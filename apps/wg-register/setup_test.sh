@@ -13,12 +13,13 @@ new_sandbox() {
 
     cat >"$SANDBOX/bin/curl" <<'STUB'
 #!/bin/sh
-url=""; method="GET"; code_only=0
+url=""; method="GET"; code_only=0; data=""
 while [ $# -gt 0 ]; do
     case "$1" in
         -X) method="$2"; shift 2 ;;
         -o) [ "$2" = "/dev/null" ] && code_only=1; shift 2 ;;
-        -H|-d|-w|--max-time) shift 2 ;;
+        -d) data="$2"; shift 2 ;;
+        -H|-w|--max-time) shift 2 ;;
         http*) url="$1"; shift ;;
         *) shift ;;
     esac
@@ -27,10 +28,13 @@ case "$method:$url" in
     GET:*/tunnels/*)     key=verify ;;
     POST:*/tunnels)      key=create ;;
     POST:*/records)      key=records ;;
+    PUT:*/key)           key=rotate ;;
     *)                   key=unknown ;;
 esac
-echo "$method $key" >> "$SANDBOX/calls.log"
-file="$SANDBOX/resp/$key"
+echo "$method $key $data" >> "$SANDBOX/calls.log"
+n=$(grep -c "^$method $key" "$SANDBOX/calls.log")
+file="$SANDBOX/resp/$key.$n"
+[ -f "$file" ] || file="$SANDBOX/resp/$key"
 [ -f "$file" ] || { echo "000"; exit 0; }
 http=$(head -1 "$file")
 body=$(tail -n +2 "$file")
@@ -45,11 +49,16 @@ STUB
 #!/bin/sh
 case "$1" in
     genkey) echo "PRIVKEY-generated" ;;
-    pubkey) cat >/dev/null; echo "PUBKEY-derived" ;;
+    pubkey) read -r key; echo "PUB-$key" ;;
 esac
 STUB
 
-    chmod +x "$SANDBOX/bin/curl" "$SANDBOX/bin/wg"
+    cat >"$SANDBOX/bin/sleep" <<'STUB'
+#!/bin/sh
+echo "sleep $1" >> "$SANDBOX/calls.log"
+STUB
+
+    chmod +x "$SANDBOX/bin/curl" "$SANDBOX/bin/wg" "$SANDBOX/bin/sleep"
     : >"$SANDBOX/calls.log"
 }
 
@@ -68,6 +77,9 @@ run_setup() {
         PLATFORM_API_URL="https://api.example.test" \
         ACCOUNT_TOKEN="test-token" \
         SERVICE_NAME="${SERVICE_NAME_OVERRIDE-myapp}" \
+        POD_NAMESPACE="${OWNER_OVERRIDE-yolab-myapp-cd34}" \
+        HANDSHAKE_POLL_SECS=1 \
+        HANDSHAKE_WATCH_SECS=3 \
         sh "$SETUP" >"$OUT" 2>&1
     RC=$?
 }
@@ -108,7 +120,7 @@ case_start() {
 }
 case_end() {
     rm -rf "$SANDBOX"
-    unset SERVICE_NAME_OVERRIDE
+    unset SERVICE_NAME_OVERRIDE OWNER_OVERRIDE
 }
 
 TUNNEL_BODY='{"tunnel_id":77,"sub_ipv6":"2001:db8::99","wg_server_endpoint":"1.2.3.4:51820","wg_server_public_key":"SERVER-PUB"}'
@@ -288,6 +300,205 @@ WG_DIR="$SANDBOX/wireguard" YOLAB_DIR="$SANDBOX/yolab" PATH="$SANDBOX/bin:$PATH"
 RC=$?
 if [ "$RC" -ne 0 ]; then ok; else bad "expected a non-zero exit, got $RC"; fi
 assert_not_called "POST create" "nothing should be requested without a token"
+case_end
+
+OWNED_STATE='{"tunnel_id":42,"sub_ipv6":"2001:db8::42","wg_private_key":"PRIVKEY-cached",
+ "wg_server_endpoint":"9.9.9.9:51820","wg_server_public_key":"CACHED-SERVER-PUB","fqdn":"old.example.test",
+ "owner":"yolab-myapp-cd34"}'
+COPIED_STATE='{"tunnel_id":42,"sub_ipv6":"2001:db8::42","wg_private_key":"PRIVKEY-cached",
+ "wg_server_endpoint":"9.9.9.9:51820","wg_server_public_key":"CACHED-SERVER-PUB","fqdn":"old.example.test",
+ "owner":"yolab-myapp-ab12"}'
+LIVE_TUNNEL='{"tunnel_id":42,"sub_ipv6":"2001:db8::42","wg_public_key":"PUB-PRIVKEY-cached",
+ "last_handshake":"2026-09-29T10:00:00Z","last_handshake_age_secs":20}'
+DEAD_TUNNEL='{"tunnel_id":42,"sub_ipv6":"2001:db8::42","wg_public_key":"PUB-PRIVKEY-cached",
+ "last_handshake":"2026-09-01T10:00:00Z","last_handshake_age_secs":2419200}'
+NEVER_SEEN_TUNNEL='{"tunnel_id":42,"sub_ipv6":"2001:db8::42","wg_public_key":"PUB-PRIVKEY-cached",
+ "last_handshake":null,"last_handshake_age_secs":null}'
+LIVE_TUNNEL_LATER='{"tunnel_id":42,"sub_ipv6":"2001:db8::42","wg_public_key":"PUB-PRIVKEY-cached",
+ "last_handshake":"2026-09-29T10:02:00Z","last_handshake_age_secs":5}'
+
+case_start "a fresh registration records which instance owns the tunnel"
+respond create 200 "$TUNNEL_BODY"
+respond records 200 "$RECORD_BODY"
+run_setup
+assert_eq "$(state_field owner)" "yolab-myapp-cd34" "owner"
+case_end
+
+case_start "an instance restarting on its own live tunnel keeps it untouched"
+write_state <<EOF
+$OWNED_STATE
+EOF
+respond verify 200 "$LIVE_TUNNEL"
+respond records 200 "$RECORD_BODY"
+run_setup
+assert_eq "$RC" "0" "exit code"
+assert_not_called "POST create" "a restart must not re-register"
+assert_not_called "PUT rotate" "a restart must not rotate its key"
+assert_contains "$(wg_conf)" 'PrivateKey = PRIVKEY-cached' "wg0.conf"
+case_end
+
+case_start "a duplicate of a live instance registers its own address"
+write_state <<EOF
+$COPIED_STATE
+EOF
+respond verify 200 "$LIVE_TUNNEL"
+respond create 200 "$TUNNEL_BODY"
+respond records 200 "$RECORD_BODY"
+run_setup
+assert_eq "$RC" "0" "exit code"
+assert_called "POST create" "the copy needs its own tunnel"
+assert_not_called "PUT rotate" "the live original must keep its key"
+assert_contains "$(wg_conf)" '2001:db8::99/128' "wg0.conf must use the new address"
+assert_missing "$(wg_conf)" 'PRIVKEY-cached' "the original's key must never be shared"
+assert_eq "$(state_field tunnel_id)" "77" "state holds the new tunnel"
+assert_eq "$(state_field owner)" "yolab-myapp-cd34" "state belongs to the copy"
+case_end
+
+case_start "a restore of an instance that is gone keeps its address under a fresh key"
+write_state <<EOF
+$COPIED_STATE
+EOF
+respond verify 200 "$DEAD_TUNNEL"
+respond rotate 200 '{}'
+respond records 200 "$RECORD_BODY"
+run_setup
+assert_eq "$RC" "0" "exit code"
+assert_not_called "POST create" "the address must be kept"
+assert_called 'PUT rotate {"wg_public_key":"PUB-PRIVKEY-generated","replaces":"PUB-PRIVKEY-cached"}' "the key is swapped only if still the old one"
+assert_contains "$(wg_conf)" '2001:db8::42/128' "wg0.conf keeps the address"
+assert_contains "$(wg_conf)" 'PrivateKey = PRIVKEY-generated' "wg0.conf uses the fresh key"
+assert_eq "$(state_field tunnel_id)" "42" "state keeps the tunnel"
+assert_eq "$(state_field wg_private_key)" "PRIVKEY-generated" "state keeps the fresh key"
+assert_eq "$(state_field owner)" "yolab-myapp-cd34" "state belongs to the restore"
+case_end
+
+case_start "a restore of a tunnel that never handshook takes it over"
+write_state <<EOF
+$COPIED_STATE
+EOF
+respond verify 200 "$NEVER_SEEN_TUNNEL"
+respond rotate 200 '{}'
+respond records 200 "$RECORD_BODY"
+run_setup
+assert_eq "$RC" "0" "exit code"
+assert_not_called "POST create" "the address must be kept"
+assert_called "PUT rotate" "takeover"
+case_end
+
+case_start "a restore that loses the takeover race registers its own address"
+write_state <<EOF
+$COPIED_STATE
+EOF
+respond verify 200 "$DEAD_TUNNEL"
+respond rotate 409 '{"detail":"key changed"}'
+respond create 200 "$TUNNEL_BODY"
+respond records 200 "$RECORD_BODY"
+run_setup
+assert_eq "$RC" "0" "exit code"
+assert_called "POST create" "the loser needs its own tunnel"
+assert_eq "$(state_field tunnel_id)" "77" "state holds the new tunnel"
+case_end
+
+case_start "a takeover the platform fails fails the init container instead of guessing"
+write_state <<EOF
+$COPIED_STATE
+EOF
+respond verify 200 "$DEAD_TUNNEL"
+respond rotate 500 '{"detail":"boom"}'
+run_setup
+if [ "$RC" -ne 0 ]; then ok; else bad "expected a non-zero exit, got $RC"; fi
+assert_not_called "POST create" "no new tunnel on an ambiguous failure"
+assert_eq "$(state_field owner)" "yolab-myapp-ab12" "the copied state is left for the retry"
+case_end
+
+case_start "an instance whose tunnel was taken over elsewhere moves to a new address"
+write_state <<EOF
+$OWNED_STATE
+EOF
+respond verify 200 '{"tunnel_id":42,"sub_ipv6":"2001:db8::42","wg_public_key":"PUB-someone-else","last_handshake_age_secs":3}'
+respond create 200 "$TUNNEL_BODY"
+respond records 200 "$RECORD_BODY"
+run_setup
+assert_eq "$RC" "0" "exit code"
+assert_called "POST create" "the stale key must not be used"
+assert_missing "$(wg_conf)" 'PRIVKEY-cached' "wg0.conf must not carry the replaced key"
+case_end
+
+case_start "a copy cannot share the key while the platform is unreachable"
+write_state <<EOF
+$COPIED_STATE
+EOF
+run_setup
+if [ "$RC" -ne 0 ]; then ok; else bad "expected a non-zero exit, got $RC"; fi
+assert_not_called "POST create" "nothing is registered blind"
+assert_missing "$(wg_conf)" 'PRIVKEY-cached' "the copied key must not come up"
+case_end
+
+case_start "a copy on a platform that cannot report liveness registers its own address"
+write_state <<EOF
+$COPIED_STATE
+EOF
+respond verify 200 '{"tunnel_id":42,"sub_ipv6":"2001:db8::42"}'
+respond create 200 "$TUNNEL_BODY"
+respond records 200 "$RECORD_BODY"
+run_setup
+assert_eq "$RC" "0" "exit code"
+assert_called "POST create" "unknown liveness must not share a key"
+assert_not_called "PUT rotate" "no takeover without liveness"
+case_end
+
+case_start "pre-ownership state reused on a platform without liveness is adopted"
+write_state <<EOF
+$CACHED_STATE
+EOF
+respond verify 200 '{"tunnel_id":42,"sub_ipv6":"2001:db8::42"}'
+respond records 200 "$RECORD_BODY"
+run_setup
+assert_eq "$RC" "0" "exit code"
+assert_not_called "POST create" "upgrading must not move every app to a new address"
+assert_eq "$(state_field owner)" "yolab-myapp-cd34" "the state is claimed"
+case_end
+
+case_start "pre-ownership state whose tunnel keeps handshaking is another live instance"
+write_state <<EOF
+$CACHED_STATE
+EOF
+respond verify.1 200 "$LIVE_TUNNEL"
+respond verify 200 "$LIVE_TUNNEL_LATER"
+respond create 200 "$TUNNEL_BODY"
+respond records 200 "$RECORD_BODY"
+run_setup
+assert_eq "$RC" "0" "exit code"
+assert_called "sleep" "it watches before deciding"
+assert_called "POST create" "a duplicate of an older instance gets its own address"
+assert_not_called "PUT rotate" "the live original keeps its key"
+case_end
+
+case_start "pre-ownership state whose tunnel went quiet was this instance before it restarted"
+write_state <<EOF
+$CACHED_STATE
+EOF
+respond verify 200 "$LIVE_TUNNEL"
+respond rotate 200 '{}'
+respond records 200 "$RECORD_BODY"
+run_setup
+assert_eq "$RC" "0" "exit code"
+assert_called "sleep" "it watches before deciding"
+assert_not_called "POST create" "the address must be kept"
+assert_contains "$(wg_conf)" '2001:db8::42/128' "wg0.conf keeps the address"
+assert_eq "$(state_field owner)" "yolab-myapp-cd34" "the state is claimed"
+case_end
+
+case_start "a chart that passes no namespace keeps today's reuse behaviour"
+OWNER_OVERRIDE=""
+write_state <<EOF
+$COPIED_STATE
+EOF
+respond verify 200 "$LIVE_TUNNEL"
+respond records 200 "$RECORD_BODY"
+run_setup
+assert_eq "$RC" "0" "exit code"
+assert_not_called "POST create" "no ownership information, no decision"
 case_end
 
 echo "wg-register: $PASS passed, $FAIL failed"
