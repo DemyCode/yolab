@@ -88,7 +88,6 @@ jobs:
           xargs -a /tmp/out.txt nix path-info --recursive \
             | nix run nixpkgs#attic-client -- push yolab --stdin --no-closure
 
-
   build-images:
     runs-on: ubuntu-latest
     permissions:
@@ -462,7 +461,7 @@ jobs:
       - name: Run nix fmt
         id: fmt
         run: |
-          nix fmt
+          nix fmt -v -L
           if git diff --quiet; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
             echo "Already formatted; nothing to open a PR for."
