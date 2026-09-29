@@ -10,8 +10,7 @@ use crate::config::Config;
 use crate::host::Host;
 use crate::routers::apps::{
     app_schema, clear_install_failed, collect_runtime, mark_install_failed, merge_credentials,
-    stage_install, write_definition, AppDefinition, BackupPolicy, StagedInstall,
-    DEFINITION_SCHEMA,
+    stage_install, write_definition, AppDefinition, BackupPolicy, StagedInstall, DEFINITION_SCHEMA,
 };
 use crate::routers::backup_common::Backend;
 
@@ -340,8 +339,12 @@ pub(crate) async fn execute<H: Host + 'static>(
 ) -> anyhow::Result<()> {
     let outcome = install_inner(b, cfg, plan, log).await;
     if let Err(e) = &outcome {
-        mark_install_failed(&b.kube, &format!("yolab-{}", plan.instance_name), &format!("{e:#}"))
-            .await;
+        mark_install_failed(
+            &b.kube,
+            &format!("yolab-{}", plan.instance_name),
+            &format!("{e:#}"),
+        )
+        .await;
     }
     outcome
 }

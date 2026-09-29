@@ -867,7 +867,10 @@ mod tests {
         let old = legacy_store();
         let fresh = old.rebuilt("node1").unwrap();
         let key = "node1--wwn-a";
-        assert_eq!(fresh.disk_claims().unwrap()[key], old.disk_claims().unwrap()[key]);
+        assert_eq!(
+            fresh.disk_claims().unwrap()[key],
+            old.disk_claims().unwrap()[key]
+        );
     }
 
     #[test]
@@ -918,7 +921,8 @@ mod tests {
     #[test]
     fn a_node_with_no_file_at_all_starts_empty() {
         let dir = tempfile::tempdir().unwrap();
-        let opened = Store::open_or_migrate("node1", &dir.path().join("store-v2.automerge")).unwrap();
+        let opened =
+            Store::open_or_migrate("node1", &dir.path().join("store-v2.automerge")).unwrap();
         assert!(opened.disk_claims().unwrap().is_empty());
     }
 
