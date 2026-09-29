@@ -119,6 +119,15 @@ function branchProp(
   return undefined;
 }
 
+export function revealedFields(schema: ConfigSchema): [string, SchemaProp][] {
+  return [...revealedBy(schema)].flatMap(([toggle, names]) =>
+    names.flatMap((name): [string, SchemaProp][] => {
+      const prop = branchProp(schema, toggle, name);
+      return prop ? [[name, prop]] : [];
+    }),
+  );
+}
+
 export function generatedFields(schema: ConfigSchema): [string, string][] {
   return Object.entries(schema.properties ?? {})
     .filter(([, p]) => p.writeOnly === true && p.generate === true)

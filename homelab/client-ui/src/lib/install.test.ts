@@ -404,6 +404,49 @@ describe("seedForm", () => {
     expect(lengths).toEqual([24]);
   });
 
+  const explorer = {
+    properties: {
+      file_explorer_enabled: { type: "boolean", default: true },
+    },
+    dependencies: {
+      file_explorer_enabled: {
+        oneOf: [
+          { properties: { file_explorer_enabled: { const: false } } },
+          {
+            properties: {
+              file_explorer_enabled: { const: true },
+              file_explorer_password: {
+                type: "string",
+                writeOnly: true,
+                generate: true,
+                minLength: 12,
+              },
+            },
+          },
+        ],
+      },
+    },
+  };
+
+  it("generates a credential that only appears once its toggle is on", () => {
+    const { lengths, generate } = counter();
+    const seed = seedForm(explorer, null, "fresh", generate);
+    expect(seed.file_explorer_password).toBe("x".repeat(24));
+    expect(lengths).toEqual([24]);
+  });
+
+  it("keeps a copied app's revealed credential instead of generating a new one", () => {
+    const { lengths, generate } = counter();
+    const seed = seedForm(
+      explorer,
+      { file_explorer_enabled: true, file_explorer_password: "__redacted__" },
+      "duplicate",
+      generate,
+    );
+    expect(seed.file_explorer_password).toBe("__redacted__");
+    expect(lengths).toEqual([]);
+  });
+
   it("keeps a copied app's settings, credentials included, instead of generating new ones", () => {
     const { lengths, generate } = counter();
     const seed = seedForm(

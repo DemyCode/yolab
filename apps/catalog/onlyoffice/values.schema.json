@@ -27,7 +27,46 @@
           "type": "boolean",
           "title": "File explorer",
           "default": true,
-          "description": "A lightweight, password-protected, read-only browser for this app's own data — handy for pulling a file out or checking what's actually stored, without needing a terminal. The password is generated for you and shown once the app finishes starting."
+          "description": "A lightweight, password-protected, read-only browser for this app's own data on its own address — handy for pulling a file out or checking what's actually stored, without needing a terminal."
+        }
+      },
+      "dependencies": {
+        "file_explorer_enabled": {
+          "oneOf": [
+            {
+              "properties": {
+                "file_explorer_enabled": {
+                  "const": false
+                }
+              }
+            },
+            {
+              "properties": {
+                "file_explorer_enabled": {
+                  "const": true
+                },
+                "file_explorer_subdomain": {
+                  "type": "string",
+                  "title": "File explorer subdomain",
+                  "format": "tunnel",
+                  "description": "Leave empty to use this app's subdomain followed by -files."
+                },
+                "file_explorer_username": {
+                  "type": "string",
+                  "title": "File explorer username",
+                  "default": "admin",
+                  "pattern": "^[A-Za-z0-9._-]+$"
+                },
+                "file_explorer_password": {
+                  "type": "string",
+                  "title": "File explorer password",
+                  "minLength": 12,
+                  "writeOnly": true,
+                  "generate": true
+                }
+              }
+            }
+          ]
         }
       }
     },
@@ -49,6 +88,20 @@
           "format": "uri",
           "source": {
             "logs": "YOLAB_OUTPUT file_explorer_url (\\S+)"
+          },
+          "when": {
+            "properties": {
+              "file_explorer_enabled": {
+                "const": true
+              }
+            }
+          }
+        },
+        "file_explorer_username": {
+          "type": "string",
+          "title": "File explorer username",
+          "source": {
+            "logs": "YOLAB_OUTPUT file_explorer_username (\\S+)"
           },
           "when": {
             "properties": {

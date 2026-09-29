@@ -119,7 +119,6 @@ data:
     {{- .Values.yolab.gateway.caddyfile | nindent 4 }}
     {{- else if eq (include "yolab-common.auth.enabled" .) "true" }}
     {$YOLAB_FQDN} {
-      {{- include "yolab-common.fileExplorer.caddyHandle" . | nindent 6 }}
       # The portal, on this app's own domain. Must be matched BEFORE the
       # forward_auth below, or the login page would itself require a login.
       handle /authelia/* {
@@ -137,10 +136,10 @@ data:
     }
     {{- else }}
     {$YOLAB_FQDN} {
-      {{- include "yolab-common.fileExplorer.caddyHandle" . | nindent 6 }}
       reverse_proxy {{ required "yolab.gateway.upstream is required when no caddyfile is given" (((.Values.yolab).gateway).upstream) }}
     }
     {{- end }}
+    {{- include "yolab-common.fileExplorer.caddySite" . | nindent 4 }}
 {{- end -}}
 
 

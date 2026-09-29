@@ -1,5 +1,7 @@
 {{ include "yolab-common.caddyConfigMap" . }}
 ---
+{{ include "yolab-common.fileExplorerSecret" . }}
+---
 {{ include "yolab-common.uninstallHook" . }}
 ---
 {{- $img := "linuxserver/mastodon:version-v4.7.0@sha256:cef14ec8b56dad042d404d01de6d16546b0a4ad23517af3dda7b35a14d3c0678" }}
