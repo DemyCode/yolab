@@ -183,8 +183,9 @@ impl Store {
     }
 
     pub fn merge(&mut self, other: &mut Store) -> Result<bool, StoreError> {
-        let applied = self.doc.merge(&mut other.doc)?;
-        Ok(!applied.is_empty())
+        let before = self.doc.get_heads();
+        let after = self.doc.merge(&mut other.doc)?;
+        Ok(after != before)
     }
 
     fn read_at<T: DeserializeOwned>(&self, key: &str) -> Result<Option<Entry<T>>, StoreError> {
@@ -484,6 +485,19 @@ mod tests {
         only.set_disk_intent("node1", "wwn-a", DiskIntent::On)
             .unwrap();
         assert_eq!(intent(&only, "node1", "wwn-a"), Some(DiskIntent::On));
+    }
+
+    #[test]
+    fn a_merge_reports_a_change_only_when_the_other_side_knew_something_new() {
+        let mut a = Store::new("node1");
+        a.set_disk_intent("node1", "wwn-a", DiskIntent::On).unwrap();
+        let mut echo = Store::load("node1", &a.save()).unwrap();
+        assert!(!a.merge(&mut echo).unwrap(), "its own document back is no news");
+
+        let mut b = Store::new("node2");
+        b.set_disk_intent("node2", "wwn-b", DiskIntent::On).unwrap();
+        assert!(a.merge(&mut b).unwrap());
+        assert!(!a.merge(&mut b).unwrap(), "the same news twice is news once");
     }
 
     #[test]
