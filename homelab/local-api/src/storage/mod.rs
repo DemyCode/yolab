@@ -11,6 +11,7 @@ pub mod keys;
 pub mod mon_member;
 pub mod noout;
 pub mod osd;
+pub mod pivot_lock;
 pub mod reset_wipe;
 pub mod settings;
 pub mod wait;
