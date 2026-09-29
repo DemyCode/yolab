@@ -26,6 +26,10 @@ yolab-tunnel-credentials
           key: account-token
     - name: SERVICE_NAME
       value: {{ ((.Values.yolab).serviceName) | default "" | quote }}
+    - name: POD_NAMESPACE
+      valueFrom:
+        fieldRef:
+          fieldPath: metadata.namespace
   volumeMounts:
     - name: wireguard
       mountPath: /wireguard
