@@ -14,6 +14,7 @@ pub struct BootstrapArgs {
     pub mon_addr: String,
     pub join_seed_addr: String,
     pub config_path: String,
+    pub api_port: u16,
 }
 
 fn admin_keyring_path(root: &Path) -> std::path::PathBuf {
@@ -52,11 +53,11 @@ fn write_keyring(path: &Path, contents: &str) -> Result<()> {
     Ok(())
 }
 
-async fn fetch_join_bundle(seed_addr: &str, token: &str) -> Result<CephJoinBundle> {
+async fn fetch_join_bundle(seed_addr: &str, port: u16, token: &str) -> Result<CephJoinBundle> {
     crate::http::client()
         .get(crate::http::peer_url(
             seed_addr,
-            3001,
+            port,
             "/api/cluster/ceph-join",
         ))
         .header(CLUSTER_AUTH_HEADER, token)
@@ -289,7 +290,7 @@ pub async fn run<H: Host>(host: &H, root: &Path, node: &str, args: &BootstrapArg
                 args.join_seed_addr
             );
         }
-        let bundle = fetch_join_bundle(&args.join_seed_addr, &token).await?;
+        let bundle = fetch_join_bundle(&args.join_seed_addr, args.api_port, &token).await?;
         validate_join_fsid(&bundle.fsid, &args.fsid, &args.join_seed_addr)
             .map_err(|e| anyhow!(e))?;
         join_cluster(host, root, node, &bundle).await?;
@@ -425,6 +426,7 @@ mod tests {
             mon_addr: "fd00:cafe::1".to_string(),
             join_seed_addr: String::new(),
             config_path: "/nonexistent/config.toml".to_string(),
+            api_port: 3001,
         };
 
         run(&host, dir.path(), "yolab-n1", &args).await.unwrap();
@@ -449,6 +451,7 @@ mod tests {
             mon_addr: "fd00:cafe::1".to_string(),
             join_seed_addr: String::new(),
             config_path: "/nonexistent/config.toml".to_string(),
+            api_port: 3001,
         };
 
         run(&host, dir.path(), "yolab-n1", &args).await.unwrap();
@@ -493,5 +496,128 @@ mod tests {
         assert!(err.to_string().contains("could not fetch a monmap"));
         assert!(admin_keyring_path(dir.path()).exists());
         assert!(!host.ran("ceph-mon --mkfs"));
+    }
+
+    use crate::testkit::{peer, PEER};
+    use wiremock::{matchers, Mock, ResponseTemplate};
+
+    struct Joiner {
+        dir: tempfile::TempDir,
+        args: BootstrapArgs,
+    }
+
+    impl Joiner {
+        fn new(port: u16, config: &str) -> Self {
+            let dir = tempfile::tempdir().unwrap();
+            let config_path = dir.path().join("config.toml");
+            std::fs::write(&config_path, config).unwrap();
+            let args = BootstrapArgs {
+                fsid: FSID.to_string(),
+                mon_addr: "fd00:cafe::2".to_string(),
+                join_seed_addr: PEER.to_string(),
+                config_path: config_path.to_string_lossy().into_owned(),
+                api_port: port,
+            };
+            Self { dir, args }
+        }
+
+        fn root(&self) -> std::path::PathBuf {
+            self.dir.path().join("root")
+        }
+    }
+
+    const WITH_TOKEN: &str = "[tunnel]\naccount_token = \"acct-tok\"\n";
+
+    async fn seed(status: u16, body: &CephJoinBundle) -> (wiremock::MockServer, u16) {
+        let (server, port) = peer().await;
+        Mock::given(matchers::method("GET"))
+            .and(matchers::path("/api/cluster/ceph-join"))
+            .and(matchers::header(CLUSTER_AUTH_HEADER, "acct-tok"))
+            .respond_with(ResponseTemplate::new(status).set_body_json(body))
+            .mount(&server)
+            .await;
+        (server, port)
+    }
+
+    fn joining_host() -> FileWritingHost {
+        FileWritingHost::new(
+            FakeHost::new()
+                .ok("chown", "")
+                .ok("ceph --connect-timeout 10 mon getmap", "")
+                .ok("ceph-mon --mkfs", ""),
+        )
+    }
+
+    #[tokio::test]
+    async fn a_joining_node_takes_the_seeds_credentials_and_becomes_a_member() {
+        let b = bundle(FSID);
+        let (_server, port) = seed(200, &b).await;
+        let j = Joiner::new(port, WITH_TOKEN);
+        let host = joining_host();
+
+        run(&host, &j.root(), "yolab-n2", &j.args).await.unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(admin_keyring_path(&j.root())).unwrap(),
+            b.admin_keyring
+        );
+        assert_eq!(
+            std::fs::read_to_string(bootstrap_osd_keyring_path(&j.root())).unwrap(),
+            b.bootstrap_osd_keyring
+        );
+        assert!(mon_dir(&j.root(), "yolab-n2").join("keyring").exists());
+        assert!(!tmp_mon_keyring_path(&j.root()).exists());
+        assert!(!host.inner.ran("ceph-authtool"));
+    }
+
+    #[tokio::test]
+    async fn a_seed_from_another_cluster_is_refused_before_anything_is_written() {
+        let (_server, port) = seed(200, &bundle("99999999-2222-3333-4444-555555555555")).await;
+        let j = Joiner::new(port, WITH_TOKEN);
+        let host = joining_host();
+
+        let err = run(&host, &j.root(), "yolab-n2", &j.args).await.unwrap_err();
+
+        assert!(err.to_string().contains("refusing to join"));
+        assert!(!admin_keyring_path(&j.root()).exists());
+        assert!(host.inner.calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_seed_that_rejects_the_token_leaves_the_node_untouched() {
+        let (_server, port) = seed(401, &CephJoinBundle::default()).await;
+        let j = Joiner::new(port, WITH_TOKEN);
+        let host = joining_host();
+
+        let err = run(&host, &j.root(), "yolab-n2", &j.args).await.unwrap_err();
+
+        assert!(format!("{err:#}").contains("rejected the join request"));
+        assert!(!admin_keyring_path(&j.root()).exists());
+    }
+
+    #[tokio::test]
+    async fn a_node_without_an_account_token_never_asks_the_seed() {
+        let (server, port) = seed(200, &bundle(FSID)).await;
+        let j = Joiner::new(port, "[tunnel]\n");
+        let host = joining_host();
+
+        let err = run(&host, &j.root(), "yolab-n2", &j.args).await.unwrap_err();
+
+        assert!(err.to_string().contains("no tunnel.account_token"));
+        assert!(server.received_requests().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_seed_that_is_down_is_an_error_the_timer_retries() {
+        let port = std::net::TcpListener::bind("[::1]:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let j = Joiner::new(port, WITH_TOKEN);
+        let err = run(&joining_host(), &j.root(), "yolab-n2", &j.args)
+            .await
+            .unwrap_err();
+        assert!(format!("{err:#}").contains("did not hand over the cluster credentials"));
     }
 }

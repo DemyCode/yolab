@@ -1,4 +1,5 @@
 use std::future::Future;
+use std::path::Path;
 use std::time::Duration;
 
 use serde_json::Value;
@@ -81,6 +82,22 @@ pub trait Host: Send + Sync + Clone {
         _timeout: Duration,
         _on_line: &'a (dyn Fn(String) + Send + Sync),
     ) -> impl Future<Output = HostResult<bool>> + Send + 'a {
+        async move {
+            Err(CmdError::Failed {
+                cmd: exec::render(bin, args),
+                kind: exec::Failure::Other,
+                stderr: "not supported by this host".into(),
+            })
+        }
+    }
+
+    fn spawn_detached<'a>(
+        &self,
+        bin: &'a str,
+        args: &'a [&'a str],
+        _log: &'a Path,
+        _pid_file: &'a Path,
+    ) -> impl Future<Output = HostResult<u32>> + Send + 'a {
         async move {
             Err(CmdError::Failed {
                 cmd: exec::render(bin, args),
@@ -232,6 +249,16 @@ impl Host for RealHost {
         on_line: &'a (dyn Fn(String) + Send + Sync),
     ) -> impl Future<Output = HostResult<bool>> + Send + 'a {
         async move { exec::stream_lines(bin, args, timeout, on_line).await }
+    }
+
+    fn spawn_detached<'a>(
+        &self,
+        bin: &'a str,
+        args: &'a [&'a str],
+        log: &'a Path,
+        pid_file: &'a Path,
+    ) -> impl Future<Output = HostResult<u32>> + Send + 'a {
+        async move { exec::spawn_detached(bin, args, log, pid_file) }
     }
 }
 
@@ -477,7 +504,30 @@ pub(crate) mod fake {
                 Ok(ok)
             }
         }
+
+        fn spawn_detached<'a>(
+            &self,
+            bin: &'a str,
+            args: &'a [&'a str],
+            log: &'a std::path::Path,
+            pid_file: &'a std::path::Path,
+        ) -> impl Future<Output = HostResult<u32>> + Send + 'a {
+            let me = self.clone();
+            async move {
+                let cmd = format!("{bin} {}", args.join(" "));
+                let out = me.answer(&cmd)?;
+                let io = |source| CmdError::Spawn {
+                    cmd: cmd.clone(),
+                    source,
+                };
+                std::fs::write(log, out).map_err(io)?;
+                std::fs::write(pid_file, FAKE_PID.to_string()).map_err(io)?;
+                Ok(FAKE_PID)
+            }
+        }
     }
+
+    pub const FAKE_PID: u32 = 4242;
 }
 
 #[cfg(test)]

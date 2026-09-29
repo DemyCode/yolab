@@ -170,3 +170,33 @@ impl TestApi {
         }
     }
 }
+
+pub(crate) const PEER: &str = "::1";
+
+pub(crate) async fn peer() -> (wiremock::MockServer, u16) {
+    let listener = std::net::TcpListener::bind("[::1]:0").expect("bind a peer on [::1]");
+    let port = listener.local_addr().expect("the peer's address").port();
+    let server = wiremock::MockServer::builder()
+        .listener(listener)
+        .start()
+        .await;
+    (server, port)
+}
+
+#[tokio::test]
+async fn a_peer_is_reached_through_the_same_url_production_builds() {
+    use wiremock::{matchers, Mock, ResponseTemplate};
+    let (server, port) = peer().await;
+    Mock::given(matchers::method("GET"))
+        .and(matchers::path("/api/status"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let res = crate::http::client()
+        .get(crate::http::peer_url(PEER, port, "/api/status"))
+        .send()
+        .await
+        .unwrap();
+    assert!(res.status().is_success());
+}

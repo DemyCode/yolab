@@ -492,4 +492,100 @@ mod tests {
             "generated-value-abc"
         );
     }
+
+    use wiremock::{matchers, Mock, ResponseTemplate};
+
+    async fn dashboard_answering(status: u16) -> (wiremock::MockServer, String) {
+        let (server, port) = crate::testkit::peer().await;
+        Mock::given(matchers::method("POST"))
+            .and(matchers::path("/ceph-dashboard/api/auth"))
+            .and(matchers::header("Accept", "application/vnd.ceph.api.v1.0+json"))
+            .and(matchers::body_json(
+                serde_json::json!({"username": "admin", "password": "clusterpw123"}),
+            ))
+            .respond_with(ResponseTemplate::new(status))
+            .mount(&server)
+            .await;
+        (server, format!("http://[::1]:{port}/ceph-dashboard/"))
+    }
+
+    #[tokio::test]
+    async fn a_login_is_checked_against_the_dashboards_own_auth_endpoint() {
+        let (_server, url) = dashboard_answering(201).await;
+        assert_eq!(verify_login(&url, "clusterpw123").await, 201);
+        assert_eq!(
+            interpret_login_code(verify_login(&url, "wrong").await),
+            LoginCheck::NotAPasswordProblem(404)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_dashboard_that_is_down_reads_as_unreachable() {
+        let port = std::net::TcpListener::bind("[::1]:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let code = verify_login(&format!("http://[::1]:{port}/ceph-dashboard"), "pw").await;
+        assert_eq!(interpret_login_code(code), LoginCheck::Unreachable);
+    }
+
+    fn configured_host(dashboard_url: &str) -> FakeHost {
+        FakeHost::new()
+            .ok("ceph -s", "")
+            .ok("ceph mgr module ls", r#"{"enabled_modules":["dashboard"]}"#)
+            .ok("ceph config set", "")
+            .ok("ceph mgr stat", r#"{"active_name":"yolab-n2"}"#)
+            .ok(
+                "ceph mgr services",
+                &serde_json::json!({ "dashboard": dashboard_url }).to_string(),
+            )
+            .ok(
+                "ceph config-key get yolab/dashboard/admin-password",
+                "clusterpw123",
+            )
+            .ok("ceph dashboard ac-user-show admin", "")
+            .ok("ceph dashboard ac-user-set-password", "")
+    }
+
+    fn local_policy(dir: &tempfile::TempDir) -> DashboardPolicy {
+        let mut p = policy();
+        p.password_file = dir
+            .path()
+            .join("dashboard-password")
+            .to_string_lossy()
+            .into_owned();
+        p
+    }
+
+    #[tokio::test]
+    async fn a_password_the_dashboard_rejects_is_applied_again() {
+        let (_server, url) = dashboard_answering(401).await;
+        let host = configured_host(&url);
+        let dir = tempfile::tempdir().unwrap();
+        run(&host, "yolab-n1", &local_policy(&dir)).await.unwrap();
+        assert!(host.ran("ceph dashboard ac-user-set-password admin -i"));
+    }
+
+    #[tokio::test]
+    async fn a_password_the_dashboard_accepts_is_left_alone() {
+        let (_server, url) = dashboard_answering(201).await;
+        let host = configured_host(&url);
+        let dir = tempfile::tempdir().unwrap();
+        run(&host, "yolab-n1", &local_policy(&dir)).await.unwrap();
+        assert!(!host.ran("ac-user-set-password"));
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("dashboard-password")).unwrap(),
+            "clusterpw123"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_dashboard_error_that_is_not_about_the_password_changes_nothing() {
+        let (_server, url) = dashboard_answering(500).await;
+        let host = configured_host(&url);
+        let dir = tempfile::tempdir().unwrap();
+        run(&host, "yolab-n1", &local_policy(&dir)).await.unwrap();
+        assert!(!host.ran("ac-user-set-password"));
+    }
 }

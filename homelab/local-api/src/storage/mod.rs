@@ -32,6 +32,7 @@ pub struct StorageEnv {
     pub mon_addr: String,
     pub join_seed_addr: String,
     pub config_path: String,
+    pub api_port: u16,
     pub images_pool: String,
     pub images_share: f64,
     pub images_min_gb: u64,
@@ -59,6 +60,7 @@ impl StorageEnv {
             mon_addr: s("YOLAB_CEPH_MON_ADDR"),
             join_seed_addr: s("YOLAB_CEPH_JOIN_SEED_ADDR"),
             config_path: s("YOLAB_CONFIG"),
+            api_port: s("YOLAB_PORT").parse().unwrap_or(3001),
             images_pool: or("YOLAB_CEPH_IMAGES_POOL", "images"),
             images_share: s("YOLAB_CEPH_IMAGES_SHARE").parse().unwrap_or(0.25),
             images_min_gb: s("YOLAB_CEPH_IMAGES_MIN_GB").parse().unwrap_or(40),
@@ -83,6 +85,7 @@ impl StorageEnv {
             mon_addr: self.mon_addr.clone(),
             join_seed_addr: self.join_seed_addr.clone(),
             config_path: self.config_path.clone(),
+            api_port: self.api_port,
         }
     }
 
@@ -196,6 +199,8 @@ mod tests {
         assert_eq!(env.images_min_gb, 40);
         assert_eq!(env.dashboard_port, 7000);
         assert_eq!(env.dashboard_prefix, "/ceph-dashboard");
+        assert_eq!(env.api_port, 3001);
+        assert_eq!(env.bootstrap_args().api_port, 3001);
         assert!(!env.mds);
         assert!(!env.is_configured());
     }
@@ -257,6 +262,12 @@ mod tests {
         assert_eq!((grow.share_of_pool, grow.min_size_gb), (0.5, 80));
         assert_eq!(env.containerd_store_policy().pool_name, "images");
         assert_eq!(env.dashboard_policy().port, 8443);
+    }
+
+    #[test]
+    fn a_join_asks_the_seed_on_the_port_this_api_is_served_on() {
+        let env = StorageEnv::from_lookup(|k| (k == "YOLAB_PORT").then(|| "3100".to_string()));
+        assert_eq!(env.bootstrap_args().api_port, 3100);
     }
 
     #[test]

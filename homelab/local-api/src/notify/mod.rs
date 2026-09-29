@@ -125,6 +125,10 @@ pub(crate) struct Notification {
 }
 
 async fn publish_local(topic: &str, n: &Notification) -> Result<()> {
+    publish_to(NTFY_LOCAL, topic, n).await
+}
+
+async fn publish_to(ntfy: &str, topic: &str, n: &Notification) -> Result<()> {
     let mut body = json!({
         "topic": topic,
         "title": n.title,
@@ -136,7 +140,7 @@ async fn publish_local(topic: &str, n: &Notification) -> Result<()> {
         body["click"] = Value::String(click.clone());
     }
     let response = crate::http::client()
-        .post(NTFY_LOCAL)
+        .post(ntfy)
         .json(&body)
         .timeout(Duration::from_secs(10))
         .send()
@@ -156,17 +160,35 @@ pub(crate) async fn publish_everywhere(
     n: &Notification,
     peer_addrs: &[String],
 ) -> Result<()> {
-    publish_local(topic, n).await?;
+    deliver_everywhere(
+        NTFY_LOCAL,
+        cfg.port,
+        &cfg.cluster_token(),
+        topic,
+        n,
+        peer_addrs,
+    )
+    .await
+}
+
+async fn deliver_everywhere(
+    ntfy: &str,
+    port: u16,
+    token: &str,
+    topic: &str,
+    n: &Notification,
+    peer_addrs: &[String],
+) -> Result<()> {
+    publish_to(ntfy, topic, n).await?;
     let client = crate::http::client();
-    let token = cfg.cluster_token();
     let deliveries = peer_addrs.iter().map(|addr| {
         let request = client
             .post(crate::http::peer_url(
                 addr,
-                cfg.port,
+                port,
                 "/api/notifications/deliver",
             ))
-            .header(crate::auth::CLUSTER_AUTH_HEADER, &token)
+            .header(crate::auth::CLUSTER_AUTH_HEADER, token)
             .timeout(Duration::from_secs(10))
             .json(n);
         async move {
@@ -337,5 +359,132 @@ token = "abcdef0123456789"
             "ntfy://notify.6.yolab.io/yolab-abc?display=YoLab"
         );
         assert_eq!(sub.web_url, "https://notify.6.yolab.io/yolab-abc");
+    }
+
+    use wiremock::{matchers, Mock, MockServer, ResponseTemplate};
+
+    fn note(click: Option<&str>) -> Notification {
+        Notification {
+            title: "YoLab".into(),
+            message: "node2 is down".into(),
+            priority: 4,
+            tags: vec!["warning".into()],
+            click: click.map(str::to_string),
+        }
+    }
+
+    async fn ntfy(status: u16) -> MockServer {
+        let server = MockServer::start().await;
+        Mock::given(matchers::method("POST"))
+            .and(matchers::path("/"))
+            .respond_with(ResponseTemplate::new(status).set_body_string("topic denied"))
+            .mount(&server)
+            .await;
+        server
+    }
+
+    async fn peer_accepting(status: u16) -> (MockServer, u16) {
+        let (server, port) = crate::testkit::peer().await;
+        Mock::given(matchers::method("POST"))
+            .and(matchers::path("/api/notifications/deliver"))
+            .and(matchers::header(crate::auth::CLUSTER_AUTH_HEADER, "cluster-tok"))
+            .and(matchers::body_json(note(None)))
+            .respond_with(ResponseTemplate::new(status))
+            .mount(&server)
+            .await;
+        (server, port)
+    }
+
+    #[tokio::test]
+    async fn a_notification_is_published_to_ntfy_under_the_clusters_topic() {
+        let server = ntfy(200).await;
+        publish_to(&server.uri(), "yolab-abc", &note(Some("https://cluster.6.yolab.io/")))
+            .await
+            .unwrap();
+        let sent: Value = server.received_requests().await.unwrap()[0]
+            .body_json()
+            .unwrap();
+        assert_eq!(
+            sent,
+            json!({
+                "topic": "yolab-abc",
+                "title": "YoLab",
+                "message": "node2 is down",
+                "priority": 4,
+                "tags": ["warning"],
+                "click": "https://cluster.6.yolab.io/",
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn a_notification_without_a_link_sends_no_click() {
+        let server = ntfy(200).await;
+        publish_to(&server.uri(), "yolab-abc", &note(None)).await.unwrap();
+        let sent: Value = server.received_requests().await.unwrap()[0]
+            .body_json()
+            .unwrap();
+        assert!(sent.get("click").is_none());
+    }
+
+    #[tokio::test]
+    async fn ntfy_refusing_the_notification_is_an_error_carrying_its_answer() {
+        let server = ntfy(403).await;
+        let err = publish_to(&server.uri(), "yolab-abc", &note(None))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("403"));
+        assert!(err.to_string().contains("topic denied"));
+    }
+
+    #[tokio::test]
+    async fn every_peer_is_handed_the_notification_after_it_is_published_here() {
+        let local = ntfy(200).await;
+        let (peer, port) = peer_accepting(200).await;
+        deliver_everywhere(
+            &local.uri(),
+            port,
+            "cluster-tok",
+            "yolab-abc",
+            &note(None),
+            &[crate::testkit::PEER.to_string()],
+        )
+        .await
+        .unwrap();
+        assert_eq!(local.received_requests().await.unwrap().len(), 1);
+        assert_eq!(peer.received_requests().await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_peer_that_cannot_take_it_does_not_fail_the_delivery() {
+        let local = ntfy(200).await;
+        let (_peer, port) = peer_accepting(503).await;
+        deliver_everywhere(
+            &local.uri(),
+            port,
+            "cluster-tok",
+            "yolab-abc",
+            &note(None),
+            &[crate::testkit::PEER.to_string()],
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn nothing_is_handed_to_peers_when_this_machines_ntfy_refuses() {
+        let local = ntfy(500).await;
+        let (peer, port) = peer_accepting(200).await;
+        let sent = deliver_everywhere(
+            &local.uri(),
+            port,
+            "cluster-tok",
+            "yolab-abc",
+            &note(None),
+            &[crate::testkit::PEER.to_string()],
+        )
+        .await;
+        assert!(sent.is_err());
+        assert!(peer.received_requests().await.unwrap().is_empty());
     }
 }

@@ -213,7 +213,7 @@ impl Controller for CephKeysController {
         for daemon in daemons {
             let job = format!("{daemon}-key");
             let outcome = locked(&job, || async {
-                keys::mint(&HOST, daemon).await?;
+                keys::mint(&HOST, root(), &ctx.node, daemon).await?;
                 ensure_started(&HOST, &format!("ceph-{daemon}-{}.service", ctx.node)).await;
                 Ok(())
             })

@@ -1,4 +1,5 @@
 use std::collections::BTreeSet;
+use std::time::Duration;
 
 use axum::{
     extract::{Query, State},
@@ -6,9 +7,8 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::process::Command;
 
-use crate::AppState;
+use crate::{host::Host, AppState};
 
 const TIMEOUT_SECS: u64 = 20;
 
@@ -112,8 +112,10 @@ pub async fn list_logs(
     State(_s): State<AppState>,
     Query(q): Query<LogQuery>,
 ) -> Json<LogsResponse> {
-    let limit = q.limit.unwrap_or(DEFAULT_LINES).clamp(1, MAX_LINES);
+    Json(read_logs(&crate::host::RealHost, &q).await)
+}
 
+fn journal_args(q: &LogQuery, limit: usize) -> Vec<String> {
     let mut args: Vec<String> = vec![
         "--no-pager".into(),
         "-o".into(),
@@ -133,25 +135,21 @@ pub async fn list_logs(
     if let Some(p) = q.priority {
         args.extend(["-p".into(), p.min(7).to_string()]);
     }
+    args
+}
 
+async fn read_logs<H: Host>(host: &H, q: &LogQuery) -> LogsResponse {
+    let limit = q.limit.unwrap_or(DEFAULT_LINES).clamp(1, MAX_LINES);
+    let args = journal_args(q, limit);
     let argv: Vec<&str> = args.iter().map(String::as_str).collect();
-    let out = tokio::time::timeout(
-        std::time::Duration::from_secs(TIMEOUT_SECS),
-        Command::new("journalctl")
-            .args(&argv)
-            .kill_on_drop(true)
-            .output(),
-    )
-    .await;
 
-    let raw = match out {
-        Ok(Ok(o)) => String::from_utf8_lossy(&o.stdout).to_string(),
-        Ok(Err(e)) => {
-            tracing::warn!("logs: could not run journalctl: {e}");
-            String::new()
-        }
-        Err(_) => {
-            tracing::warn!("logs: journalctl timed out after {TIMEOUT_SECS}s");
+    let raw = match host
+        .run_cmd_bounded("journalctl", &argv, Duration::from_secs(TIMEOUT_SECS))
+        .await
+    {
+        Ok(o) => o.stdout,
+        Err(e) => {
+            tracing::warn!("logs: could not read the journal: {e}");
             String::new()
         }
     };
@@ -159,11 +157,11 @@ pub async fn list_logs(
     let (mut entries, units) = parse_journal(&raw, q.search.as_deref());
     entries.reverse();
 
-    Json(LogsResponse {
+    LogsResponse {
         truncated: entries.len() >= limit,
         entries,
         units: units.into_iter().collect(),
-    })
+    }
 }
 
 #[cfg(test)]
@@ -229,5 +227,83 @@ mod tests {
         let (entries, units) = parse_journal(raw, None);
         assert_eq!(entries[0].unit, "kernel");
         assert!(units.contains("kernel"));
+    }
+
+    use crate::host::fake::FakeHost;
+
+    fn query() -> LogQuery {
+        LogQuery {
+            unit: None,
+            priority: None,
+            since: None,
+            search: None,
+            limit: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn by_default_the_newest_lines_of_this_boot_are_read() {
+        let host = FakeHost::new().ok("journalctl", "");
+        read_logs(&host, &query()).await;
+        assert!(host.ran("journalctl --no-pager -o json -r -n 300 -b"));
+    }
+
+    #[tokio::test]
+    async fn a_since_replaces_this_boot_and_unit_and_priority_are_passed_through() {
+        let host = FakeHost::new().ok("journalctl", "");
+        let q = LogQuery {
+            unit: Some(" k3s.service ".into()),
+            priority: Some(3),
+            since: Some("1 hour ago".into()),
+            ..query()
+        };
+        read_logs(&host, &q).await;
+        assert!(host.ran("journalctl --no-pager -o json -r -n 300 --since 1 hour ago -u k3s.service -p 3"));
+        assert!(!host.ran(" -b"));
+    }
+
+    #[test]
+    fn the_limit_and_priority_are_clamped_to_what_journalctl_accepts() {
+        let q = LogQuery {
+            priority: Some(42),
+            ..query()
+        };
+        let args = journal_args(&q, 2000);
+        assert!(args.windows(2).any(|w| w == ["-p", "7"]));
+        assert!(args.windows(2).any(|w| w == ["-n", "2000"]));
+    }
+
+    #[tokio::test]
+    async fn an_oversized_limit_is_capped() {
+        let host = FakeHost::new().ok("journalctl", "");
+        let q = LogQuery {
+            limit: Some(1_000_000),
+            ..query()
+        };
+        read_logs(&host, &q).await;
+        assert!(host.ran(&format!("-n {MAX_LINES} ")));
+    }
+
+    #[tokio::test]
+    async fn entries_come_back_oldest_first_and_a_full_page_is_marked_truncated() {
+        let newest_first: String = SAMPLE.lines().rev().collect::<Vec<_>>().join("\n");
+        let host = FakeHost::new().ok("journalctl", &newest_first);
+        let q = LogQuery {
+            limit: Some(3),
+            ..query()
+        };
+        let res = read_logs(&host, &q).await;
+        assert_eq!(res.entries[0].message, "images RBD mapped at /dev/rbd0");
+        assert_eq!(res.entries[2].unit, "k3s");
+        assert!(res.truncated);
+        assert_eq!(res.units, ["k3s", "yolab-containerd-store.service"]);
+    }
+
+    #[tokio::test]
+    async fn a_journal_that_cannot_be_read_is_an_empty_page_not_an_error() {
+        let host = FakeHost::new().fail("journalctl", "No journal files were found");
+        let res = read_logs(&host, &query()).await;
+        assert!(res.entries.is_empty());
+        assert!(!res.truncated);
     }
 }

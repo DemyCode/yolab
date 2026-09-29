@@ -2,18 +2,24 @@ use std::time::Duration;
 
 use axum::{extract::State, Json};
 
-use crate::{auth::CLUSTER_AUTH_HEADER, AppState};
+use crate::{auth::CLUSTER_AUTH_HEADER, host::Host, AppState};
 
 const REBOOT_DELAY_SECS: u64 = 3;
 
 fn spawn_reboot() {
-    tokio::spawn(async {
+    spawn_reboot_on(crate::host::RealHost);
+}
+
+fn spawn_reboot_on<H: Host + 'static>(host: H) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
         tokio::time::sleep(Duration::from_secs(REBOOT_DELAY_SECS)).await;
         tracing::warn!("rebooting this machine now");
-        if let Err(e) = crate::host::Host::systemctl(&crate::host::RealHost, &["reboot"]).await {
-            tracing::error!("reboot did not start: {e}");
+        match host.systemctl(&["reboot"]).await {
+            Ok(o) if o.success => {}
+            Ok(o) => tracing::error!("reboot did not start: {}", o.stderr.trim()),
+            Err(e) => tracing::error!("reboot did not start: {e}"),
         }
-    });
+    })
 }
 
 pub async fn reboot() -> Json<serde_json::Value> {
@@ -92,4 +98,82 @@ pub async fn reboot_all(State(state): State<AppState>) -> Json<serde_json::Value
         "status": "rebooting",
         "order": "one machine at a time, this one last",
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::host::fake::FakeHost;
+    use crate::runtime::fleet::Fleet;
+    use crate::testkit::{peer, PEER};
+    use wiremock::{matchers, Mock, ResponseTemplate};
+
+    #[tokio::test(start_paused = true)]
+    async fn the_reboot_waits_so_the_answer_reaches_the_caller_first() {
+        let host = FakeHost::new().ok("systemctl reboot", "");
+        let asked = tokio::time::Instant::now();
+        spawn_reboot_on(host.clone()).await.unwrap();
+        assert!(asked.elapsed() >= Duration::from_secs(REBOOT_DELAY_SECS));
+        assert!(host.ran("systemctl reboot"));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_reboot_that_systemd_refuses_does_not_panic_the_task() {
+        let host = FakeHost::new().fail("systemctl reboot", "Access denied");
+        spawn_reboot_on(host.clone()).await.unwrap();
+        assert!(host.ran("systemctl reboot"));
+    }
+
+    fn fleet(port: u16) -> RebootFleet {
+        RebootFleet {
+            client: crate::http::client(),
+            port,
+            token: "cluster-tok".into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_peer_is_asked_to_reboot_with_the_cluster_token() {
+        let (server, port) = peer().await;
+        Mock::given(matchers::method("POST"))
+            .and(matchers::path("/api/system/reboot"))
+            .and(matchers::header(CLUSTER_AUTH_HEADER, "cluster-tok"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+        fleet(port).act(PEER).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_peer_that_refuses_to_reboot_is_an_error() {
+        let (server, port) = peer().await;
+        Mock::given(matchers::method("POST"))
+            .and(matchers::path("/api/system/reboot"))
+            .respond_with(ResponseTemplate::new(401))
+            .mount(&server)
+            .await;
+        let err = fleet(port).act(PEER).await.unwrap_err();
+        assert!(err.to_string().contains("401"));
+    }
+
+    #[tokio::test]
+    async fn a_rebooting_peer_has_settled_only_once_its_api_answers() {
+        let (server, port) = peer().await;
+        Mock::given(matchers::method("GET"))
+            .and(matchers::path("/api/status"))
+            .and(matchers::header(CLUSTER_AUTH_HEADER, "cluster-tok"))
+            .respond_with(ResponseTemplate::new(502))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(matchers::method("GET"))
+            .and(matchers::path("/api/status"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+        let f = fleet(port);
+        assert!(!f.settled(PEER).await);
+        assert!(f.settled(PEER).await);
+    }
 }
