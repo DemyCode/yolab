@@ -195,6 +195,13 @@ mod tests {
         assert!(readable(&clean.save()).is_ok());
     }
 
+    #[test]
+    fn machines_call_a_sync_route_that_is_actually_served() {
+        assert!(crate::surface::ROUTE_TABLE
+            .iter()
+            .any(|&(path, methods)| path == SYNC_PATH && methods.contains(&"POST")));
+    }
+
     #[tokio::test]
     async fn the_old_sync_route_answers_gone_so_an_old_machine_cannot_push_its_history() {
         let (status, _) = legacy_handler().await;
