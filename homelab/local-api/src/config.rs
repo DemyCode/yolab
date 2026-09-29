@@ -42,6 +42,15 @@ pub fn write_private_file(path: &std::path::Path, content: &[u8]) -> anyhow::Res
     std::fs::rename(&tmp, path).with_context(|| format!("replace {}", path.display()))
 }
 
+pub fn remove_if_present(path: &std::path::Path) -> anyhow::Result<()> {
+    use anyhow::Context as _;
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e).with_context(|| format!("remove {}", path.display())),
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Channel {
     pub url: String,

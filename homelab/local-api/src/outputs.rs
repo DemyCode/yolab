@@ -147,17 +147,13 @@ pub async fn read_remembered(client: &Client, ns: &str) -> anyhow::Result<Option
 }
 
 fn secret_manifest(ns: &str, remembered: &Remembered) -> anyhow::Result<Value> {
-    Ok(serde_json::json!({
-        "apiVersion": "v1",
-        "kind": "Secret",
-        "type": "Opaque",
-        "metadata": {
-            "name": SECRET,
-            "namespace": ns,
-            "labels": { "yolab.io/managed": "true", "yolab.io/outputs": "true" }
-        },
-        "stringData": { SECRET_KEY: serde_json::to_string(remembered)? }
-    }))
+    let encoded = serde_json::to_string(remembered)?;
+    Ok(crate::k8s::secret_manifest(
+        SECRET,
+        ns,
+        &[(SECRET_KEY, encoded.as_str())],
+        &[("yolab.io/managed", "true"), ("yolab.io/outputs", "true")],
+    ))
 }
 
 pub async fn remembered_everywhere(client: &Client) -> BTreeMap<String, Remembered> {

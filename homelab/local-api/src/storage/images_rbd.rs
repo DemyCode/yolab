@@ -1,4 +1,4 @@
-use anyhow::{bail, Result};
+use anyhow::Result;
 
 use crate::ceph::model::OsdStat;
 use crate::host::Host;
@@ -11,14 +11,6 @@ pub struct ImagesRbdPolicy {
     pub pool_name: String,
     pub share_of_pool: f64,
     pub min_size_gb: u64,
-}
-
-async fn run_ok<H: Host>(host: &H, bin: &str, args: &[&str]) -> Result<()> {
-    let out = host.run_cmd(bin, args).await?;
-    if !out.success {
-        bail!("{bin} {}: {}", args.join(" "), out.stderr.trim());
-    }
-    Ok(())
 }
 
 pub async fn attempt<H: Host>(
@@ -39,9 +31,9 @@ pub async fn attempt<H: Host>(
     let pools = host.ceph(&["osd", "pool", "ls"]).await?;
     if !pools.lines().any(|l| l.trim() == policy.pool_name) {
         let pool = policy.pool_name.as_str();
-        run_ok(host, "ceph", &["osd", "pool", "create", pool, "32", "32"]).await?;
-        run_ok(
-            host,
+        host.run_checked("ceph", &["osd", "pool", "create", pool, "32", "32"])
+            .await?;
+        host.run_checked(
             "ceph",
             &[
                 "osd",
@@ -54,13 +46,12 @@ pub async fn attempt<H: Host>(
             ],
         )
         .await?;
-        run_ok(
-            host,
+        host.run_checked(
             "ceph",
             &["osd", "pool", "application", "enable", pool, "rbd"],
         )
         .await?;
-        run_ok(host, "rbd", &["pool", "init", pool]).await?;
+        host.run_checked("rbd", &["pool", "init", pool]).await?;
     }
 
     let sizing = SizingPolicy {
@@ -86,8 +77,7 @@ pub async fn attempt<H: Host>(
         )));
     }
     if !existing.stdout.lines().any(|l| l.trim() == node) {
-        run_ok(
-            host,
+        host.run_checked(
             "rbd",
             &[
                 "create",

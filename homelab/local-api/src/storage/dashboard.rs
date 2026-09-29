@@ -59,8 +59,13 @@ fn interpret_login_code(code: u16) -> LoginCheck {
 
 fn adopt_local_password(existing_file_contents: Option<&str>) -> Option<String> {
     existing_file_contents
-        .map(|s| s.chars().filter(|c| !c.is_whitespace()).collect::<String>())
+        .map(trimmed)
         .filter(|s| !s.is_empty())
+}
+
+async fn cluster_password<H: Host>(host: &H) -> Option<String> {
+    let stored = host.ceph(&["config-key", "get", PW_KEY]).await.ok();
+    adopt_local_password(stored.as_deref())
 }
 
 fn generate_password() -> String {
@@ -197,12 +202,7 @@ pub async fn run<H: Host>(host: &H, node: &str, policy: &DashboardPolicy) -> Res
     if let Some(parent) = Path::new(&policy.password_file).parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let mut pw = host
-        .ceph(&["config-key", "get", PW_KEY])
-        .await
-        .ok()
-        .map(|s| trimmed(&s))
-        .filter(|s| !s.is_empty());
+    let mut pw = cluster_password(host).await;
 
     if pw.is_none() {
         let local = std::fs::read_to_string(&policy.password_file).ok();
@@ -226,12 +226,7 @@ pub async fn run<H: Host>(host: &H, node: &str, policy: &DashboardPolicy) -> Res
             );
             return Ok(());
         }
-        pw = host
-            .ceph(&["config-key", "get", PW_KEY])
-            .await
-            .ok()
-            .map(|s| trimmed(&s))
-            .filter(|s| !s.is_empty());
+        pw = cluster_password(host).await;
     }
 
     let Some(pw) = pw else {
@@ -524,11 +519,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_dashboard_that_is_down_reads_as_unreachable() {
-        let port = std::net::TcpListener::bind("[::1]:0")
-            .unwrap()
-            .local_addr()
-            .unwrap()
-            .port();
+        let port = crate::testkit::closed_port();
         let code = verify_login(&format!("http://[::1]:{port}/ceph-dashboard"), "pw").await;
         assert_eq!(interpret_login_code(code), LoginCheck::Unreachable);
     }

@@ -91,6 +91,22 @@ pub trait Host: Send + Sync + Clone {
         }
     }
 
+    fn unit_is_active<'a>(&'a self, unit: &'a str) -> impl Future<Output = bool> + Send + 'a {
+        async move {
+            self.systemctl(&["is-active", "--quiet", unit])
+                .await
+                .is_ok_and(|o| o.success)
+        }
+    }
+
+    fn run_checked<'a>(
+        &'a self,
+        bin: &'a str,
+        args: &'a [&'a str],
+    ) -> impl Future<Output = HostResult<String>> + Send + 'a {
+        async move { exec::into_checked(bin, args, self.run_cmd(bin, args).await?) }
+    }
+
     fn spawn_detached<'a>(
         &self,
         bin: &'a str,

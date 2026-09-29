@@ -3,7 +3,7 @@ pub mod wg;
 
 use std::collections::HashMap;
 use std::net::Ipv6Addr;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use axum::{extract::State, Json};
 use serde::Serialize;
@@ -12,6 +12,7 @@ use crate::{
     auth::CLUSTER_AUTH_HEADER,
     error::{Outcome, Result},
     host::{Host, RealHost},
+    system::now_secs,
     AppState,
 };
 
@@ -30,13 +31,6 @@ const FAST_TICK: Duration = Duration::from_secs(5);
 const SUBNET_SUFFIX: &str = "/112";
 
 const MESH_PUBKEY_HEADER: &str = "x-yolab-mesh-pubkey";
-
-fn now_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
-}
 
 pub async fn mesh_candidates(
     axum::extract::ConnectInfo(addr): axum::extract::ConnectInfo<std::net::SocketAddr>,
@@ -1135,11 +1129,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_peer_whose_api_does_not_answer_is_skipped_without_touching_wireguard() {
-        let port = std::net::TcpListener::bind("[::1]:0")
-            .unwrap()
-            .local_addr()
-            .unwrap()
-            .port();
+        let port = crate::testkit::closed_port();
         let host = discovering(&[dump_of(&[hub_line()])], "unused");
         tick(&host, &peers(), port, TOKEN, &mut HashMap::new())
             .await

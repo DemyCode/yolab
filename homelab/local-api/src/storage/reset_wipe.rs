@@ -74,7 +74,7 @@ pub async fn run<H: Host>(host: &H, root: &Path, config_path: &Path) -> Result<(
         empty_dir(&root.join(dir), *kept)?;
     }
     for file in REMOVED_FILES {
-        remove_file(&root.join(file))?;
+        crate::config::remove_if_present(&root.join(file))?;
     }
 
     let config = std::fs::read_to_string(config_path)
@@ -149,14 +149,6 @@ fn empty_dir(dir: &Path, keep: Option<&str>) -> Result<()> {
         .with_context(|| format!("remove {}", path.display()))?;
     }
     Ok(())
-}
-
-fn remove_file(path: &Path) -> Result<()> {
-    match std::fs::remove_file(path) {
-        Ok(()) => Ok(()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(e).with_context(|| format!("remove {}", path.display())),
-    }
 }
 
 #[cfg(test)]

@@ -18,13 +18,6 @@ fn in_monmap(dump: &Value, node: &str) -> bool {
         .is_some_and(|mons| mons.iter().any(|m| m["name"] == node))
 }
 
-async fn is_active<H: Host>(host: &H, unit: &str) -> bool {
-    host.systemctl(&["is-active", "--quiet", unit])
-        .await
-        .map(|o| o.success)
-        .unwrap_or(false)
-}
-
 async fn reachable_fast<H: Host>(host: &H) -> bool {
     host.ceph(&["--connect-timeout", "10", "-s"]).await.is_ok()
 }
@@ -42,7 +35,7 @@ pub async fn run<H: Host>(host: &H, root: &Path, node: &str, args: &MonMemberArg
     }
 
     let unit = format!("ceph-mon-{node}.service");
-    if !is_active(host, &unit).await {
+    if !host.unit_is_active(&unit).await {
         host.systemctl(&["start", "--no-block", &unit])
             .await
             .warn_on_err(format!("start {unit}"));

@@ -177,6 +177,13 @@ pub(crate) fn http() -> crate::http::Client {
     crate::http::Client::new()
 }
 
+pub(crate) fn closed_port() -> u16 {
+    std::net::TcpListener::bind("[::1]:0")
+        .and_then(|l| l.local_addr())
+        .expect("bind a port on [::1]")
+        .port()
+}
+
 pub(crate) async fn peer() -> (wiremock::MockServer, u16) {
     let listener = std::net::TcpListener::bind("[::1]:0").expect("bind a peer on [::1]");
     let port = listener.local_addr().expect("the peer's address").port();

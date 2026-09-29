@@ -342,10 +342,7 @@ pub async fn pivot<H: Host>(
         }
     }
 
-    let running = host
-        .systemctl(&["is-active", "--quiet", k3s_unit])
-        .await
-        .is_ok_and(|o| o.success);
+    let running = host.unit_is_active(k3s_unit).await;
     if running {
         let stopped = host.systemctl(&["stop", k3s_unit]).await?;
         if !stopped.success {

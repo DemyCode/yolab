@@ -262,11 +262,7 @@ impl Controller for CephJoinController {
 }
 
 async fn ensure_started<H: Host>(host: &H, unit: &str) {
-    let active = host
-        .systemctl(&["is-active", "--quiet", unit])
-        .await
-        .is_ok_and(|o| o.success);
-    if active {
+    if host.unit_is_active(unit).await {
         return;
     }
     let _ = host.systemctl(&["reset-failed", unit]).await;

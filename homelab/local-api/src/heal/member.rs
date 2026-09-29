@@ -440,11 +440,7 @@ async fn put_back<H: Host>(host: &H, layout: &Layout) -> Result<()> {
         rebuild(host, layout).await?;
     }
     for copy in [layout.system_before(), layout.config_before()] {
-        match std::fs::remove_file(&copy) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(e).with_context(|| format!("remove {}", copy.display())),
-        }
+        crate::config::remove_if_present(&copy)?;
     }
     Ok(())
 }

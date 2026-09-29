@@ -129,6 +129,11 @@ impl Drop for InFlightGuard {
     }
 }
 
+pub const QUEUED: &str = "queued";
+pub const RUNNING: &str = "running";
+pub const SUCCEEDED: &str = "succeeded";
+pub const FAILED: &str = "failed";
+
 pub trait Claimed: serde::Serialize + serde::de::DeserializeOwned + Send + Sync {
     fn id(&self) -> &str;
     fn is_running(&self) -> bool;
@@ -140,6 +145,12 @@ pub trait Claimed: serde::Serialize + serde::de::DeserializeOwned + Send + Sync 
         let silent = observed_silence(self.id(), &claim.heartbeat, Instant::now());
         liveness(claim, me, in_flight.contains(self.id()), silent)
     }
+}
+
+pub fn upsert<T: Claimed>(records: &mut Vec<T>, record: T, keep: usize) {
+    records.retain(|r| r.id() != record.id());
+    records.insert(0, record);
+    records.truncate(keep);
 }
 
 pub fn spawn_heartbeat<T: Claimed + 'static>(
