@@ -87,7 +87,7 @@ spec:
 
           . /state/secrets.env
 
-          exec node /usr/src/app/dist/main.js
+          exec start.sh
 
           '
         env:
