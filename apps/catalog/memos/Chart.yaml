@@ -3,12 +3,12 @@ name: memos
 description: "Lightweight, privacy-first note taking"
 home: https://usememos.com
 type: application
-version: 0.1.5
+version: 0.1.6
 appVersion: "stable"
 
 dependencies:
   - name: yolab-common
-    version: "0.1.4"
+    version: "0.1.5"
     repository: "oci://ghcr.io/demycode/charts"
 
 annotations:

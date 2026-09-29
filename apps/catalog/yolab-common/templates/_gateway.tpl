@@ -26,6 +26,10 @@ yolab-tunnel-credentials
           key: account-token
     - name: SERVICE_NAME
       value: {{ ((.Values.yolab).serviceName) | default "" | quote }}
+    {{- if eq (include "yolab-common.fileExplorer.enabled" .) "true" }}
+    - name: ALIASES
+      value: {{ printf "FILE_EXPLORER_FQDN=%s" (include "yolab-common.fileExplorer.subdomain" .) | quote }}
+    {{- end }}
     - name: POD_NAMESPACE
       valueFrom:
         fieldRef:

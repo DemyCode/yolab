@@ -1,4 +1,5 @@
 config:
+  file_explorer_enabled: false
   server_name: My Valheim Server
   world_name: Dedicated
   server_pass: ''

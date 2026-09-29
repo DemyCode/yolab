@@ -3,12 +3,12 @@ name: vikunja
 description: "Tasks, projects and kanban boards"
 home: https://vikunja.io
 type: application
-version: 0.1.5
+version: 0.1.6
 appVersion: "0.24"
 
 dependencies:
   - name: yolab-common
-    version: "0.1.4"
+    version: "0.1.5"
     repository: "oci://ghcr.io/demycode/charts"
 
 annotations:
