@@ -43,7 +43,6 @@ pub(crate) struct InstalledApp {
     pub namespace: String,
     pub app_id: String,
     pub settings: serde_json::Map<String, Value>,
-    pub annotations: serde_json::Map<String, Value>,
 }
 
 #[derive(Serialize)]
@@ -479,7 +478,7 @@ fn read_chart(dir: &std::path::Path) -> Option<ChartMeta> {
         .ok()
         .and_then(|s| serde_json::from_str::<Value>(&s).ok())
         .unwrap_or(Value::Null);
-    let app = crate::appschema::AppSchema::from_parts(schema, &chart.annotations);
+    let app = crate::appschema::AppSchema::new(schema);
     Some(ChartMeta { chart, app })
 }
 
@@ -489,7 +488,7 @@ pub(crate) fn app_schema(catalog_dir: &std::path::Path, id: &str) -> crate::apps
         .flatten();
     match found {
         Some(meta) => meta.app,
-        None => crate::appschema::AppSchema::from_parts(Value::Null, &Default::default()),
+        None => crate::appschema::AppSchema::new(Value::Null),
     }
 }
 
@@ -1033,7 +1032,6 @@ pub async fn list_apps(State(state): State<AppState>) -> Result<Json<Vec<AppInfo
             remembered
                 .remove(&format!("yolab-{name}"))
                 .unwrap_or_default(),
-            &ann,
             &config,
         );
 
@@ -1373,13 +1371,9 @@ fn without_redacted(config: &serde_json::Map<String, Value>) -> serde_json::Map<
 
 fn listed_outputs(
     app: &crate::appschema::AppSchema,
-    mut remembered: crate::outputs::Remembered,
-    ann: &serde_json::Map<String, Value>,
+    remembered: crate::outputs::Remembered,
     settings: &serde_json::Map<String, Value>,
 ) -> Vec<crate::outputs::ShownOutput> {
-    for (key, found) in crate::outputs::from_legacy_annotation(ann, chrono::Utc::now()) {
-        remembered.entry(key).or_insert(found);
-    }
     crate::outputs::shown(
         &app.applicable_outputs(settings),
         &remembered,
@@ -1402,7 +1396,6 @@ pub(crate) async fn installed_apps(client: &Client) -> anyhow::Result<Vec<Instal
                 namespace: ns["metadata"]["name"].as_str()?.to_string(),
                 app_id: annotations.get(ANN_APP_ID)?.as_str()?.to_string(),
                 settings: saved_settings(&annotations),
-                annotations,
             })
         })
         .collect())
@@ -1432,15 +1425,11 @@ pub(crate) async fn known_outputs(
     let settings = saved_settings(&ann);
 
     let remembered = if rescan_first {
-        crate::outputs::rescan(client, ns, &app, &settings, &ann).await?
+        crate::outputs::rescan(client, ns, &app, &settings).await?
     } else {
-        let mut stored = crate::outputs::read_remembered(client, ns)
+        crate::outputs::read_remembered(client, ns)
             .await?
-            .unwrap_or_default();
-        for (key, found) in crate::outputs::from_legacy_annotation(&ann, chrono::Utc::now()) {
-            stored.entry(key).or_insert(found);
-        }
-        stored
+            .unwrap_or_default()
     };
 
     Ok(KnownOutputs {
@@ -2450,7 +2439,6 @@ mod tests {
         let rows = listed_outputs(
             &app_schema(dir.path(), "filebrowser"),
             Default::default(),
-            &serde_json::Map::new(),
             &settings,
         );
         let password = rows.iter().find(|o| o.key == "password").unwrap();
@@ -2464,25 +2452,9 @@ mod tests {
         let rows = listed_outputs(
             &app_schema(dir.path(), "filebrowser"),
             Default::default(),
-            &serde_json::Map::new(),
             &settings,
         );
         assert_eq!(keys_of(&rows), vec!["url", "password"]);
-    }
-
-    #[test]
-    fn the_listing_shows_values_scanned_before_the_outputs_moved_to_a_secret() {
-        let dir = chart_dir_with(filebrowser_schema());
-        let ann = map(json!({
-            "yolab.io/outputs": r#"[{"key":"url","label":"Web URL","value":"https://files.x","type":"url"}]"#
-        }));
-        let rows = listed_outputs(
-            &app_schema(dir.path(), "filebrowser"),
-            Default::default(),
-            &ann,
-            &serde_json::Map::new(),
-        );
-        assert_eq!(rows[0].value.as_deref(), Some("https://files.x"));
     }
 
     #[test]
@@ -2590,29 +2562,6 @@ mod tests {
 
             let keys: Vec<&str> = known.specs.iter().map(|s| s.key.as_str()).collect();
             assert_eq!(keys, vec!["url", "password"]);
-        }
-
-        #[tokio::test]
-        async fn values_found_by_the_old_scanner_still_show_before_the_first_rescan() {
-            let catalog = chart_dir_with(filebrowser_schema());
-            let (server, kube) = api_server().await;
-            serve(
-                &server,
-                NS_PATH,
-                200,
-                namespace_with(json!({
-                    ANN_APP_ID: "filebrowser",
-                    "yolab.io/outputs": r#"[{"key":"url","value":"https://old.x","type":"url"}]"#
-                })),
-            )
-            .await;
-            serve(&server, SECRET_PATH, 404, gone()).await;
-
-            let known = known_outputs(&kube, catalog.path(), NS, false)
-                .await
-                .unwrap();
-
-            assert_eq!(known.remembered["url"].value, "https://old.x");
         }
 
         #[tokio::test]

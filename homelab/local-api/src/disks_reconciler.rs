@@ -1658,11 +1658,9 @@ pub(crate) fn parse_disk_flags(dev: &Value) -> DiskFlags {
             Value::Array(a) => a.iter().any(|m| m.as_str().is_some_and(|s| !s.is_empty())),
             v => v.as_str().is_some_and(|s| !s.is_empty()),
         };
-        let legacy = n["mountpoint"].as_str().is_some_and(|s| !s.is_empty());
-        own || legacy
-            || n["children"]
-                .as_array()
-                .is_some_and(|c| c.iter().any(mounted_anywhere))
+        own || n["children"]
+            .as_array()
+            .is_some_and(|c| c.iter().any(mounted_anywhere))
     }
 
     DiskFlags {

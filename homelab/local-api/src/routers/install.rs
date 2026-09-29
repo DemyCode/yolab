@@ -539,7 +539,7 @@ mod tests {
     use serde_json::json;
 
     fn no_schema() -> crate::appschema::AppSchema {
-        crate::appschema::AppSchema::from_parts(Value::Null, &Default::default())
+        crate::appschema::AppSchema::new(Value::Null)
     }
 
     fn source(kind: &str) -> InstallSource {
@@ -757,12 +757,10 @@ mod tests {
 
     #[test]
     fn a_copy_keeps_the_originals_password_when_the_form_never_showed_it() {
-        let app = crate::appschema::AppSchema::from_parts(
-            json!({ "properties": { "config": { "properties": {
+        let app =
+            crate::appschema::AppSchema::new(json!({ "properties": { "config": { "properties": {
                 "admin_password": { "type": "string", "writeOnly": true, "generate": true }
-            }}}}),
-            &Default::default(),
-        );
+            }}}}));
         let mut source = definition("gitea");
         source.config = Map::from_iter([("admin_password".into(), json!("original"))]);
         let form = Map::from_iter([

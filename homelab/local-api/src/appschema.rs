@@ -1,11 +1,8 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use regex::Regex;
 use serde::Serialize;
 use serde_json::{json, Map, Value};
-
-pub const LEGACY_UISCHEMA: &str = "yolab.io/uischema";
-pub const LEGACY_OUTPUTS: &str = "yolab.io/outputs";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -48,7 +45,7 @@ pub struct AppSchema {
 }
 
 impl AppSchema {
-    pub fn from_parts(schema: Value, annotations: &HashMap<String, String>) -> AppSchema {
+    pub fn new(schema: Value) -> AppSchema {
         let mut document = if schema.is_object() {
             schema
         } else {
@@ -57,7 +54,6 @@ impl AppSchema {
         if let Some(props) = document["properties"].as_object_mut() {
             props.remove("yolab");
         }
-        legacy::translate(&mut document, annotations);
         AppSchema { document }
     }
 
@@ -182,99 +178,19 @@ pub fn parse_output(key: &str, spec: &Value) -> Result<OutputSpec, String> {
     })
 }
 
-mod legacy {
-    use super::*;
-
-    pub(super) fn translate(document: &mut Value, annotations: &HashMap<String, String>) {
-        if let Some(ui) = annotations
-            .get(LEGACY_UISCHEMA)
-            .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
-        {
-            credentials_from(document, &ui);
-        }
-        if document["properties"]["outputs"].is_null() {
-            if let Some(list) = annotations
-                .get(LEGACY_OUTPUTS)
-                .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
-            {
-                outputs_from(document, &list);
-            }
-        }
-    }
-
-    fn credentials_from(document: &mut Value, ui: &Value) {
-        let Some(ui) = ui.as_object() else { return };
-        let Some(props) = document["properties"]["config"]["properties"].as_object_mut() else {
-            return;
-        };
-        for (name, hints) in ui {
-            let Some(spec) = props.get_mut(name).and_then(Value::as_object_mut) else {
-                continue;
-            };
-            match hints["ui:widget"].as_str() {
-                Some("PasswordWidget") => {
-                    spec.insert("writeOnly".into(), json!(true));
-                    spec.insert("generate".into(), json!(true));
-                }
-                Some("password") => {
-                    spec.insert("writeOnly".into(), json!(true));
-                }
-                _ => {}
-            }
-        }
-    }
-
-    fn outputs_from(document: &mut Value, list: &Value) {
-        let mut outputs = Map::new();
-        for item in list.as_array().into_iter().flatten() {
-            let (Some(key), Some(pattern)) = (item["key"].as_str(), item["pattern"].as_str())
-            else {
-                continue;
-            };
-            let format = match item["type"].as_str() {
-                Some("hidden") => continue,
-                Some("url") => "uri",
-                _ if key.contains("password") || key.contains("secret") => "secret",
-                _ => "text",
-            };
-            outputs.insert(
-                key.to_string(),
-                json!({
-                    "type": "string",
-                    "title": item["label"].as_str().unwrap_or(key),
-                    "format": format,
-                    "source": { "logs": pattern },
-                }),
-            );
-        }
-        if outputs.is_empty() {
-            return;
-        }
-        if let Some(props) = document["properties"].as_object_mut() {
-            props.insert(
-                "outputs".into(),
-                json!({ "type": "object", "readOnly": true, "properties": outputs }),
-            );
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn schema(config: Value, outputs: Value) -> AppSchema {
-        AppSchema::from_parts(
-            json!({
-                "type": "object",
-                "properties": {
-                    "config": { "type": "object", "properties": config },
-                    "outputs": { "type": "object", "readOnly": true, "properties": outputs },
-                    "yolab": { "type": "object" }
-                }
-            }),
-            &HashMap::new(),
-        )
+        AppSchema::new(json!({
+            "type": "object",
+            "properties": {
+                "config": { "type": "object", "properties": config },
+                "outputs": { "type": "object", "readOnly": true, "properties": outputs },
+                "yolab": { "type": "object" }
+            }
+        }))
     }
 
     fn settings(v: Value) -> Map<String, Value> {
@@ -403,67 +319,8 @@ mod tests {
     }
 
     #[test]
-    fn a_chart_in_the_old_annotation_format_reads_as_the_new_one() {
-        let annotations = HashMap::from([
-            (
-                LEGACY_UISCHEMA.to_string(),
-                r#"{"subdomain":{"ui:widget":"TunnelWidget"},"admin_password":{"ui:widget":"PasswordWidget"},"pin":{"ui:widget":"password"}}"#.to_string(),
-            ),
-            (
-                LEGACY_OUTPUTS.to_string(),
-                r#"[{"key":"url","label":"Web URL","type":"url","pattern":"YOLAB_OUTPUT url (\\S+)"},
-                    {"key":"owner_password","label":"Owner password","type":"text","pattern":"YOLAB_OUTPUT owner_password (\\S+)"},
-                    {"key":"jwt","label":"JWT","type":"hidden","pattern":"YOLAB_OUTPUT jwt (\\S+)"}]"#
-                    .to_string(),
-            ),
-        ]);
-        let app = AppSchema::from_parts(
-            json!({ "properties": { "config": { "properties": {
-                "subdomain": { "type": "string", "format": "tunnel" },
-                "admin_password": { "type": "string" },
-                "pin": { "type": "string" }
-            }}}}),
-            &annotations,
-        );
-
-        assert_eq!(
-            app.credentials(),
-            HashSet::from(["admin_password".to_string(), "pin".to_string()])
-        );
-        assert_eq!(
-            app.config()["properties"]["admin_password"]["generate"],
-            json!(true)
-        );
-        assert!(app.config()["properties"]["pin"].get("generate").is_none());
-
-        let outputs = app.outputs();
-        assert_eq!(
-            keys(&outputs),
-            vec!["url", "owner_password"],
-            "hidden outputs are not shown"
-        );
-        assert_eq!(outputs[0].format, Format::Uri);
-        assert_eq!(outputs[1].format, Format::Secret);
-    }
-
-    #[test]
-    fn outputs_declared_in_the_schema_win_over_the_old_annotation() {
-        let annotations = HashMap::from([(
-            LEGACY_OUTPUTS.to_string(),
-            r#"[{"key":"old","type":"text","pattern":"old (\\S+)"}]"#.to_string(),
-        )]);
-        let app = AppSchema::from_parts(
-            json!({ "properties": { "outputs": { "properties": {
-                "new": { "type": "string", "source": { "logs": "new (\\S+)" } }
-            }}}}),
-            &annotations,
-        );
-        assert_eq!(keys(&app.outputs()), vec!["new"]);
-    }
-
-    #[test]
     fn a_chart_with_no_schema_has_an_empty_form_and_no_outputs() {
-        let app = AppSchema::from_parts(Value::Null, &HashMap::new());
+        let app = AppSchema::new(Value::Null);
         assert_eq!(app.config()["type"], json!("object"));
         assert!(app.outputs().is_empty());
         assert!(app.credentials().is_empty());
