@@ -11,7 +11,14 @@ STATE_FILE="${STATE_FILE:-/state/wg-state.json}"
 
 mkdir -p "$WG_DIR" "$YOLAB_DIR" "$(dirname "$STATE_FILE")"
 
+OWNER="${POD_NAMESPACE:-}"
+HANDSHAKE_FRESH_SECS="${HANDSHAKE_FRESH_SECS:-300}"
+HANDSHAKE_WATCH_SECS="${HANDSHAKE_WATCH_SECS:-240}"
+HANDSHAKE_POLL_SECS="${HANDSHAKE_POLL_SECS:-15}"
+[ "$HANDSHAKE_POLL_SECS" -ge 1 ] || HANDSHAKE_POLL_SECS=1
+
 REUSE=0
+STATE_OWNER=""
 if [ -f "$STATE_FILE" ]; then
     echo "Found existing state, attempting to reuse tunnel..."
     TUNNEL_ID=$(jq -r '.tunnel_id // empty' "$STATE_FILE")
@@ -20,6 +27,7 @@ if [ -f "$STATE_FILE" ]; then
     WG_SERVER_ENDPOINT=$(jq -r '.wg_server_endpoint // empty' "$STATE_FILE")
     WG_SERVER_PUBLIC_KEY=$(jq -r '.wg_server_public_key // empty' "$STATE_FILE")
     FQDN=$(jq -r '.fqdn // empty' "$STATE_FILE")
+    STATE_OWNER=$(jq -r '.owner // empty' "$STATE_FILE")
 
     if [ -n "$TUNNEL_ID" ] && [ -n "$SUB_IPV6" ] && [ -n "$PRIVATE_KEY" ]; then
         echo "Reusing tunnel $TUNNEL_ID (IPv6: $SUB_IPV6)"
@@ -29,19 +37,104 @@ if [ -f "$STATE_FILE" ]; then
     fi
 fi
 
-if [ "$REUSE" = "1" ]; then
-    VERIFY_HTTP=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 \
+fetch_tunnel() {
+    TUNNEL_RESP=$(curl -s -w "\n%{http_code}" --max-time 10 \
         -H "Authorization: Bearer $ACCOUNT_TOKEN" \
-        "$PLATFORM_API_URL/tunnels/$TUNNEL_ID")
-    if [ "$VERIFY_HTTP" = "200" ]; then
-        echo "Tunnel $TUNNEL_ID verified on platform."
-    elif [ "$VERIFY_HTTP" = "404" ]; then
+        "$PLATFORM_API_URL/tunnels/$TUNNEL_ID" || true)
+    VERIFY_HTTP=$(printf '%s' "$TUNNEL_RESP" | tail -1)
+    VERIFY_BODY=$(printf '%s' "$TUNNEL_RESP" | head -n -1)
+}
+
+tunnel_field() {
+    printf '%s' "$VERIFY_BODY" | jq -r ".$1 // empty" 2>/dev/null || true
+}
+
+copied_from_another_instance() {
+    [ -n "$OWNER" ] && [ "$STATE_OWNER" != "$OWNER" ]
+}
+
+holder_is_live() {
+    AGE=$(tunnel_field last_handshake_age_secs)
+    [ -n "$AGE" ] || return 1
+    [ "$AGE" -lt "$HANDSHAKE_FRESH_SECS" ] || return 1
+    [ -z "$STATE_OWNER" ] || return 0
+    echo "State predates ownership and the tunnel handshook ${AGE}s ago; watching whether that was another instance or this one before it restarted..."
+    SEEN=$(tunnel_field last_handshake)
+    WAITED=0
+    while [ "$WAITED" -lt "$HANDSHAKE_WATCH_SECS" ]; do
+        sleep "$HANDSHAKE_POLL_SECS"
+        WAITED=$((WAITED + HANDSHAKE_POLL_SECS))
+        fetch_tunnel
+        [ "$VERIFY_HTTP" = "200" ] || continue
+        LATEST=$(tunnel_field last_handshake)
+        if [ -n "$LATEST" ] && [ "$LATEST" != "$SEEN" ]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+take_over() {
+    NEW_PRIVATE_KEY=$(wg genkey)
+    NEW_PUBLIC_KEY=$(printf '%s' "$NEW_PRIVATE_KEY" | wg pubkey)
+    ROTATE_RESP=$(curl -s -w "\n%{http_code}" --max-time 10 \
+        -X PUT "$PLATFORM_API_URL/tunnels/$TUNNEL_ID/key" \
+        -H "Content-Type: application/json" \
+        -H "Authorization: Bearer $ACCOUNT_TOKEN" \
+        -d "{\"wg_public_key\":\"$NEW_PUBLIC_KEY\",\"replaces\":\"$MY_PUBLIC_KEY\"}" || true)
+    ROTATE_HTTP=$(printf '%s' "$ROTATE_RESP" | tail -1)
+    ROTATE_BODY=$(printf '%s' "$ROTATE_RESP" | head -n -1)
+    if [ "$ROTATE_HTTP" -ge 200 ] 2>/dev/null && [ "$ROTATE_HTTP" -lt 300 ]; then
+        PRIVATE_KEY="$NEW_PRIVATE_KEY"
+        echo "Took over tunnel $TUNNEL_ID with a fresh key; IPv6 $SUB_IPV6 is kept."
+    elif [ "$ROTATE_HTTP" = "409" ] || [ "$ROTATE_HTTP" = "404" ]; then
+        echo "Tunnel $TUNNEL_ID was claimed by another instance first (HTTP $ROTATE_HTTP), registering a new one..."
+        REUSE=0
+    else
+        echo "ERROR: PUT /tunnels/$TUNNEL_ID/key returned HTTP $ROTATE_HTTP: $ROTATE_BODY" >&2
+        exit 1
+    fi
+}
+
+if [ "$REUSE" = "1" ]; then
+    MY_PUBLIC_KEY=$(printf '%s' "$PRIVATE_KEY" | wg pubkey)
+    fetch_tunnel
+    if [ "$VERIFY_HTTP" = "404" ]; then
         echo "Tunnel $TUNNEL_ID was deleted on the platform, re-registering..."
         rm -f "$STATE_FILE"
         REUSE=0
+    elif [ "$VERIFY_HTTP" = "200" ]; then
+        PLATFORM_KEY=$(tunnel_field wg_public_key)
+        if [ -n "$PLATFORM_KEY" ] && [ "$PLATFORM_KEY" != "$MY_PUBLIC_KEY" ]; then
+            echo "Tunnel $TUNNEL_ID now answers to another key (taken over elsewhere), registering a new one..."
+            REUSE=0
+        elif ! copied_from_another_instance; then
+            echo "Tunnel $TUNNEL_ID verified on platform."
+        elif [ -z "$PLATFORM_KEY" ] && [ -z "$STATE_OWNER" ]; then
+            echo "Tunnel $TUNNEL_ID verified on platform (it cannot report liveness, so this state is trusted as this instance's)."
+        elif [ -z "$PLATFORM_KEY" ]; then
+            echo "State was copied from $STATE_OWNER and the platform cannot say whether it is live, registering a new tunnel..."
+            REUSE=0
+        elif holder_is_live; then
+            echo "Tunnel $TUNNEL_ID is live in ${STATE_OWNER:-another instance}; this is a copy, registering its own tunnel..."
+            REUSE=0
+        else
+            echo "Tunnel $TUNNEL_ID was copied from ${STATE_OWNER:-an older instance} that is no longer live, taking it over..."
+            take_over
+        fi
+    elif copied_from_another_instance && [ -n "$STATE_OWNER" ]; then
+        echo "ERROR: state was copied from $STATE_OWNER and the platform returned HTTP $VERIFY_HTTP, so it cannot tell whether that instance is still live; refusing to share its key" >&2
+        exit 1
     else
         echo "Platform returned HTTP $VERIFY_HTTP (unreachable or error), reusing cached state to stay online."
     fi
+fi
+
+if [ "$REUSE" = "1" ]; then
+    TMP_STATE=$(mktemp)
+    jq --arg owner "$OWNER" --arg key "$PRIVATE_KEY" \
+        '.owner = $owner | .wg_private_key = $key' "$STATE_FILE" >"$TMP_STATE" && mv "$TMP_STATE" "$STATE_FILE"
+    chmod 600 "$STATE_FILE"
 fi
 
 if [ "$REUSE" = "1" ] && [ -n "$SERVICE_NAME" ]; then
@@ -111,9 +204,10 @@ if [ "$REUSE" = "0" ]; then
         --arg wg_server_endpoint "$WG_SERVER_ENDPOINT" \
         --arg wg_server_public_key "$WG_SERVER_PUBLIC_KEY" \
         --arg fqdn "$FQDN" \
+        --arg owner "$OWNER" \
         '{tunnel_id: $tunnel_id, sub_ipv6: $sub_ipv6, wg_private_key: $wg_private_key,
           wg_server_endpoint: $wg_server_endpoint, wg_server_public_key: $wg_server_public_key,
-          fqdn: $fqdn}' >"$STATE_FILE"
+          fqdn: $fqdn, owner: $owner}' >"$STATE_FILE"
     chmod 600 "$STATE_FILE"
 fi
 
