@@ -144,7 +144,7 @@
 
       outputHashMode = "recursive";
       outputHashAlgo = "sha256";
-      outputHash = pkgs.lib.fakeHash;
+      outputHash = "sha256-R5+37Ef0EkUdYyMq+K8jgwRahk0sTj7B7Vq9CTbmw8I=";
     }
     // commonEnv
   );
