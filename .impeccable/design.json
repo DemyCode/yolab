@@ -1,0 +1,161 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-09-16T19:20:00Z",
+  "title": "Design System: YoLab",
+  "extensions": {
+    "colorMeta": {
+      "signal-blue": {
+        "role": "primary",
+        "displayName": "Signal Blue",
+        "canonical": "#2b56f5",
+        "tonalRamp": ["#08123a", "#0f2168", "#173399", "#2b56f5", "#5a7bfa", "#8ea6fd", "#c2d1fe", "#eef2ff"]
+      },
+      "signal-blue-deep": {
+        "role": "primary",
+        "displayName": "Signal Blue Deep",
+        "canonical": "#1c3fd6",
+        "tonalRamp": ["#050c2e", "#0b1a5c", "#12288f", "#1c3fd6", "#4b6cf0", "#829bf8", "#bcc9fd", "#eaefff"]
+      },
+      "signal-blue-soft": {
+        "role": "primary",
+        "displayName": "Signal Blue Soft",
+        "canonical": "#eaeeff",
+        "tonalRamp": ["#0b1233", "#16225e", "#24358f", "#3a52c9", "#6b83ee", "#9fb1f8", "#ccd6fd", "#eaeeff"]
+      },
+      "ink": {
+        "role": "neutral",
+        "displayName": "Ink",
+        "canonical": "#0a0a0c",
+        "tonalRamp": ["#0a0a0c", "#1c1c20", "#33333a", "#55555f", "#8b8b96", "#b8b8c0", "#dcdce2", "#f4f4f6"]
+      },
+      "paper": {
+        "role": "neutral",
+        "displayName": "Paper",
+        "canonical": "#ffffff",
+        "tonalRamp": ["#0a0a0c", "#1f1f23", "#3a3a41", "#5c5c64", "#8b8b96", "#bcbcc4", "#e2e2e7", "#ffffff"]
+      },
+      "paper-soft": {
+        "role": "neutral",
+        "displayName": "Paper Soft",
+        "canonical": "#f6f6f8",
+        "tonalRamp": ["#101012", "#2a2a2e", "#4a4a50", "#6e6e76", "#9a9aa2", "#c4c4cb", "#e4e4e8", "#f6f6f8"]
+      },
+      "success-green": {
+        "role": "tertiary",
+        "displayName": "Status Green",
+        "canonical": "#12a150",
+        "tonalRamp": ["#04331a", "#065c2e", "#088a45", "#12a150", "#3dbf72", "#79d69c", "#b6ebc9", "#e6f7ed"]
+      }
+    },
+    "typographyMeta": {
+      "display": { "displayName": "Display", "purpose": "The hero promise and the closing call to action. One per page." },
+      "headline": { "displayName": "Headline", "purpose": "Section headings that carry the argument on their own." },
+      "title": { "displayName": "Title", "purpose": "Card, step and pricing-row titles." },
+      "body": { "displayName": "Body", "purpose": "Prose, capped at 44–62ch." },
+      "label": { "displayName": "Label (Mono)", "purpose": "Numbers, statuses, metadata, code, and eyebrow-free labels." }
+    },
+    "shadows": [
+      { "name": "card", "value": "0 1px 2px rgb(9 9 11 / 0.05), 0 1px 3px rgb(9 9 11 / 0.04)", "purpose": "Resting lift of a card or chip." },
+      { "name": "lift", "value": "0 6px 16px -4px rgb(9 9 11 / 0.1), 0 2px 6px -2px rgb(9 9 11 / 0.05)", "purpose": "Card hover, and the resting state of the product frame." },
+      { "name": "pop", "value": "0 32px 64px -16px rgb(9 9 11 / 0.22)", "purpose": "The product surface only — the one object that should feel physically present." }
+    ],
+    "motion": [
+      { "name": "ease-out-expo", "value": "cubic-bezier(0.16, 0.9, 0.24, 1)", "purpose": "Every entrance, reveal and settle." },
+      { "name": "duration-fast", "value": "150ms", "purpose": "Colour and border state changes." },
+      { "name": "duration-base", "value": "250ms", "purpose": "Hover lifts, tilt, spotlight." },
+      { "name": "duration-entrance", "value": "800ms", "purpose": "Hero rise; each element delayed 0.05–0.44s in sequence." },
+      { "name": "tile-stagger", "value": "calc(0.5s + var(--i) * 55ms)", "purpose": "Product preview tiles arriving after the frame." },
+      { "name": "aurora-drift", "value": "22s / 27s / 32s ease-in-out infinite alternate", "purpose": "The three aurora blobs." },
+      { "name": "marquee", "value": "45s linear infinite", "purpose": "The logo marquee; paused on hover." }
+    ],
+    "breakpoints": [
+      { "name": "sm", "value": "46rem" },
+      { "name": "md", "value": "56rem" },
+      { "name": "lg", "value": "60rem" },
+      { "name": "xl", "value": "62rem" }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "The one action colour on the page. Every primary call to action.",
+      "html": "<button class=\"ds-btn-primary\">Start the install <span>→</span></button>",
+      "css": ".ds-btn-primary { display:inline-flex; align-items:center; justify-content:center; gap:.5rem; font-family:var(--f-sans); font-weight:500; font-size:.95rem; padding:.7rem 1.15rem; border-radius:10px; border:1px solid transparent; background:var(--accent); color:#fff; box-shadow:0 1px 2px rgb(9 9 11 / .05), 0 1px 3px rgb(9 9 11 / .04); cursor:pointer; transition:background .15s, transform .1s; } .ds-btn-primary:hover { background:var(--accent-strong); } .ds-btn-primary:active { transform:translateY(1px); } .ds-btn-primary:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }"
+    },
+    {
+      "name": "Secondary Button",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "The quiet alternative beside a primary action.",
+      "html": "<button class=\"ds-btn-secondary\">See how it works</button>",
+      "css": ".ds-btn-secondary { display:inline-flex; align-items:center; justify-content:center; gap:.5rem; font-family:var(--f-sans); font-weight:500; font-size:.95rem; padding:.7rem 1.15rem; border-radius:10px; border:1px solid var(--border-strong); background:var(--surface); color:var(--fg); cursor:pointer; transition:border-color .15s, transform .1s; } .ds-btn-secondary:hover { border-color:var(--fg-subtle); } .ds-btn-secondary:active { transform:translateY(1px); } .ds-btn-secondary:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }"
+    },
+    {
+      "name": "Filter Chip",
+      "kind": "chip",
+      "refersTo": "chip",
+      "description": "Category filters over the catalogue.",
+      "html": "<button class=\"ds-chip\">Photos</button>",
+      "css": ".ds-chip { font-family:var(--f-sans); font-size:.875rem; font-weight:500; padding:.4rem .85rem; border-radius:999px; border:1px solid var(--border-strong); background:var(--surface); color:var(--fg-muted); cursor:pointer; transition:border-color .15s, color .15s, background .15s; } .ds-chip:hover { color:var(--fg); border-color:var(--fg-subtle); } .ds-chip:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }"
+    },
+    {
+      "name": "Selected Chip",
+      "kind": "chip",
+      "refersTo": "chip-selected",
+      "description": "The active filter. The only place Ink is used as a fill outside the dark band.",
+      "html": "<button class=\"ds-chip ds-chip-on\">Photos</button>",
+      "css": ".ds-chip.ds-chip-on { background:var(--fg); border-color:var(--fg); color:#fff; }"
+    },
+    {
+      "name": "Card",
+      "kind": "card",
+      "refersTo": "card",
+      "description": "Catalogue entry, feature card, pricing row. Flat at rest, lifts under the pointer.",
+      "html": "<article class=\"ds-card\"><strong>Immich</strong><p style=\"margin:.4rem 0 0;color:var(--fg-muted);font-size:.9rem\">Every photo from every phone, backed up to your own disk.</p></article>",
+      "css": ".ds-card { font-family:var(--f-sans); border:1px solid var(--border); border-radius:14px; background:var(--surface); box-shadow:0 1px 2px rgb(9 9 11 / .05), 0 1px 3px rgb(9 9 11 / .04); padding:1.1rem; transition:border-color .15s, box-shadow .15s, transform .15s; } .ds-card:hover { border-color:var(--border-strong); box-shadow:0 6px 16px -4px rgb(9 9 11 / .1), 0 2px 6px -2px rgb(9 9 11 / .05); transform:translateY(-2px); }"
+    },
+    {
+      "name": "Navigation Bar",
+      "kind": "nav",
+      "description": "Sticky, translucent, hairline-closed. Collapses to a menu sheet below 60rem.",
+      "html": "<nav class=\"ds-nav\"><span class=\"ds-nav-brand\">YoLab</span><span class=\"ds-nav-links\"><a class=\"on\" href=\"#\">Product</a><a href=\"#\">Pricing</a><a href=\"#\">Docs</a></span></nav>",
+      "css": ".ds-nav { display:flex; align-items:center; gap:1.5rem; padding:.75rem 2rem; background:rgba(255,255,255,.86); backdrop-filter:saturate(180%) blur(12px); border-bottom:1px solid var(--border); font-family:var(--f-sans); } .ds-nav-brand { font-weight:600; font-size:1.1rem; letter-spacing:-.02em; color:var(--fg); } .ds-nav-links { display:flex; gap:.15rem; margin-left:auto; } .ds-nav-links a { color:var(--fg-muted); text-decoration:none; font-size:.9rem; font-weight:500; padding:.5rem .75rem; border-radius:8px; transition:color .15s, background .15s; } .ds-nav-links a:hover { color:var(--fg); background:var(--bg-soft); } .ds-nav-links a.on { color:var(--fg); }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Quiet Machine",
+    "overview": "A home appliance that happens to be a computer. The interface is built the way the product is: precise, calm, and confident enough not to shout. The register is a real product company — the bar set by 1Password, Umbrel, Linear and Vercel — where a sharp promise is followed immediately by the actual product, honest facts, and generous space. Nothing is decorative for its own sake: every gradient, shadow and motion earns its place by making the product clearer or the page feel considered.\n\nDensity is low and deliberate — one idea per screen, a single primary action, long quiet gaps between sections. Colour is a signal, not a mood: one saturated blue means \"act\" and appears almost nowhere else. Light is the default because the scene is a person at home in daylight, reading about a box they will put under a desk.",
+    "keyCharacteristics": [
+      "Product-led: the product surface appears before any feature list.",
+      "One accent, used sparingly, carrying every action.",
+      "Crisp, hairline, tight-radius surfaces; shadow is a state, not a style.",
+      "Motion is material: an orchestrated entrance, scroll reveals, and small pointer responses — never scattered effects.",
+      "The marketing site and the box's own UI are one product and share this world."
+    ],
+    "rules": [
+      { "name": "The One Voice Rule", "body": "Signal Blue occupies under ~5% of any screen. Its rarity is what makes it read as \"act\".", "section": "colors" },
+      { "name": "The No Decorative Hue Rule", "body": "Green means a running app or a satisfied condition. If a colour is not Signal Blue, Ink, or a neutral, it is reporting state — never styling.", "section": "colors" },
+      { "name": "The Heading Speaks Alone Rule", "body": "No eyebrow, kicker or label sits above a heading. The heading carries its own weight; a label above it is deleted, not restyled.", "section": "typography" },
+      { "name": "The Mono Is Data Rule", "body": "Geist Mono is for numbers, statuses, paths, labels and code. It is never a costume for \"technical\".", "section": "typography" },
+      { "name": "The Flat-By-Default Rule", "body": "Surfaces are flat at rest. A shadow is either structural (this card is raised) or a state (the pointer is on it) — never decoration.", "section": "elevation" }
+    ],
+    "dos": [
+      "Do lead every section with a heading that states the argument on its own.",
+      "Do keep Signal Blue to actions, active states, and one emphasised word.",
+      "Do show the product before claiming anything about it.",
+      "Do put numbers, statuses and paths in Geist Mono, with tabular figures.",
+      "Do use shadow only as structure or state, and keep resting surfaces flat.",
+      "Do keep the marketing site and the box UI on the same tokens — they are one product."
+    ],
+    "donts": [
+      "Don't put an eyebrow, kicker or label above a heading.",
+      "Don't use gradient text; emphasis comes from weight or size.",
+      "Don't use glass or blur as decoration — only the sticky nav's backdrop.",
+      "Don't add a coloured border-left or border-right to cards or callouts.",
+      "Don't introduce a second accent hue; green reports status, nothing else.",
+      "Don't let an animation hide content: reveals are gated on JS, and anything below the fold is visible by default."
+    ]
+  }
+}

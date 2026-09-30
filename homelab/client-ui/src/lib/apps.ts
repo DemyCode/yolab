@@ -140,3 +140,84 @@ export function instanceStem(app: AppInfo): string {
     ? app.instance_name.slice(0, -(id.length + 1))
     : app.instance_name;
 }
+
+export type AppAction =
+  | "open"
+  | "update"
+  | "retry"
+  | "duplicate"
+  | "backup"
+  | "restore"
+  | "remove";
+
+export function availableActions(
+  state: AppState,
+  restoring: boolean,
+): Set<AppAction> {
+  if (state === "removing" || restoring) return new Set<AppAction>();
+  switch (state) {
+    case "failed":
+      return new Set<AppAction>(["retry", "remove"]);
+    case "starting":
+    case "copying":
+      return new Set<AppAction>(["duplicate", "restore", "remove"]);
+    case "stopped":
+      return new Set<AppAction>(["open", "update", "duplicate", "restore", "remove"]);
+    default:
+      return new Set<AppAction>([
+        "open",
+        "update",
+        "duplicate",
+        "backup",
+        "restore",
+        "remove",
+      ]);
+  }
+}
+
+export type StatusTone = "live" | "busy" | "warn" | "error";
+
+export function appStatus(state: AppState): { tone: StatusTone; label: string } {
+  switch (state) {
+    case "failed":
+      return { tone: "error", label: "Failed installation" };
+    case "stopped":
+      return { tone: "warn", label: "Stopped working" };
+    case "removing":
+      return { tone: "busy", label: "Being removed" };
+    case "copying":
+      return { tone: "busy", label: "Copying its files" };
+    case "starting":
+      return { tone: "busy", label: "Starting up" };
+    default:
+      return { tone: "live", label: "Running" };
+  }
+}
+
+export interface RestoreRecord {
+  id: string;
+  namespace: string;
+  snapshot_id?: string | null;
+  started_at: string;
+  finished_at?: string | null;
+  error?: string | null;
+  state: "running" | "succeeded" | "failed";
+}
+
+export const RESTORE_DONE_SHOWN_MS = 30 * 60 * 1000;
+
+export function latestRestore(
+  records: RestoreRecord[],
+  namespace: string,
+  now: number,
+): RestoreRecord | null {
+  const mine = records
+    .filter((r) => r.namespace === namespace)
+    .sort((a, b) => b.started_at.localeCompare(a.started_at));
+  const latest = mine[0];
+  if (!latest) return null;
+  if (latest.state === "running") return latest;
+  const ended = latest.finished_at ? Date.parse(latest.finished_at) : NaN;
+  if (Number.isNaN(ended) || now - ended > RESTORE_DONE_SHOWN_MS) return null;
+  return latest;
+}

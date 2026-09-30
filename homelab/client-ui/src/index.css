@@ -31,6 +31,7 @@
   --primary: #2b56f5;
   --primary-fg: #ffffff;
   --primary-soft: #eaefff;
+  --primary-deep: #1c3fd6;
 
   --success: #16a34a;
   --success-soft: #f0fdf4;
@@ -38,6 +39,7 @@
   --warning-soft: #fffbeb;
   --danger: #dc2626;
   --danger-soft: #fef2f2;
+  --danger-deep: #b91c1c;
 
   --shadow-card: 0 1px 2px rgb(9 9 11 / 0.06), 0 1px 3px rgb(9 9 11 / 0.04);
   --shadow-lift:
@@ -61,6 +63,7 @@
   --primary: #5b7cff;
   --primary-fg: #ffffff;
   --primary-soft: #1a2242;
+  --primary-deep: #4b6cf0;
 
   --success: #4ade80;
   --success-soft: #0f2417;
@@ -68,6 +71,7 @@
   --warning-soft: #2a1f08;
   --danger: #f87171;
   --danger-soft: #2a1212;
+  --danger-deep: #ef4444;
 
   --shadow-card: 0 1px 2px rgb(0 0 0 / 0.5);
   --shadow-lift: 0 4px 14px -4px rgb(0 0 0 / 0.5);
@@ -94,6 +98,7 @@
   --color-primary: var(--primary);
   --color-primary-fg: var(--primary-fg);
   --color-primary-soft: var(--primary-soft);
+  --color-primary-deep: var(--primary-deep);
 
   --color-success: var(--success);
   --color-success-soft: var(--success-soft);
@@ -101,9 +106,11 @@
   --color-warning-soft: var(--warning-soft);
   --color-danger: var(--danger);
   --color-danger-soft: var(--danger-soft);
+  --color-danger-deep: var(--danger-deep);
 
   --radius-card: 0.875rem;
   --radius-tile: 1rem;
+  --radius-control: 0.625rem;
 }
 
 *,

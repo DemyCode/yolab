@@ -1,21 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import {
-  ArrowLeft,
-  Check,
-  ChevronDown,
-  Copy,
-  ExternalLink,
-  History,
-  RefreshCw,
-  RotateCcw,
-  Trash2,
-} from "lucide-react";
+import { ArrowLeft, ExternalLink, RefreshCw } from "lucide-react";
 import { Page } from "@/components/AppShell";
 import { AppAccess } from "@/components/AppAccess";
 import { AppIconTile } from "@/components/AppIcon";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
+import { buttonClass } from "@/components/ui/button-variants";
 import { ConfirmDialog, Sheet } from "@/components/ui/sheet";
 import {
   Banner,
@@ -23,18 +13,30 @@ import {
   Skeleton,
   Spinner,
 } from "@/components/ui/feedback";
-import { Card } from "@/components/ui/card";
-import { Input, Select } from "@/components/ui/input";
+import { Input, Select, Switch } from "@/components/ui/input";
+import {
+  DisclosureRow,
+  Row,
+  RowAction,
+  Section,
+  ValueRow,
+} from "@/components/ui/list";
 import { api, streamEvents } from "@/lib/api";
-import { formatDateTime } from "@/lib/format";
+import { formatDateTime, relativeTime } from "@/lib/format";
 import { useApi } from "@/lib/useResource";
 import {
   appDisplayName,
   appLinks,
   appState,
+  appStatus,
+  availableActions,
   catalogEntry,
   instanceStem,
+  latestRestore,
   newerVersion,
+  type AppState,
+  type RestoreRecord,
+  type StatusTone,
 } from "@/lib/apps";
 import { taglineFor } from "@/catalog/meta";
 import { cn } from "@/lib/utils";
@@ -45,50 +47,46 @@ import type {
   PodInfo,
 } from "@/types/apps";
 
-function CopyValue({ label, value }: { label: string; value: string }) {
-  const [copied, setCopied] = useState(false);
+const DOT: Record<StatusTone, string> = {
+  live: "bg-success",
+  busy: "bg-primary animate-pulse",
+  warn: "bg-warning",
+  error: "bg-danger",
+};
+
+function StatusLine({ state, version }: { state: AppState; version: string }) {
+  const { tone, label } = appStatus(state);
   return (
-    <div className="flex items-center gap-3 px-5 py-4">
-      <div className="min-w-0 flex-1">
-        <div className="text-sm text-fg-muted">{label}</div>
-        <div className="mt-0.5 break-all font-mono text-sm text-fg">
-          {value}
-        </div>
-      </div>
-      <button
-        onClick={async () => {
-          try {
-            await navigator.clipboard.writeText(value);
-            setCopied(true);
-            setTimeout(() => setCopied(false), 1600);
-            // eslint-disable-next-line no-empty
-          } catch {}
-        }}
-        className="shrink-0 rounded-lg p-2.5 text-fg-muted hover:bg-surface-2 hover:text-fg"
-        aria-label={`Copy ${label}`}
-      >
-        {copied ? (
-          <Check className="h-4 w-4 text-success" />
-        ) : (
-          <Copy className="h-4 w-4" />
-        )}
-      </button>
-    </div>
+    <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-fg-muted">
+      <span className="inline-flex items-center gap-1.5">
+        <span className={cn("h-2 w-2 rounded-full", DOT[tone])} aria-hidden />
+        {label}
+      </span>
+      {version && (
+        <>
+          <span aria-hidden className="text-fg-subtle">
+            ·
+          </span>
+          <span className="font-mono text-xs tabular-nums">v{version}</span>
+        </>
+      )}
+    </p>
   );
 }
 
 function FailureReason({ detail }: { detail: string }) {
   const reason = detail?.trim();
-  if (!reason) return <>It did not say why. </>;
+  if (!reason) return <p>It did not say why.</p>;
   return (
-    <pre className="my-2 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-surface-2 p-2.5 font-mono text-xs text-fg">
+    <pre className="my-2 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-control bg-surface p-2.5 font-mono text-xs text-fg">
       {reason}
     </pre>
   );
 }
 
+const MAX_LOG_LINES = 1000;
+
 function TechnicalDetails({ app }: { app: AppInfo }) {
-  const [open, setOpen] = useState(false);
   const [pods, setPods] = useState<PodInfo[] | null>(null);
   const [logs, setLogs] = useState<{
     pod: string;
@@ -97,8 +95,6 @@ function TechnicalDetails({ app }: { app: AppInfo }) {
   } | null>(null);
   const logStream = useRef<AbortController | null>(null);
   const logBox = useRef<HTMLPreElement | null>(null);
-
-  const MAX_LOG_LINES = 1000;
 
   function stopLogs() {
     logStream.current?.abort();
@@ -111,7 +107,11 @@ function TechnicalDetails({ app }: { app: AppInfo }) {
     const ctrl = new AbortController();
     logStream.current = ctrl;
     setLogs({ pod, lines: [], live: true });
-
+    const settle = () => {
+      if (logStream.current === ctrl) {
+        setLogs((l) => (l && l.pod === pod ? { ...l, live: false } : l));
+      }
+    };
     void streamEvents(
       `/api/apps/${app.instance_name}/logs/${pod}`,
       { signal: ctrl.signal },
@@ -123,16 +123,8 @@ function TechnicalDetails({ app }: { app: AppInfo }) {
         );
       },
     )
-      .then(() => {
-        if (logStream.current === ctrl) {
-          setLogs((l) => (l && l.pod === pod ? { ...l, live: false } : l));
-        }
-      })
-      .catch(() => {
-        if (logStream.current === ctrl) {
-          setLogs((l) => (l && l.pod === pod ? { ...l, live: false } : l));
-        }
-      });
+      .then(settle)
+      .catch(settle);
   }
 
   useEffect(() => () => logStream.current?.abort(), []);
@@ -143,7 +135,6 @@ function TechnicalDetails({ app }: { app: AppInfo }) {
   }, [logs?.lines.length]);
 
   useEffect(() => {
-    if (!open || pods) return;
     let cancelled = false;
     void api
       .get<PodInfo[]>(`/api/apps/${app.instance_name}/pods`)
@@ -156,113 +147,96 @@ function TechnicalDetails({ app }: { app: AppInfo }) {
     return () => {
       cancelled = true;
     };
-  }, [open, pods, app.instance_name]);
+  }, [app.instance_name]);
+
+  const settings = Object.entries(app.config ?? {});
 
   return (
-    <div className="mt-6">
-      <button
-        onClick={() => setOpen((o) => !o)}
-        className="flex items-center gap-1.5 text-sm text-fg-muted hover:text-fg"
-        aria-expanded={open}
-      >
-        Technical details
-        <ChevronDown
-          className={cn("h-4 w-4 transition-transform", open && "rotate-180")}
-        />
-      </button>
-
-      {open && (
-        <div className="mt-3 space-y-3">
-          {!pods ? (
-            <div className="flex justify-center py-4">
-              <Spinner />
-            </div>
-          ) : pods.length > 0 ? (
-            <div className="space-y-1.5">
-              {pods.map((pod) => (
-                <div
-                  key={pod.name}
-                  className="flex items-center gap-2 rounded-xl bg-surface-2 px-3 py-2"
+    <>
+      <div>
+        <h3 className="mb-1.5 text-xs font-medium text-fg-muted">
+          Running parts
+        </h3>
+        {!pods ? (
+          <Spinner className="h-4 w-4" />
+        ) : pods.length === 0 ? (
+          <p className="text-sm text-fg-muted">Nothing running right now.</p>
+        ) : (
+          <ul className="divide-y divide-border rounded-control border border-border">
+            {pods.map((pod) => (
+              <li key={pod.name} className="flex items-center gap-2 px-3 py-1.5">
+                <span
+                  className={cn(
+                    "h-2 w-2 shrink-0 rounded-full",
+                    pod.ready ? "bg-success" : "bg-warning",
+                  )}
+                  aria-hidden
+                />
+                <span className="min-w-0 flex-1 truncate font-mono text-xs text-fg-muted">
+                  {pod.name}
+                </span>
+                <span className="shrink-0 text-xs text-fg-subtle">
+                  {pod.phase}
+                </span>
+                <RowAction
+                  onClick={() =>
+                    logs?.pod === pod.name && logs.live
+                      ? stopLogs()
+                      : startLogs(pod.name)
+                  }
                 >
-                  <span
-                    className={cn(
-                      "h-2 w-2 shrink-0 rounded-full",
-                      pod.ready ? "bg-success" : "bg-warning",
-                    )}
-                  />
-                  <span className="min-w-0 flex-1 truncate font-mono text-xs text-fg-muted">
-                    {pod.name}
-                  </span>
-                  <span className="shrink-0 text-xs text-fg-subtle">
-                    {pod.phase}
-                  </span>
-                  <button
-                    onClick={() =>
-                      logs?.pod === pod.name ? stopLogs() : startLogs(pod.name)
-                    }
-                    className="shrink-0 rounded-lg px-2 py-1 text-xs text-primary hover:bg-surface-3"
-                  >
-                    {logs?.pod === pod.name ? "Stop" : "Logs"}
-                  </button>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <p className="text-sm text-fg-muted">Nothing running right now.</p>
-          )}
+                  {logs?.pod === pod.name && logs.live ? "Stop" : "Logs"}
+                </RowAction>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
 
-          {logs && (
-            <div className="space-y-1">
-              <div className="flex items-center gap-2 text-xs text-fg-subtle">
-                <span className="truncate font-mono">{logs.pod}</span>
-                {logs.live ? (
-                  <span className="flex items-center gap-1 text-success">
-                    <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-success" />
-                    Live
-                  </span>
-                ) : (
-                  <span>Stopped</span>
-                )}
-                <button
-                  onClick={stopLogs}
-                  className="ml-auto rounded px-1.5 py-0.5 hover:bg-surface-3 hover:text-fg"
-                >
-                  Close
-                </button>
-              </div>
-              <pre
-                ref={logBox}
-                className="max-h-72 overflow-auto rounded-xl bg-surface-2 p-3 font-mono text-xs leading-relaxed text-fg-muted"
-              >
-                {logs.lines.length > 0
-                  ? logs.lines.join("\n")
-                  : logs.live
-                    ? "Connected — waiting for this app to print something…"
-                    : "This app printed nothing."}
-              </pre>
-            </div>
-          )}
-
-          {Object.keys(app.config ?? {}).length > 0 && (
-            <div className="rounded-xl bg-surface-2 p-4">
-              <div className="mb-2 text-xs font-medium text-fg-muted">
-                Settings this app was installed with
-              </div>
-              <dl className="space-y-1">
-                {Object.entries(app.config).map(([k, v]) => (
-                  <div key={k} className="flex gap-2 text-xs">
-                    <dt className="text-fg-subtle">{k}</dt>
-                    <dd className="min-w-0 flex-1 break-all font-mono text-fg-muted">
-                      {typeof v === "string" ? v : JSON.stringify(v)}
-                    </dd>
-                  </div>
-                ))}
-              </dl>
-            </div>
-          )}
+      {logs && (
+        <div>
+          <p className="mb-1.5 flex items-center gap-2 text-xs text-fg-muted">
+            <span className="truncate font-mono">{logs.pod}</span>
+            {logs.live ? (
+              <span className="inline-flex items-center gap-1 text-success">
+                <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-success" />
+                Live
+              </span>
+            ) : (
+              <span>Stopped</span>
+            )}
+          </p>
+          <pre
+            ref={logBox}
+            className="max-h-72 overflow-auto rounded-control bg-surface-2 p-3 font-mono text-xs leading-relaxed text-fg-muted"
+          >
+            {logs.lines.length > 0
+              ? logs.lines.join("\n")
+              : logs.live
+                ? "Connected — waiting for this app to print something…"
+                : "This app printed nothing."}
+          </pre>
         </div>
       )}
-    </div>
+
+      {settings.length > 0 && (
+        <div>
+          <h3 className="mb-1.5 text-xs font-medium text-fg-muted">
+            Installed with
+          </h3>
+          <dl className="space-y-1 rounded-control bg-surface-2 p-3">
+            {settings.map(([k, v]) => (
+              <div key={k} className="flex gap-3 text-xs">
+                <dt className="shrink-0 text-fg-subtle">{k}</dt>
+                <dd className="min-w-0 flex-1 break-all font-mono text-fg-muted">
+                  {typeof v === "string" ? v : JSON.stringify(v)}
+                </dd>
+              </div>
+            ))}
+          </dl>
+        </div>
+      )}
+    </>
   );
 }
 
@@ -271,66 +245,68 @@ interface RestoreSnapshot {
   time: string;
 }
 
-interface RestoreRecord {
-  id: string;
-  namespace: string;
-  snapshot_id?: string | null;
-  started_at: string;
-  finished_at?: string | null;
-  error?: string | null;
-  state: "running" | "succeeded" | "failed";
-}
-
-function RestoreDialog({
+function RestoreSheet({
   instanceName,
+  name,
   open,
   onClose,
+  onStarted,
 }: {
   instanceName: string;
+  name: string;
   open: boolean;
   onClose: () => void;
+  onStarted: (snapshotTime: string | null) => void;
 }) {
   const [snapshots, setSnapshots] = useState<RestoreSnapshot[] | null>(null);
+  const [loadFailed, setLoadFailed] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!open) return;
+    let cancelled = false;
     setSelected(null);
     setError(null);
     setSnapshots(null);
-    fetch(
-      "/api/backups/snapshots?namespace=" +
-        encodeURIComponent(`yolab-${instanceName}`),
-    )
-      .then((r) => r.json())
-      .then((d: { snapshots?: RestoreSnapshot[] }) => {
-        const snaps = (d.snapshots ?? []).sort(
-          (a, b) => new Date(b.time).getTime() - new Date(a.time).getTime(),
-        );
+    setLoadFailed(false);
+    void api
+      .get<{ snapshots?: RestoreSnapshot[] }>(
+        `/api/backups/snapshots?namespace=${encodeURIComponent(`yolab-${instanceName}`)}`,
+      )
+      .then((d) => {
+        if (cancelled) return;
+        const snaps = (d.snapshots ?? [])
+          .slice()
+          .sort(
+            (a, b) => new Date(b.time).getTime() - new Date(a.time).getTime(),
+          );
         setSnapshots(snaps);
         if (snaps.length > 0) setSelected(snaps[0].id);
       })
-      .catch(() => setSnapshots([]));
+      .catch(() => {
+        if (cancelled) return;
+        setLoadFailed(true);
+        setSnapshots([]);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [open, instanceName]);
 
   async function confirm() {
     setBusy(true);
     setError(null);
     try {
-      const res = await fetch("/api/backups/restore", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          namespace: `yolab-${instanceName}`,
-          snapshot_id: selected,
-        }),
+      await api.post("/api/backups/restore", {
+        namespace: `yolab-${instanceName}`,
+        snapshot_id: selected,
       });
-      if (!res.ok) throw new Error(await res.text());
+      onStarted(snapshots?.find((s) => s.id === selected)?.time ?? null);
       onClose();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Restore failed");
+      setError(e instanceof Error ? e.message : "The restore did not start.");
     } finally {
       setBusy(false);
     }
@@ -340,25 +316,30 @@ function RestoreDialog({
     <Sheet
       open={open}
       onClose={onClose}
-      title={`Restore ${instanceName}`}
-      subtitle="Pick the backup to restore from. The app's data and settings will be rolled back to that point."
+      title={`Restore ${name}`}
+      subtitle="Its files and settings go back to the backup you pick. Anything newer is lost."
     >
       {snapshots === null ? (
         <div className="flex items-center gap-2 py-4 text-sm text-fg-muted">
-          <RefreshCw className="h-4 w-4 animate-spin" />
-          Loading backups…
+          <Spinner className="h-4 w-4" />
+          Looking for backups…
         </div>
+      ) : loadFailed ? (
+        <p className="py-4 text-sm text-fg-muted">
+          The backups could not be listed right now. Close this and try again
+          in a moment.
+        </p>
       ) : snapshots.length === 0 ? (
         <p className="py-4 text-sm text-fg-muted">
-          No backup covers this app yet. Backups taken before it was installed
-          cannot restore it, so there is nothing to roll back to.
+          There is no backup of this app yet, so there is nothing to go back
+          to.
         </p>
       ) : (
-        <div className="space-y-1">
-          {snapshots.map((s) => (
+        <div className="divide-y divide-border rounded-card border border-border">
+          {snapshots.map((s, i) => (
             <label
               key={s.id}
-              className="flex cursor-pointer items-center gap-3 rounded-card border border-border px-4 py-3 hover:bg-surface-2"
+              className="flex cursor-pointer items-center gap-3 px-4 py-3 hover:bg-surface-2"
             >
               <input
                 type="radio"
@@ -367,13 +348,18 @@ function RestoreDialog({
                 onChange={() => setSelected(s.id)}
                 className="accent-primary"
               />
-              <span className="text-sm text-fg">{formatDateTime(s.time)}</span>
+              <span className="flex-1 text-sm text-fg">
+                {formatDateTime(s.time)}
+              </span>
+              {i === 0 && (
+                <span className="text-xs text-fg-subtle">Latest</span>
+              )}
             </label>
           ))}
         </div>
       )}
 
-      {error && <p className="mt-3 text-xs text-danger">{error}</p>}
+      {error && <p className="mt-3 text-sm text-danger">{error}</p>}
 
       <div className="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
         <Button variant="secondary" onClick={onClose} disabled={busy}>
@@ -395,116 +381,115 @@ function RestoreDialog({
 const BACKUP_PRESETS: { label: string; cron: string }[] = [
   { label: "Every day at 03:00", cron: "0 3 * * *" },
   { label: "Every 6 hours", cron: "0 */6 * * *" },
-  { label: "Every week (Sunday 03:00)", cron: "0 3 * * 0" },
-  { label: "Every month (1st, 03:00)", cron: "0 3 1 * *" },
+  { label: "Every Sunday at 03:00", cron: "0 3 * * 0" },
+  { label: "On the 1st of each month", cron: "0 3 1 * *" },
 ];
 
-function backupWhen(iso: string | null): string {
-  if (!iso) return "Never backed up yet";
-  return formatDateTime(iso);
-}
-
-function BackupCard({
+function BackupsSection({
   app,
+  canBackUp,
+  canRestore,
+  onRestore,
   onChanged,
 }: {
   app: AppInfo;
+  canBackUp: boolean;
+  canRestore: boolean;
+  onRestore: () => void;
   onChanged: () => void;
 }) {
   const [enabled, setEnabled] = useState(app.backup.enabled);
   const [schedule, setSchedule] = useState(app.backup.schedule);
-  const [saving, setSaving] = useState(false);
+  const [custom, setCustom] = useState(
+    !BACKUP_PRESETS.some((p) => p.cron === app.backup.schedule),
+  );
+  const [draft, setDraft] = useState(app.backup.schedule);
   const [running, setRunning] = useState(app.backup.running);
-  const [error, setError] = useState<string | null>(null);
-  const [saved, setSaved] = useState(false);
+  const [note, setNote] = useState<{ ok: boolean; text: string } | null>(null);
 
   useEffect(() => {
     setEnabled(app.backup.enabled);
     setSchedule(app.backup.schedule);
+    setDraft(app.backup.schedule);
   }, [app.backup.enabled, app.backup.schedule]);
   useEffect(() => setRunning(app.backup.running), [app.backup.running]);
 
-  const dirty =
-    enabled !== app.backup.enabled || schedule !== app.backup.schedule;
-
-  async function save() {
-    setSaving(true);
-    setError(null);
-    setSaved(false);
+  async function save(next: { enabled: boolean; schedule: string }) {
+    const before = { enabled, schedule };
+    setEnabled(next.enabled);
+    setSchedule(next.schedule);
+    setNote(null);
     try {
-      await api.put(`/api/apps/${app.instance_name}/backup`, {
-        enabled,
-        schedule,
-      });
-      setSaved(true);
+      await api.put(`/api/apps/${app.instance_name}/backup`, next);
+      setNote({ ok: true, text: "Saved" });
       onChanged();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not save the schedule");
-    } finally {
-      setSaving(false);
+      setEnabled(before.enabled);
+      setSchedule(before.schedule);
+      setNote({
+        ok: false,
+        text: e instanceof Error ? e.message : "Could not save that.",
+      });
     }
   }
 
   async function backupNow() {
     setRunning(true);
-    setError(null);
+    setNote(null);
     try {
       await api.post(`/api/backups/apps/yolab-${app.instance_name}/run-now`);
       onChanged();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not start a backup");
       setRunning(false);
+      setNote({
+        ok: false,
+        text: e instanceof Error ? e.message : "Could not start a backup.",
+      });
     }
   }
 
-  const isPreset = BACKUP_PRESETS.some((p) => p.cron === schedule);
+  const last = app.backup.last_ok_at;
 
   return (
-    <section className="mt-6">
-      <h2 className="mb-2 text-sm font-medium text-fg">Backups</h2>
-      <Card className="p-5">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <div className="text-sm text-fg">
-              {running
-                ? "Backing up now…"
-                : enabled
-                  ? "Automatic backups on"
-                  : "Automatic backups off"}
-            </div>
-            <div className="mt-0.5 text-xs text-fg-muted">
-              Last backup: {backupWhen(app.backup.last_ok_at)}
-            </div>
-          </div>
-          <Button
-            variant="secondary"
-            onClick={() => void backupNow()}
-            loading={running}
+    <Section
+      title="Backups"
+      action={
+        note && (
+          <span
+            className={cn("text-xs", note.ok ? "text-success" : "text-danger")}
+            role="status"
           >
-            <History className="h-4 w-4" />
-            Back up now
-          </Button>
-        </div>
-
-        <div className="mt-4 space-y-3">
-          <label className="flex items-center gap-2 text-sm text-fg">
-            <input
-              type="checkbox"
-              checked={enabled}
-              onChange={(e) => setEnabled(e.target.checked)}
-              className="accent-primary"
-            />
-            Back this app up automatically
-          </label>
-
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+            {note.text}
+          </span>
+        )
+      }
+    >
+      <Row
+        label="Back up automatically"
+        trailing={
+          <Switch
+            checked={enabled}
+            onChange={(v) => void save({ enabled: v, schedule })}
+            label="Back up automatically"
+          />
+        }
+      />
+      {enabled && (
+        <Row
+          label="How often"
+          trailing={
             <Select
-              value={isPreset ? schedule : "__custom"}
+              value={custom ? "__custom" : schedule}
               onChange={(e) => {
-                if (e.target.value !== "__custom") setSchedule(e.target.value);
+                if (e.target.value === "__custom") {
+                  setCustom(true);
+                  return;
+                }
+                setCustom(false);
+                void save({ enabled, schedule: e.target.value });
               }}
-              aria-label="Backup frequency"
-              className="sm:w-64"
+              aria-label="How often"
+              className="h-9 w-auto max-w-[14rem]"
             >
               {BACKUP_PRESETS.map((p) => (
                 <option key={p.cron} value={p.cron}>
@@ -513,52 +498,84 @@ function BackupCard({
               ))}
               <option value="__custom">Custom…</option>
             </Select>
-            <Input
-              value={schedule}
-              onChange={(e) => setSchedule(e.target.value)}
-              aria-label="Backup cron expression"
-              spellCheck={false}
-              className="font-mono sm:flex-1"
-            />
-            <Button
-              onClick={() => void save()}
-              loading={saving}
-              disabled={!dirty}
-            >
-              Save
-            </Button>
-          </div>
-          <p className="text-xs text-fg-subtle">
-            A five-field cron expression: minute hour day month weekday. Times
-            are the server's local time. For example, <code>0 3 * * *</code> is
-            every day at 03:00.
-          </p>
-          {saved && !dirty && (
-            <p className="text-xs text-success">Schedule saved.</p>
+          }
+        >
+          {custom && (
+            <div className="mt-3">
+              <div className="flex gap-2">
+                <Input
+                  value={draft}
+                  onChange={(e) => setDraft(e.target.value)}
+                  aria-label="Custom schedule"
+                  spellCheck={false}
+                  className="h-9 font-mono"
+                />
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => void save({ enabled, schedule: draft })}
+                  disabled={!draft.trim() || draft === schedule}
+                >
+                  Save
+                </Button>
+              </div>
+              <p className="mt-1.5 text-xs text-fg-subtle">
+                Minute, hour, day, month, weekday, in the box&rsquo;s time.{" "}
+                <code className="font-mono">0 3 * * *</code> is every day at
+                03:00.
+              </p>
+            </div>
           )}
-          {error && <p className="text-xs text-danger">{error}</p>}
-        </div>
-      </Card>
-    </section>
+        </Row>
+      )}
+      <Row
+        label="Last backup"
+        detail={
+          running ? (
+            "Backing up now…"
+          ) : last ? (
+            <span title={formatDateTime(last)}>{relativeTime(last)}</span>
+          ) : (
+            "Not backed up yet"
+          )
+        }
+        trailing={
+          canBackUp ? (
+            <RowAction onClick={() => void backupNow()} disabled={running}>
+              {running ? "Backing up…" : "Back up now"}
+            </RowAction>
+          ) : null
+        }
+      />
+      {canRestore && (
+        <Row
+          label="Restore from a backup"
+          detail="Go back to an earlier copy of its files and settings"
+          onClick={onRestore}
+        />
+      )}
+    </Section>
   );
 }
+
+type Notice =
+  | { tone: "success"; title: string; body?: string }
+  | { tone: "error"; title: string; body: string };
 
 export function AppDetailPage() {
   const { instanceName } = useParams<{ instanceName: string }>();
   const navigate = useNavigate();
 
-  const apps = useApi<AppInfo[]>("apps", "/api/apps", {
-    pollMs: 10_000,
-  });
+  const apps = useApi<AppInfo[]>("apps", "/api/apps", { pollMs: 10_000 });
   const catalog = useApi<CatalogApp[]>("catalog", "/api/apps/catalog");
   const domain = useApi<DomainResponse>("domain", "/api/tunnel/domain");
 
   const [confirmRemove, setConfirmRemove] = useState(false);
   const [working, setWorking] = useState<null | "update" | "remove">(null);
-  const [error, setError] = useState<string | null>(null);
-  const [updated, setUpdated] = useState<string | null>(null);
+  const [notice, setNotice] = useState<Notice | null>(null);
   const [restoreOpen, setRestoreOpen] = useState(false);
   const [restore, setRestore] = useState<RestoreRecord | null>(null);
+  const [restoreSeen, setRestoreSeen] = useState<string | null>(null);
 
   const app = apps.data?.find((a) => a.instance_name === instanceName);
   const state = app ? appState(app) : "starting";
@@ -566,19 +583,17 @@ export function AppDetailPage() {
   useEffect(() => {
     if (!instanceName) return;
     let cancelled = false;
-    async function pollRestore() {
+    async function poll() {
       try {
-        const list = (await fetch("/api/backups/restores").then((r) =>
-          r.json(),
-        )) as RestoreRecord[];
-        if (cancelled) return;
-        const mine = list.find((r) => r.namespace === `yolab-${instanceName}`);
-        setRestore(mine ?? null);
+        const list = await api.get<RestoreRecord[]>("/api/backups/restores");
+        if (!cancelled) {
+          setRestore(latestRestore(list, `yolab-${instanceName}`, Date.now()));
+        }
         // eslint-disable-next-line no-empty
       } catch {}
     }
-    void pollRestore();
-    const id = window.setInterval(pollRestore, 5000);
+    void poll();
+    const id = window.setInterval(poll, 5000);
     return () => {
       cancelled = true;
       clearInterval(id);
@@ -622,16 +637,26 @@ export function AppDetailPage() {
   const entry = catalogEntry(app, catalog.data ?? []);
   const name = appDisplayName(app, catalog.data ?? [], apps.data ?? []);
   const links = appLinks(app, domain.data?.domain ?? "");
+  const restoring = restore?.state === "running";
+  const actions = availableActions(state, restoring);
+  const newer = newerVersion(app, entry);
+  const version = app.chart_version || entry?.chart_version || "";
+  const stem = instanceStem(app);
+  const current = app;
 
   async function remove() {
     if (!app) return;
     setWorking("remove");
-    setError(null);
+    setNotice(null);
     try {
       await api.del(`/api/apps/${app.instance_name}`);
       navigate("/");
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not remove the app");
+      setNotice({
+        tone: "error",
+        title: "It could not be removed",
+        body: e instanceof Error ? e.message : "The box did not accept that.",
+      });
       setWorking(null);
     }
   }
@@ -639,238 +664,324 @@ export function AppDetailPage() {
   async function update() {
     if (!app) return;
     setWorking("update");
-    setError(null);
-    setUpdated(null);
-    let version = "";
+    setNotice(null);
+    let reached = "";
     const result = await streamEvents(
       `/api/apps/${app.instance_name}/update`,
       { method: "POST" },
       (line) => {
         const found = /^Now on version (.+)$/.exec(line);
-        if (found) version = found[1];
+        if (found) reached = found[1];
       },
     );
-    if (result.ok) setUpdated(version);
-    else setError(result.error ?? "Could not update the app");
+    if (result.ok) {
+      setNotice({
+        tone: "success",
+        title: reached ? `${name} now runs version ${reached}` : `${name} was reinstalled`,
+      });
+    } else {
+      setNotice({
+        tone: "error",
+        title: "The update did not finish",
+        body: result.error ?? "Your app was left as it was.",
+      });
+    }
     await Promise.all([apps.refresh(), catalog.refresh()]);
     setWorking(null);
   }
+
+  const restoreDone =
+    restore && restore.state !== "running" && restore.id !== restoreSeen
+      ? restore
+      : null;
+
+  function banner() {
+    if (state === "removing") {
+      return (
+        <Banner tone="warning" title="Being removed">
+          This app and its files are being deleted.
+        </Banner>
+      );
+    }
+    if (state === "failed") {
+      return (
+        <Banner
+          tone="error"
+          title="The installation failed"
+          action={
+            <div className="flex flex-wrap gap-2">
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={() => void update()}
+                loading={working === "update"}
+              >
+                <RefreshCw className="h-4 w-4" />
+                Try again
+              </Button>
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={() => setConfirmRemove(true)}
+              >
+                Remove it
+              </Button>
+            </div>
+          }
+        >
+          <FailureReason detail={current.detail} />
+          It is kept so you can see what went wrong.
+        </Banner>
+      );
+    }
+    if (restoring) {
+      return (
+        <Banner tone="info" title={`Restoring ${name}`}>
+          It is offline while its files and settings are brought back, and
+          comes back on its own when that finishes.
+        </Banner>
+      );
+    }
+    if (notice?.tone === "error") {
+      return (
+        <Banner tone="error" title={notice.title}>
+          {notice.body}
+        </Banner>
+      );
+    }
+    if (restoreDone?.state === "failed") {
+      return (
+        <Banner
+          tone="error"
+          title="The restore did not finish"
+          action={
+            <div className="flex flex-wrap gap-2">
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={() => setRestoreOpen(true)}
+              >
+                Pick a backup again
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => setRestoreSeen(restoreDone.id)}
+              >
+                Dismiss
+              </Button>
+            </div>
+          }
+        >
+          {restoreDone.error ?? "Something went wrong while restoring it."}
+        </Banner>
+      );
+    }
+    if (state === "stopped") {
+      return (
+        <Banner tone="warning" title="It stopped working">
+          <FailureReason detail={current.detail} />
+          It keeps trying to start again on its own.
+        </Banner>
+      );
+    }
+    if (restoreDone?.state === "succeeded") {
+      return (
+        <Banner
+          tone="success"
+          title={`${name} is restored`}
+          action={
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => setRestoreSeen(restoreDone.id)}
+            >
+              Dismiss
+            </Button>
+          }
+        >
+          Its files and settings are back from the backup
+          {restoreDone.finished_at
+            ? `, finished ${relativeTime(restoreDone.finished_at)}`
+            : ""}
+          .
+        </Banner>
+      );
+    }
+    if (notice?.tone === "success") {
+      return (
+        <Banner
+          tone="success"
+          title={notice.title}
+          action={
+            <Button size="sm" variant="ghost" onClick={() => setNotice(null)}>
+              Dismiss
+            </Button>
+          }
+        />
+      );
+    }
+    if (state === "copying") {
+      return (
+        <Banner tone="info" title="Copying its files">
+          {current.detail?.trim() ||
+            "It starts on its own once its files are in place."}
+        </Banner>
+      );
+    }
+    if (state === "starting") {
+      return (
+        <Banner tone="info" title="Starting up">
+          {current.detail?.trim() ||
+            "This usually takes a minute or two the first time."}
+        </Banner>
+      );
+    }
+    return null;
+  }
+
+  const shown = banner();
+  const quiet = state === "failed" || state === "removing";
 
   return (
     <Page>
       <Link
         to="/"
-        className="mb-5 inline-flex items-center gap-1.5 text-sm text-fg-muted hover:text-fg"
+        className="mb-5 inline-flex items-center gap-1.5 rounded-control text-sm text-fg-muted hover:text-fg focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
       >
         <ArrowLeft className="h-4 w-4" />
         My apps
       </Link>
 
-      <header className="mb-6 flex items-center gap-4">
+      <header className="flex flex-wrap items-center gap-4">
         <AppIconTile appId={app.app_id} icon={entry?.icon} name={name} />
-        <div className="min-w-0">
-          <h1 className="font-display text-3xl text-fg">{name}</h1>
-          <p className="mt-0.5 text-sm text-fg-muted">
-            {entry
-              ? taglineFor({ id: entry.id, description: entry.description })
-              : "Installed from a chart no longer in the catalog."}
-          </p>
+        <div className="min-w-0 flex-1">
+          <h1 className="font-display text-[1.75rem] leading-tight text-fg md:text-4xl">
+            {name}
+          </h1>
+          <StatusLine state={state} version={version} />
         </div>
+        {actions.has("open") && links[0] && (
+          <a
+            href={links[0].url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className={cn(buttonClass(), "w-full sm:w-auto")}
+          >
+            Open
+            <ExternalLink className="h-4 w-4" />
+          </a>
+        )}
       </header>
 
-      {state === "copying" && (
-        <Banner tone="info" title="Copying this app's data" className="mb-5">
-          {app.detail?.trim() ||
-            "Its files are being copied from the original. It starts on its own when that finishes."}
-        </Banner>
-      )}
-      {state === "starting" && (
-        <Banner tone="info" title="Still starting" className="mb-5">
-          This usually takes a minute or two the first time. Details appear here
-          as soon as it is up.
-        </Banner>
-      )}
-      {state === "failed" && (
-        <Banner tone="error" title="Failed installation" className="mb-5">
-          <FailureReason detail={app.detail} />
-          It was kept so you can see what went wrong. Use “Remove this app” at
-          the bottom of this page when you are done.
-        </Banner>
-      )}
-      {state === "stopped" && (
-        <Banner tone="error" title="Stopped working" className="mb-5">
-          <FailureReason detail={app.detail} />
-          It keeps trying to start again on its own.
-        </Banner>
-      )}
-      {state === "removing" && (
-        <Banner tone="warning" title="Being removed" className="mb-5">
-          This app and its data are being deleted.
-        </Banner>
-      )}
-      {restore?.state === "running" && (
-        <Banner
-          tone="warning"
-          title={`Restoring ${name} from backup`}
-          className="mb-5"
-        >
-          This app is being restored — it is offline while its data and settings
-          are brought back. It will come back on its own when the restore
-          finishes.
-        </Banner>
-      )}
-      {restore?.state === "failed" && (
-        <Banner
-          tone="error"
-          title="The restore did not finish"
-          className="mb-5"
-        >
-          {restore.error ?? "Something went wrong while restoring this app."}
-        </Banner>
-      )}
-      {error && (
-        <Banner tone="error" title="That did not work" className="mb-5">
-          {error}
-        </Banner>
-      )}
-      {updated !== null && (
-        <Banner tone="info" title={`${name} is up to date`} className="mb-5">
-          {updated ? `It now runs version ${updated}.` : "It was updated."}
-        </Banner>
+      {shown && <div className="mt-6">{shown}</div>}
+
+      {!quiet && (
+        <AppAccess
+          instanceName={app.instance_name}
+          appReady={state === "ready"}
+          links={links}
+        />
       )}
 
-      {}
-      {links.length > 0 && (
-        <div className="mb-4 space-y-2">
-          {links.map((link, i) => (
-            <a
-              key={link.url}
-              href={link.url}
-              target="_blank"
-              rel="noopener noreferrer"
-              className={cn(
-                "flex items-center gap-3 rounded-card border p-4 transition-colors",
-                i === 0
-                  ? "border-primary/20 bg-primary-soft hover:brightness-[0.98]"
-                  : "border-border bg-surface hover:bg-surface-2",
+      {!quiet && (
+        <BackupsSection
+          app={app}
+          canBackUp={actions.has("backup")}
+          canRestore={actions.has("restore")}
+          onRestore={() => setRestoreOpen(true)}
+          onChanged={() => void apps.refresh()}
+        />
+      )}
+
+      <Section title="About">
+        {!quiet && (
+          <Row
+            label="What it is"
+            detail={
+              entry
+                ? taglineFor({ id: entry.id, description: entry.description })
+                : "Installed from a chart that is no longer in the catalog."
+            }
+          />
+        )}
+        <Row
+          label="Version"
+          detail={
+            <span className="font-mono tabular-nums">
+              {version || "unknown"}
+              {newer && actions.has("update") && (
+                <span className="font-sans text-fg-subtle">
+                  {" "}
+                  · {newer} available
+                </span>
               )}
-            >
-              <div className="min-w-0 flex-1">
-                <div
-                  className={cn(
-                    "text-sm font-medium",
-                    i === 0 ? "text-primary" : "text-fg",
-                  )}
-                >
-                  {links.length === 1 ? `Open ${name}` : link.label}
-                </div>
-                <div className="mt-0.5 truncate font-mono text-xs text-fg-muted">
-                  {link.url}
-                </div>
-              </div>
-              <ExternalLink
-                className={cn(
-                  "h-4 w-4 shrink-0",
-                  i === 0 ? "text-primary" : "text-fg-subtle",
-                )}
-              />
-            </a>
-          ))}
-        </div>
-      )}
-
-      {}
-      <AppAccess
-        instanceName={app.instance_name}
-        appReady={state === "ready"}
-      />
-
-      {entry && (
-        <div className="mb-6 flex flex-wrap items-center gap-2">
-          <Badge variant="outline">
-            version {app.chart_version || entry.chart_version}
-          </Badge>
-          {newerVersion(app, entry) && (
-            <Badge variant="primary">
-              version {newerVersion(app, entry)} available
-            </Badge>
-          )}
-          {instanceStem(app) !== app.app_id && (
-            <Badge variant="muted">copy named “{instanceStem(app)}”</Badge>
-          )}
-          {entry.repo !== "official" && (
-            <Badge variant="warning">from {entry.repo}</Badge>
-          )}
-        </div>
-      )}
-
-      {app.instance_id && (
-        <section className="mb-6">
-          <h2 className="mb-2 text-sm font-medium text-fg">UUID</h2>
-          <Card className="p-0">
-            <CopyValue label="UUID" value={app.instance_id} />
-          </Card>
-        </section>
-      )}
-
-      <div className="flex flex-col gap-2 sm:flex-row">
-        <Button
-          variant="secondary"
-          onClick={() => void update()}
-          loading={working === "update"}
-          className="flex-1"
-        >
-          <RefreshCw className="h-4 w-4" />
-          Update
-        </Button>
-        <Button
-          variant="secondary"
-          onClick={() =>
-            navigate(`/add/${app.app_id}?from=${app.instance_name}`)
+            </span>
           }
-          className="flex-1"
+          trailing={
+            newer && actions.has("update") ? (
+              <RowAction
+                onClick={() => void update()}
+                disabled={working === "update"}
+              >
+                {working === "update" ? "Updating…" : `Update to ${newer}`}
+              </RowAction>
+            ) : null
+          }
+        />
+        {entry && entry.repo !== "official" && (
+          <Row
+            label="Comes from"
+            detail={`"${entry.repo}", a source you added yourself`}
+          />
+        )}
+        {stem !== app.app_id && <Row label="Name" detail={stem} />}
+        {app.instance_id && (
+          <ValueRow label="ID" value={app.instance_id} copy />
+        )}
+        {actions.has("duplicate") && (
+          <Row
+            label="Duplicate"
+            detail="A separate copy with its own address and storage"
+            onClick={() =>
+              navigate(`/add/${app.app_id}?from=${app.instance_name}`)
+            }
+          />
+        )}
+        <DisclosureRow
+          label="Technical details"
+          detail="Running parts, logs and the settings it was installed with"
         >
-          <Copy className="h-4 w-4" />
-          Duplicate
-        </Button>
-        <Button
-          variant="secondary"
-          onClick={() => setRestoreOpen(true)}
-          className="flex-1"
-        >
-          <RotateCcw className="h-4 w-4" />
-          Restore
-        </Button>
-      </div>
+          <TechnicalDetails app={app} />
+        </DisclosureRow>
+      </Section>
 
-      <BackupCard app={app} onChanged={() => void apps.refresh()} />
+      {actions.has("remove") && state !== "failed" && (
+        <Section title="Remove">
+          <Row
+            label={`Remove ${name}`}
+            detail="Deletes its files and settings. Backups you already have are kept."
+            danger
+            onClick={() => setConfirmRemove(true)}
+          />
+        </Section>
+      )}
 
-      <RestoreDialog
+      <RestoreSheet
         instanceName={app.instance_name}
+        name={name}
         open={restoreOpen}
         onClose={() => setRestoreOpen(false)}
+        onStarted={() => {
+          setRestoreSeen(null);
+          setRestore({
+            id: "pending",
+            namespace: `yolab-${app.instance_name}`,
+            started_at: new Date().toISOString(),
+            state: "running",
+          });
+        }}
       />
-
-      <TechnicalDetails app={app} />
-
-      {}
-      <section className="mt-10 rounded-card border border-danger/25 bg-danger-soft p-5">
-        <h2 className="text-sm font-semibold text-danger">Danger zone</h2>
-        <div className="mt-2 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <p className="text-sm text-fg-muted">
-            Remove {name} and delete everything stored in it. Backups you have
-            already taken are kept.
-          </p>
-          <Button
-            variant="danger"
-            onClick={() => setConfirmRemove(true)}
-            className="shrink-0"
-          >
-            <Trash2 className="h-4 w-4" />
-            Remove this app
-          </Button>
-        </div>
-      </section>
 
       <ConfirmDialog
         open={confirmRemove}
@@ -882,10 +993,9 @@ export function AppDetailPage() {
         busy={working === "remove"}
         body={
           <>
-            This deletes {name} and everything stored in it — files, settings
-            and history. Backups you have already taken are kept, so this can be
-            undone from a backup, but nothing added since the last one will
-            survive.
+            This deletes {name} and everything stored in it: files, settings
+            and history. Backups you already have are kept, so it can come back
+            from one, but nothing added since the last backup survives.
           </>
         }
       />
