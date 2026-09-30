@@ -309,7 +309,9 @@ between blocks.
 ### Actions
 
 - **Primary**: one filled Signal Blue button per screen, for the thing the screen exists
-  for (Open, Install, Continue). Never for Save, never for a secondary task.
+  for (Install, Sign in, Continue). A page that is about one thing, like an app's page,
+  may have none: its addresses are rows in Access. Never for Save, never for a secondary
+  task.
 - **Row action**: quiet blue text inside the row it affects ("Back up now",
   "Update to 1.3"). Actions live next to what they change; there are no free-floating
   button rows.
