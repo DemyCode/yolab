@@ -99,6 +99,15 @@ export function catalogEntry(
   return catalog.find((c) => c.id === app.app_id);
 }
 
+export function newerVersion(
+  app: AppInfo,
+  entry: CatalogApp | undefined,
+): string | null {
+  if (!entry || !app.chart_version) return null;
+  const listed = entry.chart_version;
+  return listed === app.chart_version ? null : listed;
+}
+
 export function appAddress(app: AppInfo): string {
   const subdomain = app.config?.subdomain;
   return typeof subdomain === "string" ? subdomain : "";

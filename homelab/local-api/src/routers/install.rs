@@ -269,7 +269,7 @@ async fn apply_chart<H: Host + 'static>(
     job: &ChartJob<'_>,
     fill: &DataFill<'_>,
     log: &Log,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<String> {
     let staged = stage_install(
         &b.kube,
         cfg,
@@ -328,7 +328,8 @@ async fn apply_chart<H: Host + 'static>(
         &app_schema(&cfg.catalog_dir(), job.app_id),
     )
     .await
-    .map_err(|e| anyhow::anyhow!("save this app's settings: {e}"))
+    .map_err(|e| anyhow::anyhow!("save this app's settings: {e}"))?;
+    Ok(staged.chart_version)
 }
 
 pub(crate) async fn execute<H: Host + 'static>(
@@ -408,17 +409,33 @@ pub(crate) async fn upgrade<H: Host + 'static>(
     plan: &UpgradePlan,
     log: &Log,
 ) -> anyhow::Result<()> {
-    log.say("Getting things ready…");
+    log.say("Fetching the newest version…");
+    let repos = crate::charts::list_repos(&b.kube).await;
+    let from = plan.chart_repo.as_deref();
+    if let Err(e) = crate::charts::fetch_newest(
+        &b.host,
+        std::path::Path::new(crate::charts::CACHE_DIR),
+        &repos,
+        &plan.app_id,
+        from,
+    )
+    .await
+    {
+        log.say(format!(
+            "Could not fetch the newest version ({e:#}) — using the one fetched last"
+        ));
+    }
     let job = ChartJob {
         app_id: &plan.app_id,
         instance_name: &plan.instance_name,
         config: &plan.config,
-        chart_repo: plan.chart_repo.as_deref(),
+        chart_repo: from,
         backup: &plan.backup,
         verb: "Updating…",
     };
-    apply_chart(b, cfg, &job, &DataFill::None, log).await?;
+    let version = apply_chart(b, cfg, &job, &DataFill::None, log).await?;
     clear_install_failed(&b.kube, &format!("yolab-{}", plan.instance_name)).await;
+    log.say(format!("Now on version {version}"));
     Ok(())
 }
 

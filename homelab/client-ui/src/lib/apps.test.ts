@@ -9,6 +9,7 @@ import {
   appDisplayName,
   installedByChart,
   nextInstanceName,
+  newerVersion,
 } from "./apps";
 import type { AppInfo, AppOutput, CatalogApp } from "@/types/apps";
 
@@ -16,6 +17,7 @@ function app(over: Partial<AppInfo> = {}): AppInfo {
   return {
     app_id: "gitea",
     instance_name: "gitea",
+    chart_version: "1.0.0",
     status: "running",
     detail: "",
     outputs: [],
@@ -277,5 +279,24 @@ describe("appDisplayName", () => {
   it("copes with a chart that is no longer in the catalog", () => {
     const gone = app({ instance_name: "gitea-ab23", instance_id: "ab23" });
     expect(appDisplayName(gone, [], [gone])).toBe("gitea");
+  });
+});
+
+describe("newerVersion", () => {
+  const listed = (chart_version: string) =>
+    ({ id: "gitea", chart_version }) as unknown as CatalogApp;
+  const running = (chart_version: string) => app({ chart_version });
+
+  it("names the catalog's version when it differs from the installed one", () => {
+    expect(newerVersion(running("0.1.6"), listed("0.1.7"))).toBe("0.1.7");
+  });
+
+  it("is quiet when the app already runs the catalog's version", () => {
+    expect(newerVersion(running("0.1.7"), listed("0.1.7"))).toBeNull();
+  });
+
+  it("is quiet when either version is unknown", () => {
+    expect(newerVersion(running(""), listed("0.1.7"))).toBeNull();
+    expect(newerVersion(running("0.1.6"), undefined)).toBeNull();
   });
 });
