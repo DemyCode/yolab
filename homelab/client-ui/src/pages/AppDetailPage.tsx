@@ -164,7 +164,10 @@ function TechnicalDetails({ app }: { app: AppInfo }) {
         ) : (
           <ul className="divide-y divide-border rounded-control border border-border">
             {pods.map((pod) => (
-              <li key={pod.name} className="flex items-center gap-2 px-3 py-1.5">
+              <li
+                key={pod.name}
+                className="flex items-center gap-2 px-3 py-1.5"
+              >
                 <span
                   className={cn(
                     "h-2 w-2 shrink-0 rounded-full",
@@ -326,13 +329,12 @@ function RestoreSheet({
         </div>
       ) : loadFailed ? (
         <p className="py-4 text-sm text-fg-muted">
-          The backups could not be listed right now. Close this and try again
-          in a moment.
+          The backups could not be listed right now. Close this and try again in
+          a moment.
         </p>
       ) : snapshots.length === 0 ? (
         <p className="py-4 text-sm text-fg-muted">
-          There is no backup of this app yet, so there is nothing to go back
-          to.
+          There is no backup of this app yet, so there is nothing to go back to.
         </p>
       ) : (
         <div className="divide-y divide-border rounded-card border border-border">
@@ -677,7 +679,9 @@ export function AppDetailPage() {
     if (result.ok) {
       setNotice({
         tone: "success",
-        title: reached ? `${name} now runs version ${reached}` : `${name} was reinstalled`,
+        title: reached
+          ? `${name} now runs version ${reached}`
+          : `${name} was reinstalled`,
       });
     } else {
       setNotice({
@@ -737,8 +741,8 @@ export function AppDetailPage() {
     if (restoring) {
       return (
         <Banner tone="info" title={`Restoring ${name}`}>
-          It is offline while its files and settings are brought back, and
-          comes back on its own when that finishes.
+          It is offline while its files and settings are brought back, and comes
+          back on its own when that finishes.
         </Banner>
       );
     }
@@ -993,9 +997,9 @@ export function AppDetailPage() {
         busy={working === "remove"}
         body={
           <>
-            This deletes {name} and everything stored in it: files, settings
-            and history. Backups you already have are kept, so it can come back
-            from one, but nothing added since the last backup survives.
+            This deletes {name} and everything stored in it: files, settings and
+            history. Backups you already have are kept, so it can come back from
+            one, but nothing added since the last backup survives.
           </>
         }
       />

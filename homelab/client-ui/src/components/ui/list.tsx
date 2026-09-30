@@ -238,7 +238,10 @@ export function ValueRow({
     <div className="px-5 py-4">
       <div className="text-sm font-medium text-fg">{label}</div>
       <div className="mt-1 flex items-center gap-1">
-        <code className="min-w-0 flex-1 truncate font-mono text-sm text-fg-muted" title={value}>
+        <code
+          className="min-w-0 flex-1 truncate font-mono text-sm text-fg-muted"
+          title={value}
+        >
           {value}
         </code>
         {trailing}
