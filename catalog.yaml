@@ -33,7 +33,7 @@ charts:
   - name: code-server
     version: "0.1.6"
   - name: dawarich
-    version: "0.1.6"
+    version: "0.1.7"
   - name: docmost
     version: "0.1.6"
   - name: emulatorjs
@@ -63,7 +63,7 @@ charts:
   - name: homepage
     version: "0.1.6"
   - name: immich
-    version: "0.1.7"
+    version: "0.1.8"
   - name: it-tools
     version: "0.1.6"
   - name: jellyfin
@@ -123,7 +123,7 @@ charts:
   - name: radarr
     version: "0.1.6"
   - name: reactive-resume
-    version: "0.1.6"
+    version: "0.1.7"
   - name: romm
     version: "0.1.6"
   - name: searxng
