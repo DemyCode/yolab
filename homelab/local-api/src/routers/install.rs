@@ -529,7 +529,11 @@ where
     }
 }
 
-pub(crate) fn start(b: Backend, cfg: Arc<Config>, plan: InstallPlan) -> tokio::task::JoinHandle<()> {
+pub(crate) fn start(
+    b: Backend,
+    cfg: Arc<Config>,
+    plan: InstallPlan,
+) -> tokio::task::JoinHandle<()> {
     let subject = format!("install yolab-{}", plan.instance_name);
     let ns = format!("yolab-{}", plan.instance_name);
     let kube = b.kube.clone();
@@ -553,8 +557,12 @@ where
             Ok(Ok(())) => tracing::info!("{subject}: finished"),
             Ok(Err(e)) => tracing::warn!("{subject}: failed: {e:#}"),
             Err(e) => {
-                mark_install_failed(&kube, &ns, &format!("the install stopped unexpectedly: {e}"))
-                    .await
+                mark_install_failed(
+                    &kube,
+                    &ns,
+                    &format!("the install stopped unexpectedly: {e}"),
+                )
+                .await
             }
         }
     })

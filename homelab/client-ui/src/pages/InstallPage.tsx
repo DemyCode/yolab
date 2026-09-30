@@ -29,11 +29,7 @@ import {
   instanceNameFor,
 } from "@/lib/install";
 import { AppIconTile } from "@/components/AppIcon";
-import {
-  configSchemaOf,
-  generatedFields,
-  uiSchemaFor,
-} from "@/lib/schema";
+import { configSchemaOf, generatedFields, uiSchemaFor } from "@/lib/schema";
 import { taglineFor } from "@/catalog/meta";
 import { cn } from "@/lib/utils";
 import type {

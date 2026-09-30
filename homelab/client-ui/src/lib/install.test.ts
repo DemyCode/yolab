@@ -219,7 +219,6 @@ describe("stripInstanceId", () => {
   });
 });
 
-
 describe("installBlocker", () => {
   const ok = {
     instanceName: "gitea",
