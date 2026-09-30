@@ -214,6 +214,15 @@ describe("appState", () => {
     expect(appLabel(failed, appState(failed))).toBe("Failed installation");
   });
 
+  it("keeps an app that ran and then broke apart from a failed install", () => {
+    const stopped = app({
+      status: "stopped",
+      detail: "app: panic: config.yaml: no such file",
+    });
+    expect(appState(stopped)).toBe("stopped");
+    expect(appLabel(stopped, appState(stopped))).toBe("Stopped working");
+  });
+
   it("shows the server's copy progress instead of a generic label", () => {
     const copying = app({
       status: "copying",

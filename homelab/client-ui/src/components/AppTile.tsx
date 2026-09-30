@@ -19,7 +19,7 @@ export function AppTile({
   const label = appLabel(app, state);
   const busy = state === "starting" || state === "copying";
   const tone =
-    state === "failed"
+    state === "failed" || state === "stopped"
       ? "error"
       : state === "removing"
         ? "warn"

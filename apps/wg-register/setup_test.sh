@@ -73,6 +73,7 @@ run_setup() {
     WG_DIR="$SANDBOX/wireguard" \
         YOLAB_DIR="$SANDBOX/yolab" \
         STATE_FILE="$SANDBOX/state/wg-state.json" \
+        TERMINATION_LOG="$SANDBOX/termination-log" \
         PATH="$SANDBOX/bin:$PATH" \
         PLATFORM_API_URL="https://api.example.test" \
         ACCOUNT_TOKEN="test-token" \
@@ -291,6 +292,38 @@ respond records 409 '{"detail":"name taken"}'
 run_setup
 if [ "$RC" -ne 0 ]; then ok; else bad "expected a non-zero exit, got $RC"; fi
 assert_contains "$(cat "$OUT")" 'ERROR' "the reason is reported"
+case_end
+
+case_start "a rejected DNS record leaves the platform's own sentence as the container's last word"
+respond create 200 "$TUNNEL_BODY"
+respond records 409 '{"detail":"myapp.example.test is already used by another app on this account"}'
+run_setup
+assert_eq "$(cat "$SANDBOX/termination-log" 2>/dev/null)" \
+    "myapp.example.test is already used by another app on this account" \
+    "the termination message is exactly what the platform said"
+case_end
+
+case_start "a rejection the platform did not explain still names the address it was for"
+respond create 200 "$TUNNEL_BODY"
+respond records 500 'upstream exploded'
+run_setup
+assert_eq "$(cat "$SANDBOX/termination-log" 2>/dev/null)" \
+    "could not claim the web address 'myapp' (HTTP 500)" \
+    "the termination message falls back to a sentence of our own"
+case_end
+
+case_start "a rejected tunnel registration leaves the platform's reason as the container's last word"
+respond create 403 '{"detail":"quota exceeded"}'
+run_setup
+assert_eq "$(cat "$SANDBOX/termination-log" 2>/dev/null)" "quota exceeded" \
+    "the termination message is what the platform said"
+case_end
+
+case_start "a successful registration leaves no termination message"
+respond create 200 "$TUNNEL_BODY"
+respond records 200 "$RECORD_BODY"
+run_setup
+if [ -e "$SANDBOX/termination-log" ]; then bad "nothing failed, yet a reason was written"; else ok; fi
 case_end
 
 case_start "a missing account token fails immediately"

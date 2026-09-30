@@ -1,4 +1,4 @@
-import type { AppDefinition, AppInfo } from "@/types/apps";
+import type { AppDefinition } from "@/types/apps";
 import { addressField, revealedFields, type ConfigSchema } from "./schema";
 
 export type InstallMode = "fresh" | "duplicate" | "restore";
@@ -83,18 +83,8 @@ export function stripInstanceId(instanceName: string): string {
   return instanceName.replace(INSTANCE_ID, "");
 }
 
-export function addressTakenBy(
-  subdomain: string,
-  installed: AppInfo[],
-): string | null {
-  if (!subdomain) return null;
-  const clash = installed.find((a) => a.config?.subdomain === subdomain);
-  return clash ? clash.instance_name : null;
-}
-
 export interface BlockerInput {
   instanceName: string;
-  addressTakenBy: string | null;
   requiredMissing: boolean;
   withData: boolean;
   needsBackup: boolean;
@@ -105,26 +95,12 @@ export interface BlockerInput {
 
 export function installBlocker(input: BlockerInput): string | null {
   if (!input.instanceName) return "This app has no name to install under.";
-  if (input.addressTakenBy) {
-    return `That web address already belongs to ${input.addressTakenBy}. Pick another.`;
-  }
   if (input.requiredMissing) return "Fill in everything marked required.";
   if (input.withData && input.needsBackup) {
     if (input.snapshotsLoaded && input.snapshotCount === 0) {
       return "There is no backup to copy data from yet.";
     }
     if (!input.snapshot) return "Pick the backup to copy data from.";
-  }
-  return null;
-}
-
-export function phaseFrom(line: string): string | null {
-  const trimmed = line.trim();
-  if (trimmed.endsWith("…")) return trimmed.slice(0, -1);
-  const lower = trimmed.toLowerCase();
-  if (lower.includes("pending-install")) return "Installing";
-  if (lower.includes("deployed") || lower.startsWith("status:")) {
-    return "Almost there";
   }
   return null;
 }

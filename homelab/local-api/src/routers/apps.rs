@@ -788,11 +788,10 @@ pub(crate) fn is_finished_pod(pod: &Value) -> bool {
 
 pub(crate) fn explain_app_state(pods: &[&Value]) -> String {
     if pods.is_empty() {
-        return "Waiting to be given a machine to run on".into();
+        return "Installing…".into();
     }
 
-    let mut restarts: i64 = 0;
-    let mut waiting: Vec<(String, bool)> = Vec::new();
+    let mut waiting: Vec<String> = Vec::new();
     let mut unschedulable = false;
     let mut storage_pending = false;
     let mut running_not_ready = false;
@@ -818,14 +817,10 @@ pub(crate) fn explain_app_state(pods: &[&Value]) -> String {
                 .unwrap_or(false);
         }
 
-        for (key, is_init) in [
-            ("initContainerStatuses", true),
-            ("containerStatuses", false),
-        ] {
+        for key in ["initContainerStatuses", "containerStatuses"] {
             for cs in pod["status"][key].as_array().into_iter().flatten() {
-                restarts += cs["restartCount"].as_i64().unwrap_or(0);
                 if let Some(reason) = cs["state"]["waiting"]["reason"].as_str() {
-                    waiting.push((reason.to_string(), is_init));
+                    waiting.push(reason.to_string());
                 }
                 if cs["state"]["running"].is_object() && cs["ready"] == false {
                     running_not_ready = true;
@@ -834,24 +829,8 @@ pub(crate) fn explain_app_state(pods: &[&Value]) -> String {
         }
     }
 
-    let has = |r: &str| waiting.iter().any(|(reason, _)| reason == r);
+    let has = |r: &str| waiting.iter().any(|reason| reason == r);
 
-    if has("CrashLoopBackOff") {
-        return if restarts > 1 {
-            format!("Keeps stopping unexpectedly — restarted {restarts} times. Check the logs.")
-        } else {
-            "Keeps stopping unexpectedly. Check the logs.".into()
-        };
-    }
-    if has("ImagePullBackOff") || has("ErrImagePull") {
-        return "Could not download this app. Check that the machine is online.".into();
-    }
-    if has("CreateContainerConfigError") || has("CreateContainerError") {
-        return "A setting is missing or wrong, so it cannot start.".into();
-    }
-    if has("InvalidImageName") {
-        return "This app's image name is not valid, so it cannot be downloaded.".into();
-    }
     if unschedulable {
         return if storage_pending {
             "Getting this app's storage ready — copying its files can take a while.".into()
@@ -869,12 +848,120 @@ pub(crate) fn explain_app_state(pods: &[&Value]) -> String {
     if running_not_ready {
         return "Almost ready — waiting for the app to respond.".into();
     }
-    if !waiting.is_empty() {
-        let (reason, _) = &waiting[0];
+    if let Some(reason) = waiting.first() {
         return format!("Waiting: {reason}");
     }
 
     String::new()
+}
+
+const CANNOT_START: [&str; 5] = [
+    "ImagePullBackOff",
+    "ErrImagePull",
+    "CreateContainerConfigError",
+    "CreateContainerError",
+    "InvalidImageName",
+];
+
+const FAILURE_LOG_LINES: i64 = 5;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ContainerFailure {
+    pub pod: String,
+    pub container: String,
+    pub said: String,
+    pub exit_code: Option<i64>,
+    pub previous: bool,
+}
+
+impl ContainerFailure {
+    pub(crate) fn describe(&self, said: &str) -> String {
+        match (said.trim(), self.exit_code) {
+            ("", Some(code)) => format!(
+                "{} stopped with exit code {code} and left no message",
+                self.container
+            ),
+            ("", None) => format!("{} stopped and left no message", self.container),
+            (said, _) => format!("{}: {said}", self.container),
+        }
+    }
+}
+
+fn failure_of(pod: &str, cs: &Value) -> Option<ContainerFailure> {
+    let text = |v: &Value| v["message"].as_str().unwrap_or("").trim().to_string();
+    let failure = |said: String, ended: &Value, previous: bool| ContainerFailure {
+        pod: pod.to_string(),
+        container: cs["name"].as_str().unwrap_or("").to_string(),
+        said,
+        exit_code: ended["exitCode"].as_i64(),
+        previous,
+    };
+    let waiting = &cs["state"]["waiting"];
+    let reason = waiting["reason"].as_str().unwrap_or("");
+    if reason == "CrashLoopBackOff" {
+        let last = &cs["lastState"]["terminated"];
+        return Some(failure(text(last), last, true));
+    }
+    if CANNOT_START.contains(&reason) {
+        let said = text(waiting);
+        let said = if said.is_empty() { reason.to_string() } else { said };
+        return Some(failure(said, &Value::Null, false));
+    }
+    let ended = &cs["state"]["terminated"];
+    if ended["exitCode"].as_i64().is_some_and(|code| code != 0) {
+        return Some(failure(text(ended), ended, false));
+    }
+    None
+}
+
+pub(crate) fn container_failure(pods: &[&Value]) -> Option<ContainerFailure> {
+    pods.iter().find_map(|pod| {
+        let name = pod["metadata"]["name"].as_str().unwrap_or("");
+        ["initContainerStatuses", "containerStatuses"]
+            .iter()
+            .flat_map(|key| pod["status"][key].as_array().into_iter().flatten())
+            .find_map(|cs| failure_of(name, cs))
+    })
+}
+
+pub(crate) fn has_come_up(deployments: &[&Value]) -> bool {
+    !deployments.is_empty()
+        && deployments.iter().all(|d| {
+            d["status"]["conditions"].as_array().is_some_and(|cs| {
+                cs.iter().any(|c| {
+                    c["type"] == "Progressing" && c["reason"] == "NewReplicaSetAvailable"
+                })
+            })
+        })
+}
+
+fn last_lines(log: &str) -> String {
+    log.lines()
+        .map(str::trim_end)
+        .filter(|line| !line.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+async fn explain_failure(client: &Client, ns: &str, failure: &ContainerFailure) -> String {
+    if !failure.said.is_empty() {
+        return failure.describe(&failure.said);
+    }
+    let pods = kube::Api::<k8s_openapi::api::core::v1::Pod>::namespaced(client.clone(), ns);
+    let params = kube::api::LogParams {
+        container: Some(failure.container.clone()),
+        previous: failure.previous,
+        tail_lines: Some(FAILURE_LOG_LINES),
+        ..Default::default()
+    };
+    let said = match pods.logs(&failure.pod, &params).await {
+        Ok(log) => last_lines(&log),
+        Err(e) => {
+            tracing::debug!("{ns}: could not read why {} stopped: {e}", failure.container);
+            String::new()
+        }
+    };
+    failure.describe(&said)
 }
 
 fn is_cloning(pvc: &Value) -> bool {
@@ -941,9 +1028,10 @@ pub async fn list_apps(State(state): State<AppState>) -> Result<Json<Vec<AppInfo
     let backup_status = crate::routers::backup::app_backup_status(client).await;
     let managed = kube::api::ListParams::default().labels(&format!("{LABEL_MANAGED}=true"));
     let everything = kube::api::ListParams::default();
-    let (ns_out, pods_out, pvcs_out, events_out, mut remembered) = tokio::join!(
+    let (ns_out, pods_out, deployments_out, pvcs_out, events_out, mut remembered) = tokio::join!(
         crate::k8s::list(client, "v1", "Namespace", None, &managed),
         crate::k8s::list(client, "v1", "Pod", None, &everything),
+        crate::k8s::list(client, "apps/v1", "Deployment", None, &everything),
         crate::k8s::list(client, "v1", "PersistentVolumeClaim", None, &everything),
         crate::k8s::list(client, "v1", "Event", None, &everything),
         crate::outputs::remembered_everywhere(client),
@@ -955,6 +1043,13 @@ pub async fn list_apps(State(state): State<AppState>) -> Result<Json<Vec<AppInfo
     for pod in &all_pod_items {
         if let Some(ns) = pod["metadata"]["namespace"].as_str() {
             pods_by_ns.entry(ns).or_default().push(pod);
+        }
+    }
+    let all_deployment_items = deployments_out.unwrap_or_default();
+    let mut deployments_by_ns: std::collections::HashMap<&str, Vec<&Value>> = Default::default();
+    for deployment in &all_deployment_items {
+        if let Some(ns) = deployment["metadata"]["namespace"].as_str() {
+            deployments_by_ns.entry(ns).or_default().push(deployment);
         }
     }
     let all_pvc_items = pvcs_out.unwrap_or_default();
@@ -1009,10 +1104,19 @@ pub async fn list_apps(State(state): State<AppState>) -> Result<Json<Vec<AppInfo
                         })
                         .unwrap_or(false)
                 });
-            if !all_ready {
+            if all_ready {
+                "running".to_string()
+            } else if let Some(failure) = container_failure(&items) {
+                detail = explain_failure(client, &ns_full, &failure).await;
+                let deployments = deployments_by_ns
+                    .get(ns_full.as_str())
+                    .map(|v| v.as_slice())
+                    .unwrap_or(&[]);
+                if has_come_up(deployments) { "stopped" } else { "failed" }.to_string()
+            } else {
                 detail = explain_app_state(&items);
+                "starting".to_string()
             }
-            if all_ready { "running" } else { "starting" }.to_string()
         };
 
         let id = ann
@@ -1157,7 +1261,15 @@ pub async fn install_app(
         Err(e) => return refuse(e),
     };
 
-    Sse::new(install::install_stream(b, state.config.clone(), plan)).into_response()
+    if let Err(e) = open_app_namespace(&b.kube, &id, &instance_name, None).await {
+        return (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")).into_response();
+    }
+    install::start(b, state.config.clone(), plan);
+    (
+        StatusCode::ACCEPTED,
+        Json(serde_json::json!({ "instance_name": instance_name })),
+    )
+        .into_response()
 }
 
 pub(crate) fn install_failure(ann: &serde_json::Map<String, Value>) -> Option<String> {
@@ -1197,16 +1309,12 @@ pub(crate) struct StagedInstall {
     pub(crate) values: tempfile::NamedTempFile,
 }
 
-pub(crate) async fn stage_install(
+async fn open_app_namespace(
     client: &Client,
-    cfg: &Config,
     id: &str,
     instance_name: &str,
-    config: &serde_json::Map<String, Value>,
     prefer_repo: Option<&str>,
-) -> anyhow::Result<StagedInstall> {
-    let tunnel_cfg =
-        tunnel_config(cfg).map_err(|_| anyhow::anyhow!("could not read tunnel config"))?;
+) -> anyhow::Result<(String, String, std::path::PathBuf, ChartMeta)> {
     let Some((repo, chart_dir)) = crate::charts::resolve_chart(client, id, prefer_repo).await
     else {
         anyhow::bail!("no chart named {id} in any configured repository");
@@ -1218,6 +1326,21 @@ pub(crate) async fn stage_install(
     ensure_app_namespace(client, &ns, id, &repo, &meta.chart.version)
         .await
         .map_err(|e| anyhow::anyhow!("create namespace: {e}"))?;
+    Ok((ns, repo, chart_dir, meta))
+}
+
+pub(crate) async fn stage_install(
+    client: &Client,
+    cfg: &Config,
+    id: &str,
+    instance_name: &str,
+    config: &serde_json::Map<String, Value>,
+    prefer_repo: Option<&str>,
+) -> anyhow::Result<StagedInstall> {
+    let tunnel_cfg =
+        tunnel_config(cfg).map_err(|_| anyhow::anyhow!("could not read tunnel config"))?;
+    let (ns, repo, chart_dir, meta) =
+        open_app_namespace(client, id, instance_name, prefer_repo).await?;
     ensure_tunnel_credentials(client, &ns, &tunnel_cfg)
         .await
         .map_err(|e| anyhow::anyhow!("stage tunnel credentials: {e}"))?;
@@ -1919,44 +2042,201 @@ mod tests {
         ]}})
     }
 
-    #[test]
-    fn a_crash_loop_is_never_described_as_starting() {
-        let pod = waiting_pod("containerStatuses", "CrashLoopBackOff", 335);
-        let msg = explain_app_state(&[&pod]);
-        assert!(
-            msg.contains("335"),
-            "the restart count is the whole signal: {msg}"
-        );
-        assert!(
-            msg.to_lowercase().contains("logs"),
-            "must point somewhere: {msg}"
-        );
-        assert!(!msg.to_lowercase().contains("getting ready"));
+    fn crashing_pod(kind: &str, container: &str, message: &str) -> Value {
+        json!({"metadata": {"name": "filebrowser-7d9c-x2x"},
+               "status": {"phase": "Pending", kind: [
+            {"name": container, "restartCount": 4,
+             "state": {"waiting": {"reason": "CrashLoopBackOff"}},
+             "lastState": {"terminated": {"exitCode": 1, "reason": "Error", "message": message}}}
+        ]}})
     }
 
     #[test]
-    fn a_single_restart_reads_naturally() {
-        let pod = waiting_pod("containerStatuses", "CrashLoopBackOff", 1);
-        assert!(!explain_app_state(&[&pod]).contains('1'));
+    fn a_crash_loop_is_reported_with_what_the_container_said_when_it_stopped() {
+        let pod = crashing_pod(
+            "initContainerStatuses",
+            "wg-register",
+            "filebrowser.6.yolab.io is already used by another app on this account\n",
+        );
+        let failure = container_failure(&[&pod]).unwrap();
+        assert_eq!(failure.pod, "filebrowser-7d9c-x2x");
+        assert_eq!(failure.container, "wg-register");
+        assert!(failure.previous, "the reason belongs to the run that ended");
+        assert_eq!(
+            failure.describe(&failure.said),
+            "wg-register: filebrowser.6.yolab.io is already used by another app on this account"
+        );
     }
 
     #[test]
-    fn a_failed_download_says_so_and_names_the_likely_cause() {
-        for reason in ["ImagePullBackOff", "ErrImagePull"] {
-            let pod = waiting_pod("containerStatuses", reason, 0);
-            let msg = explain_app_state(&[&pod]).to_lowercase();
-            assert!(msg.contains("download"), "{reason}: {msg}");
-            assert!(msg.contains("online"), "{reason}: {msg}");
+    fn a_crash_that_left_no_message_is_left_for_the_logs_to_explain() {
+        let pod = crashing_pod("containerStatuses", "app", "");
+        let failure = container_failure(&[&pod]).unwrap();
+        assert!(failure.said.is_empty());
+        assert_eq!(failure.exit_code, Some(1));
+    }
+
+    #[test]
+    fn a_container_that_said_nothing_anywhere_still_names_itself_and_its_exit_code() {
+        let pod = crashing_pod("containerStatuses", "app", "");
+        let failure = container_failure(&[&pod]).unwrap();
+        assert_eq!(
+            failure.describe(""),
+            "app stopped with exit code 1 and left no message"
+        );
+    }
+
+    #[test]
+    fn an_init_container_that_just_failed_is_a_failure_before_it_is_restarted() {
+        let pod = json!({"metadata": {"name": "p"}, "status": {"phase": "Pending",
+            "initContainerStatuses": [
+                {"name": "init-db", "restartCount": 0,
+                 "state": {"terminated": {"exitCode": 1, "message": "could not initialise /db/filebrowser.db"}}}
+            ]}});
+        let failure = container_failure(&[&pod]).unwrap();
+        assert!(!failure.previous, "the reason is in the run that just ended");
+        assert_eq!(
+            failure.describe(&failure.said),
+            "init-db: could not initialise /db/filebrowser.db"
+        );
+    }
+
+    #[test]
+    fn a_finished_init_container_is_not_a_failure() {
+        let pod = json!({"metadata": {"name": "p"}, "status": {"phase": "Running",
+            "initContainerStatuses": [
+                {"name": "fix-perms", "state": {"terminated": {"exitCode": 0, "reason": "Completed"}}}
+            ],
+            "containerStatuses": [
+                {"name": "app", "ready": false, "state": {"running": {}}}
+            ]}});
+        assert_eq!(container_failure(&[&pod]), None);
+    }
+
+    #[test]
+    fn a_container_that_cannot_even_start_says_what_kubernetes_said() {
+        for reason in CANNOT_START {
+            let pod = json!({"metadata": {"name": "p"}, "status": {"phase": "Pending",
+                "containerStatuses": [
+                    {"name": "app", "state": {"waiting": {"reason": reason,
+                        "message": "secret \"filebrowser-admin\" not found"}}}
+                ]}});
+            let failure = container_failure(&[&pod]).expect(reason);
+            assert_eq!(
+                failure.describe(&failure.said),
+                "app: secret \"filebrowser-admin\" not found",
+                "{reason}"
+            );
         }
     }
 
     #[test]
+    fn a_container_that_cannot_start_without_a_message_still_gives_the_reason() {
+        let pod = json!({"metadata": {"name": "p"}, "status": {"phase": "Pending",
+            "containerStatuses": [
+                {"name": "app", "state": {"waiting": {"reason": "ErrImagePull"}}}
+            ]}});
+        let failure = container_failure(&[&pod]).unwrap();
+        assert_eq!(failure.describe(&failure.said), "app: ErrImagePull");
+    }
+
+    #[test]
     fn something_broken_outranks_something_merely_slow() {
-        let pod = json!({"status": {"phase": "Pending", "containerStatuses": [
-            {"restartCount": 0, "state": {"waiting": {"reason": "ContainerCreating"}}},
-            {"restartCount": 9, "state": {"waiting": {"reason": "CrashLoopBackOff"}}}
+        let pod = json!({"metadata": {"name": "p"}, "status": {"phase": "Pending", "containerStatuses": [
+            {"name": "sidecar", "restartCount": 0, "state": {"waiting": {"reason": "ContainerCreating"}}},
+            {"name": "app", "restartCount": 9, "state": {"waiting": {"reason": "CrashLoopBackOff"}},
+             "lastState": {"terminated": {"exitCode": 2, "message": "bad config"}}}
         ]}});
-        assert!(explain_app_state(&[&pod]).contains("stopping"));
+        assert_eq!(container_failure(&[&pod]).unwrap().container, "app");
+    }
+
+    #[test]
+    fn slow_states_are_not_failures() {
+        for reason in ["ContainerCreating", "PodInitializing"] {
+            let pod = waiting_pod("containerStatuses", reason, 0);
+            assert_eq!(container_failure(&[&pod]), None, "{reason}");
+        }
+    }
+
+    #[test]
+    fn only_the_last_lines_that_say_something_are_kept_from_a_log() {
+        assert_eq!(
+            last_lines("Creating DNS record 'x'...\n\nERROR: POST returned HTTP 409: taken   \n"),
+            "Creating DNS record 'x'...\nERROR: POST returned HTTP 409: taken"
+        );
+        assert_eq!(last_lines(""), "");
+    }
+
+    fn deployment(reason: &str) -> Value {
+        json!({"status": {"conditions": [
+            {"type": "Available", "status": "False", "reason": "MinimumReplicasUnavailable"},
+            {"type": "Progressing", "status": "True", "reason": reason}
+        ]}})
+    }
+
+    #[test]
+    fn an_app_whose_rollout_once_completed_has_come_up() {
+        let web = deployment("NewReplicaSetAvailable");
+        let gateway = deployment("NewReplicaSetAvailable");
+        assert!(has_come_up(&[&web, &gateway]));
+    }
+
+    #[test]
+    fn an_app_with_any_rollout_still_in_progress_has_not_come_up() {
+        let web = deployment("NewReplicaSetAvailable");
+        for reason in ["ReplicaSetUpdated", "NewReplicaSetCreated", "ProgressDeadlineExceeded"] {
+            let gateway = deployment(reason);
+            assert!(!has_come_up(&[&web, &gateway]), "{reason}");
+        }
+    }
+
+    #[test]
+    fn an_app_with_no_deployments_yet_has_not_come_up() {
+        assert!(!has_come_up(&[]));
+        assert!(!has_come_up(&[&json!({"status": {}})]));
+    }
+
+    #[tokio::test]
+    async fn a_failure_with_no_message_is_explained_by_the_last_lines_of_its_log() {
+        use crate::k8s::testing::api_server;
+        use wiremock::matchers::{method, path, query_param};
+        use wiremock::{Mock, ResponseTemplate};
+        let (server, kube) = api_server().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/namespaces/yolab-notes/pods/notes-0/log"))
+            .and(query_param("container", "app"))
+            .and(query_param("previous", "true"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string("starting\npanic: config.yaml: no such file\n"),
+            )
+            .mount(&server)
+            .await;
+        let failure = ContainerFailure {
+            pod: "notes-0".into(),
+            container: "app".into(),
+            said: String::new(),
+            exit_code: Some(2),
+            previous: true,
+        };
+        assert_eq!(
+            explain_failure(&kube, "yolab-notes", &failure).await,
+            "app: starting\npanic: config.yaml: no such file"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failure_whose_log_cannot_be_read_still_names_the_container() {
+        let failure = ContainerFailure {
+            pod: "notes-0".into(),
+            container: "app".into(),
+            said: String::new(),
+            exit_code: Some(2),
+            previous: true,
+        };
+        assert_eq!(
+            explain_failure(&crate::k8s::testing::unreachable(), "yolab-notes", &failure).await,
+            "app stopped with exit code 2 and left no message"
+        );
     }
 
     #[test]
@@ -2061,14 +2341,14 @@ mod tests {
     }
 
     #[test]
-    fn no_pods_at_all_says_it_is_waiting_for_a_machine() {
-        assert!(explain_app_state(&[]).to_lowercase().contains("machine"));
+    fn no_pods_at_all_means_it_is_still_being_installed() {
+        assert_eq!(explain_app_state(&[]), "Installing…");
     }
 
     #[test]
     fn a_stuck_init_container_is_not_hidden() {
-        let pod = waiting_pod("initContainerStatuses", "CrashLoopBackOff", 4);
-        assert!(explain_app_state(&[&pod]).contains("stopping"));
+        let pod = crashing_pod("initContainerStatuses", "init-db", "");
+        assert_eq!(container_failure(&[&pod]).unwrap().container, "init-db");
     }
 
     fn real_schema() -> Value {

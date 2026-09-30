@@ -243,6 +243,16 @@ pub(crate) async fn source_definition<H: Host>(
 pub(crate) struct Log(tokio::sync::mpsc::UnboundedSender<String>);
 
 impl Log {
+    pub(crate) fn to_tracing(subject: String) -> Log {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        tokio::spawn(async move {
+            while let Some(line) = rx.recv().await {
+                tracing::info!("{subject}: {line}");
+            }
+        });
+        Log(tx)
+    }
+
     pub(crate) fn say(&self, line: impl Into<String>) {
         let _ = self.0.send(line.into());
     }
@@ -519,21 +529,35 @@ where
     }
 }
 
-pub(crate) fn install_stream(
-    b: Backend,
-    cfg: Arc<Config>,
-    plan: InstallPlan,
-) -> impl futures::Stream<Item = std::result::Result<Event, Infallible>> {
-    let done = format!(
-        "{} installed — run 'Scan outputs' once the pod is ready",
-        plan.app_id
-    );
-    sse(
-        format!("install yolab-{}", plan.instance_name),
-        move |log| async move { execute(&b, &cfg, &plan, &log).await },
-        done,
-        "It stays in your apps marked as failed, so you can see what went wrong — remove it from there when you are done.",
-    )
+pub(crate) fn start(b: Backend, cfg: Arc<Config>, plan: InstallPlan) -> tokio::task::JoinHandle<()> {
+    let subject = format!("install yolab-{}", plan.instance_name);
+    let ns = format!("yolab-{}", plan.instance_name);
+    let kube = b.kube.clone();
+    let log = Log::to_tracing(subject.clone());
+    run_detached(kube, ns, subject, async move {
+        execute(&b, &cfg, &plan, &log).await
+    })
+}
+
+pub(crate) fn run_detached<F>(
+    kube: kube::Client,
+    ns: String,
+    subject: String,
+    work: F,
+) -> tokio::task::JoinHandle<()>
+where
+    F: std::future::Future<Output = anyhow::Result<()>> + Send + 'static,
+{
+    tokio::spawn(async move {
+        match tokio::spawn(work).await {
+            Ok(Ok(())) => tracing::info!("{subject}: finished"),
+            Ok(Err(e)) => tracing::warn!("{subject}: failed: {e:#}"),
+            Err(e) => {
+                mark_install_failed(&kube, &ns, &format!("the install stopped unexpectedly: {e}"))
+                    .await
+            }
+        }
+    })
 }
 
 pub(crate) fn upgrade_stream(
@@ -968,5 +992,72 @@ mod tests {
                 "{ns} @ {snap} was accepted"
             );
         }
+    }
+
+    fn install_failed_marks(patches: &[Value]) -> Vec<String> {
+        patches
+            .iter()
+            .filter_map(|p| p["metadata"]["annotations"]["yolab.io/install-failed"].as_str())
+            .map(str::to_string)
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn an_install_that_panics_is_still_left_marked_as_failed() {
+        use crate::k8s::testing::{accept_patches, api_server, patched};
+        let (server, kube) = api_server().await;
+        accept_patches(&server).await;
+
+        run_detached(
+            kube,
+            "yolab-gitea-ab12".into(),
+            "install yolab-gitea-ab12".into(),
+            async move { blow_up() },
+        )
+        .await
+        .unwrap();
+
+        let marks = install_failed_marks(&patched(&server).await);
+        assert_eq!(marks.len(), 1, "{marks:?}");
+        assert!(marks[0].contains("the install blew up"), "{marks:?}");
+    }
+
+    #[tokio::test]
+    async fn a_detached_install_that_succeeds_leaves_no_mark() {
+        use crate::k8s::testing::{accept_patches, api_server, patched};
+        let (server, kube) = api_server().await;
+        accept_patches(&server).await;
+
+        run_detached(
+            kube,
+            "yolab-gitea-ab12".into(),
+            "install yolab-gitea-ab12".into(),
+            async move { Ok(()) },
+        )
+        .await
+        .unwrap();
+
+        assert!(install_failed_marks(&patched(&server).await).is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_install_runs_to_its_end_with_nobody_waiting_on_it() {
+        let (release, released) = tokio::sync::oneshot::channel::<()>();
+        let (finished, finished_rx) = tokio::sync::oneshot::channel::<()>();
+        drop(run_detached(
+            crate::k8s::testing::unreachable(),
+            "yolab-gitea-ab12".into(),
+            "install yolab-gitea-ab12".into(),
+            async move {
+                let _ = released.await;
+                let _ = finished.send(());
+                Ok(())
+            },
+        ));
+        release.send(()).unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), finished_rx)
+            .await
+            .expect("the install must run to its end")
+            .expect("the install was dropped instead of finishing");
     }
 }
