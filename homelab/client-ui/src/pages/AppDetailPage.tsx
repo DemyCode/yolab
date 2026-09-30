@@ -1,11 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { ArrowLeft, ExternalLink, RefreshCw } from "lucide-react";
+import { ArrowLeft, RefreshCw } from "lucide-react";
 import { Page } from "@/components/AppShell";
 import { AppAccess } from "@/components/AppAccess";
 import { AppIconTile } from "@/components/AppIcon";
 import { Button } from "@/components/ui/button";
-import { buttonClass } from "@/components/ui/button-variants";
 import { ConfirmDialog, Sheet } from "@/components/ui/sheet";
 import {
   Banner,
@@ -864,17 +863,6 @@ export function AppDetailPage() {
           </h1>
           <StatusLine state={state} version={version} />
         </div>
-        {actions.has("open") && links[0] && (
-          <a
-            href={links[0].url}
-            target="_blank"
-            rel="noopener noreferrer"
-            className={cn(buttonClass(), "w-full sm:w-auto")}
-          >
-            Open
-            <ExternalLink className="h-4 w-4" />
-          </a>
-        )}
       </header>
 
       {shown && <div className="mt-6">{shown}</div>}
