@@ -142,12 +142,7 @@ export function instanceStem(app: AppInfo): string {
 }
 
 export type AppAction =
-  | "update"
-  | "retry"
-  | "duplicate"
-  | "backup"
-  | "restore"
-  | "remove";
+  "update" | "retry" | "duplicate" | "backup" | "restore" | "remove";
 
 export function availableActions(
   state: AppState,
@@ -161,12 +156,7 @@ export function availableActions(
     case "copying":
       return new Set<AppAction>(["duplicate", "restore", "remove"]);
     case "stopped":
-      return new Set<AppAction>([
-        "update",
-        "duplicate",
-        "restore",
-        "remove",
-      ]);
+      return new Set<AppAction>(["update", "duplicate", "restore", "remove"]);
     default:
       return new Set<AppAction>([
         "update",
