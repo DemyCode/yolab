@@ -164,7 +164,10 @@ function TechnicalDetails({ app }: { app: AppInfo }) {
         ) : (
           <ul className="divide-y divide-border rounded-control border border-border">
             {pods.map((pod) => (
-              <li key={pod.name} className="flex items-center gap-2 px-3 py-1.5">
+              <li
+                key={pod.name}
+                className="flex items-center gap-2 px-3 py-1.5"
+              >
                 <span
                   className={cn(
                     "h-2 w-2 shrink-0 rounded-full",
@@ -326,13 +329,12 @@ function RestoreSheet({
         </div>
       ) : loadFailed ? (
         <p className="py-4 text-sm text-fg-muted">
-          The backups could not be listed right now. Close this and try again
-          in a moment.
+          The backups could not be listed right now. Close this and try again in
+          a moment.
         </p>
       ) : snapshots.length === 0 ? (
         <p className="py-4 text-sm text-fg-muted">
-          There is no backup of this app yet, so there is nothing to go back
-          to.
+          There is no backup of this app yet, so there is nothing to go back to.
         </p>
       ) : (
         <div className="divide-y divide-border rounded-card border border-border">
@@ -396,55 +398,53 @@ function BackupsSection({
   canBackUp: boolean;
   canRestore: boolean;
   onRestore: () => void;
-  onChanged: () => void;
+  onChanged: () => Promise<unknown>;
 }) {
-  const [enabled, setEnabled] = useState(app.backup.enabled);
-  const [schedule, setSchedule] = useState(app.backup.schedule);
+  const [pending, setPending] = useState<{
+    enabled: boolean;
+    schedule: string;
+  } | null>(null);
+  const [starting, setStarting] = useState(false);
   const [custom, setCustom] = useState(
     !BACKUP_PRESETS.some((p) => p.cron === app.backup.schedule),
   );
   const [draft, setDraft] = useState(app.backup.schedule);
-  const [running, setRunning] = useState(app.backup.running);
   const [note, setNote] = useState<{ ok: boolean; text: string } | null>(null);
 
-  useEffect(() => {
-    setEnabled(app.backup.enabled);
-    setSchedule(app.backup.schedule);
-    setDraft(app.backup.schedule);
-  }, [app.backup.enabled, app.backup.schedule]);
-  useEffect(() => setRunning(app.backup.running), [app.backup.running]);
+  const enabled = pending?.enabled ?? app.backup.enabled;
+  const schedule = pending?.schedule ?? app.backup.schedule;
+  const running = starting || app.backup.running;
 
   async function save(next: { enabled: boolean; schedule: string }) {
-    const before = { enabled, schedule };
-    setEnabled(next.enabled);
-    setSchedule(next.schedule);
+    setPending(next);
     setNote(null);
     try {
       await api.put(`/api/apps/${app.instance_name}/backup`, next);
       setNote({ ok: true, text: "Saved" });
-      onChanged();
+      await onChanged();
     } catch (e) {
-      setEnabled(before.enabled);
-      setSchedule(before.schedule);
       setNote({
         ok: false,
         text: e instanceof Error ? e.message : "Could not save that.",
       });
+    } finally {
+      setPending(null);
     }
   }
 
   async function backupNow() {
-    setRunning(true);
+    setStarting(true);
     setNote(null);
     try {
       await api.post(`/api/backups/apps/yolab-${app.instance_name}/run-now`);
-      onChanged();
+      await onChanged();
     } catch (e) {
-      setRunning(false);
       setNote({
         ok: false,
         text: e instanceof Error ? e.message : "Could not start a backup.",
       });
+    } finally {
+      setStarting(false);
     }
   }
 
@@ -482,6 +482,7 @@ function BackupsSection({
               value={custom ? "__custom" : schedule}
               onChange={(e) => {
                 if (e.target.value === "__custom") {
+                  setDraft(schedule);
                   setCustom(true);
                   return;
                 }
@@ -677,7 +678,9 @@ export function AppDetailPage() {
     if (result.ok) {
       setNotice({
         tone: "success",
-        title: reached ? `${name} now runs version ${reached}` : `${name} was reinstalled`,
+        title: reached
+          ? `${name} now runs version ${reached}`
+          : `${name} was reinstalled`,
       });
     } else {
       setNotice({
@@ -737,8 +740,8 @@ export function AppDetailPage() {
     if (restoring) {
       return (
         <Banner tone="info" title={`Restoring ${name}`}>
-          It is offline while its files and settings are brought back, and
-          comes back on its own when that finishes.
+          It is offline while its files and settings are brought back, and comes
+          back on its own when that finishes.
         </Banner>
       );
     }
@@ -890,7 +893,7 @@ export function AppDetailPage() {
           canBackUp={actions.has("backup")}
           canRestore={actions.has("restore")}
           onRestore={() => setRestoreOpen(true)}
-          onChanged={() => void apps.refresh()}
+          onChanged={() => apps.refresh()}
         />
       )}
 
@@ -993,9 +996,9 @@ export function AppDetailPage() {
         busy={working === "remove"}
         body={
           <>
-            This deletes {name} and everything stored in it: files, settings
-            and history. Backups you already have are kept, so it can come back
-            from one, but nothing added since the last backup survives.
+            This deletes {name} and everything stored in it: files, settings and
+            history. Backups you already have are kept, so it can come back from
+            one, but nothing added since the last backup survives.
           </>
         }
       />
