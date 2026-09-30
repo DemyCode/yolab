@@ -247,7 +247,7 @@ spec:
 
           export POSTGRES_PASSWORD="$DB_PASSWORD"
 
-          exec docker-entrypoint.sh postgres
+          exec /usr/local/bin/immich-docker-entrypoint.sh postgres -c config_file=/etc/postgresql/postgresql.conf
 
           '
         env:
