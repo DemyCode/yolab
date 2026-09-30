@@ -904,7 +904,11 @@ fn failure_of(pod: &str, cs: &Value) -> Option<ContainerFailure> {
     }
     if CANNOT_START.contains(&reason) {
         let said = text(waiting);
-        let said = if said.is_empty() { reason.to_string() } else { said };
+        let said = if said.is_empty() {
+            reason.to_string()
+        } else {
+            said
+        };
         return Some(failure(said, &Value::Null, false));
     }
     let ended = &cs["state"]["terminated"];
@@ -928,9 +932,8 @@ pub(crate) fn has_come_up(deployments: &[&Value]) -> bool {
     !deployments.is_empty()
         && deployments.iter().all(|d| {
             d["status"]["conditions"].as_array().is_some_and(|cs| {
-                cs.iter().any(|c| {
-                    c["type"] == "Progressing" && c["reason"] == "NewReplicaSetAvailable"
-                })
+                cs.iter()
+                    .any(|c| c["type"] == "Progressing" && c["reason"] == "NewReplicaSetAvailable")
             })
         })
 }
@@ -957,7 +960,10 @@ async fn explain_failure(client: &Client, ns: &str, failure: &ContainerFailure) 
     let said = match pods.logs(&failure.pod, &params).await {
         Ok(log) => last_lines(&log),
         Err(e) => {
-            tracing::debug!("{ns}: could not read why {} stopped: {e}", failure.container);
+            tracing::debug!(
+                "{ns}: could not read why {} stopped: {e}",
+                failure.container
+            );
             String::new()
         }
     };
@@ -1112,7 +1118,12 @@ pub async fn list_apps(State(state): State<AppState>) -> Result<Json<Vec<AppInfo
                     .get(ns_full.as_str())
                     .map(|v| v.as_slice())
                     .unwrap_or(&[]);
-                if has_come_up(deployments) { "stopped" } else { "failed" }.to_string()
+                if has_come_up(deployments) {
+                    "stopped"
+                } else {
+                    "failed"
+                }
+                .to_string()
             } else {
                 detail = explain_app_state(&items);
                 "starting".to_string()
@@ -2089,12 +2100,15 @@ mod tests {
     #[test]
     fn an_init_container_that_just_failed_is_a_failure_before_it_is_restarted() {
         let pod = json!({"metadata": {"name": "p"}, "status": {"phase": "Pending",
-            "initContainerStatuses": [
-                {"name": "init-db", "restartCount": 0,
-                 "state": {"terminated": {"exitCode": 1, "message": "could not initialise /db/filebrowser.db"}}}
-            ]}});
+        "initContainerStatuses": [
+            {"name": "init-db", "restartCount": 0,
+             "state": {"terminated": {"exitCode": 1, "message": "could not initialise /db/filebrowser.db"}}}
+        ]}});
         let failure = container_failure(&[&pod]).unwrap();
-        assert!(!failure.previous, "the reason is in the run that just ended");
+        assert!(
+            !failure.previous,
+            "the reason is in the run that just ended"
+        );
         assert_eq!(
             failure.describe(&failure.said),
             "init-db: could not initialise /db/filebrowser.db"
@@ -2104,12 +2118,12 @@ mod tests {
     #[test]
     fn a_finished_init_container_is_not_a_failure() {
         let pod = json!({"metadata": {"name": "p"}, "status": {"phase": "Running",
-            "initContainerStatuses": [
-                {"name": "fix-perms", "state": {"terminated": {"exitCode": 0, "reason": "Completed"}}}
-            ],
-            "containerStatuses": [
-                {"name": "app", "ready": false, "state": {"running": {}}}
-            ]}});
+        "initContainerStatuses": [
+            {"name": "fix-perms", "state": {"terminated": {"exitCode": 0, "reason": "Completed"}}}
+        ],
+        "containerStatuses": [
+            {"name": "app", "ready": false, "state": {"running": {}}}
+        ]}});
         assert_eq!(container_failure(&[&pod]), None);
     }
 
@@ -2117,10 +2131,10 @@ mod tests {
     fn a_container_that_cannot_even_start_says_what_kubernetes_said() {
         for reason in CANNOT_START {
             let pod = json!({"metadata": {"name": "p"}, "status": {"phase": "Pending",
-                "containerStatuses": [
-                    {"name": "app", "state": {"waiting": {"reason": reason,
-                        "message": "secret \"filebrowser-admin\" not found"}}}
-                ]}});
+            "containerStatuses": [
+                {"name": "app", "state": {"waiting": {"reason": reason,
+                    "message": "secret \"filebrowser-admin\" not found"}}}
+            ]}});
             let failure = container_failure(&[&pod]).expect(reason);
             assert_eq!(
                 failure.describe(&failure.said),
@@ -2133,9 +2147,9 @@ mod tests {
     #[test]
     fn a_container_that_cannot_start_without_a_message_still_gives_the_reason() {
         let pod = json!({"metadata": {"name": "p"}, "status": {"phase": "Pending",
-            "containerStatuses": [
-                {"name": "app", "state": {"waiting": {"reason": "ErrImagePull"}}}
-            ]}});
+        "containerStatuses": [
+            {"name": "app", "state": {"waiting": {"reason": "ErrImagePull"}}}
+        ]}});
         let failure = container_failure(&[&pod]).unwrap();
         assert_eq!(failure.describe(&failure.said), "app: ErrImagePull");
     }
@@ -2184,7 +2198,11 @@ mod tests {
     #[test]
     fn an_app_with_any_rollout_still_in_progress_has_not_come_up() {
         let web = deployment("NewReplicaSetAvailable");
-        for reason in ["ReplicaSetUpdated", "NewReplicaSetCreated", "ProgressDeadlineExceeded"] {
+        for reason in [
+            "ReplicaSetUpdated",
+            "NewReplicaSetCreated",
+            "ProgressDeadlineExceeded",
+        ] {
             let gateway = deployment(reason);
             assert!(!has_come_up(&[&web, &gateway]), "{reason}");
         }
@@ -2207,7 +2225,8 @@ mod tests {
             .and(query_param("container", "app"))
             .and(query_param("previous", "true"))
             .respond_with(
-                ResponseTemplate::new(200).set_body_string("starting\npanic: config.yaml: no such file\n"),
+                ResponseTemplate::new(200)
+                    .set_body_string("starting\npanic: config.yaml: no such file\n"),
             )
             .mount(&server)
             .await;

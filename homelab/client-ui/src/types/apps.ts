@@ -15,12 +15,7 @@ export interface AppInfo {
   instance_id?: string | null;
   chart_version: string;
   status:
-    | "starting"
-    | "running"
-    | "uninstalling"
-    | "copying"
-    | "failed"
-    | "stopped";
+    "starting" | "running" | "uninstalling" | "copying" | "failed" | "stopped";
   detail: string;
   outputs: AppOutput[];
   config: Record<string, unknown>;
