@@ -246,12 +246,20 @@ async fn filesystem_is_usable<H: Host>(host: &H, root: &Path, dev: &str) -> bool
 async fn mkfs<H: Host>(host: &H, dev: &str, fs: Filesystem) -> Result<()> {
     let out = match fs {
         Filesystem::Xfs => {
-            host.run_cmd_bounded("mkfs.xfs", &["-f", "-m", "crc=1", dev], FS_OP_TIMEOUT)
-                .await?
+            host.run_cmd_bounded(
+                "mkfs.xfs",
+                &["-f", "-K", "-m", "crc=1", dev],
+                FS_OP_TIMEOUT,
+            )
+            .await?
         }
         Filesystem::Ext4 => {
-            host.run_cmd_bounded("mkfs.ext4", &["-q", "-F", "-m0", dev], FS_OP_TIMEOUT)
-                .await?
+            host.run_cmd_bounded(
+                "mkfs.ext4",
+                &["-q", "-F", "-m0", "-E", "nodiscard", dev],
+                FS_OP_TIMEOUT,
+            )
+            .await?
         }
     };
     if !out.success {
@@ -373,6 +381,12 @@ async fn quiesce<H: Host>(host: &H, root: &Path) -> Option<String> {
         .warn_on_err(format!("stop {PODS_SLICE}"));
     let _ = host.run_cmd("pkill", &["-KILL", "-f", SHIM]).await;
     let data_root = containerd_root(root);
+    for target in mounts_resting_on(root, &data_root) {
+        let target_s = target.to_string_lossy().into_owned();
+        host.run_cmd("umount", &[target_s.as_str()])
+            .await
+            .warn_on_err(format!("unmount {target_s}, left behind by a killed shim"));
+    }
     for check in 1..=QUIET_CHECKS {
         let holders = holders_of(root, &data_root);
         if holders.is_empty() {
@@ -415,15 +429,32 @@ fn holders_of(root: &Path, data_root: &Path) -> Vec<String> {
             }
         }
     }
-    let mountinfo = std::fs::read_to_string(proc.join("self/mountinfo")).unwrap_or_default();
-    for line in mountinfo.lines() {
-        if let Some(target) = line.split(' ').nth(4).map(Path::new) {
-            if target != data_root && target.starts_with(data_root) {
-                out.push(format!("the mount at {}", target.display()));
-            }
-        }
+    for target in mounts_resting_on(root, data_root) {
+        out.push(format!("the mount at {}", target.display()));
     }
     out.sort();
+    out
+}
+
+fn mount_resting_on(line: &str, data_root: &Path) -> Option<PathBuf> {
+    let target = Path::new(line.split(' ').nth(4)?);
+    let inside = target != data_root && target.starts_with(data_root);
+    let layer = format!("{}/", data_root.display());
+    let built_on = line
+        .split(" - ")
+        .nth(1)
+        .is_some_and(|sb| sb.split(' ').skip(1).any(|f| f.contains(&layer)));
+    (inside || built_on).then(|| target.to_path_buf())
+}
+
+fn mounts_resting_on(root: &Path, data_root: &Path) -> Vec<PathBuf> {
+    let mountinfo = std::fs::read_to_string(root.join("proc/self/mountinfo")).unwrap_or_default();
+    let mut out: Vec<PathBuf> = mountinfo
+        .lines()
+        .filter_map(|line| mount_resting_on(line, data_root))
+        .collect();
+    out.sort_by(|a, b| b.cmp(a));
+    out.dedup();
     out
 }
 
@@ -487,7 +518,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(ready, Attempt::Ready(()));
-        assert!(host.ran("mkfs.xfs -f -m crc=1 /dev/rbd0"));
+        assert!(host.ran("mkfs.xfs -f -K -m crc=1 /dev/rbd0"));
         assert!(host.ran(&format!("mount /dev/rbd0 {}", croot.display())));
         assert!(is_built_here(&croot));
     }
@@ -548,7 +579,7 @@ mod tests {
 
         assert_eq!(ready, Attempt::Ready(()));
         assert!(
-            at(&host, "umount") < at(&host, "mkfs.xfs -f -m crc=1 /dev/rbd0"),
+            at(&host, "umount") < at(&host, "mkfs.xfs -f -K -m crc=1 /dev/rbd0"),
             "{:?}",
             host.calls()
         );
@@ -934,7 +965,7 @@ mod tests {
         assert_eq!(out, Attempt::Ready(()));
         let stopped = at(&host, "systemctl stop k3s.service");
         let unmounted = at(&host, &format!("umount {}", croot.display()));
-        let rebuilt = at(&host, "mkfs.xfs -f -m crc=1 /dev/rbd0");
+        let rebuilt = at(&host, "mkfs.xfs -f -K -m crc=1 /dev/rbd0");
         let remounted = at(&host, &format!("mount /dev/rbd0 {}", croot.display()));
         let started = at(&host, "systemctl start --no-block k3s.service");
         assert!(
@@ -1033,6 +1064,56 @@ mod tests {
                 ),
             ]
         );
+    }
+
+    const ORPHAN: &str = "/run/k3s/containerd/io.containerd.runtime.v2.task/k8s.io/abc/rootfs";
+
+    fn orphaned_rootfs(data_root: &Path) -> String {
+        format!(
+            "480 30 0:61 / {ORPHAN} rw,relatime - overlay overlay \
+             rw,lowerdir={dr}/io.containerd.snapshotter.v1.overlayfs/snapshots/12/fs,\
+             upperdir={dr}/io.containerd.snapshotter.v1.overlayfs/snapshots/13/fs",
+            dr = data_root.display()
+        )
+    }
+
+    #[test]
+    fn a_rootfs_whose_layers_live_on_the_data_root_rests_on_it() {
+        let dr = Path::new("/var/lib/rancher/k3s/agent/containerd");
+        assert_eq!(
+            mount_resting_on(&orphaned_rootfs(dr), dr),
+            Some(PathBuf::from(ORPHAN))
+        );
+        let elsewhere = orphaned_rootfs(Path::new("/var/lib/other"));
+        assert_eq!(mount_resting_on(&elsewhere, dr), None);
+        let neighbour = orphaned_rootfs(Path::new("/var/lib/rancher/k3s/agent/containerd-old"));
+        assert_eq!(mount_resting_on(&neighbour, dr), None);
+        let the_store_itself = format!("90 22 0:50 / {} rw - xfs /dev/rbd0 rw", dr.display());
+        assert_eq!(mount_resting_on(&the_store_itself, dr), None);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_rootfs_a_killed_shim_left_behind_is_unmounted_and_blocks_the_swap_until_gone() {
+        let dir = tempfile::tempdir().unwrap();
+        let data_root = containerd_root(dir.path());
+        std::fs::create_dir_all(dir.path().join("proc/self")).unwrap();
+        std::fs::write(
+            dir.path().join("proc/self/mountinfo"),
+            orphaned_rootfs(&data_root),
+        )
+        .unwrap();
+        let host = swappable().ok("umount", "");
+        let out = pivot(&host, dir.path(), "yolab-n1", &policy(), K3S)
+            .await
+            .unwrap();
+        assert!(
+            at(&host, "pkill -KILL") < at(&host, &format!("umount {ORPHAN}")),
+            "{:?}",
+            host.calls()
+        );
+        assert!(not_yet(out).contains(ORPHAN));
+        assert!(!host.ran("mkfs"));
+        assert!(!ran_mount(&host));
     }
 
     #[test]
