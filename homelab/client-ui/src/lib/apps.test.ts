@@ -377,7 +377,9 @@ describe("latestRestore", () => {
   });
 
   it("ignores other apps' restores", () => {
-    expect(latestRestore([rec({ namespace: "yolab-x" })], "yolab-gitea", now)).toBeNull();
+    expect(
+      latestRestore([rec({ namespace: "yolab-x" })], "yolab-gitea", now),
+    ).toBeNull();
   });
 
   it("shows a finished restore for a while, then lets it go", () => {
@@ -389,7 +391,9 @@ describe("latestRestore", () => {
       state: "failed",
       finished_at: new Date(now - RESTORE_DONE_SHOWN_MS - 1).toISOString(),
     });
-    expect(latestRestore([recent], "yolab-gitea", now)?.state).toBe("succeeded");
+    expect(latestRestore([recent], "yolab-gitea", now)?.state).toBe(
+      "succeeded",
+    );
     expect(latestRestore([stale], "yolab-gitea", now)).toBeNull();
   });
 });

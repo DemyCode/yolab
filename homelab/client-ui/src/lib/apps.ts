@@ -142,13 +142,7 @@ export function instanceStem(app: AppInfo): string {
 }
 
 export type AppAction =
-  | "open"
-  | "update"
-  | "retry"
-  | "duplicate"
-  | "backup"
-  | "restore"
-  | "remove";
+  "open" | "update" | "retry" | "duplicate" | "backup" | "restore" | "remove";
 
 export function availableActions(
   state: AppState,
@@ -162,7 +156,13 @@ export function availableActions(
     case "copying":
       return new Set<AppAction>(["duplicate", "restore", "remove"]);
     case "stopped":
-      return new Set<AppAction>(["open", "update", "duplicate", "restore", "remove"]);
+      return new Set<AppAction>([
+        "open",
+        "update",
+        "duplicate",
+        "restore",
+        "remove",
+      ]);
     default:
       return new Set<AppAction>([
         "open",
@@ -177,7 +177,10 @@ export function availableActions(
 
 export type StatusTone = "live" | "busy" | "warn" | "error";
 
-export function appStatus(state: AppState): { tone: StatusTone; label: string } {
+export function appStatus(state: AppState): {
+  tone: StatusTone;
+  label: string;
+} {
   switch (state) {
     case "failed":
       return { tone: "error", label: "Failed installation" };
