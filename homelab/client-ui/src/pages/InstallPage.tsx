@@ -5,14 +5,14 @@ import {
   useParams,
   useSearchParams,
 } from "react-router-dom";
-import { ArrowLeft, Check, ExternalLink } from "lucide-react";
+import { ArrowLeft, ExternalLink } from "lucide-react";
 import { Page } from "@/components/AppShell";
 import { Button } from "@/components/ui/button";
 import { buttonClass } from "@/components/ui/button-variants";
 import { Card } from "@/components/ui/card";
 import { Select } from "@/components/ui/input";
 import { Banner, Spinner } from "@/components/ui/feedback";
-import { api, streamEvents } from "@/lib/api";
+import { api } from "@/lib/api";
 import { useApi } from "@/lib/useResource";
 import { generateSecret } from "@/lib/format";
 import Form from "@rjsf/core";
@@ -20,19 +20,16 @@ import type { RJSFSchema } from "@rjsf/utils";
 import validator from "@rjsf/validator-ajv8";
 import { templates, widgets } from "@/components/form/registry";
 import {
-  addressTakenBy,
   copiesDataByDefault,
   installBlocker,
   installOrigin,
   installSource,
-  phaseFrom,
   seedForm,
   snapshotNamespace,
   instanceNameFor,
 } from "@/lib/install";
 import { AppIconTile } from "@/components/AppIcon";
 import {
-  addressField,
   configSchemaOf,
   generatedFields,
   uiSchemaFor,
@@ -138,19 +135,13 @@ export function InstallPage() {
   );
 
   const [installing, setInstalling] = useState(false);
-  const [phase, setPhase] = useState("Getting ready");
-  const [log, setLog] = useState<string[]>([]);
-  const [showLog, setShowLog] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [done, setDone] = useState(false);
-  const [detached, setDetached] = useState(false);
+  const [started, setStarted] = useState<string | null>(null);
 
   const installedOfThisApp = (apps.data ?? []).filter(
     (a) => a.app_id === appId,
   );
   const instanceName = instanceNameFor(origin.mode, appId ?? "", sourceDef);
-
-  const addressKey = useMemo(() => addressField(schema), [schema]);
 
   const rjsfSchema = useMemo(
     () => ({ type: "object", ...schema }) as RJSFSchema,
@@ -179,28 +170,12 @@ export function InstallPage() {
     setFormData(seed);
   }, [appId, schema, sourceDef, origin.mode]);
 
-  const values = useMemo(() => {
-    if (!addressKey) return formData;
-    return formData[addressKey]
-      ? formData
-      : { ...formData, [addressKey]: instanceName };
-  }, [formData, addressKey, instanceName]);
+  const values = formData;
 
   const generatedSecrets = useMemo(() => generatedFields(schema), [schema]);
 
-  const subdomain =
-    addressKey && typeof values[addressKey] === "string"
-      ? (values[addressKey] as string)
-      : "";
-  const fullUrl =
-    subdomain && domain.data?.domain
-      ? `https://${subdomain}.${domain.data.domain}`
-      : null;
-
-  const addressClash = addressTakenBy(subdomain, apps.data ?? []);
   const blocker = installBlocker({
     instanceName,
-    addressTakenBy: addressClash,
     requiredMissing: [...required].some((n) => !String(values[n] ?? "").trim()),
     withData: copyData,
     needsBackup: origin.mode === "restore",
@@ -213,8 +188,6 @@ export function InstallPage() {
     if (!app) return;
     setInstalling(true);
     setError(null);
-    setLog([]);
-    setPhase("Getting ready");
 
     const payload = Object.fromEntries(
       Object.entries(values).filter(([name, v]) => {
@@ -223,31 +196,20 @@ export function InstallPage() {
       }),
     );
 
-    const source = installSource(origin, copyData, snapshot);
-
-    const result = await streamEvents(
-      `/api/apps/${app.id}`,
-      {
-        method: "POST",
-        body: JSON.stringify({
+    try {
+      const begun = await api.post<{ instance_name: string }>(
+        `/api/apps/${app.id}`,
+        {
           instance_name: instanceName,
           config: payload,
-          source,
-        }),
-      },
-      (line) => {
-        setLog((l) => [...l, line]);
-        const next = phaseFrom(line);
-        if (next) setPhase(next);
-      },
-    );
-
-    setInstalling(false);
-    if (result.ok) setDone(true);
-    else if (result.dropped) setDetached(true);
-    else {
-      setError(result.error ?? "Something went wrong during the install.");
-      setShowLog(true);
+          source: installSource(origin, copyData, snapshot),
+        },
+      );
+      if (generatedSecrets.length > 0) setStarted(begun.instance_name);
+      else navigate(`/app/${begun.instance_name}`);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "The install could not start.");
+      setInstalling(false);
     }
   }
 
@@ -277,67 +239,10 @@ export function InstallPage() {
     );
   }
 
-  if (done) {
+  if (started) {
     return (
       <Page>
         <div className="flex flex-col items-center py-10 text-center">
-          <div className="mb-5 flex h-16 w-16 items-center justify-center rounded-tile bg-success-soft">
-            <Check className="h-8 w-8 text-success" />
-          </div>
-          <h1 className="text-2xl font-semibold text-fg">
-            {app.name} is ready
-          </h1>
-          <p className="mt-2 max-w-sm text-sm text-fg-muted">
-            It may take another minute to finish starting the first time.
-          </p>
-
-          {generatedSecrets.length > 0 && (
-            <Card className="mt-6 w-full max-w-md p-5 text-left">
-              <p className="mb-3 text-sm font-medium text-fg">
-                Save these before you leave this page
-              </p>
-              <div className="space-y-3">
-                {generatedSecrets.map(([name, title]) => (
-                  <div key={name}>
-                    <div className="text-xs text-fg-muted">{title}</div>
-                    <code className="block break-all font-mono text-sm text-fg">
-                      {String(values[name] ?? "")}
-                    </code>
-                  </div>
-                ))}
-              </div>
-            </Card>
-          )}
-
-          <div className="mt-7 flex w-full max-w-md flex-col gap-2 sm:flex-row">
-            {fullUrl && (
-              <a
-                href={fullUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className={cn(buttonClass(), "flex-1")}
-              >
-                Open {app.name}
-                <ExternalLink className="h-4 w-4" />
-              </a>
-            )}
-            <Button
-              variant="secondary"
-              className="flex-1"
-              onClick={() => navigate("/")}
-            >
-              Back to my apps
-            </Button>
-          </div>
-        </div>
-      </Page>
-    );
-  }
-
-  if (detached) {
-    return (
-      <Page>
-        <div className="flex flex-col items-center py-14 text-center">
           <AppIconTile
             appId={app.id}
             icon={app.icon}
@@ -345,58 +250,35 @@ export function InstallPage() {
             className="mb-6"
           />
           <h1 className="font-display text-2xl text-fg">
-            Still setting up {app.name}
+            Installing {app.name}
           </h1>
           <p className="mt-2 max-w-sm text-sm text-fg-muted">
-            The connection to your box dropped. An install your box already
-            received keeps going there: check your apps — it becomes ready on
-            its own, or shows “Failed installation” with the reason. If it is
-            not listed, the box never got the request and you can try again.
-          </p>
-          <Button className="mt-7" onClick={() => navigate("/")}>
-            Back to my apps
-          </Button>
-        </div>
-      </Page>
-    );
-  }
-
-  if (installing) {
-    return (
-      <Page>
-        <div className="flex flex-col items-center py-14 text-center">
-          <AppIconTile
-            appId={app.id}
-            icon={app.icon}
-            name={app.name}
-            className="mb-6"
-          />
-          <h1 className="font-display text-2xl text-fg">
-            Setting up {app.name}
-          </h1>
-          <p className="mt-2 text-sm text-fg-muted">{phase}…</p>
-
-          <div className="mt-6 h-1.5 w-full max-w-xs overflow-hidden rounded-full bg-surface-2">
-            <div className="h-full w-1/3 animate-pulse rounded-full bg-primary" />
-          </div>
-
-          <p className="mt-6 max-w-sm text-sm text-fg-muted">
-            {phase.toLowerCase().includes("copying")
-              ? "Copying a large app can take several minutes. You can leave this page — it keeps going."
-              : "This usually takes a minute or two. You can leave this page — it keeps going."}
+            It keeps going on your box. It becomes ready on its own, or shows
+            “Failed installation” with the reason.
           </p>
 
-          <button
-            onClick={() => setShowLog((s) => !s)}
-            className="mt-6 text-sm text-fg-subtle underline underline-offset-2 hover:text-fg"
+          <Card className="mt-6 w-full max-w-md p-5 text-left">
+            <p className="mb-3 text-sm font-medium text-fg">
+              Save these before you leave this page
+            </p>
+            <div className="space-y-3">
+              {generatedSecrets.map(([name, title]) => (
+                <div key={name}>
+                  <div className="text-xs text-fg-muted">{title}</div>
+                  <code className="block break-all font-mono text-sm text-fg">
+                    {String(values[name] ?? "")}
+                  </code>
+                </div>
+              ))}
+            </div>
+          </Card>
+
+          <Button
+            className="mt-7 w-full max-w-md"
+            onClick={() => navigate(`/app/${started}`)}
           >
-            {showLog ? "Hide" : "Show"} technical details
-          </button>
-          {showLog && (
-            <pre className="mt-3 max-h-64 w-full overflow-auto rounded-xl bg-surface-2 p-3 text-left font-mono text-xs leading-relaxed text-fg-muted">
-              {log.join("\n")}
-            </pre>
-          )}
+            Go to {app.name}
+          </Button>
         </div>
       </Page>
     );
@@ -478,7 +360,7 @@ export function InstallPage() {
       {error && (
         <Banner
           tone="error"
-          title="The install did not finish"
+          title="The install could not start"
           className="mb-5"
         >
           {error}
@@ -562,9 +444,9 @@ export function InstallPage() {
           full
           size="lg"
           onClick={() => void install()}
-          disabled={blocker !== null}
+          disabled={blocker !== null || installing}
         >
-          Install {app.name}
+          {installing ? "Starting…" : `Install ${app.name}`}
         </Button>
         {blocker && (
           <p className="mt-2 text-center text-sm text-fg-muted">{blocker}</p>

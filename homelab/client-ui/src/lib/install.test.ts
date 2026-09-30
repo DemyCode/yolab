@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-  addressTakenBy,
   copiesDataByDefault,
   installBlocker,
   installOrigin,
@@ -8,26 +7,11 @@ import {
   keepsSourceAddress,
   snapshotNamespace,
   stripInstanceId,
-  phaseFrom,
   seedForm,
   instanceNameFor,
 } from "./install";
-import type { AppDefinition, AppInfo } from "@/types/apps";
+import type { AppDefinition } from "@/types/apps";
 import type { ConfigSchema } from "./schema";
-
-function app(over: Partial<AppInfo> = {}): AppInfo {
-  return {
-    app_id: "gitea",
-    instance_name: "gitea-ab12",
-    chart_version: "1.0.0",
-    status: "running",
-    detail: "",
-    outputs: [],
-    config: {},
-    backup: { enabled: true, schedule: "", last_ok_at: null, running: false },
-    ...over,
-  };
-}
 
 function definition(over: Partial<AppDefinition> = {}): AppDefinition {
   return {
@@ -235,25 +219,10 @@ describe("stripInstanceId", () => {
   });
 });
 
-describe("addressTakenBy", () => {
-  it("names the app already answering on that address", () => {
-    expect(addressTakenBy("git", [app({ config: { subdomain: "git" } })])).toBe(
-      "gitea-ab12",
-    );
-  });
-
-  it("says nothing when the address is free", () => {
-    expect(
-      addressTakenBy("git", [app({ config: { subdomain: "wiki" } })]),
-    ).toBe(null);
-    expect(addressTakenBy("", [app({ config: { subdomain: "" } })])).toBe(null);
-  });
-});
 
 describe("installBlocker", () => {
   const ok = {
     instanceName: "gitea",
-    addressTakenBy: null,
     requiredMissing: false,
     withData: false,
     needsBackup: true,
@@ -268,12 +237,6 @@ describe("installBlocker", () => {
 
   it("will not install something with no name", () => {
     expect(installBlocker({ ...ok, instanceName: "" })).toMatch(/name/i);
-  });
-
-  it("will not install onto a web address already in use", () => {
-    expect(installBlocker({ ...ok, addressTakenBy: "gitea-ab12" })).toContain(
-      "gitea-ab12",
-    );
   });
 
   it("will not install with a required field left empty", () => {
@@ -331,28 +294,6 @@ describe("installBlocker", () => {
 
   it("does not ask for a backup when no data was asked for", () => {
     expect(installBlocker({ ...ok, withData: false })).toBeNull();
-  });
-});
-
-describe("phaseFrom", () => {
-  it("takes the server's own wording when it announces a step", () => {
-    expect(phaseFrom("Copying this app’s files…")).toBe(
-      "Copying this app’s files",
-    );
-    expect(phaseFrom("Reading the backup…")).toBe("Reading the backup");
-  });
-
-  it("recognises helm's own output once the chart goes in", () => {
-    expect(
-      phaseFrom('Release "gitea" does not exist. Installing it now.'),
-    ).toBe(null);
-    expect(phaseFrom("STATUS: pending-install")).toBe("Installing");
-    expect(phaseFrom("STATUS: deployed")).toBe("Almost there");
-  });
-
-  it("leaves ordinary chatter alone rather than inventing a step", () => {
-    expect(phaseFrom("NOTES:")).toBeNull();
-    expect(phaseFrom("")).toBeNull();
   });
 });
 

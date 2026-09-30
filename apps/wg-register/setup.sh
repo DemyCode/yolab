@@ -9,6 +9,17 @@ ALIASES="${ALIASES:-}"
 WG_DIR="${WG_DIR:-/wireguard}"
 YOLAB_DIR="${YOLAB_DIR:-/yolab}"
 STATE_FILE="${STATE_FILE:-/state/wg-state.json}"
+TERMINATION_LOG="${TERMINATION_LOG:-/dev/termination-log}"
+
+fail() {
+    echo "ERROR: $1" >&2
+    printf '%s\n' "${2:-$1}" >"$TERMINATION_LOG" 2>/dev/null || true
+    exit 1
+}
+
+platform_said() {
+    printf '%s' "$1" | jq -r '.detail // empty' 2>/dev/null || true
+}
 
 mkdir -p "$WG_DIR" "$YOLAB_DIR" "$(dirname "$STATE_FILE")"
 
@@ -92,8 +103,7 @@ take_over() {
         echo "Tunnel $TUNNEL_ID was claimed by another instance first (HTTP $ROTATE_HTTP), registering a new one..."
         REUSE=0
     else
-        echo "ERROR: PUT /tunnels/$TUNNEL_ID/key returned HTTP $ROTATE_HTTP: $ROTATE_BODY" >&2
-        exit 1
+        fail "PUT /tunnels/$TUNNEL_ID/key returned HTTP $ROTATE_HTTP: $ROTATE_BODY"
     fi
 }
 
@@ -124,8 +134,7 @@ if [ "$REUSE" = "1" ]; then
             take_over
         fi
     elif copied_from_another_instance && [ -n "$STATE_OWNER" ]; then
-        echo "ERROR: state was copied from $STATE_OWNER and the platform returned HTTP $VERIFY_HTTP, so it cannot tell whether that instance is still live; refusing to share its key" >&2
-        exit 1
+        fail "state was copied from $STATE_OWNER and the platform returned HTTP $VERIFY_HTTP, so it cannot tell whether that instance is still live; refusing to share its key"
     else
         echo "Platform returned HTTP $VERIFY_HTTP (unreachable or error), reusing cached state to stay online."
     fi
@@ -170,8 +179,9 @@ if [ "$REUSE" = "0" ]; then
     TUNNEL_HTTP=$(printf '%s' "$TUNNEL_RESP" | tail -1)
     TUNNEL_BODY=$(printf '%s' "$TUNNEL_RESP" | head -n -1)
     if [ "$TUNNEL_HTTP" -lt 200 ] || [ "$TUNNEL_HTTP" -ge 300 ]; then
-        echo "ERROR: POST /tunnels returned HTTP $TUNNEL_HTTP: $TUNNEL_BODY" >&2
-        exit 1
+        SAID=$(platform_said "$TUNNEL_BODY")
+        fail "POST /tunnels returned HTTP $TUNNEL_HTTP: $TUNNEL_BODY" \
+            "${SAID:-could not register a tunnel (HTTP $TUNNEL_HTTP)}"
     fi
 
     TUNNEL_ID=$(printf '%s' "$TUNNEL_BODY" | jq -r .tunnel_id)
@@ -189,11 +199,12 @@ if [ "$REUSE" = "0" ]; then
         RECORD_HTTP=$(printf '%s' "$RECORD_RESP" | tail -1)
         RECORD_BODY=$(printf '%s' "$RECORD_RESP" | head -n -1)
         if [ "$RECORD_HTTP" -lt 200 ] || [ "$RECORD_HTTP" -ge 300 ]; then
-            echo "ERROR: POST /tunnels/$TUNNEL_ID/records returned HTTP $RECORD_HTTP: $RECORD_BODY" >&2
             curl -s -o /dev/null --max-time 10 -X DELETE \
                 -H "Authorization: Bearer $ACCOUNT_TOKEN" \
                 "$PLATFORM_API_URL/tunnels/$TUNNEL_ID" || true
-            exit 1
+            SAID=$(platform_said "$RECORD_BODY")
+            fail "POST /tunnels/$TUNNEL_ID/records returned HTTP $RECORD_HTTP: $RECORD_BODY" \
+                "${SAID:-could not claim the web address '$SERVICE_NAME' (HTTP $RECORD_HTTP)}"
         fi
         FQDN=$(printf '%s' "$RECORD_BODY" | jq -r .fqdn)
     fi
@@ -218,13 +229,11 @@ for ALIAS in $ALIASES; do
     ALIAS_NAME=${ALIAS#*=}
     case "$ALIAS_VAR" in
     "" | [0-9]* | *[!A-Z0-9_]*)
-        echo "ERROR: alias '$ALIAS' must be VAR=name, with VAR made of A-Z, 0-9 and _" >&2
-        exit 1
+        fail "alias '$ALIAS' must be VAR=name, with VAR made of A-Z, 0-9 and _"
         ;;
     esac
     if [ "$ALIAS_NAME" = "$ALIAS" ] || [ -z "$ALIAS_NAME" ]; then
-        echo "ERROR: alias '$ALIAS' names no DNS record" >&2
-        exit 1
+        fail "alias '$ALIAS' names no DNS record"
     fi
     ALIAS_RESP=$(curl -s -w "\n%{http_code}" --max-time 10 \
         -X POST "$PLATFORM_API_URL/tunnels/$TUNNEL_ID/records" \
@@ -241,13 +250,13 @@ for ALIAS in $ALIASES; do
         chmod 600 "$STATE_FILE"
         echo "DNS alias claimed: $ALIAS_FQDN -> $SUB_IPV6"
     elif [ "$ALIAS_HTTP" -ge 400 ] 2>/dev/null && [ "$ALIAS_HTTP" -lt 500 ]; then
-        echo "ERROR: could not claim '$ALIAS_NAME' (HTTP $ALIAS_HTTP): $ALIAS_BODY" >&2
-        exit 1
+        SAID=$(platform_said "$ALIAS_BODY")
+        fail "could not claim '$ALIAS_NAME' (HTTP $ALIAS_HTTP): $ALIAS_BODY" \
+            "${SAID:-could not claim '$ALIAS_NAME' (HTTP $ALIAS_HTTP)}"
     else
         ALIAS_FQDN=$(jq -r --arg var "$ALIAS_VAR" '.aliases[$var] // empty' "$STATE_FILE")
         if [ -z "$ALIAS_FQDN" ]; then
-            echo "ERROR: could not claim '$ALIAS_NAME' (HTTP $ALIAS_HTTP) and it was never claimed before" >&2
-            exit 1
+            fail "could not claim '$ALIAS_NAME' (HTTP $ALIAS_HTTP) and it was never claimed before"
         fi
         echo "WARNING: claiming '$ALIAS_NAME' returned HTTP $ALIAS_HTTP, continuing with cached $ALIAS_FQDN"
     fi

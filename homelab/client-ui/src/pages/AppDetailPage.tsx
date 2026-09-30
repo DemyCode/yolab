@@ -77,6 +77,16 @@ function CopyValue({ label, value }: { label: string; value: string }) {
   );
 }
 
+function FailureReason({ detail }: { detail: string }) {
+  const reason = detail?.trim();
+  if (!reason) return <>It did not say why. </>;
+  return (
+    <pre className="my-2 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-surface-2 p-2.5 font-mono text-xs text-fg">
+      {reason}
+    </pre>
+  );
+}
+
 function TechnicalDetails({ app }: { app: AppInfo }) {
   const [open, setOpen] = useState(false);
   const [pods, setPods] = useState<PodInfo[] | null>(null);
@@ -682,9 +692,15 @@ export function AppDetailPage() {
       )}
       {state === "failed" && (
         <Banner tone="error" title="Failed installation" className="mb-5">
-          {app.detail?.trim() || "This app did not finish installing."} It was
-          kept so you can see what went wrong. Use “Remove this app” at the
-          bottom of this page when you are done.
+          <FailureReason detail={app.detail} />
+          It was kept so you can see what went wrong. Use “Remove this app” at
+          the bottom of this page when you are done.
+        </Banner>
+      )}
+      {state === "stopped" && (
+        <Banner tone="error" title="Stopped working" className="mb-5">
+          <FailureReason detail={app.detail} />
+          It keeps trying to start again on its own.
         </Banner>
       )}
       {state === "removing" && (
