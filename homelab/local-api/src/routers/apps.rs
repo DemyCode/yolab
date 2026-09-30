@@ -32,6 +32,7 @@ pub struct AppInfo {
     pub app_id: String,
     pub instance_name: String,
     pub instance_id: Option<String>,
+    pub chart_version: String,
     pub status: String,
     pub detail: String,
     pub outputs: Vec<crate::outputs::ShownOutput>,
@@ -643,25 +644,18 @@ pub async fn refresh_catalog_app(
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>> {
     let b = state.backend().await?;
-    let mut refreshed = false;
-    let mut note = String::new();
-
-    for repo in crate::charts::list_repos(&b.kube).await {
-        match crate::charts::sync_chart(
-            &b.host,
-            std::path::Path::new(crate::charts::CACHE_DIR),
-            &repo,
-            &id,
-        )
-        .await
-        {
-            Ok(()) => {
-                refreshed = true;
-                break;
-            }
-            Err(e) => note = e.to_string(),
-        }
-    }
+    let (refreshed, note) = match crate::charts::fetch_newest(
+        &b.host,
+        std::path::Path::new(crate::charts::CACHE_DIR),
+        &crate::charts::list_repos(&b.kube).await,
+        &id,
+        None,
+    )
+    .await
+    {
+        Ok(_) => (true, String::new()),
+        Err(e) => (false, e.to_string()),
+    };
 
     let entry = crate::charts::chart_sources(&b.kube)
         .await
@@ -1048,6 +1042,11 @@ pub async fn list_apps(State(state): State<AppState>) -> Result<Json<Vec<AppInfo
         apps.push(AppInfo {
             app_id: id,
             instance_id: split_instance_name(&name).1.map(str::to_string),
+            chart_version: ann
+                .get(ANN_CHART_VERSION)
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
             instance_name: name,
             status,
             detail,

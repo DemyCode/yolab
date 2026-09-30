@@ -34,6 +34,7 @@ import {
   appState,
   catalogEntry,
   instanceStem,
+  newerVersion,
 } from "@/lib/apps";
 import { taglineFor } from "@/catalog/meta";
 import { cn } from "@/lib/utils";
@@ -545,6 +546,7 @@ export function AppDetailPage() {
   const [confirmRemove, setConfirmRemove] = useState(false);
   const [working, setWorking] = useState<null | "update" | "remove">(null);
   const [error, setError] = useState<string | null>(null);
+  const [updated, setUpdated] = useState<string | null>(null);
   const [restoreOpen, setRestoreOpen] = useState(false);
   const [restore, setRestore] = useState<RestoreRecord | null>(null);
 
@@ -628,13 +630,19 @@ export function AppDetailPage() {
     if (!app) return;
     setWorking("update");
     setError(null);
+    setUpdated(null);
+    let version = "";
     const result = await streamEvents(
       `/api/apps/${app.instance_name}/update`,
       { method: "POST" },
-      () => {},
+      (line) => {
+        const found = /^Now on version (.+)$/.exec(line);
+        if (found) version = found[1];
+      },
     );
-    if (!result.ok) setError(result.error ?? "Could not update the app");
-    await apps.refresh();
+    if (result.ok) setUpdated(version);
+    else setError(result.error ?? "Could not update the app");
+    await Promise.all([apps.refresh(), catalog.refresh()]);
     setWorking(null);
   }
 
@@ -709,6 +717,11 @@ export function AppDetailPage() {
           {error}
         </Banner>
       )}
+      {updated !== null && (
+        <Banner tone="info" title={`${name} is up to date`} className="mb-5">
+          {updated ? `It now runs version ${updated}.` : "It was updated."}
+        </Banner>
+      )}
 
       {}
       {links.length > 0 && (
@@ -758,7 +771,14 @@ export function AppDetailPage() {
 
       {entry && (
         <div className="mb-6 flex flex-wrap items-center gap-2">
-          <Badge variant="outline">version {entry.chart_version}</Badge>
+          <Badge variant="outline">
+            version {app.chart_version || entry.chart_version}
+          </Badge>
+          {newerVersion(app, entry) && (
+            <Badge variant="primary">
+              version {newerVersion(app, entry)} available
+            </Badge>
+          )}
           {instanceStem(app) !== app.app_id && (
             <Badge variant="muted">copy named “{instanceStem(app)}”</Badge>
           )}
@@ -785,7 +805,7 @@ export function AppDetailPage() {
           className="flex-1"
         >
           <RefreshCw className="h-4 w-4" />
-          Check for updates
+          Update
         </Button>
         <Button
           variant="secondary"

@@ -216,6 +216,23 @@ pub async fn sync_chart<H: Host>(
     pull_into(host, &dir, &manifest.registry, entry).await
 }
 
+pub async fn fetch_newest<H: Host>(
+    host: &H,
+    cache_root: &Path,
+    repos: &[ChartRepo],
+    name: &str,
+    from: Option<&str>,
+) -> anyhow::Result<String> {
+    let mut last = None;
+    for repo in repos.iter().filter(|r| from.is_none_or(|f| f == r.name)) {
+        match sync_chart(host, cache_root, repo, name).await {
+            Ok(()) => return Ok(repo.name.clone()),
+            Err(e) => last = Some(e),
+        }
+    }
+    Err(last.unwrap_or_else(|| anyhow::anyhow!("no catalog to fetch {name} from")))
+}
+
 pub async fn sync_repo<H: Host>(
     host: &H,
     cache_root: &Path,
@@ -476,6 +493,70 @@ mod tests {
                 .await
                 .is_err());
             assert!(host.calls().is_empty());
+        }
+
+        #[tokio::test]
+        async fn the_newest_chart_is_fetched_from_the_catalog_the_app_came_from() {
+            let (_server, community) = catalog(
+                "registry: oci://ghcr.io/x/charts\ncharts:\n  - name: notes\n    version: \"2\"\n",
+            )
+            .await;
+            let official = ChartRepo {
+                name: OFFICIAL.into(),
+                url: "http://[::1]:9/unreachable.yaml".into(),
+                removable: false,
+            };
+            let host = FakeHost::new().ok("helm pull", "");
+            let cache = tempfile::tempdir().unwrap();
+            let from = fetch_newest(
+                &host,
+                cache.path(),
+                &[official, community],
+                "notes",
+                Some("community"),
+            )
+            .await
+            .unwrap();
+            assert_eq!(from, "community");
+            assert!(host.ran("helm pull oci://ghcr.io/x/charts/notes --version 2"));
+        }
+
+        #[tokio::test]
+        async fn without_a_preference_the_first_catalog_that_has_the_chart_wins() {
+            let (_empty, without) = catalog("registry: oci://ghcr.io/x/charts\n").await;
+            let (_server, with) = catalog(
+                "registry: oci://ghcr.io/y/charts\ncharts:\n  - name: notes\n    version: \"3\"\n",
+            )
+            .await;
+            let with = ChartRepo {
+                name: "second".into(),
+                ..with
+            };
+            let host = FakeHost::new().ok("helm pull", "");
+            let cache = tempfile::tempdir().unwrap();
+            let from = fetch_newest(&host, cache.path(), &[without, with], "notes", None)
+                .await
+                .unwrap();
+            assert_eq!(from, "second");
+            assert!(host.ran("helm pull oci://ghcr.io/y/charts/notes --version 3"));
+        }
+
+        #[tokio::test]
+        async fn a_chart_no_catalog_can_supply_says_why() {
+            let (_server, repo) = catalog(
+                "registry: oci://ghcr.io/x/charts\ncharts:\n  - name: notes\n    version: \"1\"\n",
+            )
+            .await;
+            let host = FakeHost::new().fail("helm pull", "manifest unknown");
+            let cache = tempfile::tempdir().unwrap();
+            let e = fetch_newest(&host, cache.path(), &[repo.clone()], "notes", None)
+                .await
+                .unwrap_err();
+            assert!(e.to_string().contains("manifest unknown"), "{e}");
+            let e = fetch_newest(&host, cache.path(), &[repo], "notes", Some("custom"))
+                .await
+                .unwrap_err();
+            assert!(e.to_string().contains("no catalog"), "{e}");
         }
 
         #[tokio::test]

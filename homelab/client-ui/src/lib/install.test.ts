@@ -19,6 +19,7 @@ function app(over: Partial<AppInfo> = {}): AppInfo {
   return {
     app_id: "gitea",
     instance_name: "gitea-ab12",
+    chart_version: "1.0.0",
     status: "running",
     detail: "",
     outputs: [],
