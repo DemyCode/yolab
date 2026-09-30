@@ -203,8 +203,9 @@ if [ "$REUSE" = "0" ]; then
                 -H "Authorization: Bearer $ACCOUNT_TOKEN" \
                 "$PLATFORM_API_URL/tunnels/$TUNNEL_ID" || true
             SAID=$(platform_said "$RECORD_BODY")
+            OURS="could not claim the web address '$SERVICE_NAME' (HTTP $RECORD_HTTP)"
             fail "POST /tunnels/$TUNNEL_ID/records returned HTTP $RECORD_HTTP: $RECORD_BODY" \
-                "${SAID:-could not claim the web address '$SERVICE_NAME' (HTTP $RECORD_HTTP)}"
+                "${SAID:-$OURS}"
         fi
         FQDN=$(printf '%s' "$RECORD_BODY" | jq -r .fqdn)
     fi
@@ -251,8 +252,9 @@ for ALIAS in $ALIASES; do
         echo "DNS alias claimed: $ALIAS_FQDN -> $SUB_IPV6"
     elif [ "$ALIAS_HTTP" -ge 400 ] 2>/dev/null && [ "$ALIAS_HTTP" -lt 500 ]; then
         SAID=$(platform_said "$ALIAS_BODY")
+        OURS="could not claim '$ALIAS_NAME' (HTTP $ALIAS_HTTP)"
         fail "could not claim '$ALIAS_NAME' (HTTP $ALIAS_HTTP): $ALIAS_BODY" \
-            "${SAID:-could not claim '$ALIAS_NAME' (HTTP $ALIAS_HTTP)}"
+            "${SAID:-$OURS}"
     else
         ALIAS_FQDN=$(jq -r --arg var "$ALIAS_VAR" '.aliases[$var] // empty' "$STATE_FILE")
         if [ -z "$ALIAS_FQDN" ]; then
