@@ -1,5 +1,6 @@
 import {
   AlertTriangle,
+  CircleCheck,
   Info,
   Loader2,
   OctagonAlert,
@@ -22,7 +23,7 @@ export function Spinner({ className }: { className?: string }) {
   );
 }
 
-export type Tone = "info" | "warning" | "error";
+export type Tone = "info" | "success" | "warning" | "error";
 
 export function Banner({
   tone,
@@ -42,6 +43,11 @@ export function Banner({
       wrap: "bg-primary-soft border-primary/20",
       icon: "text-primary",
       Icon: Info,
+    },
+    success: {
+      wrap: "bg-success-soft border-success/25",
+      icon: "text-success",
+      Icon: CircleCheck,
     },
     warning: {
       wrap: "bg-warning-soft border-warning/25",
@@ -63,7 +69,7 @@ export function Banner({
         styles.wrap,
         className,
       )}
-      role={tone === "error" ? "alert" : undefined}
+      role={tone === "error" ? "alert" : "status"}
     >
       <Icon className={cn("mt-0.5 h-5 w-5 shrink-0", styles.icon)} />
       <div className="min-w-0 flex-1">

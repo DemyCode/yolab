@@ -6,7 +6,7 @@ import type {
 } from "react";
 
 const control =
-  "w-full h-11 rounded-xl border border-border bg-surface px-3.5 text-sm text-fg " +
+  "w-full h-11 rounded-control border border-border-strong bg-surface px-3.5 text-sm text-fg " +
   "placeholder:text-fg-subtle transition-colors " +
   "focus:outline-none focus:border-primary focus:ring-2 focus:ring-primary/20 " +
   "disabled:opacity-60";
@@ -58,6 +58,45 @@ export function Field({
   );
 }
 
+export function Switch({
+  checked,
+  onChange,
+  label,
+  disabled,
+}: {
+  checked: boolean;
+  onChange: (v: boolean) => void;
+  label: string;
+  disabled?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      aria-label={label}
+      disabled={disabled}
+      onClick={(e) => {
+        e.stopPropagation();
+        onChange(!checked);
+      }}
+      className={cn(
+        "relative h-7 w-12 shrink-0 overflow-hidden rounded-full transition-colors",
+        "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary",
+        "disabled:pointer-events-none disabled:opacity-50",
+        checked ? "bg-primary" : "bg-surface-3",
+      )}
+    >
+      <span
+        className={cn(
+          "absolute left-0.5 top-0.5 h-6 w-6 rounded-full bg-white shadow transition-transform",
+          checked ? "translate-x-5" : "translate-x-0",
+        )}
+      />
+    </button>
+  );
+}
+
 export function Toggle({
   checked,
   onChange,
@@ -78,27 +117,7 @@ export function Toggle({
         <span className="block text-sm font-medium text-fg">{label}</span>
         {help && <span className="block text-sm text-fg-muted">{help}</span>}
       </span>
-      <button
-        type="button"
-        role="switch"
-        aria-checked={checked}
-        aria-label={label}
-        onClick={(e) => {
-          e.stopPropagation();
-          onChange(!checked);
-        }}
-        className={cn(
-          "relative h-7 w-12 shrink-0 overflow-hidden rounded-full transition-colors",
-          checked ? "bg-primary" : "bg-surface-3",
-        )}
-      >
-        <span
-          className={cn(
-            "absolute left-0.5 top-0.5 h-6 w-6 rounded-full bg-white shadow transition-transform",
-            checked ? "translate-x-5" : "translate-x-0",
-          )}
-        />
-      </button>
+      <Switch checked={checked} onChange={onChange} label={label} />
     </div>
   );
 }

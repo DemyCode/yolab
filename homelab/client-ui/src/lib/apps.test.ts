@@ -10,6 +10,11 @@ import {
   installedByChart,
   nextInstanceName,
   newerVersion,
+  availableActions,
+  appStatus,
+  latestRestore,
+  RESTORE_DONE_SHOWN_MS,
+  type RestoreRecord,
 } from "./apps";
 import type { AppInfo, AppOutput, CatalogApp } from "@/types/apps";
 
@@ -307,5 +312,84 @@ describe("newerVersion", () => {
   it("is quiet when either version is unknown", () => {
     expect(newerVersion(running(""), listed("0.1.7"))).toBeNull();
     expect(newerVersion(running("0.1.6"), undefined)).toBeNull();
+  });
+});
+
+describe("availableActions", () => {
+  it("offers a failed install only a retry and removal", () => {
+    expect([...availableActions("failed", false)].sort()).toEqual([
+      "remove",
+      "retry",
+    ]);
+  });
+
+  it("offers nothing while the app is being removed or restored", () => {
+    expect(availableActions("removing", false).size).toBe(0);
+    expect(availableActions("ready", true).size).toBe(0);
+  });
+
+  it("does not offer to open or back up an app that is not up yet", () => {
+    for (const state of ["starting", "copying"] as const) {
+      const actions = availableActions(state, false);
+      expect(actions.has("open")).toBe(false);
+      expect(actions.has("backup")).toBe(false);
+      expect(actions.has("remove")).toBe(true);
+    }
+  });
+
+  it("offers a running app everything but a retry", () => {
+    const actions = availableActions("ready", false);
+    expect(actions.has("retry")).toBe(false);
+    expect(actions.has("open")).toBe(true);
+    expect(actions.has("update")).toBe(true);
+  });
+});
+
+describe("appStatus", () => {
+  it("gives each state one tone, with red kept for what needs the user", () => {
+    expect(appStatus("ready").tone).toBe("live");
+    expect(appStatus("starting").tone).toBe("busy");
+    expect(appStatus("stopped").tone).toBe("warn");
+    expect(appStatus("failed").tone).toBe("error");
+  });
+});
+
+describe("latestRestore", () => {
+  const now = Date.parse("2026-10-01T12:00:00Z");
+  const rec = (over: Partial<RestoreRecord>): RestoreRecord => ({
+    id: "r",
+    namespace: "yolab-gitea",
+    started_at: "2026-10-01T11:00:00Z",
+    finished_at: null,
+    state: "running",
+    ...over,
+  });
+
+  it("follows the newest restore of this app, not an older one", () => {
+    const old = rec({
+      id: "old",
+      state: "failed",
+      started_at: "2026-09-01T00:00:00Z",
+      finished_at: "2026-09-01T00:05:00Z",
+    });
+    const current = rec({ id: "new" });
+    expect(latestRestore([old, current], "yolab-gitea", now)?.id).toBe("new");
+  });
+
+  it("ignores other apps' restores", () => {
+    expect(latestRestore([rec({ namespace: "yolab-x" })], "yolab-gitea", now)).toBeNull();
+  });
+
+  it("shows a finished restore for a while, then lets it go", () => {
+    const recent = rec({
+      state: "succeeded",
+      finished_at: new Date(now - 60_000).toISOString(),
+    });
+    const stale = rec({
+      state: "failed",
+      finished_at: new Date(now - RESTORE_DONE_SHOWN_MS - 1).toISOString(),
+    });
+    expect(latestRestore([recent], "yolab-gitea", now)?.state).toBe("succeeded");
+    expect(latestRestore([stale], "yolab-gitea", now)).toBeNull();
   });
 });
