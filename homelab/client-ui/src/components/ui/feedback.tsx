@@ -115,7 +115,7 @@ export function ServiceTrouble({ onRetry }: { onRetry: () => void }) {
     <EmptyState
       icon={<WifiOff className="h-6 w-6" />}
       title="Having trouble reaching your services"
-      body="This is usually brief — the box may just be busy for a moment. Try again in a bit."
+      body="This is usually brief — the server may just be busy for a moment. Try again in a bit."
       action={
         <button
           type="button"

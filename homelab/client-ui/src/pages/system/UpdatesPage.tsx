@@ -44,7 +44,7 @@ function LogLine({ line }: { line: string }) {
   );
 }
 
-export function SystemPage() {
+export function UpdatesPage() {
   const [status, setStatus] = useState<StatusInfo | null>(null);
   const [log, setLog] = useState<string[]>([]);
   const [phase, setPhase] = useState<Phase>("idle");

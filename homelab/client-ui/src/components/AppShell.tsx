@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { NavLink, Outlet } from "react-router-dom";
-import { Box, Home, LayoutGrid, LogOut } from "lucide-react";
+import { Home, LayoutGrid, LogOut, Server } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { api } from "@/lib/api";
 import { Wordmark } from "@/components/Logo";
@@ -9,7 +9,7 @@ import { ThemeControl } from "@/components/ThemeControl";
 const NAV = [
   { to: "/", icon: Home, label: "Home", end: true },
   { to: "/add", icon: LayoutGrid, label: "Apps" },
-  { to: "/box", icon: Box, label: "Box" },
+  { to: "/system", icon: Server, label: "System" },
 ];
 
 function useHideOnScroll(threshold = 10) {

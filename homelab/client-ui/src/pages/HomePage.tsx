@@ -87,7 +87,7 @@ export function HomePage() {
           action={
             concern.tone !== "info" ? (
               <Link
-                to="/box/storage"
+                to="/system/storage"
                 className={buttonClass({ size: "sm", variant: "secondary" })}
               >
                 Look at storage
@@ -99,7 +99,7 @@ export function HomePage() {
           {(concern.more ?? 0) > 0 && (
             <>
               {" "}
-              <Link to="/box/storage" className="underline underline-offset-2">
+              <Link to="/system/storage" className="underline underline-offset-2">
                 {concern.more} other {concern.more === 1 ? "issue" : "issues"}
               </Link>
             </>

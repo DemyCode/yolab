@@ -87,7 +87,7 @@ pub async fn console_link(State(state): State<AppState>) -> Result<Json<ConsoleL
     let console = platform_api_url(&state.config)
         .as_deref()
         .and_then(console_url_from_api)
-        .ok_or_else(|| anyhow::anyhow!("no console URL for this box"))?;
+        .ok_or_else(|| anyhow::anyhow!("no console URL for this server"))?;
 
     let token = crate::config::read_account_token(&state.config.config_path);
     let url = console_link_url(&console, &token)

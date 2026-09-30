@@ -520,7 +520,7 @@ function BackupsSection({
                 </Button>
               </div>
               <p className="mt-1.5 text-xs text-fg-subtle">
-                Minute, hour, day, month, weekday, in the box&rsquo;s time.{" "}
+                Minute, hour, day, month, weekday, in the server&rsquo;s time.{" "}
                 <code className="font-mono">0 3 * * *</code> is every day at
                 03:00.
               </p>
@@ -620,7 +620,7 @@ export function AppDetailPage() {
     return (
       <Page title="App not found">
         <p className="text-sm text-fg-muted">
-          There is no app called “{instanceName}” on this box. It may have been
+          There is no app called “{instanceName}” on this server. It may have been
           removed.
         </p>
         <Link
@@ -655,7 +655,7 @@ export function AppDetailPage() {
       setNotice({
         tone: "error",
         title: "It could not be removed",
-        body: e instanceof Error ? e.message : "The box did not accept that.",
+        body: e instanceof Error ? e.message : "The server did not accept that.",
       });
       setWorking(null);
     }
