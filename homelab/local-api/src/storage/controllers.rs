@@ -335,10 +335,12 @@ impl crate::runtime::resource::Resource for ContainerdStoreResource {
     }
     async fn check(&self, _ctx: &Ctx) -> crate::runtime::resource::State {
         use crate::runtime::resource::State;
-        if containerd_store::is_mounted(&HOST, root()).await {
+        if containerd_store::is_in_place(&HOST, root()).await {
             State::Ready
         } else {
-            State::NotYet("containerd's data-root is still on the root filesystem".into())
+            State::NotYet(
+                "containerd's data-root is not yet on an image store this swap built".into(),
+            )
         }
     }
     async fn converge(&self, ctx: &Ctx) -> Result<Tick> {

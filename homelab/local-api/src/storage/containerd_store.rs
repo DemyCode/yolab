@@ -39,8 +39,7 @@ pub fn containerd_root(root: &Path) -> PathBuf {
 }
 
 fn probe_dir(root: &Path) -> PathBuf {
-    let uniq: u64 = rand::random();
-    root.join(format!("tmp/yolab-containerd-probe-{uniq:016x}"))
+    root.join(format!("tmp/yolab-containerd-probe-{}", std::process::id()))
 }
 
 pub async fn attempt<H: Host>(
@@ -77,18 +76,20 @@ pub async fn attempt<H: Host>(
         Err(why) => return Ok(Attempt::NotYet(format!("cannot map {image}: {why}"))),
     };
 
-    if !has_filesystem(host, &dev).await {
+    let fresh = if !has_filesystem(host, &dev).await {
         tracing::info!("{dev} is blank — creating {:?}", policy.filesystem);
-        mkfs(host, &dev, policy.filesystem).await?;
+        true
     } else if !filesystem_is_usable(host, root, &dev).await {
         tracing::warn!(
-            "the image store on {dev} will not mount, read or start pods — rebuilding it"
+            "the image store on {dev} was not built by this swap, or will not mount, read or \
+             start pods — rebuilding it empty; images are pulled again"
         );
+        true
+    } else {
+        false
+    };
+    if fresh {
         mkfs(host, &dev, policy.filesystem).await?;
-    }
-
-    if let Some(why) = carry_over_existing_store(host, root, &dev, &croot).await? {
-        return Ok(Attempt::NotYet(why));
     }
 
     std::fs::create_dir_all(&croot)?;
@@ -104,6 +105,11 @@ pub async fn attempt<H: Host>(
     }
     if !is_readable_dir(&croot) {
         bail!("{croot_s} was mounted from {dev} but cannot be read");
+    }
+    if fresh {
+        if let Err(e) = std::fs::write(croot.join(BUILT_HERE), b"") {
+            bail!("{croot_s} was rebuilt on {dev} but cannot be written: {e}");
+        }
     }
     tracing::info!("containerd's data-root is {dev} ({image})");
     Ok(Attempt::Ready(()))
@@ -224,7 +230,10 @@ async fn filesystem_is_usable<H: Host>(host: &H, root: &Path, dev: &str) -> bool
         .run_cmd("mount", &[dev, probe_s.as_str()])
         .await
         .is_ok_and(|o| o.success);
-    let usable = mounted && is_readable_dir(&probe) && snapshotter_is_coherent(&probe);
+    let usable = mounted
+        && is_readable_dir(&probe)
+        && is_built_here(&probe)
+        && snapshotter_is_coherent(&probe);
     if mounted {
         host.run_cmd("umount", &[probe_s.as_str()])
             .await
@@ -232,66 +241,6 @@ async fn filesystem_is_usable<H: Host>(host: &H, root: &Path, dev: &str) -> bool
     }
     std::fs::remove_dir(&probe).debug_on_err(format!("remove {probe_s}"));
     usable
-}
-
-fn should_carry_over(local_has_store: bool, image_has_store: bool) -> bool {
-    local_has_store && !image_has_store
-}
-
-fn staging_dir(root: &Path) -> PathBuf {
-    let uniq: u64 = rand::random();
-    root.join(format!("tmp/yolab-containerd-staging-{uniq:016x}"))
-}
-
-async fn carry_over_existing_store<H: Host>(
-    host: &H,
-    root: &Path,
-    dev: &str,
-    croot: &Path,
-) -> Result<Option<String>> {
-    if !dir_has_any_entries(croot) {
-        return Ok(None);
-    }
-
-    let staging = staging_dir(root);
-    std::fs::create_dir_all(&staging)?;
-    let staging_s = staging.to_string_lossy().into_owned();
-
-    let mounted = host
-        .run_cmd("mount", &[dev, staging_s.as_str()])
-        .await?
-        .success;
-    if !mounted {
-        let _ = std::fs::remove_dir(&staging);
-        return Ok(Some(format!(
-            "cannot stage {dev} at {staging_s} to carry the existing image store over"
-        )));
-    }
-
-    let outcome = if !should_carry_over(dir_has_any_entries(croot), dir_has_any_entries(&staging)) {
-        Ok(None)
-    } else {
-        let from = format!("{}/.", croot.to_string_lossy());
-        let copied = host
-            .run_cmd_bounded("cp", &["-a", &from, staging_s.as_str()], FS_OP_TIMEOUT)
-            .await;
-        match copied {
-            Ok(o) if o.success => Ok(None),
-            Ok(o) => Ok(Some(format!(
-                "could not carry the existing image store onto {dev}: {}",
-                o.stderr.trim()
-            ))),
-            Err(e) => Ok(Some(format!(
-                "could not carry the existing image store onto {dev}: {e}"
-            ))),
-        }
-    };
-
-    host.run_cmd("umount", &[staging_s.as_str()])
-        .await
-        .warn_on_err(format!("unmount the staging mount {staging_s}"));
-    std::fs::remove_dir(&staging).debug_on_err(format!("remove {staging_s}"));
-    outcome
 }
 
 async fn mkfs<H: Host>(host: &H, dev: &str, fs: Filesystem) -> Result<()> {
@@ -311,9 +260,19 @@ async fn mkfs<H: Host>(host: &H, dev: &str, fs: Filesystem) -> Result<()> {
     Ok(())
 }
 
-pub async fn is_mounted<H: Host>(host: &H, root: &Path) -> bool {
+const BUILT_HERE: &str = "yolab-built-empty";
+
+fn is_built_here(store: &Path) -> bool {
+    store.join(BUILT_HERE).is_file()
+}
+
+async fn is_mounted<H: Host>(host: &H, root: &Path) -> bool {
     let croot = containerd_root(root);
     is_mountpoint(host, &croot.to_string_lossy()).await
+}
+
+pub async fn is_in_place<H: Host>(host: &H, root: &Path) -> bool {
+    is_mounted(host, root).await && is_built_here(&containerd_root(root))
 }
 
 pub const PODS_SLICE: &str = "kubepods.slice";
@@ -328,7 +287,7 @@ pub async fn pivot<H: Host>(
     policy: &ContainerdStorePolicy,
     k3s_unit: &str,
 ) -> Result<Attempt<()>> {
-    if is_mounted(host, root).await {
+    if is_in_place(host, root).await {
         return Ok(Attempt::Ready(()));
     }
     match image_state(host, &policy.pool_name, node).await {
@@ -373,7 +332,10 @@ async fn swap<H: Host>(
 
     let outcome = match quiesce(host, root).await {
         Some(why) => Ok(Attempt::NotYet(why)),
-        None => attempt(host, root, node, policy).await,
+        None => match unmount_untrusted(host, root).await? {
+            Some(why) => Ok(Attempt::NotYet(why)),
+            None => attempt(host, root, node, policy).await,
+        },
     };
 
     if host
@@ -387,6 +349,22 @@ async fn swap<H: Host>(
             .warn_on_err(format!("start {k3s_unit} after swapping the image store"));
     }
     outcome
+}
+
+async fn unmount_untrusted<H: Host>(host: &H, root: &Path) -> Result<Option<String>> {
+    if !is_mounted(host, root).await {
+        return Ok(None);
+    }
+    let croot_s = containerd_root(root).to_string_lossy().into_owned();
+    tracing::warn!("the image store at {croot_s} was not built by this swap — rebuilding it");
+    let out = host.run_cmd("umount", &[croot_s.as_str()]).await?;
+    if out.success {
+        return Ok(None);
+    }
+    Ok(Some(format!(
+        "could not unmount the untrusted image store at {croot_s}: {}",
+        out.stderr.trim()
+    )))
 }
 
 async fn quiesce<H: Host>(host: &H, root: &Path) -> Option<String> {
@@ -511,11 +489,19 @@ mod tests {
         assert_eq!(ready, Attempt::Ready(()));
         assert!(host.ran("mkfs.xfs -f -m crc=1 /dev/rbd0"));
         assert!(host.ran(&format!("mount /dev/rbd0 {}", croot.display())));
+        assert!(is_built_here(&croot));
+    }
+
+    fn built_here_on_probe(root: &Path) {
+        let probe = probe_dir(root);
+        std::fs::create_dir_all(&probe).unwrap();
+        std::fs::write(probe.join(BUILT_HERE), b"").unwrap();
     }
 
     #[tokio::test]
     async fn a_usable_filesystem_is_mounted_as_it_is() {
         let dir = tempfile::tempdir().unwrap();
+        built_here_on_probe(dir.path());
         let host = mapped()
             .ok("blkid /dev/rbd0", "TYPE=xfs")
             .ok("mount", "")
@@ -548,8 +534,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_store_this_swap_did_not_build_is_rebuilt_empty_and_marked() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = mapped()
+            .ok("blkid /dev/rbd0", "TYPE=xfs")
+            .ok("mount", "")
+            .ok("umount", "")
+            .ok("mkfs.xfs", "");
+
+        let ready = attempt(&host, dir.path(), "yolab-n1", &policy())
+            .await
+            .unwrap();
+
+        assert_eq!(ready, Attempt::Ready(()));
+        assert!(
+            at(&host, "umount") < at(&host, "mkfs.xfs -f -m crc=1 /dev/rbd0"),
+            "{:?}",
+            host.calls()
+        );
+        assert!(is_built_here(&containerd_root(dir.path())));
+    }
+
+    #[tokio::test]
+    async fn a_store_whose_layers_are_gone_is_rebuilt_even_when_marked() {
+        let dir = tempfile::tempdir().unwrap();
+        built_here_on_probe(dir.path());
+        snapshotter_at(&probe_dir(dir.path()), 262_144, 0);
+        let host = mapped()
+            .ok("blkid /dev/rbd0", "TYPE=xfs")
+            .ok("mount", "")
+            .ok("umount", "")
+            .ok("mkfs.xfs", "");
+
+        attempt(&host, dir.path(), "yolab-n1", &policy())
+            .await
+            .unwrap();
+
+        assert!(host.ran("mkfs.xfs"));
+    }
+
+    #[tokio::test]
     async fn an_existing_mapping_is_reused_never_mapped_twice() {
         let dir = tempfile::tempdir().unwrap();
+        built_here_on_probe(dir.path());
         let host = booting()
             .ok("rbd ls images", "yolab-n1\n")
             .ok(
@@ -726,9 +753,16 @@ mod tests {
         );
     }
 
+    fn built_here_in_place(root: &Path) {
+        let croot = containerd_root(root);
+        std::fs::create_dir_all(&croot).unwrap();
+        std::fs::write(croot.join(BUILT_HERE), b"").unwrap();
+    }
+
     #[tokio::test]
     async fn an_already_mounted_store_is_not_pivoted_again() {
         let dir = tempfile::tempdir().unwrap();
+        built_here_in_place(dir.path());
         let host = FakeHost::new().ok("findmnt -rno TARGET --mountpoint", "");
         let out = pivot(&host, dir.path(), "yolab-n1", &policy(), K3S)
             .await
@@ -738,109 +772,14 @@ mod tests {
         assert!(!ran_mount(&host));
     }
 
-    fn store_with(root: &Path, entries: &[&str]) -> PathBuf {
-        let croot = containerd_root(root);
-        std::fs::create_dir_all(&croot).unwrap();
-        for e in entries {
-            std::fs::write(croot.join(e), b"x").unwrap();
-        }
-        croot
-    }
-
     #[tokio::test]
-    async fn an_empty_store_is_not_carried_over() {
+    async fn only_a_mounted_store_this_swap_built_is_in_place() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(containerd_root(dir.path())).unwrap();
-        let host = FakeHost::new();
-        let out =
-            carry_over_existing_store(&host, dir.path(), "/dev/rbd0", &containerd_root(dir.path()))
-                .await
-                .unwrap();
-        assert_eq!(out, None);
-        assert!(
-            !host.ran("cp -a"),
-            "nothing to carry over, so nothing should have been copied"
-        );
-    }
-
-    #[tokio::test]
-    async fn a_populated_store_is_copied_onto_the_image_before_it_is_mounted_over() {
-        let dir = tempfile::tempdir().unwrap();
-        let croot = store_with(dir.path(), &["layer-a", "layer-b"]);
-        let host = FakeHost::new()
-            .ok("mount ", "")
-            .ok("cp -a", "")
-            .ok("umount", "");
-        let out = carry_over_existing_store(&host, dir.path(), "/dev/rbd0", &croot)
-            .await
-            .unwrap();
-        assert_eq!(out, None);
-        let staged = host
-            .position("mount /dev/rbd0")
-            .expect("never staged the image");
-        let copied = host
-            .position("cp -a")
-            .expect("the existing image store was discarded instead of carried over");
-        let released = host
-            .position("umount")
-            .expect("never unmounted the staging mount");
-        assert!(staged < copied && copied < released, "{:?}", host.calls());
-    }
-
-    #[test]
-    fn an_image_that_already_holds_a_store_is_never_overwritten() {
-        assert!(
-            !should_carry_over(true, true),
-            "the image already carries this node's store from a previous boot; \
-             copying the root filesystem over it would replace newer layers with older"
-        );
-    }
-
-    #[test]
-    fn a_populated_local_store_is_carried_onto_a_blank_image() {
-        assert!(should_carry_over(true, false));
-    }
-
-    #[test]
-    fn nothing_is_carried_over_when_there_is_nothing_to_carry() {
-        assert!(!should_carry_over(false, false));
-        assert!(!should_carry_over(false, true));
-    }
-
-    #[tokio::test]
-    async fn a_failed_copy_leaves_the_old_store_in_place_and_does_not_mount() {
-        let dir = tempfile::tempdir().unwrap();
-        let croot = store_with(dir.path(), &["layer-a"]);
-        let host = FakeHost::new()
-            .ok("mount ", "")
-            .fail("cp -a", "no space left on device")
-            .ok("umount", "");
-        let why = carry_over_existing_store(&host, dir.path(), "/dev/rbd0", &croot)
-            .await
-            .unwrap()
-            .expect("a failed copy must not report success");
-        assert!(why.contains("no space left"), "{why}");
-        assert!(
-            host.ran("umount"),
-            "the staging mount was leaked after a failed copy"
-        );
-        assert!(
-            std::fs::read_dir(&croot).unwrap().count() > 0,
-            "the old store was destroyed by a failed carry-over"
-        );
-    }
-
-    #[tokio::test]
-    async fn a_staging_mount_that_fails_is_reported_and_nothing_is_copied() {
-        let dir = tempfile::tempdir().unwrap();
-        let croot = store_with(dir.path(), &["layer-a"]);
-        let host = FakeHost::new().fail("mount ", "no such device");
-        let why = carry_over_existing_store(&host, dir.path(), "/dev/rbd0", &croot)
-            .await
-            .unwrap()
-            .expect("a failed staging mount must not report success");
-        assert!(why.contains("stage"), "{why}");
-        assert!(!host.ran("cp -a"));
+        let mounted = || FakeHost::new().ok("findmnt -rno TARGET --mountpoint", "");
+        assert!(!is_in_place(&mounted(), dir.path()).await);
+        built_here_in_place(dir.path());
+        assert!(is_in_place(&mounted(), dir.path()).await);
+        assert!(!is_in_place(&booting(), dir.path()).await);
     }
 
     const CLAIM: &str = "ceph config-key get yolab/containerd-pivot";
@@ -963,6 +902,65 @@ mod tests {
         assert!(host.ran("ceph config-key rm yolab/containerd-pivot"));
     }
 
+    const FINDMNT: &str = "findmnt -rno TARGET --mountpoint";
+
+    fn mounted_untrusted() -> FakeHost {
+        claimable(
+            FakeHost::new()
+                .ok(FINDMNT, "")
+                .ok(FINDMNT, "")
+                .fail(FINDMNT, "")
+                .ok("rbd ls images", "yolab-n1\n")
+                .ok("rbd showmapped --format json", "[]")
+                .ok("rbd map images/yolab-n1", "/dev/rbd0\n")
+                .ok("blkid /dev/rbd0", "TYPE=xfs")
+                .ok("mkfs.xfs", "")
+                .ok("mount ", "")
+                .ok("systemctl stop", "")
+                .ok("systemctl reset-failed", "")
+                .ok("systemctl start", "")
+                .ok("systemctl is-enabled", ""),
+        )
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_mounted_store_this_swap_did_not_build_is_rebuilt_while_k3s_is_down() {
+        let dir = tempfile::tempdir().unwrap();
+        let croot = containerd_root(dir.path());
+        let host = mounted_untrusted().ok("umount", "");
+        let out = pivot(&host, dir.path(), "yolab-n1", &policy(), K3S)
+            .await
+            .unwrap();
+        assert_eq!(out, Attempt::Ready(()));
+        let stopped = at(&host, "systemctl stop k3s.service");
+        let unmounted = at(&host, &format!("umount {}", croot.display()));
+        let rebuilt = at(&host, "mkfs.xfs -f -m crc=1 /dev/rbd0");
+        let remounted = at(&host, &format!("mount /dev/rbd0 {}", croot.display()));
+        let started = at(&host, "systemctl start --no-block k3s.service");
+        assert!(
+            stopped < unmounted
+                && unmounted < rebuilt
+                && rebuilt < remounted
+                && remounted < started,
+            "{:?}",
+            host.calls()
+        );
+        assert!(is_built_here(&croot));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_untrusted_store_that_will_not_unmount_is_left_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = mounted_untrusted().fail("umount", "target is busy");
+        let out = pivot(&host, dir.path(), "yolab-n1", &policy(), K3S)
+            .await
+            .unwrap();
+        assert!(not_yet(out).contains("target is busy"));
+        assert!(!host.ran("mkfs"));
+        assert!(!ran_mount(&host));
+        assert!(host.ran("systemctl start --no-block k3s.service"));
+    }
+
     #[tokio::test(start_paused = true)]
     async fn only_one_machine_swaps_its_image_store_at_a_time() {
         let dir = tempfile::tempdir().unwrap();
@@ -995,7 +993,6 @@ mod tests {
         let why = not_yet(out);
         assert!(why.contains("pid 12564 (containerd)"), "{why}");
         assert!(!host.calls().iter().any(|c| c.starts_with("mount ")));
-        assert!(!host.ran("cp -a"));
         assert!(host.ran("systemctl start --no-block k3s.service"));
     }
 
@@ -1042,21 +1039,5 @@ mod tests {
     fn a_machine_with_nothing_on_the_data_root_has_no_holders() {
         let dir = tempfile::tempdir().unwrap();
         assert!(holders_of(dir.path(), &containerd_root(dir.path())).is_empty());
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn a_swap_carries_the_nodes_images_across_after_k3s_has_stopped() {
-        let dir = tempfile::tempdir().unwrap();
-        store_with(dir.path(), &["layer-a"]);
-        let host = swappable().ok("cp -a", "").ok("umount", "");
-        let out = pivot(&host, dir.path(), "yolab-n1", &policy(), K3S)
-            .await
-            .unwrap();
-        assert_eq!(out, Attempt::Ready(()));
-        assert!(
-            at(&host, "systemctl stop k3s.service") < at(&host, "cp -a"),
-            "the store was copied while containerd was still writing it: {:?}",
-            host.calls()
-        );
     }
 }
