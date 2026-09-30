@@ -99,7 +99,10 @@ export function HomePage() {
           {(concern.more ?? 0) > 0 && (
             <>
               {" "}
-              <Link to="/system/storage" className="underline underline-offset-2">
+              <Link
+                to="/system/storage"
+                className="underline underline-offset-2"
+              >
                 {concern.more} other {concern.more === 1 ? "issue" : "issues"}
               </Link>
             </>
