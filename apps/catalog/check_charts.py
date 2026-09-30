@@ -366,6 +366,8 @@ def check(app, docs, fail, chart_yaml="", schema=None):
             if v == "":
                 fail(app, f"Secret key {k} rendered empty")
 
+    check_sourced_secrets_reach_the_program(app, docs, fail)
+
     for d in docs:
         spec = (d.get("spec", {}).get("template", {}) or {}).get("spec", {})
         for c in spec.get("containers") or []:
@@ -397,6 +399,31 @@ def check(app, docs, fail, chart_yaml="", schema=None):
                     app,
                     f"output {key} is not conditioned on the file explorer being "
                     f"on, so an app installed without it waits for it forever",
+                )
+
+
+SOURCED = re.compile(r"^\s*\.\s+(\S+)", re.M)
+BARE_SECRET = re.compile(r"printf '([A-Z_][A-Z0-9_]*)=%s")
+
+
+def check_sourced_secrets_reach_the_program(app, docs, fail):
+    bare = sorted(set(BARE_SECRET.findall(json.dumps(docs))))
+    if not bare:
+        return
+    for d in docs:
+        spec = (d.get("spec", {}).get("template", {}) or {}).get("spec", {})
+        for c in spec.get("containers") or []:
+            script = "\n".join((c.get("command") or [])[2:] + (c.get("args") or []))
+            sourced = [p for p in SOURCED.findall(script) if p != "/yolab/env"]
+            if not sourced or "exec " not in script or "set -a" in script:
+                continue
+            for name in bare:
+                if f"${name}" in script or f"${{{name}}}" in script:
+                    continue
+                fail(
+                    app,
+                    f"container {c['name']} sources {', '.join(sourced)} and execs a "
+                    f"program that never sees {name} — `set -a` before sourcing",
                 )
 
 

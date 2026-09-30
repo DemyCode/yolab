@@ -192,5 +192,59 @@ class FileExplorerOutputs(unittest.TestCase):
         self.assertIn("waits for it forever", found[0])
 
 
+def pod(*containers):
+    return {
+        "kind": "Deployment",
+        "spec": {"template": {"spec": {"containers": list(containers)}}},
+    }
+
+
+def shell(name, script):
+    return {"name": name, "command": ["/bin/sh", "-c", script]}
+
+
+GEN = shell("gen", "printf 'DB_PASSWORD=%s\\n' x > /state/secrets.env")
+
+
+def sourcing_failures(*containers):
+    found = []
+    check_charts.check_sourced_secrets_reach_the_program(
+        "demo", [pod(GEN, *containers)], lambda app, msg: found.append(msg)
+    )
+    return found
+
+
+class SourcedSecrets(unittest.TestCase):
+    def test_a_sourced_secret_the_program_never_sees_is_reported(self):
+        found = sourcing_failures(
+            shell("server", ". /state/secrets.env\nexec start.sh\n")
+        )
+        self.assertEqual(len(found), 1)
+        self.assertIn("DB_PASSWORD", found[0])
+
+    def test_set_a_before_sourcing_exports_it(self):
+        script = "set -a\n. /state/secrets.env\nset +a\nexec start.sh\n"
+        self.assertEqual(sourcing_failures(shell("server", script)), [])
+
+    def test_a_script_that_hands_the_value_on_itself_passes(self):
+        script = (
+            '. /state/secrets.env\nexport POSTGRES_PASSWORD="$DB_PASSWORD"\n'
+            "exec docker-entrypoint.sh postgres\n"
+        )
+        self.assertEqual(sourcing_failures(shell("postgres", script)), [])
+
+    def test_the_tunnel_env_exports_its_own_values(self):
+        script = ". /yolab/env\nexec caddy run\n"
+        self.assertEqual(sourcing_failures(shell("caddy", script)), [])
+
+    def test_a_script_given_as_args_is_read_too(self):
+        web = {
+            "name": "web",
+            "command": ["/bin/sh", "-c"],
+            "args": [". /yolab/secrets.env\nexec rails server\n"],
+        }
+        self.assertEqual(len(sourcing_failures(web)), 1)
+
+
 if __name__ == "__main__":
     unittest.main()
