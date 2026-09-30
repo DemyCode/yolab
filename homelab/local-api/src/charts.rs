@@ -549,11 +549,12 @@ mod tests {
             .await;
             let host = FakeHost::new().fail("helm pull", "manifest unknown");
             let cache = tempfile::tempdir().unwrap();
-            let e = fetch_newest(&host, cache.path(), &[repo.clone()], "notes", None)
+            let repos = [repo];
+            let e = fetch_newest(&host, cache.path(), &repos, "notes", None)
                 .await
                 .unwrap_err();
             assert!(e.to_string().contains("manifest unknown"), "{e}");
-            let e = fetch_newest(&host, cache.path(), &[repo], "notes", Some("custom"))
+            let e = fetch_newest(&host, cache.path(), &repos, "notes", Some("custom"))
                 .await
                 .unwrap_err();
             assert!(e.to_string().contains("no catalog"), "{e}");

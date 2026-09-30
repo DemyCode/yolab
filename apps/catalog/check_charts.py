@@ -402,7 +402,7 @@ def check(app, docs, fail, chart_yaml="", schema=None):
                 )
 
 
-SOURCED = re.compile(r"^\s*\.\s+(\S+)", re.M)
+SOURCED = re.compile(r"^\s*\.\s+(\S+)", re.MULTILINE)
 BARE_SECRET = re.compile(r"printf '([A-Z_][A-Z0-9_]*)=%s")
 
 
