@@ -124,8 +124,7 @@ export function AppSources({ onChanged }: { onChanged?: () => void }) {
 
       {adding && (
         <>
-          {}
-          <p className="mt-4 flex items-start gap-2 rounded-md border border-warning-soft bg-warning-soft p-3 text-sm text-warning">
+          <p className="mt-4 flex items-start gap-2 rounded-control border border-warning-soft bg-warning-soft p-3 text-sm text-warning">
             <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
             <span>
               Apps from another source run with the same access as the ones
@@ -191,7 +190,7 @@ export function AppSources({ onChanged }: { onChanged?: () => void }) {
                 onClick={() => remove(r)}
                 disabled={busy}
                 aria-label={`Remove ${r.name}`}
-                className="shrink-0 rounded-md p-1.5 text-fg-subtle transition-colors hover:bg-surface-2 hover:text-danger disabled:opacity-50"
+                className="shrink-0 rounded-control p-1.5 text-fg-subtle transition-colors hover:bg-surface-2 hover:text-danger disabled:opacity-50"
               >
                 <Trash2 className="h-4 w-4" />
               </button>

@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { Package, Search, SlidersHorizontal, X } from "lucide-react";
 import { Page } from "@/components/AppShell";
-import { Input } from "@/components/ui/input";
+import { Input, Select } from "@/components/ui/input";
 import { AppCard } from "@/components/AppCard";
 import { Skeleton, EmptyState } from "@/components/ui/feedback";
 import { useApi } from "@/lib/useResource";
@@ -97,7 +97,6 @@ export function AppsPage() {
       subtitle="Everything here runs at home, on your own machines."
       action={<AddFromBackupButton />}
     >
-      {}
       <div className="mb-4 flex gap-2">
         <div className="relative flex-1">
           <Search className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-fg-subtle" />
@@ -114,10 +113,10 @@ export function AppsPage() {
           onClick={() => setFiltersOpen((o) => !o)}
           aria-expanded={filtersOpen}
           className={cn(
-            "inline-flex shrink-0 items-center gap-1.5 rounded-md border px-3 text-sm transition-colors",
+            "inline-flex shrink-0 items-center gap-1.5 rounded-control border px-3 text-sm transition-colors",
             filtersOn
-              ? "border-primary/30 bg-primary-soft text-primary"
-              : "border-border text-fg-muted hover:border-border-strong hover:text-fg",
+              ? "border-fg bg-fg text-bg"
+              : "border-border-strong bg-surface text-fg-muted hover:text-fg",
           )}
         >
           <SlidersHorizontal className="h-3.5 w-3.5" />
@@ -125,15 +124,14 @@ export function AppsPage() {
         </button>
       </div>
 
-      {}
       <div className="-mx-5 mb-4 flex gap-2 overflow-x-auto px-5 pb-1 md:mx-0 md:px-0">
         <button
           onClick={() => setActiveGroup(null)}
           className={cn(
-            "shrink-0 rounded-full px-3.5 py-1.5 text-sm transition-colors",
+            "shrink-0 rounded-full border px-3.5 py-1.5 text-sm transition-colors",
             activeGroup === null
-              ? "bg-primary text-primary-fg"
-              : "bg-surface-2 text-fg-muted hover:text-fg",
+              ? "border-fg bg-fg text-bg"
+              : "border-border-strong bg-surface text-fg-muted hover:text-fg",
           )}
         >
           Everything
@@ -143,10 +141,10 @@ export function AppsPage() {
             key={g.id}
             onClick={() => setActiveGroup(g.id === activeGroup ? null : g.id)}
             className={cn(
-              "shrink-0 rounded-full px-3.5 py-1.5 text-sm transition-colors",
+              "shrink-0 rounded-full border px-3.5 py-1.5 text-sm transition-colors",
               activeGroup === g.id
-                ? "bg-primary text-primary-fg"
-                : "bg-surface-2 text-fg-muted hover:text-fg",
+                ? "border-fg bg-fg text-bg"
+                : "border-border-strong bg-surface text-fg-muted hover:text-fg",
             )}
           >
             {g.label}
@@ -158,24 +156,24 @@ export function AppsPage() {
         <div className="mb-5 flex flex-wrap items-center gap-3 rounded-card border border-border bg-surface p-3 text-sm">
           <label className="flex items-center gap-2">
             <span className="text-fg-muted">Status</span>
-            <select
+            <Select
               value={installed}
               onChange={(e) => setInstalled(e.target.value as Installed)}
-              className="rounded-md border border-border bg-bg px-2 py-1 text-fg"
+              className="h-9 w-auto"
             >
               <option value="any">Any</option>
               <option value="not-installed">Not installed</option>
               <option value="installed">Installed</option>
-            </select>
+            </Select>
           </label>
 
           {sources.length > 1 && (
             <label className="flex items-center gap-2">
               <span className="text-fg-muted">Source</span>
-              <select
+              <Select
                 value={source}
                 onChange={(e) => setSource(e.target.value)}
-                className="rounded-md border border-border bg-bg px-2 py-1 text-fg"
+                className="h-9 w-auto"
               >
                 <option value="any">Any</option>
                 {sources.map((s) => (
@@ -187,7 +185,7 @@ export function AppsPage() {
                         : s}
                   </option>
                 ))}
-              </select>
+              </Select>
             </label>
           )}
 
@@ -260,7 +258,6 @@ export function AppsPage() {
         </div>
       )}
 
-      {}
       <AppSources onChanged={() => void catalog.refresh()} />
     </Page>
   );

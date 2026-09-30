@@ -144,7 +144,6 @@ export default function CustomAppPage() {
       subtitle="Upload a Helm chart, or paste Kubernetes YAML. Either way it becomes an app like any other — its own address, its own backups."
     >
       <div className="space-y-4">
-        {}
         <section className="rounded-card border border-border bg-surface p-4">
           <div className="flex flex-wrap items-center gap-3">
             <Package className="h-4 w-4 shrink-0 text-fg-muted" />
@@ -290,7 +289,7 @@ export default function CustomAppPage() {
             rows={16}
             placeholder="apiVersion: apps/v1&#10;kind: Deployment&#10;…"
             aria-label="Kubernetes YAML"
-            className="w-full rounded-md border border-border bg-bg p-3 font-mono text-xs text-fg outline-none focus:border-primary focus:ring-1 focus:ring-primary"
+            className="w-full rounded-control border border-border bg-bg p-3 font-mono text-xs text-fg outline-none focus:border-primary focus:ring-1 focus:ring-primary"
           />
           <span className="mt-1 block text-xs text-fg-muted">
             Leave out <code>namespace:</code> — YoLab gives this app its own.
@@ -300,13 +299,13 @@ export default function CustomAppPage() {
         </label>
 
         {error && (
-          <p className="flex items-start gap-2 rounded-md border border-danger-soft bg-danger-soft p-3 text-sm text-danger">
+          <p className="flex items-start gap-2 rounded-control border border-danger-soft bg-danger-soft p-3 text-sm text-danger">
             <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
             <span>{error}</span>
           </p>
         )}
         {saved && (
-          <p className="flex items-start gap-2 rounded-md border border-success-soft bg-success-soft p-3 text-sm text-success">
+          <p className="flex items-start gap-2 rounded-control border border-success-soft bg-success-soft p-3 text-sm text-success">
             <Check className="mt-0.5 h-4 w-4 shrink-0" />
             <span>{saved}</span>
           </p>
@@ -353,7 +352,7 @@ export default function CustomAppPage() {
                     onClick={() => remove(a)}
                     disabled={busy}
                     aria-label={`Remove ${a.display_name}`}
-                    className="rounded-md p-1.5 text-fg-subtle transition-colors hover:bg-surface-2 hover:text-danger disabled:opacity-50"
+                    className="rounded-control p-1.5 text-fg-subtle transition-colors hover:bg-surface-2 hover:text-danger disabled:opacity-50"
                   >
                     <Trash2 className="h-4 w-4" />
                   </button>

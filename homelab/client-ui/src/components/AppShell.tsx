@@ -54,7 +54,6 @@ export function AppShell({ onLogout }: { onLogout: () => void }) {
 
   return (
     <div className="flex min-h-full bg-bg">
-      {}
       <aside className="sticky top-0 hidden h-screen w-60 shrink-0 flex-col border-r border-border bg-surface px-3 py-5 md:flex">
         <div className="px-3 pb-5">
           <Wordmark />
@@ -68,7 +67,7 @@ export function AppShell({ onLogout }: { onLogout: () => void }) {
               end={end}
               className={({ isActive }) =>
                 cn(
-                  "flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm transition-colors",
+                  "flex items-center gap-3 rounded-control px-3 py-2.5 text-sm transition-colors",
                   isActive
                     ? "bg-primary-soft font-medium text-primary"
                     : "text-fg-muted hover:bg-surface-2 hover:text-fg",
@@ -85,7 +84,7 @@ export function AppShell({ onLogout }: { onLogout: () => void }) {
           <ThemeControl compact />
           <button
             onClick={() => void signOut()}
-            className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-sm text-fg-muted transition-colors hover:bg-surface-2 hover:text-fg"
+            className="flex w-full items-center gap-3 rounded-control px-3 py-2.5 text-sm text-fg-muted transition-colors hover:bg-surface-2 hover:text-fg"
           >
             <LogOut className="h-[18px] w-[18px] shrink-0" strokeWidth={1.75} />
             Sign out
@@ -93,12 +92,10 @@ export function AppShell({ onLogout }: { onLogout: () => void }) {
         </div>
       </aside>
 
-      {}
       <main className="min-w-0 flex-1 pb-[calc(4.5rem+env(safe-area-inset-bottom))] md:pb-0">
         <Outlet context={{ signOut }} />
       </main>
 
-      {}
       <nav
         className={cn(
           "fixed inset-x-0 bottom-0 z-40 flex border-t border-border bg-surface/95 pb-[env(safe-area-inset-bottom)] backdrop-blur transition-transform duration-200 md:hidden",

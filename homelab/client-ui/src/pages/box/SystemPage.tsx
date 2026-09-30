@@ -202,12 +202,11 @@ export function SystemPage() {
 
   return (
     <div className="space-y-6 max-w-3xl">
-      {}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
         <Card>
           <CardContent className="flex items-start gap-3 pt-5">
-            <div className="mt-0.5 rounded-md bg-primary/10 p-1.5">
-              <Cpu className="h-4 w-4 text-primary" strokeWidth={1.75} />
+            <div className="mt-0.5 rounded-control bg-surface-2 p-1.5">
+              <Cpu className="h-4 w-4 text-fg-muted" strokeWidth={1.75} />
             </div>
             <div className="min-w-0">
               <p className="text-xs text-fg-muted">Platform</p>
@@ -222,8 +221,8 @@ export function SystemPage() {
         </Card>
         <Card>
           <CardContent className="flex items-start gap-3 pt-5">
-            <div className="mt-0.5 rounded-md bg-primary/10 p-1.5">
-              <GitCommit className="h-4 w-4 text-primary" strokeWidth={1.75} />
+            <div className="mt-0.5 rounded-control bg-surface-2 p-1.5">
+              <GitCommit className="h-4 w-4 text-fg-muted" strokeWidth={1.75} />
             </div>
             <div className="min-w-0">
               <p className="text-xs text-fg-muted">Commit</p>
@@ -238,8 +237,8 @@ export function SystemPage() {
         </Card>
         <Card>
           <CardContent className="flex items-start gap-3 pt-5">
-            <div className="mt-0.5 rounded-md bg-primary/10 p-1.5">
-              <Calendar className="h-4 w-4 text-primary" strokeWidth={1.75} />
+            <div className="mt-0.5 rounded-control bg-surface-2 p-1.5">
+              <Calendar className="h-4 w-4 text-fg-muted" strokeWidth={1.75} />
             </div>
             <div className="min-w-0">
               <p className="text-xs text-fg-muted">Built at</p>
@@ -250,7 +249,7 @@ export function SystemPage() {
       </div>
 
       {status?.error && (
-        <div className="flex items-start gap-2 rounded-lg border border-danger/30 bg-danger/5 p-4">
+        <div className="flex items-start gap-2 rounded-control border border-danger/30 bg-danger/5 p-4">
           <AlertCircle className="h-4 w-4 text-danger mt-0.5 flex-shrink-0" />
           <p className="text-sm text-danger">{status.error}</p>
         </div>
@@ -258,7 +257,6 @@ export function SystemPage() {
 
       <NotificationsCard />
 
-      {}
       <Card>
         <CardContent className="pt-5 pb-4 space-y-4">
           <div className="flex items-center gap-3 flex-wrap">
@@ -274,7 +272,6 @@ export function SystemPage() {
               {updating ? "Updating…" : "Update all machines"}
             </Button>
 
-            {}
             {rebootConfirm ? (
               <div className="flex items-center gap-2">
                 <Button
@@ -367,7 +364,6 @@ export function SystemPage() {
         </CardContent>
       </Card>
 
-      {}
       {phase !== "idle" && (
         <Card>
           <CardHeader>
@@ -386,7 +382,7 @@ export function SystemPage() {
           <CardContent>
             <div
               ref={logRef}
-              className="rounded-lg bg-bg border border-border p-3 max-h-96 overflow-y-auto space-y-0.5"
+              className="rounded-control bg-bg border border-border p-3 max-h-96 overflow-y-auto space-y-0.5"
             >
               {log.map((line, i) => (
                 <LogLine key={i} line={line} />

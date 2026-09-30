@@ -86,7 +86,7 @@ export function TerminalPage() {
     <div className="space-y-4">
       <div
         onClick={() => inputRef.current?.focus()}
-        className="rounded-xl border border-border bg-bg p-4 min-h-[500px] cursor-text font-mono text-sm"
+        className="rounded-control border border-border bg-bg p-4 min-h-[500px] cursor-text font-mono text-sm"
       >
         {lines.map((l, i) => (
           <div

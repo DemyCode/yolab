@@ -50,7 +50,7 @@ function NavRow({
     <>
       <div
         className={cn(
-          "flex h-10 w-10 shrink-0 items-center justify-center rounded-xl",
+          "flex h-10 w-10 shrink-0 items-center justify-center rounded-control",
           tone === "error"
             ? "bg-danger-soft text-danger"
             : tone === "warn"
@@ -206,7 +206,6 @@ export function BoxPage() {
           label="Updates and system"
           detail={status.data?.platform}
         />
-        {}
         {status.data?.console_url && (
           <NavRow
             onClick={openConsole}
@@ -231,7 +230,6 @@ export function BoxPage() {
         wrong and someone is helping you.
       </p>
       <Card className="mb-4 overflow-hidden p-0">
-        {}
         <NavRow
           to="/box/logs"
           icon={ScrollText}

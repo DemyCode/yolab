@@ -1,0 +1,20 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "overused-font",
+        "value": "geist",
+        "createdAt": "2026-09-30T22:46:56.606Z",
+        "reason": "DESIGN.md commits Geist as the one family, shared with the marketing site"
+      },
+      {
+        "rule": "overused-font",
+        "value": "geist mono",
+        "createdAt": "2026-09-30T22:46:56.612Z",
+        "reason": "DESIGN.md: Geist Mono is the data face"
+      }
+    ]
+  }
+}
