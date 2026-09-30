@@ -36,7 +36,7 @@ export function HealBanner({ className }: { className?: string }) {
   const heal = status.heal;
   const link = (label: string) => (
     <Link
-      to="/box/storage"
+      to="/system/storage"
       className={buttonClass({ size: "sm", variant: "secondary" })}
     >
       {label}

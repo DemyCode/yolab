@@ -71,7 +71,7 @@ describe("configSchemaOf", () => {
 });
 
 describe("uiSchemaFor", () => {
-  it("renders the address field with the box's domain", () => {
+  it("renders the address field with the server's domain", () => {
     expect(uiSchemaFor(codeServer, "box.yolab.io").subdomain).toEqual({
       "ui:widget": "TunnelWidget",
       "ui:options": { domain: "box.yolab.io" },

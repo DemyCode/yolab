@@ -69,7 +69,7 @@ export const APP_META: Record<string, AppMeta> = {
     group: "files",
   },
   filebrowser: {
-    tagline: "Browse and share the files on your box",
+    tagline: "Browse and share the files on your server",
     group: "files",
   },
   "paperless-ngx": {

@@ -250,7 +250,7 @@ export function InstallPage() {
             Installing {app.name}
           </h1>
           <p className="mt-2 max-w-sm text-sm text-fg-muted">
-            It keeps going on your box. It becomes ready on its own, or shows
+            It keeps going on your server. It becomes ready on its own, or shows
             “Failed installation” with the reason.
           </p>
 

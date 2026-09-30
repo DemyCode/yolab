@@ -37,7 +37,7 @@ describe("streamEvents", () => {
     expect(result.dropped).toBeUndefined();
   });
 
-  it("reports the box's own failure as a failure, not as a dropped connection", async () => {
+  it("reports the server's own failure as a failure, not as a dropped connection", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async () =>
@@ -48,7 +48,7 @@ describe("streamEvents", () => {
     expect(result).toEqual({ ok: false, error: "helm said no" });
   });
 
-  it("treats a stream that ends without a verdict as dropped, because the box keeps going", async () => {
+  it("treats a stream that ends without a verdict as dropped, because the server keeps going", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async () => streaming(frames("Installing…"))),
