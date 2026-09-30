@@ -11,7 +11,9 @@ import { buttonClass } from "@/components/ui/button-variants";
 import type { ReactNode } from "react";
 
 export function Skeleton({ className }: { className?: string }) {
-  return <div className={cn("shimmer rounded-control bg-surface-2", className)} />;
+  return (
+    <div className={cn("shimmer rounded-control bg-surface-2", className)} />
+  );
 }
 
 export function Spinner({ className }: { className?: string }) {
