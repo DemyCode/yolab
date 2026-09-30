@@ -85,7 +85,11 @@ spec:
         - -c
         - 'until [ -f /state/secrets.env ]; do sleep 2; done
 
+          set -a
+
           . /state/secrets.env
+
+          set +a
 
           exec start.sh
 
