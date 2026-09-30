@@ -10,11 +10,12 @@ import { Page } from "@/components/AppShell";
 import { Button } from "@/components/ui/button";
 import { buttonClass } from "@/components/ui/button-variants";
 import { Card } from "@/components/ui/card";
-import { Select } from "@/components/ui/input";
+import { Select, Switch } from "@/components/ui/input";
+import { Row, Section } from "@/components/ui/list";
 import { Banner, Spinner } from "@/components/ui/feedback";
 import { api } from "@/lib/api";
 import { useApi } from "@/lib/useResource";
-import { generateSecret } from "@/lib/format";
+import { formatDateTime, generateSecret } from "@/lib/format";
 import Form from "@rjsf/core";
 import type { RJSFSchema } from "@rjsf/utils";
 import validator from "@rjsf/validator-ajv8";
@@ -245,7 +246,7 @@ export function InstallPage() {
             name={app.name}
             className="mb-6"
           />
-          <h1 className="font-display text-2xl text-fg">
+          <h1 className="font-display text-[1.75rem] leading-tight text-fg">
             Installing {app.name}
           </h1>
           <p className="mt-2 max-w-sm text-sm text-fg-muted">
@@ -280,104 +281,72 @@ export function InstallPage() {
     );
   }
 
+  const sourceName =
+    origin.mode === "duplicate"
+      ? (sourceDef?.instance_name ?? origin.fromInstance)
+      : (sourceDef?.instance_name ?? origin.namespace);
+
+  const notice = error ? (
+    <Banner tone="error" title="The install could not start">
+      {error}
+    </Banner>
+  ) : app.repo !== "official" ? (
+    <Banner tone="warning" title={`This app comes from "${app.repo}"`}>
+      You added this source yourself. Apps from outside the official catalog can
+      do anything on your machines, so only install ones you trust.
+    </Banner>
+  ) : null;
+
   return (
     <Page>
       <Link
         to="/add"
-        className="mb-5 inline-flex items-center gap-1.5 text-sm text-fg-muted hover:text-fg"
+        className="mb-5 inline-flex items-center gap-1.5 rounded-control text-sm text-fg-muted hover:text-fg focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
       >
         <ArrowLeft className="h-4 w-4" />
         All apps
       </Link>
 
-      <div className="mb-7 flex items-center gap-4">
+      <header className="flex items-center gap-4">
         <AppIconTile appId={app.id} icon={app.icon} name={app.name} />
-        <div className="min-w-0">
-          <h1 className="font-display text-3xl text-fg">{app.name}</h1>
-          <p className="mt-0.5 text-sm text-fg-muted">{taglineFor(app)}</p>
-          {}
-          {app.home && (
+        <div className="min-w-0 flex-1">
+          <h1 className="font-display text-[1.75rem] leading-tight text-fg md:text-4xl">
+            {origin.mode === "duplicate"
+              ? `Duplicate ${sourceName ?? app.name}`
+              : origin.mode === "restore"
+                ? `Restore ${sourceName ?? app.name}`
+                : app.name}
+          </h1>
+          <p className="mt-1 text-sm text-fg-muted">
+            {origin.mode === "duplicate"
+              ? "A separate app from the same settings, with its own address and storage."
+              : origin.mode === "restore"
+                ? "Its settings come back from the backup; change any of them before it is installed."
+                : installedOfThisApp.length > 0
+                  ? `${taglineFor(app)} You already have ${installedOfThisApp.length === 1 ? "one" : installedOfThisApp.length}; this adds a separate one.`
+                  : taglineFor(app)}
+          </p>
+          {app.home && origin.mode === "fresh" && (
             <a
               href={app.home}
               target="_blank"
               rel="noreferrer noopener"
-              className="mt-1 inline-flex items-center gap-1 text-sm text-fg-subtle transition-colors hover:text-primary hover:underline"
+              className="mt-1 inline-flex items-center gap-1 rounded-control text-sm text-fg-subtle transition-colors hover:text-fg focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
             >
+              The project&rsquo;s website
               <ExternalLink className="h-3.5 w-3.5" />
-              Visit the project's website
             </a>
           )}
         </div>
-      </div>
+      </header>
 
-      {origin.mode === "duplicate" && (
-        <Banner
-          tone="info"
-          title={`Duplicating ${sourceDef?.instance_name ?? origin.fromInstance}`}
-          className="mb-5"
-        >
-          This creates a separate app from the same chart and settings, with its
-          own name, storage and web address.{" "}
-          {copyData
-            ? "Its files are copied from the app itself."
-            : "It starts empty — none of its files are copied."}
-        </Banner>
-      )}
-      {origin.mode === "restore" && (
-        <Banner
-          tone="info"
-          title={`Restoring ${sourceDef?.instance_name ?? origin.namespace}`}
-          className="mb-5"
-        >
-          Its settings come back from the backup, and you can change any of them
-          here before it is installed.{" "}
-          {copyData
-            ? "Its files come back from the backup you pick below."
-            : "It starts empty — none of its files come back."}
-        </Banner>
-      )}
+      {notice && <div className="mt-6">{notice}</div>}
 
-      {installedOfThisApp.length > 0 && origin.mode === "fresh" && (
-        <Banner
-          tone="info"
-          title={
-            installedOfThisApp.length === 1
-              ? `You already have ${app.name}`
-              : `You already have ${installedOfThisApp.length} copies of ${app.name}`
-          }
-          className="mb-5"
-        >
-          This adds another, completely separate one — its own storage, its own
-          login, its own web address. Nothing about the existing{" "}
-          {installedOfThisApp.length === 1 ? "one" : "ones"} changes.
-        </Banner>
-      )}
-
-      {error && (
-        <Banner
-          tone="error"
-          title="The install could not start"
-          className="mb-5"
-        >
-          {error}
-        </Banner>
-      )}
-
-      {app.repo !== "official" && (
-        <Banner
-          tone="warning"
-          title={`This app comes from "${app.repo}"`}
-          className="mb-5"
-        >
-          You added this source yourself. Apps from outside the official catalog
-          can do anything on your machines, so only install ones you trust.
-        </Banner>
-      )}
-
-      <Card className="divide-y divide-border">
-        {}
-        {}
-        <div className="p-5">
+      <section className="mt-8">
+        <h2 className="mb-2 px-1 text-sm font-semibold text-fg-muted">
+          Settings
+        </h2>
+        <Card className="p-5">
           <Form
             schema={rjsfSchema}
             uiSchema={rjsfUiSchema}
@@ -390,62 +359,87 @@ export function InstallPage() {
             showErrorList={false}
             onChange={(e) => setFormData(e.formData ?? {})}
           >
-            {}
             <></>
           </Form>
-        </div>
+        </Card>
+      </section>
 
-        {origin.mode !== "fresh" && (
-          <div className="space-y-3 p-5">
-            <label className="flex items-center gap-2 text-sm text-fg">
-              <input
-                type="checkbox"
-                checked={copyData}
-                onChange={(e) => setCopyData(e.target.checked)}
-                className="accent-primary"
-              />
-              {origin.mode === "duplicate"
+      {origin.mode !== "fresh" && (
+        <Section title="Files">
+          <Row
+            label={
+              origin.mode === "duplicate"
                 ? "Copy this app’s files too"
-                : "Bring this app’s files back too"}
-            </label>
-            {copyData &&
-              origin.mode === "restore" &&
-              (snapshots === null ? (
-                <p className="text-xs text-fg-muted">Looking for backups…</p>
-              ) : snapshots.length === 0 ? (
-                <p className="text-xs text-fg-muted">
-                  There is no backup of this app yet, so there is nothing to
-                  copy. Install it empty, or back it up first.
-                </p>
-              ) : (
-                <Select
-                  value={snapshot}
-                  onChange={(e) => setSnapshot(e.target.value)}
-                  aria-label="Backup to copy from"
-                >
-                  {snapshots.map((s, i) => (
-                    <option key={s.id} value={s.id}>
-                      {i === 0 ? "Latest — " : ""}
-                      {new Date(s.time).toLocaleString()}
-                    </option>
-                  ))}
-                </Select>
-              ))}
-          </div>
-        )}
-      </Card>
+                : "Bring its files back too"
+            }
+            detail={
+              copyData
+                ? origin.mode === "duplicate"
+                  ? "Copied straight from the app, as they are now."
+                  : "From the backup you pick below."
+                : "It starts empty."
+            }
+            trailing={
+              <Switch
+                checked={copyData}
+                onChange={setCopyData}
+                label={
+                  origin.mode === "duplicate"
+                    ? "Copy this app’s files too"
+                    : "Bring its files back too"
+                }
+              />
+            }
+          />
+          {copyData && origin.mode === "restore" && (
+            <Row
+              label="From the backup of"
+              detail={
+                snapshots === null
+                  ? "Looking for backups…"
+                  : snapshots.length === 0
+                    ? "There is no backup yet. Install it empty, or back it up first."
+                    : undefined
+              }
+              trailing={
+                snapshots && snapshots.length > 0 ? (
+                  <Select
+                    value={snapshot}
+                    onChange={(e) => setSnapshot(e.target.value)}
+                    aria-label="Backup to copy from"
+                    className="h-9 w-auto max-w-[14rem]"
+                  >
+                    {snapshots.map((s, i) => (
+                      <option key={s.id} value={s.id}>
+                        {i === 0 ? "Latest — " : ""}
+                        {formatDateTime(s.time)}
+                      </option>
+                    ))}
+                  </Select>
+                ) : null
+              }
+            />
+          )}
+        </Section>
+      )}
 
-      <div className="mt-7">
+      <div className="mt-8">
         <Button
           full
           size="lg"
           onClick={() => void install()}
           disabled={blocker !== null || installing}
         >
-          {installing ? "Starting…" : `Install ${app.name}`}
+          {installing
+            ? "Starting…"
+            : origin.mode === "restore"
+              ? `Restore ${app.name}`
+              : `Install ${app.name}`}
         </Button>
         {blocker && (
-          <p className="mt-2 text-center text-sm text-fg-muted">{blocker}</p>
+          <p className="mt-2 text-center text-sm text-fg-muted" role="status">
+            {blocker}
+          </p>
         )}
       </div>
     </Page>
