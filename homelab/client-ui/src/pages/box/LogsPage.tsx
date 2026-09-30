@@ -117,7 +117,7 @@ export function LogsPage() {
           <select
             value={unit}
             onChange={(e) => setUnit(e.target.value)}
-            className="min-w-0 flex-1 rounded-xl border border-line bg-surface px-3 py-2 text-sm text-fg"
+            className="min-w-0 flex-1 rounded-control border border-line bg-surface px-3 py-2 text-sm text-fg"
           >
             <option value="">Everything on this machine</option>
             {units.map((u) => (
@@ -181,7 +181,6 @@ export function LogsPage() {
                 <span className="w-40 shrink-0 truncate text-fg-subtle">
                   {shortUnit(e.unit)}
                 </span>
-                {}
                 <span className={cn("min-w-0 break-all", toneOf(e.priority))}>
                   {e.message}
                 </span>
@@ -204,13 +203,13 @@ function SegmentedControl({
   onChange: (i: number) => void;
 }) {
   return (
-    <div className="flex gap-1 rounded-xl bg-surface-2 p-1">
+    <div className="flex gap-1 rounded-control bg-surface-2 p-1">
       {options.map((label, i) => (
         <button
           key={label}
           onClick={() => onChange(i)}
           className={cn(
-            "rounded-lg px-3 py-1.5 text-sm transition-colors",
+            "rounded-control px-3 py-1.5 text-sm transition-colors",
             value === i
               ? "bg-surface font-medium text-fg shadow-[var(--shadow-card)]"
               : "text-fg-muted hover:text-fg",

@@ -134,6 +134,34 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
+@layer base {
+  :where(a, button, summary, [role="switch"], [tabindex]):focus-visible {
+    outline: 2px solid var(--primary);
+    outline-offset: 2px;
+  }
+
+  ::selection {
+    background: var(--primary-soft);
+    color: var(--fg);
+  }
+
+  input,
+  textarea {
+    caret-color: var(--primary);
+  }
+
+  :root {
+    accent-color: var(--primary);
+  }
+
+  code,
+  kbd,
+  samp,
+  pre {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
 .font-display {
   font-family: var(--font-display);
   font-weight: 600;

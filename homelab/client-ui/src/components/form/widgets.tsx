@@ -58,7 +58,7 @@ export function PasswordWidget(props: WidgetProps) {
         type="button"
         aria-label={shown ? "Hide" : "Show"}
         onClick={() => setShown((s) => !s)}
-        className="rounded-md p-2 text-fg-muted hover:bg-surface-2"
+        className="rounded-control p-2 text-fg-muted hover:bg-surface-2"
       >
         {shown ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
       </button>
@@ -67,7 +67,7 @@ export function PasswordWidget(props: WidgetProps) {
           type="button"
           aria-label="Generate a new one"
           onClick={regenerate}
-          className="rounded-md p-2 text-fg-muted hover:bg-surface-2"
+          className="rounded-control p-2 text-fg-muted hover:bg-surface-2"
         >
           <RefreshCw className="h-4 w-4" />
         </button>
@@ -99,7 +99,7 @@ export function TextareaWidget(props: WidgetProps) {
       rows={4}
       onChange={(e) => onChange(e.target.value)}
       className={cn(
-        "w-full rounded-lg border border-border bg-surface px-3 py-2 font-mono text-sm",
+        "w-full rounded-control border border-border bg-surface px-3 py-2 font-mono text-sm",
         "text-fg placeholder:text-fg-subtle focus:border-primary focus:outline-none",
       )}
     />

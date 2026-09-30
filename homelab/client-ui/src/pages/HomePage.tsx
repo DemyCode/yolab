@@ -72,13 +72,11 @@ export function HomePage() {
           </h1>
           <p className="mt-1 flex items-center gap-2 text-sm text-fg-muted">
             Everything running at home. Tap one to open it.
-            {}
             <CacheDot cache={health.cache ?? apps.cache} />
           </p>
         </div>
       </header>
 
-      {}
       <HealBanner className="mb-6" />
 
       {concern && (
@@ -98,7 +96,6 @@ export function HomePage() {
           }
         >
           {concern.body}
-          {}
           {(concern.more ?? 0) > 0 && (
             <>
               {" "}

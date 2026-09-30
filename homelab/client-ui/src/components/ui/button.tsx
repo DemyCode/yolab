@@ -32,7 +32,6 @@ export function Button({
       {loading ? (
         <>
           <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
-          {}
           <span className="opacity-70">{children}</span>
         </>
       ) : (

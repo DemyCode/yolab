@@ -154,7 +154,6 @@ export default function App() {
                 </BoxSubPage>
               }
             />
-            {}
             <Route path="*" element={<Navigate to="/" replace />} />
           </Route>
         </Routes>
