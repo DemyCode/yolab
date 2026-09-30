@@ -246,12 +246,8 @@ async fn filesystem_is_usable<H: Host>(host: &H, root: &Path, dev: &str) -> bool
 async fn mkfs<H: Host>(host: &H, dev: &str, fs: Filesystem) -> Result<()> {
     let out = match fs {
         Filesystem::Xfs => {
-            host.run_cmd_bounded(
-                "mkfs.xfs",
-                &["-f", "-K", "-m", "crc=1", dev],
-                FS_OP_TIMEOUT,
-            )
-            .await?
+            host.run_cmd_bounded("mkfs.xfs", &["-f", "-K", "-m", "crc=1", dev], FS_OP_TIMEOUT)
+                .await?
         }
         Filesystem::Ext4 => {
             host.run_cmd_bounded(
