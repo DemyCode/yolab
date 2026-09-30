@@ -620,8 +620,8 @@ export function AppDetailPage() {
     return (
       <Page title="App not found">
         <p className="text-sm text-fg-muted">
-          There is no app called “{instanceName}” on this server. It may have been
-          removed.
+          There is no app called “{instanceName}” on this server. It may have
+          been removed.
         </p>
         <Link
           to="/"
@@ -655,7 +655,8 @@ export function AppDetailPage() {
       setNotice({
         tone: "error",
         title: "It could not be removed",
-        body: e instanceof Error ? e.message : "The server did not accept that.",
+        body:
+          e instanceof Error ? e.message : "The server did not accept that.",
       });
       setWorking(null);
     }

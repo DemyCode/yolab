@@ -20,19 +20,27 @@ import { SystemSubPage } from "@/pages/system/SystemSubPage";
 import { api, setUnauthorizedHandler } from "@/lib/api";
 
 const StoragePage = lazy(() =>
-  import("@/pages/system/StoragePage").then((m) => ({ default: m.StoragePage })),
+  import("@/pages/system/StoragePage").then((m) => ({
+    default: m.StoragePage,
+  })),
 );
 const BackupsPage = lazy(() =>
-  import("@/pages/system/BackupsPage").then((m) => ({ default: m.BackupsPage })),
+  import("@/pages/system/BackupsPage").then((m) => ({
+    default: m.BackupsPage,
+  })),
 );
 const NodesPage = lazy(() =>
   import("@/pages/system/NodesPage").then((m) => ({ default: m.NodesPage })),
 );
 const UpdatesPage = lazy(() =>
-  import("@/pages/system/UpdatesPage").then((m) => ({ default: m.UpdatesPage })),
+  import("@/pages/system/UpdatesPage").then((m) => ({
+    default: m.UpdatesPage,
+  })),
 );
 const TerminalPage = lazy(() =>
-  import("@/pages/system/TerminalPage").then((m) => ({ default: m.TerminalPage })),
+  import("@/pages/system/TerminalPage").then((m) => ({
+    default: m.TerminalPage,
+  })),
 );
 const LogsPage = lazy(() =>
   import("@/pages/system/LogsPage").then((m) => ({ default: m.LogsPage })),
