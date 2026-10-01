@@ -105,7 +105,10 @@ describe("roughDuration", () => {
 
 describe("creditLeft", () => {
   it("shows the credit left in euros with cents", () => {
-    expect(creditLeft(420)).toEqual({ text: "€4.20 credit left", empty: false });
+    expect(creditLeft(420)).toEqual({
+      text: "€4.20 credit left",
+      empty: false,
+    });
     expect(creditLeft(1200)).toEqual({
       text: "€12.00 credit left",
       empty: false,

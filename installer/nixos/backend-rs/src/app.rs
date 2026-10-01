@@ -1290,7 +1290,8 @@ mod tests {
         for c in "ab3k".chars() {
             app.key_account_new(KeyEvent::from(KeyCode::Char(c))).await;
         }
-        app.key_account_new(KeyEvent::from(KeyCode::Backspace)).await;
+        app.key_account_new(KeyEvent::from(KeyCode::Backspace))
+            .await;
         assert_eq!(app.acct_referral, "ab3");
         assert!(app.acct_input.is_empty());
     }
