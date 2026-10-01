@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   formatBytes,
   generateSecret,
-  creditLeft,
+  creditStatus,
+  formatEuros,
   relativeTime,
   roughDuration,
 } from "./format";
@@ -103,24 +104,47 @@ describe("roughDuration", () => {
   });
 });
 
-describe("creditLeft", () => {
+describe("creditStatus", () => {
+  const running = { suspended: false, stops_on: null };
+
   it("shows the credit left in euros with cents", () => {
-    expect(creditLeft(420)).toEqual({
+    expect(creditStatus({ credit_cents: 420, ...running })).toEqual({
       text: "€4.20 credit left",
-      empty: false,
-    });
-    expect(creditLeft(1200)).toEqual({
-      text: "€12.00 credit left",
-      empty: false,
     });
   });
 
-  it("asks for a top-up once the credit is used up or overdrawn", () => {
-    for (const cents of [0, -130, Number.NaN]) {
-      expect(creditLeft(cents)).toEqual({
-        text: "No credit left — top up to keep using YoLab",
-        empty: true,
-      });
-    }
+  it("shows a negative credit and the day tunnels and backups stop", () => {
+    expect(
+      creditStatus({
+        credit_cents: -237,
+        suspended: false,
+        stops_on: "2026-10-31",
+      }),
+    ).toEqual({
+      text: "−€2.37 — YoLab tunnels and backups will stop working at the end of 31 October 2026",
+      tone: "warn",
+    });
+  });
+
+  it("says they have stopped once the account is suspended", () => {
+    expect(
+      creditStatus({ credit_cents: -237, suspended: true, stops_on: null }),
+    ).toEqual({
+      text: "−€2.37 — YoLab tunnels and backups are stopped until you top up",
+      tone: "error",
+    });
+  });
+
+  it("does not warn at exactly zero, because nothing stops at zero", () => {
+    expect(creditStatus({ credit_cents: 0, ...running })).toEqual({
+      text: "€0.00 credit left",
+    });
+  });
+});
+
+describe("formatEuros", () => {
+  it("puts the minus sign before the euro sign", () => {
+    expect(formatEuros(-5)).toBe("−€0.05");
+    expect(formatEuros(1200)).toBe("€12.00");
   });
 });

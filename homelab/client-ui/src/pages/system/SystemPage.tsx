@@ -18,7 +18,7 @@ import { useApi } from "@/lib/useResource";
 import { CacheDot } from "@/components/CacheDot";
 import { ThemeControl } from "@/components/ThemeControl";
 import type { CacheMeta } from "@/lib/api";
-import { creditLeft, formatBytes } from "@/lib/format";
+import { creditStatus, formatBytes } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type { StorageDetailResponse } from "@/types/storage";
 import type { NodeInfo } from "@/types/nodes";
@@ -63,8 +63,13 @@ function NavRow({
       <div className="min-w-0 flex-1">
         <div className="text-sm font-medium text-fg">{label}</div>
         {detail && (
-          <div className="mt-0.5 flex items-center gap-1.5 truncate text-sm text-fg-muted">
-            <span className="truncate">{detail}</span>
+          <div
+            className={cn(
+              "mt-0.5 flex items-center gap-1.5 text-sm text-fg-muted",
+              !tone && "truncate",
+            )}
+          >
+            <span className={cn(!tone && "truncate")}>{detail}</span>
             <CacheDot cache={cache ?? null} />
           </div>
         )}
@@ -121,13 +126,15 @@ export function SystemPage() {
     "backups-s3",
     "/api/backups/s3",
   );
-  const billing = useApi<{ credit_cents: number }>(
+  const billing = useApi<{
+    credit_cents: number;
+    suspended: boolean;
+    stops_on: string | null;
+  }>(
     status.data?.console_url ? "billing-credit" : null,
     "/api/billing/balance",
   );
-  const credit = billing.data
-    ? creditLeft(billing.data.credit_cents)
-    : undefined;
+  const credit = billing.data ? creditStatus(billing.data) : undefined;
 
   const detail = storage.data?.data;
   const storageDetail = detail
@@ -219,7 +226,7 @@ export function SystemPage() {
             icon={CreditCard}
             label="Account and billing"
             detail={credit?.text ?? "Your credit, top-ups and referral code"}
-            tone={credit?.empty ? "warn" : undefined}
+            tone={credit?.tone}
             cache={billing.cache}
             external
           />

@@ -214,16 +214,7 @@ pub(crate) async fn ensure_master_config_with(
         return Ok(cfg);
     }
 
-    let resp = crate::http::client()
-        .post(format!("{url}/storage/s3"))
-        .bearer_auth(token)
-        .send()
-        .await
-        .map_err(|e| anyhow::anyhow!(e))?
-        .error_for_status()
-        .map_err(|e| anyhow::anyhow!(e))?;
-    let s3: S3StorageInfo = resp.json().await.map_err(|e| anyhow::anyhow!(e))?;
-
+    let s3 = platform_storage(url, token).await?;
     let restic_password = random_hex(32);
 
     apply_secret(
@@ -247,6 +238,68 @@ pub(crate) async fn ensure_master_config_with(
         endpoint: s3.endpoint,
         restic_password,
     })
+}
+
+async fn platform_storage(url: &str, token: &str) -> anyhow::Result<S3StorageInfo> {
+    let resp = crate::http::client()
+        .post(format!("{url}/storage/s3"))
+        .bearer_auth(token)
+        .send()
+        .await
+        .map_err(|e| anyhow::anyhow!(e))?
+        .error_for_status()
+        .map_err(|e| anyhow::anyhow!(e))?;
+    resp.json().await.map_err(|e| anyhow::anyhow!(e))
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum KeyRefresh {
+    NotEnabled,
+    Current,
+    Replaced,
+    OtherBucket,
+}
+
+pub(crate) fn key_refresh(cfg: &BackupConfig, s3: &S3StorageInfo) -> KeyRefresh {
+    if s3.bucket_name != cfg.bucket {
+        KeyRefresh::OtherBucket
+    } else if s3.access_key_id.is_empty()
+        || s3.secret_access_key.is_empty()
+        || (s3.access_key_id == cfg.access_key_id
+            && s3.secret_access_key == cfg.secret_access_key)
+    {
+        KeyRefresh::Current
+    } else {
+        KeyRefresh::Replaced
+    }
+}
+
+pub(crate) async fn refresh_master_key_with(
+    client: &Client,
+    url: &str,
+    token: &str,
+) -> anyhow::Result<KeyRefresh> {
+    let Some(cfg) = master_config(client).await? else {
+        return Ok(KeyRefresh::NotEnabled);
+    };
+    let s3 = platform_storage(url, token).await?;
+    let outcome = key_refresh(&cfg, &s3);
+    if outcome == KeyRefresh::Replaced {
+        apply_secret(
+            client,
+            MASTER_SECRET,
+            MASTER_NS,
+            &[
+                ("access_key_id", &s3.access_key_id),
+                ("secret_access_key", &s3.secret_access_key),
+                ("bucket", &cfg.bucket),
+                ("endpoint", &cfg.endpoint),
+                ("restic_password", &cfg.restic_password),
+            ],
+        )
+        .await?;
+    }
+    Ok(outcome)
 }
 
 pub(crate) async fn allow_privileged_movers(client: &Client, ns: &str) {
@@ -1065,6 +1118,158 @@ mod tests {
                 .await;
 
             assert!(ensure_master_config_with(&client, &platform.uri(), "tok")
+                .await
+                .is_err());
+        }
+
+        fn platform_key(bucket: &str, key: &str, secret: &str) -> serde_json::Value {
+            json!({
+                "bucket_name": bucket, "endpoint": "https://s3.example", "region": "eu",
+                "access_key_id": key, "secret_access_key": secret, "created_at": "now"
+            })
+        }
+
+        fn info(bucket: &str, key: &str, secret: &str) -> S3StorageInfo {
+            serde_json::from_value(platform_key(bucket, key, secret)).unwrap()
+        }
+
+        #[test]
+        fn a_key_reissued_after_a_pause_replaces_the_stored_one() {
+            assert_eq!(
+                key_refresh(&cfg(), &info("bucket-1", "AKID2", "SECRET2")),
+                KeyRefresh::Replaced
+            );
+            assert_eq!(
+                key_refresh(&cfg(), &info("bucket-1", "AKID", "SECRET2")),
+                KeyRefresh::Replaced
+            );
+        }
+
+        #[test]
+        fn the_same_key_is_left_alone() {
+            assert_eq!(
+                key_refresh(&cfg(), &info("bucket-1", "AKID", "SECRET")),
+                KeyRefresh::Current
+            );
+        }
+
+        #[test]
+        fn an_empty_key_from_the_platform_never_overwrites_a_working_one() {
+            assert_eq!(
+                key_refresh(&cfg(), &info("bucket-1", "", "")),
+                KeyRefresh::Current
+            );
+        }
+
+        #[test]
+        fn a_key_for_another_bucket_is_never_adopted() {
+            assert_eq!(
+                key_refresh(&cfg(), &info("bucket-2", "AKID2", "SECRET2")),
+                KeyRefresh::OtherBucket
+            );
+        }
+
+        #[tokio::test]
+        async fn a_reissued_key_is_written_with_the_same_recovery_key_and_bucket() {
+            let (server, client) = api_server().await;
+            serve_config(&server, 200, stored_config("pw")).await;
+            Mock::given(method("PATCH"))
+                .and(path(CONFIG_PATH))
+                .and(body_partial_json(json!({ "stringData": {
+                    "access_key_id": "AKID2", "secret_access_key": "SECRET2",
+                    "bucket": "bucket-1", "endpoint": "https://s3.example",
+                    "restic_password": "pw"
+                } })))
+                .respond_with(ResponseTemplate::new(200).set_body_json(stored_config("pw")))
+                .expect(1)
+                .mount(&server)
+                .await;
+            let platform = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/storage/s3"))
+                .and(header("authorization", "Bearer tok"))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_json(platform_key("bucket-1", "AKID2", "SECRET2")),
+                )
+                .expect(1)
+                .mount(&platform)
+                .await;
+
+            assert_eq!(
+                refresh_master_key_with(&client, &platform.uri(), "tok")
+                    .await
+                    .unwrap(),
+                KeyRefresh::Replaced
+            );
+        }
+
+        #[tokio::test]
+        async fn an_unchanged_key_writes_nothing() {
+            let (server, client) = api_server().await;
+            serve_config(&server, 200, stored_config("pw")).await;
+            Mock::given(method("PATCH"))
+                .respond_with(ResponseTemplate::new(200))
+                .expect(0)
+                .mount(&server)
+                .await;
+            let platform = MockServer::start().await;
+            Mock::given(method("POST"))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_json(platform_key("bucket-1", "AKID", "SECRET")),
+                )
+                .mount(&platform)
+                .await;
+
+            assert_eq!(
+                refresh_master_key_with(&client, &platform.uri(), "tok")
+                    .await
+                    .unwrap(),
+                KeyRefresh::Current
+            );
+        }
+
+        #[tokio::test]
+        async fn backups_that_were_never_enabled_are_not_enabled_by_a_key_refresh() {
+            let (server, client) = api_server().await;
+            serve_config(&server, 404, status(404, "NotFound")).await;
+            Mock::given(method("PATCH"))
+                .respond_with(ResponseTemplate::new(200))
+                .expect(0)
+                .mount(&server)
+                .await;
+            let platform = MockServer::start().await;
+            Mock::given(method("POST"))
+                .respond_with(ResponseTemplate::new(200))
+                .expect(0)
+                .mount(&platform)
+                .await;
+
+            assert_eq!(
+                refresh_master_key_with(&client, &platform.uri(), "tok")
+                    .await
+                    .unwrap(),
+                KeyRefresh::NotEnabled
+            );
+        }
+
+        #[tokio::test]
+        async fn an_unreachable_platform_keeps_the_stored_key() {
+            let (server, client) = api_server().await;
+            serve_config(&server, 200, stored_config("pw")).await;
+            Mock::given(method("PATCH"))
+                .respond_with(ResponseTemplate::new(200))
+                .expect(0)
+                .mount(&server)
+                .await;
+            let platform = MockServer::start().await;
+            Mock::given(method("POST"))
+                .respond_with(ResponseTemplate::new(503))
+                .mount(&platform)
+                .await;
+
+            assert!(refresh_master_key_with(&client, &platform.uri(), "tok")
                 .await
                 .is_err());
         }

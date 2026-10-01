@@ -54,15 +54,31 @@ export function roughDuration(ms: number): string {
   return hours === 1 ? "an hour" : `${hours} hours`;
 }
 
-export function creditLeft(creditCents: number): {
-  text: string;
-  empty: boolean;
-} {
-  if (!Number.isFinite(creditCents) || creditCents <= 0)
-    return { text: "No credit left — top up to keep using YoLab", empty: true };
-  const euros = new Intl.NumberFormat("en-IE", {
-    style: "currency",
-    currency: "EUR",
-  }).format(creditCents / 100);
-  return { text: `${euros} credit left`, empty: false };
+export function formatEuros(cents: number): string {
+  const sign = cents < 0 ? "−" : "";
+  return `${sign}€${(Math.abs(cents) / 100).toFixed(2)}`;
+}
+
+export function creditStatus(credit: {
+  credit_cents: number;
+  suspended: boolean;
+  stops_on: string | null;
+}): { text: string; tone?: "warn" | "error" } {
+  const amount = formatEuros(credit.credit_cents);
+  if (credit.suspended)
+    return {
+      text: `${amount} — YoLab tunnels and backups are stopped until you top up`,
+      tone: "error",
+    };
+  if (credit.stops_on) {
+    const day = new Date(`${credit.stops_on}T00:00:00Z`).toLocaleDateString(
+      "en-GB",
+      { day: "numeric", month: "long", year: "numeric", timeZone: "UTC" },
+    );
+    return {
+      text: `${amount} — YoLab tunnels and backups will stop working at the end of ${day}`,
+      tone: "warn",
+    };
+  }
+  return { text: `${amount} credit left` };
 }

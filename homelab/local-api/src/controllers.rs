@@ -14,6 +14,7 @@ pub const NAMES: &[&str] = &[
     "topology",
     "heal",
     "backup-credentials",
+    "backup-key",
     "notifier",
     "shared-names",
     "mesh-paths",
@@ -75,6 +76,12 @@ pub fn spawn_all(leader: Leadership) {
     );
     spawn(
         crate::heal::credentials::BackupCredentialsController,
+        &leader,
+    );
+    spawn(
+        backups::BackupKeyController {
+            config: crate::config::Config::from_env(),
+        },
         &leader,
     );
     spawn(
@@ -143,6 +150,12 @@ pub async fn run_named(name: &str) -> anyhow::Result<runtime::Tick> {
         }
         "backup-credentials" => {
             runtime::run_once(&crate::heal::credentials::BackupCredentialsController).await
+        }
+        "backup-key" => {
+            runtime::run_once(&backups::BackupKeyController {
+                config: crate::config::Config::from_env(),
+            })
+            .await
         }
         "notifier" => {
             runtime::run_once(&crate::notify::alerts::NotifierController {

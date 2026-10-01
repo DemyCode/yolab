@@ -479,6 +479,49 @@ impl crate::runtime::Controller for LockSweeperController {
     }
 }
 
+pub struct BackupKeyController {
+    pub config: Config,
+}
+
+impl crate::runtime::Controller for BackupKeyController {
+    fn name(&self) -> &'static str {
+        "backup-key"
+    }
+    fn scope(&self) -> crate::runtime::Scope {
+        crate::runtime::Scope::Cluster
+    }
+    fn interval(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(300)
+    }
+    fn requires(&self) -> &'static [crate::runtime::Requirement] {
+        &[crate::runtime::Requirement::KubeApi]
+    }
+    async fn reconcile(&self, _ctx: &crate::runtime::Ctx) -> anyhow::Result<crate::runtime::Tick> {
+        let Some((url, token)) = ye_creds(&self.config) else {
+            return Ok(crate::runtime::Tick::Idle(
+                "this machine is not connected to the YoLab platform".into(),
+            ));
+        };
+        let b = Backend::real().await?;
+        Ok(key_refresh_tick(refresh_master_key_with(&b.kube, &url, &token).await?))
+    }
+}
+
+fn key_refresh_tick(outcome: KeyRefresh) -> crate::runtime::Tick {
+    use crate::runtime::Tick;
+    match outcome {
+        KeyRefresh::NotEnabled => Tick::Idle("backups are not enabled".into()),
+        KeyRefresh::Current => Tick::Idle("the backup key matches the platform".into()),
+        KeyRefresh::Replaced => {
+            tracing::info!("backup key replaced with the one the platform reissued");
+            Tick::Done
+        }
+        KeyRefresh::OtherBucket => Tick::Idle(
+            "the platform names a different bucket; keeping this cluster's key".into(),
+        ),
+    }
+}
+
 pub(crate) async fn sweep_locks<H: Host>(b: &Backend<H>) -> anyhow::Result<crate::runtime::Tick> {
     let Some(cfg) = master_config(&b.kube).await? else {
         return Ok(crate::runtime::Tick::Idle("backups are not enabled".into()));
@@ -494,6 +537,19 @@ pub(crate) async fn sweep_locks<H: Host>(b: &Backend<H>) -> anyhow::Result<crate
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_replaced_key_counts_as_work_done() {
+        use crate::runtime::Tick;
+        assert!(matches!(key_refresh_tick(KeyRefresh::Replaced), Tick::Done));
+        for idle in [
+            KeyRefresh::NotEnabled,
+            KeyRefresh::Current,
+            KeyRefresh::OtherBucket,
+        ] {
+            assert!(matches!(key_refresh_tick(idle), Tick::Idle(_)));
+        }
+    }
 
     fn versions() -> restore::BackupVersions {
         let v = |id: &str| restore::AppVersion {

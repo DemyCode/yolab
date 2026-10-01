@@ -101,11 +101,17 @@ pub async fn console_link(State(state): State<AppState>) -> Result<Json<ConsoleL
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
 pub struct BillingCredit {
     pub credit_cents: i64,
+    pub suspended: bool,
+    pub stops_on: Option<String>,
 }
 
 #[derive(Deserialize)]
 struct PlatformBalance {
     balance_cents: i64,
+    #[serde(default)]
+    suspended: bool,
+    #[serde(default)]
+    stops_on: Option<String>,
 }
 
 pub async fn billing_balance(State(state): State<AppState>) -> Result<Json<BillingCredit>> {
@@ -134,6 +140,8 @@ async fn fetch_credit(
         .await?;
     Ok(BillingCredit {
         credit_cents: balance.balance_cents,
+        suspended: balance.suspended,
+        stops_on: balance.stops_on,
     })
 }
 
@@ -147,14 +155,15 @@ mod tests {
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
         #[tokio::test]
-        async fn the_credit_left_is_read_with_the_account_token() {
+        async fn the_credit_and_its_stop_date_are_read_with_the_account_token() {
             let server = MockServer::start().await;
             Mock::given(method("GET"))
                 .and(path("/billing/balance"))
                 .and(header("authorization", "Bearer tok"))
                 .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                    "balance_cents": 420,
+                    "balance_cents": -237,
                     "suspended": false,
+                    "stops_on": "2026-10-31",
                     "vat_percent": 20,
                 })))
                 .expect(1)
@@ -165,12 +174,16 @@ mod tests {
                 fetch_credit(&crate::http::Client::new(), &api, "tok")
                     .await
                     .unwrap(),
-                BillingCredit { credit_cents: 420 }
+                BillingCredit {
+                    credit_cents: -237,
+                    suspended: false,
+                    stops_on: Some("2026-10-31".into()),
+                }
             );
         }
 
         #[tokio::test]
-        async fn a_negative_balance_is_passed_through_not_clamped() {
+        async fn a_platform_without_suspension_fields_still_reports_the_credit() {
             let server = MockServer::start().await;
             Mock::given(method("GET"))
                 .and(path("/billing/balance"))
@@ -184,8 +197,29 @@ mod tests {
                 fetch_credit(&crate::http::Client::new(), &server.uri(), "tok")
                     .await
                     .unwrap(),
-                BillingCredit { credit_cents: -130 }
+                BillingCredit {
+                    credit_cents: -130,
+                    suspended: false,
+                    stops_on: None,
+                }
             );
+        }
+
+        #[tokio::test]
+        async fn a_suspended_account_is_reported_as_suspended() {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/billing/balance"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "balance_cents": -900, "suspended": true, "stops_on": null,
+                })))
+                .mount(&server)
+                .await;
+            let credit = fetch_credit(&crate::http::Client::new(), &server.uri(), "tok")
+                .await
+                .unwrap();
+            assert!(credit.suspended);
+            assert_eq!(credit.stops_on, None);
         }
 
         #[tokio::test]
