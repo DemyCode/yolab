@@ -631,6 +631,7 @@ mod tests {
             auth: auth_state(Arc::clone(&config)),
             config,
             kube: crate::k8s::Kube::with(crate::k8s::testing::unreachable()),
+            http: crate::http::Client::new(),
         }
     }
 

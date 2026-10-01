@@ -120,9 +120,7 @@ pub async fn billing_balance(State(state): State<AppState>) -> Result<Json<Billi
     let api = platform_api_url(&state.config)
         .ok_or_else(|| anyhow::anyhow!("this server is not connected to the YoLab platform"))?;
     let token = crate::config::read_account_token(&state.config.config_path);
-    Ok(Json(
-        fetch_total(&crate::http::client(), &api, &token).await?,
-    ))
+    Ok(Json(fetch_total(&state.http, &api, &token).await?))
 }
 
 async fn fetch_total(

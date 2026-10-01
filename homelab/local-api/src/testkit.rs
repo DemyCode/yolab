@@ -72,6 +72,7 @@ impl TestApi {
                 config,
                 auth,
                 kube: crate::k8s::Kube::with(kube),
+                http: crate::http::Client::new(),
             }),
             _dir: dir,
             session: None,

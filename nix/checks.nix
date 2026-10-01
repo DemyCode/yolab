@@ -311,7 +311,7 @@ in let
         "disks_reconciler.rs" = 2;
         "heal/credentials.rs" = 1;
         "heal/mod.rs" = 9;
-        "main.rs" = 1;
+        "main.rs" = 2;
         "mesh/mod.rs" = 7;
         "notify/mod.rs" = 2;
         "ops.rs" = 1;
@@ -324,7 +324,6 @@ in let
         "routers/custom_app.rs" = 8;
         "routers/disks.rs" = 4;
         "routers/logs.rs" = 1;
-        "routers/nodes.rs" = 1;
         "routers/reboot.rs" = 2;
         "routers/terminal.rs" = 1;
         "routers/update.rs" = 3;

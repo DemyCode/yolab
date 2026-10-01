@@ -87,7 +87,7 @@ pub async fn node_links(State(state): State<AppState>) -> Result<Json<Vec<NodeLi
         .to_string();
 
     Ok(Json(
-        links_to_nodes(&crate::http::client(), &platform_api_url, &account_token).await?,
+        links_to_nodes(&state.http, &platform_api_url, &account_token).await?,
     ))
 }
 

@@ -5,6 +5,7 @@ pub(crate) const ROUTE_TABLE: &[(&str, &[&str])] = &[
     ("/api/status", &["GET"]),
     ("/api/system/controllers", &["GET"]),
     ("/api/console/link", &["GET"]),
+    ("/api/billing/balance", &["GET"]),
     ("/api/update", &["POST"]),
     ("/api/update/all", &["POST"]),
     ("/api/system/reboot", &["POST"]),

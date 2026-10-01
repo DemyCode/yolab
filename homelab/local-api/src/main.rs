@@ -47,6 +47,7 @@ pub struct AppState {
     pub config: Arc<Config>,
     pub auth: AuthState,
     pub kube: k8s::Kube,
+    pub http: http::Client,
 }
 
 impl AppState {
@@ -107,6 +108,7 @@ async fn main() {
         config: Arc::clone(&cfg),
         auth: auth_state,
         kube: kube.clone(),
+        http: http::client(),
     };
 
     let app = router::build_router(state);
