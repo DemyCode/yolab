@@ -139,6 +139,40 @@ in let
         ''}
         touch $out
       '';
+    wireguard-carries-only-exposure-and-mesh = let
+      inherit (pkgs) lib;
+      interfaces = nixosSystems.yolab-ci.config.networking.wireguard.interfaces;
+      defaultRoutes = ["::/0" "0.0.0.0/0"];
+      isMainTableDefault = line:
+        builtins.match ".*route (add|replace) (::/0|0\\.0\\.0\\.0/0|default) dev .*" line
+        != null
+        && builtins.match ".*table .*" line == null;
+      routesPeerDefault = i:
+        (i.allowedIPsAsRoutes or true)
+        && lib.any (p: lib.any (a: builtins.elem a defaultRoutes) p.allowedIPs) i.peers;
+      problems =
+        lib.optional (!(interfaces ? wg0)) "wg0 is gone, so this check proves nothing"
+        ++ lib.concatLists (lib.mapAttrsToList (
+            name: i:
+              map (l: "${name} postSetup routes everything through the tunnel: ${l}")
+              (builtins.filter isMainTableDefault (lib.splitString "\n" (i.postSetup or "")))
+              ++ lib.optional (routesPeerDefault i)
+              "${name} turns a peer's catch-all allowedIPs into a main-table default route"
+          )
+          interfaces);
+    in
+      pkgs.runCommand "wireguard-carries-only-exposure-and-mesh" {} ''
+        ${lib.concatMapStrings (p: "echo ${lib.escapeShellArg p} >&2\n") problems}
+        ${lib.optionalString (problems != []) ''
+          echo "" >&2
+          echo "WireGuard exists to make public addresses reachable and to link the" >&2
+          echo "machines. Outbound internet traffic from the OS and from apps must leave" >&2
+          echo "through the machine's own connection, never through the YoLab server." >&2
+          exit 1
+        ''}
+        touch $out
+      '';
+
     self-healing-timers-can-re-arm = let
       allowlist = ["yolab-ceph-bootstrap"];
       services = nixosSystems.yolab-ci.config.systemd.services;

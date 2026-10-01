@@ -152,6 +152,15 @@ assert_contains "$(wg_conf)" 'Endpoint = 1.2.3.4:51820' "wg0.conf peer"
 assert_contains "$(wg_conf)" '2001:db8::99/128' "wg0.conf address"
 case_end
 
+case_start "the app tunnel carries only replies from its public address, never the app's own outbound traffic"
+respond create 200 "$TUNNEL_BODY"
+respond records 200 "$RECORD_BODY"
+run_setup
+assert_contains "$(wg_conf)" 'Table = off' "wg-quick must not install a default route"
+assert_contains "$(wg_conf)" 'ip -6 rule add from 2001:db8::99 lookup 51820' "only the public address is steered into the tunnel"
+assert_missing "$(wg_conf | grep -o 'route add ::/0 dev wg0[^;]*' | grep -v 'table 51820')" '::/0' "a default route through the tunnel outside table 51820"
+case_end
+
 case_start "the env file exports what the app containers source"
 respond create 200 "$TUNNEL_BODY"
 respond records 200 "$RECORD_BODY"

@@ -114,22 +114,17 @@ in {
       wireguard.interfaces.wg0 = {
         ips = ["${s.tunnelCfg.sub_ipv6}/128"];
         privateKey = s.tunnelCfg.wg_private_key;
+        allowedIPsAsRoutes = false;
 
         postSetup = ''
           # B. Source policy: public address always exits wg0.
           ip -6 rule add from ${s.tunnelCfg.sub_ipv6} lookup 51820 priority 100 2>/dev/null || true
           ip -6 route replace ::/0 dev wg0 table 51820 2>/dev/null || true
-
-          # C. Default route: pod traffic exits via wg0 for outbound IPv6.
-          #    metric 200 loses to any ISP-provided default route and wins only
-          #    when no ISP IPv6 exists.
-          ip -6 route replace ::/0 dev wg0 metric 200 2>/dev/null || true
         '';
 
         preShutdown = ''
           ip -6 rule del from ${s.tunnelCfg.sub_ipv6} lookup 51820 priority 100 2>/dev/null || true
           ip -6 route del ::/0 dev wg0 table 51820 2>/dev/null || true
-          ip -6 route del ::/0 dev wg0 metric 200 2>/dev/null || true
         '';
 
         peers = [
