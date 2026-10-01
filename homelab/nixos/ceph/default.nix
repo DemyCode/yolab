@@ -85,6 +85,12 @@ in {
         authClusterRequired = "cephx";
         authServiceRequired = "cephx";
         authClientRequired = "cephx";
+        mgrModulePath = pkgs.applyPatches {
+          name = "ceph-mgr-modules";
+          src = "${pkgs.ceph.lib}/lib/ceph/mgr";
+          patches = [./patches/mgr-dashboard-flat-progress-refs.patch];
+          patchFlags = ["-p4"];
+        };
       };
 
       extraConfig = {

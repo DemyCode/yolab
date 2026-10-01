@@ -493,6 +493,30 @@ in let
         touch $out
       '';
 
+    ceph-dashboard-survives-a-cephfs-clone-progress-event = let
+      modules = nixosSystems.yolab-ci.config.services.ceph.global.mgrModulePath;
+    in
+      pkgs.runCommand "ceph-dashboard-survives-a-cephfs-clone-progress-event" {nativeBuildInputs = [pkgs.python3];} ''
+        mkdir -p pkg/dashboard/services
+        echo "mgr = None" > pkg/dashboard/__init__.py
+        touch pkg/dashboard/services/__init__.py pkg/dashboard/services/rbd.py
+        cp ${modules}/dashboard/services/progress.py pkg/dashboard/services/
+        PYTHONPATH=pkg python3 - <<'EOF'
+        from dashboard.services.progress import _progress_event_to_dashboard_task
+
+        def finished(refs):
+            return {"message": "1 ongoing clones", "refs": refs, "started_at": 0,
+                    "finished_at": 1, "progress": 1.0}
+
+        clone = _progress_event_to_dashboard_task(finished(["mds", "clone"]), True)
+        assert clone["metadata"] == {"raw_refs": ["mds", "clone"]}, clone
+
+        paired = _progress_event_to_dashboard_task(finished([["pool", "images"]]), True)
+        assert paired["metadata"] == {"pool": "images"}, paired
+        EOF
+        touch $out
+      '';
+
     catalog-apps-have-a-tagline = let
       uncurated = [
         "babybuddy"
