@@ -14,7 +14,7 @@ established world (DESIGN.md, "App UI" section); no new identity.
 
 The person who installed an app, or someone in their household, opening one app's page.
 They come to answer three questions in order: *can I open it*, *is it OK*, *is it safe*
-(backed up). Primary action: **Open** the app. Everything else is occasional:
+(backed up). No primary button: its web addresses are the first rows of Access. Everything else is occasional:
 passwords, backups, restore, update, duplicate, remove, logs.
 
 ## States and ranges
@@ -34,10 +34,10 @@ Refuses the admin-panel stack of equal-weight buttons, badges and forms.
 section headings outside the card, one Signal Blue button, quiet blue row actions,
 mono for every value, status as a coloured dot plus plain words.
 
-**STORY.** The header says what it is and whether it is running, with Open beside it.
+**STORY.** The header says what it is and whether it is running.
 Below: Access, Backups, About (version, copy, ID, technical details), and Remove last.
 
-**FIRST VIEWPORT.** Icon, name, status line and Open; the single status banner when
+**FIRST VIEWPORT.** Icon, name and status line; the single status banner when
 there is one; the Access section beginning beneath.
 
 **FORM.** A settings-list detail page in the category standard (1Password item view,

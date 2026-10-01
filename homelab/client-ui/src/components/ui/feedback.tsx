@@ -11,7 +11,9 @@ import { buttonClass } from "@/components/ui/button-variants";
 import type { ReactNode } from "react";
 
 export function Skeleton({ className }: { className?: string }) {
-  return <div className={cn("shimmer rounded-xl bg-surface-2", className)} />;
+  return (
+    <div className={cn("shimmer rounded-control bg-surface-2", className)} />
+  );
 }
 
 export function Spinner({ className }: { className?: string }) {
@@ -113,7 +115,7 @@ export function ServiceTrouble({ onRetry }: { onRetry: () => void }) {
     <EmptyState
       icon={<WifiOff className="h-6 w-6" />}
       title="Having trouble reaching your services"
-      body="This is usually brief — the box may just be busy for a moment. Try again in a bit."
+      body="This is usually brief — the server may just be busy for a moment. Try again in a bit."
       action={
         <button
           type="button"

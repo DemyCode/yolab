@@ -30,16 +30,10 @@ export function LoginPage({ onLogin }: { onLogin: () => void }) {
   }
 
   return (
-    <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-bg p-5">
-      {}
-      <div
-        aria-hidden
-        className="pointer-events-none absolute -top-40 left-1/2 h-[34rem] w-[34rem] -translate-x-1/2 rounded-full bg-primary/10 blur-3xl"
-      />
-
-      <div className="relative w-full max-w-sm animate-rise-in">
+    <div className="flex min-h-screen items-center justify-center bg-bg p-5">
+      <div className="w-full max-w-sm animate-rise-in">
         <div className="mb-8 flex flex-col items-center gap-4 text-center">
-          <Logo className="h-12 w-12" />
+          <Logo className="h-16" />
           <div>
             <h1 className="font-display text-3xl text-fg">Welcome home</h1>
             <p className="mt-1.5 text-sm text-fg-muted">
@@ -50,7 +44,7 @@ export function LoginPage({ onLogin }: { onLogin: () => void }) {
 
         <form
           onSubmit={submit}
-          className="space-y-4 rounded-card border border-border bg-surface p-6 shadow-[var(--shadow-lift)]"
+          className="space-y-4 rounded-card border border-border bg-surface p-6 shadow-[var(--shadow-card)]"
         >
           <Field label="Password" error={error || null} htmlFor="password">
             <Input

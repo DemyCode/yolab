@@ -90,7 +90,7 @@ const DROPPED: StreamResult = {
   ok: false,
   dropped: true,
   error:
-    "The connection to your box dropped. What it was doing keeps going there.",
+    "The connection to your server dropped. What it was doing keeps going there.",
 };
 
 export async function streamEvents(

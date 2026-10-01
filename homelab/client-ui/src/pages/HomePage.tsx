@@ -72,13 +72,11 @@ export function HomePage() {
           </h1>
           <p className="mt-1 flex items-center gap-2 text-sm text-fg-muted">
             Everything running at home. Tap one to open it.
-            {}
             <CacheDot cache={health.cache ?? apps.cache} />
           </p>
         </div>
       </header>
 
-      {}
       <HealBanner className="mb-6" />
 
       {concern && (
@@ -89,7 +87,7 @@ export function HomePage() {
           action={
             concern.tone !== "info" ? (
               <Link
-                to="/box/storage"
+                to="/system/storage"
                 className={buttonClass({ size: "sm", variant: "secondary" })}
               >
                 Look at storage
@@ -98,11 +96,13 @@ export function HomePage() {
           }
         >
           {concern.body}
-          {}
           {(concern.more ?? 0) > 0 && (
             <>
               {" "}
-              <Link to="/box/storage" className="underline underline-offset-2">
+              <Link
+                to="/system/storage"
+                className="underline underline-offset-2"
+              >
                 {concern.more} other {concern.more === 1 ? "issue" : "issues"}
               </Link>
             </>

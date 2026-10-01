@@ -328,10 +328,9 @@ describe("availableActions", () => {
     expect(availableActions("ready", true).size).toBe(0);
   });
 
-  it("does not offer to open or back up an app that is not up yet", () => {
+  it("does not offer to back up an app that is not up yet", () => {
     for (const state of ["starting", "copying"] as const) {
       const actions = availableActions(state, false);
-      expect(actions.has("open")).toBe(false);
       expect(actions.has("backup")).toBe(false);
       expect(actions.has("remove")).toBe(true);
     }
@@ -340,7 +339,7 @@ describe("availableActions", () => {
   it("offers a running app everything but a retry", () => {
     const actions = availableActions("ready", false);
     expect(actions.has("retry")).toBe(false);
-    expect(actions.has("open")).toBe(true);
+    expect(actions.has("backup")).toBe(true);
     expect(actions.has("update")).toBe(true);
   });
 });

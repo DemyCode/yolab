@@ -15,6 +15,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { Switch } from "@/components/ui/input";
 import { Sheet } from "@/components/ui/sheet";
 import { Banner, Skeleton } from "@/components/ui/feedback";
 import { ForceHealCard } from "@/components/ForceHeal";
@@ -355,7 +356,6 @@ function DiskRow({
             )}
           </p>
         </div>
-        {}
         {disk.message && (
           <p className="mt-1 text-sm text-fg-muted">{disk.message}</p>
         )}
@@ -389,27 +389,13 @@ function DiskRow({
         </div>
       )}
 
-      {}
       {state !== "unidentified" && !confirm && (
-        <button
-          onClick={() => void toggle()}
+        <Switch
+          checked={isOn}
+          onChange={() => void toggle()}
           disabled={busy}
-          role="switch"
-          aria-checked={isOn}
-          aria-label={isOn ? `Stop using ${label}` : `Use ${label}`}
-          className={cn(
-            "relative inline-flex h-7 w-12 shrink-0 items-center rounded-full transition-colors",
-            isOn ? "bg-primary" : "bg-surface-3",
-            busy && "cursor-not-allowed opacity-50",
-          )}
-        >
-          <span
-            className={cn(
-              "inline-block h-6 w-6 rounded-full bg-white shadow transition-transform",
-              isOn ? "translate-x-[1.375rem]" : "translate-x-0.5",
-            )}
-          />
-        </button>
+          label={isOn ? `Stop using ${label}` : `Use ${label}`}
+        />
       )}
     </div>
   );
@@ -448,7 +434,7 @@ function DiskList({
       <Card className="divide-y divide-border p-0">
         {[0, 1].map((i) => (
           <div key={i} className="flex items-center gap-4 px-5 py-4">
-            <Skeleton className="h-5 w-5 rounded-lg" />
+            <Skeleton className="h-5 w-5 rounded-control" />
             <div className="flex-1 space-y-2">
               <Skeleton className="h-4 w-40" />
               <Skeleton className="h-3 w-24" />
@@ -768,7 +754,7 @@ function RedundancySheet({
       onClick={onClick}
       disabled={disabled}
       className={cn(
-        "flex-1 rounded-xl border px-4 py-3 text-left transition-colors",
+        "flex-1 rounded-control border px-4 py-3 text-left transition-colors",
         disabled
           ? "cursor-not-allowed border-border text-fg-subtle opacity-50"
           : active
@@ -851,7 +837,6 @@ function RedundancySheet({
               <p className="mb-2 text-sm font-medium text-fg">
                 How many copies
               </p>
-              {}
               <div className="flex items-center gap-4">
                 <Button
                   size="sm"
@@ -922,7 +907,7 @@ function RedundancySheet({
               </Banner>
             )}
 
-            <div className="rounded-xl bg-surface-2 p-4">
+            <div className="rounded-control bg-surface-2 p-4">
               <p className="text-sm text-fg-muted">
                 Room for your files with this setting
               </p>
@@ -1043,7 +1028,7 @@ function OsdTable({
   const hosts = [...new Set(osds.map((o) => o.host))].sort();
 
   return (
-    <div className="overflow-x-auto rounded-xl border border-border">
+    <div className="overflow-x-auto rounded-control border border-border">
       <table className="w-full text-sm">
         <thead>
           <tr className="border-b border-border">
@@ -1076,7 +1061,7 @@ function OsdTable({
             const hostOsds = osds.filter((o) => o.host === host);
             return hostOsds.map((osd, idx) => (
               <tr key={osd.id}>
-                <td className="py-3 pl-5 pr-4 font-mono text-xs text-primary">
+                <td className="py-3 pl-5 pr-4 font-mono text-xs text-fg-muted">
                   {osd.name}
                 </td>
                 <td className="px-4 py-3 text-xs text-fg-muted">
@@ -1116,7 +1101,6 @@ function OsdTable({
                   <VarBadge v={osd.var} />
                 </td>
                 <td className="px-4 py-3">
-                  {}
                   <OsdPill on={osd.reweight > 0.5} labels={["In", "Out"]} />
                 </td>
                 <td className="px-4 py-3">
@@ -1183,9 +1167,7 @@ function AdvancedPanel({
 
       {open && (
         <div className="mt-4 space-y-6">
-          {}
           <div className="flex items-center justify-end">
-            {}
             <Button
               size="sm"
               variant="ghost"
@@ -1199,11 +1181,10 @@ function AdvancedPanel({
             </Button>
           </div>
 
-          {}
           {osds.length > 0 && <OsdTable osds={osds} onRefresh={onRefresh} />}
 
           {creds && (
-            <div className="space-y-3 rounded-xl border border-border p-4">
+            <div className="space-y-3 rounded-control border border-border p-4">
               <p className="text-sm font-medium text-fg">Ceph dashboard</p>
               <div className="flex items-center justify-between">
                 <span className="text-sm text-fg-muted">Username</span>
@@ -1296,7 +1277,6 @@ export function StoragePage() {
         </Banner>
       )}
 
-      {}
       <div className="flex items-center justify-end -mb-3">
         <CacheDot cache={detailRes.cache} />
       </div>
@@ -1360,7 +1340,6 @@ export function StoragePage() {
         refreshing={detailRes.loading}
       />
 
-      {}
       <OfflineDiskBanner detail={detail} policy={policyRes.data} />
     </div>
   );

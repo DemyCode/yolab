@@ -39,7 +39,7 @@ function QrCode({ value, size = 184 }: { value: string; size?: number }) {
       viewBox={`${-quiet} ${-quiet} ${count + quiet * 2} ${count + quiet * 2}`}
       role="img"
       aria-label="QR code to subscribe to notifications"
-      className="rounded-md bg-white"
+      className="rounded-control bg-white"
       shapeRendering="crispEdges"
     >
       <rect
@@ -80,8 +80,8 @@ export function NotificationsCard() {
     <Card>
       <CardContent className="space-y-4 pt-5 pb-5">
         <div className="flex items-start gap-3">
-          <div className="mt-0.5 rounded-md bg-primary/10 p-1.5">
-            <Bell className="h-4 w-4 text-primary" strokeWidth={1.75} />
+          <div className="mt-0.5 rounded-control bg-surface-2 p-1.5">
+            <Bell className="h-4 w-4 text-fg-muted" strokeWidth={1.75} />
           </div>
           <div className="min-w-0">
             <p className="text-sm font-medium text-fg">Phone notifications</p>

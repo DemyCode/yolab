@@ -50,7 +50,7 @@ function NavRow({
     <>
       <div
         className={cn(
-          "flex h-10 w-10 shrink-0 items-center justify-center rounded-xl",
+          "flex h-10 w-10 shrink-0 items-center justify-center rounded-control",
           tone === "error"
             ? "bg-danger-soft text-danger"
             : tone === "warn"
@@ -107,7 +107,7 @@ function NavRow({
   );
 }
 
-export function BoxPage() {
+export function SystemPage() {
   const { signOut } = useOutletContext<{ signOut: () => void }>();
 
   const health = useApi<ClusterHealth>("health", "/api/cluster/health");
@@ -161,12 +161,12 @@ export function BoxPage() {
 
   return (
     <Page
-      title="Box"
+      title="System"
       subtitle="Storage, backups and the machines everything runs on."
     >
       <Card className="mb-4 overflow-hidden p-0">
         <NavRow
-          to="/box/storage"
+          to="/system/storage"
           icon={Database}
           label="Storage"
           detail={storageDetail}
@@ -180,7 +180,7 @@ export function BoxPage() {
           }
         />
         <NavRow
-          to="/box/backups"
+          to="/system/backups"
           icon={Cloud}
           label="Backups"
           cache={backups.cache}
@@ -194,19 +194,18 @@ export function BoxPage() {
           tone={backups.data && !backups.data.configured ? "warn" : undefined}
         />
         <NavRow
-          to="/box/machines"
+          to="/system/machines"
           icon={Server}
           label="Machines"
           detail={nodesDetail}
           cache={nodes.cache}
         />
         <NavRow
-          to="/box/system"
+          to="/system/updates"
           icon={Wrench}
-          label="Updates and system"
+          label="Updates"
           detail={status.data?.platform}
         />
-        {}
         {status.data?.console_url && (
           <NavRow
             onClick={openConsole}
@@ -231,15 +230,14 @@ export function BoxPage() {
         wrong and someone is helping you.
       </p>
       <Card className="mb-4 overflow-hidden p-0">
-        {}
         <NavRow
-          to="/box/logs"
+          to="/system/logs"
           icon={ScrollText}
           label="Logs"
           detail="What the machine has been saying"
         />
         <NavRow
-          to="/box/terminal"
+          to="/system/terminal"
           icon={TerminalSquare}
           label="Terminal"
           detail="Run commands on the machine"
@@ -251,7 +249,7 @@ export function BoxPage() {
           onClick={() => void signOut()}
           icon={LogOut}
           label="Sign out"
-          detail="Leave this box on this device"
+          detail="Sign out of your server on this device"
         />
       </Card>
     </Page>

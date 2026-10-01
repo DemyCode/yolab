@@ -13,7 +13,7 @@ export function CacheDot({
 
   const seconds = Math.max(1, Math.round(cache.ageMs / 1000));
   const title =
-    `Cached: showing a value from ${seconds}s ago while the box recalculates it. ` +
+    `Cached: showing a value from ${seconds}s ago while the server recalculates it. ` +
     `It will update on its own in a moment.`;
 
   return (
