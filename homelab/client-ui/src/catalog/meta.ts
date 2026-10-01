@@ -37,6 +37,10 @@ export const APP_META: Record<string, AppMeta> = {
     group: "watch",
   },
   jellyseerr: { tagline: "Ask for a film and have it appear", group: "watch" },
+  "media-stack": {
+    tagline: "Jellyfin plus everything that fills it, private behind a VPN",
+    group: "watch",
+  },
   qbittorrent: { tagline: "Download large files", group: "watch" },
   metube: {
     tagline: "Save videos from the web to watch later",
