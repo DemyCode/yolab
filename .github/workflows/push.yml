@@ -83,6 +83,7 @@ jobs:
           cat /tmp/out.txt
 
       - name: Push to the Nix cache
+        continue-on-error: true
         env:
           ATTIC_AUTH_TOKEN: ${{ secrets.ATTIC_AUTH_TOKEN }}
         if: ${{ env.ATTIC_AUTH_TOKEN != '' }}
@@ -393,6 +394,7 @@ jobs:
           echo "ISO store path: $ISO_OUT"
 
       - name: Push to the Nix cache
+        continue-on-error: true
         env:
           ATTIC_AUTH_TOKEN: ${{ secrets.ATTIC_AUTH_TOKEN }}
         if: ${{ env.ATTIC_AUTH_TOKEN != '' }}
