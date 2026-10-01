@@ -157,7 +157,7 @@ function EnableCard({ onEnable }: { onEnable: () => Promise<void> }) {
   return (
     <Card>
       <CardContent className="flex items-start gap-3 py-5">
-        <div className="mt-0.5 shrink-0 rounded-md bg-warning-soft p-1.5">
+        <div className="mt-0.5 shrink-0 rounded-control bg-warning-soft p-1.5">
           <Database className="h-4 w-4 text-warning" strokeWidth={1.75} />
         </div>
         <div className="flex-1">

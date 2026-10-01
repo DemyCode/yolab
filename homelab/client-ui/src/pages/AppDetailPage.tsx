@@ -1,11 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { ArrowLeft, ExternalLink, RefreshCw } from "lucide-react";
+import { ArrowLeft, RefreshCw } from "lucide-react";
 import { Page } from "@/components/AppShell";
 import { AppAccess } from "@/components/AppAccess";
 import { AppIconTile } from "@/components/AppIcon";
 import { Button } from "@/components/ui/button";
-import { buttonClass } from "@/components/ui/button-variants";
 import { ConfirmDialog, Sheet } from "@/components/ui/sheet";
 import {
   Banner,
@@ -398,55 +397,53 @@ function BackupsSection({
   canBackUp: boolean;
   canRestore: boolean;
   onRestore: () => void;
-  onChanged: () => void;
+  onChanged: () => Promise<unknown>;
 }) {
-  const [enabled, setEnabled] = useState(app.backup.enabled);
-  const [schedule, setSchedule] = useState(app.backup.schedule);
+  const [pending, setPending] = useState<{
+    enabled: boolean;
+    schedule: string;
+  } | null>(null);
+  const [starting, setStarting] = useState(false);
   const [custom, setCustom] = useState(
     !BACKUP_PRESETS.some((p) => p.cron === app.backup.schedule),
   );
   const [draft, setDraft] = useState(app.backup.schedule);
-  const [running, setRunning] = useState(app.backup.running);
   const [note, setNote] = useState<{ ok: boolean; text: string } | null>(null);
 
-  useEffect(() => {
-    setEnabled(app.backup.enabled);
-    setSchedule(app.backup.schedule);
-    setDraft(app.backup.schedule);
-  }, [app.backup.enabled, app.backup.schedule]);
-  useEffect(() => setRunning(app.backup.running), [app.backup.running]);
+  const enabled = pending?.enabled ?? app.backup.enabled;
+  const schedule = pending?.schedule ?? app.backup.schedule;
+  const running = starting || app.backup.running;
 
   async function save(next: { enabled: boolean; schedule: string }) {
-    const before = { enabled, schedule };
-    setEnabled(next.enabled);
-    setSchedule(next.schedule);
+    setPending(next);
     setNote(null);
     try {
       await api.put(`/api/apps/${app.instance_name}/backup`, next);
       setNote({ ok: true, text: "Saved" });
-      onChanged();
+      await onChanged();
     } catch (e) {
-      setEnabled(before.enabled);
-      setSchedule(before.schedule);
       setNote({
         ok: false,
         text: e instanceof Error ? e.message : "Could not save that.",
       });
+    } finally {
+      setPending(null);
     }
   }
 
   async function backupNow() {
-    setRunning(true);
+    setStarting(true);
     setNote(null);
     try {
       await api.post(`/api/backups/apps/yolab-${app.instance_name}/run-now`);
-      onChanged();
+      await onChanged();
     } catch (e) {
-      setRunning(false);
       setNote({
         ok: false,
         text: e instanceof Error ? e.message : "Could not start a backup.",
       });
+    } finally {
+      setStarting(false);
     }
   }
 
@@ -484,6 +481,7 @@ function BackupsSection({
               value={custom ? "__custom" : schedule}
               onChange={(e) => {
                 if (e.target.value === "__custom") {
+                  setDraft(schedule);
                   setCustom(true);
                   return;
                 }
@@ -522,7 +520,7 @@ function BackupsSection({
                 </Button>
               </div>
               <p className="mt-1.5 text-xs text-fg-subtle">
-                Minute, hour, day, month, weekday, in the box&rsquo;s time.{" "}
+                Minute, hour, day, month, weekday, in the server&rsquo;s time.{" "}
                 <code className="font-mono">0 3 * * *</code> is every day at
                 03:00.
               </p>
@@ -622,8 +620,8 @@ export function AppDetailPage() {
     return (
       <Page title="App not found">
         <p className="text-sm text-fg-muted">
-          There is no app called “{instanceName}” on this box. It may have been
-          removed.
+          There is no app called “{instanceName}” on this server. It may have
+          been removed.
         </p>
         <Link
           to="/"
@@ -657,7 +655,8 @@ export function AppDetailPage() {
       setNotice({
         tone: "error",
         title: "It could not be removed",
-        body: e instanceof Error ? e.message : "The box did not accept that.",
+        body:
+          e instanceof Error ? e.message : "The server did not accept that.",
       });
       setWorking(null);
     }
@@ -865,17 +864,6 @@ export function AppDetailPage() {
           </h1>
           <StatusLine state={state} version={version} />
         </div>
-        {actions.has("open") && links[0] && (
-          <a
-            href={links[0].url}
-            target="_blank"
-            rel="noopener noreferrer"
-            className={cn(buttonClass(), "w-full sm:w-auto")}
-          >
-            Open
-            <ExternalLink className="h-4 w-4" />
-          </a>
-        )}
       </header>
 
       {shown && <div className="mt-6">{shown}</div>}
@@ -894,7 +882,7 @@ export function AppDetailPage() {
           canBackUp={actions.has("backup")}
           canRestore={actions.has("restore")}
           onRestore={() => setRestoreOpen(true)}
-          onChanged={() => void apps.refresh()}
+          onChanged={() => apps.refresh()}
         />
       )}
 

@@ -130,7 +130,7 @@ fn heal_alert(problem: &str) -> Alert {
         key: format!("heal:{problem}"),
         title: title.to_string(),
         message: "Open the Storage page to see what is wrong.".into(),
-        page: "/box/storage".into(),
+        page: "/system/storage".into(),
     }
 }
 
@@ -183,7 +183,7 @@ fn backup_alerts(
                 key: format!("backup:{namespace}"),
                 title: format!("{name} could not be backed up"),
                 message: why.to_string(),
-                page: "/box/backups".into(),
+                page: "/system/backups".into(),
             });
             continue;
         }
@@ -203,7 +203,7 @@ fn backup_alerts(
                     Some(hours) => format!("The last good copy is {hours}h old."),
                     None => "It has never been backed up.".to_string(),
                 },
-                page: "/box/backups".into(),
+                page: "/system/backups".into(),
             });
         }
     }
@@ -254,7 +254,7 @@ fn disk_source() -> Source {
                     key: format!("disk:{disk}"),
                     title: "A disk could not be added".into(),
                     message,
-                    page: "/box/storage".into(),
+                    page: "/system/storage".into(),
                 })
                 .collect(),
         ),
@@ -349,7 +349,7 @@ mod tests {
             key: key.into(),
             title: format!("title of {key}"),
             message: "m".into(),
-            page: "/box/storage".into(),
+            page: "/system/storage".into(),
         }
     }
 
@@ -523,7 +523,7 @@ mod tests {
         assert_eq!(raised.priority, 4);
         assert_eq!(
             raised.click.as_deref(),
-            Some("https://cluster.6.yolab.io/box/storage")
+            Some("https://cluster.6.yolab.io/system/storage")
         );
         let cleared = notification(&Change::Cleared(heal_alert("data_unreachable")), &tunnel());
         assert_eq!(cleared.title, "YoLab: resolved");
@@ -532,13 +532,13 @@ mod tests {
             key: "disk:sdb".into(),
             title: "A disk could not be added".into(),
             message: "busy".into(),
-            page: "/box/storage".into(),
+            page: "/system/storage".into(),
         };
         let n = notification(&Change::Raised(disk), &tunnel());
         assert_eq!(n.title, "node1: A disk could not be added");
         assert_eq!(
             n.click.as_deref(),
-            Some("https://node1.6.yolab.io/box/storage")
+            Some("https://node1.6.yolab.io/system/storage")
         );
     }
 

@@ -63,7 +63,6 @@ export function Sheet({
           "sm:mx-4",
         )}
       >
-        {}
         <div className="mx-auto mt-3 h-1 w-10 shrink-0 rounded-full bg-border-strong sm:hidden" />
 
         {(title || subtitle) && (
@@ -80,7 +79,7 @@ export function Sheet({
             </div>
             <button
               onClick={onClose}
-              className="-mr-1 shrink-0 rounded-lg p-2 text-fg-muted hover:bg-surface-2 hover:text-fg"
+              className="-mr-1 shrink-0 rounded-control p-2 text-fg-muted hover:bg-surface-2 hover:text-fg"
               aria-label="Close"
             >
               <X className="h-5 w-5" />

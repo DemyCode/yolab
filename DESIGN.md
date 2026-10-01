@@ -213,7 +213,7 @@ to state (a card under the pointer). There is no ambient shadow on resting text 
 ## Shapes
 
 Tight, technical corners. Cards and panels use a `14px` radius; buttons, inputs and small
-surfaces `10px`; the brand mark `7px`. Pills (`999px`) are reserved for filter chips and
+surfaces `10px`. Pills (`999px`) are reserved for filter chips and
 status badges. Borders are always `1px` hairlines, `border` at rest and `border-strong` on
 interactive controls — never a coloured left or right accent bar.
 
@@ -251,6 +251,14 @@ hairline; a shadow appears once the page scrolls. Links are muted at rest, ink o
 with a soft ink wash behind the hovered item. Below `60rem` the links collapse into a
 full-width sheet behind a single Menu button — the nav never disappears without a
 replacement.
+
+### Logo
+
+The mark is a house with its cloud parked in front of it. It is only ever placed from
+the outlined files in `brand/yolab-logo` (horizontal lockup in navigation, symbol where
+space is square, the no-door small symbol below 32px, reversed on dark grounds), never
+retyped, recoloured or rebuilt in CSS. Clear space, minimum sizes and approved pairs are in
+that kit's `GUIDELINES.md`.
 
 ### Product Surface (signature)
 
@@ -301,7 +309,9 @@ between blocks.
 ### Actions
 
 - **Primary**: one filled Signal Blue button per screen, for the thing the screen exists
-  for (Open, Install, Continue). Never for Save, never for a secondary task.
+  for (Install, Sign in, Continue). A page that is about one thing, like an app's page,
+  may have none: its addresses are rows in Access. Never for Save, never for a secondary
+  task.
 - **Row action**: quiet blue text inside the row it affects ("Back up now",
   "Update to 1.3"). Actions live next to what they change; there are no free-floating
   button rows.

@@ -1,5 +1,12 @@
 import { lazy, Suspense, useCallback, useEffect, useState } from "react";
-import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
+import {
+  BrowserRouter,
+  Navigate,
+  Route,
+  Routes,
+  useLocation,
+} from "react-router-dom";
+import { fromOldBoxPath } from "@/lib/routes";
 import { AppShell } from "@/components/AppShell";
 import { Spinner } from "@/components/ui/feedback";
 import { LoginPage } from "@/pages/LoginPage";
@@ -8,28 +15,41 @@ import { AppsPage } from "@/pages/AppsPage";
 import { InstallPage } from "@/pages/InstallPage";
 import CustomAppPage from "@/pages/CustomAppPage";
 import { AppDetailPage } from "@/pages/AppDetailPage";
-import { BoxPage } from "@/pages/box/BoxPage";
-import { BoxSubPage } from "@/pages/box/BoxSubPage";
+import { SystemPage } from "@/pages/system/SystemPage";
+import { SystemSubPage } from "@/pages/system/SystemSubPage";
 import { api, setUnauthorizedHandler } from "@/lib/api";
 
 const StoragePage = lazy(() =>
-  import("@/pages/box/StoragePage").then((m) => ({ default: m.StoragePage })),
+  import("@/pages/system/StoragePage").then((m) => ({
+    default: m.StoragePage,
+  })),
 );
 const BackupsPage = lazy(() =>
-  import("@/pages/box/BackupsPage").then((m) => ({ default: m.BackupsPage })),
+  import("@/pages/system/BackupsPage").then((m) => ({
+    default: m.BackupsPage,
+  })),
 );
 const NodesPage = lazy(() =>
-  import("@/pages/box/NodesPage").then((m) => ({ default: m.NodesPage })),
+  import("@/pages/system/NodesPage").then((m) => ({ default: m.NodesPage })),
 );
-const SystemPage = lazy(() =>
-  import("@/pages/box/SystemPage").then((m) => ({ default: m.SystemPage })),
+const UpdatesPage = lazy(() =>
+  import("@/pages/system/UpdatesPage").then((m) => ({
+    default: m.UpdatesPage,
+  })),
 );
 const TerminalPage = lazy(() =>
-  import("@/pages/box/TerminalPage").then((m) => ({ default: m.TerminalPage })),
+  import("@/pages/system/TerminalPage").then((m) => ({
+    default: m.TerminalPage,
+  })),
 );
 const LogsPage = lazy(() =>
-  import("@/pages/box/LogsPage").then((m) => ({ default: m.LogsPage })),
+  import("@/pages/system/LogsPage").then((m) => ({ default: m.LogsPage })),
 );
+
+function OldBoxPath() {
+  const { pathname } = useLocation();
+  return <Navigate to={fromOldBoxPath(pathname)} replace />;
+}
 
 function Loading() {
   return (
@@ -75,86 +95,86 @@ export default function App() {
             <Route path="/add" element={<AppsPage />} />
             <Route path="/add/custom" element={<CustomAppPage />} />
             <Route path="/add/:appId" element={<InstallPage />} />
-            <Route path="/box" element={<BoxPage />} />
+            <Route path="/system" element={<SystemPage />} />
             <Route
-              path="/box/storage"
+              path="/system/storage"
               element={
-                <BoxSubPage
+                <SystemSubPage
                   title="Storage"
                   subtitle="The disks your apps keep their data on."
                 >
                   <Suspense fallback={<Loading />}>
                     <StoragePage />
                   </Suspense>
-                </BoxSubPage>
+                </SystemSubPage>
               }
             />
             <Route
-              path="/box/backups"
+              path="/system/backups"
               element={
-                <BoxSubPage
+                <SystemSubPage
                   title="Backups"
                   subtitle="Copies of your data, kept somewhere else."
                 >
                   <Suspense fallback={<Loading />}>
                     <BackupsPage />
                   </Suspense>
-                </BoxSubPage>
+                </SystemSubPage>
               }
             />
             <Route
-              path="/box/machines"
+              path="/system/machines"
               element={
-                <BoxSubPage
+                <SystemSubPage
                   title="Machines"
                   subtitle="Every machine that makes up your home server."
                 >
                   <Suspense fallback={<Loading />}>
                     <NodesPage />
                   </Suspense>
-                </BoxSubPage>
+                </SystemSubPage>
               }
             />
             <Route
-              path="/box/system"
+              path="/system/updates"
               element={
-                <BoxSubPage
-                  title="Updates and system"
+                <SystemSubPage
+                  title="Updates"
                   subtitle="What version your machines are running."
                 >
                   <Suspense fallback={<Loading />}>
-                    <SystemPage />
+                    <UpdatesPage />
                   </Suspense>
-                </BoxSubPage>
+                </SystemSubPage>
               }
             />
             <Route
-              path="/box/logs"
+              path="/system/logs"
               element={
-                <BoxSubPage
+                <SystemSubPage
                   title="Logs"
                   subtitle="Everything the machine has been saying."
                 >
                   <Suspense fallback={<Loading />}>
                     <LogsPage />
                   </Suspense>
-                </BoxSubPage>
+                </SystemSubPage>
               }
             />
             <Route
-              path="/box/terminal"
+              path="/system/terminal"
               element={
-                <BoxSubPage
+                <SystemSubPage
                   title="Terminal"
                   subtitle="Run commands directly on the machine."
                 >
                   <Suspense fallback={<Loading />}>
                     <TerminalPage />
                   </Suspense>
-                </BoxSubPage>
+                </SystemSubPage>
               }
             />
-            {}
+            <Route path="/box/*" element={<OldBoxPath />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Route>
         </Routes>

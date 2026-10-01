@@ -41,7 +41,7 @@ export function ArrayFieldTemplate(props: ArrayFieldTemplateProps) {
       {items.map((el) => (
         <div
           key={el.key}
-          className="flex items-start gap-2 rounded-lg border border-border p-3"
+          className="flex items-start gap-2 rounded-control border border-border p-3"
         >
           <div className="min-w-0 flex-1">{el.children}</div>
           {el.hasRemove && (
@@ -49,7 +49,7 @@ export function ArrayFieldTemplate(props: ArrayFieldTemplateProps) {
               type="button"
               aria-label="Remove"
               onClick={el.onDropIndexClick(el.index)}
-              className="mt-1 rounded-md p-2 text-fg-muted hover:bg-surface-2 hover:text-danger"
+              className="mt-1 rounded-control p-2 text-fg-muted hover:bg-surface-2 hover:text-danger"
             >
               <X className="h-4 w-4" />
             </button>
@@ -61,7 +61,7 @@ export function ArrayFieldTemplate(props: ArrayFieldTemplateProps) {
         <button
           type="button"
           onClick={onAddClick}
-          className="flex items-center gap-2 rounded-lg border border-dashed border-border px-3 py-2 text-sm text-fg-muted hover:border-primary hover:text-fg"
+          className="flex items-center gap-2 rounded-control border border-dashed border-border px-3 py-2 text-sm text-fg-muted hover:border-primary hover:text-fg"
         >
           <Plus className="h-4 w-4" />
           Add

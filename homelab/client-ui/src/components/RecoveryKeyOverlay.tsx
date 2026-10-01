@@ -25,9 +25,9 @@ export function RecoveryKeyOverlay({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-bg/95 p-6 backdrop-blur-sm">
-      <div className="w-full max-w-lg space-y-4 rounded-lg border border-border-strong bg-surface p-6">
+      <div className="w-full max-w-lg space-y-4 rounded-control border border-border-strong bg-surface p-6">
         <div className="flex items-start gap-3">
-          <div className="mt-0.5 shrink-0 rounded-md bg-warning-soft p-1.5">
+          <div className="mt-0.5 shrink-0 rounded-control bg-warning-soft p-1.5">
             <KeyRound className="h-4 w-4 text-warning" strokeWidth={1.75} />
           </div>
           <div>

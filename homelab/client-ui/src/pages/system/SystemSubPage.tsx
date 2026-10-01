@@ -2,7 +2,7 @@ import { Link } from "react-router-dom";
 import { ArrowLeft } from "lucide-react";
 import type { ReactNode } from "react";
 
-export function BoxSubPage({
+export function SystemSubPage({
   title,
   subtitle,
   children,
@@ -14,11 +14,11 @@ export function BoxSubPage({
   return (
     <div className="mx-auto w-full max-w-5xl px-5 py-6 md:px-8 md:py-8">
       <Link
-        to="/box"
+        to="/system"
         className="mb-5 inline-flex items-center gap-1.5 text-sm text-fg-muted hover:text-fg"
       >
         <ArrowLeft className="h-4 w-4" />
-        Box
+        System
       </Link>
       <header className="mb-6">
         <h1 className="font-display text-[1.75rem] leading-tight text-fg md:text-4xl">
