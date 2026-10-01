@@ -3,12 +3,12 @@ name: firefly-iii
 description: "Personal finance manager: budgets, accounts and reports"
 home: https://www.firefly-iii.org
 type: application
-version: 0.1.6
+version: 0.1.7
 appVersion: "6"
 
 dependencies:
   - name: yolab-common
-    version: "0.1.5"
+    version: "0.1.6"
     repository: "oci://ghcr.io/demycode/charts"
 
 annotations:

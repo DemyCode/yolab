@@ -3,12 +3,12 @@ name: filebrowser
 description: Web-based file manager for your storage
 home: https://filebrowser.org
 type: application
-version: 0.1.8
+version: 0.1.9
 appVersion: "2"
 
 dependencies:
   - name: yolab-common
-    version: "0.1.5"
+    version: "0.1.6"
     repository: "oci://ghcr.io/demycode/charts"
 
 annotations:
