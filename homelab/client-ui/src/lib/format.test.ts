@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   formatBytes,
   generateSecret,
+  leftToPay,
   relativeTime,
   roughDuration,
 } from "./format";
@@ -99,5 +100,18 @@ describe("roughDuration", () => {
   it("never shows a nonsense number", () => {
     expect(roughDuration(Number.NaN)).toBe("a few seconds");
     expect(roughDuration(-5_000)).toBe("a few seconds");
+  });
+});
+
+describe("leftToPay", () => {
+  it("shows the amount owed in euros with cents", () => {
+    expect(leftToPay(640)).toBe("€6.40 left to pay");
+    expect(leftToPay(1200)).toBe("€12.00 left to pay");
+  });
+
+  it("says there is nothing to pay instead of showing a zero or a credit", () => {
+    expect(leftToPay(0)).toBe("Nothing left to pay");
+    expect(leftToPay(-250)).toBe("Nothing left to pay");
+    expect(leftToPay(Number.NaN)).toBe("Nothing left to pay");
   });
 });

@@ -1,5 +1,7 @@
+use std::time::Duration;
+
 use axum::{extract::State, Json};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::{config::Config, error::Result, AppState};
 
@@ -96,9 +98,85 @@ pub async fn console_link(State(state): State<AppState>) -> Result<Json<ConsoleL
     Ok(Json(ConsoleLink { url }))
 }
 
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
+pub struct BillingBalance {
+    pub balance_cents: i64,
+}
+
+pub async fn billing_balance(State(state): State<AppState>) -> Result<Json<BillingBalance>> {
+    let api = platform_api_url(&state.config)
+        .ok_or_else(|| anyhow::anyhow!("this server is not connected to the YoLab platform"))?;
+    let token = crate::config::read_account_token(&state.config.config_path);
+    Ok(Json(
+        fetch_balance(&crate::http::client(), &api, &token).await?,
+    ))
+}
+
+async fn fetch_balance(
+    client: &crate::http::Client,
+    platform_api_url: &str,
+    account_token: &str,
+) -> anyhow::Result<BillingBalance> {
+    Ok(client
+        .get(format!(
+            "{}/billing/balance",
+            platform_api_url.trim_end_matches('/')
+        ))
+        .bearer_auth(account_token)
+        .timeout(Duration::from_secs(10))
+        .send()
+        .await?
+        .error_for_status()?
+        .json::<BillingBalance>()
+        .await?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{console_link_url, console_url_from_api};
+
+    mod against_the_platform {
+        use super::super::{fetch_balance, BillingBalance};
+        use wiremock::matchers::{header, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        #[tokio::test]
+        async fn the_balance_is_read_with_the_account_token() {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/billing/balance"))
+                .and(header("authorization", "Bearer tok"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "balance_cents": 640,
+                    "suspended": false,
+                    "has_pending_invoice": true,
+                })))
+                .expect(1)
+                .mount(&server)
+                .await;
+            let api = format!("{}/", server.uri());
+            assert_eq!(
+                fetch_balance(&crate::http::Client::new(), &api, "tok")
+                    .await
+                    .unwrap(),
+                BillingBalance { balance_cents: 640 }
+            );
+        }
+
+        #[tokio::test]
+        async fn a_refused_token_is_an_error_not_a_zero_balance() {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .respond_with(ResponseTemplate::new(401))
+                .mount(&server)
+                .await;
+            assert!(
+                fetch_balance(&crate::http::Client::new(), &server.uri(), "bad")
+                    .await
+                    .is_err()
+            );
+        }
+    }
 
     #[test]
     fn the_token_goes_in_the_fragment_never_the_query() {

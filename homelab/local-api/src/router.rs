@@ -27,6 +27,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/status", get(status::handler))
         .route("/api/system/controllers", get(runtime::status::handler))
         .route("/api/console/link", get(status::console_link))
+        .route("/api/billing/balance", get(status::billing_balance))
         .route("/api/update", post(update::update))
         .route("/api/update/all", post(update::update_all))
         .route("/api/system/reboot", post(reboot::reboot))

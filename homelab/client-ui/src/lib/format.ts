@@ -53,3 +53,13 @@ export function roughDuration(ms: number): string {
   const hours = Math.round(minutes / 60);
   return hours === 1 ? "an hour" : `${hours} hours`;
 }
+
+export function leftToPay(balanceCents: number): string {
+  if (!Number.isFinite(balanceCents) || balanceCents <= 0)
+    return "Nothing left to pay";
+  const euros = new Intl.NumberFormat("en-IE", {
+    style: "currency",
+    currency: "EUR",
+  }).format(balanceCents / 100);
+  return `${euros} left to pay`;
+}
