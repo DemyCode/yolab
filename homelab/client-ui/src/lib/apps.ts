@@ -64,12 +64,7 @@ export function nextInstanceName(appId: string, installed: AppInfo[]): string {
 }
 
 export type AppState =
-  | "ready"
-  | "starting"
-  | "removing"
-  | "copying"
-  | "failed"
-  | "stopped";
+  "ready" | "starting" | "removing" | "copying" | "failed" | "stopped";
 
 export function appState(app: AppInfo): AppState {
   if (app.status === "uninstalling") return "removing";
@@ -148,12 +143,7 @@ export function instanceStem(app: AppInfo): string {
 }
 
 export type AppAction =
-  | "update"
-  | "retry"
-  | "duplicate"
-  | "backup"
-  | "restore"
-  | "remove";
+  "update" | "retry" | "duplicate" | "backup" | "restore" | "remove";
 
 export function availableActions(
   state: AppState,
