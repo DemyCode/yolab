@@ -18,7 +18,7 @@ import { useApi } from "@/lib/useResource";
 import { CacheDot } from "@/components/CacheDot";
 import { ThemeControl } from "@/components/ThemeControl";
 import type { CacheMeta } from "@/lib/api";
-import { formatBytes, leftToPay } from "@/lib/format";
+import { creditLeft, formatBytes } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type { StorageDetailResponse } from "@/types/storage";
 import type { NodeInfo } from "@/types/nodes";
@@ -121,12 +121,12 @@ export function SystemPage() {
     "backups-s3",
     "/api/backups/s3",
   );
-  const billing = useApi<{ total_cents: number; threshold_cents: number }>(
-    status.data?.console_url ? "billing-total" : null,
+  const billing = useApi<{ credit_cents: number }>(
+    status.data?.console_url ? "billing-credit" : null,
     "/api/billing/balance",
   );
-  const toPay = billing.data
-    ? leftToPay(billing.data.total_cents, billing.data.threshold_cents)
+  const credit = billing.data
+    ? creditLeft(billing.data.credit_cents)
     : undefined;
 
   const detail = storage.data?.data;
@@ -218,8 +218,8 @@ export function SystemPage() {
             onClick={openConsole}
             icon={CreditCard}
             label="Account and billing"
-            detail={toPay?.text ?? "Your plan, invoices and payment details"}
-            tone={toPay?.mustPay ? "warn" : undefined}
+            detail={credit?.text ?? "Your credit, top-ups and referral code"}
+            tone={credit?.empty ? "warn" : undefined}
             cache={billing.cache}
             external
           />

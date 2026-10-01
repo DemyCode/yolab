@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   formatBytes,
   generateSecret,
-  leftToPay,
+  creditLeft,
   relativeTime,
   roughDuration,
 } from "./format";
@@ -103,27 +103,20 @@ describe("roughDuration", () => {
   });
 });
 
-describe("leftToPay", () => {
-  it("shows the amount owed in euros with cents while under the threshold", () => {
-    expect(leftToPay(640, 1000)).toEqual({
-      text: "€6.40 left to pay",
-      mustPay: false,
+describe("creditLeft", () => {
+  it("shows the credit left in euros with cents", () => {
+    expect(creditLeft(420)).toEqual({ text: "€4.20 credit left", empty: false });
+    expect(creditLeft(1200)).toEqual({
+      text: "€12.00 credit left",
+      empty: false,
     });
   });
 
-  it("warns that this is the last month once the total reaches the threshold", () => {
-    expect(leftToPay(1000, 1000)).toEqual({
-      text: "€10.00 to pay — last month before payment is needed",
-      mustPay: true,
-    });
-    expect(leftToPay(1240, 1000).mustPay).toBe(true);
-  });
-
-  it("says there is nothing to pay instead of showing a zero or a credit", () => {
-    for (const cents of [0, -250, Number.NaN]) {
-      expect(leftToPay(cents, 1000)).toEqual({
-        text: "Nothing left to pay",
-        mustPay: false,
+  it("asks for a top-up once the credit is used up or overdrawn", () => {
+    for (const cents of [0, -130, Number.NaN]) {
+      expect(creditLeft(cents)).toEqual({
+        text: "No credit left — top up to keep using YoLab",
+        empty: true,
       });
     }
   });

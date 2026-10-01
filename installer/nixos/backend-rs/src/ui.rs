@@ -241,7 +241,7 @@ fn render_account_new(f: &mut Frame, area: Rect, app: &mut App) {
             Constraint::Length(1),
             Constraint::Length(2),
             Constraint::Length(3),
-            Constraint::Length(6),
+            Constraint::Length(7),
             Constraint::Min(0),
             Constraint::Length(3),
             Constraint::Length(3),
@@ -303,15 +303,33 @@ fn render_account_new(f: &mut Frame, area: Rect, app: &mut App) {
             ClickTarget::Btn(BtnId::Continue),
         );
     } else if app.acct_cursor == 0 {
+        let input_area = Rect {
+            x: rows[4].x + 2,
+            y: rows[4].y,
+            width: inner.width.saturating_sub(4),
+            height: 3,
+        };
+        render_input(
+            f,
+            input_area,
+            "Referral code (optional)",
+            &app.acct_referral,
+            false,
+            true,
+        );
         f.render_widget(
-            Paragraph::new("\n  No email required — a token is generated instantly.\n  Keep it safe: you'll need it to add more nodes later.")
-                .style(muted())
-                .wrap(Wrap { trim: true }),
-            rows[4],
+            Paragraph::new("  No email needed. Keep the token safe: you need it to add nodes.")
+                .style(muted()),
+            Rect {
+                x: rows[4].x,
+                y: rows[4].y + 3,
+                width: rows[4].width,
+                height: 1,
+            },
         );
         let btn_rect = Rect {
             x: rows[4].x + 2,
-            y: rows[4].y + 3,
+            y: rows[4].y + 4,
             width: 22,
             height: 3,
         };

@@ -95,6 +95,7 @@ pub struct App {
 
     pub acct_cursor: u8,
     pub acct_input: String,
+    pub acct_referral: String,
     pub account_token: Option<String>,
     pub created_token: Option<String>,
     pub join_url: String,
@@ -153,6 +154,7 @@ impl App {
             mode_cursor: 0,
             acct_cursor: 0,
             acct_input: String::new(),
+            acct_referral: String::new(),
             account_token: None,
             created_token: None,
             join_url: String::new(),
@@ -291,6 +293,14 @@ impl App {
             }
             KeyCode::Backspace if self.acct_cursor == 1 => {
                 self.acct_input.pop();
+            }
+            KeyCode::Char(c) if self.acct_cursor == 0 && self.account_token.is_none() => {
+                if self.acct_referral.chars().count() < REFERRAL_CODE_MAX {
+                    self.acct_referral.push(c);
+                }
+            }
+            KeyCode::Backspace if self.acct_cursor == 0 => {
+                self.acct_referral.pop();
             }
             _ => {}
         }
@@ -575,8 +585,9 @@ impl App {
         self.loading = true;
         self.loading_msg = "Creating account…".into();
         let tx = self.tx.clone();
+        let referral = self.acct_referral.clone();
         tokio::spawn(async move {
-            match do_create_account().await {
+            match do_create_account(&referral).await {
                 Ok(token) => {
                     let _ = tx.send(AppEvent::AccountCreated(token));
                 }
@@ -738,14 +749,38 @@ impl App {
     }
 }
 
-async fn do_create_account() -> anyhow::Result<String> {
+const REFERRAL_CODE_MAX: usize = 32;
+
+async fn do_create_account(referral: &str) -> anyhow::Result<String> {
     let resp = reqwest::Client::new()
         .post(format!("{PLATFORM_API}/users"))
+        .json(&create_account_body(referral))
         .send()
-        .await?
-        .json::<serde_json::Value>()
         .await?;
-    resp["account_token"]
+    let ok = resp.status().is_success();
+    let body: serde_json::Value = resp.json().await.unwrap_or(serde_json::Value::Null);
+    account_token_from(ok, &body)
+}
+
+fn create_account_body(referral: &str) -> serde_json::Value {
+    let code = referral.trim();
+    if code.is_empty() {
+        serde_json::json!({})
+    } else {
+        serde_json::json!({ "referral_code": code })
+    }
+}
+
+fn account_token_from(ok: bool, body: &serde_json::Value) -> anyhow::Result<String> {
+    if !ok {
+        anyhow::bail!(
+            "{}",
+            body["detail"]
+                .as_str()
+                .unwrap_or("The account could not be created")
+        );
+    }
+    body["account_token"]
         .as_str()
         .map(|s| s.to_string())
         .ok_or_else(|| anyhow::anyhow!("missing account_token in response"))
@@ -1212,5 +1247,51 @@ mod tests {
         let mut v = join_reply();
         v.as_object_mut().unwrap().remove("account_token");
         assert_eq!(super::parse_join_response(&v).unwrap().2, None);
+    }
+
+    #[test]
+    fn without_a_referral_code_the_account_request_body_is_empty() {
+        assert_eq!(create_account_body(""), serde_json::json!({}));
+        assert_eq!(create_account_body("   "), serde_json::json!({}));
+    }
+
+    #[test]
+    fn a_typed_referral_code_is_sent_trimmed() {
+        assert_eq!(
+            create_account_body("  AB3K9XYZ "),
+            serde_json::json!({ "referral_code": "AB3K9XYZ" })
+        );
+    }
+
+    #[test]
+    fn a_refused_referral_code_shows_the_platforms_reason() {
+        let body = serde_json::json!({ "detail": "This referral code does not exist" });
+        let err = account_token_from(false, &body).unwrap_err();
+        assert_eq!(err.to_string(), "This referral code does not exist");
+    }
+
+    #[test]
+    fn a_failure_without_a_reason_still_says_what_failed() {
+        let err = account_token_from(false, &serde_json::Value::Null).unwrap_err();
+        assert_eq!(err.to_string(), "The account could not be created");
+    }
+
+    #[test]
+    fn a_created_account_yields_its_token() {
+        let body = serde_json::json!({ "account_token": "tok-1" });
+        assert_eq!(account_token_from(true, &body).unwrap(), "tok-1");
+    }
+
+    #[tokio::test]
+    async fn typing_on_the_create_tab_fills_the_referral_code_not_the_token() {
+        let mut app = App::new();
+        app.mode = Some(ClusterMode::New);
+        app.acct_cursor = 0;
+        for c in "ab3k".chars() {
+            app.key_account_new(KeyEvent::from(KeyCode::Char(c))).await;
+        }
+        app.key_account_new(KeyEvent::from(KeyCode::Backspace)).await;
+        assert_eq!(app.acct_referral, "ab3");
+        assert!(app.acct_input.is_empty());
     }
 }
