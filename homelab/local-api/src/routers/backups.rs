@@ -503,7 +503,9 @@ impl crate::runtime::Controller for BackupKeyController {
             ));
         };
         let b = Backend::real().await?;
-        Ok(key_refresh_tick(refresh_master_key_with(&b.kube, &url, &token).await?))
+        Ok(key_refresh_tick(
+            refresh_master_key_with(&b.kube, &url, &token).await?,
+        ))
     }
 }
 
@@ -516,9 +518,9 @@ fn key_refresh_tick(outcome: KeyRefresh) -> crate::runtime::Tick {
             tracing::info!("backup key replaced with the one the platform reissued");
             Tick::Done
         }
-        KeyRefresh::OtherBucket => Tick::Idle(
-            "the platform names a different bucket; keeping this cluster's key".into(),
-        ),
+        KeyRefresh::OtherBucket => {
+            Tick::Idle("the platform names a different bucket; keeping this cluster's key".into())
+        }
     }
 }
 

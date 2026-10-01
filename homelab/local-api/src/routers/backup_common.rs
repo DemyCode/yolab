@@ -265,8 +265,7 @@ pub(crate) fn key_refresh(cfg: &BackupConfig, s3: &S3StorageInfo) -> KeyRefresh 
         KeyRefresh::OtherBucket
     } else if s3.access_key_id.is_empty()
         || s3.secret_access_key.is_empty()
-        || (s3.access_key_id == cfg.access_key_id
-            && s3.secret_access_key == cfg.secret_access_key)
+        || (s3.access_key_id == cfg.access_key_id && s3.secret_access_key == cfg.secret_access_key)
     {
         KeyRefresh::Current
     } else {
