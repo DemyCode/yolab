@@ -150,8 +150,26 @@ in let
       routesPeerDefault = i:
         (i.allowedIPsAsRoutes or true)
         && lib.any (p: lib.any (a: builtins.elem a defaultRoutes) p.allowedIPs) i.peers;
+      ipv6 = import ../homelab/nixos/ipv6.nix {inherit lib;};
+      prefixCases = {
+        "2a01:4f8:1c1e:43ff::20" = "2a01:4f8:1c1e:43ff::/64";
+        "2a01:4f8:1c1e:43ff:0:0:0:20" = "2a01:4f8:1c1e:43ff::/64";
+        "2a01:4f8::20" = "2a01:4f8:0:0::/64";
+        "fd00:1::" = "fd00:1:0:0::/64";
+        "2001:db8:aa:bb:cc:dd:ee:ff" = "2001:db8:aa:bb::/64";
+      };
+      wg0Setup = interfaces.wg0.postSetup or "";
       problems =
         lib.optional (!(interfaces ? wg0)) "wg0 is gone, so this check proves nothing"
+        ++ lib.concatLists (lib.mapAttrsToList (
+            addr: want: let
+              got = ipv6.prefix64 addr;
+            in
+              lib.optional (got != want) "prefix64 ${addr} gave ${got}, expected ${want}"
+          )
+          prefixCases)
+        ++ lib.optional (!(lib.hasInfix "route replace fd00:1:0:0::/64 dev wg0" wg0Setup))
+        "wg0 no longer routes YoLab's own address range through the tunnel, so packages cannot reach each other's public addresses from an IPv4-only home"
         ++ lib.concatLists (lib.mapAttrsToList (
             name: i:
               map (l: "${name} postSetup routes everything through the tunnel: ${l}")

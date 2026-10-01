@@ -25,6 +25,12 @@
   userDomain = lib.concatStringsSep "." (lib.drop 1 (lib.splitString "." tunnelDomain));
   platformApiUrl = lib.removeSuffix "/" (s.tunnelCfg.platform_api_url or "https://api.yolab.io");
 
+  ipv6 = import ./ipv6.nix {inherit lib;};
+  yolabRange =
+    if (s.tunnelCfg.sub_ipv6 or "") == "" || lib.hasPrefix "[" (s.tunnelCfg.wg_server_endpoint or "")
+    then null
+    else ipv6.prefix64 s.tunnelCfg.sub_ipv6;
+
   cephCfg = s.homelabConfig.ceph or {};
 
   cephSeedAddr =
@@ -120,11 +126,13 @@ in {
           # B. Source policy: public address always exits wg0.
           ip -6 rule add from ${s.tunnelCfg.sub_ipv6} lookup 51820 priority 100 2>/dev/null || true
           ip -6 route replace ::/0 dev wg0 table 51820 2>/dev/null || true
+          ${lib.optionalString (yolabRange != null) "ip -6 route replace ${yolabRange} dev wg0 2>/dev/null || true"}
         '';
 
         preShutdown = ''
           ip -6 rule del from ${s.tunnelCfg.sub_ipv6} lookup 51820 priority 100 2>/dev/null || true
           ip -6 route del ::/0 dev wg0 table 51820 2>/dev/null || true
+          ${lib.optionalString (yolabRange != null) "ip -6 route del ${yolabRange} dev wg0 2>/dev/null || true"}
         '';
 
         peers = [

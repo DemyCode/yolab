@@ -1,0 +1,421 @@
+{{ include "yolab-common.caddyConfigMap" . }}
+---
+{{ include "yolab-common.fileExplorerSecret" . }}
+---
+{{ include "yolab-common.autheliaSecret" . }}
+---
+{{ include "yolab-common.uninstallHook" . }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Release.Name }}-vpn
+  namespace: {{ .Release.Namespace }}
+type: Opaque
+stringData:
+  private-key: {{ .Values.config.vpn_private_key | quote }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-data
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: yolab-cephfs
+  resources:
+    requests:
+      storage: {{ .Values.config.storage_size | default "1Ti" | quote }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: downloads
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    app: downloads
+  ports:
+    - name: qbittorrent
+      port: 8080
+    - name: prowlarr
+      port: 9696
+    - name: sonarr
+      port: 8989
+    - name: radarr
+      port: 7878
+    - name: lidarr
+      port: 8686
+    - name: lazylibrarian
+      port: 5299
+    - name: flaresolverr
+      port: 8191
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      initContainers:
+      {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
+      {{- include "yolab-common.autheliaInit" . | nindent 6 }}
+      - name: links
+        image: {{ include "yolab-common.image.wgRegister" . }}
+        imagePullPolicy: IfNotPresent
+        command:
+          - /bin/sh
+          - -c
+          - |
+            set -eu
+            . /yolab/env
+            echo "YOLAB_OUTPUT requests_url https://$REQUESTS_FQDN"
+            echo "YOLAB_OUTPUT sonarr_url https://$SONARR_FQDN"
+            echo "YOLAB_OUTPUT radarr_url https://$RADARR_FQDN"
+            echo "YOLAB_OUTPUT lidarr_url https://$LIDARR_FQDN"
+            echo "YOLAB_OUTPUT books_url https://$BOOKS_FQDN"
+            echo "YOLAB_OUTPUT prowlarr_url https://$PROWLARR_FQDN"
+            echo "YOLAB_OUTPUT bazarr_url https://$BAZARR_FQDN"
+            echo "YOLAB_OUTPUT cleanuparr_url https://$CLEANUPARR_FQDN"
+            echo "YOLAB_OUTPUT torrents_url https://$TORRENTS_FQDN"
+            echo "YOLAB_OUTPUT wiring Library in /data/media, downloads in /data/torrents. Sonarr, Radarr, Lidarr, LazyLibrarian and Prowlarr share one host: qBittorrent is localhost:8080, Prowlarr localhost:9696, FlareSolverr http://localhost:8191, Sonarr localhost:8989, Radarr localhost:7878, Lidarr localhost:8686. From Jellyseerr, Bazarr and Cleanuparr: Jellyfin is http://localhost:8096 and the same tools are at downloads:<port>, e.g. http://downloads:8989."
+        volumeMounts:
+          - name: yolab
+            mountPath: /yolab
+      containers:
+      {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      {{- include "yolab-common.autheliaContainer" . | nindent 6 }}
+      - name: jellyfin
+        image: lscr.io/linuxserver/jellyfin:latest@sha256:b8dcc7b71d0ea872b74314da4b995c0cf282b1778438c295996e7be88c70fdda
+        imagePullPolicy: IfNotPresent
+        command:
+          - /bin/sh
+          - -c
+          - |
+            . /yolab/env
+            export JELLYFIN_PublishedServerUrl="https://$YOLAB_FQDN"
+            exec /init
+        env:
+          - name: PUID
+            value: "1000"
+          - name: PGID
+            value: "1000"
+          - name: TZ
+            value: {{ .Values.config.timezone | default "Etc/UTC" | quote }}
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8096
+          initialDelaySeconds: 20
+          periodSeconds: 10
+        volumeMounts:
+          - name: data
+            mountPath: /config
+            subPath: {{ .Release.Name }}/config/jellyfin
+          - name: data
+            mountPath: /data
+            subPath: {{ .Release.Name }}/data
+            readOnly: true
+          - name: yolab
+            mountPath: /yolab
+      - name: jellyseerr
+        image: fallenbagel/jellyseerr:latest@sha256:4538137bc5af902dece165f2bf73776d9cf4eafb6dd714670724af8f3eb77764
+        imagePullPolicy: IfNotPresent
+        env:
+          - name: TZ
+            value: {{ .Values.config.timezone | default "Etc/UTC" | quote }}
+        readinessProbe:
+          tcpSocket:
+            port: 5055
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        volumeMounts:
+          - name: data
+            mountPath: /app/config
+            subPath: {{ .Release.Name }}/config/jellyseerr
+      - name: bazarr
+        image: lscr.io/linuxserver/bazarr:v1.6.2-ls366@sha256:8b30e81c4aec2991f469e78fae8afaa89ecc9b21a80e3897f50427216b55470c
+        imagePullPolicy: IfNotPresent
+        env:
+          - name: PUID
+            value: "1000"
+          - name: PGID
+            value: "1000"
+          - name: TZ
+            value: {{ .Values.config.timezone | default "Etc/UTC" | quote }}
+        readinessProbe:
+          tcpSocket:
+            port: 6767
+          initialDelaySeconds: 15
+          periodSeconds: 10
+        volumeMounts:
+          - name: data
+            mountPath: /config
+            subPath: {{ .Release.Name }}/config/bazarr
+          - name: data
+            mountPath: /data
+            subPath: {{ .Release.Name }}/data
+      - name: cleanuparr
+        image: ghcr.io/cleanuparr/cleanuparr:2.10.8@sha256:ec444338a67e429a20f6eef938e1ed771ce357ed4831765026096061a09bbbb7
+        imagePullPolicy: IfNotPresent
+        env:
+          - name: PUID
+            value: "1000"
+          - name: PGID
+            value: "1000"
+          - name: TZ
+            value: {{ .Values.config.timezone | default "Etc/UTC" | quote }}
+        readinessProbe:
+          tcpSocket:
+            port: 11011
+          initialDelaySeconds: 15
+          periodSeconds: 10
+        volumeMounts:
+          - name: data
+            mountPath: /config
+            subPath: {{ .Release.Name }}/config/cleanuparr
+          - name: data
+            mountPath: /data
+            subPath: {{ .Release.Name }}/data
+      volumes:
+      {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+      {{- include "yolab-common.autheliaVolumes" . | nindent 6 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: downloads
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: downloads
+  template:
+    metadata:
+      labels:
+        app: downloads
+    spec:
+      initContainers:
+      - name: library-folders
+        image: lscr.io/linuxserver/lidarr:3.1.0.4875-ls42@sha256:044d616beb43c5e7810991242c6a9c42b93ff238c8c0850684939634ea751208
+        imagePullPolicy: IfNotPresent
+        env:
+          - name: VPN_PRIVATE_KEY
+            valueFrom:
+              secretKeyRef:
+                name: {{ .Release.Name }}-vpn
+                key: private-key
+        command:
+          - /bin/sh
+          - -c
+          - |
+            set -eu
+            if [ -z "${VPN_PRIVATE_KEY:-}" ]; then
+              echo "no Mullvad key: refusing to start the downloaders without the VPN" >&2
+              exit 1
+            fi
+            for d in torrents/tv torrents/movies torrents/music torrents/books media/tv media/movies media/music media/books; do
+              mkdir -p "/data/$d"
+            done
+            chown 1000:1000 /data /data/torrents /data/media
+            for d in torrents/tv torrents/movies torrents/music torrents/books media/tv media/movies media/music media/books; do
+              chown 1000:1000 "/data/$d"
+            done
+        volumeMounts:
+          - name: data
+            mountPath: /data
+            subPath: {{ .Release.Name }}/data
+      containers:
+      - name: gluetun
+        image: qmcgaw/gluetun:v3@sha256:fa19cc76b2af13d57a8d3dc3066f2ada061b1c761b8aecf989b3877c0486e027
+        imagePullPolicy: IfNotPresent
+        securityContext:
+          capabilities:
+            add:
+              - NET_ADMIN
+        env:
+          - name: VPN_SERVICE_PROVIDER
+            value: mullvad
+          - name: VPN_TYPE
+            value: wireguard
+          - name: WIREGUARD_PRIVATE_KEY
+            valueFrom:
+              secretKeyRef:
+                name: {{ .Release.Name }}-vpn
+                key: private-key
+          - name: WIREGUARD_ADDRESSES
+            value: {{ .Values.config.vpn_addresses | quote }}
+          {{- with .Values.config.vpn_server_countries }}
+          - name: SERVER_COUNTRIES
+            value: {{ . | quote }}
+          {{- end }}
+          - name: FIREWALL_INPUT_PORTS
+            value: "8080,9696,8989,7878,8686,5299,8191"
+          - name: FIREWALL_OUTBOUND_SUBNETS
+            value: "10.42.0.0/16,10.43.0.0/16,fd00:42::/56,fd00:43::/112"
+          - name: TZ
+            value: {{ .Values.config.timezone | default "Etc/UTC" | quote }}
+      - name: qbittorrent
+        image: ghcr.io/linuxserver/qbittorrent:latest@sha256:b024436f8ca665d16d9a997d26fd27fdf867ee5566ba09f32764e7b2976d3e02
+        imagePullPolicy: IfNotPresent
+        env:
+          - name: PUID
+            value: "1000"
+          - name: PGID
+            value: "1000"
+          - name: TZ
+            value: {{ .Values.config.timezone | default "Etc/UTC" | quote }}
+          - name: WEBUI_PORT
+            value: "8080"
+        readinessProbe:
+          tcpSocket:
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        volumeMounts:
+          - name: data
+            mountPath: /config
+            subPath: {{ .Release.Name }}/config/qbittorrent
+          - name: data
+            mountPath: /data
+            subPath: {{ .Release.Name }}/data
+      - name: prowlarr
+        image: linuxserver/prowlarr:version-2.5.2.5491@sha256:1295cff29d10b486c0d8324d1559a552140a5932bf8b3d87e398654414f63f92
+        imagePullPolicy: IfNotPresent
+        env:
+          - name: PUID
+            value: "1000"
+          - name: PGID
+            value: "1000"
+          - name: TZ
+            value: {{ .Values.config.timezone | default "Etc/UTC" | quote }}
+        readinessProbe:
+          tcpSocket:
+            port: 9696
+          initialDelaySeconds: 15
+          periodSeconds: 10
+        volumeMounts:
+          - name: data
+            mountPath: /config
+            subPath: {{ .Release.Name }}/config/prowlarr
+      - name: flaresolverr
+        image: ghcr.io/flaresolverr/flaresolverr:v3.5.2@sha256:c80ae007ce2ccdcd217a12426e4f039ef763ff90738c808d38810c3e59323767
+        imagePullPolicy: IfNotPresent
+        env:
+          - name: LOG_LEVEL
+            value: info
+          - name: TZ
+            value: {{ .Values.config.timezone | default "Etc/UTC" | quote }}
+        readinessProbe:
+          tcpSocket:
+            port: 8191
+          initialDelaySeconds: 15
+          periodSeconds: 10
+      - name: sonarr
+        image: linuxserver/sonarr:version-4.0.19.2979@sha256:c19aa4ecdf03d73e1d5c901da33744cb7eb4d921f89bafed1ca264601d7fa224
+        imagePullPolicy: IfNotPresent
+        env:
+          - name: PUID
+            value: "1000"
+          - name: PGID
+            value: "1000"
+          - name: TZ
+            value: {{ .Values.config.timezone | default "Etc/UTC" | quote }}
+        readinessProbe:
+          tcpSocket:
+            port: 8989
+          initialDelaySeconds: 15
+          periodSeconds: 10
+        volumeMounts:
+          - name: data
+            mountPath: /config
+            subPath: {{ .Release.Name }}/config/sonarr
+          - name: data
+            mountPath: /data
+            subPath: {{ .Release.Name }}/data
+      - name: radarr
+        image: linuxserver/radarr:version-6.3.0.10514@sha256:119aaa4a4f7349bcd2a136c5373a0d7925b5479915c7dfe0c0ad352db2a6d438
+        imagePullPolicy: IfNotPresent
+        env:
+          - name: PUID
+            value: "1000"
+          - name: PGID
+            value: "1000"
+          - name: TZ
+            value: {{ .Values.config.timezone | default "Etc/UTC" | quote }}
+        readinessProbe:
+          tcpSocket:
+            port: 7878
+          initialDelaySeconds: 15
+          periodSeconds: 10
+        volumeMounts:
+          - name: data
+            mountPath: /config
+            subPath: {{ .Release.Name }}/config/radarr
+          - name: data
+            mountPath: /data
+            subPath: {{ .Release.Name }}/data
+      - name: lidarr
+        image: lscr.io/linuxserver/lidarr:3.1.0.4875-ls42@sha256:044d616beb43c5e7810991242c6a9c42b93ff238c8c0850684939634ea751208
+        imagePullPolicy: IfNotPresent
+        env:
+          - name: PUID
+            value: "1000"
+          - name: PGID
+            value: "1000"
+          - name: TZ
+            value: {{ .Values.config.timezone | default "Etc/UTC" | quote }}
+        readinessProbe:
+          tcpSocket:
+            port: 8686
+          initialDelaySeconds: 15
+          periodSeconds: 10
+        volumeMounts:
+          - name: data
+            mountPath: /config
+            subPath: {{ .Release.Name }}/config/lidarr
+          - name: data
+            mountPath: /data
+            subPath: {{ .Release.Name }}/data
+      - name: lazylibrarian
+        image: lscr.io/linuxserver/lazylibrarian:9af8fbd8-ls360@sha256:451e73343d76ae09614b737dfaf90cdcd66d2168c599bb842aab3cd565a9a1d0
+        imagePullPolicy: IfNotPresent
+        env:
+          - name: PUID
+            value: "1000"
+          - name: PGID
+            value: "1000"
+          - name: TZ
+            value: {{ .Values.config.timezone | default "Etc/UTC" | quote }}
+        readinessProbe:
+          tcpSocket:
+            port: 5299
+          initialDelaySeconds: 15
+          periodSeconds: 10
+        volumeMounts:
+          - name: data
+            mountPath: /config
+            subPath: {{ .Release.Name }}/config/lazylibrarian
+          - name: data
+            mountPath: /data
+            subPath: {{ .Release.Name }}/data
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: {{ .Release.Name }}-data

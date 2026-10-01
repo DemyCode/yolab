@@ -57,6 +57,10 @@ LINT_VALUES = {
     "config.server_name": "example",
     "config.server_pass": "PlaceholderPw2026",
     "config.subdomain": "example",
+    "config.vpn_private_key": "PlaceholderVpnKey2026=",
+    "config.vpn_addresses": "10.64.0.2/32",
+    "config.auth_users[0].username": "admin",
+    "config.auth_users[0].password": "PlaceholderPw2026",
 }
 
 GATEWAY_CONTAINERS = ("wireguard", "caddy")

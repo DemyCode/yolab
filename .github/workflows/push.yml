@@ -250,6 +250,10 @@ jobs:
               --set config.gateway_token=PlaceholderGatewayToken2026Placeholder \
               --set config.server_name=example \
               --set config.server_pass=PlaceholderPw2026 \
+              --set config.vpn_private_key=PlaceholderVpnKey2026= \
+              --set config.vpn_addresses=10.64.0.2/32 \
+              --set 'config.auth_users[0].username=admin' \
+              --set 'config.auth_users[0].password=PlaceholderPw2026' \
               --set config.subdomain=example || { failed="$failed $name(lint)"; continue; }
 
             helm package "$chart" --version "${base}${SUFFIX}" --destination /tmp/pkg

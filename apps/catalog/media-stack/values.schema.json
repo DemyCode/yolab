@@ -1,0 +1,286 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": [
+    "config"
+  ],
+  "properties": {
+    "config": {
+      "title": "Media stack",
+      "type": "object",
+      "required": [
+        "subdomain",
+        "vpn_private_key",
+        "vpn_addresses",
+        "auth_users"
+      ],
+      "properties": {
+        "subdomain": {
+          "type": "string",
+          "title": "Subdomain",
+          "format": "tunnel",
+          "default": "media",
+          "description": "Jellyfin lives here. Every other tool gets its own address starting with this name: media-requests, media-sonarr, media-radarr, media-lidarr, media-prowlarr, media-bazarr, media-books, media-torrents and media-cleanuparr."
+        },
+        "storage_size": {
+          "type": "string",
+          "title": "Library size",
+          "default": "1Ti",
+          "description": "One shared space for downloads and the finished library, so a finished download becomes a library file instantly instead of being copied (e.g. 500Gi, 1Ti, 4Ti)."
+        },
+        "timezone": {
+          "type": "string",
+          "title": "Time zone",
+          "default": "Etc/UTC",
+          "description": "Used for schedules and log times, e.g. Europe/Paris."
+        },
+        "vpn_private_key": {
+          "type": "string",
+          "title": "Mullvad WireGuard private key",
+          "minLength": 1,
+          "writeOnly": true,
+          "description": "From mullvad.net → Account → WireGuard configuration → generate a key, then copy the PrivateKey line. qBittorrent, the indexers and the downloaders only reach the internet through this VPN and stop if it is down."
+        },
+        "vpn_addresses": {
+          "type": "string",
+          "title": "Mullvad WireGuard address",
+          "minLength": 1,
+          "description": "The Address line from the same Mullvad configuration file, e.g. 10.64.123.45/32."
+        },
+        "vpn_server_countries": {
+          "type": "string",
+          "title": "VPN server countries",
+          "default": "",
+          "description": "Optional. Comma-separated, e.g. Netherlands,Switzerland. Empty lets the VPN pick."
+        },
+        "auth_users": {
+          "type": "array",
+          "title": "Logins for the admin tools",
+          "description": "Sonarr, Radarr, Lidarr, Prowlarr, Bazarr, LazyLibrarian, qBittorrent and Cleanuparr sit behind this one login. Jellyfin and the request page keep their own accounts so TV and phone apps work.",
+          "minItems": 1,
+          "default": [],
+          "items": {
+            "type": "object",
+            "required": [
+              "username",
+              "password"
+            ],
+            "properties": {
+              "username": {
+                "type": "string",
+                "title": "Username",
+                "minLength": 1
+              },
+              "password": {
+                "type": "string",
+                "title": "Password",
+                "minLength": 8,
+                "writeOnly": true,
+                "generate": true
+              }
+            }
+          }
+        },
+        "file_explorer_enabled": {
+          "type": "boolean",
+          "title": "File explorer",
+          "default": true,
+          "description": "A lightweight, password-protected, read-only browser for this app's own data on its own address — handy for pulling a file out or checking what's actually stored, without needing a terminal."
+        }
+      },
+      "dependencies": {
+        "file_explorer_enabled": {
+          "oneOf": [
+            {
+              "properties": {
+                "file_explorer_enabled": {
+                  "const": false
+                }
+              }
+            },
+            {
+              "properties": {
+                "file_explorer_enabled": {
+                  "const": true
+                },
+                "file_explorer_subdomain": {
+                  "type": "string",
+                  "title": "File explorer subdomain",
+                  "format": "tunnel",
+                  "description": "Leave empty to use this app's subdomain followed by -files."
+                },
+                "file_explorer_username": {
+                  "type": "string",
+                  "title": "File explorer username",
+                  "default": "admin",
+                  "pattern": "^[A-Za-z0-9._-]+$"
+                },
+                "file_explorer_password": {
+                  "type": "string",
+                  "title": "File explorer password",
+                  "minLength": 12,
+                  "writeOnly": true,
+                  "generate": true
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "outputs": {
+      "type": "object",
+      "readOnly": true,
+      "properties": {
+        "url": {
+          "type": "string",
+          "title": "Jellyfin",
+          "format": "uri",
+          "source": {
+            "logs": "YOLAB_OUTPUT url (\\S+)"
+          }
+        },
+        "requests_url": {
+          "type": "string",
+          "title": "Requests (Jellyseerr)",
+          "format": "uri",
+          "source": {
+            "logs": "YOLAB_OUTPUT requests_url (\\S+)"
+          }
+        },
+        "sonarr_url": {
+          "type": "string",
+          "title": "Sonarr (TV)",
+          "format": "uri",
+          "source": {
+            "logs": "YOLAB_OUTPUT sonarr_url (\\S+)"
+          }
+        },
+        "radarr_url": {
+          "type": "string",
+          "title": "Radarr (films)",
+          "format": "uri",
+          "source": {
+            "logs": "YOLAB_OUTPUT radarr_url (\\S+)"
+          }
+        },
+        "lidarr_url": {
+          "type": "string",
+          "title": "Lidarr (music)",
+          "format": "uri",
+          "source": {
+            "logs": "YOLAB_OUTPUT lidarr_url (\\S+)"
+          }
+        },
+        "books_url": {
+          "type": "string",
+          "title": "LazyLibrarian (books)",
+          "format": "uri",
+          "source": {
+            "logs": "YOLAB_OUTPUT books_url (\\S+)"
+          }
+        },
+        "prowlarr_url": {
+          "type": "string",
+          "title": "Prowlarr (indexers)",
+          "format": "uri",
+          "source": {
+            "logs": "YOLAB_OUTPUT prowlarr_url (\\S+)"
+          }
+        },
+        "bazarr_url": {
+          "type": "string",
+          "title": "Bazarr (subtitles)",
+          "format": "uri",
+          "source": {
+            "logs": "YOLAB_OUTPUT bazarr_url (\\S+)"
+          }
+        },
+        "cleanuparr_url": {
+          "type": "string",
+          "title": "Cleanuparr",
+          "format": "uri",
+          "source": {
+            "logs": "YOLAB_OUTPUT cleanuparr_url (\\S+)"
+          }
+        },
+        "torrents_url": {
+          "type": "string",
+          "title": "qBittorrent",
+          "format": "uri",
+          "source": {
+            "logs": "YOLAB_OUTPUT torrents_url (\\S+)"
+          }
+        },
+        "torrents_username": {
+          "type": "string",
+          "title": "qBittorrent username",
+          "format": "text",
+          "source": {
+            "logs": "The WebUI administrator username is: (\\S+)"
+          }
+        },
+        "torrents_password": {
+          "type": "string",
+          "title": "qBittorrent temporary password",
+          "format": "secret",
+          "source": {
+            "logs": "A temporary password is provided for this session: (\\S+)"
+          }
+        },
+        "wiring": {
+          "type": "string",
+          "title": "Connecting the tools",
+          "format": "text",
+          "source": {
+            "logs": "YOLAB_OUTPUT wiring (.+)"
+          }
+        },
+        "file_explorer_url": {
+          "type": "string",
+          "title": "File explorer",
+          "format": "uri",
+          "source": {
+            "logs": "YOLAB_OUTPUT file_explorer_url (\\S+)"
+          },
+          "when": {
+            "properties": {
+              "file_explorer_enabled": {
+                "const": true
+              }
+            }
+          }
+        },
+        "file_explorer_username": {
+          "type": "string",
+          "title": "File explorer username",
+          "source": {
+            "logs": "YOLAB_OUTPUT file_explorer_username (\\S+)"
+          },
+          "when": {
+            "properties": {
+              "file_explorer_enabled": {
+                "const": true
+              }
+            }
+          }
+        },
+        "file_explorer_password": {
+          "type": "string",
+          "title": "File explorer password",
+          "format": "secret",
+          "source": {
+            "logs": "YOLAB_OUTPUT file_explorer_password (\\S+)"
+          },
+          "when": {
+            "properties": {
+              "file_explorer_enabled": {
+                "const": true
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,104 @@
+config:
+  subdomain: media
+  storage_size: 1Ti
+  timezone: Etc/UTC
+  vpn_private_key: ""
+  vpn_addresses: ""
+  vpn_server_countries: ""
+  auth_enabled: true
+  auth_users: []
+
+yolab:
+  platformApiUrl: ""
+  accountToken: ""
+  serviceName: ""
+  auth:
+    sharedSession: true
+  gateway:
+    aliases:
+      REQUESTS_FQDN: requests
+      SONARR_FQDN: sonarr
+      RADARR_FQDN: radarr
+      LIDARR_FQDN: lidarr
+      PROWLARR_FQDN: prowlarr
+      BAZARR_FQDN: bazarr
+      BOOKS_FQDN: books
+      TORRENTS_FQDN: torrents
+      CLEANUPARR_FQDN: cleanuparr
+    caddyfile: |
+      {$YOLAB_FQDN} {
+        handle /authelia/* {
+          reverse_proxy localhost:9091
+        }
+        handle {
+          reverse_proxy localhost:8096
+        }
+      }
+
+      {$REQUESTS_FQDN} {
+        reverse_proxy localhost:5055
+      }
+
+      {$SONARR_FQDN} {
+        forward_auth localhost:9091 {
+          uri /authelia/api/authz/forward-auth
+          copy_headers Remote-User Remote-Groups Remote-Email Remote-Name
+        }
+        reverse_proxy downloads:8989
+      }
+
+      {$RADARR_FQDN} {
+        forward_auth localhost:9091 {
+          uri /authelia/api/authz/forward-auth
+          copy_headers Remote-User Remote-Groups Remote-Email Remote-Name
+        }
+        reverse_proxy downloads:7878
+      }
+
+      {$LIDARR_FQDN} {
+        forward_auth localhost:9091 {
+          uri /authelia/api/authz/forward-auth
+          copy_headers Remote-User Remote-Groups Remote-Email Remote-Name
+        }
+        reverse_proxy downloads:8686
+      }
+
+      {$PROWLARR_FQDN} {
+        forward_auth localhost:9091 {
+          uri /authelia/api/authz/forward-auth
+          copy_headers Remote-User Remote-Groups Remote-Email Remote-Name
+        }
+        reverse_proxy downloads:9696
+      }
+
+      {$BOOKS_FQDN} {
+        forward_auth localhost:9091 {
+          uri /authelia/api/authz/forward-auth
+          copy_headers Remote-User Remote-Groups Remote-Email Remote-Name
+        }
+        reverse_proxy downloads:5299
+      }
+
+      {$TORRENTS_FQDN} {
+        forward_auth localhost:9091 {
+          uri /authelia/api/authz/forward-auth
+          copy_headers Remote-User Remote-Groups Remote-Email Remote-Name
+        }
+        reverse_proxy downloads:8080
+      }
+
+      {$BAZARR_FQDN} {
+        forward_auth localhost:9091 {
+          uri /authelia/api/authz/forward-auth
+          copy_headers Remote-User Remote-Groups Remote-Email Remote-Name
+        }
+        reverse_proxy localhost:6767
+      }
+
+      {$CLEANUPARR_FQDN} {
+        forward_auth localhost:9091 {
+          uri /authelia/api/authz/forward-auth
+          copy_headers Remote-User Remote-Groups Remote-Email Remote-Name
+        }
+        reverse_proxy localhost:11011
+      }

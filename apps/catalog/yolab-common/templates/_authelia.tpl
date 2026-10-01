@@ -56,6 +56,10 @@ stringData:
       JWT=$(cat /data/secrets/jwt)
       SESSION=$(cat /data/secrets/session)
       STORAGE=$(cat /data/secrets/storage)
+      COOKIE_DOMAIN="$YOLAB_FQDN"
+      {{- if (((.Values.yolab).auth).sharedSession) }}
+      COOKIE_DOMAIN="${YOLAB_FQDN#*.}"
+      {{- end }}
 
       cat > /authelia-config/configuration.yml <<EOF
       theme: light
@@ -76,7 +80,7 @@ stringData:
         name: authelia_session
         secret: '${SESSION}'
         cookies:
-          - domain: '${YOLAB_FQDN}'
+          - domain: '${COOKIE_DOMAIN}'
             authelia_url: 'https://${YOLAB_FQDN}/authelia'
       regulation:
         max_retries: 5
