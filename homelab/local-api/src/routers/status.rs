@@ -98,37 +98,70 @@ pub async fn console_link(State(state): State<AppState>) -> Result<Json<ConsoleL
     Ok(Json(ConsoleLink { url }))
 }
 
-#[derive(Serialize, Deserialize, Debug, PartialEq)]
-pub struct BillingBalance {
-    pub balance_cents: i64,
+pub const INVOICE_THRESHOLD_CENTS: i64 = 1000;
+
+#[derive(Serialize, Debug, PartialEq)]
+pub struct BillingTotal {
+    pub total_cents: i64,
+    pub threshold_cents: i64,
 }
 
-pub async fn billing_balance(State(state): State<AppState>) -> Result<Json<BillingBalance>> {
+#[derive(Deserialize)]
+struct PlatformBalance {
+    balance_cents: i64,
+}
+
+#[derive(Deserialize)]
+struct PlatformEstimate {
+    total_cents: i64,
+}
+
+pub async fn billing_balance(State(state): State<AppState>) -> Result<Json<BillingTotal>> {
     let api = platform_api_url(&state.config)
         .ok_or_else(|| anyhow::anyhow!("this server is not connected to the YoLab platform"))?;
     let token = crate::config::read_account_token(&state.config.config_path);
     Ok(Json(
-        fetch_balance(&crate::http::client(), &api, &token).await?,
+        fetch_total(&crate::http::client(), &api, &token).await?,
     ))
 }
 
-async fn fetch_balance(
+async fn fetch_total(
     client: &crate::http::Client,
     platform_api_url: &str,
     account_token: &str,
-) -> anyhow::Result<BillingBalance> {
-    Ok(client
-        .get(format!(
-            "{}/billing/balance",
-            platform_api_url.trim_end_matches('/')
-        ))
-        .bearer_auth(account_token)
-        .timeout(Duration::from_secs(10))
-        .send()
-        .await?
-        .error_for_status()?
-        .json::<BillingBalance>()
-        .await?)
+) -> anyhow::Result<BillingTotal> {
+    let api = platform_api_url.trim_end_matches('/');
+    let get = |route: &str| {
+        client
+            .get(format!("{api}{route}"))
+            .bearer_auth(account_token)
+            .timeout(Duration::from_secs(10))
+            .send()
+    };
+    let (balance, estimate) = tokio::try_join!(
+        async {
+            Ok::<_, anyhow::Error>(
+                get("/billing/balance")
+                    .await?
+                    .error_for_status()?
+                    .json::<PlatformBalance>()
+                    .await?,
+            )
+        },
+        async {
+            Ok::<_, anyhow::Error>(
+                get("/billing/estimate")
+                    .await?
+                    .error_for_status()?
+                    .json::<PlatformEstimate>()
+                    .await?,
+            )
+        },
+    )?;
+    Ok(BillingTotal {
+        total_cents: balance.balance_cents + estimate.total_cents,
+        threshold_cents: INVOICE_THRESHOLD_CENTS,
+    })
 }
 
 #[cfg(test)]
@@ -136,42 +169,88 @@ mod tests {
     use super::{console_link_url, console_url_from_api};
 
     mod against_the_platform {
-        use super::super::{fetch_balance, BillingBalance};
+        use super::super::{fetch_total, BillingTotal, INVOICE_THRESHOLD_CENTS};
         use wiremock::matchers::{header, method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
-        #[tokio::test]
-        async fn the_balance_is_read_with_the_account_token() {
+        async fn platform(balance_cents: i64, month_so_far_cents: i64) -> MockServer {
             let server = MockServer::start().await;
             Mock::given(method("GET"))
                 .and(path("/billing/balance"))
                 .and(header("authorization", "Bearer tok"))
                 .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                    "balance_cents": 640,
+                    "balance_cents": balance_cents,
                     "suspended": false,
-                    "has_pending_invoice": true,
+                    "has_pending_invoice": false,
                 })))
                 .expect(1)
                 .mount(&server)
                 .await;
-            let api = format!("{}/", server.uri());
-            assert_eq!(
-                fetch_balance(&crate::http::Client::new(), &api, "tok")
-                    .await
-                    .unwrap(),
-                BillingBalance { balance_cents: 640 }
-            );
+            Mock::given(method("GET"))
+                .and(path("/billing/estimate"))
+                .and(header("authorization", "Bearer tok"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "year_month": "2026-10",
+                    "total_cents": month_so_far_cents,
+                })))
+                .expect(1)
+                .mount(&server)
+                .await;
+            server
         }
 
         #[tokio::test]
-        async fn a_refused_token_is_an_error_not_a_zero_balance() {
+        async fn the_total_is_every_unpaid_month_plus_this_month_so_far() {
+            let server = platform(640, 180).await;
+            let api = format!("{}/", server.uri());
+            assert_eq!(
+                fetch_total(&crate::http::Client::new(), &api, "tok")
+                    .await
+                    .unwrap(),
+                BillingTotal {
+                    total_cents: 820,
+                    threshold_cents: INVOICE_THRESHOLD_CENTS,
+                }
+            );
+        }
+
+        #[test]
+        fn the_threshold_matches_the_platform_invoice_threshold_of_ten_euros() {
+            assert_eq!(INVOICE_THRESHOLD_CENTS, 1000);
+        }
+
+        #[tokio::test]
+        async fn a_refused_token_is_an_error_not_a_zero_total() {
             let server = MockServer::start().await;
             Mock::given(method("GET"))
                 .respond_with(ResponseTemplate::new(401))
                 .mount(&server)
                 .await;
             assert!(
-                fetch_balance(&crate::http::Client::new(), &server.uri(), "bad")
+                fetch_total(&crate::http::Client::new(), &server.uri(), "bad")
+                    .await
+                    .is_err()
+            );
+        }
+
+        #[tokio::test]
+        async fn a_missing_estimate_is_an_error_not_a_smaller_total() {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/billing/balance"))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_json(serde_json::json!({ "balance_cents": 640 })),
+                )
+                .mount(&server)
+                .await;
+            Mock::given(method("GET"))
+                .and(path("/billing/estimate"))
+                .respond_with(ResponseTemplate::new(500))
+                .mount(&server)
+                .await;
+            assert!(
+                fetch_total(&crate::http::Client::new(), &server.uri(), "tok")
                     .await
                     .is_err()
             );

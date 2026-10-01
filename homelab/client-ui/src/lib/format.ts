@@ -54,12 +54,20 @@ export function roughDuration(ms: number): string {
   return hours === 1 ? "an hour" : `${hours} hours`;
 }
 
-export function leftToPay(balanceCents: number): string {
-  if (!Number.isFinite(balanceCents) || balanceCents <= 0)
-    return "Nothing left to pay";
+export function leftToPay(
+  totalCents: number,
+  thresholdCents: number,
+): { text: string; mustPay: boolean } {
+  if (!Number.isFinite(totalCents) || totalCents <= 0)
+    return { text: "Nothing left to pay", mustPay: false };
   const euros = new Intl.NumberFormat("en-IE", {
     style: "currency",
     currency: "EUR",
-  }).format(balanceCents / 100);
-  return `${euros} left to pay`;
+  }).format(totalCents / 100);
+  if (totalCents >= thresholdCents)
+    return {
+      text: `${euros} to pay — last month before payment is needed`,
+      mustPay: true,
+    };
+  return { text: `${euros} left to pay`, mustPay: false };
 }

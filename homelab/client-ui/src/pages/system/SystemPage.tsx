@@ -121,10 +121,13 @@ export function SystemPage() {
     "backups-s3",
     "/api/backups/s3",
   );
-  const balance = useApi<{ balance_cents: number }>(
-    status.data?.console_url ? "billing-balance" : null,
+  const billing = useApi<{ total_cents: number; threshold_cents: number }>(
+    status.data?.console_url ? "billing-total" : null,
     "/api/billing/balance",
   );
+  const toPay = billing.data
+    ? leftToPay(billing.data.total_cents, billing.data.threshold_cents)
+    : undefined;
 
   const detail = storage.data?.data;
   const storageDetail = detail
@@ -215,12 +218,9 @@ export function SystemPage() {
             onClick={openConsole}
             icon={CreditCard}
             label="Account and billing"
-            detail={
-              balance.data
-                ? leftToPay(balance.data.balance_cents)
-                : "Your plan, invoices and payment details"
-            }
-            cache={balance.cache}
+            detail={toPay?.text ?? "Your plan, invoices and payment details"}
+            tone={toPay?.mustPay ? "warn" : undefined}
+            cache={billing.cache}
             external
           />
         )}

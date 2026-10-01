@@ -104,14 +104,27 @@ describe("roughDuration", () => {
 });
 
 describe("leftToPay", () => {
-  it("shows the amount owed in euros with cents", () => {
-    expect(leftToPay(640)).toBe("€6.40 left to pay");
-    expect(leftToPay(1200)).toBe("€12.00 left to pay");
+  it("shows the amount owed in euros with cents while under the threshold", () => {
+    expect(leftToPay(640, 1000)).toEqual({
+      text: "€6.40 left to pay",
+      mustPay: false,
+    });
+  });
+
+  it("warns that this is the last month once the total reaches the threshold", () => {
+    expect(leftToPay(1000, 1000)).toEqual({
+      text: "€10.00 to pay — last month before payment is needed",
+      mustPay: true,
+    });
+    expect(leftToPay(1240, 1000).mustPay).toBe(true);
   });
 
   it("says there is nothing to pay instead of showing a zero or a credit", () => {
-    expect(leftToPay(0)).toBe("Nothing left to pay");
-    expect(leftToPay(-250)).toBe("Nothing left to pay");
-    expect(leftToPay(Number.NaN)).toBe("Nothing left to pay");
+    for (const cents of [0, -250, Number.NaN]) {
+      expect(leftToPay(cents, 1000)).toEqual({
+        text: "Nothing left to pay",
+        mustPay: false,
+      });
+    }
   });
 });
