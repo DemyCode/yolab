@@ -61,6 +61,10 @@ spec:
             export DEFAULT_DOMAIN="$YOLAB_FQDN"
             exec /bin/sh ./docker-entrypoint.sh
         env:
+          # RoadRunner listens on 0.0.0.0 by default, which is IPv4 only; pods here
+          # have IPv6 addresses, so the readiness probe was refused forever.
+          - name: ADDRESS
+            value: "[::]"
           - name: DB_DRIVER
             value: "sqlite"
           - name: IS_HTTPS_ENABLED

@@ -129,7 +129,7 @@ charts:
   - name: searxng
     version: "0.1.6"
   - name: shlink
-    version: "0.1.6"
+    version: "0.1.7"
   - name: sonarr
     version: "0.1.6"
   - name: speedtest-tracker
