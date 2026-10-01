@@ -20,6 +20,8 @@ jobs:
           extra_nix_config: |
             experimental-features = nix-command flakes
             accept-flake-config = true
+            fallback = true
+            connect-timeout = 10
 
       - id: list
         run: |
@@ -70,6 +72,8 @@ jobs:
           extra_nix_config: |
             experimental-features = nix-command flakes
             accept-flake-config = true
+            fallback = true
+            connect-timeout = 10
             system-features = nixos-test benchmark big-parallel kvm
 
       - name: Build
@@ -369,6 +373,8 @@ jobs:
           extra_nix_config: |
             experimental-features = nix-command flakes
             accept-flake-config = true
+            fallback = true
+            connect-timeout = 10
 
       - name: Build ISO
         id: build_iso
@@ -457,6 +463,8 @@ jobs:
           extra_nix_config: |
             experimental-features = nix-command flakes
             accept-flake-config = true
+            fallback = true
+            connect-timeout = 10
 
       - name: Run nix fmt
         id: fmt
