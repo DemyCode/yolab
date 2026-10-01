@@ -258,7 +258,7 @@ in {
       enable = true;
       package = pkgs.caddy.withPlugins {
         plugins = ["github.com/caddy-dns/acmedns@v0.7.0"];
-        hash = "sha256-iKExEW87Jd6DXrNBxqvkWkKjkh3KwpNZsBIf1HmSGE4=";
+        hash = "sha256-Eiatn6cA3CLr5C1b7e41ojK4ByvnWm9uJlIZInFh1aU=";
       };
       configFile = pkgs.writeText "Caddyfile" ''
         # A certificate for a shared name: `import shared_tls <name>`. The key is
@@ -342,8 +342,14 @@ in {
     };
 
     systemd.services.caddy = {
-      after = ["wireguard-wg0.service" "yolab-caddy-credentials.service"];
-      wants = ["wireguard-wg0.service" "yolab-caddy-credentials.service"];
+      after = [
+        "wireguard-wg0.service"
+        "yolab-caddy-credentials.service"
+      ];
+      wants = [
+        "wireguard-wg0.service"
+        "yolab-caddy-credentials.service"
+      ];
       serviceConfig.EnvironmentFile = "-/var/lib/yolab/caddy/acme.env";
     };
 
@@ -443,35 +449,45 @@ in {
       };
     };
 
-    systemd.services.yolab-reset-wipe = lib.mkIf config.yolab.ceph.enable (let
-      host = config.networking.hostName;
-    in {
-      description = "Wipe this machine's cluster state for a FORCE HEAL";
-      wantedBy = ["multi-user.target"];
-      after = ["local-fs.target" "systemd-tmpfiles-setup.service"];
-      before = [
-        "yolab-ceph-bootstrap.service"
-        "ceph-mon-${host}.service"
-        "ceph-mgr-${host}.service"
-        "ceph-mds-${host}.service"
-        "k3s-node-ip.service"
-        "k3s.service"
-        "yolab-local-api.service"
-      ];
-      requiredBy = [
-        "yolab-ceph-bootstrap.service"
-        "k3s.service"
-      ];
-      restartIfChanged = false;
-      path = with pkgs; [ceph lvm2 util-linux coreutils];
-      environment.YOLAB_MACHINE_DIR = config.yolab.machineDir;
-      serviceConfig = {
-        Type = "oneshot";
-        RemainAfterExit = true;
-        TimeoutStartSec = "1800s";
-        ExecStart = "${s.localApiEnv}/bin/local-api storage reset-wipe";
-      };
-    });
+    systemd.services.yolab-reset-wipe = lib.mkIf config.yolab.ceph.enable (
+      let
+        host = config.networking.hostName;
+      in {
+        description = "Wipe this machine's cluster state for a FORCE HEAL";
+        wantedBy = ["multi-user.target"];
+        after = [
+          "local-fs.target"
+          "systemd-tmpfiles-setup.service"
+        ];
+        before = [
+          "yolab-ceph-bootstrap.service"
+          "ceph-mon-${host}.service"
+          "ceph-mgr-${host}.service"
+          "ceph-mds-${host}.service"
+          "k3s-node-ip.service"
+          "k3s.service"
+          "yolab-local-api.service"
+        ];
+        requiredBy = [
+          "yolab-ceph-bootstrap.service"
+          "k3s.service"
+        ];
+        restartIfChanged = false;
+        path = with pkgs; [
+          ceph
+          lvm2
+          util-linux
+          coreutils
+        ];
+        environment.YOLAB_MACHINE_DIR = config.yolab.machineDir;
+        serviceConfig = {
+          Type = "oneshot";
+          RemainAfterExit = true;
+          TimeoutStartSec = "1800s";
+          ExecStart = "${s.localApiEnv}/bin/local-api storage reset-wipe";
+        };
+      }
+    );
 
     users.users.root.openssh.authorizedKeys.keys =
       lib.optional (s.rootSshKey != "") s.rootSshKey
@@ -549,11 +565,9 @@ in {
     system.activationScripts.yolabVersion = ''
       mkdir -p /var/lib/yolab
       printf '%s' ${lib.escapeShellArg yolabRev} > /var/lib/yolab/built-hash
-      ${
-        lib.optionalString (yolabLastModified != null) ''
-          ${pkgs.coreutils}/bin/date -u -d @${toString yolabLastModified} +%Y-%m-%dT%H:%M:%SZ > /var/lib/yolab/built-date
-        ''
-      }
+      ${lib.optionalString (yolabLastModified != null) ''
+        ${pkgs.coreutils}/bin/date -u -d @${toString yolabLastModified} +%Y-%m-%dT%H:%M:%SZ > /var/lib/yolab/built-date
+      ''}
       : > /var/lib/yolab/built-message
     '';
 
