@@ -14,6 +14,9 @@ import {
   appStatus,
   latestRestore,
   RESTORE_DONE_SHOWN_MS,
+  SLOW_START_MS,
+  podStatus,
+  waitNote,
   type RestoreRecord,
 } from "./apps";
 import type { AppInfo, AppOutput, CatalogApp } from "@/types/apps";
@@ -394,5 +397,64 @@ describe("latestRestore", () => {
       "succeeded",
     );
     expect(latestRestore([stale], "yolab-gitea", now)).toBeNull();
+  });
+});
+
+describe("waitNote", () => {
+  const now = Date.parse("2026-10-01T10:00:00Z");
+  const ago = (ms: number) => new Date(now - ms).toISOString();
+  const ahead = (ms: number) => new Date(now + ms).toISOString();
+
+  it("says how long an app has been starting", () => {
+    const a = app({ status: "starting", since: ago(3 * 60_000) });
+    expect(waitNote(a, "starting", now)).toBe("Started 3 minutes ago.");
+  });
+
+  it("says a start is taking longer than usual once it is", () => {
+    const a = app({
+      status: "starting",
+      since: ago(SLOW_START_MS + 4 * 60_000),
+    });
+    expect(waitNote(a, "starting", now)).toMatch(
+      /^It has been 14 minutes, longer than usual/,
+    );
+  });
+
+  it("does not call a long copy slow, big copies take time", () => {
+    const a = app({ status: "copying", since: ago(SLOW_START_MS * 3) });
+    expect(waitNote(a, "copying", now)).toBe("Started 30 minutes ago.");
+  });
+
+  it("counts down to the next try of an app that keeps stopping", () => {
+    const a = app({ status: "stopped", retry_at: ahead(150_000) });
+    expect(waitNote(a, "stopped", now)).toBe("Next try in about 3 minutes.");
+    const soon = app({ status: "stopped", retry_at: ahead(20_000) });
+    expect(waitNote(soon, "stopped", now)).toBe("Next try in a few seconds.");
+  });
+
+  it("says it is trying again once the next try is due", () => {
+    const a = app({ status: "failed", retry_at: ago(30_000) });
+    expect(waitNote(a, "failed", now)).toBe("Trying to start it again now…");
+  });
+
+  it("stays quiet when there is no time to tell", () => {
+    expect(waitNote(app({ status: "starting" }), "starting", now)).toBeNull();
+    expect(waitNote(app({ status: "stopped" }), "stopped", now)).toBeNull();
+    expect(waitNote(app({ since: ago(60_000) }), "ready", now)).toBeNull();
+    expect(
+      waitNote(app({ status: "starting", since: "soon" }), "starting", now),
+    ).toBeNull();
+  });
+});
+
+describe("podStatus", () => {
+  it("puts every Kubernetes phase into plain words", () => {
+    const pod = (phase: string, ready = false) => ({ name: "p", phase, ready });
+    expect(podStatus(pod("Running", true))).toBe("Running");
+    expect(podStatus(pod("Running"))).toBe("Starting");
+    expect(podStatus(pod("Pending"))).toBe("Getting ready");
+    expect(podStatus(pod("Succeeded"))).toBe("Finished its job");
+    expect(podStatus(pod("Failed"))).toBe("Stopped");
+    expect(podStatus(pod("Unknown"))).toBe("Not responding");
   });
 });

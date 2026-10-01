@@ -44,3 +44,12 @@ export function relativeTime(
   if (hours < 24) return hours === 1 ? "an hour ago" : `${hours} hours ago`;
   return formatDateTime(input);
 }
+
+export function roughDuration(ms: number): string {
+  const minutes = Math.round(ms / 60_000);
+  if (!Number.isFinite(minutes) || ms < 45_000) return "a few seconds";
+  if (minutes <= 1) return "a minute";
+  if (minutes < 60) return `${minutes} minutes`;
+  const hours = Math.round(minutes / 60);
+  return hours === 1 ? "an hour" : `${hours} hours`;
+}

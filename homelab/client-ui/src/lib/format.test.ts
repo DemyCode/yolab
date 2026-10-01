@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { formatBytes, generateSecret, relativeTime } from "./format";
+import {
+  formatBytes,
+  generateSecret,
+  relativeTime,
+  roughDuration,
+} from "./format";
 
 describe("formatBytes", () => {
   it("never renders a non-number as a size", () => {
@@ -79,5 +84,20 @@ describe("relativeTime", () => {
 
   it("says nothing about a time it cannot read", () => {
     expect(relativeTime("not a date", now)).toBe("");
+  });
+});
+
+describe("roughDuration", () => {
+  it("rounds a wait to words a person would say", () => {
+    expect(roughDuration(10_000)).toBe("a few seconds");
+    expect(roughDuration(60_000)).toBe("a minute");
+    expect(roughDuration(160_000)).toBe("3 minutes");
+    expect(roughDuration(65 * 60_000)).toBe("an hour");
+    expect(roughDuration(150 * 60_000)).toBe("3 hours");
+  });
+
+  it("never shows a nonsense number", () => {
+    expect(roughDuration(Number.NaN)).toBe("a few seconds");
+    expect(roughDuration(-5_000)).toBe("a few seconds");
   });
 });

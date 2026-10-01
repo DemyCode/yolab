@@ -1,4 +1,5 @@
-import type { AppInfo, AppOutput, CatalogApp } from "@/types/apps";
+import type { AppInfo, AppOutput, CatalogApp, PodInfo } from "@/types/apps";
+import { roughDuration } from "./format";
 
 export interface AppLink {
   label: string;
@@ -63,7 +64,12 @@ export function nextInstanceName(appId: string, installed: AppInfo[]): string {
 }
 
 export type AppState =
-  "ready" | "starting" | "removing" | "copying" | "failed" | "stopped";
+  | "ready"
+  | "starting"
+  | "removing"
+  | "copying"
+  | "failed"
+  | "stopped";
 
 export function appState(app: AppInfo): AppState {
   if (app.status === "uninstalling") return "removing";
@@ -142,7 +148,12 @@ export function instanceStem(app: AppInfo): string {
 }
 
 export type AppAction =
-  "update" | "retry" | "duplicate" | "backup" | "restore" | "remove";
+  | "update"
+  | "retry"
+  | "duplicate"
+  | "backup"
+  | "restore"
+  | "remove";
 
 export function availableActions(
   state: AppState,
@@ -216,4 +227,51 @@ export function latestRestore(
   const ended = latest.finished_at ? Date.parse(latest.finished_at) : NaN;
   if (Number.isNaN(ended) || now - ended > RESTORE_DONE_SHOWN_MS) return null;
   return latest;
+}
+
+export const SLOW_START_MS = 10 * 60 * 1000;
+
+export function waitNote(
+  app: AppInfo,
+  state: AppState,
+  now: number,
+): string | null {
+  if (state === "failed" || state === "stopped") {
+    if (!app.retry_at) return null;
+    const left = Date.parse(app.retry_at) - now;
+    if (Number.isNaN(left)) return null;
+    if (left <= 5_000) return "Trying to start it again now…";
+    return left < 45_000
+      ? "Next try in a few seconds."
+      : `Next try in about ${roughDuration(left)}.`;
+  }
+  if (state !== "starting" && state !== "copying" && state !== "removing") {
+    return null;
+  }
+  if (!app.since) return null;
+  const started = Date.parse(app.since);
+  if (Number.isNaN(started)) return null;
+  const waited = Math.max(0, now - started);
+  if (state === "starting" && waited >= SLOW_START_MS) {
+    return `It has been ${roughDuration(waited)}, longer than usual. Technical details below show what each part is doing.`;
+  }
+  return waited < 45_000
+    ? "Started a few seconds ago."
+    : `Started ${roughDuration(waited)} ago.`;
+}
+
+export function podStatus(pod: PodInfo): string {
+  if (pod.ready) return "Running";
+  switch (pod.phase) {
+    case "Running":
+      return "Starting";
+    case "Pending":
+      return "Getting ready";
+    case "Succeeded":
+      return "Finished its job";
+    case "Failed":
+      return "Stopped";
+    default:
+      return "Not responding";
+  }
 }

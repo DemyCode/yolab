@@ -33,6 +33,8 @@ import {
   instanceStem,
   latestRestore,
   newerVersion,
+  podStatus,
+  waitNote,
   type AppState,
   type RestoreRecord,
   type StatusTone,
@@ -73,14 +75,37 @@ function StatusLine({ state, version }: { state: AppState; version: string }) {
   );
 }
 
-function FailureReason({ detail }: { detail: string }) {
-  const reason = detail?.trim();
-  if (!reason) return <p>It did not say why.</p>;
+function WhatHappened({ app, fallback }: { app: AppInfo; fallback: string }) {
+  const said = app.technical?.trim();
   return (
-    <pre className="my-2 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-control bg-surface p-2.5 font-mono text-xs text-fg">
-      {reason}
-    </pre>
+    <>
+      <p>{app.detail?.trim() || fallback}</p>
+      {said && (
+        <details className="my-2">
+          <summary className="cursor-pointer text-xs text-fg-muted hover:text-fg">
+            What the system said
+          </summary>
+          <pre className="mt-1.5 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-control bg-surface p-2.5 font-mono text-xs text-fg">
+            {said}
+          </pre>
+        </details>
+      )}
+    </>
   );
+}
+
+function WaitNote({ note }: { note: string | null }) {
+  if (!note) return null;
+  return <p className="mt-1 tabular-nums">{note}</p>;
+}
+
+function useNow(everyMs: number): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = window.setInterval(() => setNow(Date.now()), everyMs);
+    return () => clearInterval(id);
+  }, [everyMs]);
+  return now;
 }
 
 const MAX_LOG_LINES = 1000;
@@ -177,8 +202,11 @@ function TechnicalDetails({ app }: { app: AppInfo }) {
                 <span className="min-w-0 flex-1 truncate font-mono text-xs text-fg-muted">
                   {pod.name}
                 </span>
-                <span className="shrink-0 text-xs text-fg-subtle">
-                  {pod.phase}
+                <span
+                  className="shrink-0 text-xs text-fg-subtle"
+                  title={pod.phase}
+                >
+                  {podStatus(pod)}
                 </span>
                 <RowAction
                   onClick={() =>
@@ -579,6 +607,7 @@ export function AppDetailPage() {
 
   const app = apps.data?.find((a) => a.instance_name === instanceName);
   const state = app ? appState(app) : "starting";
+  const now = useNow(5_000);
 
   useEffect(() => {
     if (!instanceName) return;
@@ -697,12 +726,14 @@ export function AppDetailPage() {
     restore && restore.state !== "running" && restore.id !== restoreSeen
       ? restore
       : null;
+  const note = waitNote(current, state, now);
 
   function banner() {
     if (state === "removing") {
       return (
         <Banner tone="warning" title="Being removed">
           This app and its files are being deleted.
+          <WaitNote note={note} />
         </Banner>
       );
     }
@@ -732,8 +763,12 @@ export function AppDetailPage() {
             </div>
           }
         >
-          <FailureReason detail={current.detail} />
-          It is kept so you can see what went wrong.
+          <WhatHappened app={current} fallback="It did not say why." />
+          {note ? (
+            <WaitNote note={`It keeps trying on its own. ${note}`} />
+          ) : (
+            <p className="mt-1">It is kept so you can see what went wrong.</p>
+          )}
         </Banner>
       );
     }
@@ -783,8 +818,10 @@ export function AppDetailPage() {
     if (state === "stopped") {
       return (
         <Banner tone="warning" title="It stopped working">
-          <FailureReason detail={current.detail} />
-          It keeps trying to start again on its own.
+          <WhatHappened app={current} fallback="It did not say why." />
+          <WaitNote
+            note={`It keeps trying to start again on its own.${note ? ` ${note}` : ""}`}
+          />
         </Banner>
       );
     }
@@ -829,14 +866,18 @@ export function AppDetailPage() {
         <Banner tone="info" title="Copying its files">
           {current.detail?.trim() ||
             "It starts on its own once its files are in place."}
+          <WaitNote note={note} />
         </Banner>
       );
     }
     if (state === "starting") {
       return (
         <Banner tone="info" title="Starting up">
-          {current.detail?.trim() ||
-            "This usually takes a minute or two the first time."}
+          <WhatHappened
+            app={current}
+            fallback="This usually takes a minute or two the first time."
+          />
+          <WaitNote note={note} />
         </Banner>
       );
     }

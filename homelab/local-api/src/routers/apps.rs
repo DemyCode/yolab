@@ -35,6 +35,9 @@ pub struct AppInfo {
     pub chart_version: String,
     pub status: String,
     pub detail: String,
+    pub technical: String,
+    pub since: Option<String>,
+    pub retry_at: Option<String>,
     pub outputs: Vec<crate::outputs::ShownOutput>,
     pub config: serde_json::Map<String, Value>,
     pub backup: AppBackupStatus,
@@ -848,18 +851,99 @@ pub(crate) fn explain_app_state(pods: &[&Value]) -> String {
     if running_not_ready {
         return "Almost ready — waiting for the app to respond.".into();
     }
-    if let Some(reason) = waiting.first() {
-        return format!("Waiting: {reason}");
+    if !waiting.is_empty() {
+        return "Getting ready…".into();
     }
 
     String::new()
 }
 
-const CANNOT_START: [&str; 5] = [
+const EXPLAINED_WAITS: [&str; 2] = ["ContainerCreating", "PodInitializing"];
+
+pub(crate) fn unexplained_waits(pods: &[&Value]) -> String {
+    let mut reasons: Vec<&str> = pods
+        .iter()
+        .flat_map(|pod| {
+            ["initContainerStatuses", "containerStatuses"]
+                .into_iter()
+                .flat_map(move |key| pod["status"][key].as_array().into_iter().flatten())
+        })
+        .filter_map(|cs| cs["state"]["waiting"]["reason"].as_str())
+        .filter(|reason| !EXPLAINED_WAITS.contains(reason))
+        .collect();
+    reasons.dedup();
+    reasons.join(", ")
+}
+
+pub(crate) fn waiting_since(pods: &[&Value]) -> Option<String> {
+    pods.iter()
+        .filter_map(|p| p["metadata"]["creationTimestamp"].as_str())
+        .min()
+        .map(str::to_string)
+}
+
+pub(crate) fn install_failure_headline(reason: &str) -> String {
+    let said = reason.to_lowercase();
+    if said.contains("timed out") || said.contains("deadline exceeded") {
+        "It took too long to start, so the installation was stopped.".into()
+    } else if said.contains("no space") || said.contains("insufficient") {
+        "There is not enough room on the server for it.".into()
+    } else {
+        "Something went wrong while setting it up.".into()
+    }
+}
+
+fn go_duration(text: &str) -> Option<chrono::Duration> {
+    let mut rest = text.trim();
+    if rest.is_empty() {
+        return None;
+    }
+    let mut total = 0f64;
+    while !rest.is_empty() {
+        let digits = rest
+            .find(|c: char| !(c.is_ascii_digit() || c == '.'))
+            .unwrap_or(rest.len());
+        let number: f64 = rest[..digits].parse().ok()?;
+        rest = &rest[digits..];
+        let unit = rest
+            .find(|c: char| c.is_ascii_digit() || c == '.')
+            .unwrap_or(rest.len());
+        let seconds = match &rest[..unit] {
+            "h" => 3600.0,
+            "m" => 60.0,
+            "s" => 1.0,
+            "ms" => 0.001,
+            _ => return None,
+        };
+        total += number * seconds;
+        rest = &rest[unit..];
+    }
+    Some(chrono::Duration::milliseconds(
+        (total * 1000.0).round() as i64
+    ))
+}
+
+fn next_restart(waiting: &Value, last: &Value) -> Option<String> {
+    let delay = waiting["message"]
+        .as_str()?
+        .strip_prefix("back-off ")?
+        .split_whitespace()
+        .next()
+        .and_then(go_duration)?;
+    let ended = chrono::DateTime::parse_from_rfc3339(last["finishedAt"].as_str()?).ok()?;
+    Some(
+        (ended.with_timezone(&chrono::Utc) + delay)
+            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+    )
+}
+
+const CANNOT_START: [&str; 7] = [
     "ImagePullBackOff",
     "ErrImagePull",
+    "ErrImageNeverPull",
     "CreateContainerConfigError",
     "CreateContainerError",
+    "RunContainerError",
     "InvalidImageName",
 ];
 
@@ -872,9 +956,37 @@ pub(crate) struct ContainerFailure {
     pub said: String,
     pub exit_code: Option<i64>,
     pub previous: bool,
+    pub reason: String,
+    pub retry_at: Option<String>,
 }
 
 impl ContainerFailure {
+    pub(crate) fn headline(&self) -> String {
+        let said = self.said.to_lowercase();
+        let mentions = |words: &[&str]| words.iter().any(|w| said.contains(w));
+        match self.reason.as_str() {
+            "ImagePullBackOff" | "ErrImagePull" | "ErrImageNeverPull" => {
+                if mentions(&["not found", "manifest unknown", "does not exist"]) {
+                    "The version of its program it asks for could not be found online.".into()
+                } else if mentions(&["unauthorized", "denied", "forbidden"]) {
+                    "Its program could not be downloaded: the place it comes from refused access."
+                        .into()
+                } else {
+                    "Its program could not be downloaded. Check that the server is connected to the internet.".into()
+                }
+            }
+            "InvalidImageName" => "It points to a program that does not exist.".into(),
+            "CreateContainerConfigError" => {
+                "A setting or password it needs to start is missing.".into()
+            }
+            "CreateContainerError" | "RunContainerError" => {
+                "Its program could not be started.".into()
+            }
+            "OOMKilled" => "It ran out of memory and was stopped.".into(),
+            _ => "It starts, then stops right away.".into(),
+        }
+    }
+
     pub(crate) fn describe(&self, said: &str) -> String {
         match (said.trim(), self.exit_code) {
             ("", Some(code)) => format!(
@@ -889,18 +1001,27 @@ impl ContainerFailure {
 
 fn failure_of(pod: &str, cs: &Value) -> Option<ContainerFailure> {
     let text = |v: &Value| v["message"].as_str().unwrap_or("").trim().to_string();
-    let failure = |said: String, ended: &Value, previous: bool| ContainerFailure {
+    let failure = |said: String, ended: &Value, previous: bool, reason: &str| ContainerFailure {
         pod: pod.to_string(),
         container: cs["name"].as_str().unwrap_or("").to_string(),
         said,
         exit_code: ended["exitCode"].as_i64(),
         previous,
+        reason: reason.to_string(),
+        retry_at: None,
     };
     let waiting = &cs["state"]["waiting"];
     let reason = waiting["reason"].as_str().unwrap_or("");
     if reason == "CrashLoopBackOff" {
         let last = &cs["lastState"]["terminated"];
-        return Some(failure(text(last), last, true));
+        let why = match last["reason"].as_str() {
+            Some("OOMKilled") => "OOMKilled",
+            _ => reason,
+        };
+        return Some(ContainerFailure {
+            retry_at: next_restart(waiting, last),
+            ..failure(text(last), last, true, why)
+        });
     }
     if CANNOT_START.contains(&reason) {
         let said = text(waiting);
@@ -909,11 +1030,12 @@ fn failure_of(pod: &str, cs: &Value) -> Option<ContainerFailure> {
         } else {
             said
         };
-        return Some(failure(said, &Value::Null, false));
+        return Some(failure(said, &Value::Null, false, reason));
     }
     let ended = &cs["state"]["terminated"];
     if ended["exitCode"].as_i64().is_some_and(|code| code != 0) {
-        return Some(failure(text(ended), ended, false));
+        let why = ended["reason"].as_str().unwrap_or("");
+        return Some(failure(text(ended), ended, false, why));
     }
     None
 }
@@ -1016,16 +1138,20 @@ fn copying_data(
     namespace: &str,
     pvcs_by_ns: &std::collections::HashMap<&str, Vec<&Value>>,
     events: &[Value],
-) -> Option<String> {
+) -> Option<(String, Option<String>)> {
     let pvc = pvcs_by_ns
         .get(namespace)?
         .iter()
         .find(|pvc| is_cloning(pvc))?;
     let name = pvc["metadata"]["name"].as_str().unwrap_or("");
-    Some(match clone_percent(events, namespace, name) {
+    let said = match clone_percent(events, namespace, name) {
         Some(percent) => format!("Copying this app's files… {percent}%"),
         None => "Copying this app's files…".to_string(),
-    })
+    };
+    let started = pvc["metadata"]["creationTimestamp"]
+        .as_str()
+        .map(str::to_string);
+    Some((said, started))
 }
 
 pub async fn list_apps(State(state): State<AppState>) -> Result<Json<Vec<AppInfo>>> {
@@ -1081,13 +1207,23 @@ pub async fn list_apps(State(state): State<AppState>) -> Result<Json<Vec<AppInfo
         let phase = ns["status"]["phase"].as_str().unwrap_or("Active");
         let ns_full = format!("yolab-{name}");
         let mut detail = String::new();
+        let mut technical = String::new();
+        let mut since: Option<String> = None;
+        let mut retry_at: Option<String> = None;
         let status = if phase == "Terminating" || uninstall_lock_is_fresh(&ann) {
+            since = ns["metadata"]["deletionTimestamp"]
+                .as_str()
+                .map(str::to_string);
             "uninstalling".to_string()
         } else if let Some(reason) = install_failure(&ann) {
-            detail = reason;
+            detail = install_failure_headline(&reason);
+            technical = reason;
             "failed".to_string()
-        } else if let Some(copying) = copying_data(&ns_full, &pvcs_by_ns, &all_event_items) {
+        } else if let Some((copying, started)) =
+            copying_data(&ns_full, &pvcs_by_ns, &all_event_items)
+        {
             detail = copying;
+            since = started;
             "copying".to_string()
         } else {
             let items: Vec<&Value> = pods_by_ns
@@ -1113,7 +1249,9 @@ pub async fn list_apps(State(state): State<AppState>) -> Result<Json<Vec<AppInfo
             if all_ready {
                 "running".to_string()
             } else if let Some(failure) = container_failure(&items) {
-                detail = explain_failure(client, &ns_full, &failure).await;
+                detail = failure.headline();
+                technical = explain_failure(client, &ns_full, &failure).await;
+                retry_at = failure.retry_at.clone();
                 let deployments = deployments_by_ns
                     .get(ns_full.as_str())
                     .map(|v| v.as_slice())
@@ -1126,6 +1264,12 @@ pub async fn list_apps(State(state): State<AppState>) -> Result<Json<Vec<AppInfo
                 .to_string()
             } else {
                 detail = explain_app_state(&items);
+                technical = unexplained_waits(&items);
+                since = waiting_since(&items).or_else(|| {
+                    ns["metadata"]["creationTimestamp"]
+                        .as_str()
+                        .map(str::to_string)
+                });
                 "starting".to_string()
             }
         };
@@ -1165,6 +1309,9 @@ pub async fn list_apps(State(state): State<AppState>) -> Result<Json<Vec<AppInfo
             instance_name: name,
             status,
             detail,
+            technical,
+            since,
+            retry_at,
             outputs,
             config,
             backup: AppBackupStatus {
@@ -2236,6 +2383,8 @@ mod tests {
             said: String::new(),
             exit_code: Some(2),
             previous: true,
+            reason: "CrashLoopBackOff".into(),
+            retry_at: None,
         };
         assert_eq!(
             explain_failure(&kube, "yolab-notes", &failure).await,
@@ -2251,6 +2400,8 @@ mod tests {
             said: String::new(),
             exit_code: Some(2),
             previous: true,
+            reason: "CrashLoopBackOff".into(),
+            retry_at: None,
         };
         assert_eq!(
             explain_failure(&crate::k8s::testing::unreachable(), "yolab-notes", &failure).await,
@@ -2321,7 +2472,9 @@ mod tests {
         let mut by_ns: std::collections::HashMap<&str, Vec<&Value>> = Default::default();
         by_ns.insert("yolab-notes", vec![&pvc]);
         assert_eq!(
-            copying_data("yolab-notes", &by_ns, &events).as_deref(),
+            copying_data("yolab-notes", &by_ns, &events)
+                .map(|(said, _)| said)
+                .as_deref(),
             Some("Copying this app's files… 37%")
         );
     }
@@ -2332,7 +2485,9 @@ mod tests {
         let mut by_ns: std::collections::HashMap<&str, Vec<&Value>> = Default::default();
         by_ns.insert("yolab-notes", vec![&pvc]);
         assert_eq!(
-            copying_data("yolab-notes", &by_ns, &[]).as_deref(),
+            copying_data("yolab-notes", &by_ns, &[])
+                .map(|(said, _)| said)
+                .as_deref(),
             Some("Copying this app's files…")
         );
     }
@@ -2354,9 +2509,115 @@ mod tests {
     }
 
     #[test]
-    fn an_unknown_reason_is_shown_not_invented_over() {
+    fn an_unknown_reason_is_said_plainly_and_kept_for_the_curious() {
         let pod = waiting_pod("containerStatuses", "SomeFutureReason", 0);
-        assert!(explain_app_state(&[&pod]).contains("SomeFutureReason"));
+        let said = explain_app_state(&[&pod]);
+        assert!(!said.contains("SomeFutureReason"), "{said}");
+        assert_eq!(unexplained_waits(&[&pod]), "SomeFutureReason");
+    }
+
+    #[test]
+    fn reasons_already_put_into_words_are_not_repeated_as_jargon() {
+        let pod = waiting_pod("containerStatuses", "ContainerCreating", 0);
+        assert_eq!(unexplained_waits(&[&pod]), "");
+    }
+
+    #[test]
+    fn the_wait_is_counted_from_the_oldest_part() {
+        let a = json!({"metadata": {"creationTimestamp": "2026-10-01T10:05:00Z"}});
+        let b = json!({"metadata": {"creationTimestamp": "2026-10-01T10:00:00Z"}});
+        assert_eq!(
+            waiting_since(&[&a, &b]).as_deref(),
+            Some("2026-10-01T10:00:00Z")
+        );
+        assert_eq!(waiting_since(&[]), None);
+    }
+
+    #[test]
+    fn go_durations_are_read_as_kubernetes_writes_them() {
+        assert_eq!(go_duration("5m0s"), Some(chrono::Duration::seconds(300)));
+        assert_eq!(go_duration("1m20s"), Some(chrono::Duration::seconds(80)));
+        assert_eq!(go_duration("40s"), Some(chrono::Duration::seconds(40)));
+        assert_eq!(
+            go_duration("1.5s"),
+            Some(chrono::Duration::milliseconds(1500))
+        );
+        assert_eq!(go_duration("soon"), None);
+        assert_eq!(go_duration(""), None);
+    }
+
+    #[test]
+    fn a_crash_loop_knows_when_it_tries_again() {
+        let pod = json!({"metadata": {"name": "p"}, "status": {"phase": "Running", "containerStatuses": [
+            {"name": "app", "restartCount": 6,
+             "state": {"waiting": {"reason": "CrashLoopBackOff",
+                "message": "back-off 2m40s restarting failed container=app pod=p_yolab-notes(1234)"}},
+             "lastState": {"terminated": {"exitCode": 1, "finishedAt": "2026-10-01T10:00:00Z"}}}
+        ]}});
+        let failure = container_failure(&[&pod]).unwrap();
+        assert_eq!(failure.retry_at.as_deref(), Some("2026-10-01T10:02:40Z"));
+        assert_eq!(failure.headline(), "It starts, then stops right away.");
+    }
+
+    #[test]
+    fn a_crash_loop_without_a_back_off_message_has_no_guessed_time() {
+        let pod = crashing_pod("containerStatuses", "app", "");
+        assert_eq!(container_failure(&[&pod]).unwrap().retry_at, None);
+    }
+
+    #[test]
+    fn running_out_of_memory_is_named() {
+        let pod = json!({"metadata": {"name": "p"}, "status": {"phase": "Running", "containerStatuses": [
+            {"name": "app", "state": {"waiting": {"reason": "CrashLoopBackOff"}},
+             "lastState": {"terminated": {"exitCode": 137, "reason": "OOMKilled"}}}
+        ]}});
+        let failure = container_failure(&[&pod]).unwrap();
+        assert!(
+            failure.headline().contains("memory"),
+            "{}",
+            failure.headline()
+        );
+    }
+
+    #[test]
+    fn kubernetes_reasons_never_reach_the_headline() {
+        for reason in CANNOT_START {
+            let pod = json!({"metadata": {"name": "p"}, "status": {"phase": "Pending",
+            "containerStatuses": [
+                {"name": "app", "state": {"waiting": {"reason": reason}}}
+            ]}});
+            let headline = container_failure(&[&pod]).expect(reason).headline();
+            assert!(!headline.contains(reason), "{reason}: {headline}");
+            assert!(!headline.contains("app:"), "{reason}: {headline}");
+        }
+    }
+
+    #[test]
+    fn a_missing_image_is_told_apart_from_no_internet() {
+        let pull = |message: &str| ContainerFailure {
+            pod: "p".into(),
+            container: "app".into(),
+            said: message.into(),
+            exit_code: None,
+            previous: false,
+            reason: "ErrImagePull".into(),
+            retry_at: None,
+        };
+        assert!(pull("manifest unknown")
+            .headline()
+            .contains("could not be found"));
+        assert!(pull("dial tcp: i/o timeout")
+            .headline()
+            .contains("internet"));
+    }
+
+    #[test]
+    fn an_install_that_timed_out_says_so_plainly() {
+        assert!(install_failure_headline("helm: context deadline exceeded").contains("too long"));
+        assert_eq!(
+            install_failure_headline("helm said no"),
+            "Something went wrong while setting it up."
+        );
     }
 
     #[test]
