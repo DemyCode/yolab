@@ -61,8 +61,8 @@ spec:
             export DEFAULT_DOMAIN="$YOLAB_FQDN"
             exec /bin/sh ./docker-entrypoint.sh
         env:
-          # RoadRunner listens on 0.0.0.0 by default, which is IPv4 only; pods here
-          # have IPv6 addresses, so the readiness probe was refused forever.
+          # RoadRunner listens on 0.0.0.0 by default, which is IPv4 only. Pods are
+          # dual-stack with IPv6 first, and the kubelet probes that first address.
           - name: ADDRESS
             value: "[::]"
           - name: DB_DRIVER
