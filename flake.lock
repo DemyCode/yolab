@@ -58,8 +58,8 @@
         "nixpkgs": "nixpkgs",
         "rust-overlay": "rust-overlay",
         "treefmt-nix": "treefmt-nix",
-        "yolab-android-key": "yolab-android-key",
-        "yolab-machine": "yolab-machine"
+        "yolab-machine": "yolab-machine",
+        "yolab-android-key": "yolab-android-key"
       }
     },
     "rust-overlay": {
@@ -69,11 +69,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1790843958,
-        "narHash": "sha256-jtYAaAXT1gxEtzmeYmOGu0IvKPle5J39BOFbgl6os+A=",
+        "lastModified": 1790669703,
+        "narHash": "sha256-PA75DaxgfJSDNr1eDF/l9TDfNxSUAjPRt08fICQWOqc=",
         "owner": "oxalica",
         "repo": "rust-overlay",
-        "rev": "b2ccad3b67335d368eef49ec48b9c8166858e73d",
+        "rev": "49b6548d31019e8bfe9d4415193ac1df3c48f53a",
         "type": "github"
       },
       "original": {
@@ -102,18 +102,6 @@
         "type": "github"
       }
     },
-    "yolab-android-key": {
-      "flake": false,
-      "locked": {
-        "path": "./homelab/android-key",
-        "type": "path"
-      },
-      "original": {
-        "path": "./homelab/android-key",
-        "type": "path"
-      },
-      "parent": []
-    },
     "yolab-machine": {
       "flake": false,
       "locked": {
@@ -122,6 +110,18 @@
       },
       "original": {
         "path": "./homelab/machine",
+        "type": "path"
+      },
+      "parent": []
+    },
+    "yolab-android-key": {
+      "flake": false,
+      "locked": {
+        "path": "./homelab/android-key",
+        "type": "path"
+      },
+      "original": {
+        "path": "./homelab/android-key",
         "type": "path"
       },
       "parent": []
