@@ -245,8 +245,9 @@ pub(crate) async fn checks<H: Host>(host: &H) -> anyhow::Result<Checks> {
     let verdicts: Vec<(i64, bool, bool)> = stream::iter(ids)
         .map(|id| async move {
             let name = format!("osd.{id}");
+            let args = ["osd", "ok-to-stop", name.as_str()];
             let (stop, destroy) = tokio::join!(
-                host.ceph(&["osd", "ok-to-stop", &name]),
+                host.ceph(&args),
                 crate::ceph::destructive::safe_to_destroy(host, id),
             );
             (id, stop.is_ok(), matches!(destroy, Ok(Some(_))))
