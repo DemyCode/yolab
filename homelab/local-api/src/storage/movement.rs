@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -8,6 +8,9 @@ use crate::host::Host;
 use crate::storage::settings;
 
 pub const RECORD_KEY: &str = "yolab/movement";
+
+const UNAVAILABLE_AFTER_MS: u64 = 45 * 1000;
+const CLONE_SCALE: u64 = 10_000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -26,6 +29,34 @@ pub enum JobKind {
     Move,
     AddCopies,
     Rebuild,
+    Clone,
+    FreeSpace,
+    Repair,
+}
+
+impl JobKind {
+    fn unit(self) -> Unit {
+        match self {
+            JobKind::Move | JobKind::AddCopies | JobKind::Rebuild => Unit::Bytes,
+            JobKind::Clone | JobKind::FreeSpace | JobKind::Repair => Unit::Percent,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Unit {
+    Bytes,
+    Percent,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MoveReason {
+    Draining,
+    Filling,
+    Resizing,
+    Balancing,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -37,6 +68,7 @@ pub struct DiskRef {
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Job {
     pub kind: JobKind,
+    pub unit: Unit,
     pub remaining_bytes: u64,
     pub to_move_bytes: u64,
     pub moved_bytes: u64,
@@ -48,9 +80,13 @@ pub struct Job {
 pub struct Movement {
     pub state: State,
     pub jobs: Vec<Job>,
+    pub move_reason: Option<MoveReason>,
     pub draining: Vec<DiskRef>,
+    pub filling: Vec<DiskRef>,
     pub waiting_for: Vec<String>,
     pub copies: Option<u32>,
+    pub clones: u32,
+    pub repairing: bool,
     pub eta_secs: Option<u64>,
     pub inactive_pgs: u64,
     pub total_pgs: u64,
@@ -61,9 +97,13 @@ impl Movement {
         Movement {
             state: State::Unknown,
             jobs: Vec::new(),
+            move_reason: None,
             draining: Vec::new(),
+            filling: Vec::new(),
             waiting_for: Vec::new(),
             copies: None,
+            clones: 0,
+            repairing: false,
             eta_secs: None,
             inactive_pgs: 0,
             total_pgs: 0,
@@ -77,9 +117,18 @@ pub struct Snapshot {
     pub degraded_bytes: u64,
     pub inactive_pgs: u64,
     pub total_pgs: u64,
+    pub snaptrim_pgs: u64,
+    pub inconsistent_pgs: u64,
+    pub repairing: bool,
     pub no_room: bool,
     pub noout: bool,
     pub osds_down: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Clones {
+    pub count: u32,
+    pub progress: f64,
 }
 
 fn bytes_of(objects: u64, data_bytes: u64, num_objects: u64) -> u64 {
@@ -99,10 +148,12 @@ pub fn snapshot(status: &Value, osd_flags: &str) -> Snapshot {
                 .collect()
         })
         .unwrap_or_default();
-    let has = |part: &str| {
+    let count_with = |parts: &[&str]| -> u64 {
         states
             .iter()
-            .any(|(name, _)| name.split('+').any(|p| p == part))
+            .filter(|(name, _)| name.split('+').any(|p| parts.contains(&p)))
+            .map(|(_, n)| n)
+            .sum()
     };
     let inactive_pgs = states
         .iter()
@@ -127,13 +178,48 @@ pub fn snapshot(status: &Value, osd_flags: &str) -> Snapshot {
         ),
         inactive_pgs,
         total_pgs: pgmap["num_pgs"].as_u64().unwrap_or(0),
-        no_room: has("backfill_toofull") || has("recovery_toofull"),
+        snaptrim_pgs: count_with(&["snaptrim", "snaptrim_wait"]),
+        inconsistent_pgs: count_with(&["inconsistent"]),
+        repairing: count_with(&["repair"]) > 0,
+        no_room: count_with(&["backfill_toofull", "recovery_toofull"]) > 0,
         noout: osd_flags.split(',').any(|f| f == "noout"),
         osds_down: num_up < num_osds,
     }
 }
 
-pub fn remaining_by_job(s: &Snapshot) -> BTreeMap<JobKind, u64> {
+fn clone_event(e: &Value) -> bool {
+    e["id"].as_str() == Some("mgr-vol-ongoing-clones")
+        || e["refs"]
+            .as_array()
+            .is_some_and(|r| r.iter().any(|x| x.as_str() == Some("clone")))
+            && e["message"].as_str().is_some_and(|m| m.contains("ongoing clones"))
+}
+
+pub fn clones(progress: &Value) -> Option<Clones> {
+    let event = progress["events"].as_array()?.iter().find(|e| clone_event(e))?;
+    let message = event["message"].as_str().unwrap_or("");
+    let count = message
+        .split_whitespace()
+        .next()
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(1);
+    let fraction = event["progress"].as_f64().or_else(|| {
+        let pct = regex::Regex::new(r"average progress is ([0-9.]+)%")
+            .ok()?
+            .captures(message)?
+            .get(1)?
+            .as_str()
+            .parse::<f64>()
+            .ok()?;
+        Some(pct / 100.0)
+    })?;
+    Some(Clones {
+        count,
+        progress: fraction.clamp(0.0, 1.0),
+    })
+}
+
+pub fn remaining_by_job(s: &Snapshot, c: Option<Clones>) -> BTreeMap<JobKind, u64> {
     let mut jobs = BTreeMap::new();
     if s.misplaced_bytes > 0 {
         jobs.insert(JobKind::Move, s.misplaced_bytes);
@@ -146,20 +232,69 @@ pub fn remaining_by_job(s: &Snapshot) -> BTreeMap<JobKind, u64> {
         };
         jobs.insert(kind, s.degraded_bytes);
     }
+    if let Some(c) = c.filter(|c| c.progress < 1.0) {
+        let left = ((1.0 - c.progress) * CLONE_SCALE as f64).round() as u64;
+        jobs.insert(JobKind::Clone, left.max(1));
+    }
+    if s.snaptrim_pgs > 0 {
+        jobs.insert(JobKind::FreeSpace, s.snaptrim_pgs);
+    }
+    if s.inconsistent_pgs > 0 {
+        jobs.insert(JobKind::Repair, s.inconsistent_pgs);
+    }
     jobs
 }
 
-pub fn state_of(s: &Snapshot) -> State {
-    if s.inactive_pgs > 0 {
+pub fn state_of(s: &Snapshot, unavailable_for_long: bool, has_jobs: bool) -> State {
+    if s.inactive_pgs > 0 && unavailable_for_long {
         State::Unavailable
     } else if s.no_room {
         State::NoRoom
     } else if s.noout && s.osds_down {
         State::Restarting
-    } else if s.misplaced_bytes > 0 || s.degraded_bytes > 0 {
+    } else if has_jobs {
         State::Working
     } else {
         State::Settled
+    }
+}
+
+pub fn filling_osds(df: &Value) -> Vec<i64> {
+    let avg = df["summary"]["average_utilization"].as_f64().unwrap_or(0.0);
+    if avg <= 0.0 {
+        return Vec::new();
+    }
+    df["nodes"]
+        .as_array()
+        .map(|nodes| {
+            nodes
+                .iter()
+                .filter(|n| n["reweight"].as_f64().unwrap_or(0.0) > 0.5)
+                .filter(|n| n["crush_weight"].as_f64().unwrap_or(0.0) > 0.0)
+                .filter(|n| n["utilization"].as_f64().unwrap_or(avg) < avg * 0.5)
+                .filter_map(|n| n["id"].as_i64())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+pub fn pools_resizing(pools: &Value) -> bool {
+    pools.as_array().is_some_and(|pools| {
+        pools.iter().any(|p| {
+            p["pg_num"] != p["pg_num_target"] || p["pg_placement_num"] != p["pg_placement_num_target"]
+        })
+    })
+}
+
+pub fn move_reason(draining: &[DiskRef], filling: &[DiskRef], resizing: bool) -> MoveReason {
+    if !draining.is_empty() {
+        MoveReason::Draining
+    } else if !filling.is_empty() {
+        MoveReason::Filling
+    } else if resizing {
+        MoveReason::Resizing
+    } else {
+        MoveReason::Balancing
     }
 }
 
@@ -223,21 +358,36 @@ impl Tracker {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Record {
     pub jobs: BTreeMap<JobKind, Tracker>,
+    #[serde(default)]
+    pub inactive_since: Option<u64>,
 }
 
 impl Record {
-    pub fn advance(&mut self, now_ms: u64, remaining: &BTreeMap<JobKind, u64>) {
+    pub fn advance(&mut self, now_ms: u64, remaining: &BTreeMap<JobKind, u64>, inactive: bool) {
         self.jobs.retain(|kind, _| remaining.contains_key(kind));
         for (&kind, &left) in remaining {
             self.jobs.entry(kind).or_default().record(now_ms, left);
         }
+        self.inactive_since = if inactive {
+            Some(self.inactive_since.unwrap_or(now_ms))
+        } else {
+            None
+        };
+    }
+
+    pub fn unavailable_for_long(&self, now_ms: u64, inactive: bool) -> bool {
+        inactive
+            && self
+                .inactive_since
+                .is_some_and(|t| now_ms.saturating_sub(t) >= UNAVAILABLE_AFTER_MS)
     }
 
     pub fn jobs(&self, now_ms: u64, remaining: &BTreeMap<JobKind, u64>) -> Vec<Job> {
         remaining
             .iter()
             .map(|(&kind, &left)| {
-                let e = match self.jobs.get(&kind) {
+                let tracked = self.jobs.get(&kind);
+                let mut e = match tracked {
                     Some(t) => t.estimate(now_ms, left),
                     None => Estimate {
                         to_move: left,
@@ -246,11 +396,16 @@ impl Record {
                         eta_secs: None,
                     },
                 };
+                if kind == JobKind::Clone {
+                    e.progress = Some(1.0 - left as f64 / CLONE_SCALE as f64);
+                }
+                let bytes = kind.unit() == Unit::Bytes;
                 Job {
                     kind,
-                    remaining_bytes: left,
-                    to_move_bytes: e.to_move,
-                    moved_bytes: e.moved,
+                    unit: kind.unit(),
+                    remaining_bytes: if bytes { left } else { 0 },
+                    to_move_bytes: if bytes { e.to_move } else { 0 },
+                    moved_bytes: if bytes { e.moved } else { 0 },
                     progress: e.progress,
                     eta_secs: e.eta_secs,
                 }
@@ -270,8 +425,8 @@ pub fn overall_eta(jobs: &[Job]) -> Option<u64> {
         .max()
 }
 
-pub fn draining_disks(published: &BTreeMap<String, String>) -> Vec<DiskRef> {
-    let mut out: Vec<DiskRef> = published
+fn published_disks(published: &BTreeMap<String, String>) -> Vec<(String, String, Value)> {
+    published
         .iter()
         .flat_map(|(node, raw)| {
             let payload: Value = serde_json::from_str(raw).unwrap_or(Value::Null);
@@ -280,29 +435,54 @@ pub fn draining_disks(published: &BTreeMap<String, String>) -> Vec<DiskRef> {
                 .map(|disks| {
                     disks
                         .iter()
-                        .filter(|(_, d)| {
-                            matches!(d["phase"].as_str(), Some("draining") | Some("removing"))
-                        })
-                        .map(|(id, d)| DiskRef {
-                            node: node.clone(),
-                            name: d["model"]
-                                .as_str()
-                                .filter(|m| !m.is_empty())
-                                .unwrap_or(id)
-                                .to_string(),
-                        })
+                        .map(|(id, d)| (node.clone(), id.clone(), d.clone()))
                         .collect::<Vec<_>>()
                 })
                 .unwrap_or_default()
         })
-        .collect();
+        .collect()
+}
+
+fn disk_ref(node: &str, id: &str, d: &Value) -> DiskRef {
+    DiskRef {
+        node: node.to_string(),
+        name: d["model"]
+            .as_str()
+            .filter(|m| !m.is_empty())
+            .unwrap_or(id)
+            .to_string(),
+    }
+}
+
+fn sorted(mut out: Vec<DiskRef>) -> Vec<DiskRef> {
     out.sort_by(|a, b| (&a.node, &a.name).cmp(&(&b.node, &b.name)));
     out
 }
 
+pub fn draining_disks(published: &BTreeMap<String, String>) -> Vec<DiskRef> {
+    sorted(
+        published_disks(published)
+            .into_iter()
+            .filter(|(_, _, d)| matches!(d["phase"].as_str(), Some("draining") | Some("removing")))
+            .map(|(node, id, d)| disk_ref(&node, &id, &d))
+            .collect(),
+    )
+}
+
+pub fn disks_of_osds(published: &BTreeMap<String, String>, osds: &[i64]) -> Vec<DiskRef> {
+    let wanted: HashSet<i64> = osds.iter().copied().collect();
+    sorted(
+        published_disks(published)
+            .into_iter()
+            .filter(|(_, _, d)| d["osd_id"].as_i64().is_some_and(|id| wanted.contains(&id)))
+            .map(|(node, id, d)| disk_ref(&node, &id, &d))
+            .collect(),
+    )
+}
+
 pub fn hosts_with_down_osds(tree: &Value) -> Vec<String> {
     let nodes = tree["nodes"].as_array().cloned().unwrap_or_default();
-    let down: std::collections::HashSet<i64> = nodes
+    let down: HashSet<i64> = nodes
         .iter()
         .filter(|n| n["type"].as_str() == Some("osd") && n["status"].as_str() == Some("down"))
         .filter_map(|n| n["id"].as_i64())
@@ -311,11 +491,9 @@ pub fn hosts_with_down_osds(tree: &Value) -> Vec<String> {
         .iter()
         .filter(|n| n["type"].as_str() == Some("host"))
         .filter(|h| {
-            h["children"].as_array().is_some_and(|c| {
-                c.iter()
-                    .filter_map(Value::as_i64)
-                    .any(|id| down.contains(&id))
-            })
+            h["children"]
+                .as_array()
+                .is_some_and(|c| c.iter().filter_map(Value::as_i64).any(|id| down.contains(&id)))
         })
         .filter_map(|h| h["name"].as_str().map(str::to_string))
         .collect();
@@ -330,7 +508,12 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-async fn read_snapshot<H: Host>(host: &H) -> Option<Snapshot> {
+struct Reading {
+    snap: Snapshot,
+    clones: Option<Clones>,
+}
+
+async fn read<H: Host>(host: &H) -> Option<Reading> {
     let status = host.ceph_json(&["status"]).await.ok()?;
     let flags = host
         .ceph_json(&["osd", "dump"])
@@ -338,7 +521,15 @@ async fn read_snapshot<H: Host>(host: &H) -> Option<Snapshot> {
         .ok()
         .and_then(|d| d["flags"].as_str().map(str::to_string))
         .unwrap_or_default();
-    Some(snapshot(&status, &flags))
+    let clones = host
+        .ceph_json(&["progress", "json"])
+        .await
+        .ok()
+        .and_then(|p| clones(&p));
+    Some(Reading {
+        snap: snapshot(&status, &flags),
+        clones,
+    })
 }
 
 async fn read_record<H: Host>(host: &H) -> Record {
@@ -351,15 +542,16 @@ async fn read_record<H: Host>(host: &H) -> Record {
 }
 
 pub async fn sample<H: Host>(host: &H) {
-    let Some(snap) = read_snapshot(host).await else {
+    let Some(r) = read(host).await else {
         return;
     };
-    let remaining = remaining_by_job(&snap);
+    let remaining = remaining_by_job(&r.snap, r.clones);
+    let inactive = r.snap.inactive_pgs > 0;
     let mut record = read_record(host).await;
-    if remaining.is_empty() && record.jobs.is_empty() {
+    if remaining.is_empty() && !inactive && record == Record::default() {
         return;
     }
-    record.advance(now_ms(), &remaining);
+    record.advance(now_ms(), &remaining, inactive);
     match serde_json::to_string(&record) {
         Ok(raw) => {
             if let Err(e) = settings::set(host, RECORD_KEY, &raw).await {
@@ -371,11 +563,14 @@ pub async fn sample<H: Host>(host: &H) {
 }
 
 pub async fn assess_via<H: Host>(host: &H) -> Movement {
-    let Some(snap) = read_snapshot(host).await else {
+    let Some(r) = read(host).await else {
         return Movement::unknown();
     };
-    let remaining = remaining_by_job(&snap);
-    let jobs = read_record(host).await.jobs(now_ms(), &remaining);
+    let snap = r.snap;
+    let now = now_ms();
+    let remaining = remaining_by_job(&snap, r.clones);
+    let record = read_record(host).await;
+    let jobs = record.jobs(now, &remaining);
     let waiting_for = if snap.osds_down {
         host.ceph_json(&["osd", "tree"])
             .await
@@ -384,21 +579,48 @@ pub async fn assess_via<H: Host>(host: &H) -> Movement {
     } else {
         Vec::new()
     };
-    let draining = settings::dump(host, settings::DISK_STATUS)
+    let published = settings::dump(host, settings::DISK_STATUS)
         .await
-        .map(|p| draining_disks(&p))
         .unwrap_or_default();
+    let draining = draining_disks(&published);
+    let (filling, reason) = if remaining.contains_key(&JobKind::Move) {
+        let filling = if draining.is_empty() {
+            let osds = host
+                .ceph_json(&["osd", "df"])
+                .await
+                .map(|df| filling_osds(&df))
+                .unwrap_or_default();
+            disks_of_osds(&published, &osds)
+        } else {
+            Vec::new()
+        };
+        let resizing = draining.is_empty()
+            && filling.is_empty()
+            && host
+                .ceph_json(&["osd", "pool", "ls", "detail"])
+                .await
+                .is_ok_and(|p| pools_resizing(&p));
+        let reason = move_reason(&draining, &filling, resizing);
+        (filling, Some(reason))
+    } else {
+        (Vec::new(), None)
+    };
     let copies = match crate::topology::read_policy_from(host).await {
         Some(crate::topology::PolicyState::Chosen(p)) => Some(p.size),
         _ => None,
     };
+    let inactive = snap.inactive_pgs > 0;
     Movement {
-        state: state_of(&snap),
+        state: state_of(&snap, record.unavailable_for_long(now, inactive), !jobs.is_empty()),
         eta_secs: overall_eta(&jobs),
         jobs,
+        move_reason: reason,
         draining,
+        filling,
         waiting_for,
         copies,
+        clones: r.clones.map(|c| c.count).unwrap_or(0),
+        repairing: snap.repairing,
         inactive_pgs: snap.inactive_pgs,
         total_pgs: snap.total_pgs,
     }
@@ -453,23 +675,26 @@ mod tests {
         pairs.iter().copied().collect()
     }
 
+    fn pgs(states: &[(&str, u64)]) -> Value {
+        json!({"pgmap": {"pgs_by_state": states
+            .iter()
+            .map(|(s, n)| json!({"state_name": s, "count": n}))
+            .collect::<Vec<_>>()}})
+    }
+
     #[test]
     fn the_drain_seen_on_node3_is_one_move_job_with_everything_usable() {
         let s = snapshot(&live_node3_status(), "sortbitwise,recovery_deletes");
-        assert_eq!(state_of(&s), State::Working);
-        assert_eq!(s.inactive_pgs, 0);
-        let jobs = remaining_by_job(&s);
-        assert_eq!(
-            jobs.keys().copied().collect::<Vec<_>>(),
-            vec![JobKind::Move]
-        );
+        let jobs = remaining_by_job(&s, None);
+        assert_eq!(state_of(&s, false, !jobs.is_empty()), State::Working);
+        assert_eq!(jobs.keys().copied().collect::<Vec<_>>(), vec![JobKind::Move]);
         let mv = jobs[&JobKind::Move];
         assert!(mv > 96_000_000_000 && mv < 97_000_000_000);
     }
 
     #[test]
     fn a_drain_and_a_raised_copy_count_are_two_separate_jobs() {
-        let jobs = remaining_by_job(&snapshot(&drain_and_second_copy(), ""));
+        let jobs = remaining_by_job(&snapshot(&drain_and_second_copy(), ""), None);
         assert_eq!(jobs.get(&JobKind::Move), Some(&40_000));
         assert_eq!(jobs.get(&JobKind::AddCopies), Some(&90_000));
         assert!(!jobs.contains_key(&JobKind::Rebuild));
@@ -488,21 +713,39 @@ mod tests {
     fn missing_copies_while_a_disk_is_down_are_a_rebuild() {
         let mut status = drain_and_second_copy();
         status["osdmap"]["num_up_osds"] = json!(2);
-        let jobs = remaining_by_job(&snapshot(&status, ""));
+        let jobs = remaining_by_job(&snapshot(&status, ""), None);
         assert!(jobs.contains_key(&JobKind::Rebuild));
         assert!(!jobs.contains_key(&JobKind::AddCopies));
     }
 
     #[test]
-    fn a_pg_that_is_not_active_makes_files_unavailable() {
-        let status = json!({"pgmap": {"pgs_by_state": [
-            {"state_name": "active+clean", "count": 70},
-            {"state_name": "down", "count": 3},
-            {"state_name": "peering", "count": 2}
-        ]}});
-        let s = snapshot(&status, "");
-        assert_eq!(s.inactive_pgs, 5);
-        assert_eq!(state_of(&s), State::Unavailable);
+    fn a_short_peering_blip_is_not_called_unavailable() {
+        let s = snapshot(&pgs(&[("active+clean", 70), ("peering", 11)]), "");
+        assert_eq!(s.inactive_pgs, 11);
+        let mut r = Record::default();
+        r.advance(0, &left(&[]), true);
+        assert!(!r.unavailable_for_long(30_000, true));
+        assert_eq!(state_of(&s, r.unavailable_for_long(30_000, true), false), State::Settled);
+    }
+
+    #[test]
+    fn files_out_of_reach_for_a_while_are_unavailable() {
+        let s = snapshot(&pgs(&[("active+clean", 70), ("down", 3), ("peering", 2)]), "");
+        let mut r = Record::default();
+        r.advance(0, &left(&[]), true);
+        r.advance(60_000, &left(&[]), true);
+        assert!(r.unavailable_for_long(60_000, true));
+        assert_eq!(state_of(&s, true, false), State::Unavailable);
+    }
+
+    #[test]
+    fn coming_back_resets_the_unavailable_clock() {
+        let mut r = Record::default();
+        r.advance(0, &left(&[]), true);
+        r.advance(60_000, &left(&[]), false);
+        assert_eq!(r.inactive_since, None);
+        r.advance(70_000, &left(&[]), true);
+        assert!(!r.unavailable_for_long(90_000, true));
     }
 
     #[test]
@@ -516,15 +759,13 @@ mod tests {
             osds_down: true,
             ..Default::default()
         };
-        assert_eq!(state_of(&s), State::Unavailable);
+        assert_eq!(state_of(&s, true, true), State::Unavailable);
     }
 
     #[test]
     fn a_full_backfill_target_is_reported_as_no_room() {
-        let status = json!({"pgmap": {"pgs_by_state": [
-            {"state_name": "active+remapped+backfill_toofull", "count": 4}
-        ], "misplaced_objects": 10, "num_objects": 100, "data_bytes": 1000}});
-        assert_eq!(state_of(&snapshot(&status, "")), State::NoRoom);
+        let s = snapshot(&pgs(&[("active+remapped+backfill_toofull", 4)]), "");
+        assert_eq!(state_of(&s, false, true), State::NoRoom);
     }
 
     #[test]
@@ -535,25 +776,107 @@ mod tests {
             "osdmap": {"num_osds": 3, "num_up_osds": 2}
         });
         assert_eq!(
-            state_of(&snapshot(&status, "noout,sortbitwise")),
+            state_of(&snapshot(&status, "noout,sortbitwise"), false, true),
             State::Restarting
         );
-        assert_eq!(state_of(&snapshot(&status, "sortbitwise")), State::Working);
+        assert_eq!(
+            state_of(&snapshot(&status, "sortbitwise"), false, true),
+            State::Working
+        );
     }
 
     #[test]
     fn a_clean_cluster_is_settled_with_no_jobs() {
-        let status = json!({"pgmap": {"pgs_by_state": [{"state_name": "active+clean", "count": 81}],
-                                      "num_objects": 10, "data_bytes": 1000}});
-        let s = snapshot(&status, "");
-        assert_eq!(state_of(&s), State::Settled);
-        assert!(remaining_by_job(&s).is_empty());
+        let s = snapshot(&pgs(&[("active+clean", 81)]), "");
+        let jobs = remaining_by_job(&s, None);
+        assert!(jobs.is_empty());
+        assert_eq!(state_of(&s, false, false), State::Settled);
+    }
+
+    #[test]
+    fn deleting_snapshots_is_a_free_space_job() {
+        let s = snapshot(&pgs(&[("active+clean", 70), ("active+clean+snaptrim", 3), ("active+clean+snaptrim_wait", 8)]), "");
+        assert_eq!(remaining_by_job(&s, None).get(&JobKind::FreeSpace), Some(&11));
+    }
+
+    #[test]
+    fn damaged_copies_are_a_repair_job_and_say_whether_repair_runs() {
+        let found = snapshot(&pgs(&[("active+clean+inconsistent", 2)]), "");
+        assert_eq!(remaining_by_job(&found, None).get(&JobKind::Repair), Some(&2));
+        assert!(!found.repairing);
+        let fixing = snapshot(&pgs(&[("active+clean+scrubbing+deep+inconsistent+repair", 2)]), "");
+        assert!(fixing.repairing);
+    }
+
+    #[test]
+    fn routine_scrubbing_is_not_a_job() {
+        let s = snapshot(&pgs(&[("active+clean+scrubbing", 3), ("active+clean+scrubbing+deep", 1), ("active+clean", 77)]), "");
+        assert!(remaining_by_job(&s, None).is_empty());
+    }
+
+    #[test]
+    fn an_app_copy_reads_its_progress_from_the_ceph_progress_event() {
+        let progress = json!({
+            "events": [{"id": "mgr-vol-ongoing-clones", "message": "2 ongoing clones - average progress is 66.555%", "refs": ["mds", "clone"]}],
+            "completed": []
+        });
+        let c = clones(&progress).unwrap();
+        assert_eq!(c.count, 2);
+        assert!((c.progress - 0.66555).abs() < 1e-9);
+        let jobs = Record::default().jobs(0, &remaining_by_job(&Snapshot::default(), Some(c)));
+        assert_eq!(jobs[0].kind, JobKind::Clone);
+        assert_eq!(jobs[0].unit, Unit::Percent);
+        assert!((jobs[0].progress.unwrap() - 0.6656).abs() < 1e-3);
+    }
+
+    #[test]
+    fn a_finished_clone_in_the_completed_list_is_not_a_job() {
+        let progress = json!({
+            "events": [],
+            "completed": [{"id": "mgr-vol-ongoing-clones", "message": "1 ongoing clones - average progress is 100.0%", "refs": ["mds", "clone"]}]
+        });
+        assert_eq!(clones(&progress), None);
+    }
+
+    #[test]
+    fn an_explicit_progress_field_wins_over_the_message() {
+        let progress = json!({"events": [{"id": "mgr-vol-ongoing-clones", "message": "1 ongoing clones - average progress is 10%", "progress": 0.25}]});
+        assert_eq!(clones(&progress).unwrap().progress, 0.25);
+    }
+
+    #[test]
+    fn a_much_emptier_disk_is_the_one_being_filled() {
+        let df = json!({
+            "nodes": [
+                {"id": 0, "crush_weight": 0.19, "reweight": 1.0, "utilization": 14.8},
+                {"id": 1, "crush_weight": 0.17, "reweight": 1.0, "utilization": 14.4},
+                {"id": 3, "crush_weight": 0.9, "reweight": 1.0, "utilization": 1.2},
+                {"id": 2, "crush_weight": 0.9, "reweight": 0.0, "utilization": 0.0}
+            ],
+            "summary": {"average_utilization": 10.0}
+        });
+        assert_eq!(filling_osds(&df), vec![3]);
+    }
+
+    #[test]
+    fn a_pool_changing_its_group_count_is_resizing() {
+        assert!(pools_resizing(&json!([{"pg_num": 32, "pg_num_target": 64, "pg_placement_num": 32, "pg_placement_num_target": 64}])));
+        assert!(!pools_resizing(&json!([{"pg_num": 32, "pg_num_target": 32, "pg_placement_num": 32, "pg_placement_num_target": 32}])));
+    }
+
+    #[test]
+    fn the_reason_for_moving_prefers_what_the_person_did() {
+        let d = vec![DiskRef { node: "node2".into(), name: "easystore".into() }];
+        assert_eq!(move_reason(&d, &d, true), MoveReason::Draining);
+        assert_eq!(move_reason(&[], &d, true), MoveReason::Filling);
+        assert_eq!(move_reason(&[], &[], true), MoveReason::Resizing);
+        assert_eq!(move_reason(&[], &[], false), MoveReason::Balancing);
     }
 
     #[test]
     fn progress_is_measured_from_the_peak_recorded_when_the_job_began() {
         let mut r = Record::default();
-        r.advance(0, &left(&[(JobKind::Move, 1000)]));
+        r.advance(0, &left(&[(JobKind::Move, 1000)]), false);
         let jobs = r.jobs(30_000, &left(&[(JobKind::Move, 750)]));
         assert_eq!(jobs[0].to_move_bytes, 1000);
         assert_eq!(jobs[0].moved_bytes, 250);
@@ -563,15 +886,9 @@ mod tests {
     #[test]
     fn a_second_job_starting_does_not_reset_the_first() {
         let mut r = Record::default();
-        r.advance(0, &left(&[(JobKind::Move, 1000)]));
-        r.advance(
-            120_000,
-            &left(&[(JobKind::Move, 800), (JobKind::AddCopies, 5000)]),
-        );
-        let jobs = r.jobs(
-            180_000,
-            &left(&[(JobKind::Move, 700), (JobKind::AddCopies, 4900)]),
-        );
+        r.advance(0, &left(&[(JobKind::Move, 1000)]), false);
+        r.advance(120_000, &left(&[(JobKind::Move, 800), (JobKind::AddCopies, 5000)]), false);
+        let jobs = r.jobs(180_000, &left(&[(JobKind::Move, 700), (JobKind::AddCopies, 4900)]));
         let mv = jobs.iter().find(|j| j.kind == JobKind::Move).unwrap();
         assert_eq!(mv.to_move_bytes, 1000);
         assert_eq!(mv.moved_bytes, 300);
@@ -581,10 +898,10 @@ mod tests {
     #[test]
     fn a_finished_job_is_forgotten_and_starts_from_zero_next_time() {
         let mut r = Record::default();
-        r.advance(0, &left(&[(JobKind::Move, 1000)]));
-        r.advance(60_000, &left(&[]));
+        r.advance(0, &left(&[(JobKind::Move, 1000)]), false);
+        r.advance(60_000, &left(&[]), false);
         assert!(r.jobs.is_empty());
-        r.advance(120_000, &left(&[(JobKind::Move, 300)]));
+        r.advance(120_000, &left(&[(JobKind::Move, 300)]), false);
         let jobs = r.jobs(120_000, &left(&[(JobKind::Move, 300)]));
         assert_eq!(jobs[0].to_move_bytes, 300);
         assert_eq!(jobs[0].moved_bytes, 0);
@@ -596,6 +913,14 @@ mod tests {
         assert_eq!(jobs[0].progress, None);
         assert_eq!(jobs[0].eta_secs, None);
         assert_eq!(jobs[0].to_move_bytes, 500);
+    }
+
+    #[test]
+    fn percent_jobs_never_report_bytes() {
+        let jobs = Record::default().jobs(0, &left(&[(JobKind::FreeSpace, 11)]));
+        assert_eq!(jobs[0].unit, Unit::Percent);
+        assert_eq!(jobs[0].to_move_bytes, 0);
+        assert_eq!(jobs[0].remaining_bytes, 0);
     }
 
     #[test]
@@ -640,15 +965,24 @@ mod tests {
     #[test]
     fn the_record_survives_a_round_trip_through_the_config_store() {
         let mut r = Record::default();
-        r.advance(5, &left(&[(JobKind::Move, 10), (JobKind::AddCopies, 20)]));
+        r.advance(5, &left(&[(JobKind::Move, 10), (JobKind::Clone, 20)]), true);
         let raw = serde_json::to_string(&r).unwrap();
         assert_eq!(serde_json::from_str::<Record>(&raw).unwrap(), r);
+    }
+
+    #[test]
+    fn a_record_written_before_the_unavailable_clock_still_loads() {
+        let old = r#"{"jobs":{"move":{"peak":10,"samples":[[0,10]]}}}"#;
+        let r: Record = serde_json::from_str(old).unwrap();
+        assert_eq!(r.inactive_since, None);
+        assert_eq!(r.jobs[&JobKind::Move].peak, 10);
     }
 
     #[test]
     fn the_whole_reorganisation_takes_as_long_as_its_slowest_job() {
         let job = |eta| Job {
             kind: JobKind::Move,
+            unit: Unit::Bytes,
             remaining_bytes: 1,
             to_move_bytes: 1,
             moved_bytes: 0,
@@ -661,28 +995,27 @@ mod tests {
     }
 
     #[test]
-    fn the_disk_being_drained_is_named_by_its_model_and_machine() {
+    fn disks_are_named_by_their_model_and_machine() {
         let published = BTreeMap::from([
             (
                 "node2".to_string(),
                 json!({"disks": {
-                    "serial-wwn-0x50014ee214caf529": {"model": "easystore 2647", "phase": "draining"},
-                    "system": {"model": "System disk", "phase": "active"}
+                    "serial-wwn-0x50014ee214caf529": {"model": "easystore 2647", "phase": "draining", "osd_id": 2},
+                    "system": {"model": "System disk", "phase": "active", "osd_id": 1}
                 }})
                 .to_string(),
             ),
             (
                 "node3".to_string(),
-                json!({"disks": {"system": {"model": "System disk", "phase": "active"}}})
+                json!({"disks": {"system": {"model": "System disk", "phase": "active", "osd_id": 0}}})
                     .to_string(),
             ),
         ]);
+        let easystore = DiskRef { node: "node2".into(), name: "easystore 2647".into() };
+        assert_eq!(draining_disks(&published), vec![easystore]);
         assert_eq!(
-            draining_disks(&published),
-            vec![DiskRef {
-                node: "node2".into(),
-                name: "easystore 2647".into()
-            }]
+            disks_of_osds(&published, &[0]),
+            vec![DiskRef { node: "node3".into(), name: "System disk".into() }]
         );
     }
 

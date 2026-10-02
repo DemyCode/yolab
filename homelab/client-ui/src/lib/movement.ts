@@ -28,21 +28,42 @@ function copiesWord(copies: number | null): string {
   return "another copy";
 }
 
-function disks(m: Movement): string {
-  return list(m.draining.map((d) => `the ${d.name} disk on ${d.node}`));
+function named(refs: { node: string; name: string }[]): string {
+  return list(
+    refs.map((d) =>
+      /\bdisk$/i.test(d.name)
+        ? `the ${d.name} on ${d.node}`
+        : `the ${d.name} disk on ${d.node}`,
+    ),
+  );
+}
+
+function moveLabel(m: Movement, yours: boolean): string {
+  const files = yours ? "your files" : "files";
+  switch (m.move_reason) {
+    case "draining":
+      return `Moving ${files} off ${named(m.draining)}`;
+    case "filling":
+      return `Spreading ${files} onto ${named(m.filling)}`;
+    case "resizing":
+      return `Regrouping ${files} so your disks can hold more`;
+    default:
+      return yours
+        ? "Evening out space across your disks"
+        : "Evening out space across disks";
+  }
+}
+
+function cloneLabel(m: Movement): string {
+  return m.clones > 1
+    ? `Copying files for ${m.clones} apps`
+    : "Copying files for an app";
 }
 
 function jobCopy(job: MovementJob, m: Movement): JobCopy {
   switch (job.kind) {
     case "move":
-      return {
-        job,
-        label: m.draining.length
-          ? `Moving files off ${disks(m)}`
-          : "Moving files between your disks",
-        note: null,
-        tone: "calm",
-      };
+      return { job, label: moveLabel(m, false), note: null, tone: "calm" };
     case "add_copies":
       return {
         job,
@@ -61,19 +82,40 @@ function jobCopy(job: MovementJob, m: Movement): JobCopy {
         note: null,
         tone: "warning",
       };
+    case "clone":
+      return {
+        job,
+        label: cloneLabel(m),
+        note: "Duplicating or restoring an app copies its files inside your storage.",
+        tone: "calm",
+      };
+    case "free_space":
+      return {
+        job,
+        label: "Freeing space from deleted snapshots",
+        note: null,
+        tone: "calm",
+      };
+    case "repair":
+      return {
+        job,
+        label: m.repairing
+          ? "Repairing damaged copies"
+          : "Damaged copies found",
+        note: m.repairing
+          ? null
+          : "A routine check found copies that don't match. They are put right by a repair.",
+        tone: "warning",
+      };
   }
 }
 
 function headlineFor(jobs: JobCopy[], m: Movement): string {
   if (jobs.length > 1) return "Reorganising your files";
   const only = jobs[0]?.job.kind;
-  if (only === "move")
-    return m.draining.length
-      ? `Moving your files off ${disks(m)}`
-      : "Rearranging your files across your disks";
-  if (only === "add_copies")
-    return `Adding ${copiesWord(m.copies)} of every file`;
-  if (only === "rebuild") return jobs[0].label;
+  if (only === "move") return moveLabel(m, true);
+  if (only === "add_copies") return `Adding ${copiesWord(m.copies)} of every file`;
+  if (jobs[0]) return jobs[0].label;
   return "Rearranging your files across your disks";
 }
 
@@ -92,6 +134,14 @@ export function movementCopy(m: Movement): MovementCopy | null {
           headline: headlineFor(jobs, m),
           safety:
             "Some files have fewer copies than you chose until this finishes. Don't unplug any disk or machine.",
+          tone: "warning",
+          jobs,
+        };
+      if (has("repair"))
+        return {
+          headline: headlineFor(jobs, m),
+          safety:
+            "Some copies were found damaged. Your apps keep working; don't unplug any disk or machine until they're repaired.",
           tone: "warning",
           jobs,
         };
@@ -143,9 +193,11 @@ export function movementCopy(m: Movement): MovementCopy | null {
 
 export function overallProgress(m: Movement): number | null {
   const jobs = m.jobs ?? [];
+  if (jobs.length === 0 || jobs.every((j) => j.progress === null)) return null;
   const total = jobs.reduce((s, j) => s + j.to_move_bytes, 0);
-  if (total === 0 || jobs.every((j) => j.progress === null)) return null;
-  return jobs.reduce((s, j) => s + j.moved_bytes, 0) / total;
+  if (total > 0) return jobs.reduce((s, j) => s + j.moved_bytes, 0) / total;
+  const measured = jobs.filter((j) => j.progress !== null);
+  return measured.reduce((s, j) => s + (j.progress ?? 0), 0) / measured.length;
 }
 
 export function jobOf(
@@ -178,7 +230,7 @@ export function needsAttentionEverywhere(m: Movement | undefined): boolean {
 }
 
 export function useMovement() {
-  return useApi<Movement>("storage-movement-v2", "/api/storage/movement", {
+  return useApi<Movement>("storage-movement-v3", "/api/storage/movement", {
     pollMs: 10_000,
   });
 }

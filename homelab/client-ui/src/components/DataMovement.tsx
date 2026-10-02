@@ -74,8 +74,16 @@ function JobRow({ copy, showLabel }: { copy: JobCopy; showLabel: boolean }) {
           />
         </div>
         <span className="shrink-0 text-sm tabular-nums text-fg-muted">
-          <RollingNumber value={job.moved_bytes} format={formatBytes} /> of{" "}
-          <RollingNumber value={job.to_move_bytes} format={formatBytes} />
+          {job.unit === "bytes" ? (
+            <>
+              <RollingNumber value={job.moved_bytes} format={formatBytes} /> of{" "}
+              <RollingNumber value={job.to_move_bytes} format={formatBytes} />
+            </>
+          ) : (
+            <>
+              <RollingNumber value={Math.round(percent(job.progress))} />%
+            </>
+          )}
         </span>
       </div>
       {copy.note && <p className="mt-1.5 text-sm text-fg-muted">{copy.note}</p>}

@@ -98,10 +98,19 @@ export interface StoragePolicyData {
 export type MovementState =
   "settled" | "working" | "unavailable" | "no_room" | "restarting" | "unknown";
 
-export type MovementJobKind = "move" | "add_copies" | "rebuild";
+export type MovementJobKind =
+  | "move"
+  | "add_copies"
+  | "rebuild"
+  | "clone"
+  | "free_space"
+  | "repair";
+
+export type MoveReason = "draining" | "filling" | "resizing" | "balancing";
 
 export interface MovementJob {
   kind: MovementJobKind;
+  unit: "bytes" | "percent";
   remaining_bytes: number;
   to_move_bytes: number;
   moved_bytes: number;
@@ -112,9 +121,13 @@ export interface MovementJob {
 export interface Movement {
   state: MovementState;
   jobs: MovementJob[];
+  move_reason: MoveReason | null;
   draining: { node: string; name: string }[];
+  filling: { node: string; name: string }[];
   waiting_for: string[];
   copies: number | null;
+  clones: number;
+  repairing: boolean;
   eta_secs: number | null;
   inactive_pgs: number;
   total_pgs: number;

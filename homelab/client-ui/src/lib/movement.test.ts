@@ -13,6 +13,7 @@ import type { Movement, MovementJob } from "@/types/storage";
 function job(over: Partial<MovementJob> = {}): MovementJob {
   return {
     kind: "move",
+    unit: "bytes",
     remaining_bytes: 0,
     to_move_bytes: 0,
     moved_bytes: 0,
@@ -26,9 +27,13 @@ function movement(over: Partial<Movement> = {}): Movement {
   return {
     state: "working",
     jobs: [job()],
+    move_reason: null,
     draining: [],
+    filling: [],
     waiting_for: [],
     copies: null,
+    clones: 0,
+    repairing: false,
     eta_secs: null,
     inactive_pgs: 0,
     total_pgs: 81,
@@ -40,7 +45,7 @@ const easystore = [{ node: "node2", name: "easystore 2647" }];
 
 describe("movementCopy", () => {
   it("names the disk being emptied and says the files are safe", () => {
-    const copy = movementCopy(movement({ draining: easystore }));
+    const copy = movementCopy(movement({ draining: easystore, move_reason: "draining" }));
     expect(copy?.headline).toBe(
       "Moving your files off the easystore 2647 disk on node2",
     );
@@ -63,6 +68,7 @@ describe("movementCopy", () => {
       movement({
         jobs: [job({ kind: "move" }), job({ kind: "add_copies" })],
         draining: easystore,
+        move_reason: "draining",
         copies: 2,
       }),
     );
@@ -100,6 +106,69 @@ describe("movementCopy", () => {
   });
 });
 
+describe("the other jobs Ceph runs", () => {
+  it("says why files move when no disk is being removed", () => {
+    const filling = movementCopy(
+      movement({ move_reason: "filling", filling: easystore }),
+    );
+    expect(filling?.headline).toBe(
+      "Spreading your files onto the easystore 2647 disk on node2",
+    );
+    expect(
+      movementCopy(movement({ move_reason: "balancing" }))?.headline,
+    ).toBe("Evening out space across your disks");
+    expect(
+      movementCopy(movement({ move_reason: "resizing" }))?.headline,
+    ).toMatch(/Regrouping/);
+  });
+
+  it("does not say disk twice for a disk already called one", () => {
+    const copy = movementCopy(
+      movement({
+        move_reason: "filling",
+        filling: [{ node: "node3", name: "System disk" }],
+      }),
+    );
+    expect(copy?.headline).toBe("Spreading your files onto the System disk on node3");
+  });
+
+  it("counts the apps whose files are being copied", () => {
+    const one = movementCopy(
+      movement({ jobs: [job({ kind: "clone", unit: "percent" })], clones: 1 }),
+    );
+    expect(one?.headline).toBe("Copying files for an app");
+    const two = movementCopy(
+      movement({ jobs: [job({ kind: "clone", unit: "percent" })], clones: 2 }),
+    );
+    expect(two?.headline).toBe("Copying files for 2 apps");
+    expect(two?.tone).toBe("calm");
+  });
+
+  it("explains why space is not back yet after deleting", () => {
+    const copy = movementCopy(
+      movement({ jobs: [job({ kind: "free_space", unit: "percent" })] }),
+    );
+    expect(copy?.headline).toBe("Freeing space from deleted snapshots");
+    expect(copy?.tone).toBe("calm");
+  });
+
+  it("warns about damaged copies and says whether they are being repaired", () => {
+    const found = movementCopy(
+      movement({ jobs: [job({ kind: "repair", unit: "percent" })] }),
+    );
+    expect(found?.headline).toBe("Damaged copies found");
+    expect(found?.tone).toBe("warning");
+    expect(found?.jobs[0].note).toMatch(/repair/);
+    const fixing = movementCopy(
+      movement({
+        jobs: [job({ kind: "repair", unit: "percent" })],
+        repairing: true,
+      }),
+    );
+    expect(fixing?.headline).toBe("Repairing damaged copies");
+  });
+});
+
 describe("overallProgress", () => {
   it("weighs each job by how much it has to move", () => {
     const m = movement({
@@ -114,6 +183,16 @@ describe("overallProgress", () => {
       ],
     });
     expect(overallProgress(m)).toBeCloseTo(0.125);
+  });
+
+  it("averages jobs that only report a percentage", () => {
+    const m = movement({
+      jobs: [
+        job({ kind: "clone", unit: "percent", progress: 0.4 }),
+        job({ kind: "free_space", unit: "percent", progress: 0.8 }),
+      ],
+    });
+    expect(overallProgress(m)).toBeCloseTo(0.6);
   });
 
   it("has nothing to show before any job was measured", () => {
