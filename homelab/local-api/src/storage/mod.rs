@@ -9,6 +9,7 @@ pub mod images_rbd;
 mod images_sizing;
 pub mod keys;
 pub mod mon_member;
+pub mod movement;
 pub mod noout;
 pub mod osd;
 pub mod pivot_lock;

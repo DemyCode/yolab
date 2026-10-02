@@ -29,6 +29,7 @@ import {
   RollingNumber,
   Swap,
 } from "@/components/motion";
+import { DataMovementCard, DrainProgress } from "@/components/DataMovement";
 import type {
   OsdInfo,
   PoolInfo,
@@ -356,6 +357,7 @@ function DiskRow({
           />
           <p className={cn("text-sm transition-colors duration-300", sm.color)}>
             <Swap id={sm.label}>{sm.label}</Swap>
+            {state === "draining" && <DrainProgress />}
             {disk.is_loop && (
               <span className="text-fg-subtle"> · built into this machine</span>
             )}
@@ -1316,6 +1318,8 @@ export function StoragePage() {
           {cephError}
         </Banner>
       </Collapse>
+
+      <DataMovementCard />
 
       <CapacityCard
         detail={detail}

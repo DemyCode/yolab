@@ -11,6 +11,7 @@ import { appDisplayName, catalogEntry } from "@/lib/apps";
 import type { AppInfo, CatalogApp } from "@/types/apps";
 import type { ClusterHealth } from "@/types/health";
 import { AnimatedList, Collapse, RollingNumber } from "@/components/motion";
+import { MovementBanner } from "@/components/DataMovement";
 
 interface Concern {
   tone: "info" | "warning" | "error";
@@ -77,6 +78,8 @@ export function HomePage() {
       </header>
 
       <HealBanner className="mb-6" />
+
+      <MovementBanner className="pb-6" />
 
       <Collapse open={Boolean(concern)} className="pb-6">
         {concern && (

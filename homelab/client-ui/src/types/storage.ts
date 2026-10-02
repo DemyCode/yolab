@@ -94,3 +94,25 @@ export interface StoragePolicyData {
   topology: StorageTopology | null;
   target: StorageTarget | null;
 }
+
+export type MovementState =
+  | "settled"
+  | "moving"
+  | "rebuilding"
+  | "unavailable"
+  | "no_room"
+  | "restarting"
+  | "unknown";
+
+export interface Movement {
+  state: MovementState;
+  draining: { node: string; name: string }[];
+  waiting_for: string[];
+  remaining_bytes: number;
+  moved_bytes: number;
+  to_move_bytes: number;
+  progress: number | null;
+  eta_secs: number | null;
+  inactive_pgs: number;
+  total_pgs: number;
+}

@@ -17,6 +17,8 @@ import { Card } from "@/components/ui/card";
 import { api } from "@/lib/api";
 import { useApi } from "@/lib/useResource";
 import { RollingNumber } from "@/components/motion";
+import { MovementSummary } from "@/components/DataMovement";
+import { isVisible, useMovement } from "@/lib/movement";
 import { ThemeControl } from "@/components/ThemeControl";
 import { creditStatus, formatBytes, formatEuros } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -113,6 +115,7 @@ export function SystemPage() {
   const { signOut } = useOutletContext<{ signOut: () => void }>();
 
   const health = useApi<ClusterHealth>("health", "/api/cluster/health");
+  const movement = useMovement();
   const storage = useApi<StorageDetailResponse>(
     "storage-detail",
     "/api/ceph/detail",
@@ -191,7 +194,7 @@ export function SystemPage() {
           to="/system/storage"
           icon={Database}
           label="Storage"
-          detail={storageDetail}
+          detail={isVisible(movement.data) ? <MovementSummary /> : storageDetail}
           tone={
             health.data?.level === "error"
               ? "error"

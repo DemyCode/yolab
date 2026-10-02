@@ -41,6 +41,7 @@ pub(crate) const ROUTE_TABLE: &[(&str, &[&str])] = &[
     ("/api/notifications/test", &["POST"]),
     ("/api/notifications/deliver", &["POST"]),
     ("/api/storage/policy", &["GET", "PUT"]),
+    ("/api/storage/movement", &["GET"]),
     ("/api/ceph/detail", &["GET"]),
     ("/api/ceph/dashboard", &["GET"]),
     ("/ceph-dashboard", &["ANY"]),
