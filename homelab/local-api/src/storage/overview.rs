@@ -550,7 +550,11 @@ mod tests {
 
     #[tokio::test]
     async fn a_failed_question_is_an_error_not_a_page_of_zeros() {
-        let host = answering().fail("ceph df", "timed out");
+        let host = FakeHost::new()
+            .ok("ceph status", &status().to_string())
+            .fail("ceph df", "timed out")
+            .ok("ceph osd df tree", &tree().to_string())
+            .ok("ceph osd pool ls detail", &detail().to_string());
         assert!(read(&host, "images").await.is_err());
     }
 
