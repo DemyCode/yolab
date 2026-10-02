@@ -192,11 +192,16 @@ fn clone_event(e: &Value) -> bool {
         || e["refs"]
             .as_array()
             .is_some_and(|r| r.iter().any(|x| x.as_str() == Some("clone")))
-            && e["message"].as_str().is_some_and(|m| m.contains("ongoing clones"))
+            && e["message"]
+                .as_str()
+                .is_some_and(|m| m.contains("ongoing clones"))
 }
 
 pub fn clones(progress: &Value) -> Option<Clones> {
-    let event = progress["events"].as_array()?.iter().find(|e| clone_event(e))?;
+    let event = progress["events"]
+        .as_array()?
+        .iter()
+        .find(|e| clone_event(e))?;
     let message = event["message"].as_str().unwrap_or("");
     let count = message
         .split_whitespace()
@@ -281,7 +286,8 @@ pub fn filling_osds(df: &Value) -> Vec<i64> {
 pub fn pools_resizing(pools: &Value) -> bool {
     pools.as_array().is_some_and(|pools| {
         pools.iter().any(|p| {
-            p["pg_num"] != p["pg_num_target"] || p["pg_placement_num"] != p["pg_placement_num_target"]
+            p["pg_num"] != p["pg_num_target"]
+                || p["pg_placement_num"] != p["pg_placement_num_target"]
         })
     })
 }
@@ -491,9 +497,11 @@ pub fn hosts_with_down_osds(tree: &Value) -> Vec<String> {
         .iter()
         .filter(|n| n["type"].as_str() == Some("host"))
         .filter(|h| {
-            h["children"]
-                .as_array()
-                .is_some_and(|c| c.iter().filter_map(Value::as_i64).any(|id| down.contains(&id)))
+            h["children"].as_array().is_some_and(|c| {
+                c.iter()
+                    .filter_map(Value::as_i64)
+                    .any(|id| down.contains(&id))
+            })
         })
         .filter_map(|h| h["name"].as_str().map(str::to_string))
         .collect();
@@ -611,7 +619,11 @@ pub async fn assess_via<H: Host>(host: &H) -> Movement {
     };
     let inactive = snap.inactive_pgs > 0;
     Movement {
-        state: state_of(&snap, record.unavailable_for_long(now, inactive), !jobs.is_empty()),
+        state: state_of(
+            &snap,
+            record.unavailable_for_long(now, inactive),
+            !jobs.is_empty(),
+        ),
         eta_secs: overall_eta(&jobs),
         jobs,
         move_reason: reason,
@@ -687,7 +699,10 @@ mod tests {
         let s = snapshot(&live_node3_status(), "sortbitwise,recovery_deletes");
         let jobs = remaining_by_job(&s, None);
         assert_eq!(state_of(&s, false, !jobs.is_empty()), State::Working);
-        assert_eq!(jobs.keys().copied().collect::<Vec<_>>(), vec![JobKind::Move]);
+        assert_eq!(
+            jobs.keys().copied().collect::<Vec<_>>(),
+            vec![JobKind::Move]
+        );
         let mv = jobs[&JobKind::Move];
         assert!(mv > 96_000_000_000 && mv < 97_000_000_000);
     }
@@ -725,12 +740,18 @@ mod tests {
         let mut r = Record::default();
         r.advance(0, &left(&[]), true);
         assert!(!r.unavailable_for_long(30_000, true));
-        assert_eq!(state_of(&s, r.unavailable_for_long(30_000, true), false), State::Settled);
+        assert_eq!(
+            state_of(&s, r.unavailable_for_long(30_000, true), false),
+            State::Settled
+        );
     }
 
     #[test]
     fn files_out_of_reach_for_a_while_are_unavailable() {
-        let s = snapshot(&pgs(&[("active+clean", 70), ("down", 3), ("peering", 2)]), "");
+        let s = snapshot(
+            &pgs(&[("active+clean", 70), ("down", 3), ("peering", 2)]),
+            "",
+        );
         let mut r = Record::default();
         r.advance(0, &left(&[]), true);
         r.advance(60_000, &left(&[]), true);
@@ -795,22 +816,45 @@ mod tests {
 
     #[test]
     fn deleting_snapshots_is_a_free_space_job() {
-        let s = snapshot(&pgs(&[("active+clean", 70), ("active+clean+snaptrim", 3), ("active+clean+snaptrim_wait", 8)]), "");
-        assert_eq!(remaining_by_job(&s, None).get(&JobKind::FreeSpace), Some(&11));
+        let s = snapshot(
+            &pgs(&[
+                ("active+clean", 70),
+                ("active+clean+snaptrim", 3),
+                ("active+clean+snaptrim_wait", 8),
+            ]),
+            "",
+        );
+        assert_eq!(
+            remaining_by_job(&s, None).get(&JobKind::FreeSpace),
+            Some(&11)
+        );
     }
 
     #[test]
     fn damaged_copies_are_a_repair_job_and_say_whether_repair_runs() {
         let found = snapshot(&pgs(&[("active+clean+inconsistent", 2)]), "");
-        assert_eq!(remaining_by_job(&found, None).get(&JobKind::Repair), Some(&2));
+        assert_eq!(
+            remaining_by_job(&found, None).get(&JobKind::Repair),
+            Some(&2)
+        );
         assert!(!found.repairing);
-        let fixing = snapshot(&pgs(&[("active+clean+scrubbing+deep+inconsistent+repair", 2)]), "");
+        let fixing = snapshot(
+            &pgs(&[("active+clean+scrubbing+deep+inconsistent+repair", 2)]),
+            "",
+        );
         assert!(fixing.repairing);
     }
 
     #[test]
     fn routine_scrubbing_is_not_a_job() {
-        let s = snapshot(&pgs(&[("active+clean+scrubbing", 3), ("active+clean+scrubbing+deep", 1), ("active+clean", 77)]), "");
+        let s = snapshot(
+            &pgs(&[
+                ("active+clean+scrubbing", 3),
+                ("active+clean+scrubbing+deep", 1),
+                ("active+clean", 77),
+            ]),
+            "",
+        );
         assert!(remaining_by_job(&s, None).is_empty());
     }
 
@@ -860,13 +904,20 @@ mod tests {
 
     #[test]
     fn a_pool_changing_its_group_count_is_resizing() {
-        assert!(pools_resizing(&json!([{"pg_num": 32, "pg_num_target": 64, "pg_placement_num": 32, "pg_placement_num_target": 64}])));
-        assert!(!pools_resizing(&json!([{"pg_num": 32, "pg_num_target": 32, "pg_placement_num": 32, "pg_placement_num_target": 32}])));
+        assert!(pools_resizing(
+            &json!([{"pg_num": 32, "pg_num_target": 64, "pg_placement_num": 32, "pg_placement_num_target": 64}])
+        ));
+        assert!(!pools_resizing(
+            &json!([{"pg_num": 32, "pg_num_target": 32, "pg_placement_num": 32, "pg_placement_num_target": 32}])
+        ));
     }
 
     #[test]
     fn the_reason_for_moving_prefers_what_the_person_did() {
-        let d = vec![DiskRef { node: "node2".into(), name: "easystore".into() }];
+        let d = vec![DiskRef {
+            node: "node2".into(),
+            name: "easystore".into(),
+        }];
         assert_eq!(move_reason(&d, &d, true), MoveReason::Draining);
         assert_eq!(move_reason(&[], &d, true), MoveReason::Filling);
         assert_eq!(move_reason(&[], &[], true), MoveReason::Resizing);
@@ -887,8 +938,15 @@ mod tests {
     fn a_second_job_starting_does_not_reset_the_first() {
         let mut r = Record::default();
         r.advance(0, &left(&[(JobKind::Move, 1000)]), false);
-        r.advance(120_000, &left(&[(JobKind::Move, 800), (JobKind::AddCopies, 5000)]), false);
-        let jobs = r.jobs(180_000, &left(&[(JobKind::Move, 700), (JobKind::AddCopies, 4900)]));
+        r.advance(
+            120_000,
+            &left(&[(JobKind::Move, 800), (JobKind::AddCopies, 5000)]),
+            false,
+        );
+        let jobs = r.jobs(
+            180_000,
+            &left(&[(JobKind::Move, 700), (JobKind::AddCopies, 4900)]),
+        );
         let mv = jobs.iter().find(|j| j.kind == JobKind::Move).unwrap();
         assert_eq!(mv.to_move_bytes, 1000);
         assert_eq!(mv.moved_bytes, 300);
@@ -1011,11 +1069,17 @@ mod tests {
                     .to_string(),
             ),
         ]);
-        let easystore = DiskRef { node: "node2".into(), name: "easystore 2647".into() };
+        let easystore = DiskRef {
+            node: "node2".into(),
+            name: "easystore 2647".into(),
+        };
         assert_eq!(draining_disks(&published), vec![easystore]);
         assert_eq!(
             disks_of_osds(&published, &[0]),
-            vec![DiskRef { node: "node3".into(), name: "System disk".into() }]
+            vec![DiskRef {
+                node: "node3".into(),
+                name: "System disk".into()
+            }]
         );
     }
 

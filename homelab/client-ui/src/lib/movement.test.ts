@@ -45,7 +45,9 @@ const easystore = [{ node: "node2", name: "easystore 2647" }];
 
 describe("movementCopy", () => {
   it("names the disk being emptied and says the files are safe", () => {
-    const copy = movementCopy(movement({ draining: easystore, move_reason: "draining" }));
+    const copy = movementCopy(
+      movement({ draining: easystore, move_reason: "draining" }),
+    );
     expect(copy?.headline).toBe(
       "Moving your files off the easystore 2647 disk on node2",
     );
@@ -114,9 +116,9 @@ describe("the other jobs Ceph runs", () => {
     expect(filling?.headline).toBe(
       "Spreading your files onto the easystore 2647 disk on node2",
     );
-    expect(
-      movementCopy(movement({ move_reason: "balancing" }))?.headline,
-    ).toBe("Evening out space across your disks");
+    expect(movementCopy(movement({ move_reason: "balancing" }))?.headline).toBe(
+      "Evening out space across your disks",
+    );
     expect(
       movementCopy(movement({ move_reason: "resizing" }))?.headline,
     ).toMatch(/Regrouping/);
@@ -129,7 +131,9 @@ describe("the other jobs Ceph runs", () => {
         filling: [{ node: "node3", name: "System disk" }],
       }),
     );
-    expect(copy?.headline).toBe("Spreading your files onto the System disk on node3");
+    expect(copy?.headline).toBe(
+      "Spreading your files onto the System disk on node3",
+    );
   });
 
   it("counts the apps whose files are being copied", () => {

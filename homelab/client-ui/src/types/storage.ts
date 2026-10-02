@@ -99,12 +99,7 @@ export type MovementState =
   "settled" | "working" | "unavailable" | "no_room" | "restarting" | "unknown";
 
 export type MovementJobKind =
-  | "move"
-  | "add_copies"
-  | "rebuild"
-  | "clone"
-  | "free_space"
-  | "repair";
+  "move" | "add_copies" | "rebuild" | "clone" | "free_space" | "repair";
 
 export type MoveReason = "draining" | "filling" | "resizing" | "balancing";
 

@@ -114,7 +114,8 @@ function headlineFor(jobs: JobCopy[], m: Movement): string {
   if (jobs.length > 1) return "Reorganising your files";
   const only = jobs[0]?.job.kind;
   if (only === "move") return moveLabel(m, true);
-  if (only === "add_copies") return `Adding ${copiesWord(m.copies)} of every file`;
+  if (only === "add_copies")
+    return `Adding ${copiesWord(m.copies)} of every file`;
   if (jobs[0]) return jobs[0].label;
   return "Rearranging your files across your disks";
 }
