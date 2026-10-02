@@ -1,5 +1,7 @@
 import unittest
 
+import yaml
+
 import check_charts
 
 EXPLORER_ON = {"properties": {"file_explorer_enabled": {"const": True}}}
@@ -190,6 +192,187 @@ class FileExplorerOutputs(unittest.TestCase):
         self.assertEqual(len(found), 1)
         self.assertIn("file_explorer_url", found[0])
         self.assertIn("waits for it forever", found[0])
+
+
+def explorer_chart(
+    listen="127.0.0.1",
+    header_up=True,
+    protected=("release/postgres",),
+    read_only=False,
+):
+    writable = not read_only
+    config = {
+        "http": {"listen": listen, "port": 18790},
+        "server": {
+            "sources": [
+                {
+                    "path": "/srv/data",
+                    "name": "demo",
+                    "config": {
+                        "readOnly": read_only,
+                        "defaultPermissions": {
+                            "view": True,
+                            "download": True,
+                            "modify": writable,
+                            "create": writable,
+                            "delete": writable,
+                        },
+                    },
+                }
+            ]
+        },
+        "auth": {
+            "methods": {
+                "password": {"enabled": False},
+                "proxy": {"enabled": True, "header": "X-Yolab-User"},
+            }
+        },
+    }
+    caddyfile = "files.example {\n  reverse_proxy localhost:18790"
+    if header_up:
+        caddyfile += " {\n    header_up X-Yolab-User {http.auth.user.id}\n  }"
+    caddyfile += "\n}\n"
+    data_volume = {"name": "data", "persistentVolumeClaim": {"claimName": "release-data"}}
+    explorer_mounts = [
+        {"name": "data", "mountPath": "/srv/data", "subPath": "release", "readOnly": read_only}
+    ] + [
+        {"name": "data", "mountPath": f"/srv/data/{p}", "subPath": p, "readOnly": True}
+        for p in protected
+    ]
+    return [
+        {
+            "kind": "ConfigMap",
+            "metadata": {"name": "release-caddy"},
+            "data": {"Caddyfile": caddyfile},
+        },
+        {
+            "kind": "ConfigMap",
+            "metadata": {"name": "release-file-explorer"},
+            "data": {"config.yaml": yaml.safe_dump(config)},
+        },
+        {
+            "kind": "Deployment",
+            "metadata": {"name": "gateway"},
+            "spec": {
+                "template": {
+                    "spec": {
+                        "initContainers": [{"name": "file-explorer-init"}],
+                        "containers": [
+                            {
+                                "name": "file-explorer",
+                                "image": "gtstef/filebrowser:2@sha256:0",
+                                "volumeMounts": explorer_mounts,
+                            }
+                        ],
+                        "volumes": [data_volume],
+                    }
+                }
+            },
+        },
+        {
+            "kind": "Deployment",
+            "metadata": {"name": "postgres"},
+            "spec": {
+                "template": {
+                    "spec": {
+                        "containers": [
+                            {
+                                "name": "postgres",
+                                "image": "postgres:16-alpine@sha256:0",
+                                "volumeMounts": [
+                                    {
+                                        "name": "data",
+                                        "mountPath": "/var/lib/postgresql/data",
+                                        "subPath": "release/postgres",
+                                    }
+                                ],
+                            }
+                        ],
+                        "volumes": [data_volume],
+                    }
+                }
+            },
+        },
+    ]
+
+
+def explorer_failures(docs, read_only=False):
+    found = []
+    check = (
+        check_charts.check_file_explorer_read_only
+        if read_only
+        else check_charts.check_file_explorer
+    )
+    check("demo", docs, lambda app, msg: found.append(msg))
+    return found
+
+
+class FileExplorerContainer(unittest.TestCase):
+    def test_a_loopback_explorer_behind_caddy_with_its_database_guarded_passes(self):
+        self.assertEqual(explorer_failures(explorer_chart()), [])
+
+    def test_an_explorer_other_pods_can_reach_is_reported(self):
+        found = explorer_failures(explorer_chart(listen="0.0.0.0"))
+        self.assertEqual(len(found), 1)
+        self.assertIn("without the Caddy login", found[0])
+
+    def test_a_user_header_caddy_does_not_overwrite_is_reported(self):
+        found = explorer_failures(explorer_chart(header_up=False))
+        self.assertEqual(len(found), 1)
+        self.assertIn("could send that header itself", found[0])
+
+    def test_a_database_folder_the_explorer_can_write_is_reported(self):
+        found = explorer_failures(explorer_chart(protected=()))
+        self.assertEqual(len(found), 1)
+        self.assertIn("release/postgres", found[0])
+        self.assertIn("yolab.fileExplorer.protect", found[0])
+
+    def test_a_read_only_parent_folder_guards_the_database_inside_it(self):
+        self.assertEqual(
+            explorer_failures(explorer_chart(protected=(), read_only=True)), []
+        )
+
+    def test_an_init_without_the_explorer_container_is_reported(self):
+        docs = explorer_chart()
+        docs[2]["spec"]["template"]["spec"]["containers"] = []
+        found = explorer_failures(docs)
+        self.assertEqual(len(found), 1)
+        self.assertIn("no file-explorer container", found[0])
+
+    def test_the_database_image_is_recognised_whatever_its_registry(self):
+        for image in (
+            "postgres:16-alpine@sha256:0",
+            "ghcr.io/immich-app/postgres:14-vectorchord0.4.3@sha256:0",
+            "docker.io/valkey/valkey:8-bookworm@sha256:0",
+            "postgis/postgis:17-3.5-alpine@sha256:0",
+        ):
+            self.assertTrue(
+                check_charts.DATABASE_IMAGES.match(check_charts.image_name(image)),
+                image,
+            )
+        self.assertFalse(
+            check_charts.DATABASE_IMAGES.match(
+                check_charts.image_name("ghcr.io/umami-software/umami:postgresql-latest")
+            )
+        )
+
+
+class FileExplorerReadOnly(unittest.TestCase):
+    def test_a_fully_read_only_explorer_passes(self):
+        self.assertEqual(
+            explorer_failures(explorer_chart(read_only=True), read_only=True), []
+        )
+
+    def test_a_writable_mount_under_read_only_is_reported(self):
+        found = explorer_failures(explorer_chart(), read_only=True)
+        self.assertTrue(any("mounts release-data:'release' writable" in f for f in found))
+
+    def test_write_permissions_under_read_only_are_reported(self):
+        found = explorer_failures(explorer_chart(), read_only=True)
+        self.assertTrue(any("leaves source demo writable" in f for f in found))
+        self.assertTrue(
+            any("still grants modify, create, delete" in f for f in found)
+        )
 
 
 def pod(*containers):

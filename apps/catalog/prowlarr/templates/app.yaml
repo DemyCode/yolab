@@ -2,6 +2,8 @@
 ---
 {{ include "yolab-common.fileExplorerSecret" . }}
 ---
+{{ include "yolab-common.fileExplorerConfigMap" . }}
+---
 {{ include "yolab-common.uninstallHook" . }}
 ---
 apiVersion: v1
@@ -39,6 +41,7 @@ spec:
       {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
       containers:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
       - name: prowlarr
         image: linuxserver/prowlarr:version-2.5.2.5491@sha256:1295cff29d10b486c0d8324d1559a552140a5932bf8b3d87e398654414f63f92
         imagePullPolicy: IfNotPresent
@@ -61,3 +64,4 @@ spec:
             subPath: {{ .Release.Name }}/config
       volumes:
       {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}

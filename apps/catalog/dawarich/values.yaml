@@ -2,6 +2,10 @@ config:
   subdomain: dawarich
   time_zone: UTC
 yolab:
+  fileExplorer:
+    protect:
+    - postgres
+    - redis
   platformApiUrl: ''
   accountToken: ''
   serviceName: ''

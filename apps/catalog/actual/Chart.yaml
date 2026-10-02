@@ -3,12 +3,12 @@ name: actual
 description: "Local-first envelope budgeting with multi-device sync"
 home: https://actualbudget.org
 type: application
-version: 0.1.7
+version: 0.1.8
 appVersion: "25"
 
 dependencies:
   - name: yolab-common
-    version: "0.1.6"
+    version: "0.1.7"
     repository: "oci://ghcr.io/demycode/charts"
 
 annotations:

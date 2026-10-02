@@ -2,6 +2,8 @@
 ---
 {{ include "yolab-common.fileExplorerSecret" . }}
 ---
+{{ include "yolab-common.fileExplorerConfigMap" . }}
+---
 {{ include "yolab-common.uninstallHook" . }}
 ---
 apiVersion: v1
@@ -52,6 +54,7 @@ spec:
           mountPath: /yolab
       containers:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
       - name: app
         image: freikin/dawarich:latest@sha256:4e3c55c4cd572373624e75c9e02075ff436c83a3ea952595ae0d4ffc4c7ae52b
         imagePullPolicy: IfNotPresent
@@ -117,6 +120,7 @@ spec:
           mountPath: /yolab
       volumes:
       {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
 ---
 apiVersion: apps/v1
 kind: Deployment

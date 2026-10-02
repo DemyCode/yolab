@@ -2,6 +2,8 @@
 ---
 {{ include "yolab-common.fileExplorerSecret" . }}
 ---
+{{ include "yolab-common.fileExplorerConfigMap" . }}
+---
 {{ include "yolab-common.uninstallHook" . }}
 ---
 apiVersion: v1
@@ -39,6 +41,7 @@ spec:
       {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
       containers:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
       - name: navidrome
         image: deluan/navidrome:latest@sha256:9012939114fbb1bb641b81cf96dec5ded15f0aafefe8d47a511d7cb919658e40
         imagePullPolicy: IfNotPresent
@@ -61,3 +64,4 @@ spec:
             subPath: {{ .Release.Name }}/music
       volumes:
       {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}

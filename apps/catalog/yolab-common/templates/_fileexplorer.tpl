@@ -17,6 +17,24 @@
 {{- end -}}
 
 
+{{- define "yolab-common.fileExplorer.readOnly" -}}
+{{- $cfg := (.Values.config) | default dict -}}
+{{- if and (hasKey $cfg "file_explorer_read_only") (eq (get $cfg "file_explorer_read_only") true) -}}true{{- else -}}false{{- end -}}
+{{- end -}}
+
+
+{{- define "yolab-common.fileExplorer.protected" -}}
+{{- $folders := list "caddy" "file-explorer" "yolab-state" -}}
+{{- range ((((.Values.yolab).fileExplorer).protect) | default list) -}}
+{{- $folders = append $folders . -}}
+{{- end -}}
+{{- toJson ($folders | uniq) -}}
+{{- end -}}
+
+
+{{- define "yolab-common.fileExplorer.port" -}}18790{{- end -}}
+
+
 {{- define "yolab-common.fileExplorerSecret" -}}
 {{- if eq (include "yolab-common.fileExplorer.enabled" .) "true" }}
 {{- $password := (get ((.Values.config) | default dict) "file_explorer_password") | default "" }}
@@ -89,12 +107,96 @@ stringData:
 {{- end -}}
 
 
-{{- define "yolab-common.fileExplorer.volumeMounts" -}}
+{{- define "yolab-common.fileExplorerConfigMap" -}}
 {{- if eq (include "yolab-common.fileExplorer.enabled" .) "true" }}
-- name: data
-  mountPath: /browse
-  subPath: {{ .Release.Name | quote }}
-  readOnly: true
+{{- $writable := ne (include "yolab-common.fileExplorer.readOnly" .) "true" }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ printf "%s-file-explorer" .Release.Name }}
+  namespace: {{ .Release.Namespace }}
+data:
+  config.yaml: |
+    http:
+      listen: "127.0.0.1"
+      port: {{ include "yolab-common.fileExplorer.port" . }}
+      disableWebDAV: true
+    server:
+      disableUpdateCheck: true
+      cacheDir: /var/lib/filebrowser/cache
+      database:
+        path: /var/lib/filebrowser/database.sqlite
+      filesystem:
+        createFilePermission: "666"
+        createDirectoryPermission: "777"
+      sources:
+        - path: /srv/data
+          name: {{ .Chart.Name | quote }}
+          config:
+            defaultEnabled: true
+            private: true
+            readOnly: {{ not $writable }}
+            defaultPermissions:
+              view: true
+              download: true
+              modify: {{ $writable }}
+              create: {{ $writable }}
+              delete: {{ $writable }}
+            rules:
+              - folderPath: "/"
+                viewable: true
+    auth:
+      methods:
+        password:
+          enabled: false
+        proxy:
+          enabled: true
+          header: X-Yolab-User
+    frontend:
+      name: {{ printf "%s files" .Chart.Name | quote }}
+      disableDefaultLinks: true
+{{- end -}}
+{{- end -}}
+
+
+{{- define "yolab-common.fileExplorerContainer" -}}
+{{- if eq (include "yolab-common.fileExplorer.enabled" .) "true" }}
+- name: file-explorer
+  image: {{ include "yolab-common.image.fileExplorer" . }}
+  imagePullPolicy: IfNotPresent
+  securityContext:
+    runAsUser: 0
+    runAsGroup: 0
+  env:
+    - name: FILEBROWSER_CONFIG
+      value: /etc/filebrowser/config.yaml
+  volumeMounts:
+    - name: file-explorer-config
+      mountPath: /etc/filebrowser
+      readOnly: true
+    - name: file-explorer-state
+      mountPath: /var/lib/filebrowser
+    - name: data
+      mountPath: /srv/data
+      subPath: {{ .Release.Name | quote }}
+      readOnly: {{ eq (include "yolab-common.fileExplorer.readOnly" .) "true" }}
+    {{- range (include "yolab-common.fileExplorer.protected" . | fromJsonArray) }}
+    - name: data
+      mountPath: {{ printf "/srv/data/%s" . | quote }}
+      subPath: {{ printf "%s/%s" $.Release.Name . | quote }}
+      readOnly: true
+    {{- end }}
+{{- end -}}
+{{- end -}}
+
+
+{{- define "yolab-common.fileExplorerVolumes" -}}
+{{- if eq (include "yolab-common.fileExplorer.enabled" .) "true" }}
+- name: file-explorer-config
+  configMap:
+    name: {{ printf "%s-file-explorer" .Release.Name }}
+- name: file-explorer-state
+  emptyDir: {}
 {{- end -}}
 {{- end -}}
 
@@ -105,8 +207,9 @@ stringData:
   basic_auth {
     {$FILE_EXPLORER_USER} {$FILE_EXPLORER_AUTH_HASH}
   }
-  root * /browse
-  file_server browse
+  reverse_proxy localhost:{{ include "yolab-common.fileExplorer.port" . }} {
+    header_up X-Yolab-User {http.auth.user.id}
+  }
 }
 {{- end -}}
 {{- end -}}

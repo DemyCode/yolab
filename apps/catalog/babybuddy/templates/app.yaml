@@ -2,6 +2,8 @@
 ---
 {{ include "yolab-common.fileExplorerSecret" . }}
 ---
+{{ include "yolab-common.fileExplorerConfigMap" . }}
+---
 {{ include "yolab-common.uninstallHook" . }}
 ---
 apiVersion: v1
@@ -39,6 +41,7 @@ spec:
       {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
       containers:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
       - name: babybuddy
         image: linuxserver/babybuddy:version-v2.10.0@sha256:ee252beae8cb269a30991807e2d3b06fd825bcf80efebd502fd8b29823e6593f
         imagePullPolicy: IfNotPresent
@@ -77,3 +80,4 @@ spec:
             mountPath: /yolab
       volumes:
       {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}

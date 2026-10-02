@@ -2,6 +2,8 @@
 ---
 {{ include "yolab-common.fileExplorerSecret" . }}
 ---
+{{ include "yolab-common.fileExplorerConfigMap" . }}
+---
 {{ include "yolab-common.uninstallHook" . }}
 ---
 apiVersion: v1
@@ -49,6 +51,7 @@ spec:
       {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
       containers:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
       - name: miniflux
         image: miniflux/miniflux:latest@sha256:49d7b60987616387c306a8023087b31f2c9b7b21288b523026cb04058e8b6dbb
         imagePullPolicy: IfNotPresent
@@ -76,6 +79,7 @@ spec:
           periodSeconds: 10
       volumes:
       {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
 ---
 apiVersion: apps/v1
 kind: Deployment

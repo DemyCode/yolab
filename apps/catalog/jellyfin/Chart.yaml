@@ -3,11 +3,11 @@ name: jellyfin
 description: "Free and open source media server"
 home: https://jellyfin.org
 type: application
-version: 0.1.7
+version: 0.1.8
 
 dependencies:
   - name: yolab-common
-    version: "0.1.6"
+    version: "0.1.7"
     repository: "oci://ghcr.io/demycode/charts"
 
 annotations:

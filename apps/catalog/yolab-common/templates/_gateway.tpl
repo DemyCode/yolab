@@ -97,7 +97,6 @@ yolab-tunnel-credentials
       subPath: Caddyfile
     - name: yolab
       mountPath: /yolab
-    {{- include "yolab-common.fileExplorer.volumeMounts" . | nindent 4 }}
 {{- end -}}
 
 

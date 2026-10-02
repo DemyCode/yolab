@@ -6,6 +6,9 @@ config:
   storage_size: 1Gi
 
 yolab:
+  fileExplorer:
+    protect:
+    - postgres
   platformApiUrl: ""
   accountToken: ""
   serviceName: ""

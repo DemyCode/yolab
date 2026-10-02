@@ -1,6 +1,9 @@
 config:
   subdomain: gitea
 yolab:
+  fileExplorer:
+    protect:
+    - postgres
   platformApiUrl: ''
   accountToken: ''
   serviceName: ''

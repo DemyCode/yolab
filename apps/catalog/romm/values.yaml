@@ -3,6 +3,10 @@ config:
   storage_size: 50Gi
 
 yolab:
+  fileExplorer:
+    protect:
+    - mariadb
+    - romm/redis
   platformApiUrl: ""
   accountToken: ""
   serviceName: ""

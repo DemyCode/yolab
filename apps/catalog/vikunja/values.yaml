@@ -5,6 +5,9 @@ config:
   storage_size: 5Gi
 
 yolab:
+  fileExplorer:
+    protect:
+    - vikunja/db
   platformApiUrl: ""
   accountToken: ""
   serviceName: ""

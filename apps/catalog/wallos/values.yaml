@@ -3,6 +3,9 @@ config:
   storage_size: 2Gi
 
 yolab:
+  fileExplorer:
+    protect:
+    - wallos/db
   platformApiUrl: ""
   accountToken: ""
   serviceName: ""

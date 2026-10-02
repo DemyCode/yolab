@@ -85,7 +85,7 @@ def chart_field(chart_yaml, field):
     return None
 
 
-def render(chart_dir, library_tgz, workdir):
+def render(chart_dir, library_tgz, workdir, extra=None):
     """helm template the chart against the local library. Returns the YAML text.
 
     Renders from a copy: the chart has to gain a `charts/` directory holding the
@@ -97,7 +97,7 @@ def render(chart_dir, library_tgz, workdir):
     shutil.copy(library_tgz, os.path.join(staged, "charts"))
 
     cmd = ["helm", "template", "release", staged]
-    for k, v in LINT_VALUES.items():
+    for k, v in {**LINT_VALUES, **(extra or {})}.items():
         cmd += ["--set", f"{k}={v}"]
     out = subprocess.run(cmd, capture_output=True, text=True, check=False)
     shutil.rmtree(staged, ignore_errors=True)
@@ -406,6 +406,162 @@ def check(app, docs, fail, chart_yaml="", schema=None):
                 )
 
 
+DATABASE_IMAGES = re.compile(
+    r"^(postgres|postgis|pgvector|mariadb|mysql|redis|valkey|mongo|minio)$"
+)
+EXPLORER_HEADER_UP = re.compile(r"header_up\s+(\S+)\s+\{http\.auth\.user\.id\}")
+
+
+def image_name(image):
+    repo = image.split("@", 1)[0].rsplit("/", 1)[-1]
+    return repo.split(":", 1)[0]
+
+
+def pod_specs(docs):
+    for d in docs:
+        if d.get("kind") != "Deployment":
+            continue
+        yield d["metadata"]["name"], d["spec"]["template"]["spec"]
+
+
+def claim_mounts(spec, container):
+    claims = {
+        v["name"]: v["persistentVolumeClaim"]["claimName"]
+        for v in spec.get("volumes") or []
+        if "persistentVolumeClaim" in v
+    }
+    for m in container.get("volumeMounts") or []:
+        if m["name"] in claims:
+            yield claims[m["name"]], m.get("subPath", ""), m.get("readOnly") is True
+
+
+def explorer_pod(docs):
+    for name, spec in pod_specs(docs):
+        if any(
+            c["name"] == "file-explorer-init" for c in spec.get("initContainers") or []
+        ):
+            return name, spec
+    return None, None
+
+
+def explorer_config(docs):
+    for d in docs:
+        if d.get("kind") != "ConfigMap":
+            continue
+        if not d["metadata"]["name"].endswith("-file-explorer"):
+            continue
+        text = (d.get("data") or {}).get("config.yaml")
+        if text is not None:
+            return yaml.safe_load(text) or {}
+    return None
+
+
+def check_file_explorer(app, docs, fail):
+    pod_name, spec = explorer_pod(docs)
+    if spec is None:
+        return
+    explorer = next(
+        (c for c in spec.get("containers") or [] if c["name"] == "file-explorer"),
+        None,
+    )
+    if explorer is None:
+        fail(app, f"pod {pod_name} runs file-explorer-init but no file-explorer container")
+        return
+
+    config = explorer_config(docs)
+    if config is None:
+        fail(app, "the file-explorer container has no rendered config.yaml ConfigMap")
+        return
+
+    http = config.get("http") or {}
+    if http.get("listen") != "127.0.0.1":
+        fail(
+            app,
+            f"file-explorer listens on {http.get('listen')!r}, not 127.0.0.1 — any pod "
+            f"could reach it without the Caddy login",
+        )
+
+    methods = (config.get("auth") or {}).get("methods") or {}
+    proxy = methods.get("proxy") or {}
+    if (methods.get("password") or {}).get("enabled") is not False:
+        fail(app, "file-explorer keeps its own password login next to the Caddy one")
+    if proxy.get("enabled") is not True or not proxy.get("header"):
+        fail(app, "file-explorer does not take the signed-in user from Caddy")
+
+    caddyfile = next(
+        (
+            c["data"]["Caddyfile"]
+            for c in docs
+            if c.get("kind") == "ConfigMap" and "Caddyfile" in (c.get("data") or {})
+        ),
+        "",
+    )
+    handed = EXPLORER_HEADER_UP.findall(caddyfile)
+    if proxy.get("header") and proxy["header"] not in handed:
+        fail(
+            app,
+            f"Caddy never sets {proxy['header']} from its basic_auth user, so a "
+            f"browser could send that header itself",
+        )
+
+    read_only = [(claim, sub) for claim, sub, ro in claim_mounts(spec, explorer) if ro]
+    for dname, dspec in pod_specs(docs):
+        for c in dspec.get("containers") or []:
+            if not DATABASE_IMAGES.match(image_name(c["image"])):
+                continue
+            for claim, sub, _ in claim_mounts(dspec, c):
+                guarded = any(
+                    claim == rclaim
+                    and (rsub == "" or sub == rsub or sub.startswith(rsub + "/"))
+                    for rclaim, rsub in read_only
+                )
+                mounted = any(
+                    claim == eclaim for eclaim, _, _ in claim_mounts(spec, explorer)
+                )
+                if mounted and not guarded:
+                    fail(
+                        app,
+                        f"database {dname}/{c['name']} keeps its files in {sub!r}, "
+                        f"which file-explorer can write — add it to "
+                        f"yolab.fileExplorer.protect",
+                    )
+
+
+def check_file_explorer_read_only(app, docs, fail):
+    _, spec = explorer_pod(docs)
+    if spec is None:
+        return
+    explorer = next(
+        (c for c in spec.get("containers") or [] if c["name"] == "file-explorer"),
+        None,
+    )
+    if explorer is None:
+        return
+    for claim, sub, ro in claim_mounts(spec, explorer):
+        if not ro:
+            fail(
+                app,
+                f"read-only file-explorer still mounts {claim}:{sub!r} writable",
+            )
+    for source in ((explorer_config(docs) or {}).get("server") or {}).get(
+        "sources"
+    ) or []:
+        cfg = source.get("config") or {}
+        if cfg.get("readOnly") is not True:
+            fail(app, f"read-only file-explorer leaves source {source.get('name')} writable")
+        granted = [
+            k
+            for k in ("modify", "create", "delete")
+            if (cfg.get("defaultPermissions") or {}).get(k)
+        ]
+        if granted:
+            fail(
+                app,
+                f"read-only file-explorer still grants {', '.join(granted)} on "
+                f"source {source.get('name')}",
+            )
+
+
 SOURCED = re.compile(r"^\s*\.\s+(\S+)", re.MULTILINE)
 BARE_SECRET = re.compile(r"printf '([A-Z_][A-Z0-9_]*)=%s")
 
@@ -570,6 +726,26 @@ def main(argv):
                 schema = {}
             check_schema(app, schema, text, fail)
             check(app, docs, fail, text, schema)
+            check_file_explorer(app, docs, fail)
+
+            if explorer_pod(docs)[1] is None:
+                continue
+            rendered, err = render(
+                chart_dir,
+                library_tgz,
+                tmp,
+                {"config.file_explorer_read_only": "true"},
+            )
+            if rendered is None:
+                fail(
+                    app,
+                    f"helm template with a read-only file-explorer failed: "
+                    f"{err.splitlines()[-1] if err else 'unknown'}",
+                )
+                continue
+            check_file_explorer_read_only(
+                app, [d for d in yaml.safe_load_all(rendered) if d], fail
+            )
 
     print(f"checked {len(chart_dirs)} charts")
     for f in fail.items:

@@ -2,6 +2,9 @@ config:
   subdomain: librespeed
   password: ''
 yolab:
+  fileExplorer:
+    protect:
+    - postgres
   platformApiUrl: ''
   accountToken: ''
   serviceName: ''

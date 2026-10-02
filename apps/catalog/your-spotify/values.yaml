@@ -4,6 +4,9 @@ config:
   spotify_secret: ""
   storage_size: 5Gi
 yolab:
+  fileExplorer:
+    protect:
+    - mongo
   platformApiUrl: ""
   accountToken: ""
   serviceName: ""

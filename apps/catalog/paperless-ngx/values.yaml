@@ -8,6 +8,10 @@ config:
   storage_size: 50Gi
 
 yolab:
+  fileExplorer:
+    protect:
+    - postgres
+    - redis
   platformApiUrl: ""
   accountToken: ""
   serviceName: ""

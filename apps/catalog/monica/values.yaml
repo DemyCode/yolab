@@ -4,6 +4,9 @@ config:
   storage_size: 5Gi
 
 yolab:
+  fileExplorer:
+    protect:
+    - mariadb
   platformApiUrl: ""
   accountToken: ""
   serviceName: ""

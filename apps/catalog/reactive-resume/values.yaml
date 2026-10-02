@@ -1,6 +1,10 @@
 config:
   subdomain: reactive-resume
 yolab:
+  fileExplorer:
+    protect:
+    - minio
+    - postgres
   platformApiUrl: ''
   accountToken: ''
   serviceName: ''

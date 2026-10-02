@@ -3,6 +3,11 @@ config:
   admin_email: admin@example.com
   admin_password: ''
 yolab:
+  fileExplorer:
+    protect:
+    - minio
+    - postgres
+    - redis
   platformApiUrl: ''
   accountToken: ''
   serviceName: ''

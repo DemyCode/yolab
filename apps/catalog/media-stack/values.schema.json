@@ -85,7 +85,7 @@
           "type": "boolean",
           "title": "File explorer",
           "default": true,
-          "description": "A lightweight, password-protected, read-only browser for this app's own data on its own address — handy for pulling a file out or checking what's actually stored, without needing a terminal."
+          "description": "A password-protected file manager for this app's own data on its own address: browse, download, upload, rename and delete files without needing a terminal. Folders holding a database server (Postgres, MariaDB, Redis, MongoDB, MinIO) always stay read-only."
         }
       },
       "dependencies": {
@@ -121,6 +121,12 @@
                   "minLength": 12,
                   "writeOnly": true,
                   "generate": true
+                },
+                "file_explorer_read_only": {
+                  "type": "boolean",
+                  "title": "Read only",
+                  "default": false,
+                  "description": "Only browse and download. Nothing can be uploaded, renamed, edited or deleted through the file explorer."
                 }
               }
             }
