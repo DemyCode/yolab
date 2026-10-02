@@ -10,155 +10,155 @@ registry: oci://ghcr.io/demycode/charts
 # chart built on it renders on a node, but never listed on the storefront.
 library:
   name: yolab-common
-  version: "0.1.6"
+  version: "0.1.7"
 charts:
   - name: 2fauth
-    version: "0.1.7"
+    version: "0.1.8"
   - name: actual
-    version: "0.1.7"
+    version: "0.1.8"
   - name: appflowy
-    version: "0.2.7"
+    version: "0.2.8"
   - name: audiobookshelf
-    version: "0.1.7"
+    version: "0.1.8"
   - name: babybuddy
-    version: "0.1.7"
+    version: "0.1.8"
   - name: bookstack
-    version: "0.1.7"
+    version: "0.1.8"
   - name: calibre-web
-    version: "0.1.7"
+    version: "0.1.8"
   - name: changedetection
-    version: "0.1.7"
+    version: "0.1.8"
   - name: cinny
-    version: "0.1.7"
+    version: "0.1.8"
   - name: code-server
-    version: "0.1.7"
+    version: "0.1.8"
   - name: dawarich
-    version: "0.1.8"
-  - name: docmost
-    version: "0.1.7"
-  - name: emulatorjs
-    version: "0.1.7"
-  - name: excalidraw
-    version: "0.1.7"
-  - name: filebrowser
     version: "0.1.9"
-  - name: firefly-iii
-    version: "0.1.7"
-  - name: freshrss
-    version: "0.1.7"
-  - name: frigate
-    version: "0.1.7"
-  - name: ghost
-    version: "0.1.7"
-  - name: gitea
-    version: "0.1.7"
-  - name: grafana
-    version: "0.1.7"
-  - name: grocy
-    version: "0.1.7"
-  - name: healthchecks
-    version: "0.1.7"
-  - name: home-assistant
-    version: "0.1.7"
-  - name: homepage
-    version: "0.1.7"
-  - name: immich
+  - name: docmost
+    version: "0.1.8"
+  - name: emulatorjs
+    version: "0.1.8"
+  - name: excalidraw
+    version: "0.1.8"
+  - name: filebrowser
     version: "0.1.10"
+  - name: firefly-iii
+    version: "0.1.8"
+  - name: freshrss
+    version: "0.1.8"
+  - name: frigate
+    version: "0.1.8"
+  - name: ghost
+    version: "0.1.8"
+  - name: gitea
+    version: "0.1.8"
+  - name: grafana
+    version: "0.1.8"
+  - name: grocy
+    version: "0.1.8"
+  - name: healthchecks
+    version: "0.1.8"
+  - name: home-assistant
+    version: "0.1.8"
+  - name: homepage
+    version: "0.1.8"
+  - name: immich
+    version: "0.1.11"
   - name: it-tools
-    version: "0.1.7"
+    version: "0.1.8"
   - name: jellyfin
-    version: "0.1.7"
+    version: "0.1.8"
   - name: jellyseerr
-    version: "0.1.7"
+    version: "0.1.8"
   - name: karakeep
-    version: "0.1.7"
+    version: "0.1.8"
   - name: kavita
-    version: "0.1.7"
+    version: "0.1.8"
   - name: kimai
-    version: "0.1.7"
+    version: "0.1.8"
   - name: librespeed
-    version: "0.1.7"
+    version: "0.1.8"
   - name: linkwarden
-    version: "0.1.7"
+    version: "0.1.8"
   - name: mastodon
-    version: "0.1.7"
+    version: "0.1.8"
   - name: mealie
-    version: "0.1.7"
+    version: "0.1.8"
   - name: media-stack
-    version: "0.1.1"
+    version: "0.1.2"
   - name: memos
-    version: "0.1.7"
+    version: "0.1.8"
   - name: metube
-    version: "0.1.7"
+    version: "0.1.8"
   - name: minecraft
-    version: "0.1.7"
+    version: "0.1.8"
   - name: miniflux
-    version: "0.1.7"
+    version: "0.1.8"
   - name: monica
-    version: "0.1.7"
+    version: "0.1.8"
   - name: n8n
-    version: "0.1.7"
+    version: "0.1.8"
   - name: navidrome
-    version: "0.1.7"
+    version: "0.1.8"
   - name: nextcloud
-    version: "0.1.7"
+    version: "0.1.8"
   - name: ntfy
-    version: "0.1.7"
+    version: "0.1.8"
   - name: onlyoffice
-    version: "0.1.7"
+    version: "0.1.8"
   - name: open-webui
-    version: "0.1.7"
+    version: "0.1.8"
   - name: openclaw
-    version: "0.1.7"
+    version: "0.1.8"
   - name: pairdrop
-    version: "0.1.7"
+    version: "0.1.8"
   - name: paperless-ngx
-    version: "0.1.7"
+    version: "0.1.8"
   - name: photoprism
-    version: "0.1.7"
+    version: "0.1.8"
   - name: planka
-    version: "0.1.7"
+    version: "0.1.8"
   - name: prowlarr
-    version: "0.1.7"
+    version: "0.1.8"
   - name: qbittorrent
-    version: "0.1.8"
+    version: "0.1.9"
   - name: radarr
-    version: "0.1.7"
+    version: "0.1.8"
   - name: reactive-resume
-    version: "0.1.8"
+    version: "0.1.9"
   - name: romm
-    version: "0.1.7"
-  - name: searxng
-    version: "0.1.7"
-  - name: shlink
     version: "0.1.8"
+  - name: searxng
+    version: "0.1.8"
+  - name: shlink
+    version: "0.1.9"
   - name: sonarr
-    version: "0.1.7"
+    version: "0.1.8"
   - name: speedtest-tracker
-    version: "0.1.7"
+    version: "0.1.8"
   - name: stirling-pdf
-    version: "0.1.7"
+    version: "0.1.8"
   - name: strfry
-    version: "0.1.7"
+    version: "0.1.8"
   - name: synapse
-    version: "0.1.7"
+    version: "0.1.8"
   - name: syncthing
-    version: "0.1.7"
+    version: "0.1.8"
   - name: umami
-    version: "0.1.7"
+    version: "0.1.8"
   - name: unifi
-    version: "0.1.7"
+    version: "0.1.8"
   - name: uptime-kuma
-    version: "0.1.7"
+    version: "0.1.8"
   - name: valheim
-    version: "0.1.7"
+    version: "0.1.8"
   - name: vaultwarden
-    version: "0.1.7"
+    version: "0.1.8"
   - name: vikunja
-    version: "0.1.7"
+    version: "0.1.8"
   - name: wallabag
-    version: "0.1.7"
+    version: "0.1.8"
   - name: wallos
-    version: "0.1.7"
+    version: "0.1.8"
   - name: your-spotify
-    version: "0.1.7"
+    version: "0.1.8"
