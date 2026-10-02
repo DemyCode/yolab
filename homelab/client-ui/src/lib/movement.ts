@@ -53,8 +53,7 @@ export function movementCopy(m: Movement): MovementCopy | null {
     case "no_room":
       return {
         headline: "Not enough room to finish moving your files",
-        safety:
-          "Add a disk, or free some space, and it carries on by itself.",
+        safety: "Add a disk, or free some space, and it carries on by itself.",
         tone: "error",
         showsProgress: true,
       };
@@ -80,7 +79,8 @@ export function timeLeft(secs: number | null): string {
   if (minutes < 10) return `about ${minutes} min left`;
   if (minutes < 60) return `about ${Math.round(minutes / 5) * 5} min left`;
   const hours = Math.round(minutes / 60);
-  if (hours < 48) return hours === 1 ? "about an hour left" : `about ${hours} hours left`;
+  if (hours < 48)
+    return hours === 1 ? "about an hour left" : `about ${hours} hours left`;
   const days = Math.round(hours / 24);
   return `about ${days} days left`;
 }

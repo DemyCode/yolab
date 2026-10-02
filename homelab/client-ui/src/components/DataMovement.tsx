@@ -1,4 +1,9 @@
-import { ArrowRightLeft, OctagonAlert, ShieldAlert, ShieldCheck } from "lucide-react";
+import {
+  ArrowRightLeft,
+  OctagonAlert,
+  ShieldAlert,
+  ShieldCheck,
+} from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Banner } from "@/components/ui/feedback";
 import { Collapse, RollingNumber, Swap } from "@/components/motion";
@@ -79,7 +84,12 @@ export function DataMovementCard({ className }: { className?: string }) {
   return (
     <Collapse open={visible && copy !== null} className={className}>
       {data && copy && (
-        <Card className={cn("p-6 transition-colors duration-300", TONE[copy.tone].wrap)}>
+        <Card
+          className={cn(
+            "p-6 transition-colors duration-300",
+            TONE[copy.tone].wrap,
+          )}
+        >
           <div className="flex items-start gap-3">
             <ArrowRightLeft className="mt-0.5 h-5 w-5 shrink-0 text-fg-muted" />
             <div className="min-w-0 flex-1">
@@ -89,7 +99,10 @@ export function DataMovementCard({ className }: { className?: string }) {
               {copy.showsProgress && <Progress m={data} tone={copy.tone} />}
               <p className="mt-3 flex items-start gap-2 text-sm text-fg-muted">
                 <Icon
-                  className={cn("mt-0.5 h-4 w-4 shrink-0", TONE[copy.tone].iconClass)}
+                  className={cn(
+                    "mt-0.5 h-4 w-4 shrink-0",
+                    TONE[copy.tone].iconClass,
+                  )}
                 />
                 <Swap id={copy.safety}>{copy.safety}</Swap>
               </p>
@@ -138,7 +151,8 @@ export function MovementSummary() {
   }
   return (
     <>
-      Moving files, <RollingNumber value={Math.round(percent(data.progress))} />%
+      Moving files, <RollingNumber value={Math.round(percent(data.progress))} />
+      %
     </>
   );
 }

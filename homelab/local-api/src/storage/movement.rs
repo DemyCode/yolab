@@ -84,7 +84,11 @@ pub fn snapshot(status: &Value, osd_flags: &str) -> Snapshot {
                 .collect()
         })
         .unwrap_or_default();
-    let has = |part: &str| states.iter().any(|(name, _)| name.split('+').any(|p| p == part));
+    let has = |part: &str| {
+        states
+            .iter()
+            .any(|(name, _)| name.split('+').any(|p| p == part))
+    };
     let inactive_pgs = states
         .iter()
         .filter(|(name, _)| !name.split('+').any(|p| p == "active"))
@@ -224,9 +228,11 @@ pub fn hosts_with_down_osds(tree: &Value) -> Vec<String> {
         .iter()
         .filter(|n| n["type"].as_str() == Some("host"))
         .filter(|h| {
-            h["children"]
-                .as_array()
-                .is_some_and(|c| c.iter().filter_map(Value::as_i64).any(|id| down.contains(&id)))
+            h["children"].as_array().is_some_and(|c| {
+                c.iter()
+                    .filter_map(Value::as_i64)
+                    .any(|id| down.contains(&id))
+            })
         })
         .filter_map(|h| h["name"].as_str().map(str::to_string))
         .collect();
@@ -371,7 +377,10 @@ mod tests {
             state_of(&snapshot(&status, "noout,sortbitwise")),
             State::Restarting
         );
-        assert_eq!(state_of(&snapshot(&status, "sortbitwise")), State::Rebuilding);
+        assert_eq!(
+            state_of(&snapshot(&status, "sortbitwise")),
+            State::Rebuilding
+        );
     }
 
     #[test]

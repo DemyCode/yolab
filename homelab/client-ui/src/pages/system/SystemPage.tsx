@@ -194,7 +194,9 @@ export function SystemPage() {
           to="/system/storage"
           icon={Database}
           label="Storage"
-          detail={isVisible(movement.data) ? <MovementSummary /> : storageDetail}
+          detail={
+            isVisible(movement.data) ? <MovementSummary /> : storageDetail
+          }
           tone={
             health.data?.level === "error"
               ? "error"
