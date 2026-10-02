@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ApiError, api } from "./api";
 import { recall, remember } from "./localCache";
+import { joinOrStart, startFresh } from "./inflight";
 
 export interface Resource<T> {
   data: T | undefined;
@@ -57,10 +58,12 @@ export function useResource<T>(
     };
   }, []);
 
-  const refresh = useCallback(async () => {
+  const load = useCallback(
+    async (fresh: boolean) => {
     if (!key) return;
     try {
-      const next = await fetcherRef.current();
+      const run = () => fetcherRef.current();
+      const next = await (fresh ? startFresh(key, run) : joinOrStart(key, run));
       if (!alive.current || shownKey.current !== key) return;
       if (persist) remember(key, next, Date.now());
       setData(next);
@@ -75,23 +78,28 @@ export function useResource<T>(
     } finally {
       if (alive.current) setLoading(false);
     }
-  }, [key, persist]);
+    },
+    [key, persist],
+  );
+
+  const refresh = useCallback(() => load(true), [load]);
+  const poll = useCallback(() => load(false), [load]);
 
   useEffect(() => {
-    void refresh();
+    void poll();
     if (!pollMs) return;
     const id = setInterval(() => {
-      if (document.visibilityState === "visible") void refresh();
+      if (document.visibilityState === "visible") void poll();
     }, pollMs);
     const onVisible = () => {
-      if (document.visibilityState === "visible") void refresh();
+      if (document.visibilityState === "visible") void poll();
     };
     document.addEventListener("visibilitychange", onVisible);
     return () => {
       clearInterval(id);
       document.removeEventListener("visibilitychange", onVisible);
     };
-  }, [refresh, pollMs]);
+  }, [poll, pollMs]);
 
   const mutate = useCallback((updater: T | ((prev: T | undefined) => T)) => {
     setData((prev) =>
