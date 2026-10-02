@@ -2,11 +2,10 @@ use std::collections::VecDeque;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use axum::Json;
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::host::{Host, RealHost};
+use crate::host::Host;
 use crate::storage::settings;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -292,10 +291,6 @@ pub async fn assess_via<H: Host>(host: &H) -> Movement {
         inactive_pgs: snap.inactive_pgs,
         total_pgs: snap.total_pgs,
     }
-}
-
-pub async fn handler() -> Json<Movement> {
-    Json(assess_via(&RealHost).await)
 }
 
 #[cfg(test)]

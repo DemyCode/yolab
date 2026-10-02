@@ -158,12 +158,17 @@ fn disk_list(
 pub async fn list_disks(
     State(_s): State<AppState>,
 ) -> crate::error::Result<Json<HashMap<String, Vec<DiskInfo>>>> {
-    let desired: HashMap<String, String> = settings::dump(&RealHost, settings::DISKS)
+    let host = RealHost;
+    let desired: HashMap<String, String> = settings::dump(&host, settings::DISKS)
         .await?
         .into_iter()
         .collect();
-    let live = parse_inventory(&settings::dump(&RealHost, settings::DISK_STATUS).await?);
+    let live = parse_inventory(&settings::dump(&host, settings::DISK_STATUS).await?);
     Ok(Json(disk_list(&desired, &live)))
+}
+
+pub async fn movement() -> Json<crate::storage::movement::Movement> {
+    Json(crate::storage::movement::assess_via(&RealHost).await)
 }
 
 fn refuse_state_change(disk_id: &str, desired: &str) -> Option<&'static str> {

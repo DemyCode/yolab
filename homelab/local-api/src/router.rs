@@ -86,7 +86,7 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route(
             "/api/storage/movement",
-            get(crate::storage::movement::handler),
+            get(disks::movement),
         )
         .route("/api/ceph/detail", get(ceph_api::storage_detail))
         .route("/api/ceph/dashboard", get(ceph_api::dashboard_creds))
