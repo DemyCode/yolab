@@ -84,10 +84,7 @@ pub fn build_router(state: AppState) -> Router {
             "/api/storage/policy",
             get(topology::get_policy).put(topology::set_policy),
         )
-        .route(
-            "/api/storage/movement",
-            get(disks::movement),
-        )
+        .route("/api/storage/movement", get(disks::movement))
         .route("/api/ceph/detail", get(ceph_api::storage_detail))
         .route("/api/ceph/dashboard", get(ceph_api::dashboard_creds))
         .route("/ceph-dashboard", any(ceph_api::dashboard_proxy))
