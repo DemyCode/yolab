@@ -270,20 +270,17 @@ describe("pickBanner", () => {
 
 describe("protectionLine", () => {
   it("one copy is called out as unprotected", () => {
-    expect(protectionLine(target({ size: 1 }), 0)?.tone).toBe("bad");
+    expect(protectionLine(target({ size: 1 }))).toMatchObject({
+      tone: "bad",
+      text: expect.stringContaining("If a machine fails"),
+    });
   });
 
-  it("names the unit copies are spread across", () => {
-    expect(protectionLine(target({ size: 2 }), 0)?.text).toContain(
-      "Any one machine can fail",
-    );
+  it("says nothing once there is more than one copy", () => {
+    expect(protectionLine(target({ size: 2 }))).toBeNull();
     expect(
-      protectionLine(target({ size: 3, failure_domain: "osd" }), 0)?.text,
-    ).toContain("Any 2 disks can fail");
-  });
-
-  it("warns while a disk is offline", () => {
-    expect(protectionLine(target(), 1)).toMatchObject({ tone: "warn" });
+      protectionLine(target({ size: 3, failure_domain: "osd" })),
+    ).toBeNull();
   });
 });
 

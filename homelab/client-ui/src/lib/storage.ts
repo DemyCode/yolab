@@ -177,24 +177,12 @@ export function pickBanner({
 
 export function protectionLine(
   target: StorageTarget | null | undefined,
-  offline: number,
 ): { tone: Tone; text: string } | null {
-  if (!target) return null;
+  if (!target || target.size > 1) return null;
   const unit = target.failure_domain === "host" ? "machine" : "disk";
-  const suffix =
-    offline > 0
-      ? ` ${offline} ${offline === 1 ? "disk is" : "disks are"} offline right now.`
-      : "";
-  if (target.size <= 1) {
-    return {
-      tone: "bad",
-      text: `Everything is stored once. If a ${unit} fails, what was on it is gone — backups are your only copy.${suffix}`,
-    };
-  }
-  const survives = target.size - 1;
   return {
-    tone: offline > 0 ? "warn" : "ok",
-    text: `Any ${survives === 1 ? "one" : survives} ${unit}${survives === 1 ? "" : "s"} can fail without losing anything.${suffix}`,
+    tone: "bad",
+    text: `Everything is stored once. If a ${unit} fails, what was on it is gone — backups are your only copy.`,
   };
 }
 

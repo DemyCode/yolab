@@ -295,17 +295,13 @@ function UsageSection({ imagesBytes }: { imagesBytes: number }) {
           </AnimatedList>
         )}
       </Section>
-      <p className="mt-2 px-1 text-sm text-fg-subtle">
-        Each app’s files, counted once.
-        {usage.data && usage.data.unreadable > 0 && (
-          <>
-            {" "}
-            {usage.data.unreadable}{" "}
-            {usage.data.unreadable === 1 ? "volume" : "volumes"} could not be
-            measured this time.
-          </>
-        )}
-      </p>
+      {usage.data && usage.data.unreadable > 0 && (
+        <p className="mt-2 px-1 text-sm text-fg-subtle">
+          {usage.data.unreadable}{" "}
+          {usage.data.unreadable === 1 ? "volume" : "volumes"} could not be
+          measured this time.
+        </p>
+      )}
     </>
   );
 }
@@ -510,73 +506,67 @@ function DisksSection({
     disk.osd_id === null ? undefined : osds.find((o) => o.id === disk.osd_id);
 
   return (
-    <>
-      <Section title="Disks">
-        {loading && !disks ? (
-          [0, 1].map((i) => (
-            <div key={i} className="flex items-center gap-3 px-5 py-4">
-              <Skeleton className="h-5 w-5" />
-              <div className="flex-1 space-y-2">
-                <Skeleton className="h-4 w-40" />
-                <Skeleton className="h-3 w-24" />
-              </div>
+    <Section title="Disks">
+      {loading && !disks ? (
+        [0, 1].map((i) => (
+          <div key={i} className="flex items-center gap-3 px-5 py-4">
+            <Skeleton className="h-5 w-5" />
+            <div className="flex-1 space-y-2">
+              <Skeleton className="h-4 w-40" />
+              <Skeleton className="h-3 w-24" />
             </div>
-          ))
-        ) : present.length === 0 && past.length === 0 ? (
-          <Row
-            label="No disks found yet"
-            detail="Plug one in and it will appear here."
-          />
-        ) : (
-          <>
-            <AnimatedList
-              items={present}
-              keyOf={([node, disk]) => `${node}/${disk.id}`}
+          </div>
+        ))
+      ) : present.length === 0 && past.length === 0 ? (
+        <Row
+          label="No disks found yet"
+          detail="Plug one in and it will appear here."
+        />
+      ) : (
+        <>
+          <AnimatedList
+            items={present}
+            keyOf={([node, disk]) => `${node}/${disk.id}`}
+          >
+            {([node, disk]) => (
+              <>
+                {multiNode && firsts.has(`${node}/${disk.id}`) && (
+                  <p className="bg-surface-2 px-5 py-1.5 text-xs font-medium text-fg-muted">
+                    {node}
+                  </p>
+                )}
+                <DiskRow
+                  node={node}
+                  disk={disk}
+                  osd={osdFor(disk)}
+                  onChanged={onChanged}
+                />
+              </>
+            )}
+          </AnimatedList>
+          {present.length === 0 && (
+            <Row label="None of the disks this machine has seen are connected right now." />
+          )}
+          {past.length > 0 && (
+            <DisclosureRow
+              label={`${past.length} ${past.length === 1 ? "disk" : "disks"} seen before but not connected`}
             >
-              {([node, disk]) => (
-                <>
-                  {multiNode && firsts.has(`${node}/${disk.id}`) && (
-                    <p className="bg-surface-2 px-5 py-1.5 text-xs font-medium text-fg-muted">
-                      {node}
-                    </p>
-                  )}
+              <div className="-mx-5 divide-y divide-border opacity-70">
+                {past.map(([node, disk]) => (
                   <DiskRow
+                    key={`${node}/${disk.id}`}
                     node={node}
                     disk={disk}
                     osd={osdFor(disk)}
                     onChanged={onChanged}
                   />
-                </>
-              )}
-            </AnimatedList>
-            {present.length === 0 && (
-              <Row label="None of the disks this machine has seen are connected right now." />
-            )}
-            {past.length > 0 && (
-              <DisclosureRow
-                label={`${past.length} ${past.length === 1 ? "disk" : "disks"} seen before but not connected`}
-              >
-                <div className="-mx-5 divide-y divide-border opacity-70">
-                  {past.map(([node, disk]) => (
-                    <DiskRow
-                      key={`${node}/${disk.id}`}
-                      node={node}
-                      disk={disk}
-                      osd={osdFor(disk)}
-                      onChanged={onChanged}
-                    />
-                  ))}
-                </div>
-              </DisclosureRow>
-            )}
-          </>
-        )}
-      </Section>
-      <p className="mt-2 px-1 text-sm text-fg-subtle">
-        A new disk does nothing until you switch it on. Switching one off moves
-        its data elsewhere first.
-      </p>
-    </>
+                ))}
+              </div>
+            </DisclosureRow>
+          )}
+        </>
+      )}
+    </Section>
   );
 }
 
@@ -609,8 +599,7 @@ function ProtectionSection({
     changed && overview?.space
       ? estimateChange(overview.space, size, places)
       : null;
-  const offline = osds.filter((o) => !o.up).length;
-  const line = protectionLine(policy.target, offline);
+  const line = protectionLine(policy.target);
   const unit = domain === "osd" ? "disk" : "machine";
   const maxCopies = Math.max(3, saved.size, size);
 

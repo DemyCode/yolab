@@ -62,7 +62,7 @@ describe("movementCopy", () => {
     expect(copy?.headline).toBe("Adding a second copy of every file");
     expect(copy?.tone).toBe("calm");
     expect(copy?.jobs[0].note).toMatch(/You chose 2 copies/);
-    expect(copy?.safety).not.toMatch(/fewer copies/);
+    expect(copy?.safety).toBeNull();
   });
 
   it("shows a drain and a second copy as two lines under one headline", () => {
@@ -79,7 +79,7 @@ describe("movementCopy", () => {
       "Moving files off the easystore 2647 disk on node2",
       "Adding a second copy of every file",
     ]);
-    expect(copy?.safety).toMatch(/Don't unplug/);
+    expect(copy?.safety).toBeNull();
   });
 
   it("is only worried when copies are rebuilt after a loss", () => {

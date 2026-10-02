@@ -123,15 +123,17 @@ export function DataMovementCard({ className }: { className?: string }) {
               <AnimatedList items={copy.jobs} keyOf={(j) => j.job.kind}>
                 {(j) => <JobRow copy={j} showLabel={copy.jobs.length > 1} />}
               </AnimatedList>
-              <p className="mt-4 flex items-start gap-2 text-sm text-fg-muted">
-                <Icon
-                  className={cn(
-                    "mt-0.5 h-4 w-4 shrink-0",
-                    TONE[copy.tone].iconClass,
-                  )}
-                />
-                <Swap id={copy.safety}>{copy.safety}</Swap>
-              </p>
+              {copy.safety && (
+                <p className="mt-4 flex items-start gap-2 text-sm text-fg-muted">
+                  <Icon
+                    className={cn(
+                      "mt-0.5 h-4 w-4 shrink-0",
+                      TONE[copy.tone].iconClass,
+                    )}
+                  />
+                  <Swap id={copy.safety}>{copy.safety}</Swap>
+                </p>
+              )}
             </div>
           </div>
         </Card>

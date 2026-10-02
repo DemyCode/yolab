@@ -12,7 +12,7 @@ export interface JobCopy {
 
 export interface MovementCopy {
   headline: string;
-  safety: string;
+  safety: string | null;
   tone: MovementTone;
   jobs: JobCopy[];
 }
@@ -149,8 +149,7 @@ export function movementCopy(m: Movement): MovementCopy | null {
       if (has("add_copies"))
         return {
           headline: headlineFor(jobs, m),
-          safety:
-            "Your apps keep working. Don't unplug any disk or machine until this is done.",
+          safety: null,
           tone: "calm",
           jobs,
         };
