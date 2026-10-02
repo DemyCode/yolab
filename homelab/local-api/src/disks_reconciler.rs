@@ -311,7 +311,9 @@ impl crate::runtime::Controller for DisksController {
         if ctx.node.is_empty() {
             anyhow::bail!("cannot determine this node's name");
         }
-        publish_local(&RealHost, &ctx.node).await?;
+        let host = RealHost;
+        publish_local(&host, &ctx.node).await?;
+        crate::storage::movement::sample(&host).await;
         Ok(crate::runtime::Tick::Done)
     }
 }

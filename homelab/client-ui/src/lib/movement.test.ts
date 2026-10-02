@@ -1,22 +1,34 @@
 import { describe, expect, it } from "vitest";
 import {
   isVisible,
+  jobOf,
   movementCopy,
   needsAttentionEverywhere,
+  overallProgress,
   percent,
   timeLeft,
 } from "./movement";
-import type { Movement } from "@/types/storage";
+import type { Movement, MovementJob } from "@/types/storage";
+
+function job(over: Partial<MovementJob> = {}): MovementJob {
+  return {
+    kind: "move",
+    remaining_bytes: 0,
+    to_move_bytes: 0,
+    moved_bytes: 0,
+    progress: null,
+    eta_secs: null,
+    ...over,
+  };
+}
 
 function movement(over: Partial<Movement> = {}): Movement {
   return {
-    state: "moving",
+    state: "working",
+    jobs: [job()],
     draining: [],
     waiting_for: [],
-    remaining_bytes: 0,
-    moved_bytes: 0,
-    to_move_bytes: 0,
-    progress: null,
+    copies: null,
     eta_secs: null,
     inactive_pgs: 0,
     total_pgs: 81,
@@ -24,11 +36,11 @@ function movement(over: Partial<Movement> = {}): Movement {
   };
 }
 
+const easystore = [{ node: "node2", name: "easystore 2647" }];
+
 describe("movementCopy", () => {
   it("names the disk being emptied and says the files are safe", () => {
-    const copy = movementCopy(
-      movement({ draining: [{ node: "node2", name: "easystore 2647" }] }),
-    );
+    const copy = movementCopy(movement({ draining: easystore }));
     expect(copy?.headline).toBe(
       "Moving your files off the easystore 2647 disk on node2",
     );
@@ -36,10 +48,39 @@ describe("movementCopy", () => {
     expect(copy?.safety).toMatch(/safe/);
   });
 
-  it("falls back to a general sentence when no disk is being removed", () => {
-    expect(movementCopy(movement())?.headline).toBe(
-      "Rearranging your files across your disks",
+  it("calls a raised copy count a gain, not a loss", () => {
+    const copy = movementCopy(
+      movement({ jobs: [job({ kind: "add_copies" })], copies: 2 }),
     );
+    expect(copy?.headline).toBe("Adding a second copy of every file");
+    expect(copy?.tone).toBe("calm");
+    expect(copy?.jobs[0].note).toMatch(/You chose 2 copies/);
+    expect(copy?.safety).not.toMatch(/fewer copies/);
+  });
+
+  it("shows a drain and a second copy as two lines under one headline", () => {
+    const copy = movementCopy(
+      movement({
+        jobs: [job({ kind: "move" }), job({ kind: "add_copies" })],
+        draining: easystore,
+        copies: 2,
+      }),
+    );
+    expect(copy?.headline).toBe("Reorganising your files");
+    expect(copy?.jobs.map((j) => j.label)).toEqual([
+      "Moving files off the easystore 2647 disk on node2",
+      "Adding a second copy of every file",
+    ]);
+    expect(copy?.safety).toMatch(/Don't unplug/);
+  });
+
+  it("is only worried when copies are rebuilt after a loss", () => {
+    const copy = movementCopy(
+      movement({ jobs: [job({ kind: "rebuild" })], waiting_for: ["node1"] }),
+    );
+    expect(copy?.headline).toBe("Rebuilding copies that were on node1");
+    expect(copy?.tone).toBe("warning");
+    expect(copy?.safety).toMatch(/fewer copies than you chose/);
   });
 
   it("says what it is waiting for when files can't be reached", () => {
@@ -48,13 +89,7 @@ describe("movementCopy", () => {
     );
     expect(copy?.headline).toBe("Waiting for node1 and node2");
     expect(copy?.tone).toBe("error");
-    expect(copy?.showsProgress).toBe(false);
-  });
-
-  it("warns against unplugging while copies are rebuilt", () => {
-    const copy = movementCopy(movement({ state: "rebuilding" }));
-    expect(copy?.tone).toBe("warning");
-    expect(copy?.safety).toMatch(/unplug/);
+    expect(copy?.jobs).toEqual([]);
   });
 
   it("says nothing when everything is in place or unknown", () => {
@@ -62,6 +97,34 @@ describe("movementCopy", () => {
     expect(isVisible(movement({ state: "settled" }))).toBe(false);
     expect(isVisible(movement({ state: "unknown" }))).toBe(false);
     expect(isVisible(undefined)).toBe(false);
+  });
+});
+
+describe("overallProgress", () => {
+  it("weighs each job by how much it has to move", () => {
+    const m = movement({
+      jobs: [
+        job({ to_move_bytes: 100, moved_bytes: 50, progress: 0.5 }),
+        job({
+          kind: "add_copies",
+          to_move_bytes: 300,
+          moved_bytes: 0,
+          progress: 0,
+        }),
+      ],
+    });
+    expect(overallProgress(m)).toBeCloseTo(0.125);
+  });
+
+  it("has nothing to show before any job was measured", () => {
+    expect(overallProgress(movement({ jobs: [job({ to_move_bytes: 5 })] }))).toBeNull();
+    expect(overallProgress(movement({ jobs: [] }))).toBeNull();
+  });
+
+  it("finds one job by its kind", () => {
+    const m = movement({ jobs: [job({ kind: "add_copies" })] });
+    expect(jobOf(m, "add_copies")?.kind).toBe("add_copies");
+    expect(jobOf(m, "move")).toBeUndefined();
   });
 });
 
@@ -89,12 +152,7 @@ describe("percent and reach", () => {
 
   it("only interrupts the home page when something can't be used or finished", () => {
     expect(needsAttentionEverywhere(movement())).toBe(false);
-    expect(needsAttentionEverywhere(movement({ state: "rebuilding" }))).toBe(
-      false,
-    );
-    expect(needsAttentionEverywhere(movement({ state: "unavailable" }))).toBe(
-      true,
-    );
+    expect(needsAttentionEverywhere(movement({ state: "unavailable" }))).toBe(true);
     expect(needsAttentionEverywhere(movement({ state: "no_room" }))).toBe(true);
   });
 });
