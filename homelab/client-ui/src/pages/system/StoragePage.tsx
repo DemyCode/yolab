@@ -387,8 +387,7 @@ function DiskRow({
     }
   }
 
-  const Icon =
-    state === "missing" ? WifiOff : disk.is_loop ? Cpu : HardDrive;
+  const Icon = state === "missing" ? WifiOff : disk.is_loop ? Cpu : HardDrive;
 
   return (
     <div className={cn("px-5 py-4", state === "missing" && "bg-danger-soft")}>

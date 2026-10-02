@@ -159,7 +159,11 @@ fn parse_pools(df: &Value, detail: &Value) -> Vec<Pool> {
 fn space_of(pools: &[Pool], osds: &[Osd], images_pool: &str) -> Option<Space> {
     let data = pools.iter().find(|p| p.name == DATA_POOL)?;
     let stored = |pred: &dyn Fn(&Pool) -> bool| -> u64 {
-        pools.iter().filter(|p| pred(p)).map(|p| p.stored_bytes).sum()
+        pools
+            .iter()
+            .filter(|p| pred(p))
+            .map(|p| p.stored_bytes)
+            .sum()
     };
     let is_app = |p: &Pool| p.name == DATA_POOL || p.name == META_POOL;
     let is_images = |p: &Pool| p.name == images_pool;
@@ -187,7 +191,10 @@ pub(crate) fn assemble(
     let osds = parse_osds(tree);
     let pools = parse_pools(df, detail);
     Overview {
-        health: status["health"]["status"].as_str().unwrap_or("").to_string(),
+        health: status["health"]["status"]
+            .as_str()
+            .unwrap_or("")
+            .to_string(),
         space: space_of(&pools, &osds, images_pool),
         raw: parse_raw(status),
         osds,
@@ -423,7 +430,12 @@ mod tests {
     fn the_raw_totals_are_exactly_what_ceph_status_reports() {
         let raw = overview().raw;
         assert_eq!(
-            (raw.total_bytes, raw.used_bytes, raw.avail_bytes, raw.data_bytes),
+            (
+                raw.total_bytes,
+                raw.used_bytes,
+                raw.avail_bytes,
+                raw.data_bytes
+            ),
             (4000, 900, 3100, 420)
         );
     }
@@ -493,7 +505,11 @@ mod tests {
             .collect();
         assert_eq!(
             order,
-            vec![("node1".into(), 0), ("node1".into(), 2), ("node2".into(), 1)]
+            vec![
+                ("node1".into(), 0),
+                ("node1".into(), 2),
+                ("node2".into(), 1)
+            ]
         );
     }
 
@@ -543,8 +559,14 @@ mod tests {
             .ok("ceph osd ls", "[0, 1]")
             .ok("ceph osd ok-to-stop osd.0", "")
             .fail("ceph osd ok-to-stop osd.1", "would make pgs inactive")
-            .ok("ceph osd safe-to-destroy osd.0", r#"{"safe_to_destroy": []}"#)
-            .ok("ceph osd safe-to-destroy osd.1", r#"{"safe_to_destroy": [1]}"#);
+            .ok(
+                "ceph osd safe-to-destroy osd.0",
+                r#"{"safe_to_destroy": []}"#,
+            )
+            .ok(
+                "ceph osd safe-to-destroy osd.1",
+                r#"{"safe_to_destroy": [1]}"#,
+            );
         let c = checks(&host).await.unwrap();
         assert_eq!(c.ok_to_stop, vec![0]);
         assert_eq!(c.safe_to_destroy, vec![1]);
@@ -609,10 +631,7 @@ mod tests {
 
     #[test]
     fn an_unreadable_volume_is_counted_not_guessed() {
-        let u = tally(vec![
-            ("yolab-a".into(), None),
-            ("yolab-a".into(), Some(3)),
-        ]);
+        let u = tally(vec![("yolab-a".into(), None), ("yolab-a".into(), Some(3))]);
         assert_eq!((u.apps[0].bytes, u.unreadable), (3, 1));
     }
 

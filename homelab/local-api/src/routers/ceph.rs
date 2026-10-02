@@ -636,7 +636,6 @@ async fn ceph_health_and_details<H: Host>(host: &H) -> anyhow::Result<String> {
     Ok(format!("{status}\n{checks}"))
 }
 
-
 pub async fn osd_mark_in(Path(id): Path<i64>) -> (StatusCode, Json<serde_json::Value>) {
     set_desired_by_osd(id, "ON").await
 }
