@@ -41,7 +41,7 @@ charts:
   - name: excalidraw
     version: "0.1.8"
   - name: filebrowser
-    version: "0.1.10"
+    version: "0.1.11"
   - name: firefly-iii
     version: "0.1.8"
   - name: freshrss
