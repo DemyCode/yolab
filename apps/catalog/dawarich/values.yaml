@@ -1,6 +1,8 @@
 config:
   subdomain: dawarich
   time_zone: UTC
+  admin_email: ""
+  admin_password: ""
 yolab:
   fileExplorer:
     protect:

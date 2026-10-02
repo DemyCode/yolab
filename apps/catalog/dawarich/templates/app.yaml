@@ -7,6 +7,16 @@
 {{ include "yolab-common.uninstallHook" . }}
 ---
 apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Release.Name }}-admin
+  namespace: {{ .Release.Namespace }}
+type: Opaque
+stringData:
+  admin_email: {{ required "config.admin_email is required" .Values.config.admin_email | quote }}
+  admin_password: {{ required "config.admin_password is required" .Values.config.admin_password | quote }}
+---
+apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: {{ .Release.Name }}-data
@@ -60,27 +70,24 @@ spec:
         imagePullPolicy: IfNotPresent
         readinessProbe:
           httpGet:
-            path: /
+            path: /api/v1/health
             port: 3000
+            httpHeaders:
+            - name: X-Forwarded-Proto
+              value: https
           initialDelaySeconds: 20
           periodSeconds: 10
         command:
         - /bin/sh
         - -c
         args:
-        - '. /yolab/env
-
+        - |
+          . /yolab/env
           set -a
-
           . /yolab/secrets.env
-
           set +a
-
           export APPLICATION_HOSTS="localhost,$YOLAB_FQDN,127.0.0.1,::1"
-
-          exec web-entrypoint.sh bin/rails server -p 3000 -b ::
-
-          '
+          exec web-entrypoint.sh sh -c 'bin/rails runner "u = User.find_by(email: %q(demo@dawarich.app)); u.update!(email: ENV.fetch(%q(YOLAB_ADMIN_EMAIL)), password: ENV.fetch(%q(YOLAB_ADMIN_PASSWORD))) if u&.valid_password?(%q(safepassword))" && exec bin/rails server -p 3000 -b ::'
         env:
         - name: RAILS_ENV
           value: production
@@ -106,6 +113,16 @@ spec:
           value: 'true'
         - name: STORE_GEODATA
           value: 'true'
+        - name: YOLAB_ADMIN_EMAIL
+          valueFrom:
+            secretKeyRef:
+              name: {{ .Release.Name }}-admin
+              key: admin_email
+        - name: YOLAB_ADMIN_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: {{ .Release.Name }}-admin
+              key: admin_password
         volumeMounts:
         - name: data
           mountPath: /var/app/public

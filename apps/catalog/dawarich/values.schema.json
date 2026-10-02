@@ -9,7 +9,9 @@
       "title": "Dawarich",
       "type": "object",
       "required": [
-        "subdomain"
+        "subdomain",
+        "admin_email",
+        "admin_password"
       ],
       "properties": {
         "subdomain": {
@@ -23,6 +25,21 @@
           "title": "Time zone",
           "default": "UTC",
           "description": "e.g. Europe/Paris, America/New_York"
+        },
+        "admin_email": {
+          "type": "string",
+          "title": "Your email",
+          "format": "email",
+          "default": "",
+          "description": "You sign in with this."
+        },
+        "admin_password": {
+          "type": "string",
+          "title": "Password",
+          "minLength": 12,
+          "description": "At least 12 characters.",
+          "writeOnly": true,
+          "generate": true
         },
         "file_explorer_enabled": {
           "type": "boolean",
@@ -87,6 +104,14 @@
           "format": "uri",
           "source": {
             "logs": "YOLAB_OUTPUT url (\\S+)"
+          }
+        },
+        "admin_password": {
+          "type": "string",
+          "title": "Password",
+          "format": "secret",
+          "source": {
+            "config": "admin_password"
           }
         },
         "file_explorer_url": {

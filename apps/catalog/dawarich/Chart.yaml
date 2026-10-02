@@ -3,7 +3,7 @@ name: dawarich
 description: "Self-hosted location history and travel tracking"
 home: https://dawarich.app
 type: application
-version: 0.1.9
+version: 0.1.10
 
 dependencies:
   - name: yolab-common
