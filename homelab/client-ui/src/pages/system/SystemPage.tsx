@@ -18,7 +18,7 @@ import { api } from "@/lib/api";
 import { useApi } from "@/lib/useResource";
 import { RollingNumber } from "@/components/motion";
 import { ThemeControl } from "@/components/ThemeControl";
-import { creditStatus, formatBytes } from "@/lib/format";
+import { creditStatus, formatBytes, formatEuros } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type { StorageDetailResponse } from "@/types/storage";
 import type { NodeInfo } from "@/types/nodes";
@@ -132,6 +132,13 @@ export function SystemPage() {
     "/api/billing/balance",
   );
   const credit = billing.data ? creditStatus(billing.data) : undefined;
+  const creditDetail =
+    billing.data && credit ? (
+      <>
+        <RollingNumber value={billing.data.credit_cents} format={formatEuros} />
+        {credit.text.slice(formatEuros(billing.data.credit_cents).length)}
+      </>
+    ) : undefined;
 
   const detail = storage.data?.data;
   const storageDetail = detail ? (
@@ -223,7 +230,7 @@ export function SystemPage() {
             onClick={openConsole}
             icon={CreditCard}
             label="Account and billing"
-            detail={credit?.text ?? "Your credit, top-ups and referral code"}
+            detail={creditDetail ?? "Your credit, top-ups and referral code"}
             tone={credit?.tone}
             external
           />

@@ -10,7 +10,7 @@ import { GROUPS, groupFor, groupLabel, taglineFor } from "@/catalog/meta";
 import { AppSources } from "@/components/AppSources";
 import { AddFromBackupButton } from "@/components/AddFromBackup";
 import { cn } from "@/lib/utils";
-import { AnimatedList, RollingNumber } from "@/components/motion";
+import { AnimatedList, Collapse, RollingNumber } from "@/components/motion";
 import type { AppInfo, CatalogApp } from "@/types/apps";
 
 type Installed = "any" | "installed" | "not-installed";
@@ -157,8 +157,8 @@ export function AppsPage() {
         ))}
       </div>
 
-      {filtersOpen && (
-        <div className="mb-5 flex flex-wrap items-center gap-3 rounded-card border border-border bg-surface p-3 text-sm">
+      <Collapse open={filtersOpen} className="pb-5">
+        <div className="flex flex-wrap items-center gap-3 rounded-card border border-border bg-surface p-3 text-sm">
           <label className="flex items-center gap-2">
             <span className="text-fg-muted">Status</span>
             <Select
@@ -213,7 +213,7 @@ export function AppsPage() {
             )}
           </span>
         </div>
-      )}
+      </Collapse>
 
       {catalog.loading ? (
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
@@ -236,7 +236,7 @@ export function AppsPage() {
           }
         />
       ) : browsing ? (
-        <div className="space-y-8">
+        <div className="animate-fade-in space-y-8">
           {grouped.map(([groupId, groupApps]) => (
             <section key={groupId}>
               <h2 className="mb-3 text-sm font-semibold text-fg-muted">
@@ -256,7 +256,7 @@ export function AppsPage() {
           ))}
         </div>
       ) : (
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        <div className="grid animate-fade-in gap-3 sm:grid-cols-2 lg:grid-cols-3">
           <AnimatedList items={matches} keyOf={catalogKey}>
             {(app) => (
               <AppCard app={app} count={installedCounts.get(app.id) ?? 0} />

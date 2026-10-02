@@ -16,6 +16,7 @@ import {
 } from "@/lib/apps";
 import { relativeTime } from "@/lib/format";
 import { cn } from "@/lib/utils";
+import { AnimatedList, Collapse } from "@/components/motion";
 import type { AppOutput, OutputsResponse } from "@/types/apps";
 
 const WAITING_POLL_MS = 15_000;
@@ -99,16 +100,18 @@ function OutputRow({ output }: { output: AppOutput }) {
             `Reported ${relativeTime(output.found_at)}`}
         </span>
       </div>
-      {state === "ready" && <OutputValue output={output} />}
-      {state === "waiting" && (
+      <Collapse open={state === "ready"}>
+        <OutputValue output={output} />
+      </Collapse>
+      <Collapse open={state === "waiting"}>
         <p className="mt-1.5 flex items-center gap-2 text-sm text-fg-muted">
           <Spinner className="h-3 w-3" />
           Waiting for the app to report this
         </p>
-      )}
-      {state === "unset" && (
+      </Collapse>
+      <Collapse open={state === "unset"}>
         <p className="mt-1 text-sm text-fg-subtle">Not set</p>
-      )}
+      </Collapse>
     </div>
   );
 }
@@ -185,12 +188,12 @@ export function AppAccess({
         )
       }
     >
-      {links.map((link) => (
-        <LinkRow key={link.url} link={link} />
-      ))}
-      {rows.map((o) => (
-        <OutputRow key={o.key} output={o} />
-      ))}
+      <AnimatedList items={links} keyOf={(link) => link.url}>
+        {(link) => <LinkRow link={link} />}
+      </AnimatedList>
+      <AnimatedList items={rows} keyOf={(o) => o.key}>
+        {(o) => <OutputRow output={o} />}
+      </AnimatedList>
       {loading && links.length === 0 && (
         <div className="flex justify-center px-5 py-4">
           <Spinner className="h-4 w-4" />

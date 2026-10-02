@@ -3,6 +3,7 @@ import { AppIconTile } from "@/components/AppIcon";
 import { StatusDot } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/feedback";
 import { cn } from "@/lib/utils";
+import { Swap } from "@/components/motion";
 import { appLabel, appState } from "@/lib/apps";
 import type { AppInfo } from "@/types/apps";
 
@@ -31,7 +32,7 @@ export function AppTile({
     <Link
       to={`/app/${app.instance_name}`}
       className={cn(
-        "group flex flex-col items-center rounded-card p-3 transition-colors hover:bg-surface active:scale-[0.97]",
+        "group flex flex-col items-center rounded-card p-3 transition-[background-color,opacity,transform] duration-300 hover:bg-surface active:scale-[0.97]",
         state === "removing" && "opacity-60",
       )}
     >
@@ -50,9 +51,12 @@ export function AppTile({
       </div>
       <span className="line-clamp-1 text-sm font-medium text-fg">{name}</span>
       {label && (
-        <span className="mt-0.5 line-clamp-2 text-balance text-center text-xs text-fg-muted">
+        <Swap
+          id={label}
+          className="mt-0.5 line-clamp-2 text-balance text-center text-xs text-fg-muted"
+        >
           {label}
-        </span>
+        </Swap>
       )}
     </Link>
   );

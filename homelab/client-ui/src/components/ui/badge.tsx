@@ -3,7 +3,7 @@ import { cn } from "@/lib/utils";
 import type { HTMLAttributes } from "react";
 
 const badgeVariants = cva(
-  "inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium",
+  "inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium transition-colors duration-300",
   {
     variants: {
       variant: {
@@ -38,19 +38,22 @@ export function StatusDot({
   pulse?: boolean;
   className?: string;
 }) {
-  if (tone === "ok") return null;
   const color =
     tone === "error"
       ? "bg-danger"
       : tone === "warn"
         ? "bg-warning"
-        : "bg-primary";
+        : tone === "busy"
+          ? "bg-primary"
+          : "bg-success";
   return (
     <span
+      aria-hidden={tone === "ok" || undefined}
       className={cn(
-        "inline-block h-2.5 w-2.5 rounded-full ring-2 ring-surface",
+        "inline-block h-2.5 w-2.5 rounded-full ring-2 ring-surface transition-[background-color,opacity,transform] duration-300",
         color,
-        pulse && "animate-pulse",
+        tone === "ok" && "scale-50 opacity-0",
+        pulse && tone !== "ok" && "animate-pulse",
         className,
       )}
     />

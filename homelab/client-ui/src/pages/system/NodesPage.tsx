@@ -11,6 +11,7 @@ import {
 import type { NodeInfo, NodeLink } from "@/types/nodes";
 import type { PathStatus } from "@/types/mesh";
 import { fetchList } from "@/lib/api";
+import { AnimatedList, Swap } from "@/components/motion";
 
 export function NodesPage() {
   const [nodes, setNodes] = useState<NodeInfo[] | null>(null);
@@ -94,14 +95,17 @@ export function NodesPage() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border/50">
-                  {nodes.map((n) => {
+                  <AnimatedList
+                    as="tr"
+                    items={nodes}
+                    keyOf={(n) => n.name}
+                    itemClassName="group hover:bg-border/20 transition-colors"
+                  >
+                    {(n) => {
                     const url = urlFor(n.name);
                     const path = pathFor(n.ip);
                     return (
-                      <tr
-                        key={n.name}
-                        className="group hover:bg-border/20 transition-colors"
-                      >
+                      <>
                         <td className="py-3 pr-4 font-medium text-fg whitespace-nowrap">
                           {n.name}
                         </td>
@@ -110,7 +114,9 @@ export function NodesPage() {
                             <Badge variant="warning">Offline</Badge>
                           ) : (
                             <Badge variant={n.ready ? "success" : "danger"}>
-                              {n.ready ? "Ready" : "Not Ready"}
+                              <Swap id={String(n.ready)}>
+                                {n.ready ? "Ready" : "Not Ready"}
+                              </Swap>
                             </Badge>
                           )}
                         </td>
@@ -165,9 +171,10 @@ export function NodesPage() {
                             </span>
                           )}
                         </td>
-                      </tr>
+                      </>
                     );
-                  })}
+                  }}
+                  </AnimatedList>
                 </tbody>
               </table>
             </div>

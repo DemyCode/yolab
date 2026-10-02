@@ -8,6 +8,7 @@ import { formatDateTime } from "@/lib/format";
 import { restorePath } from "@/lib/backups";
 import type { RestorePoint } from "@/lib/backups";
 import type { AppDefinition } from "@/types/apps";
+import { AnimatedList } from "@/components/motion";
 
 async function chartOf(
   appId: string | undefined,
@@ -73,11 +74,14 @@ export function RestorePointList({
     <>
       {failed && <p className="mb-2 text-sm text-danger">{failed}</p>}
       <ul className="divide-y divide-border">
-        {points.map((point, i) => (
-          <li
-            key={point.snapshot_id}
-            className="flex items-center justify-between gap-3 py-3"
-          >
+        <AnimatedList
+          as="li"
+          items={points.map((point, i) => ({ point, i }))}
+          keyOf={({ point }) => point.snapshot_id}
+          itemClassName="flex items-center justify-between gap-3 py-3"
+        >
+          {({ point, i }) => (
+          <>
             <div className="flex min-w-0 items-center gap-2.5">
               <History className="h-4 w-4 shrink-0 text-fg-subtle" />
               <div className="min-w-0">
@@ -99,8 +103,9 @@ export function RestorePointList({
               <RotateCcw className="h-3.5 w-3.5" />
               Restore
             </Button>
-          </li>
-        ))}
+          </>
+          )}
+        </AnimatedList>
       </ul>
     </>
   );

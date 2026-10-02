@@ -1,3 +1,4 @@
+import { AnimatedList, Collapse, Swap } from "@/components/motion";
 import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { ArrowLeft, RefreshCw } from "lucide-react";
@@ -60,8 +61,14 @@ function StatusLine({ state, version }: { state: AppState; version: string }) {
   return (
     <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-fg-muted">
       <span className="inline-flex items-center gap-1.5">
-        <span className={cn("h-2 w-2 rounded-full", DOT[tone])} aria-hidden />
-        {label}
+        <span
+          className={cn(
+            "h-2 w-2 rounded-full transition-colors duration-300",
+            DOT[tone],
+          )}
+          aria-hidden
+        />
+        <Swap id={label}>{label}</Swap>
       </span>
       {version && (
         <>
@@ -187,14 +194,17 @@ function TechnicalDetails({ app }: { app: AppInfo }) {
           <p className="text-sm text-fg-muted">Nothing running right now.</p>
         ) : (
           <ul className="divide-y divide-border rounded-control border border-border">
-            {pods.map((pod) => (
-              <li
-                key={pod.name}
-                className="flex items-center gap-2 px-3 py-1.5"
-              >
+            <AnimatedList
+              as="li"
+              items={pods}
+              keyOf={(pod) => pod.name}
+              itemClassName="flex items-center gap-2 px-3 py-1.5"
+            >
+              {(pod) => (
+              <>
                 <span
                   className={cn(
-                    "h-2 w-2 shrink-0 rounded-full",
+                    "h-2 w-2 shrink-0 rounded-full transition-colors duration-300",
                     pod.ready ? "bg-success" : "bg-warning",
                   )}
                   aria-hidden
@@ -206,7 +216,7 @@ function TechnicalDetails({ app }: { app: AppInfo }) {
                   className="shrink-0 text-xs text-fg-subtle"
                   title={pod.phase}
                 >
-                  {podStatus(pod)}
+                  <Swap id={podStatus(pod)}>{podStatus(pod)}</Swap>
                 </span>
                 <RowAction
                   onClick={() =>
@@ -217,8 +227,9 @@ function TechnicalDetails({ app }: { app: AppInfo }) {
                 >
                   {logs?.pod === pod.name && logs.live ? "Stop" : "Logs"}
                 </RowAction>
-              </li>
-            ))}
+              </>
+              )}
+            </AnimatedList>
           </ul>
         )}
       </div>
@@ -907,7 +918,9 @@ export function AppDetailPage() {
         </div>
       </header>
 
-      {shown && <div className="mt-6">{shown}</div>}
+      <Collapse open={Boolean(shown)} className="pt-6">
+        {shown}
+      </Collapse>
 
       {!quiet && (
         <AppAccess

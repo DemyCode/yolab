@@ -23,7 +23,7 @@ import { api } from "@/lib/api";
 import { useApi } from "@/lib/useResource";
 import { formatBytes } from "@/lib/format";
 import { cn } from "@/lib/utils";
-import { AnimatedList, RollingNumber } from "@/components/motion";
+import { AnimatedList, Collapse, RollingNumber, Swap } from "@/components/motion";
 import type {
   OsdInfo,
   PoolInfo,
@@ -133,7 +133,7 @@ function VarBadge({ v }: { v: number }) {
         ok ? "text-fg-muted" : warn ? "text-warning" : "text-danger",
       )}
     >
-      {v.toFixed(2)}
+      <RollingNumber value={v} format={(n) => n.toFixed(2)} />
     </span>
   );
 }
@@ -141,7 +141,7 @@ function VarBadge({ v }: { v: number }) {
 function OsdPill({ on, labels }: { on: boolean; labels: [string, string] }) {
   return (
     <Badge variant={on ? "success" : "muted"}>
-      {on ? labels[0] : labels[1]}
+      <Swap id={String(on)}>{on ? labels[0] : labels[1]}</Swap>
     </Badge>
   );
 }
@@ -337,29 +337,31 @@ function DiskRow({
           {label} {}
           {disk.connected && disk.size_bytes > 0 && (
             <span className="ml-2 font-normal text-fg-muted">
-              {formatBytes(disk.size_bytes)}
+              <RollingNumber value={disk.size_bytes} format={formatBytes} />
             </span>
           )}
         </p>
         <div className="mt-1 flex items-center gap-1.5">
           <span
             className={cn(
-              "inline-block h-1.5 w-1.5 shrink-0 rounded-full",
+              "inline-block h-1.5 w-1.5 shrink-0 rounded-full transition-colors duration-300",
               sm.dot,
               sm.pulse && "animate-pulse",
             )}
           />
-          <p className={cn("text-sm", sm.color)}>
-            {sm.label}
+          <p className={cn("text-sm transition-colors duration-300", sm.color)}>
+            <Swap id={sm.label}>{sm.label}</Swap>
             {disk.is_loop && (
               <span className="text-fg-subtle"> · built into this machine</span>
             )}
           </p>
         </div>
-        {disk.message && (
-          <p className="mt-1 text-sm text-fg-muted">{disk.message}</p>
-        )}
-        {err && <p className="mt-1 text-sm text-danger">{err}</p>}
+        <Collapse open={Boolean(disk.message)}>
+          <p className="pt-1 text-sm text-fg-muted">{disk.message}</p>
+        </Collapse>
+        <Collapse open={Boolean(err)}>
+          <p className="pt-1 text-sm text-danger">{err}</p>
+        </Collapse>
       </div>
 
       {osd && state === "active" && (
@@ -503,19 +505,20 @@ function DiskList({
               )}
             />
           </button>
-          {showPast && (
-            <Card className="mt-2 divide-y divide-border p-0 opacity-70">
-              {past.map(([node, disk]) => (
-                <DiskRow
-                  key={`${node}/${disk.id}`}
-                  node={node}
-                  disk={disk}
-                  osd={osdFor(disk)}
-                  onChanged={onChanged}
-                />
-              ))}
+          <Collapse open={showPast} className="pt-2">
+            <Card className="divide-y divide-border p-0 opacity-70">
+              <AnimatedList items={past} keyOf={([node, disk]) => `${node}/${disk.id}`}>
+                {([node, disk]) => (
+                  <DiskRow
+                    node={node}
+                    disk={disk}
+                    osd={osdFor(disk)}
+                    onChanged={onChanged}
+                  />
+                )}
+              </AnimatedList>
             </Card>
-          )}
+          </Collapse>
         </div>
       )}
     </>
@@ -586,7 +589,7 @@ function CapacityCard({
   }
 
   return (
-    <Card className="p-6">
+    <Card className="animate-fade-in p-6">
       {total > 0 ? (
         <>
           <p className="font-display text-3xl text-fg">
@@ -1064,10 +1067,17 @@ function OsdTable({
           </tr>
         </thead>
         <tbody className="divide-y divide-border">
-          {hosts.flatMap((host) => {
-            const hostOsds = osds.filter((o) => o.host === host);
-            return hostOsds.map((osd, idx) => (
-              <tr key={osd.id}>
+          <AnimatedList
+            as="tr"
+            items={hosts.flatMap((host) =>
+              osds
+                .filter((o) => o.host === host)
+                .map((osd, idx) => ({ osd, host, idx })),
+            )}
+            keyOf={({ osd }) => String(osd.id)}
+          >
+            {({ osd, host, idx }) => (
+              <>
                 <td className="py-3 pl-5 pr-4 font-mono text-xs text-fg-muted">
                   {osd.name}
                 </td>
@@ -1085,7 +1095,11 @@ function OsdTable({
                   </Badge>
                 </td>
                 <td className="whitespace-nowrap px-4 py-3 text-xs tabular-nums text-fg-muted">
-                  {osd.size_bytes > 0 ? fmtBytes(osd.size_bytes) : "—"}
+                  {osd.size_bytes > 0 ? (
+                    <RollingNumber value={osd.size_bytes} format={fmtBytes} />
+                  ) : (
+                    "—"
+                  )}
                 </td>
                 <td className="px-4 py-3">
                   {osd.size_bytes > 0 ? (
@@ -1095,14 +1109,23 @@ function OsdTable({
                   )}
                 </td>
                 <td className="whitespace-nowrap px-4 py-3 text-xs tabular-nums text-fg-muted">
-                  {osd.size_bytes > 0
-                    ? osd.crush_weight > 0
-                      ? `${fmtBytes(osd.used_bytes)} / ${fmtBytes(osd.avail_bytes)}`
-                      : `${fmtBytes(osd.used_bytes)} / ${fmtBytes(osd.size_bytes)}`
-                    : "—"}
+                  {osd.size_bytes > 0 ? (
+                    <>
+                      <RollingNumber value={osd.used_bytes} format={fmtBytes} />
+                      {" / "}
+                      <RollingNumber
+                        value={
+                          osd.crush_weight > 0 ? osd.avail_bytes : osd.size_bytes
+                        }
+                        format={fmtBytes}
+                      />
+                    </>
+                  ) : (
+                    "—"
+                  )}
                 </td>
                 <td className="px-4 py-3 text-xs tabular-nums text-fg-muted">
-                  {osd.pgs}
+                  <RollingNumber value={osd.pgs} />
                 </td>
                 <td className="px-4 py-3">
                   <VarBadge v={osd.var} />
@@ -1122,9 +1145,9 @@ function OsdTable({
                 <td className="px-4 py-3 pr-5">
                   <OsdActions osd={osd} onRefresh={onRefresh} />
                 </td>
-              </tr>
-            ));
-          })}
+              </>
+            )}
+          </AnimatedList>
         </tbody>
       </table>
     </div>
@@ -1172,8 +1195,8 @@ function AdvancedPanel({
         />
       </button>
 
-      {open && (
-        <div className="mt-4 space-y-6">
+      <Collapse open={open} className="pt-4">
+        <div className="space-y-6">
           <div className="flex items-center justify-end">
             <Button
               size="sm"
@@ -1230,7 +1253,7 @@ function AdvancedPanel({
             </div>
           )}
         </div>
-      )}
+      </Collapse>
     </div>
   );
 }
@@ -1278,11 +1301,11 @@ export function StoragePage() {
     <div className="space-y-6">
       <ForceHealCard />
 
-      {cephError && (
+      <Collapse open={Boolean(cephError)}>
         <Banner tone="error" title="Storage is not responding">
           {cephError}
         </Banner>
-      )}
+      </Collapse>
 
       <CapacityCard
         detail={detail}

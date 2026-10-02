@@ -35,7 +35,7 @@ export function Banner({
   className,
 }: {
   tone: Tone;
-  title: string;
+  title: ReactNode;
   children?: ReactNode;
   action?: ReactNode;
   className?: string;
@@ -67,7 +67,7 @@ export function Banner({
   return (
     <div
       className={cn(
-        "flex items-start gap-3 rounded-card border p-4",
+        "flex items-start gap-3 rounded-card border p-4 transition-colors duration-300 animate-rise-in",
         styles.wrap,
         className,
       )}

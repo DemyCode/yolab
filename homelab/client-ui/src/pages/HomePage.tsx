@@ -10,7 +10,7 @@ import { HealBanner } from "@/components/ForceHeal";
 import { appDisplayName, catalogEntry } from "@/lib/apps";
 import type { AppInfo, CatalogApp } from "@/types/apps";
 import type { ClusterHealth } from "@/types/health";
-import { AnimatedList } from "@/components/motion";
+import { AnimatedList, Collapse, RollingNumber } from "@/components/motion";
 
 interface Concern {
   tone: "info" | "warning" | "error";
@@ -78,11 +78,11 @@ export function HomePage() {
 
       <HealBanner className="mb-6" />
 
-      {concern && (
+      <Collapse open={Boolean(concern)} className="pb-6">
+        {concern && (
         <Banner
           tone={concern.tone}
           title={concern.title}
-          className="mb-6"
           action={
             concern.tone !== "info" ? (
               <Link
@@ -102,12 +102,14 @@ export function HomePage() {
                 to="/system/storage"
                 className="underline underline-offset-2"
               >
-                {concern.more} other {concern.more === 1 ? "issue" : "issues"}
+                <RollingNumber value={concern.more ?? 0} /> other{" "}
+                {concern.more === 1 ? "issue" : "issues"}
               </Link>
             </>
           )}
         </Banner>
       )}
+      </Collapse>
 
       {apps.loading ? (
         <div className="grid grid-cols-3 gap-2 sm:grid-cols-4 md:grid-cols-6">
@@ -131,7 +133,7 @@ export function HomePage() {
         />
       ) : (
         <>
-          <div className="grid grid-cols-3 gap-2 sm:grid-cols-4 md:grid-cols-6">
+          <div className="grid animate-fade-in grid-cols-3 gap-2 sm:grid-cols-4 md:grid-cols-6">
             <AnimatedList items={installed} keyOf={(app) => app.instance_name}>
               {(app) => (
                 <AppTile

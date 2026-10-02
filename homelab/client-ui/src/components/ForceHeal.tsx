@@ -9,6 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Sheet } from "@/components/ui/sheet";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { AnimatedList, Collapse, Swap } from "@/components/motion";
 import {
   HEAL_PROBLEM_LABELS,
   HEAL_STEP_LABELS,
@@ -113,17 +114,19 @@ function StepList({ heal }: { heal: Heal }) {
               : "pending";
         return (
           <li key={step} className="flex gap-3">
-            {state === "done" ? (
-              <CheckCircle className="mt-0.5 h-5 w-5 shrink-0 text-success" />
-            ) : state === "current" ? (
-              <RefreshCw className="mt-0.5 h-5 w-5 shrink-0 animate-spin text-primary" />
-            ) : (
-              <Circle className="mt-0.5 h-5 w-5 shrink-0 text-fg-subtle" />
-            )}
+            <Swap id={state} className="inline-block shrink-0">
+              {state === "done" ? (
+                <CheckCircle className="mt-0.5 h-5 w-5 shrink-0 text-success" />
+              ) : state === "current" ? (
+                <RefreshCw className="mt-0.5 h-5 w-5 shrink-0 animate-spin text-primary" />
+              ) : (
+                <Circle className="mt-0.5 h-5 w-5 shrink-0 text-fg-subtle" />
+              )}
+            </Swap>
             <div className="min-w-0">
               <p
                 className={cn(
-                  "text-sm",
+                  "text-sm transition-colors duration-300",
                   state === "current" && "font-medium text-fg",
                   state === "done" && "text-fg-muted",
                   state === "pending" && "text-fg-subtle",
@@ -131,9 +134,9 @@ function StepList({ heal }: { heal: Heal }) {
               >
                 {HEAL_STEP_LABELS[step]}
               </p>
-              {state === "current" && heal.waiting && (
+              <Collapse open={state === "current" && Boolean(heal.waiting)}>
                 <p className="mt-0.5 text-xs text-fg-muted">{heal.waiting}</p>
-              )}
+              </Collapse>
             </div>
           </li>
         );
@@ -296,9 +299,9 @@ function HealDialog({
               cluster on its own, and must be installed again. Type each name to
               confirm.
             </p>
-            {plan.remove_machines.map((m) => (
+            <AnimatedList items={plan.remove_machines} keyOf={(m) => m}>
+              {(m) => (
               <Input
-                key={m}
                 placeholder={m}
                 value={confirmed[m] ?? ""}
                 onChange={(e) =>
@@ -306,7 +309,8 @@ function HealDialog({
                 }
                 aria-label={`Type ${m} to confirm`}
               />
-            ))}
+              )}
+            </AnimatedList>
           </div>
         )}
         <div className="space-y-2">
@@ -384,9 +388,9 @@ export function ForceHealCard() {
     <Card className="border-danger/30 bg-danger-soft">
       <CardContent className="space-y-3 pt-5 pb-5">
         <ul className="space-y-1 text-sm font-medium text-danger">
-          {s.problems.map((p) => (
-            <li key={p}>{HEAL_PROBLEM_LABELS[p]}</li>
-          ))}
+          <AnimatedList as="li" items={s.problems} keyOf={(p) => p}>
+            {(p) => HEAL_PROBLEM_LABELS[p]}
+          </AnimatedList>
         </ul>
         <div className="space-y-1 text-sm text-fg-muted">
           {gone.length > 0 && (

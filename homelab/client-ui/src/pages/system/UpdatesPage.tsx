@@ -27,7 +27,7 @@ function LogLine({ line }: { line: string }) {
   return (
     <div
       className={cn(
-        "font-mono text-xs leading-5 whitespace-pre-wrap break-all",
+        "font-mono text-xs leading-5 whitespace-pre-wrap break-all animate-fade-in",
         isError
           ? "text-danger"
           : isCmd
@@ -375,7 +375,9 @@ export function UpdatesPage() {
                 <CardTitle>{logTitle}</CardTitle>
               </div>
               {phase === "done" && (
-                <span className="text-xs text-success font-medium">✓ Done</span>
+                <span className="animate-rise-in text-xs text-success font-medium">
+                  ✓ Done
+                </span>
               )}
             </div>
           </CardHeader>

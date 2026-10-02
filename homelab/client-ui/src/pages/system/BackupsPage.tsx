@@ -25,6 +25,8 @@ import {
   protectionTone,
 } from "@/lib/backups";
 import type { ProtectedApp } from "@/lib/backups";
+import { AnimatedList, Collapse, RollingNumber, Swap } from "@/components/motion";
+import { cn } from "@/lib/utils";
 
 const STALE_AFTER_HOURS = 36;
 
@@ -64,7 +66,7 @@ function AppRow({
   }
 
   return (
-    <li>
+    <div>
       <button
         onClick={onOpen}
         className="flex w-full items-center gap-3 px-1 py-3 text-left transition-colors hover:bg-surface-2"
@@ -79,13 +81,19 @@ function AppRow({
             {app.instance_name}
           </div>
           <div className="flex flex-wrap items-center gap-x-2 text-xs">
-            <span className={TONE_CLASS[protectionTone(state)]}>
+            <Swap
+              id={protectionLabel(state)}
+              className={cn(
+                "inline-block transition-colors duration-300",
+                TONE_CLASS[protectionTone(state)],
+              )}
+            >
               {protectionLabel(state)}
-            </span>
+            </Swap>
             {app.last_ok_at && (
-              <span className="text-fg-muted">
+              <Swap id={app.last_ok_at} className="inline-block text-fg-muted">
                 · {formatDateTime(app.last_ok_at)}
-              </span>
+              </Swap>
             )}
           </div>
           {app.error && (
@@ -106,7 +114,7 @@ function AppRow({
         )}
         <ChevronRight className="h-4 w-4 shrink-0 text-fg-subtle" />
       </button>
-    </li>
+    </div>
   );
 }
 
@@ -264,11 +272,11 @@ export function BackupsPage() {
         )}
       </div>
 
-      {actionError && (
+      <Collapse open={Boolean(actionError)}>
         <Banner tone="error" title="That did not start">
           {actionError}
         </Banner>
-      )}
+      </Collapse>
 
       {protectedApps.loading && !data ? (
         <Card>
@@ -280,20 +288,25 @@ export function BackupsPage() {
         <EnableCard onEnable={enable} />
       ) : (
         <>
-          {attention.length > 0 && (
+          <Collapse open={attention.length > 0}>
             <Banner
               tone="warning"
               title={
                 attention.length === 1
                   ? `${attention[0].instance_name} has no recent backup`
-                  : `${attention.length} apps have no recent backup`
+                  : (
+                      <>
+                        <RollingNumber value={attention.length} /> apps have no
+                        recent backup
+                      </>
+                    )
               }
             >
               Anything changed in {attention.length === 1 ? "it" : "them"} since
               the last good copy is not saved anywhere else yet. Use “Save now”,
               or open the app to see what went wrong.
             </Banner>
-          )}
+          </Collapse>
 
           {apps.length === 0 ? (
             <Card>
@@ -305,17 +318,22 @@ export function BackupsPage() {
               </CardContent>
             </Card>
           ) : (
-            <Card>
+            <Card className="animate-fade-in">
               <CardContent className="py-1">
                 <ul className="divide-y divide-border">
-                  {apps.map((app) => (
-                    <AppRow
-                      key={app.namespace}
-                      app={app}
-                      onOpen={() => setOpen(app)}
-                      onBackupNow={() => backupNow(app.namespace)}
-                    />
-                  ))}
+                  <AnimatedList
+                    as="li"
+                    items={apps}
+                    keyOf={(app) => app.namespace}
+                  >
+                    {(app) => (
+                      <AppRow
+                        app={app}
+                        onOpen={() => setOpen(app)}
+                        onBackupNow={() => backupNow(app.namespace)}
+                      />
+                    )}
+                  </AnimatedList>
                 </ul>
               </CardContent>
             </Card>

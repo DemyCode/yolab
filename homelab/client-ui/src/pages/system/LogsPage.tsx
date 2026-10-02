@@ -175,7 +175,7 @@ export function LogsPage() {
             {entries.map((e, i) => (
               <div
                 key={`${e.timestamp}-${i}`}
-                className="flex gap-3 border-b border-line/50 px-4 py-2 font-mono text-xs last:border-0"
+                className="flex gap-3 border-b border-line/50 px-4 py-2 font-mono text-xs last:border-0 animate-fade-in"
               >
                 <span className="shrink-0 tabular-nums text-fg-subtle">
                   {formatTime(e.timestamp)}
