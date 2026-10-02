@@ -33,7 +33,7 @@ charts:
   - name: code-server
     version: "0.1.8"
   - name: dawarich
-    version: "0.1.9"
+    version: "0.1.10"
   - name: docmost
     version: "0.1.8"
   - name: emulatorjs
