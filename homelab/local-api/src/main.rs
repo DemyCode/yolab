@@ -47,13 +47,14 @@ pub struct AppState {
     pub auth: AuthState,
     pub kube: k8s::Kube,
     pub http: http::Client,
+    pub host: host::RealHost,
 }
 
 impl AppState {
     pub(crate) async fn backend(&self) -> anyhow::Result<routers::backup_common::Backend> {
         Ok(routers::backup_common::Backend {
             kube: self.kube.client().await?,
-            host: host::RealHost,
+            host: self.host.clone(),
         })
     }
 }
@@ -108,6 +109,7 @@ async fn main() {
         auth: auth_state,
         kube: kube.clone(),
         http: http::client(),
+        host: Default::default(),
     };
 
     let app = router::build_router(state);

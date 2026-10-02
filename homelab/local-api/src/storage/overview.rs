@@ -7,7 +7,7 @@ use serde::Serialize;
 use serde_json::{json, Value};
 
 use crate::cephfs::{DATA_POOL, FS_NAME, META_POOL, SUBVOLUME_GROUP};
-use crate::host::{Host, RealHost};
+use crate::host::Host;
 use crate::AppState;
 
 const KUBE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -219,9 +219,9 @@ fn failed(e: impl std::fmt::Display) -> (StatusCode, Json<Value>) {
     )
 }
 
-pub async fn handler() -> (StatusCode, Json<Value>) {
+pub async fn handler(State(state): State<AppState>) -> (StatusCode, Json<Value>) {
     let images_pool = super::StorageEnv::from_env().images_pool;
-    match read(&RealHost, &images_pool).await {
+    match read(&state.host, &images_pool).await {
         Ok(o) => (StatusCode::OK, Json(json!(o))),
         Err(e) => failed(e),
     }
@@ -263,15 +263,15 @@ pub(crate) async fn checks<H: Host>(host: &H) -> anyhow::Result<Checks> {
     Ok(out)
 }
 
-pub async fn checks_handler() -> (StatusCode, Json<Value>) {
-    match checks(&RealHost).await {
+pub async fn checks_handler(State(state): State<AppState>) -> (StatusCode, Json<Value>) {
+    match checks(&state.host).await {
         Ok(c) => (StatusCode::OK, Json(json!(c))),
         Err(e) => failed(e),
     }
 }
 
-pub async fn status_text_handler() -> (StatusCode, Json<Value>) {
-    match RealHost.ceph(&["status"]).await {
+pub async fn status_text_handler(State(state): State<AppState>) -> (StatusCode, Json<Value>) {
+    match state.host.ceph(&["status"]).await {
         Ok(text) => (StatusCode::OK, Json(json!({ "text": text }))),
         Err(e) => failed(e),
     }
@@ -369,7 +369,7 @@ pub async fn usage_handler(State(state): State<AppState>) -> (StatusCode, Json<V
         Ok(Err(e)) => return failed(e),
         Err(_) => return failed("the cluster did not list volumes in time"),
     };
-    let u = usage(&RealHost, app_volumes(&pvs)).await;
+    let u = usage(&state.host, app_volumes(&pvs)).await;
     (StatusCode::OK, Json(json!(u)))
 }
 
