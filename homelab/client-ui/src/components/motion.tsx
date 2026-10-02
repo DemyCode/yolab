@@ -1,5 +1,4 @@
 import {
-  createElement,
   useEffect,
   useLayoutEffect,
   useRef,
@@ -23,6 +22,14 @@ const ROLL_MS = 700;
 
 function canAnimate(el: HTMLElement | null | undefined): el is HTMLElement {
   return !!el && typeof el.animate === "function" && !prefersReducedMotion();
+}
+
+function motionAvailable(): boolean {
+  return (
+    typeof Element !== "undefined" &&
+    typeof Element.prototype.animate === "function" &&
+    !prefersReducedMotion()
+  );
 }
 
 export function AnimatedList<T>({
@@ -121,24 +128,23 @@ export function AnimatedList<T>({
     before.current = new Map();
   }, [rows]);
 
+  const Tag = as;
   return (
     <>
-      {rows.map((row) =>
-        createElement(
-          as,
-          {
-            key: row.key,
-            "data-leaving": row.leaving || undefined,
-            "aria-hidden": row.leaving || undefined,
-            className: cn(itemClassName),
-            ref: (el: HTMLElement | null) => {
-              if (el) nodes.current.set(row.key, el);
-              else nodes.current.delete(row.key);
-            },
-          },
-          children(row.item),
-        ),
-      )}
+      {rows.map((row) => (
+        <Tag
+          key={row.key}
+          data-leaving={row.leaving || undefined}
+          aria-hidden={row.leaving || undefined}
+          className={cn(itemClassName)}
+          ref={(el: HTMLElement | null) => {
+            if (el) nodes.current.set(row.key, el);
+            else nodes.current.delete(row.key);
+          }}
+        >
+          {children(row.item)}
+        </Tag>
+      ))}
     </>
   );
 }
@@ -192,17 +198,16 @@ export function Collapse({
   className?: string;
 }) {
   const [present, setPresent] = useState(open);
+  const [prevOpen, setPrevOpen] = useState(open);
   const [last, setLast] = useState<ReactNode>(open ? children : null);
   const ref = useRef<HTMLDivElement>(null);
   const settled = useRef(false);
 
-  useEffect(() => {
-    if (open) setPresent(true);
-  }, [open]);
-
-  useEffect(() => {
-    if (open) setLast(children);
-  }, [open, children]);
+  if (open !== prevOpen) {
+    setPrevOpen(open);
+    setPresent(open || motionAvailable());
+  }
+  if (open && last !== children) setLast(children);
 
   useLayoutEffect(() => {
     if (!settled.current) {
@@ -210,11 +215,7 @@ export function Collapse({
       return;
     }
     const el = ref.current;
-    if (!el) return;
-    if (!canAnimate(el)) {
-      if (!open) setPresent(false);
-      return;
-    }
+    if (!el || typeof el.animate !== "function") return;
     el.getAnimations().forEach((a) => a.cancel());
     const full = { height: `${el.scrollHeight}px`, opacity: 1 };
     const none = { height: "0px", opacity: 0 };
@@ -227,7 +228,7 @@ export function Collapse({
       el.style.overflow = "";
       if (!open) setPresent(false);
     };
-  }, [open, present]);
+  }, [open]);
 
   if (!present) return null;
   return (
