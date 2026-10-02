@@ -22,7 +22,7 @@
         "password": {
           "type": "string",
           "title": "Admin password",
-          "description": "At least 12 characters — File Browser rejects anything shorter.",
+          "description": "At least 12 characters. You sign in as admin with this.",
           "minLength": 12,
           "writeOnly": true,
           "generate": true

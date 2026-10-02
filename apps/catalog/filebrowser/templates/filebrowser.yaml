@@ -1,4 +1,34 @@
-{{- $image := "filebrowser/filebrowser:v2@sha256:a469ea076d4a1b4b1d86a41d130f2f536cd9da996a2b1fb39c0d7635f9d89b9a" -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-config
+  namespace: {{ .Release.Namespace }}
+data:
+  config.yaml: |
+    http:
+      port: 8080
+      disableWebDAV: true
+    server:
+      disableUpdateCheck: true
+      cacheDir: /tmp/filebrowser-cache
+      database:
+        path: /var/lib/filebrowser/database.sqlite
+      sources:
+        - path: /srv
+          name: files
+          config:
+            defaultEnabled: true
+    auth:
+      methods:
+        password:
+          enabled: true
+          minLength: 12
+          signup: false
+          adminUsername: admin
+    frontend:
+      name: "File Browser"
+      disableDefaultLinks: true
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -16,108 +46,56 @@ spec:
       labels:
         app: filebrowser
       annotations:
-        
         checksum/admin-secret: {{ .Values.config.password | sha256sum }}
     spec:
       initContainers:
         - name: fix-perms
           image: busybox:1@sha256:dc2d74b28e4cf8984fa52af1f39bc7c3d9c73760b41a74d629f5d11b1ab28616
           imagePullPolicy: IfNotPresent
-          command: ["sh", "-c", "chown -R 1000:1000 /db /srv"]
+          command: ["sh", "-c", "chown -R 1000:1000 /state /srv"]
           volumeMounts:
             - name: data
-              mountPath: /db
-              subPath: {{ printf "%s/db" .Release.Name | quote }}
+              mountPath: /state
+              subPath: {{ printf "%s/quantum" .Release.Name | quote }}
             - name: data
               mountPath: /srv
               subPath: {{ printf "%s/files" .Release.Name | quote }}
-        - name: init-db
-          image: {{ $image }}
+      containers:
+        - name: filebrowser
+          image: gtstef/filebrowser:2.1.0-beta@sha256:329dfca21dcd04d1430f9f190a719d9e9ecb0fb9a916d26a56cd631876aebaf1
           imagePullPolicy: IfNotPresent
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
           env:
-            - name: FB_ADMIN_PASSWORD
+            - name: FILEBROWSER_CONFIG
+              value: /etc/filebrowser/config.yaml
+            - name: FILEBROWSER_ADMIN_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: {{ .Release.Name }}-admin
                   key: password
-          command:
-            - /bin/sh
-            - -c
-            - |
-              # IDEMPOTENT, AND RETRIED. Both matter.
-              #
-              # This was `if [ ! -f "$DB" ]` then init+add, else update. That
-              # branch is a one-way trap: `config init` creates the file, so if
-              # `users add` then fails for any reason, every later run sees the
-              # DB exists, takes the `else` branch, and tries to UPDATE an admin
-              # that was never added. The app crash-loops for good, and the only
-              # way out is deleting the volume.
-              #
-              # Trying add and falling back to update covers both states without
-              # asking which one we are in: a fresh DB gets the user added, an
-              # existing one gets the password updated.
-              #
-              # The retry is for the bolt lock. filebrowser keeps its database in
-              # bolt, which takes an exclusive flock on open and gives up with
-              # "Error: timeout" rather than waiting — observed on this chart
-              # against CephFS, nine restarts deep with no other writer in sight.
-              # A few seconds apart is enough for a contended open to succeed,
-              # and failing after five tries still surfaces the problem instead
-              # of hanging the pod forever.
-              set -u
-              DB=/db/filebrowser.db
-              attempt=1
-              while [ "$attempt" -le 5 ]; do
-                if [ ! -f "$DB" ]; then
-                  filebrowser config init --database "$DB" || true
-                fi
-                if filebrowser users add admin "$FB_ADMIN_PASSWORD" \
-                     --perm.admin --database "$DB"; then
-                  echo "admin created"
-                  exit 0
-                fi
-                if filebrowser users update admin --password "$FB_ADMIN_PASSWORD" \
-                     --database "$DB"; then
-                  echo "admin password updated"
-                  exit 0
-                fi
-                echo "database not ready (attempt $attempt) — retrying"
-                attempt=$((attempt + 1))
-                sleep 5
-              done
-              echo "could not initialise $DB after 5 attempts" >&2
-              exit 1
           volumeMounts:
+            - name: config
+              mountPath: /etc/filebrowser
+              readOnly: true
             - name: data
-              mountPath: /db
-              subPath: {{ printf "%s/db" .Release.Name | quote }}
-      containers:
-        - name: filebrowser
-          image: {{ $image }}
-          imagePullPolicy: IfNotPresent
-          readinessProbe:
-            httpGet:
-              path: /
-              port: 80
-            initialDelaySeconds: 5
-            periodSeconds: 10
-          env:
-            - name: FB_DATABASE
-              value: /db/filebrowser.db
-            - name: FB_ROOT
-              value: /srv
-            - name: FB_PORT
-              value: "80"
-            - name: FB_ADDRESS
-              value: "0.0.0.0"
-          volumeMounts:
+              mountPath: /var/lib/filebrowser
+              subPath: {{ printf "%s/quantum" .Release.Name | quote }}
             - name: data
               mountPath: /srv
               subPath: {{ printf "%s/files" .Release.Name | quote }}
-            - name: data
-              mountPath: /db
-              subPath: {{ printf "%s/db" .Release.Name | quote }}
+            - name: cache
+              mountPath: /tmp/filebrowser-cache
       volumes:
+        - name: config
+          configMap:
+            name: {{ .Release.Name }}-config
+        - name: cache
+          emptyDir: {}
         - name: data
           persistentVolumeClaim:
             claimName: {{ .Release.Name }}-data
@@ -132,4 +110,4 @@ spec:
     app: filebrowser
   ports:
     - port: 80
-      targetPort: 80
+      targetPort: 8080
