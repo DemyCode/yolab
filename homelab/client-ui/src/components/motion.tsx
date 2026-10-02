@@ -1,6 +1,13 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { cn } from "@/lib/utils";
+import {
+  easeOut,
+  mergeRows,
+  prefersReducedMotion,
+  rollFormat,
+} from "@/lib/motion";
+import type { Row } from "@/lib/motion";
 
 const EASE = "cubic-bezier(0.22, 1, 0.36, 1)";
 const MOVE_MS = 320;
@@ -8,41 +15,8 @@ const ENTER_MS = 260;
 const EXIT_MS = 200;
 const ROLL_MS = 700;
 
-export function prefersReducedMotion(): boolean {
-  try {
-    return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-  } catch {
-    return true;
-  }
-}
-
 function canAnimate(el: HTMLElement | null | undefined): el is HTMLElement {
   return !!el && typeof el.animate === "function" && !prefersReducedMotion();
-}
-
-export interface Row<T> {
-  key: string;
-  item: T;
-  leaving: boolean;
-}
-
-export function mergeRows<T>(
-  prev: Row<T>[],
-  items: T[],
-  keyOf: (item: T) => string,
-): Row<T>[] {
-  const next: Row<T>[] = items.map((item) => ({
-    key: keyOf(item),
-    item,
-    leaving: false,
-  }));
-  const kept = new Set(next.map((r) => r.key));
-  prev.forEach((row, i) => {
-    if (kept.has(row.key)) return;
-    next.splice(Math.min(i, next.length), 0, { ...row, leaving: true });
-    kept.add(row.key);
-  });
-  return next;
 }
 
 export function AnimatedList<T>({
@@ -62,7 +36,9 @@ export function AnimatedList<T>({
   const seen = useRef(new Set(rows.map((r) => r.key)));
   const exiting = useRef(new Set<string>());
   const keyOfRef = useRef(keyOf);
-  keyOfRef.current = keyOf;
+  useEffect(() => {
+    keyOfRef.current = keyOf;
+  });
 
   function snapshot() {
     before.current = new Map();
@@ -155,15 +131,6 @@ export function AnimatedList<T>({
       ))}
     </>
   );
-}
-
-export function rollFormat(value: number): (n: number) => string {
-  const decimals = Math.min(2, (String(value).split(".")[1] ?? "").length);
-  return (n) => n.toFixed(decimals);
-}
-
-export function easeOut(t: number): number {
-  return 1 - Math.pow(1 - Math.min(1, Math.max(0, t)), 3);
 }
 
 export function RollingNumber({
