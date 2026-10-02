@@ -23,7 +23,12 @@ import { api } from "@/lib/api";
 import { useApi } from "@/lib/useResource";
 import { formatBytes } from "@/lib/format";
 import { cn } from "@/lib/utils";
-import { AnimatedList, Collapse, RollingNumber, Swap } from "@/components/motion";
+import {
+  AnimatedList,
+  Collapse,
+  RollingNumber,
+  Swap,
+} from "@/components/motion";
 import type {
   OsdInfo,
   PoolInfo,
@@ -507,7 +512,10 @@ function DiskList({
           </button>
           <Collapse open={showPast} className="pt-2">
             <Card className="divide-y divide-border p-0 opacity-70">
-              <AnimatedList items={past} keyOf={([node, disk]) => `${node}/${disk.id}`}>
+              <AnimatedList
+                items={past}
+                keyOf={([node, disk]) => `${node}/${disk.id}`}
+              >
                 {([node, disk]) => (
                   <DiskRow
                     node={node}
@@ -1115,7 +1123,9 @@ function OsdTable({
                       {" / "}
                       <RollingNumber
                         value={
-                          osd.crush_weight > 0 ? osd.avail_bytes : osd.size_bytes
+                          osd.crush_weight > 0
+                            ? osd.avail_bytes
+                            : osd.size_bytes
                         }
                         format={fmtBytes}
                       />

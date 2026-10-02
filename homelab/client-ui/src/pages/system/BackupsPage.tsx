@@ -25,7 +25,12 @@ import {
   protectionTone,
 } from "@/lib/backups";
 import type { ProtectedApp } from "@/lib/backups";
-import { AnimatedList, Collapse, RollingNumber, Swap } from "@/components/motion";
+import {
+  AnimatedList,
+  Collapse,
+  RollingNumber,
+  Swap,
+} from "@/components/motion";
 import { cn } from "@/lib/utils";
 
 const STALE_AFTER_HOURS = 36;
@@ -292,14 +297,14 @@ export function BackupsPage() {
             <Banner
               tone="warning"
               title={
-                attention.length === 1
-                  ? `${attention[0].instance_name} has no recent backup`
-                  : (
-                      <>
-                        <RollingNumber value={attention.length} /> apps have no
-                        recent backup
-                      </>
-                    )
+                attention.length === 1 ? (
+                  `${attention[0].instance_name} has no recent backup`
+                ) : (
+                  <>
+                    <RollingNumber value={attention.length} /> apps have no
+                    recent backup
+                  </>
+                )
               }
             >
               Anything changed in {attention.length === 1 ? "it" : "them"} since

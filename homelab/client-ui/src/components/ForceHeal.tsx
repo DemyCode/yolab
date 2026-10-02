@@ -301,14 +301,14 @@ function HealDialog({
             </p>
             <AnimatedList items={plan.remove_machines} keyOf={(m) => m}>
               {(m) => (
-              <Input
-                placeholder={m}
-                value={confirmed[m] ?? ""}
-                onChange={(e) =>
-                  setConfirmed((c) => ({ ...c, [m]: e.target.value }))
-                }
-                aria-label={`Type ${m} to confirm`}
-              />
+                <Input
+                  placeholder={m}
+                  value={confirmed[m] ?? ""}
+                  onChange={(e) =>
+                    setConfirmed((c) => ({ ...c, [m]: e.target.value }))
+                  }
+                  aria-label={`Type ${m} to confirm`}
+                />
               )}
             </AnimatedList>
           </div>

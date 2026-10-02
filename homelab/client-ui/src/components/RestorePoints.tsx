@@ -81,29 +81,29 @@ export function RestorePointList({
           itemClassName="flex items-center justify-between gap-3 py-3"
         >
           {({ point, i }) => (
-          <>
-            <div className="flex min-w-0 items-center gap-2.5">
-              <History className="h-4 w-4 shrink-0 text-fg-subtle" />
-              <div className="min-w-0">
-                <div className="truncate text-sm text-fg">
-                  {formatDateTime(point.time)}
+            <>
+              <div className="flex min-w-0 items-center gap-2.5">
+                <History className="h-4 w-4 shrink-0 text-fg-subtle" />
+                <div className="min-w-0">
+                  <div className="truncate text-sm text-fg">
+                    {formatDateTime(point.time)}
+                  </div>
+                  {i === 0 && (
+                    <div className="text-xs text-fg-muted">Most recent</div>
+                  )}
                 </div>
-                {i === 0 && (
-                  <div className="text-xs text-fg-muted">Most recent</div>
-                )}
               </div>
-            </div>
-            <Button
-              size="sm"
-              variant="secondary"
-              loading={opening === point.snapshot_id}
-              disabled={opening !== null}
-              onClick={() => void open(point.snapshot_id)}
-            >
-              <RotateCcw className="h-3.5 w-3.5" />
-              Restore
-            </Button>
-          </>
+              <Button
+                size="sm"
+                variant="secondary"
+                loading={opening === point.snapshot_id}
+                disabled={opening !== null}
+                onClick={() => void open(point.snapshot_id)}
+              >
+                <RotateCcw className="h-3.5 w-3.5" />
+                Restore
+              </Button>
+            </>
           )}
         </AnimatedList>
       </ul>

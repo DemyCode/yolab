@@ -201,33 +201,33 @@ function TechnicalDetails({ app }: { app: AppInfo }) {
               itemClassName="flex items-center gap-2 px-3 py-1.5"
             >
               {(pod) => (
-              <>
-                <span
-                  className={cn(
-                    "h-2 w-2 shrink-0 rounded-full transition-colors duration-300",
-                    pod.ready ? "bg-success" : "bg-warning",
-                  )}
-                  aria-hidden
-                />
-                <span className="min-w-0 flex-1 truncate font-mono text-xs text-fg-muted">
-                  {pod.name}
-                </span>
-                <span
-                  className="shrink-0 text-xs text-fg-subtle"
-                  title={pod.phase}
-                >
-                  <Swap id={podStatus(pod)}>{podStatus(pod)}</Swap>
-                </span>
-                <RowAction
-                  onClick={() =>
-                    logs?.pod === pod.name && logs.live
-                      ? stopLogs()
-                      : startLogs(pod.name)
-                  }
-                >
-                  {logs?.pod === pod.name && logs.live ? "Stop" : "Logs"}
-                </RowAction>
-              </>
+                <>
+                  <span
+                    className={cn(
+                      "h-2 w-2 shrink-0 rounded-full transition-colors duration-300",
+                      pod.ready ? "bg-success" : "bg-warning",
+                    )}
+                    aria-hidden
+                  />
+                  <span className="min-w-0 flex-1 truncate font-mono text-xs text-fg-muted">
+                    {pod.name}
+                  </span>
+                  <span
+                    className="shrink-0 text-xs text-fg-subtle"
+                    title={pod.phase}
+                  >
+                    <Swap id={podStatus(pod)}>{podStatus(pod)}</Swap>
+                  </span>
+                  <RowAction
+                    onClick={() =>
+                      logs?.pod === pod.name && logs.live
+                        ? stopLogs()
+                        : startLogs(pod.name)
+                    }
+                  >
+                    {logs?.pod === pod.name && logs.live ? "Stop" : "Logs"}
+                  </RowAction>
+                </>
               )}
             </AnimatedList>
           </ul>

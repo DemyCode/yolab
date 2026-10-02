@@ -80,35 +80,35 @@ export function HomePage() {
 
       <Collapse open={Boolean(concern)} className="pb-6">
         {concern && (
-        <Banner
-          tone={concern.tone}
-          title={concern.title}
-          action={
-            concern.tone !== "info" ? (
-              <Link
-                to="/system/storage"
-                className={buttonClass({ size: "sm", variant: "secondary" })}
-              >
-                Look at storage
-              </Link>
-            ) : undefined
-          }
-        >
-          {concern.body}
-          {(concern.more ?? 0) > 0 && (
-            <>
-              {" "}
-              <Link
-                to="/system/storage"
-                className="underline underline-offset-2"
-              >
-                <RollingNumber value={concern.more ?? 0} /> other{" "}
-                {concern.more === 1 ? "issue" : "issues"}
-              </Link>
-            </>
-          )}
-        </Banner>
-      )}
+          <Banner
+            tone={concern.tone}
+            title={concern.title}
+            action={
+              concern.tone !== "info" ? (
+                <Link
+                  to="/system/storage"
+                  className={buttonClass({ size: "sm", variant: "secondary" })}
+                >
+                  Look at storage
+                </Link>
+              ) : undefined
+            }
+          >
+            {concern.body}
+            {(concern.more ?? 0) > 0 && (
+              <>
+                {" "}
+                <Link
+                  to="/system/storage"
+                  className="underline underline-offset-2"
+                >
+                  <RollingNumber value={concern.more ?? 0} /> other{" "}
+                  {concern.more === 1 ? "issue" : "issues"}
+                </Link>
+              </>
+            )}
+          </Banner>
+        )}
       </Collapse>
 
       {apps.loading ? (

@@ -102,78 +102,82 @@ export function NodesPage() {
                     itemClassName="group hover:bg-border/20 transition-colors"
                   >
                     {(n) => {
-                    const url = urlFor(n.name);
-                    const path = pathFor(n.ip);
-                    return (
-                      <>
-                        <td className="py-3 pr-4 font-medium text-fg whitespace-nowrap">
-                          {n.name}
-                        </td>
-                        <td className="py-3 pr-4">
-                          {stale ? (
-                            <Badge variant="warning">Offline</Badge>
-                          ) : (
-                            <Badge variant={n.ready ? "success" : "danger"}>
-                              <Swap id={String(n.ready)}>
-                                {n.ready ? "Ready" : "Not Ready"}
-                              </Swap>
-                            </Badge>
-                          )}
-                        </td>
-                        <td className="py-3 pr-4 text-xs text-fg-muted whitespace-nowrap">
-                          {n.joined_at
-                            ? new Date(n.joined_at).toLocaleDateString(
-                                undefined,
-                                {
-                                  month: "short",
-                                  day: "numeric",
-                                  year: "numeric",
-                                },
-                              )
-                            : "—"}
-                        </td>
-                        <td className="py-3 pr-4">
-                          {path ? (
-                            <div className="flex flex-col gap-0.5">
-                              <Badge
-                                variant={
-                                  path.path === "direct" ? "success" : "neutral"
-                                }
-                              >
-                                {path.path === "direct" ? "Direct" : "Relayed"}
+                      const url = urlFor(n.name);
+                      const path = pathFor(n.ip);
+                      return (
+                        <>
+                          <td className="py-3 pr-4 font-medium text-fg whitespace-nowrap">
+                            {n.name}
+                          </td>
+                          <td className="py-3 pr-4">
+                            {stale ? (
+                              <Badge variant="warning">Offline</Badge>
+                            ) : (
+                              <Badge variant={n.ready ? "success" : "danger"}>
+                                <Swap id={String(n.ready)}>
+                                  {n.ready ? "Ready" : "Not Ready"}
+                                </Swap>
                               </Badge>
-                              {path.path === "direct" && path.endpoint && (
-                                <span className="text-xs text-fg-muted">
-                                  {path.endpoint}
-                                </span>
-                              )}
-                            </div>
-                          ) : (
-                            <span className="text-xs text-border-strong">
-                              —
-                            </span>
-                          )}
-                        </td>
-                        <td className="py-3">
-                          {url ? (
-                            <a
-                              href={url}
-                              target="_blank"
-                              rel="noreferrer"
-                              className="inline-flex items-center gap-1.5 text-sm text-primary hover:text-primary transition-colors"
-                            >
-                              {url.replace(/^https?:\/\//, "")}
-                              <ExternalLink className="h-3.5 w-3.5 flex-shrink-0" />
-                            </a>
-                          ) : (
-                            <span className="text-xs text-border-strong">
-                              —
-                            </span>
-                          )}
-                        </td>
-                      </>
-                    );
-                  }}
+                            )}
+                          </td>
+                          <td className="py-3 pr-4 text-xs text-fg-muted whitespace-nowrap">
+                            {n.joined_at
+                              ? new Date(n.joined_at).toLocaleDateString(
+                                  undefined,
+                                  {
+                                    month: "short",
+                                    day: "numeric",
+                                    year: "numeric",
+                                  },
+                                )
+                              : "—"}
+                          </td>
+                          <td className="py-3 pr-4">
+                            {path ? (
+                              <div className="flex flex-col gap-0.5">
+                                <Badge
+                                  variant={
+                                    path.path === "direct"
+                                      ? "success"
+                                      : "neutral"
+                                  }
+                                >
+                                  {path.path === "direct"
+                                    ? "Direct"
+                                    : "Relayed"}
+                                </Badge>
+                                {path.path === "direct" && path.endpoint && (
+                                  <span className="text-xs text-fg-muted">
+                                    {path.endpoint}
+                                  </span>
+                                )}
+                              </div>
+                            ) : (
+                              <span className="text-xs text-border-strong">
+                                —
+                              </span>
+                            )}
+                          </td>
+                          <td className="py-3">
+                            {url ? (
+                              <a
+                                href={url}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="inline-flex items-center gap-1.5 text-sm text-primary hover:text-primary transition-colors"
+                              >
+                                {url.replace(/^https?:\/\//, "")}
+                                <ExternalLink className="h-3.5 w-3.5 flex-shrink-0" />
+                              </a>
+                            ) : (
+                              <span className="text-xs text-border-strong">
+                                —
+                              </span>
+                            )}
+                          </td>
+                        </>
+                      );
+                    }}
                   </AnimatedList>
                 </tbody>
               </table>
