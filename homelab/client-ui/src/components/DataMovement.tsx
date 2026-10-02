@@ -1,7 +1,17 @@
-import { ArrowRightLeft, OctagonAlert, ShieldAlert, ShieldCheck } from "lucide-react";
+import {
+  ArrowRightLeft,
+  OctagonAlert,
+  ShieldAlert,
+  ShieldCheck,
+} from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Banner } from "@/components/ui/feedback";
-import { AnimatedList, Collapse, RollingNumber, Swap } from "@/components/motion";
+import {
+  AnimatedList,
+  Collapse,
+  RollingNumber,
+  Swap,
+} from "@/components/motion";
 import { formatBytes } from "@/lib/format";
 import {
   isVisible,
@@ -20,7 +30,12 @@ const TONE: Record<
   MovementTone,
   { bar: string; icon: typeof ShieldCheck; iconClass: string; wrap: string }
 > = {
-  calm: { bar: "bg-primary", icon: ShieldCheck, iconClass: "text-success", wrap: "" },
+  calm: {
+    bar: "bg-primary",
+    icon: ShieldCheck,
+    iconClass: "text-success",
+    wrap: "",
+  },
   warning: {
     bar: "bg-warning",
     icon: ShieldAlert,
@@ -76,7 +91,12 @@ export function DataMovementCard({ className }: { className?: string }) {
   return (
     <Collapse open={isVisible(data) && copy !== null} className={className}>
       {data && copy && (
-        <Card className={cn("p-6 transition-colors duration-300", TONE[copy.tone].wrap)}>
+        <Card
+          className={cn(
+            "p-6 transition-colors duration-300",
+            TONE[copy.tone].wrap,
+          )}
+        >
           <div className="flex items-start gap-3">
             <ArrowRightLeft className="mt-0.5 h-5 w-5 shrink-0 text-fg-muted" />
             <div className="min-w-0 flex-1">
@@ -86,7 +106,9 @@ export function DataMovementCard({ className }: { className?: string }) {
                 </p>
                 {copy.jobs.length > 0 && (
                   <span className="text-sm text-fg-muted">
-                    <Swap id={timeLeft(data.eta_secs)}>{timeLeft(data.eta_secs)}</Swap>
+                    <Swap id={timeLeft(data.eta_secs)}>
+                      {timeLeft(data.eta_secs)}
+                    </Swap>
                   </span>
                 )}
               </div>
@@ -95,7 +117,10 @@ export function DataMovementCard({ className }: { className?: string }) {
               </AnimatedList>
               <p className="mt-4 flex items-start gap-2 text-sm text-fg-muted">
                 <Icon
-                  className={cn("mt-0.5 h-4 w-4 shrink-0", TONE[copy.tone].iconClass)}
+                  className={cn(
+                    "mt-0.5 h-4 w-4 shrink-0",
+                    TONE[copy.tone].iconClass,
+                  )}
                 />
                 <Swap id={copy.safety}>{copy.safety}</Swap>
               </p>
@@ -124,7 +149,10 @@ export function MovementBanner({ className }: { className?: string }) {
   const { data } = useMovement();
   const copy = data ? movementCopy(data) : null;
   return (
-    <Collapse open={needsAttentionEverywhere(data) && copy !== null} className={className}>
+    <Collapse
+      open={needsAttentionEverywhere(data) && copy !== null}
+      className={className}
+    >
       {copy && (
         <Banner tone="error" title={copy.headline}>
           {copy.safety}

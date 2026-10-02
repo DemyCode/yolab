@@ -71,7 +71,8 @@ function headlineFor(jobs: JobCopy[], m: Movement): string {
     return m.draining.length
       ? `Moving your files off ${disks(m)}`
       : "Rearranging your files across your disks";
-  if (only === "add_copies") return `Adding ${copiesWord(m.copies)} of every file`;
+  if (only === "add_copies")
+    return `Adding ${copiesWord(m.copies)} of every file`;
   if (only === "rebuild") return jobs[0].label;
   return "Rearranging your files across your disks";
 }
@@ -82,7 +83,8 @@ export function isVisible(m: Movement | undefined): m is Movement {
 
 export function movementCopy(m: Movement): MovementCopy | null {
   const jobs = (m.jobs ?? []).map((j) => jobCopy(j, m));
-  const has = (kind: MovementJob["kind"]) => jobs.some((j) => j.job.kind === kind);
+  const has = (kind: MovementJob["kind"]) =>
+    jobs.some((j) => j.job.kind === kind);
   switch (m.state) {
     case "working":
       if (has("rebuild"))

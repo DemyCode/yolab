@@ -96,12 +96,7 @@ export interface StoragePolicyData {
 }
 
 export type MovementState =
-  | "settled"
-  | "working"
-  | "unavailable"
-  | "no_room"
-  | "restarting"
-  | "unknown";
+  "settled" | "working" | "unavailable" | "no_room" | "restarting" | "unknown";
 
 export type MovementJobKind = "move" | "add_copies" | "rebuild";
 

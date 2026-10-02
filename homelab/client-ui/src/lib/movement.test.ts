@@ -117,7 +117,9 @@ describe("overallProgress", () => {
   });
 
   it("has nothing to show before any job was measured", () => {
-    expect(overallProgress(movement({ jobs: [job({ to_move_bytes: 5 })] }))).toBeNull();
+    expect(
+      overallProgress(movement({ jobs: [job({ to_move_bytes: 5 })] })),
+    ).toBeNull();
     expect(overallProgress(movement({ jobs: [] }))).toBeNull();
   });
 
@@ -152,7 +154,9 @@ describe("percent and reach", () => {
 
   it("only interrupts the home page when something can't be used or finished", () => {
     expect(needsAttentionEverywhere(movement())).toBe(false);
-    expect(needsAttentionEverywhere(movement({ state: "unavailable" }))).toBe(true);
+    expect(needsAttentionEverywhere(movement({ state: "unavailable" }))).toBe(
+      true,
+    );
     expect(needsAttentionEverywhere(movement({ state: "no_room" }))).toBe(true);
   });
 });
