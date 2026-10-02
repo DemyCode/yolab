@@ -60,24 +60,26 @@ export function useResource<T>(
 
   const load = useCallback(
     async (fresh: boolean) => {
-    if (!key) return;
-    try {
-      const run = () => fetcherRef.current();
-      const next = await (fresh ? startFresh(key, run) : joinOrStart(key, run));
-      if (!alive.current || shownKey.current !== key) return;
-      if (persist) remember(key, next, Date.now());
-      setData(next);
-      setStale(false);
-      setError(null);
-    } catch (e) {
-      if (!alive.current) return;
-      if (!(e instanceof ApiError && e.isUnauthorized)) {
-        setStale(true);
-        setError(e instanceof Error ? e.message : "Something went wrong");
+      if (!key) return;
+      try {
+        const run = () => fetcherRef.current();
+        const next = await (fresh
+          ? startFresh(key, run)
+          : joinOrStart(key, run));
+        if (!alive.current || shownKey.current !== key) return;
+        if (persist) remember(key, next, Date.now());
+        setData(next);
+        setStale(false);
+        setError(null);
+      } catch (e) {
+        if (!alive.current) return;
+        if (!(e instanceof ApiError && e.isUnauthorized)) {
+          setStale(true);
+          setError(e instanceof Error ? e.message : "Something went wrong");
+        }
+      } finally {
+        if (alive.current) setLoading(false);
       }
-    } finally {
-      if (alive.current) setLoading(false);
-    }
     },
     [key, persist],
   );
