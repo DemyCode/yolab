@@ -1,4 +1,4 @@
-export interface OsdInfo {
+export interface Osd {
   id: number;
   name: string;
   host: string;
@@ -9,37 +9,59 @@ export interface OsdInfo {
   utilization: number;
   var: number;
   pgs: number;
-  status: string;
-  crush_weight: number;
+  up: boolean;
+  weight: number;
   reweight: number;
-  safe_to_destroy: boolean;
-  ok_to_stop: boolean;
 }
 
-export interface PoolInfo {
+export interface Pool {
   id: number;
   name: string;
-  size: number;
-  min_size: number;
-  crush_rule_name: string;
-  failure_domain: string;
+  copies: number;
+  min_copies: number;
   stored_bytes: number;
   used_bytes: number;
   max_avail_bytes: number;
 }
 
-export interface StorageDetail {
-  osds: OsdInfo[];
-  pools: PoolInfo[];
-  total_bytes: number;
-  avail_bytes: number;
-  used_bytes: number;
+export interface Space {
+  free_bytes: number;
+  apps_bytes: number;
+  images_bytes: number;
+  other_bytes: number;
+  copies: number;
+  fullest_disk_percent: number;
 }
 
-export interface StorageDetailResponse {
-  ok: boolean;
-  data?: StorageDetail;
-  error?: string;
+export interface RawUsage {
+  total_bytes: number;
+  used_bytes: number;
+  avail_bytes: number;
+  data_bytes: number;
+}
+
+export interface StorageOverview {
+  health: string;
+  space: Space | null;
+  raw: RawUsage;
+  osds: Osd[];
+  pools: Pool[];
+}
+
+export interface AppUsage {
+  namespace: string;
+  instance: string | null;
+  bytes: number;
+}
+
+export interface StorageUsage {
+  apps: AppUsage[];
+  unreadable: number;
+}
+
+export interface OsdChecks {
+  ok_to_stop: number[];
+  safe_to_destroy: number[];
 }
 
 export interface DiskInfo {

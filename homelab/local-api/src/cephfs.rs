@@ -6,10 +6,10 @@ use crate::ceph::model::{FsEntry, OsdStat};
 use crate::host::Host;
 use crate::runtime::{Activity, Controller, Ctx, Requirement, Scope, Tick};
 
-const FS_NAME: &str = "yolab-fs";
-const META_POOL: &str = "yolab-fs-metadata";
-const DATA_POOL: &str = "yolab-fs-data0";
-const SUBVOLUME_GROUP: &str = "csi";
+pub(crate) const FS_NAME: &str = "yolab-fs";
+pub(crate) const META_POOL: &str = "yolab-fs-metadata";
+pub(crate) const DATA_POOL: &str = "yolab-fs-data0";
+pub(crate) const SUBVOLUME_GROUP: &str = "csi";
 
 fn pool_listed(pool_ls: &str, name: &str) -> bool {
     pool_ls.lines().any(|l| l.trim() == name)

@@ -20,9 +20,10 @@ import { RollingNumber } from "@/components/motion";
 import { MovementSummary } from "@/components/DataMovement";
 import { isVisible, useMovement } from "@/lib/movement";
 import { ThemeControl } from "@/components/ThemeControl";
-import { creditStatus, formatBytes, formatEuros } from "@/lib/format";
+import { creditStatus, formatEuros } from "@/lib/format";
+import { formatCephBytes } from "@/lib/storage";
 import { cn } from "@/lib/utils";
-import type { StorageDetailResponse } from "@/types/storage";
+import type { StorageOverview } from "@/types/storage";
 import type { NodeInfo } from "@/types/nodes";
 import type { StatusInfo } from "@/types/status";
 import type { ClusterHealth } from "@/types/health";
@@ -116,10 +117,7 @@ export function SystemPage() {
 
   const health = useApi<ClusterHealth>("health", "/api/cluster/health");
   const movement = useMovement();
-  const storage = useApi<StorageDetailResponse>(
-    "storage-detail",
-    "/api/ceph/detail",
-  );
+  const storage = useApi<StorageOverview>("storage-overview", "/api/storage");
   const nodes = useApi<NodeInfo[]>("nodes", "/api/nodes");
   const status = useApi<StatusInfo>("status", "/api/status");
   const backups = useApi<{ configured: boolean }>(
@@ -143,11 +141,11 @@ export function SystemPage() {
       </>
     ) : undefined;
 
-  const detail = storage.data?.data;
-  const storageDetail = detail ? (
+  const space = storage.data?.space;
+  const storageDetail = space ? (
     <>
-      <RollingNumber value={detail.used_bytes} format={formatBytes} /> used of{" "}
-      <RollingNumber value={detail.total_bytes} format={formatBytes} />
+      <RollingNumber value={space.free_bytes} format={formatCephBytes} /> free
+      for your files
     </>
   ) : health.data?.starting ? (
     "Starting up…"

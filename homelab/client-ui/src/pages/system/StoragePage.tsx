@@ -1,274 +1,342 @@
-import { useEffect, useMemo, useState } from "react";
+import { useState, type ReactNode } from "react";
+import { Link } from "react-router-dom";
 import {
-  RefreshCw,
-  HardDrive,
-  ChevronDown,
-  Copy,
-  Check,
+  ChevronRight,
+  Cpu,
   ExternalLink,
   Eye,
   EyeOff,
-  Loader2,
-  Cpu,
+  HardDrive,
+  RefreshCw,
   WifiOff,
 } from "lucide-react";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { Switch } from "@/components/ui/input";
-import { Sheet } from "@/components/ui/sheet";
+import { Select, Switch } from "@/components/ui/input";
 import { Banner, Skeleton } from "@/components/ui/feedback";
+import {
+  CopyButton,
+  DisclosureRow,
+  IconButton,
+  Row,
+  Section,
+  ValueRow,
+} from "@/components/ui/list";
+import { AppIcon } from "@/components/AppIcon";
 import { ForceHealCard } from "@/components/ForceHeal";
-import { api } from "@/lib/api";
-import { useApi } from "@/lib/useResource";
-import { formatBytes } from "@/lib/format";
-import { cn } from "@/lib/utils";
+import {
+  DataMovementCard,
+  DrainProgress,
+  MovementBanner,
+} from "@/components/DataMovement";
 import {
   AnimatedList,
   Collapse,
   RollingNumber,
   Swap,
 } from "@/components/motion";
-import { DataMovementCard, DrainProgress } from "@/components/DataMovement";
+import { api } from "@/lib/api";
+import { useApi, useResource } from "@/lib/useResource";
+import { formatBytes } from "@/lib/format";
+import {
+  isVisible,
+  needsAttentionEverywhere,
+  useMovement,
+} from "@/lib/movement";
+import {
+  POLL_IDLE_MS,
+  POLL_MOVING_MS,
+  POLL_USAGE_MS,
+  diskState,
+  estimateChange,
+  fillTone,
+  formatCephBytes,
+  pickBanner,
+  placesFor,
+  protectionLine,
+  rawPercent,
+  statusLine,
+  usageRows,
+  type DiskState,
+  type Domain,
+  type Tone,
+} from "@/lib/storage";
+import { cn } from "@/lib/utils";
+import type { AppInfo, CatalogApp } from "@/types/apps";
 import type {
-  OsdInfo,
-  PoolInfo,
-  StorageDetail,
-  StorageDetailResponse,
   DiskInfo,
+  Osd,
+  OsdChecks,
+  StorageOverview,
   StoragePolicyData,
+  StorageUsage,
 } from "@/types/storage";
 
-const GiB = 1073741824;
-const TiB = GiB * 1024;
+const TONE_TEXT: Record<Tone, string> = {
+  ok: "text-fg-muted",
+  warn: "text-warning",
+  bad: "text-danger",
+};
 
-function fmtBytes(b: number): string {
-  if (b >= TiB) return `${(b / TiB).toFixed(2)} TiB`;
-  if (b >= GiB) return `${(b / GiB).toFixed(1)} GiB`;
-  if (b >= 1048576) return `${(b / 1048576).toFixed(0)} MiB`;
-  return `${(b / 1024).toFixed(0)} KiB`;
+const TONE_FILL: Record<Tone, string> = {
+  ok: "bg-success",
+  warn: "bg-warning",
+  bad: "bg-danger",
+};
+
+const TONE_DOT: Record<Tone, string> = {
+  ok: "bg-success",
+  warn: "bg-warning",
+  bad: "bg-danger",
+};
+
+function Mono({ children }: { children: ReactNode }) {
+  return <span className="font-mono tabular-nums">{children}</span>;
 }
 
-function OfflineDiskBanner({
-  detail,
-  policy,
-}: {
-  detail: StorageDetail | undefined;
-  policy: StoragePolicyData | undefined;
-}) {
-  if (!detail) return null;
-
-  const down = detail.osds.filter((o) => o.status !== "up" && o.host !== "");
-  const phantom = detail.osds.filter((o) => o.status !== "up" && o.host === "");
-
-  if (down.length === 0 && phantom.length === 0) return null;
-
-  if (down.length === 0) {
-    return (
-      <Banner
-        tone="warning"
-        title="A disk did not finish being set up"
-        className="mt-2"
-      >
-        {phantom.length === 1 ? "One disk" : `${phantom.length} disks`} started
-        being added and never finished, so nothing is stored on{" "}
-        {phantom.length === 1 ? "it" : "them"} yet. Switch the disk off and on
-        again to retry. Nothing is at risk —{" "}
-        {phantom.length === 1 ? "it" : "they"} never held any of your files.
-      </Banner>
-    );
-  }
-
-  const copies = policy?.target?.size ?? 1;
-  const anyUp = detail.osds.some((o) => o.status === "up");
-
-  if (copies <= 1 || !anyUp) {
-    return (
-      <Banner
-        tone="error"
-        title="A disk is offline and there is no second copy"
-        className="mt-2"
-      >
-        Whatever was on {down.length === 1 ? "that disk" : "those disks"} is not
-        readable right now, and it is not stored anywhere else — so do NOT
-        switch it off. There is nothing to rebuild from, and switching it off
-        discards it. Get the disk back if you can; otherwise your backups are
-        the only copy.
-      </Banner>
-    );
-  }
-
+function Bytes({ value }: { value: number }) {
   return (
-    <Banner tone="warning" title="A disk is offline" className="mt-2">
-      Your files are still there — they are stored {copies} times, so the other
-      copies are serving them. If the disk does not come back, switch it off
-      above and YoLab will rebuild the missing copies on the ones that remain.
-    </Banner>
+    <Mono>
+      <RollingNumber value={value} format={formatCephBytes} />
+    </Mono>
   );
 }
-function fillColor(pct: number): string {
-  if (pct >= 85) return "var(--danger)";
-  if (pct >= 70) return "var(--warning)";
-  return "var(--success)";
-}
 
-function FillBar({ pct }: { pct: number }) {
-  const color = fillColor(pct);
+function Bar({ pct, tone }: { pct: number; tone: Tone }) {
   return (
-    <div className="flex min-w-[120px] items-center gap-2">
-      <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-surface-3">
-        <div
-          className="h-full rounded-full transition-all"
-          style={{ width: `${Math.min(pct, 100)}%`, background: color }}
-        />
-      </div>
-      <span className="w-10 text-right text-xs tabular-nums" style={{ color }}>
-        <RollingNumber value={pct} format={(n) => n.toFixed(1)} />%
-      </span>
+    <div className="h-2 overflow-hidden rounded-full bg-surface-3">
+      <div
+        className={cn(
+          "h-full rounded-full transition-[width] duration-700",
+          TONE_FILL[tone],
+        )}
+        style={{ width: `${Math.max(Math.min(pct, 100), pct > 0 ? 1.5 : 0)}%` }}
+      />
     </div>
   );
 }
 
-function VarBadge({ v }: { v: number }) {
-  const ok = v >= 0.7 && v <= 1.4;
-  const warn = !ok && v >= 0.4 && v <= 2.0;
+function storedTimes(copies: number): string {
+  return copies <= 1
+    ? "Everything is stored once"
+    : `Everything is stored ${copies} times`;
+}
+
+function StatusLine({
+  overview,
+  policy,
+}: {
+  overview: StorageOverview | undefined;
+  policy: StoragePolicyData | undefined;
+}) {
+  const line = statusLine(overview, policy?.target);
+  if (!line) return <Skeleton className="-mt-4 h-4 w-64" />;
   return (
-    <span
-      className={cn(
-        "font-mono text-xs tabular-nums",
-        ok ? "text-fg-muted" : warn ? "text-warning" : "text-danger",
+    <p className="-mt-4 flex items-center gap-2 text-sm text-fg-muted">
+      <span
+        aria-hidden
+        className={cn("h-2 w-2 shrink-0 rounded-full", TONE_DOT[line.tone])}
+      />
+      <Swap id={line.text}>{line.text}</Swap>
+    </p>
+  );
+}
+
+function SpaceSection({
+  overview,
+  loading,
+}: {
+  overview: StorageOverview | undefined;
+  loading: boolean;
+}) {
+  const space = overview?.space;
+  return (
+    <Section title="Space">
+      {loading && !overview ? (
+        <div className="space-y-4 px-5 py-5">
+          <Skeleton className="h-9 w-64" />
+          <Skeleton className="h-2 w-full" />
+          <Skeleton className="h-4 w-80" />
+        </div>
+      ) : !overview || !space ? (
+        <Row
+          label="Storage is still being set up"
+          detail="This fills in once the first disk is ready."
+        />
+      ) : (
+        <div className="px-5 py-5">
+          <p className="font-display text-3xl text-fg">
+            <Bytes value={space.free_bytes} />{" "}
+            <span className="text-fg-muted">free for your files</span>
+          </p>
+          <div className="mt-4">
+            <Bar
+              pct={rawPercent(overview.raw)}
+              tone={fillTone(rawPercent(overview.raw))}
+            />
+          </div>
+          <p className="mt-3 text-sm text-fg-muted">
+            Apps’ files <Bytes value={space.apps_bytes} /> · App programs{" "}
+            <Bytes value={space.images_bytes} />
+            {space.other_bytes > 0 && (
+              <>
+                {" "}
+                · Other <Bytes value={space.other_bytes} />
+              </>
+            )}
+          </p>
+          <p className="mt-1 text-sm text-fg-muted">
+            {storedTimes(space.copies)}, so the disks hold{" "}
+            <Bytes value={overview.raw.used_bytes} /> of{" "}
+            <Bytes value={overview.raw.total_bytes} />.
+          </p>
+          {fillTone(space.fullest_disk_percent) !== "ok" && (
+            <p
+              className={cn(
+                "mt-1 text-sm",
+                TONE_TEXT[fillTone(space.fullest_disk_percent)],
+              )}
+            >
+              Your fullest disk is{" "}
+              <Mono>{Math.round(space.fullest_disk_percent)}%</Mono> full.
+              Storage stops accepting new files when any one disk fills up, so
+              add a disk or remove files before then.
+            </p>
+          )}
+        </div>
       )}
-    >
-      <RollingNumber value={v} format={(n) => n.toFixed(2)} />
-    </span>
+    </Section>
   );
 }
 
-function OsdPill({ on, labels }: { on: boolean; labels: [string, string] }) {
+function UsageSection({ imagesBytes }: { imagesBytes: number }) {
+  const usage = useApi<StorageUsage>("storage-usage", "/api/storage/usage", {
+    pollMs: POLL_USAGE_MS,
+  });
+  const apps = useApi<AppInfo[]>("apps", "/api/apps");
+  const catalog = useApi<CatalogApp[]>("catalog", "/api/apps/catalog");
+  const rows = usageRows(
+    usage.data,
+    apps.data ?? [],
+    catalog.data ?? [],
+    imagesBytes,
+  );
+  const largest = rows[0]?.bytes ?? 0;
+
   return (
-    <Badge variant={on ? "success" : "muted"}>
-      <Swap id={String(on)}>{on ? labels[0] : labels[1]}</Swap>
-    </Badge>
+    <>
+      <Section title="What’s using space">
+        {usage.loading && !usage.data ? (
+          [0, 1, 2].map((i) => (
+            <div key={i} className="flex items-center gap-3 px-5 py-4">
+              <Skeleton className="h-8 w-8" />
+              <Skeleton className="h-4 flex-1" />
+            </div>
+          ))
+        ) : usage.error && !usage.data ? (
+          <Row
+            label="App sizes could not be read right now"
+            detail={usage.error}
+          />
+        ) : rows.length === 0 ? (
+          <Row label="No app is storing anything yet" />
+        ) : (
+          <AnimatedList items={rows} keyOf={(r) => r.key}>
+            {(r) => {
+              const body = (
+                <>
+                  <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-control bg-surface-2">
+                    {r.instance ? (
+                      <AppIcon
+                        appId={r.appId}
+                        icon={r.icon}
+                        name={r.label}
+                        className="h-5 w-5"
+                      />
+                    ) : (
+                      <HardDrive className="h-4 w-4 text-fg-muted" />
+                    )}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-baseline justify-between gap-3">
+                      <span className="truncate text-sm font-medium text-fg">
+                        {r.label}
+                      </span>
+                      <span className="shrink-0 text-sm text-fg-muted">
+                        <Bytes value={r.bytes} />
+                      </span>
+                    </div>
+                    <div className="mt-2 h-1 overflow-hidden rounded-full bg-surface-3">
+                      <div
+                        className="h-full rounded-full bg-fg-subtle transition-[width] duration-700"
+                        style={{
+                          width: `${largest > 0 ? Math.max((r.bytes / largest) * 100, 1) : 0}%`,
+                        }}
+                      />
+                    </div>
+                  </div>
+                </>
+              );
+              return r.instance ? (
+                <Link
+                  to={`/app/${r.instance}`}
+                  className="flex items-center gap-3 px-5 py-4 transition-colors hover:bg-surface-2 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-primary"
+                >
+                  {body}
+                  <ChevronRight className="h-5 w-5 shrink-0 text-fg-subtle" />
+                </Link>
+              ) : (
+                <div className="flex items-center gap-3 px-5 py-4">
+                  {body}
+                  <span aria-hidden className="w-5 shrink-0" />
+                </div>
+              );
+            }}
+          </AnimatedList>
+        )}
+      </Section>
+      <p className="mt-2 px-1 text-sm text-fg-subtle">
+        Each app’s files, counted once.
+        {usage.data && usage.data.unreadable > 0 && (
+          <>
+            {" "}
+            {usage.data.unreadable}{" "}
+            {usage.data.unreadable === 1 ? "volume" : "volumes"} could not be
+            measured this time.
+          </>
+        )}
+      </p>
+    </>
   );
-}
-
-type DiskState =
-  | "active"
-  | "pending"
-  | "missing"
-  | "draining"
-  | "excluded"
-  | "historical"
-  | "foreign"
-  | "unidentified"
-  | "failing"
-  | "blocked"
-  | "stale"
-  | "removing"
-  | "removable";
-
-function diskState(disk: DiskInfo): DiskState {
-  if (disk.ownership === "unknown") return "unidentified";
-  if (disk.foreign_ceph) return "foreign";
-
-  const on = disk.desired === "ON";
-  if (on && !disk.connected) return "missing";
-  if (!on && !disk.connected) return "historical";
-
-  switch (disk.phase) {
-    case "active":
-      return "active";
-    case "creating":
-      return "pending";
-    case "retrying":
-      return "failing";
-    case "blocked":
-      return "blocked";
-    case "draining":
-      return "draining";
-    case "removing":
-      return "removing";
-    case "removable":
-      return "removable";
-    case "unknown":
-      return "stale";
-  }
-
-  if (on && disk.is_our_osd) return "active";
-  if (on) return "pending";
-  if (disk.is_our_osd) return "draining";
-  return "excluded";
 }
 
 const STATE_META: Record<
   DiskState,
-  { label: string; color: string; dot: string; pulse?: boolean }
+  { label: string; tone: Tone | "idle"; pulse?: boolean }
 > = {
-  active: { label: "In use", color: "text-fg-muted", dot: "bg-success" },
-  pending: {
-    label: "Setting up…",
-    color: "text-warning",
-    dot: "bg-warning",
-    pulse: true,
-  },
-  missing: {
-    label: "Missing — not connected",
-    color: "text-danger",
-    dot: "bg-danger",
-    pulse: true,
-  },
+  active: { label: "In use", tone: "ok" },
+  pending: { label: "Setting up…", tone: "warn", pulse: true },
+  missing: { label: "Missing — not connected", tone: "bad", pulse: true },
   draining: {
     label: "Being removed — moving data off",
-    color: "text-warning",
-    dot: "bg-warning",
+    tone: "warn",
     pulse: true,
   },
-  failing: {
-    label: "Could not be added",
-    color: "text-danger",
-    dot: "bg-danger",
-  },
-  blocked: {
-    label: "Needs a decision",
-    color: "text-warning",
-    dot: "bg-warning",
-  },
+  failing: { label: "Could not be added", tone: "bad" },
+  blocked: { label: "Needs a decision", tone: "warn" },
   removing: {
     label: "Finishing up — do not unplug yet",
-    color: "text-warning",
-    dot: "bg-warning",
+    tone: "warn",
     pulse: true,
   },
-  removable: {
-    label: "Safe to unplug",
-    color: "text-success",
-    dot: "bg-success",
-  },
-  stale: {
-    label: "Checking…",
-    color: "text-fg-muted",
-    dot: "bg-fg-subtle",
-    pulse: true,
-  },
-  excluded: {
-    label: "Connected, not in use",
-    color: "text-fg-muted",
-    dot: "bg-fg-subtle",
-  },
-  historical: {
-    label: "Not connected",
-    color: "text-fg-subtle",
-    dot: "bg-border-strong",
-  },
-  foreign: {
-    label: "Has data from another system",
-    color: "text-warning",
-    dot: "bg-warning",
-  },
+  removable: { label: "Safe to unplug", tone: "ok" },
+  stale: { label: "Checking…", tone: "idle", pulse: true },
+  excluded: { label: "Connected, not in use", tone: "idle" },
+  historical: { label: "Not connected", tone: "idle" },
+  foreign: { label: "Has data from another system", tone: "warn" },
   unidentified: {
-    label: "Can't identify this disk yet",
-    color: "text-fg-muted",
-    dot: "bg-fg-subtle",
+    label: "Can’t identify this disk yet",
+    tone: "idle",
     pulse: true,
   },
 };
@@ -281,7 +349,7 @@ function DiskRow({
 }: {
   node: string;
   disk: DiskInfo;
-  osd?: OsdInfo;
+  osd?: Osd;
   onChanged: () => void;
 }) {
   const [busy, setBusy] = useState(false);
@@ -289,8 +357,9 @@ function DiskRow({
   const [err, setErr] = useState<string | null>(null);
 
   const state = diskState(disk);
-  const sm = STATE_META[state];
+  const meta = STATE_META[state];
   const isOn = disk.desired === "ON";
+  const label = disk.model || disk.device || disk.id;
 
   async function toggle() {
     const next = isOn ? "OFF" : "ON";
@@ -318,118 +387,112 @@ function DiskRow({
     }
   }
 
-  const label = disk.model || disk.device || disk.id;
-  const isMissing = state === "missing";
+  const Icon =
+    state === "missing" ? WifiOff : disk.is_loop ? Cpu : HardDrive;
 
   return (
-    <div
-      className={cn(
-        "flex items-center gap-4 border-b border-border px-5 py-4 last:border-0",
-        isMissing && "bg-danger-soft",
-      )}
-    >
-      <div className="shrink-0">
-        {state === "missing" ? (
-          <WifiOff className="h-5 w-5 text-danger" strokeWidth={1.5} />
-        ) : disk.is_loop ? (
-          <Cpu className="h-5 w-5 text-fg-muted" strokeWidth={1.5} />
-        ) : (
-          <HardDrive className="h-5 w-5 text-fg-muted" strokeWidth={1.5} />
-        )}
-      </div>
-
-      <div className="min-w-0 flex-1">
-        <p className="truncate text-sm font-medium text-fg">
-          {label} {}
-          {disk.connected && disk.size_bytes > 0 && (
-            <span className="ml-2 font-normal text-fg-muted">
-              <RollingNumber value={disk.size_bytes} format={formatBytes} />
-            </span>
+    <div className={cn("px-5 py-4", state === "missing" && "bg-danger-soft")}>
+      <div className="flex items-center gap-3">
+        <Icon
+          className={cn(
+            "h-5 w-5 shrink-0",
+            state === "missing" ? "text-danger" : "text-fg-muted",
           )}
-        </p>
-        <div className="mt-1 flex items-center gap-1.5">
-          <span
-            className={cn(
-              "inline-block h-1.5 w-1.5 shrink-0 rounded-full transition-colors duration-300",
-              sm.dot,
-              sm.pulse && "animate-pulse",
-            )}
-          />
-          <p className={cn("text-sm transition-colors duration-300", sm.color)}>
-            <Swap id={sm.label}>{sm.label}</Swap>
-            {state === "draining" && <DrainProgress />}
-            {disk.is_loop && (
-              <span className="text-fg-subtle"> · built into this machine</span>
+          strokeWidth={1.5}
+        />
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-sm font-medium text-fg">
+            {label}
+            {disk.connected && disk.size_bytes > 0 && (
+              <span className="ml-2 font-mono font-normal text-fg-muted">
+                {formatBytes(disk.size_bytes)}
+              </span>
             )}
           </p>
+          <p className="mt-0.5 flex items-center gap-1.5 text-sm">
+            <span
+              aria-hidden
+              className={cn(
+                "inline-block h-1.5 w-1.5 shrink-0 rounded-full",
+                meta.tone === "idle" ? "bg-fg-subtle" : TONE_DOT[meta.tone],
+                meta.pulse && "animate-pulse",
+              )}
+            />
+            <span
+              className={
+                meta.tone === "idle" || meta.tone === "ok"
+                  ? "text-fg-muted"
+                  : TONE_TEXT[meta.tone]
+              }
+            >
+              <Swap id={meta.label}>{meta.label}</Swap>
+              {state === "active" && osd && osd.size_bytes > 0 && (
+                <span className={TONE_TEXT[fillTone(osd.utilization)]}>
+                  {" · "}
+                  <Mono>{Math.round(osd.utilization)}%</Mono> full
+                </span>
+              )}
+              {state === "draining" && <DrainProgress />}
+              {disk.is_loop && (
+                <span className="text-fg-subtle">
+                  {" "}
+                  · built into this machine
+                </span>
+              )}
+            </span>
+          </p>
         </div>
-        <Collapse open={Boolean(disk.message)}>
-          <p className="pt-1 text-sm text-fg-muted">{disk.message}</p>
-        </Collapse>
-        <Collapse open={Boolean(err)}>
-          <p className="pt-1 text-sm text-danger">{err}</p>
-        </Collapse>
+        {state !== "unidentified" && !confirm && (
+          <Switch
+            checked={isOn}
+            onChange={() => void toggle()}
+            disabled={busy}
+            label={isOn ? `Stop using ${label}` : `Use ${label}`}
+          />
+        )}
       </div>
-
-      {osd && state === "active" && (
-        <div className="hidden shrink-0 flex-col items-end gap-1 sm:flex">
-          <FillBar pct={osd.utilization} />
-        </div>
-      )}
-
-      {confirm && (
-        <div className="flex shrink-0 items-center gap-2">
-          <span className="hidden text-sm text-fg-muted sm:inline">
+      <Collapse open={Boolean(disk.message)}>
+        <p className="pl-8 pt-1 text-sm text-fg-muted">{disk.message}</p>
+      </Collapse>
+      <Collapse open={Boolean(err)}>
+        <p className="pl-8 pt-1 text-sm text-danger">{err}</p>
+      </Collapse>
+      <Collapse open={confirm}>
+        <div className="flex flex-wrap items-center gap-2 pl-8 pt-3">
+          <span className="mr-auto text-sm text-fg-muted">
             {isOn
-              ? "Data moves off first."
+              ? "Its data moves to your other disks first. This can take a while."
               : "Everything on it will be erased."}
           </span>
-          <Button
-            size="sm"
-            variant="danger"
-            disabled={busy}
-            onClick={() => void toggle()}
-          >
-            {isOn ? "Remove" : "Erase and use"}
-          </Button>
           <Button size="sm" variant="ghost" onClick={() => setConfirm(false)}>
             Cancel
           </Button>
+          <Button
+            size="sm"
+            variant="danger"
+            loading={busy}
+            onClick={() => void toggle()}
+          >
+            {isOn ? "Stop using it" : "Erase and use"}
+          </Button>
         </div>
-      )}
-
-      {state !== "unidentified" && !confirm && (
-        <Switch
-          checked={isOn}
-          onChange={() => void toggle()}
-          disabled={busy}
-          label={isOn ? `Stop using ${label}` : `Use ${label}`}
-        />
-      )}
+      </Collapse>
     </div>
   );
 }
 
-function DiskList({
+function DisksSection({
   disks,
   osds,
   loading,
   onChanged,
 }: {
   disks: Record<string, DiskInfo[]> | undefined;
-  osds: OsdInfo[];
+  osds: Osd[];
   loading: boolean;
   onChanged: () => void;
 }) {
-  const [showPast, setShowPast] = useState(false);
   const nodes = disks ? Object.keys(disks).sort() : [];
-
-  function osdFor(disk: DiskInfo) {
-    return disk.osd_id === null
-      ? undefined
-      : osds.find((o) => o.id === disk.osd_id);
-  }
-
   const present: [string, DiskInfo][] = [];
   const past: [string, DiskInfo][] = [];
   for (const node of nodes) {
@@ -437,558 +500,137 @@ function DiskList({
       (diskState(disk) === "historical" ? past : present).push([node, disk]);
     }
   }
-
-  if (loading && !disks) {
-    return (
-      <Card className="divide-y divide-border p-0">
-        {[0, 1].map((i) => (
-          <div key={i} className="flex items-center gap-4 px-5 py-4">
-            <Skeleton className="h-5 w-5 rounded-control" />
-            <div className="flex-1 space-y-2">
-              <Skeleton className="h-4 w-40" />
-              <Skeleton className="h-3 w-24" />
-            </div>
-          </div>
-        ))}
-      </Card>
-    );
-  }
-
-  if (present.length === 0 && past.length === 0) {
-    return (
-      <Card className="p-5">
-        <p className="text-sm text-fg-muted">
-          No disks found yet. Plug one in and it will appear here.
-        </p>
-      </Card>
-    );
-  }
-
   const multiNode = nodes.length > 1;
+  const firsts = new Set(
+    nodes.flatMap((node) => {
+      const first = present.find(([n]) => n === node);
+      return first ? [`${node}/${first[1].id}`] : [];
+    }),
+  );
+  const osdFor = (disk: DiskInfo) =>
+    disk.osd_id === null ? undefined : osds.find((o) => o.id === disk.osd_id);
 
   return (
     <>
-      <Card className="divide-y divide-border p-0">
-        <AnimatedList
-          items={present}
-          keyOf={([node, disk]) => `${node}/${disk.id}`}
-        >
-          {([node, disk]) => (
-            <>
-              {multiNode && (
-                <p className="bg-surface-2 px-5 py-1.5 text-xs font-medium text-fg-muted">
-                  {node}
-                </p>
-              )}
-              <DiskRow
-                node={node}
-                disk={disk}
-                osd={osdFor(disk)}
-                onChanged={onChanged}
-              />
-            </>
-          )}
-        </AnimatedList>
-        {present.length === 0 && (
-          <p className="px-5 py-4 text-sm text-fg-muted">
-            None of the disks this machine has seen are connected right now.
-          </p>
-        )}
-      </Card>
-
-      {past.length > 0 && (
-        <div className="mt-3">
-          <button
-            onClick={() => setShowPast((s) => !s)}
-            className="flex items-center gap-1.5 text-sm text-fg-muted hover:text-fg"
-            aria-expanded={showPast}
-          >
-            {past.length} disk{past.length === 1 ? "" : "s"} seen before but not
-            connected
-            <ChevronDown
-              className={cn(
-                "h-4 w-4 transition-transform",
-                showPast && "rotate-180",
-              )}
-            />
-          </button>
-          <Collapse open={showPast} className="pt-2">
-            <Card className="divide-y divide-border p-0 opacity-70">
-              <AnimatedList
-                items={past}
-                keyOf={([node, disk]) => `${node}/${disk.id}`}
-              >
-                {([node, disk]) => (
+      <Section title="Disks">
+        {loading && !disks ? (
+          [0, 1].map((i) => (
+            <div key={i} className="flex items-center gap-3 px-5 py-4">
+              <Skeleton className="h-5 w-5" />
+              <div className="flex-1 space-y-2">
+                <Skeleton className="h-4 w-40" />
+                <Skeleton className="h-3 w-24" />
+              </div>
+            </div>
+          ))
+        ) : present.length === 0 && past.length === 0 ? (
+          <Row
+            label="No disks found yet"
+            detail="Plug one in and it will appear here."
+          />
+        ) : (
+          <>
+            <AnimatedList
+              items={present}
+              keyOf={([node, disk]) => `${node}/${disk.id}`}
+            >
+              {([node, disk]) => (
+                <>
+                  {multiNode && firsts.has(`${node}/${disk.id}`) && (
+                    <p className="bg-surface-2 px-5 py-1.5 text-xs font-medium text-fg-muted">
+                      {node}
+                    </p>
+                  )}
                   <DiskRow
                     node={node}
                     disk={disk}
                     osd={osdFor(disk)}
                     onChanged={onChanged}
                   />
-                )}
-              </AnimatedList>
-            </Card>
-          </Collapse>
-        </div>
-      )}
+                </>
+              )}
+            </AnimatedList>
+            {present.length === 0 && (
+              <Row label="None of the disks this machine has seen are connected right now." />
+            )}
+            {past.length > 0 && (
+              <DisclosureRow
+                label={`${past.length} ${past.length === 1 ? "disk" : "disks"} seen before but not connected`}
+              >
+                <div className="-mx-5 divide-y divide-border opacity-70">
+                  {past.map(([node, disk]) => (
+                    <DiskRow
+                      key={`${node}/${disk.id}`}
+                      node={node}
+                      disk={disk}
+                      osd={osdFor(disk)}
+                      onChanged={onChanged}
+                    />
+                  ))}
+                </div>
+              </DisclosureRow>
+            )}
+          </>
+        )}
+      </Section>
+      <p className="mt-2 px-1 text-sm text-fg-subtle">
+        A new disk does nothing until you switch it on. Switching one off moves
+        its data elsewhere first.
+      </p>
     </>
   );
 }
 
-function safetyLine(
-  data: StoragePolicyData | undefined,
-  detail: StorageDetail | undefined,
-): { tone: "ok" | "warn" | "bad"; text: string } | null {
-  if (!data) return null;
-  const { target } = data;
-  if (!target) return null;
-  const offline = detail?.osds.filter((o) => o.status !== "up").length ?? 0;
-  const survives = target.size - 1;
-  const unit = target.failure_domain === "host" ? "machine" : "disk";
-
-  const suffix =
-    offline > 0
-      ? ` ${offline} ${offline === 1 ? "disk is" : "disks are"} offline right now.`
-      : "";
-
-  if (target.size <= 1) {
-    return {
-      tone: "bad",
-      text: `Your files are stored once. If a ${unit} fails, what was on it is gone — backups are your only copy.${suffix}`,
-    };
-  }
-  return {
-    tone: offline > 0 ? "warn" : "ok",
-    text: `Any ${survives === 1 ? "one" : survives} ${unit}${survives === 1 ? "" : "s"} can fail without losing anything.${suffix}`,
-  };
-}
-
-function CapacityCard({
-  detail,
+function ProtectionSection({
   policy,
-  loading,
+  overview,
+  onChanged,
 }: {
-  detail: StorageDetail | undefined;
-  policy: StoragePolicyData | undefined;
-  loading: boolean;
+  policy: StoragePolicyData;
+  overview: StorageOverview | undefined;
+  onChanged: () => void;
 }) {
-  const pools = (detail?.pools ?? []).filter(
-    (p) => !p.name.startsWith(".") && p.name !== "images",
-  );
-  const used = pools.reduce((s, p) => s + p.stored_bytes, 0);
-
-  const poolFree = pools.length
-    ? Math.min(...pools.map((p) => p.max_avail_bytes))
-    : 0;
-
-  const rawFree = detail?.avail_bytes ?? poolFree;
-  const free = Math.min(poolFree, rawFree);
-  const total = used + free;
-  const pct = total > 0 ? (used / total) * 100 : 0;
-
-  const safety = safetyLine(policy, detail);
-
-  if (loading && !detail) {
-    return (
-      <Card className="space-y-4 p-6">
-        <Skeleton className="h-9 w-64" />
-        <Skeleton className="h-2 w-full" />
-        <Skeleton className="h-4 w-80" />
-      </Card>
-    );
-  }
-
-  return (
-    <Card className="animate-fade-in p-6">
-      {total > 0 ? (
-        <>
-          <p className="font-display text-3xl text-fg">
-            <RollingNumber value={free} format={formatBytes} />{" "}
-            <span className="text-fg-muted">free</span>
-          </p>
-          <p className="mt-1 text-sm text-fg-muted">
-            <RollingNumber value={used} format={formatBytes} /> of{" "}
-            <RollingNumber value={total} format={formatBytes} /> used
-          </p>
-          <div className="mt-4 h-2 overflow-hidden rounded-full bg-surface-3">
-            <div
-              className="h-full rounded-full transition-all"
-              style={{
-                width: `${Math.max(Math.min(pct, 100), used > 0 ? 1.5 : 0)}%`,
-                background: fillColor(pct),
-              }}
-            />
-          </div>
-        </>
-      ) : (
-        <p className="text-sm text-fg-muted">
-          Storage is still being set up. This fills in once the first disk is
-          ready.
-        </p>
-      )}
-
-      {safety && (
-        <p
-          className={cn(
-            "mt-5 border-t border-border pt-4 text-sm",
-            safety.tone === "bad"
-              ? "text-danger"
-              : safety.tone === "warn"
-                ? "text-warning"
-                : "text-fg-muted",
-          )}
-        >
-          {safety.text}
-        </p>
-      )}
-    </Card>
-  );
-}
-
-type Domain = "osd" | "host";
-
-function estimateUsable(
-  osds: OsdInfo[],
-  size: number,
-  domain: "osd" | "host",
-): number {
-  const SAFETY = 0.95;
-  const totalRaw = osds.reduce((s, o) => s + o.size_bytes, 0);
-  if (totalRaw === 0) return 0;
-
-  const buckets = placementBuckets(osds, domain);
-  if (buckets.length === 0) return 0;
-
-  const effective = Math.min(size, buckets.length);
-
-  if (effective === buckets.length) {
-    return Math.min(...buckets) * SAFETY;
-  }
-  return (totalRaw / effective) * SAFETY;
-}
-
-function placementBuckets(osds: OsdInfo[], domain: "osd" | "host"): number[] {
-  if (domain === "osd") return osds.map((o) => o.size_bytes);
-  const hostMap = new Map<string, number>();
-  for (const o of osds) {
-    hostMap.set(o.host, (hostMap.get(o.host) ?? 0) + o.size_bytes);
-  }
-  return [...hostMap.values()];
-}
-
-function RedundancySheet({
-  open,
-  onClose,
-  policyData,
-  osds,
-  pools,
-  onPolicyChanged,
-}: {
-  open: boolean;
-  onClose: () => void;
-  policyData: StoragePolicyData;
-  osds: OsdInfo[];
-  pools: PoolInfo[];
-  onPolicyChanged: () => void;
-}) {
-  const saved = policyData.policy ?? {
-    size: 1,
-    failure_domain: "osd" as const,
+  const saved = policy.policy ?? {
+    size: policy.target?.size ?? 1,
+    failure_domain: (policy.target?.failure_domain === "host"
+      ? "host"
+      : "osd") as Domain,
   };
-
-  const [size, setSize] = useState<number>(saved.size);
-  const [domain, setDomain] = useState<Domain>(saved.failure_domain as Domain);
-  const [applying, setApplying] = useState(false);
-  const [confirm, setConfirm] = useState(false);
-  const [result, setResult] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    setSize(saved.size);
-    setDomain(saved.failure_domain as Domain);
-    setConfirm(false);
-    setResult(null);
-  }, [open, saved.size, saved.failure_domain]);
-
-  const nDisks = osds.length;
-  const nNodes = new Set(osds.map((o) => o.host)).size;
-
-  const changed = size !== saved.size || domain !== saved.failure_domain;
-
-  const cephFs = pools.filter((p) => !p.name.startsWith("."));
-  const totalStored = cephFs.reduce((s, p) => s + p.stored_bytes, 0);
-  const rawFree = osds.reduce((s, o) => s + o.avail_bytes, 0);
-  const places = domain === "osd" ? nDisks : nNodes;
-  const effNew = Math.min(size, places);
-  const effOld = Math.min(saved.size, places);
-  const rawNeeded = (effNew - effOld) * totalStored;
-  let feasibility: "ok" | "tight" | "impossible" | null = null;
-  if (rawNeeded > 0) {
-    if (rawFree < rawNeeded) feasibility = "impossible";
-    else if (rawFree < rawNeeded * 1.3) feasibility = "tight";
-    else feasibility = "ok";
-  }
-
-  const authoritative = cephFs[0]?.max_avail_bytes ?? 0;
-  const showEstimate = changed || authoritative === 0;
-  const capacity = showEstimate
-    ? estimateUsable(osds, size, domain)
-    : authoritative;
-
-  async function apply() {
-    setApplying(true);
-    setResult(null);
-    try {
-      const body = { size, failure_domain: domain };
-      const d = await api.put<{ ok?: boolean; error?: string }>(
-        "/api/storage/policy",
-        body,
-      );
-      if (d.ok) {
-        onPolicyChanged();
-        onClose();
-      } else {
-        setResult(d.error ?? "Unknown error");
-      }
-    } catch (e) {
-      setResult(e instanceof Error ? e.message : String(e));
-    } finally {
-      setApplying(false);
-    }
-  }
-
-  const Choice = ({
-    active,
-    onClick,
-    title,
-    body,
-    disabled,
-  }: {
-    active: boolean;
-    onClick: () => void;
-    title: string;
-    body?: string;
-    disabled?: boolean;
-  }) => (
-    <button
-      onClick={onClick}
-      disabled={disabled}
-      className={cn(
-        "flex-1 rounded-control border px-4 py-3 text-left transition-colors",
-        disabled
-          ? "cursor-not-allowed border-border text-fg-subtle opacity-50"
-          : active
-            ? "border-primary bg-primary-soft text-primary"
-            : "border-border text-fg hover:border-border-strong",
-      )}
-    >
-      <span className="block text-sm font-medium">{title}</span>
-      {body && <span className="mt-0.5 block text-xs opacity-80">{body}</span>}
-    </button>
-  );
-
-  return (
-    <Sheet
-      open={open}
-      onClose={onClose}
-      wide
-      title="How safe should your files be?"
-      subtitle="More copies survive more failures, and leave less room."
-      footer={
-        confirm ? (
-          <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
-            <Button
-              variant="secondary"
-              onClick={() => setConfirm(false)}
-              disabled={applying}
-            >
-              Back
-            </Button>
-            <Button onClick={() => void apply()} loading={applying}>
-              Yes, change it
-            </Button>
-          </div>
-        ) : (
-          <Button
-            full
-            disabled={!changed || feasibility === "impossible"}
-            onClick={() => setConfirm(true)}
-          >
-            {changed ? "Save changes" : "No changes"}
-          </Button>
-        )
-      }
-    >
-      {confirm ? (
-        <div className="space-y-3">
-          <p className="text-sm text-fg">
-            {`Keep ${size} ${size === 1 ? "copy" : "copies"} of everything, spread across ${domain === "osd" ? "different disks" : "different machines"}?`}
-          </p>
-          <p className="text-sm text-fg-muted">
-            Your files stay available while this happens. Moving them around in
-            the background can take a while on a large library.
-          </p>
-          {result && <p className="text-sm text-danger">{result}</p>}
-        </div>
-      ) : (
-        <div className="space-y-6">
-          <>
-            <div>
-              <p className="mb-2 text-sm font-medium text-fg">
-                Spread copies across
-              </p>
-              <div className="flex gap-2">
-                <Choice
-                  active={domain === "osd"}
-                  onClick={() => setDomain("osd")}
-                  title="Different disks"
-                  body={`${nDisks} available`}
-                />
-                <Choice
-                  active={domain === "host"}
-                  onClick={() => setDomain("host")}
-                  title="Different machines"
-                  body={`${nNodes} available`}
-                />
-              </div>
-            </div>
-
-            <div>
-              <p className="mb-2 text-sm font-medium text-fg">
-                How many copies
-              </p>
-              <div className="flex items-center gap-4">
-                <Button
-                  size="sm"
-                  variant="outline"
-                  disabled={size <= 1}
-                  onClick={() => setSize((n) => Math.max(1, n - 1))}
-                  aria-label="One fewer copy"
-                >
-                  −
-                </Button>
-                <span
-                  className="w-12 text-center font-display text-3xl tabular-nums text-fg"
-                  aria-live="polite"
-                >
-                  {size}
-                </span>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => setSize((n) => n + 1)}
-                  aria-label="One more copy"
-                >
-                  +
-                </Button>
-              </div>
-
-              <div className="mt-3">
-                {size === 1 ? (
-                  <Banner tone="error" title="No protection">
-                    One copy means if a {domain === "osd" ? "disk" : "machine"}{" "}
-                    fails, whatever was on it is gone. Your backups would be the
-                    only copy left.
-                  </Banner>
-                ) : size > places ? (
-                  <Banner
-                    tone="warning"
-                    title={`Only ${places} of those ${size} copies fit right now`}
-                  >
-                    You have {places} {domain === "osd" ? "disk" : "machine"}
-                    {places === 1 ? "" : "s"}, and each copy needs its own.
-                    YoLab will keep {places} for now and make the rest
-                    automatically when you add{" "}
-                    {domain === "osd" ? "a disk" : "a machine"}. Nothing is at
-                    risk in the meantime.
-                  </Banner>
-                ) : (
-                  <p className="text-sm text-fg-muted">
-                    Survives {size - 1} {domain === "osd" ? "disk" : "machine"}
-                    {size - 1 === 1 ? "" : "s"} failing.
-                  </p>
-                )}
-              </div>
-            </div>
-
-            {feasibility === "impossible" && (
-              <Banner tone="error" title="Not enough room for that">
-                Making {size - saved.size} more{" "}
-                {size - saved.size === 1 ? "copy" : "copies"} needs{" "}
-                {formatBytes(rawNeeded)} and only {formatBytes(rawFree)} is
-                free. Add a disk first.
-              </Banner>
-            )}
-            {feasibility === "tight" && (
-              <Banner tone="warning" title="This will be a tight fit">
-                It needs {formatBytes(rawNeeded)} and {formatBytes(rawFree)} is
-                free. It should work, but you will be close to full while the
-                copies are made.
-              </Banner>
-            )}
-
-            <div className="rounded-control bg-surface-2 p-4">
-              <p className="text-sm text-fg-muted">
-                Room for your files with this setting
-              </p>
-              <p className="mt-0.5 font-display text-2xl text-fg">
-                {showEstimate ? "about " : ""}
-                {formatBytes(capacity)}
-              </p>
-            </div>
-          </>
-
-          {result && <p className="text-sm text-danger">{result}</p>}
-        </div>
-      )}
-    </Sheet>
-  );
-}
-
-function CopyButton({ text }: { text: string }) {
-  const [copied, setCopied] = useState(false);
-  return (
-    <button
-      onClick={() => {
-        void navigator.clipboard.writeText(text).then(() => {
-          setCopied(true);
-          setTimeout(() => setCopied(false), 2000);
-        });
-      }}
-      className="text-fg-subtle transition-colors hover:text-fg"
-      aria-label="Copy"
-    >
-      {copied ? (
-        <Check className="h-4 w-4 text-success" />
-      ) : (
-        <Copy className="h-4 w-4" />
-      )}
-    </button>
-  );
-}
-
-function OsdActions({
-  osd,
-  onRefresh,
-}: {
-  osd: OsdInfo;
-  onRefresh: () => void;
-}) {
-  const isIn = osd.crush_weight > 0;
+  const [size, setSize] = useState(saved.size);
+  const [domain, setDomain] = useState<Domain>(saved.failure_domain);
   const [busy, setBusy] = useState(false);
-  const [confirm, setConfirm] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  async function callApi(path: string) {
+  const osds = overview?.osds ?? [];
+  const disks = placesFor(osds, "osd");
+  const machines = placesFor(osds, "host");
+  const places = domain === "osd" ? disks : machines;
+  const changed = size !== saved.size || domain !== saved.failure_domain;
+  const estimate =
+    changed && overview?.space
+      ? estimateChange(overview.space, size, places)
+      : null;
+  const offline = osds.filter((o) => !o.up).length;
+  const line = protectionLine(policy.target, offline);
+  const unit = domain === "osd" ? "disk" : "machine";
+  const maxCopies = Math.max(3, saved.size, size);
+
+  function reset() {
+    setSize(saved.size);
+    setDomain(saved.failure_domain);
+    setErr(null);
+  }
+
+  async function apply() {
     setBusy(true);
     setErr(null);
     try {
-      const d = await api.post<{ ok?: boolean; error?: string }>(path);
-      if (!d.ok) setErr(d.error ?? "Unknown error");
-      else {
-        setConfirm(false);
-        onRefresh();
-      }
+      const d = await api.put<{ ok?: boolean; error?: string }>(
+        "/api/storage/policy",
+        { size, failure_domain: domain },
+      );
+      if (d.ok) onChanged();
+      else setErr(d.error ?? "Unknown error");
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
     } finally {
@@ -997,286 +639,325 @@ function OsdActions({
   }
 
   return (
-    <div className="flex flex-col gap-1">
-      {isIn ? (
-        confirm ? (
-          <div className="flex gap-1.5">
-            <Button
-              size="sm"
-              variant="danger"
-              disabled={busy}
-              onClick={() => void callApi(`/api/ceph/osd/${osd.id}/mark-out`)}
+    <Section title="Protection">
+      <Row
+        label="Copies of everything"
+        detail={
+          size === 1
+            ? "No protection against a failed disk"
+            : `Survives ${size - 1} ${unit}${size - 1 === 1 ? "" : "s"} failing`
+        }
+        trailing={
+          <Select
+            value={size}
+            onChange={(e) => setSize(Number(e.target.value))}
+            aria-label="Copies of everything"
+            className="w-24"
+          >
+            {Array.from({ length: maxCopies }, (_, i) => i + 1).map((n) => (
+              <option key={n} value={n}>
+                {n}
+              </option>
+            ))}
+          </Select>
+        }
+      />
+      <Row
+        label="Keep copies on"
+        detail={`${disks} ${disks === 1 ? "disk" : "disks"} on ${machines} ${machines === 1 ? "machine" : "machines"} available`}
+        trailing={
+          <Select
+            value={domain}
+            onChange={(e) => setDomain(e.target.value as Domain)}
+            aria-label="Keep copies on"
+            className="w-48"
+          >
+            <option value="osd">Different disks</option>
+            <option value="host">Different machines</option>
+          </Select>
+        }
+      />
+      {changed ? (
+        <div className="space-y-3 px-5 py-4">
+          <p className="text-sm text-fg">
+            Keep {size} {size === 1 ? "copy" : "copies"} of everything on
+            different {unit}s?
+          </p>
+          {size > places && (
+            <p className="text-sm text-fg-muted">
+              You have {places} {unit}
+              {places === 1 ? "" : "s"}, and each copy needs its own. YoLab
+              keeps {places} for now and makes the rest when you add{" "}
+              {unit === "disk" ? "a disk" : "a machine"}.
+            </p>
+          )}
+          {estimate && (
+            <p
+              className={cn(
+                "text-sm",
+                estimate.fit === "impossible"
+                  ? "text-danger"
+                  : estimate.fit === "tight"
+                    ? "text-warning"
+                    : "text-fg-muted",
+              )}
             >
-              {busy ? <Loader2 className="h-3 w-3 animate-spin" /> : "Confirm"}
-            </Button>
-            <Button
-              size="sm"
-              variant="ghost"
-              disabled={busy}
-              onClick={() => setConfirm(false)}
-            >
+              {estimate.fit === "impossible" ? (
+                <>
+                  Not enough room: the extra copies need about{" "}
+                  <Bytes value={estimate.extraNeeded} />. Add a disk first.
+                </>
+              ) : (
+                <>
+                  About <Bytes value={estimate.freeAfter} /> would be free
+                  afterwards
+                  {estimate.extraNeeded > 0 && (
+                    <>
+                      {" "}
+                      — the extra copies write about{" "}
+                      <Bytes value={estimate.extraNeeded} /> in the background
+                    </>
+                  )}
+                  .
+                  {estimate.fit === "tight" &&
+                    " It fits, but you will be close to full while the copies are made."}
+                </>
+              )}
+            </p>
+          )}
+          {err && <p className="text-sm text-danger">{err}</p>}
+          <div className="flex justify-end gap-2">
+            <Button size="sm" variant="ghost" onClick={reset} disabled={busy}>
               Cancel
             </Button>
+            <Button
+              size="sm"
+              variant="secondary"
+              loading={busy}
+              disabled={estimate?.fit === "impossible"}
+              onClick={() => void apply()}
+            >
+              Apply change
+            </Button>
           </div>
-        ) : (
-          <Button size="sm" variant="outline" onClick={() => setConfirm(true)}>
-            Remove safely
-          </Button>
-        )
+        </div>
       ) : (
-        <Button
-          size="sm"
-          variant="outline"
-          disabled={busy}
-          onClick={() => void callApi(`/api/ceph/osd/${osd.id}/mark-in`)}
-        >
-          {busy ? <Loader2 className="h-3 w-3 animate-spin" /> : "Re-add disk"}
-        </Button>
+        line && (
+          <Row
+            label={<span className={TONE_TEXT[line.tone]}>{line.text}</span>}
+          />
+        )
       )}
-      {err && <p className="text-xs text-danger">{err}</p>}
-    </div>
+    </Section>
   );
 }
 
-function OsdTable({
-  osds,
-  onRefresh,
+function Table({
+  head,
+  rows,
 }: {
-  osds: OsdInfo[];
-  onRefresh: () => void;
+  head: string[];
+  rows: { key: string; cells: ReactNode[] }[];
 }) {
-  const hosts = [...new Set(osds.map((o) => o.host))].sort();
-
   return (
     <div className="overflow-x-auto rounded-control border border-border">
-      <table className="w-full text-sm">
+      <table className="w-full text-xs">
         <thead>
-          <tr className="border-b border-border">
-            {[
-              "OSD",
-              "Host",
-              "Class",
-              "Size",
-              "Fill",
-              "Used / Free",
-              "PGs",
-              "Balance",
-              "In/Out",
-              "Up/Down",
-              "Losable",
-              "Removable",
-              "",
-            ].map((h, i) => (
-              <th
-                key={i}
-                className="whitespace-nowrap px-4 py-2.5 text-left text-xs font-medium text-fg-muted first:pl-5 last:pr-5"
-              >
+          <tr className="border-b border-border text-left text-fg-muted">
+            {head.map((h) => (
+              <th key={h} className="whitespace-nowrap px-3 py-2 font-medium">
                 {h}
               </th>
             ))}
           </tr>
         </thead>
-        <tbody className="divide-y divide-border">
-          <AnimatedList
-            as="tr"
-            items={hosts.flatMap((host) =>
-              osds
-                .filter((o) => o.host === host)
-                .map((osd, idx) => ({ osd, host, idx })),
-            )}
-            keyOf={({ osd }) => String(osd.id)}
-          >
-            {({ osd, host, idx }) => (
-              <>
-                <td className="py-3 pl-5 pr-4 font-mono text-xs text-fg-muted">
-                  {osd.name}
+        <tbody className="divide-y divide-border font-mono tabular-nums text-fg">
+          {rows.map((r) => (
+            <tr key={r.key}>
+              {r.cells.map((c, i) => (
+                <td key={i} className="whitespace-nowrap px-3 py-2">
+                  {c}
                 </td>
-                <td className="px-4 py-3 text-xs text-fg-muted">
-                  {idx === 0 && (
-                    <span className="inline-flex items-center gap-1">
-                      <HardDrive className="h-3 w-3" />
-                      {host}
-                    </span>
-                  )}
-                </td>
-                <td className="px-4 py-3">
-                  <Badge variant="muted" className="text-xs uppercase">
-                    {osd.class || "—"}
-                  </Badge>
-                </td>
-                <td className="whitespace-nowrap px-4 py-3 text-xs tabular-nums text-fg-muted">
-                  {osd.size_bytes > 0 ? (
-                    <RollingNumber value={osd.size_bytes} format={fmtBytes} />
-                  ) : (
-                    "—"
-                  )}
-                </td>
-                <td className="px-4 py-3">
-                  {osd.size_bytes > 0 ? (
-                    <FillBar pct={osd.utilization} />
-                  ) : (
-                    <span className="text-xs text-fg-subtle">—</span>
-                  )}
-                </td>
-                <td className="whitespace-nowrap px-4 py-3 text-xs tabular-nums text-fg-muted">
-                  {osd.size_bytes > 0 ? (
-                    <>
-                      <RollingNumber value={osd.used_bytes} format={fmtBytes} />
-                      {" / "}
-                      <RollingNumber
-                        value={
-                          osd.crush_weight > 0
-                            ? osd.avail_bytes
-                            : osd.size_bytes
-                        }
-                        format={fmtBytes}
-                      />
-                    </>
-                  ) : (
-                    "—"
-                  )}
-                </td>
-                <td className="px-4 py-3 text-xs tabular-nums text-fg-muted">
-                  <RollingNumber value={osd.pgs} />
-                </td>
-                <td className="px-4 py-3">
-                  <VarBadge v={osd.var} />
-                </td>
-                <td className="px-4 py-3">
-                  <OsdPill on={osd.reweight > 0.5} labels={["In", "Out"]} />
-                </td>
-                <td className="px-4 py-3">
-                  <OsdPill on={osd.status === "up"} labels={["Up", "Down"]} />
-                </td>
-                <td className="px-4 py-3">
-                  <OsdPill on={osd.ok_to_stop} labels={["Yes", "No"]} />
-                </td>
-                <td className="px-4 py-3">
-                  <OsdPill on={osd.safe_to_destroy} labels={["Yes", "No"]} />
-                </td>
-                <td className="px-4 py-3 pr-5">
-                  <OsdActions osd={osd} onRefresh={onRefresh} />
-                </td>
-              </>
-            )}
-          </AnimatedList>
+              ))}
+            </tr>
+          ))}
         </tbody>
       </table>
     </div>
   );
 }
 
-function AdvancedPanel({
-  detail,
-  onRefresh,
-  refreshing,
+function verdict(list: number[] | undefined, id: number): string {
+  if (!list) return "…";
+  return list.includes(id) ? "yes" : "no";
+}
+
+function TechnicalBody({
+  overview,
 }: {
-  detail: StorageDetail | undefined;
-  onRefresh: () => void;
-  refreshing: boolean;
+  overview: StorageOverview | undefined;
 }) {
-  const [open, setOpen] = useState(false);
-  const [creds, setCreds] = useState<{
-    username: string;
-    password: string;
-  } | null>(null);
-  const [showPass, setShowPass] = useState(false);
-
-  function toggle() {
-    if (!open && !creds) {
-      void api
-        .get<{ username: string; password: string }>("/api/ceph/dashboard")
-        .then(setCreds)
-        .catch(() => {});
-    }
-    setOpen((o) => !o);
-  }
-
-  const osds = detail?.osds ?? [];
+  const status = useResource<{ text: string }>("ceph-status-text", () =>
+    api.get<{ text: string }>("/api/storage/ceph-status"),
+  );
+  const checks = useResource<OsdChecks>("storage-checks", () =>
+    api.get<OsdChecks>("/api/storage/checks"),
+  );
+  const creds = useResource<{ username: string; password: string }>(
+    "ceph-dashboard-creds",
+    () =>
+      api.get<{ username: string; password: string }>("/api/ceph/dashboard"),
+  );
+  const [reveal, setReveal] = useState(false);
 
   return (
-    <div className="mt-8">
-      <button
-        onClick={toggle}
-        className="flex items-center gap-1.5 text-sm text-fg-muted hover:text-fg"
-        aria-expanded={open}
-      >
-        Technical details
-        <ChevronDown
-          className={cn("h-4 w-4 transition-transform", open && "rotate-180")}
-        />
-      </button>
-
-      <Collapse open={open} className="pt-4">
-        <div className="space-y-6">
-          <div className="flex items-center justify-end">
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={onRefresh}
-              disabled={refreshing}
+    <div className="space-y-5 pt-1">
+      <div>
+        <div className="mb-2 flex items-center justify-between">
+          <p className="text-sm font-medium text-fg">ceph status</p>
+          <div className="flex items-center">
+            <IconButton
+              label="Refresh"
+              onClick={() => {
+                void status.refresh();
+                void checks.refresh();
+              }}
             >
               <RefreshCw
-                className={cn("h-4 w-4", refreshing && "animate-spin")}
+                className={cn("h-4 w-4", status.loading && "animate-spin")}
               />
-              Refresh
-            </Button>
+            </IconButton>
+            {status.data && (
+              <CopyButton value={status.data.text} label="ceph status" />
+            )}
           </div>
+        </div>
+        <pre className="max-h-80 overflow-auto rounded-control bg-surface-2 p-3 font-mono text-xs leading-relaxed text-fg">
+          {status.data?.text ?? (status.error ? status.error : "Asking Ceph…")}
+        </pre>
+      </div>
 
-          {osds.length > 0 && <OsdTable osds={osds} onRefresh={onRefresh} />}
-
-          {creds && (
-            <div className="space-y-3 rounded-control border border-border p-4">
-              <p className="text-sm font-medium text-fg">Ceph dashboard</p>
-              <div className="flex items-center justify-between">
-                <span className="text-sm text-fg-muted">Username</span>
-                <span className="flex items-center gap-2 font-mono text-sm text-fg">
-                  {creds.username}
-                  <CopyButton text={creds.username} />
-                </span>
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-sm text-fg-muted">Password</span>
-                <span className="flex items-center gap-2 font-mono text-sm text-fg">
-                  {showPass ? creds.password : "••••••••••••"}
-                  <button
-                    onClick={() => setShowPass((s) => !s)}
-                    className="text-fg-subtle hover:text-fg"
-                    aria-label={showPass ? "Hide password" : "Show password"}
-                  >
-                    {showPass ? (
-                      <EyeOff className="h-4 w-4" />
-                    ) : (
-                      <Eye className="h-4 w-4" />
-                    )}
-                  </button>
-                  <CopyButton text={creds.password} />
-                </span>
-              </div>
-              <a
-                href="/ceph-dashboard/"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex items-center gap-1.5 text-sm text-primary"
-              >
-                Open Ceph dashboard
-                <ExternalLink className="h-3.5 w-3.5" />
-              </a>
-            </div>
+      {overview && overview.osds.length > 0 && (
+        <div>
+          <p className="mb-2 text-sm font-medium text-fg">Disks (OSDs)</p>
+          <Table
+            head={[
+              "OSD",
+              "Host",
+              "Class",
+              "Size",
+              "Used",
+              "Free",
+              "Fill",
+              "PGs",
+              "Var",
+              "Up",
+              "In",
+              "Can stop",
+              "Can destroy",
+            ]}
+            rows={overview.osds.map((o) => ({
+              key: String(o.id),
+              cells: [
+                o.name,
+                o.host || "—",
+                o.class || "—",
+                formatCephBytes(o.size_bytes),
+                formatCephBytes(o.used_bytes),
+                formatCephBytes(o.avail_bytes),
+                <span key="f" className={TONE_TEXT[fillTone(o.utilization)]}>
+                  {o.utilization.toFixed(1)}%
+                </span>,
+                o.pgs,
+                o.var.toFixed(2),
+                o.up ? "up" : "down",
+                o.weight > 0 && o.reweight > 0 ? "in" : "out",
+                verdict(checks.data?.ok_to_stop, o.id),
+                verdict(checks.data?.safe_to_destroy, o.id),
+              ],
+            }))}
+          />
+          {checks.error && (
+            <p className="mt-1 text-xs text-fg-subtle">
+              Safety checks unavailable: {checks.error}
+            </p>
           )}
         </div>
-      </Collapse>
+      )}
+
+      {overview && overview.pools.length > 0 && (
+        <div>
+          <p className="mb-2 text-sm font-medium text-fg">Pools</p>
+          <Table
+            head={["Pool", "Copies", "Min", "Stored", "On disk", "Max avail"]}
+            rows={overview.pools.map((p) => ({
+              key: String(p.id),
+              cells: [
+                p.name,
+                p.copies,
+                p.min_copies,
+                formatCephBytes(p.stored_bytes),
+                formatCephBytes(p.used_bytes),
+                formatCephBytes(p.max_avail_bytes),
+              ],
+            }))}
+          />
+        </div>
+      )}
+
+      {creds.data && (
+        <Card className="divide-y divide-border overflow-hidden p-0">
+          <ValueRow
+            label="Ceph dashboard user"
+            value={creds.data.username}
+            copy
+          />
+          <ValueRow
+            label="Ceph dashboard password"
+            value={reveal ? creds.data.password : "••••••••••••"}
+            trailing={
+              <>
+                <IconButton
+                  label={reveal ? "Hide password" : "Show password"}
+                  onClick={() => setReveal((r) => !r)}
+                >
+                  {reveal ? (
+                    <EyeOff className="h-4 w-4" />
+                  ) : (
+                    <Eye className="h-4 w-4" />
+                  )}
+                </IconButton>
+                <CopyButton
+                  value={creds.data.password}
+                  label="Ceph dashboard password"
+                />
+              </>
+            }
+          />
+          <a
+            href="/ceph-dashboard/"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center gap-3 px-5 py-4 text-sm font-medium text-fg transition-colors hover:bg-surface-2"
+          >
+            <span className="flex-1">Open Ceph dashboard</span>
+            <ExternalLink className="h-4 w-4 text-fg-subtle" />
+          </a>
+        </Card>
+      )}
     </div>
   );
 }
 
 export function StoragePage() {
-  const [editing, setEditing] = useState(false);
+  const movement = useMovement();
+  const moving = isVisible(movement.data);
+  const pollMs = moving ? POLL_MOVING_MS : POLL_IDLE_MS;
 
-  const detailRes = useApi<StorageDetailResponse>(
-    "storage-detail",
-    "/api/ceph/detail",
-    { pollMs: 20_000 },
+  const overviewRes = useApi<StorageOverview>(
+    "storage-overview",
+    "/api/storage",
+    { pollMs },
   );
   const policyRes = useApi<StoragePolicyData>(
     "storage-policy",
@@ -1285,102 +966,75 @@ export function StoragePage() {
   const disksRes = useApi<Record<string, DiskInfo[]>>(
     "storage-disks",
     "/api/disks",
-    { pollMs: 20_000 },
+    { pollMs },
   );
 
-  const detail = detailRes.data?.ok ? detailRes.data.data : undefined;
-  const cephError =
-    detailRes.data && !detailRes.data.ok
-      ? (detailRes.data.error ?? "Storage is not responding.")
-      : null;
+  const overview = overviewRes.data;
+  const policy = policyRes.data;
+  const blocked = needsAttentionEverywhere(movement.data);
 
   function refreshAll() {
-    void detailRes.refresh();
+    void overviewRes.refresh();
     void policyRes.refresh();
     void disksRes.refresh();
+    void movement.refresh();
   }
 
-  const policy = policyRes.data;
-  const summary = useMemo(() => {
-    if (!policy) return null;
-    const { target } = policy;
-    if (!target) return null;
-    const unit = target.failure_domain === "host" ? "machines" : "disks";
-    return `${target.size} ${target.size === 1 ? "copy" : "copies"} across different ${unit}`;
-  }, [policy]);
+  const banner = pickBanner({
+    error: overviewRes.error,
+    movementBlocked: blocked,
+    overview,
+    copies: overview?.space?.copies ?? policy?.target?.size ?? 1,
+  });
 
   return (
-    <div className="space-y-6">
-      <ForceHealCard />
+    <div>
+      <StatusLine overview={overview} policy={policy} />
 
-      <Collapse open={Boolean(cephError)}>
-        <Banner tone="error" title="Storage is not responding">
-          {cephError}
-        </Banner>
-      </Collapse>
+      <div className="mt-6 space-y-4 empty:hidden">
+        <ForceHealCard />
+        {banner === "movement" ? (
+          <MovementBanner />
+        ) : (
+          banner && (
+            <Banner tone={banner.tone} title={banner.title}>
+              {banner.body}
+            </Banner>
+          )
+        )}
+      </div>
 
-      <DataMovementCard />
+      <SpaceSection overview={overview} loading={overviewRes.loading} />
+      {!blocked && <DataMovementCard className="mt-4" />}
 
-      <CapacityCard
-        detail={detail}
-        policy={policy}
-        loading={detailRes.loading}
+      <UsageSection imagesBytes={overview?.space?.images_bytes ?? 0} />
+
+      <DisksSection
+        disks={disksRes.data}
+        osds={overview?.osds ?? []}
+        loading={disksRes.loading}
+        onChanged={refreshAll}
       />
 
-      <section>
-        <h2 className="mb-3 flex items-center gap-2 text-sm font-semibold text-fg-muted">
-          Disks
-        </h2>
-        <DiskList
-          disks={disksRes.data}
-          osds={detail?.osds ?? []}
-          loading={disksRes.loading}
+      {policy && (
+        <ProtectionSection
+          key={`${policy.policy?.size}-${policy.policy?.failure_domain}`}
+          policy={policy}
+          overview={overview}
           onChanged={refreshAll}
         />
-        <p className="mt-3 text-sm text-fg-subtle">
-          A new disk does nothing until you switch it on. Switching one off
-          moves its data elsewhere first.
-        </p>
+      )}
+
+      <section className="mt-8">
+        <Card className="overflow-hidden p-0">
+          <DisclosureRow
+            label="Technical details"
+            detail="Raw Ceph status, every OSD and pool, and the Ceph dashboard"
+          >
+            <TechnicalBody overview={overview} />
+          </DisclosureRow>
+        </Card>
       </section>
-
-      {policy && (
-        <section>
-          <h2 className="mb-3 text-sm font-semibold text-fg-muted">
-            Protection
-          </h2>
-          <Card className="flex items-center gap-4 p-5">
-            <div className="min-w-0 flex-1">
-              <p className="text-sm text-fg">{summary}</p>
-            </div>
-            <Button
-              size="sm"
-              variant="secondary"
-              onClick={() => setEditing(true)}
-            >
-              Change
-            </Button>
-          </Card>
-        </section>
-      )}
-
-      {policy && (
-        <RedundancySheet
-          open={editing}
-          onClose={() => setEditing(false)}
-          policyData={policy}
-          osds={detail?.osds ?? []}
-          pools={detail?.pools ?? []}
-          onPolicyChanged={refreshAll}
-        />
-      )}
-
-      <AdvancedPanel
-        detail={detail}
-        onRefresh={refreshAll}
-        refreshing={detailRes.loading}
-      />
-
-      <OfflineDiskBanner detail={detail} policy={policyRes.data} />
     </div>
   );
 }

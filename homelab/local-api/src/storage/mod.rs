@@ -12,6 +12,7 @@ pub mod mon_member;
 pub mod movement;
 pub mod noout;
 pub mod osd;
+pub mod overview;
 pub mod pivot_lock;
 pub mod reset_wipe;
 pub mod settings;

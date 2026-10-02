@@ -103,10 +103,7 @@ export default function App() {
             <Route
               path="/system/storage"
               element={
-                <SystemSubPage
-                  title="Storage"
-                  subtitle="The disks your apps keep their data on."
-                >
+                <SystemSubPage title="Storage">
                   <Suspense fallback={<Loading />}>
                     <StoragePage />
                   </Suspense>
