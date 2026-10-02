@@ -93,7 +93,6 @@ function OutputRow({ output }: { output: AppOutput }) {
       <div className="flex items-baseline justify-between gap-3">
         <span className="text-sm font-medium text-fg">{output.title}</span>
         <span className="shrink-0 text-xs text-fg-subtle">
-          {state === "ready" && output.from_config && "Chosen at install"}
           {state === "ready" &&
             !output.from_config &&
             output.found_at &&
