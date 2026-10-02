@@ -442,7 +442,9 @@ fn hardware_id_behind_node(name: &str) -> Option<&str> {
 fn fold_hardware_claims<T>(claims: BTreeMap<String, Entry<T>>) -> BTreeMap<String, Entry<T>> {
     let mut grouped: BTreeMap<String, Vec<Entry<T>>> = BTreeMap::new();
     for (name, entry) in claims {
-        let key = hardware_id_behind_node(&name).map(str::to_string).unwrap_or(name);
+        let key = hardware_id_behind_node(&name)
+            .map(str::to_string)
+            .unwrap_or(name);
         grouped.entry(key).or_default().push(entry);
     }
     grouped
@@ -1007,10 +1009,15 @@ mod tests {
     #[test]
     fn switching_off_a_hardware_disk_overrides_the_earlier_on() {
         let mut s = Store::new("node3");
-        s.set_disk_intent("node2", "serial-wwn-x", DiskIntent::On).unwrap();
-        s.set_disk_intent("node2", "serial-wwn-x", DiskIntent::Off).unwrap();
+        s.set_disk_intent("node2", "serial-wwn-x", DiskIntent::On)
+            .unwrap();
+        s.set_disk_intent("node2", "serial-wwn-x", DiskIntent::Off)
+            .unwrap();
         assert_eq!(
-            s.desired_records().unwrap().get("serial-wwn-x").map(String::as_str),
+            s.desired_records()
+                .unwrap()
+                .get("serial-wwn-x")
+                .map(String::as_str),
             Some("OFF")
         );
     }
@@ -1019,10 +1026,16 @@ mod tests {
     fn the_newer_node_scoped_off_found_on_node3_beats_the_older_bare_on() {
         let mut s = Store::new("node3");
         legacy_write(&mut s, "serial-wwn-0x50014ee214caf529", DiskIntent::On);
-        legacy_write(&mut s, "node2--serial-wwn-0x50014ee214caf529", DiskIntent::Off);
+        legacy_write(
+            &mut s,
+            "node2--serial-wwn-0x50014ee214caf529",
+            DiskIntent::Off,
+        );
         let records = s.desired_records().unwrap();
         assert_eq!(
-            records.get("serial-wwn-0x50014ee214caf529").map(String::as_str),
+            records
+                .get("serial-wwn-0x50014ee214caf529")
+                .map(String::as_str),
             Some("OFF")
         );
         assert!(
@@ -1037,7 +1050,10 @@ mod tests {
         legacy_write(&mut s, "node2--serial-wwn-x", DiskIntent::Off);
         legacy_write(&mut s, "serial-wwn-x", DiskIntent::On);
         assert_eq!(
-            s.desired_records().unwrap().get("serial-wwn-x").map(String::as_str),
+            s.desired_records()
+                .unwrap()
+                .get("serial-wwn-x")
+                .map(String::as_str),
             Some("ON")
         );
     }
@@ -1056,9 +1072,13 @@ mod tests {
     #[test]
     fn a_node_scoped_disk_without_a_hardware_id_keeps_its_node() {
         let mut s = Store::new("node1");
-        s.set_disk_intent("node1", "dev-sdb", DiskIntent::Off).unwrap();
+        s.set_disk_intent("node1", "dev-sdb", DiskIntent::Off)
+            .unwrap();
         assert_eq!(
-            s.desired_records().unwrap().get("node1--dev-sdb").map(String::as_str),
+            s.desired_records()
+                .unwrap()
+                .get("node1--dev-sdb")
+                .map(String::as_str),
             Some("OFF")
         );
     }
