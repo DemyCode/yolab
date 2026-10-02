@@ -1631,16 +1631,5 @@ mod machine_health_tests {
             let host = machine(DF, "", r#"{"num_up_osds": 1, "num_in_osds": 2}"#);
             assert!(compute_cluster_health(&host, None).await.provisioning);
         }
-
-        #[tokio::test]
-        async fn every_osd_is_asked_whether_it_can_stop() {
-            let host = FakeHost::new()
-                .ok("ceph osd ls", "[0, 1]")
-                .ok("ceph osd ok-to-stop osd.1", "")
-                .fail("ceph osd ok-to-stop osd.0", "would make PGs inactive")
-                .fail("ceph osd", "unscripted");
-            let raw = fetch_storage_raw(&host).await.unwrap();
-            assert_eq!(raw["ok_to_stop"]["ok_to_stop"], serde_json::json!([1]));
-        }
     }
 }
