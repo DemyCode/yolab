@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
@@ -34,6 +35,8 @@ impl Policy {
     }
 }
 
+const DAY: u64 = 24 * 60 * 60;
+
 pub(crate) fn policy_for(path: &str) -> Option<Policy> {
     if !path.starts_with("/api/") {
         return None;
@@ -58,17 +61,58 @@ pub(crate) fn policy_for(path: &str) -> Option<Policy> {
         return None;
     }
 
-    Some(Policy::secs(15, 60))
+    Some(Policy::secs(15, DAY))
 }
 
 struct Entry {
     body: Arc<Value>,
     fetched_at: Instant,
+    generation: u64,
+    stored: u64,
+}
+
+struct Cached {
+    body: Arc<Value>,
+    age: Duration,
+    stored: u64,
+    current: bool,
+}
+
+impl Cached {
+    fn answers_alone(&self, policy: Policy) -> bool {
+        self.current && self.age < policy.ttl
+    }
+
+    fn label(&self, policy: Policy) -> &'static str {
+        if self.answers_alone(policy) {
+            "hit"
+        } else {
+            "stale"
+        }
+    }
 }
 
 fn entries() -> &'static Mutex<HashMap<String, Entry>> {
     static E: OnceLock<Mutex<HashMap<String, Entry>>> = OnceLock::new();
     E.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn generation() -> &'static AtomicU64 {
+    static G: AtomicU64 = AtomicU64::new(0);
+    &G
+}
+
+fn current_generation() -> u64 {
+    generation().load(AtomicOrdering::SeqCst)
+}
+
+fn stores() -> &'static AtomicU64 {
+    static S: AtomicU64 = AtomicU64::new(0);
+    &S
+}
+
+fn stores_so_far() -> u64 {
+    stores().load(AtomicOrdering::SeqCst)
 }
 
 fn flight(key: &str) -> Arc<Mutex<()>> {
@@ -78,7 +122,7 @@ fn flight(key: &str) -> Arc<Mutex<()>> {
     guard.entry(key.to_string()).or_default().clone()
 }
 
-async fn look_up(key: &str, policy: Policy) -> Option<(Arc<Value>, Duration)> {
+async fn look_up(key: &str, policy: Policy) -> Option<Cached> {
     let mut map = entries().lock().await;
     let entry = map.get(key)?;
     let age = entry.fetched_at.elapsed();
@@ -86,12 +130,17 @@ async fn look_up(key: &str, policy: Policy) -> Option<(Arc<Value>, Duration)> {
         map.remove(key);
         return None;
     }
-    Some((entry.body.clone(), age))
+    Some(Cached {
+        body: entry.body.clone(),
+        age,
+        stored: entry.stored,
+        current: entry.generation == current_generation(),
+    })
 }
 
 const MAX_ENTRIES: usize = 256;
 
-async fn store(key: &str, body: Value) {
+async fn store(key: &str, body: Value, generation: u64) {
     let mut map = entries().lock().await;
     if map.len() >= MAX_ENTRIES && !map.contains_key(key) {
         if let Some(oldest) = map
@@ -107,12 +156,15 @@ async fn store(key: &str, body: Value) {
         Entry {
             body: Arc::new(body),
             fetched_at: Instant::now(),
+            generation,
+            stored: stores().fetch_add(1, AtomicOrdering::SeqCst) + 1,
         },
     );
 }
 
 pub async fn invalidate_all() {
-    entries().lock().await.clear();
+    let _map = entries().lock().await;
+    generation().fetch_add(1, AtomicOrdering::SeqCst);
 }
 
 fn meta(state: &str, age: Duration, policy: Policy) -> (String, u128, u128) {
@@ -204,82 +256,92 @@ pub async fn middleware(req: Request, next: Next) -> Response {
         .and_then(|v| v.to_str().ok())
         .is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
 
+    let started = stores_so_far();
     let cached = look_up(&key, policy).await;
 
     if !progressive {
-        if let Some((body, age)) = &cached {
-            if *age < policy.ttl {
-                return single(body, "hit", *age, policy);
+        if let Some(c) = &cached {
+            if c.answers_alone(policy) {
+                return single(&c.body, "hit", c.age, policy);
             }
         }
-    }
-
-    if progressive {
-        if let Some((body, age)) = cached {
-            let label = if age < policy.ttl { "hit" } else { "stale" };
-            let first = frame(&body, label, age, policy);
-            let key = key.clone();
-            let stream = async_stream::stream! {
-                yield Ok::<_, std::convert::Infallible>(axum::body::Bytes::from(first));
-                match run_handler(req, next).await {
-                    Handled::Cacheable(fresh) => {
-                        store(&key, fresh.clone()).await;
-                        yield Ok(axum::body::Bytes::from(frame(&fresh, "fresh", Duration::ZERO, policy)));
-                    }
-                    Handled::PassThrough(res) => {
-                        let status = res.status().as_u16();
-                        let envelope = serde_json::json!({
-                            "cache": "error",
-                            "status": status,
-                        });
-                        yield Ok(axum::body::Bytes::from(format!("{envelope}\n")));
-                    }
-                }
-            };
-            let mut res = Response::new(Body::from_stream(stream));
-            res.headers_mut()
-                .insert(header::CONTENT_TYPE, HeaderValue::from_static(NDJSON));
-            res.headers_mut()
-                .insert(HEADER_STATE, HeaderValue::from_static(label));
-            return res;
-        }
-        let body = match compute_once(&key, policy, req, next).await {
-            Computed::Fresh(body) => body,
-            Computed::Ready(res) => return *res,
+        return match compute_once(&key, policy, started, req, next).await {
+            Computed::Fresh { body, age } => single(&body, "miss", age, policy),
+            Computed::Failed(res) => *res,
         };
-        let mut res = Response::new(Body::from(frame(&body, "miss", Duration::ZERO, policy)));
-        res.headers_mut()
-            .insert(header::CONTENT_TYPE, HeaderValue::from_static(NDJSON));
-        res.headers_mut()
-            .insert(HEADER_STATE, HeaderValue::from_static("miss"));
-        return res;
     }
 
-    match compute_once(&key, policy, req, next).await {
-        Computed::Fresh(body) => single(&body, "miss", Duration::ZERO, policy),
-        Computed::Ready(res) => *res,
-    }
+    let Some(first) = cached else {
+        return match compute_once(&key, policy, started, req, next).await {
+            Computed::Fresh { body, age } => {
+                ndjson(Body::from(frame(&body, "miss", age, policy)), "miss")
+            }
+            Computed::Failed(res) => *res,
+        };
+    };
+
+    let label = first.label(policy);
+    let head = frame(&first.body, label, first.age, policy);
+    let stream = async_stream::stream! {
+        yield Ok::<_, std::convert::Infallible>(axum::body::Bytes::from(head));
+        match compute_once(&key, policy, started, req, next).await {
+            Computed::Fresh { body, age } => {
+                yield Ok(axum::body::Bytes::from(frame(&body, "fresh", age, policy)));
+            }
+            Computed::Failed(res) => {
+                let envelope = serde_json::json!({
+                    "cache": "error",
+                    "status": res.status().as_u16(),
+                });
+                yield Ok(axum::body::Bytes::from(format!("{envelope}\n")));
+            }
+        }
+    };
+    ndjson(Body::from_stream(stream), label)
+}
+
+fn ndjson(body: Body, state: &'static str) -> Response {
+    let mut res = Response::new(body);
+    res.headers_mut()
+        .insert(header::CONTENT_TYPE, HeaderValue::from_static(NDJSON));
+    res.headers_mut()
+        .insert(HEADER_STATE, HeaderValue::from_static(state));
+    res
 }
 
 enum Computed {
-    Fresh(Value),
-    Ready(Box<Response>),
+    Fresh { body: Arc<Value>, age: Duration },
+    Failed(Box<Response>),
 }
 
-async fn compute_once(key: &str, policy: Policy, req: Request, next: Next) -> Computed {
+async fn compute_once(
+    key: &str,
+    policy: Policy,
+    started: u64,
+    req: Request,
+    next: Next,
+) -> Computed {
     let flight = flight(key);
     let _guard = flight.lock().await;
-    if let Some((body, age)) = look_up(key, policy).await {
-        if age < policy.ttl {
-            return Computed::Ready(Box::new(single(&body, "hit", age, policy)));
+    if let Some(c) = look_up(key, policy).await {
+        if c.current && c.stored > started {
+            return Computed::Fresh {
+                body: c.body,
+                age: c.age,
+            };
         }
     }
+    let generation = current_generation();
     match run_handler(req, next).await {
         Handled::Cacheable(body) => {
-            store(key, body.clone()).await;
-            Computed::Fresh(body)
+            let body = Arc::new(body);
+            store(key, (*body).clone(), generation).await;
+            Computed::Fresh {
+                body,
+                age: Duration::ZERO,
+            }
         }
-        Handled::PassThrough(res) => Computed::Ready(res),
+        Handled::PassThrough(res) => Computed::Failed(res),
     }
 }
 
@@ -444,7 +506,7 @@ mod tests {
         let calls = Arc::new(AtomicUsize::new(0));
 
         app(calls.clone()).oneshot(req(false)).await.unwrap();
-        tokio::time::advance(Duration::from_secs(61)).await;
+        tokio::time::advance(Duration::from_secs(DAY + 1)).await;
 
         let res = app(calls.clone()).oneshot(req(true)).await.unwrap();
         let lines: Vec<Value> = body_string(res)
@@ -652,6 +714,147 @@ mod tests {
 
         let res = app.oneshot(req(false)).await.unwrap();
         assert_eq!(res.headers()[HEADER_STATE], "hit");
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    fn slow_app(calls: Arc<AtomicUsize>) -> Router {
+        Router::new()
+            .route(
+                "/api/ceph/detail",
+                get(move || {
+                    let calls = calls.clone();
+                    async move {
+                        tokio::time::sleep(Duration::from_secs(5)).await;
+                        let n = calls.fetch_add(1, Ordering::SeqCst) + 1;
+                        axum::Json(serde_json::json!({ "n": n }))
+                    }
+                }),
+            )
+            .layer(axum::middleware::from_fn(middleware))
+    }
+
+    async fn frames(res: Response) -> Vec<Value> {
+        body_string(res)
+            .await
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect()
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_write_keeps_the_old_value_as_an_instant_stale_first_frame() {
+        let _g = begin().await;
+        let calls = Arc::new(AtomicUsize::new(0));
+
+        app(calls.clone()).oneshot(req(false)).await.unwrap();
+        invalidate_all().await;
+
+        let res = app(calls.clone()).oneshot(req(true)).await.unwrap();
+        assert_eq!(res.headers()[HEADER_STATE], "stale");
+        let lines = frames(res).await;
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0]["cache"], "stale");
+        assert_eq!(lines[0]["data"]["n"], 1);
+        assert_eq!(lines[1]["cache"], "fresh");
+        assert_eq!(lines[1]["data"]["n"], 2);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_hour_old_value_still_answers_a_progressive_client_first() {
+        let _g = begin().await;
+        let calls = Arc::new(AtomicUsize::new(0));
+
+        app(calls.clone()).oneshot(req(false)).await.unwrap();
+        tokio::time::advance(Duration::from_secs(3600)).await;
+
+        let lines = frames(app(calls.clone()).oneshot(req(true)).await.unwrap()).await;
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0]["cache"], "stale");
+        assert_eq!(lines[0]["ageMs"], 3_600_000);
+        assert_eq!(lines[0]["data"]["n"], 1);
+        assert_eq!(lines[1]["data"]["n"], 2);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_hour_old_value_never_answers_a_plain_client() {
+        let _g = begin().await;
+        let calls = Arc::new(AtomicUsize::new(0));
+
+        app(calls.clone()).oneshot(req(false)).await.unwrap();
+        tokio::time::advance(Duration::from_secs(3600)).await;
+
+        let res = app(calls.clone()).oneshot(req(false)).await.unwrap();
+        assert_eq!(res.headers()[HEADER_STATE], "miss");
+        assert_eq!(body_string(res).await, r#"{"n":2}"#);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_value_computed_across_a_write_is_not_trusted_after_it() {
+        let _g = begin().await;
+        let calls = Arc::new(AtomicUsize::new(0));
+        let reads = calls.clone();
+        let app = Router::new()
+            .route(
+                "/api/ceph/detail",
+                get(move || {
+                    let reads = reads.clone();
+                    async move {
+                        let n = reads.fetch_add(1, Ordering::SeqCst) + 1;
+                        if n == 1 {
+                            invalidate_all().await;
+                        }
+                        axum::Json(serde_json::json!({ "n": n }))
+                    }
+                }),
+            )
+            .layer(axum::middleware::from_fn(middleware));
+
+        let res = app.clone().oneshot(req(false)).await.unwrap();
+        assert_eq!(body_string(res).await, r#"{"n":1}"#);
+
+        let res = app.oneshot(req(false)).await.unwrap();
+        assert_eq!(res.headers()[HEADER_STATE], "miss");
+        assert_eq!(body_string(res).await, r#"{"n":2}"#);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn concurrent_progressive_refreshes_share_one_computation() {
+        let _g = begin().await;
+        let calls = Arc::new(AtomicUsize::new(0));
+        let app = slow_app(calls.clone());
+
+        app.clone().oneshot(req(false)).await.unwrap();
+        tokio::time::advance(Duration::from_secs(20)).await;
+
+        let one = async { frames(app.clone().oneshot(req(true)).await.unwrap()).await };
+        let two = async { frames(app.clone().oneshot(req(true)).await.unwrap()).await };
+        let (one, two) = tokio::join!(one, two);
+
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        for lines in [one, two] {
+            assert_eq!(lines.len(), 2);
+            assert_eq!(lines[0]["data"]["n"], 1);
+            assert_eq!(lines[1]["cache"], "fresh");
+            assert_eq!(lines[1]["data"]["n"], 2);
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn concurrent_progressive_misses_are_both_ndjson() {
+        let _g = begin().await;
+        let calls = Arc::new(AtomicUsize::new(0));
+        let app = slow_app(calls.clone());
+
+        let one = async { app.clone().oneshot(req(true)).await.unwrap() };
+        let two = async { app.clone().oneshot(req(true)).await.unwrap() };
+        let (one, two) = tokio::join!(one, two);
+
+        for res in [one, two] {
+            assert_eq!(res.headers()[header::CONTENT_TYPE], NDJSON);
+            let lines = frames(res).await;
+            assert_eq!(lines.len(), 1);
+            assert_eq!(lines[0]["data"]["n"], 1);
+        }
         assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 }

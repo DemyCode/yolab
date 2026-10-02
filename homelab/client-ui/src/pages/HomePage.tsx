@@ -11,6 +11,7 @@ import { HealBanner } from "@/components/ForceHeal";
 import { appDisplayName, catalogEntry } from "@/lib/apps";
 import type { AppInfo, CatalogApp } from "@/types/apps";
 import type { ClusterHealth } from "@/types/health";
+import { AnimatedList } from "@/components/motion";
 
 interface Concern {
   tone: "info" | "warning" | "error";
@@ -133,17 +134,15 @@ export function HomePage() {
       ) : (
         <>
           <div className="grid grid-cols-3 gap-2 sm:grid-cols-4 md:grid-cols-6">
-            {installed.map((app) => {
-              const entry = catalogEntry(app, catalogApps);
-              return (
+            <AnimatedList items={installed} keyOf={(app) => app.instance_name}>
+              {(app) => (
                 <AppTile
-                  key={app.instance_name}
                   app={app}
                   name={appDisplayName(app, catalogApps, installed)}
-                  icon={entry?.icon ?? "📦"}
+                  icon={catalogEntry(app, catalogApps)?.icon ?? "📦"}
                 />
-              );
-            })}
+              )}
+            </AnimatedList>
 
             <Link
               to="/add"

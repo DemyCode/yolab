@@ -18,6 +18,7 @@ import { AppDetailPage } from "@/pages/AppDetailPage";
 import { SystemPage } from "@/pages/system/SystemPage";
 import { SystemSubPage } from "@/pages/system/SystemSubPage";
 import { api, setUnauthorizedHandler } from "@/lib/api";
+import { forgetAll } from "@/lib/localCache";
 
 const StoragePage = lazy(() =>
   import("@/pages/system/StoragePage").then((m) => ({
@@ -62,7 +63,10 @@ function Loading() {
 export default function App() {
   const [loggedIn, setLoggedIn] = useState<boolean | null>(null);
 
-  const handleLogout = useCallback(() => setLoggedIn(false), []);
+  const handleLogout = useCallback(() => {
+    forgetAll();
+    setLoggedIn(false);
+  }, []);
 
   useEffect(() => {
     setUnauthorizedHandler(handleLogout);

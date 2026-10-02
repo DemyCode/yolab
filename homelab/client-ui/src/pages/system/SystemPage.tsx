@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { Link, useOutletContext } from "react-router-dom";
 import {
   ChevronRight,
@@ -16,6 +17,7 @@ import { Card } from "@/components/ui/card";
 import { api } from "@/lib/api";
 import { useApi } from "@/lib/useResource";
 import { CacheDot } from "@/components/CacheDot";
+import { RollingNumber } from "@/components/motion";
 import { ThemeControl } from "@/components/ThemeControl";
 import type { CacheMeta } from "@/lib/api";
 import { creditStatus, formatBytes } from "@/lib/format";
@@ -41,7 +43,7 @@ function NavRow({
   onClick?: () => void;
   icon: typeof Database;
   label: string;
-  detail?: string;
+  detail?: ReactNode;
   tone?: "warn" | "error";
   cache?: CacheMeta | null;
   external?: boolean;
@@ -137,9 +139,12 @@ export function SystemPage() {
   const credit = billing.data ? creditStatus(billing.data) : undefined;
 
   const detail = storage.data?.data;
-  const storageDetail = detail
-    ? `${formatBytes(detail.used_bytes)} used of ${formatBytes(detail.total_bytes)}`
-    : health.data?.starting
+  const storageDetail = detail ? (
+    <>
+      <RollingNumber value={detail.used_bytes} format={formatBytes} /> used of{" "}
+      <RollingNumber value={detail.total_bytes} format={formatBytes} />
+    </>
+  ) : health.data?.starting
       ? "Starting up…"
       : undefined;
 
@@ -167,11 +172,12 @@ export function SystemPage() {
 
   const nodeCount = nodes.data?.length ?? 0;
   const nodesDetail =
-    nodeCount === 0
-      ? undefined
-      : nodeCount === 1
-        ? "1 machine"
-        : `${nodeCount} machines`;
+    nodeCount === 0 ? undefined : (
+      <>
+        <RollingNumber value={nodeCount} />{" "}
+        {nodeCount === 1 ? "machine" : "machines"}
+      </>
+    );
 
   return (
     <Page

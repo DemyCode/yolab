@@ -10,9 +10,15 @@ import { GROUPS, groupFor, groupLabel, taglineFor } from "@/catalog/meta";
 import { AppSources } from "@/components/AppSources";
 import { AddFromBackupButton } from "@/components/AddFromBackup";
 import { cn } from "@/lib/utils";
+import { AnimatedList, RollingNumber } from "@/components/motion";
+import { CacheDot } from "@/components/CacheDot";
 import type { AppInfo, CatalogApp } from "@/types/apps";
 
 type Installed = "any" | "installed" | "not-installed";
+
+function catalogKey(app: CatalogApp): string {
+  return `${app.repo}/${app.id}`;
+}
 
 export function AppsPage() {
   const [query, setQuery] = useState("");
@@ -199,10 +205,14 @@ export function AppsPage() {
             </button>
           )}
 
-          <span className="ml-auto text-fg-subtle">
-            {catalog.loading
-              ? ""
-              : `${matches.length} of ${catalog.data?.length ?? 0}`}
+          <span className="ml-auto flex items-center gap-1.5 text-fg-subtle">
+            {!catalog.loading && (
+              <span>
+                <RollingNumber value={matches.length} /> of{" "}
+                <RollingNumber value={catalog.data?.length ?? 0} />
+              </span>
+            )}
+            <CacheDot cache={catalog.cache ?? apps.cache} />
           </span>
         </div>
       )}
@@ -235,26 +245,25 @@ export function AppsPage() {
                 {groupLabel(groupId)}
               </h2>
               <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                {groupApps.map((app) => (
-                  <AppCard
-                    key={`${app.repo}/${app.id}`}
-                    app={app}
-                    count={installedCounts.get(app.id) ?? 0}
-                  />
-                ))}
+                <AnimatedList items={groupApps} keyOf={catalogKey}>
+                  {(app) => (
+                    <AppCard
+                      app={app}
+                      count={installedCounts.get(app.id) ?? 0}
+                    />
+                  )}
+                </AnimatedList>
               </div>
             </section>
           ))}
         </div>
       ) : (
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-          {matches.map((app) => (
-            <AppCard
-              key={`${app.repo}/${app.id}`}
-              app={app}
-              count={installedCounts.get(app.id) ?? 0}
-            />
-          ))}
+          <AnimatedList items={matches} keyOf={catalogKey}>
+            {(app) => (
+              <AppCard app={app} count={installedCounts.get(app.id) ?? 0} />
+            )}
+          </AnimatedList>
         </div>
       )}
 

@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ApiError, getProgressive, isCached } from "./api";
 import type { CacheMeta } from "./api";
+import { recall, remember } from "./localCache";
+import type { Remembered } from "./localCache";
 
 export interface Resource<T> {
   data: T | undefined;
@@ -13,6 +15,25 @@ export interface Resource<T> {
   cached: boolean;
 }
 
+export function rememberedMeta(
+  entry: Remembered<unknown>,
+  now = Date.now(),
+): CacheMeta {
+  return { state: "stale", ageMs: Math.max(0, now - entry.savedAt), ttlMs: 0 };
+}
+
+export function frameSavedAt(meta: CacheMeta | null, now = Date.now()): number {
+  return now - (meta?.ageMs ?? 0);
+}
+
+export function shouldShowFrame(
+  meta: CacheMeta | null,
+  savedAt: number,
+  shownAt: number,
+): boolean {
+  return !isCached(meta) || savedAt >= shownAt;
+}
+
 export function useResource<T>(
   key: string | null,
   fetcher: (
@@ -21,11 +42,29 @@ export function useResource<T>(
   opts: { pollMs?: number } = {},
 ): Resource<T> {
   const { pollMs } = opts;
-  const [data, setData] = useState<T | undefined>(undefined);
-  const [loading, setLoading] = useState(() => Boolean(key));
+  const [initial] = useState(() => (key ? recall<T>(key) : null));
+  const [data, setData] = useState<T | undefined>(initial?.data);
+  const [loading, setLoading] = useState(() => Boolean(key) && !initial);
   const [stale, setStale] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [cache, setCache] = useState<CacheMeta | null>(null);
+  const [cache, setCache] = useState<CacheMeta | null>(() =>
+    initial ? rememberedMeta(initial) : null,
+  );
+
+  const shownAt = useRef(initial?.savedAt ?? -Infinity);
+  const shownKey = useRef(key);
+
+  useEffect(() => {
+    if (shownKey.current === key) return;
+    shownKey.current = key;
+    const entry = key ? recall<T>(key) : null;
+    shownAt.current = entry?.savedAt ?? -Infinity;
+    setData(entry?.data);
+    setCache(entry ? rememberedMeta(entry) : null);
+    setLoading(Boolean(key) && !entry);
+    setStale(false);
+    setError(null);
+  }, [key]);
 
   const fetcherRef = useRef(fetcher);
   fetcherRef.current = fetcher;
@@ -40,20 +79,27 @@ export function useResource<T>(
 
   const refresh = useCallback(async () => {
     if (!key) return;
-    let sawFrame = false;
+    let called = false;
     try {
       const next = await fetcherRef.current((partial, meta) => {
-        if (!alive.current) return;
-        sawFrame = true;
+        called = true;
+        if (!alive.current || shownKey.current !== key) return;
+        const savedAt = frameSavedAt(meta);
+        if (!shouldShowFrame(meta, savedAt, shownAt.current)) return;
+        shownAt.current = savedAt;
+        if (meta) remember(key, partial, savedAt);
         setData(partial);
         setCache(meta);
         setStale(false);
         setError(null);
         setLoading(false);
       });
-      if (!alive.current) return;
-      setData(next);
-      if (!sawFrame) setCache(null);
+      if (!alive.current || shownKey.current !== key) return;
+      if (!called) {
+        shownAt.current = Date.now();
+        setData(next);
+        setCache(null);
+      }
       setStale(false);
       setError(null);
     } catch (e) {

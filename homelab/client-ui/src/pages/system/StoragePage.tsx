@@ -24,6 +24,7 @@ import { CacheDot } from "@/components/CacheDot";
 import { useApi } from "@/lib/useResource";
 import { formatBytes } from "@/lib/format";
 import { cn } from "@/lib/utils";
+import { AnimatedList, RollingNumber } from "@/components/motion";
 import type {
   OsdInfo,
   PoolInfo,
@@ -117,7 +118,7 @@ function FillBar({ pct }: { pct: number }) {
         />
       </div>
       <span className="w-10 text-right text-xs tabular-nums" style={{ color }}>
-        {pct.toFixed(1)}%
+        <RollingNumber value={pct} format={(n) => n.toFixed(1)} />%
       </span>
     </div>
   );
@@ -460,21 +461,23 @@ function DiskList({
   return (
     <>
       <Card className="divide-y divide-border p-0">
-        {present.map(([node, disk]) => (
-          <div key={`${node}/${disk.id}`}>
-            {multiNode && (
-              <p className="bg-surface-2 px-5 py-1.5 text-xs font-medium text-fg-muted">
-                {node}
-              </p>
-            )}
-            <DiskRow
-              node={node}
-              disk={disk}
-              osd={osdFor(disk)}
-              onChanged={onChanged}
-            />
-          </div>
-        ))}
+        <AnimatedList items={present} keyOf={([node, disk]) => `${node}/${disk.id}`}>
+          {([node, disk]) => (
+            <>
+              {multiNode && (
+                <p className="bg-surface-2 px-5 py-1.5 text-xs font-medium text-fg-muted">
+                  {node}
+                </p>
+              )}
+              <DiskRow
+                node={node}
+                disk={disk}
+                osd={osdFor(disk)}
+                onChanged={onChanged}
+              />
+            </>
+          )}
+        </AnimatedList>
         {present.length === 0 && (
           <p className="px-5 py-4 text-sm text-fg-muted">
             None of the disks this machine has seen are connected right now.
@@ -585,10 +588,12 @@ function CapacityCard({
       {total > 0 ? (
         <>
           <p className="font-display text-3xl text-fg">
-            {formatBytes(free)} <span className="text-fg-muted">free</span>
+            <RollingNumber value={free} format={formatBytes} />{" "}
+            <span className="text-fg-muted">free</span>
           </p>
           <p className="mt-1 text-sm text-fg-muted">
-            {formatBytes(used)} of {formatBytes(total)} used
+            <RollingNumber value={used} format={formatBytes} /> of{" "}
+            <RollingNumber value={total} format={formatBytes} /> used
           </p>
           <div className="mt-4 h-2 overflow-hidden rounded-full bg-surface-3">
             <div
