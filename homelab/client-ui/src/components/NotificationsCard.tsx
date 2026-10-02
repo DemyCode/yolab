@@ -58,6 +58,7 @@ export function NotificationsCard() {
   const status = useApi<NotificationsStatus>(
     "notifications",
     "/api/notifications",
+    { persist: false },
   );
   const [sending, setSending] = useState(false);
   const [result, setResult] = useState<string | null>(null);

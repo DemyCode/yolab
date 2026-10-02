@@ -92,7 +92,6 @@ fn concrete(path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cache;
     use crate::testkit::TestApi;
     use axum::http::StatusCode;
 
@@ -234,75 +233,5 @@ mod tests {
         assert_eq!(concrete("/api/apps/:id/pods"), "/api/apps/probe/pods");
         assert_eq!(concrete("/api/disks/:node/:id"), "/api/disks/probe/probe");
         assert_eq!(concrete("/ceph-dashboard/*rest"), "/ceph-dashboard/probe");
-    }
-
-    #[test]
-    fn nothing_that_returns_a_secret_is_cacheable() {
-        for path in [
-            "/api/account/token",
-            "/api/login",
-            "/api/logout",
-            "/api/auth/check",
-            "/api/backups/recovery-key",
-            "/api/ceph/dashboard",
-            "/api/cluster/ceph-join",
-            "/api/notifications",
-        ] {
-            assert!(
-                cache::policy_for(path).is_none(),
-                "{path} returns credentials and would be cached"
-            );
-        }
-    }
-
-    #[test]
-    fn no_heal_route_is_cacheable() {
-        let heal: Vec<&str> = ROUTE_TABLE
-            .iter()
-            .map(|&(p, _)| p)
-            .filter(|p| p.starts_with("/api/heal"))
-            .collect();
-        assert!(!heal.is_empty(), "the table lost the heal routes");
-        for path in heal {
-            assert!(
-                cache::policy_for(path).is_none(),
-                "{path} decides a destructive action and would be cached"
-            );
-        }
-    }
-
-    #[test]
-    fn no_log_route_is_cacheable() {
-        for &(path, _) in ROUTE_TABLE {
-            if path.contains("/logs") || path == "/api/rebuild-log" {
-                assert!(
-                    cache::policy_for(&concrete(path)).is_none(),
-                    "{path} serves logs and would be cached"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn nothing_outside_the_api_is_cacheable() {
-        for &(path, _) in ROUTE_TABLE {
-            if !path.starts_with("/api/") {
-                assert!(
-                    cache::policy_for(&concrete(path)).is_none(),
-                    "{path} is not an API route and would be cached"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn a_cached_body_is_shown_for_less_time_than_it_is_kept() {
-        let policy = cache::policy_for("/api/status").expect("/api/status is cached");
-        assert!(
-            policy.ttl < policy.hard,
-            "ttl {:?} is not shorter than the hard limit {:?}",
-            policy.ttl,
-            policy.hard
-        );
     }
 }

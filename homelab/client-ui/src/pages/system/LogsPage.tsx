@@ -73,7 +73,9 @@ export function LogsPage() {
     return p.toString();
   }, [level, range, unit, search]);
 
-  const logs = useApi<LogsResponse>(`logs?${query}`, `/api/logs?${query}`);
+  const logs = useApi<LogsResponse>(`logs?${query}`, `/api/logs?${query}`, {
+    persist: false,
+  });
 
   const entries = logs.data?.entries ?? [];
   const units = logs.data?.units ?? [];

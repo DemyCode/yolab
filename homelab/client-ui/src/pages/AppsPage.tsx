@@ -11,7 +11,6 @@ import { AppSources } from "@/components/AppSources";
 import { AddFromBackupButton } from "@/components/AddFromBackup";
 import { cn } from "@/lib/utils";
 import { AnimatedList, RollingNumber } from "@/components/motion";
-import { CacheDot } from "@/components/CacheDot";
 import type { AppInfo, CatalogApp } from "@/types/apps";
 
 type Installed = "any" | "installed" | "not-installed";
@@ -212,7 +211,6 @@ export function AppsPage() {
                 <RollingNumber value={catalog.data?.length ?? 0} />
               </span>
             )}
-            <CacheDot cache={catalog.cache ?? apps.cache} />
           </span>
         </div>
       )}

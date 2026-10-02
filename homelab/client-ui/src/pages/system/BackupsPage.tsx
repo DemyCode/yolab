@@ -25,7 +25,6 @@ import {
   protectionTone,
 } from "@/lib/backups";
 import type { ProtectedApp } from "@/lib/backups";
-import { CacheDot } from "@/components/CacheDot";
 
 const STALE_AFTER_HOURS = 36;
 
@@ -252,7 +251,6 @@ export function BackupsPage() {
         <p className="max-w-lg text-sm text-fg-muted">
           Every app is copied on its own schedule, encrypted, to storage outside
           your home. Open one to bring it back as it was at any point in time.
-          <CacheDot cache={protectedApps.cache} className="ml-2" />
         </p>
         {data?.configured && (
           <Button

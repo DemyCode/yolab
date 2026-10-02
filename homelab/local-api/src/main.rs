@@ -1,7 +1,6 @@
 mod appschema;
 mod auth;
 mod boot;
-mod cache;
 mod ceph;
 mod ceph_cli;
 mod cephfs;

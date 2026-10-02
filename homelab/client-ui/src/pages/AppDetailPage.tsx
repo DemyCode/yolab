@@ -1,4 +1,3 @@
-import { CacheDot } from "@/components/CacheDot";
 import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { ArrowLeft, RefreshCw } from "lucide-react";
@@ -904,10 +903,7 @@ export function AppDetailPage() {
           <h1 className="font-display text-[1.75rem] leading-tight text-fg md:text-4xl">
             {name}
           </h1>
-          <div className="flex items-center gap-2">
-            <StatusLine state={state} version={version} />
-            <CacheDot cache={apps.cache} />
-          </div>
+          <StatusLine state={state} version={version} />
         </div>
       </header>
 

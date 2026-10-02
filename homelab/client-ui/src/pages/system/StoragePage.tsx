@@ -20,7 +20,6 @@ import { Sheet } from "@/components/ui/sheet";
 import { Banner, Skeleton } from "@/components/ui/feedback";
 import { ForceHealCard } from "@/components/ForceHeal";
 import { api } from "@/lib/api";
-import { CacheDot } from "@/components/CacheDot";
 import { useApi } from "@/lib/useResource";
 import { formatBytes } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -1285,9 +1284,6 @@ export function StoragePage() {
         </Banner>
       )}
 
-      <div className="flex items-center justify-end -mb-3">
-        <CacheDot cache={detailRes.cache} />
-      </div>
       <CapacityCard
         detail={detail}
         policy={policy}
@@ -1297,7 +1293,6 @@ export function StoragePage() {
       <section>
         <h2 className="mb-3 flex items-center gap-2 text-sm font-semibold text-fg-muted">
           Disks
-          <CacheDot cache={disksRes.cache} />
         </h2>
         <DiskList
           disks={disksRes.data}

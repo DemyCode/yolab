@@ -1,8 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ApiError, getProgressive, isCached } from "./api";
-import type { CacheMeta } from "./api";
+import { ApiError, api } from "./api";
 import { recall, remember } from "./localCache";
-import type { Remembered } from "./localCache";
 
 export interface Resource<T> {
   data: T | undefined;
@@ -11,63 +9,45 @@ export interface Resource<T> {
   error: string | null;
   refresh: () => Promise<void>;
   mutate: (updater: T | ((prev: T | undefined) => T)) => void;
-  cache: CacheMeta | null;
-  cached: boolean;
 }
 
-export function rememberedMeta(
-  entry: Remembered<unknown>,
-  now = Date.now(),
-): CacheMeta {
-  return { state: "stale", ageMs: Math.max(0, now - entry.savedAt), ttlMs: 0 };
+export interface ResourceOptions {
+  pollMs?: number;
+  persist?: boolean;
 }
 
-export function frameSavedAt(meta: CacheMeta | null, now = Date.now()): number {
-  return now - (meta?.ageMs ?? 0);
-}
-
-export function shouldShowFrame(
-  meta: CacheMeta | null,
-  savedAt: number,
-  shownAt: number,
-): boolean {
-  return !isCached(meta) || savedAt >= shownAt;
+function recallIf<T>(key: string | null, persist: boolean) {
+  return persist && key ? recall<T>(key) : null;
 }
 
 export function useResource<T>(
   key: string | null,
-  fetcher: (
-    onPartial: (value: T, meta: CacheMeta | null) => void,
-  ) => Promise<T>,
-  opts: { pollMs?: number } = {},
+  fetcher: () => Promise<T>,
+  opts: ResourceOptions = {},
 ): Resource<T> {
-  const { pollMs } = opts;
-  const [initial] = useState(() => (key ? recall<T>(key) : null));
+  const { pollMs, persist = false } = opts;
+  const [initial] = useState(() => recallIf<T>(key, persist));
   const [data, setData] = useState<T | undefined>(initial?.data);
   const [loading, setLoading] = useState(() => Boolean(key) && !initial);
   const [stale, setStale] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [cache, setCache] = useState<CacheMeta | null>(() =>
-    initial ? rememberedMeta(initial) : null,
-  );
 
-  const shownAt = useRef(initial?.savedAt ?? -Infinity);
   const shownKey = useRef(key);
 
   useEffect(() => {
     if (shownKey.current === key) return;
     shownKey.current = key;
-    const entry = key ? recall<T>(key) : null;
-    shownAt.current = entry?.savedAt ?? -Infinity;
+    const entry = recallIf<T>(key, persist);
     setData(entry?.data);
-    setCache(entry ? rememberedMeta(entry) : null);
     setLoading(Boolean(key) && !entry);
     setStale(false);
     setError(null);
-  }, [key]);
+  }, [key, persist]);
 
   const fetcherRef = useRef(fetcher);
-  fetcherRef.current = fetcher;
+  useEffect(() => {
+    fetcherRef.current = fetcher;
+  });
 
   const alive = useRef(true);
   useEffect(() => {
@@ -79,27 +59,11 @@ export function useResource<T>(
 
   const refresh = useCallback(async () => {
     if (!key) return;
-    let called = false;
     try {
-      const next = await fetcherRef.current((partial, meta) => {
-        called = true;
-        if (!alive.current || shownKey.current !== key) return;
-        const savedAt = frameSavedAt(meta);
-        if (!shouldShowFrame(meta, savedAt, shownAt.current)) return;
-        shownAt.current = savedAt;
-        if (meta) remember(key, partial, savedAt);
-        setData(partial);
-        setCache(meta);
-        setStale(false);
-        setError(null);
-        setLoading(false);
-      });
+      const next = await fetcherRef.current();
       if (!alive.current || shownKey.current !== key) return;
-      if (!called) {
-        shownAt.current = Date.now();
-        setData(next);
-        setCache(null);
-      }
+      if (persist) remember(key, next, Date.now());
+      setData(next);
       setStale(false);
       setError(null);
     } catch (e) {
@@ -111,7 +75,7 @@ export function useResource<T>(
     } finally {
       if (alive.current) setLoading(false);
     }
-  }, [key]);
+  }, [key, persist]);
 
   useEffect(() => {
     void refresh();
@@ -144,19 +108,16 @@ export function useResource<T>(
     error,
     refresh,
     mutate,
-    cache,
-    cached: isCached(cache),
   };
 }
 
 export function useApi<T>(
   key: string | null,
   path: string,
-  opts: { pollMs?: number } = {},
+  opts: ResourceOptions = {},
 ): Resource<T> {
-  return useResource<T>(
-    key,
-    (onPartial) => getProgressive<T>(path, onPartial),
-    opts,
-  );
+  return useResource<T>(key, () => api.get<T>(path), {
+    persist: true,
+    ...opts,
+  });
 }

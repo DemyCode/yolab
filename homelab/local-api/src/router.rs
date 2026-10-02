@@ -10,7 +10,7 @@ use crate::routers::{
     apps, backups, ceph as ceph_api, ceph_join, custom_app, disks, logs, nodes, reboot, rebuild,
     status, terminal, update,
 };
-use crate::{auth, cache, heal, mesh, notify, runtime, topology, AppState};
+use crate::{auth, heal, mesh, notify, runtime, topology, AppState};
 
 pub fn build_router(state: AppState) -> Router {
     let auth_state = state.auth.clone();
@@ -133,7 +133,6 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/apps/:id/pods", get(apps::list_pods))
         .route("/api/apps/:id/logs/:pod_name", get(apps::pod_logs))
         .route("/api/terminal/exec", post(terminal::exec))
-        .layer(middleware::from_fn(cache::middleware))
         .layer(middleware::from_fn_with_state(auth_state, auth_middleware))
         .layer(cors)
         .with_state(state)

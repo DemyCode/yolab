@@ -6,7 +6,6 @@ import { AppTile, AppTileSkeleton } from "@/components/AppTile";
 import { Banner, EmptyState, ServiceTrouble } from "@/components/ui/feedback";
 import { buttonClass } from "@/components/ui/button-variants";
 import { useApi } from "@/lib/useResource";
-import { CacheDot } from "@/components/CacheDot";
 import { HealBanner } from "@/components/ForceHeal";
 import { appDisplayName, catalogEntry } from "@/lib/apps";
 import type { AppInfo, CatalogApp } from "@/types/apps";
@@ -73,7 +72,6 @@ export function HomePage() {
           </h1>
           <p className="mt-1 flex items-center gap-2 text-sm text-fg-muted">
             Everything running at home. Tap one to open it.
-            <CacheDot cache={health.cache ?? apps.cache} />
           </p>
         </div>
       </header>

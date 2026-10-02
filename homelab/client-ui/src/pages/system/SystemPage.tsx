@@ -16,10 +16,8 @@ import { Page } from "@/components/AppShell";
 import { Card } from "@/components/ui/card";
 import { api } from "@/lib/api";
 import { useApi } from "@/lib/useResource";
-import { CacheDot } from "@/components/CacheDot";
 import { RollingNumber } from "@/components/motion";
 import { ThemeControl } from "@/components/ThemeControl";
-import type { CacheMeta } from "@/lib/api";
 import { creditStatus, formatBytes } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type { StorageDetailResponse } from "@/types/storage";
@@ -35,7 +33,6 @@ function NavRow({
   label,
   detail,
   tone,
-  cache,
   external,
 }: {
   to?: string;
@@ -45,7 +42,6 @@ function NavRow({
   label: string;
   detail?: ReactNode;
   tone?: "warn" | "error";
-  cache?: CacheMeta | null;
   external?: boolean;
 }) {
   const inner = (
@@ -72,7 +68,6 @@ function NavRow({
             )}
           >
             <span className={cn(!tone && "truncate")}>{detail}</span>
-            <CacheDot cache={cache ?? null} />
           </div>
         )}
       </div>
@@ -190,7 +185,6 @@ export function SystemPage() {
           icon={Database}
           label="Storage"
           detail={storageDetail}
-          cache={storage.cache}
           tone={
             health.data?.level === "error"
               ? "error"
@@ -203,7 +197,6 @@ export function SystemPage() {
           to="/system/backups"
           icon={Cloud}
           label="Backups"
-          cache={backups.cache}
           detail={
             backups.data === undefined
               ? undefined
@@ -218,7 +211,6 @@ export function SystemPage() {
           icon={Server}
           label="Machines"
           detail={nodesDetail}
-          cache={nodes.cache}
         />
         <NavRow
           to="/system/updates"
@@ -233,7 +225,6 @@ export function SystemPage() {
             label="Account and billing"
             detail={credit?.text ?? "Your credit, top-ups and referral code"}
             tone={credit?.tone}
-            cache={billing.cache}
             external
           />
         )}
