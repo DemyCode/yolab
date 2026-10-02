@@ -1,8 +1,7 @@
 import unittest
 
-import yaml
-
 import check_charts
+import yaml
 
 EXPLORER_ON = {"properties": {"file_explorer_enabled": {"const": True}}}
 
@@ -232,9 +231,17 @@ def explorer_chart(
     if header_up:
         caddyfile += " {\n    header_up X-Yolab-User {http.auth.user.id}\n  }"
     caddyfile += "\n}\n"
-    data_volume = {"name": "data", "persistentVolumeClaim": {"claimName": "release-data"}}
+    data_volume = {
+        "name": "data",
+        "persistentVolumeClaim": {"claimName": "release-data"},
+    }
     explorer_mounts = [
-        {"name": "data", "mountPath": "/srv/data", "subPath": "release", "readOnly": read_only}
+        {
+            "name": "data",
+            "mountPath": "/srv/data",
+            "subPath": "release",
+            "readOnly": read_only,
+        }
     ] + [
         {"name": "data", "mountPath": f"/srv/data/{p}", "subPath": p, "readOnly": True}
         for p in protected
@@ -352,7 +359,9 @@ class FileExplorerContainer(unittest.TestCase):
             )
         self.assertFalse(
             check_charts.DATABASE_IMAGES.match(
-                check_charts.image_name("ghcr.io/umami-software/umami:postgresql-latest")
+                check_charts.image_name(
+                    "ghcr.io/umami-software/umami:postgresql-latest"
+                )
             )
         )
 
@@ -365,14 +374,14 @@ class FileExplorerReadOnly(unittest.TestCase):
 
     def test_a_writable_mount_under_read_only_is_reported(self):
         found = explorer_failures(explorer_chart(), read_only=True)
-        self.assertTrue(any("mounts release-data:'release' writable" in f for f in found))
+        self.assertTrue(
+            any("mounts release-data:'release' writable" in f for f in found)
+        )
 
     def test_write_permissions_under_read_only_are_reported(self):
         found = explorer_failures(explorer_chart(), read_only=True)
         self.assertTrue(any("leaves source demo writable" in f for f in found))
-        self.assertTrue(
-            any("still grants modify, create, delete" in f for f in found)
-        )
+        self.assertTrue(any("still grants modify, create, delete" in f for f in found))
 
 
 def pod(*containers):

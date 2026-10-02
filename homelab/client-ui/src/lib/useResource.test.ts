@@ -12,7 +12,10 @@ describe("useResource frame ordering", () => {
 
   it("dates a frame by its age, not by when it arrived", () => {
     expect(
-      frameSavedAt({ state: "stale", ageMs: 3_600_000, ttlMs: 15_000 }, 4_000_000),
+      frameSavedAt(
+        { state: "stale", ageMs: 3_600_000, ttlMs: 15_000 },
+        4_000_000,
+      ),
     ).toBe(400_000);
   });
 
@@ -28,9 +31,9 @@ describe("useResource frame ordering", () => {
 
   it("always shows the real answer", () => {
     for (const state of ["fresh", "miss"] as const) {
-      expect(shouldShowFrame({ state, ageMs: 0, ttlMs: 15_000 }, 0, 5_000)).toBe(
-        true,
-      );
+      expect(
+        shouldShowFrame({ state, ageMs: 0, ttlMs: 15_000 }, 0, 5_000),
+      ).toBe(true);
     }
     expect(shouldShowFrame(null, 0, 5_000)).toBe(true);
   });

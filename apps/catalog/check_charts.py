@@ -465,7 +465,10 @@ def check_file_explorer(app, docs, fail):
         None,
     )
     if explorer is None:
-        fail(app, f"pod {pod_name} runs file-explorer-init but no file-explorer container")
+        fail(
+            app,
+            f"pod {pod_name} runs file-explorer-init but no file-explorer container",
+        )
         return
 
     config = explorer_config(docs)
@@ -548,7 +551,10 @@ def check_file_explorer_read_only(app, docs, fail):
     ) or []:
         cfg = source.get("config") or {}
         if cfg.get("readOnly") is not True:
-            fail(app, f"read-only file-explorer leaves source {source.get('name')} writable")
+            fail(
+                app,
+                f"read-only file-explorer leaves source {source.get('name')} writable",
+            )
         granted = [
             k
             for k in ("modify", "create", "delete")

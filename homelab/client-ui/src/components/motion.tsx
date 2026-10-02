@@ -56,9 +56,7 @@ export function AnimatedList<T>({
   children: (item: T) => ReactNode;
   itemClassName?: string;
 }) {
-  const [rows, setRows] = useState<Row<T>[]>(() =>
-    mergeRows([], items, keyOf),
-  );
+  const [rows, setRows] = useState<Row<T>[]>(() => mergeRows([], items, keyOf));
   const nodes = useRef(new Map<string, HTMLElement>());
   const before = useRef(new Map<string, DOMRect>());
   const seen = useRef(new Set(rows.map((r) => r.key)));
@@ -87,7 +85,9 @@ export function AnimatedList<T>({
         const drop = () => {
           exiting.current.delete(row.key);
           snapshot();
-          setRows((prev) => prev.filter((r) => !(r.key === row.key && r.leaving)));
+          setRows((prev) =>
+            prev.filter((r) => !(r.key === row.key && r.leaving)),
+          );
         };
         if (!canAnimate(el)) return drop();
         el.style.pointerEvents = "none";

@@ -144,9 +144,9 @@ export function SystemPage() {
       <RollingNumber value={detail.used_bytes} format={formatBytes} /> used of{" "}
       <RollingNumber value={detail.total_bytes} format={formatBytes} />
     </>
-  ) : health.data?.starting
-      ? "Starting up…"
-      : undefined;
+  ) : health.data?.starting ? (
+    "Starting up…"
+  ) : undefined;
 
   async function openConsole() {
     const w = window.open("about:blank", "_blank");

@@ -461,7 +461,10 @@ function DiskList({
   return (
     <>
       <Card className="divide-y divide-border p-0">
-        <AnimatedList items={present} keyOf={([node, disk]) => `${node}/${disk.id}`}>
+        <AnimatedList
+          items={present}
+          keyOf={([node, disk]) => `${node}/${disk.id}`}
+        >
           {([node, disk]) => (
             <>
               {multiNode && (
