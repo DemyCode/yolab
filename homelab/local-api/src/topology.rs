@@ -15,9 +15,7 @@ pub struct StoragePolicy {
     pub failure_domain: String,
 }
 
-pub fn min_size_for(size: u32) -> u32 {
-    size.saturating_sub(1).max(1)
-}
+pub const MIN_SIZE: u32 = 1;
 
 pub enum PolicyState {
     NotChosen,
@@ -45,7 +43,7 @@ pub fn compute_target(policy: &StoragePolicy, topo: &Topology) -> Target {
 
     Target {
         size: policy.size,
-        min_size: min_size_for(policy.size),
+        min_size: MIN_SIZE,
         failure_domain: policy.failure_domain.clone(),
         mon,
         mgr,
@@ -318,7 +316,6 @@ async fn apply_pools<H: Host>(host: &H, target: &Target) {
             continue;
         };
         let want = target.size;
-        let min = min_size_for(want);
 
         host.ceph(&["osd", "pool", "set", pool, "crush_rule", rule])
             .await
@@ -346,7 +343,7 @@ async fn apply_pools<H: Host>(host: &H, target: &Target) {
                 );
             }
         }
-        let ms = min.to_string();
+        let ms = MIN_SIZE.to_string();
         host.ceph(&["osd", "pool", "set", pool, "min_size", &ms])
             .await
             .warn_on_err(format!("topology: set min_size on {pool}"));
@@ -485,21 +482,21 @@ mod tests {
 
     #[test]
     fn a_single_copy_still_accepts_writes_because_refusing_would_mean_no_storage_at_all() {
-        assert_eq!(min_size_for(1), 1);
         let t = compute_target(&policy(1, "osd"), &topo(1, 1, 1));
         assert_eq!(t.min_size, 1);
     }
 
     #[test]
-    fn replicated_pools_stop_accepting_writes_before_the_last_copy_is_left() {
+    fn files_stay_reachable_while_any_copy_is_left_whatever_the_copy_count() {
         for size in [2u32, 3, 7] {
-            assert_eq!(
-                min_size_for(size),
-                size - 1,
-                "size={size}: a pool that keeps taking writes down to one surviving \
-                 copy loses acknowledged data the moment that copy dies, which is \
-                 exactly what the Storage page promises it will not do"
-            );
+            for fd in ["osd", "host"] {
+                assert_eq!(
+                    compute_target(&policy(size, fd), &topo(2, 3, 2)).min_size,
+                    1,
+                    "size={size} fd={fd}: rebooting the machine that holds most copies \
+                     must not take the files offline"
+                );
+            }
         }
     }
 
@@ -701,6 +698,38 @@ mod tests {
             assert!(host.ran("ceph osd pool set images min_size 1"));
             assert!(host.ran("ceph osd pool set images crush_rule replicated_rule"));
             assert!(!host.ran(".nfs"), "{:?}", host.calls());
+        }
+
+        #[tokio::test]
+        async fn raising_one_copy_to_three_keeps_every_pool_serving_from_the_copy_it_has() {
+            let host = FakeHost::new()
+                .ok("ceph osd pool ls", "images\nyolab-fs-data0\n")
+                .ok("ceph osd pool get images size", r#"{"size": 1}"#)
+                .ok("ceph osd pool get yolab-fs-data0 size", r#"{"size": 1}"#)
+                .ok("ceph osd crush rule ls", "replicated_osd\n")
+                .ok("ceph osd pool set", "");
+            apply_pools(&host, &target(3, "osd")).await;
+            for pool in ["images", "yolab-fs-data0"] {
+                assert!(host.ran(&format!("ceph osd pool set {pool} size 3")));
+                assert!(host.ran(&format!("ceph osd pool set {pool} min_size 1")));
+                assert!(
+                    !host.ran(&format!("ceph osd pool set {pool} min_size 2")),
+                    "{:?}",
+                    host.calls()
+                );
+            }
+        }
+
+        #[tokio::test]
+        async fn a_pool_left_at_a_higher_floor_is_brought_back_to_one() {
+            let host = FakeHost::new()
+                .ok("ceph osd pool ls", "images\n")
+                .ok("ceph osd pool get images size", r#"{"size": 3}"#)
+                .ok("ceph osd crush rule ls", "replicated_osd\n")
+                .ok("ceph osd pool set", "");
+            apply_pools(&host, &target(3, "osd")).await;
+            assert!(!host.ran("ceph osd pool set images size"), "{:?}", host.calls());
+            assert!(host.ran("ceph osd pool set images min_size 1"));
         }
 
         #[tokio::test]
