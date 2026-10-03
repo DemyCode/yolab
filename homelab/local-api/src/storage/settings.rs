@@ -120,7 +120,10 @@ mod tests {
     fn ceph_only_takes_printable_ascii_so_other_characters_are_escaped_and_read_back_unchanged() {
         let text = "Finishing up — do not unplug yet. Can’t 🙂";
         let raw = ascii_json(&serde_json::json!({ "message": text }).to_string());
-        assert!(raw.chars().all(|c| c.is_ascii() && !c.is_ascii_control()), "{raw}");
+        assert!(
+            raw.chars().all(|c| c.is_ascii() && !c.is_ascii_control()),
+            "{raw}"
+        );
         let back: serde_json::Value = serde_json::from_str(&raw).unwrap();
         assert_eq!(back["message"], text);
     }
