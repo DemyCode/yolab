@@ -36,6 +36,7 @@ import { useApi, useResource } from "@/lib/useResource";
 import { formatBytes } from "@/lib/format";
 import {
   isVisible,
+  movementCopy,
   needsAttentionEverywhere,
   useMovement,
 } from "@/lib/movement";
@@ -61,6 +62,7 @@ import { cn } from "@/lib/utils";
 import type { AppInfo, CatalogApp } from "@/types/apps";
 import type {
   DiskInfo,
+  Movement,
   Osd,
   OsdChecks,
   StorageOverview,
@@ -121,11 +123,16 @@ function storedTimes(copies: number): string {
 function StatusLine({
   overview,
   policy,
+  movement,
 }: {
   overview: StorageOverview | undefined;
   policy: StoragePolicyData | undefined;
+  movement: Movement | undefined;
 }) {
-  const line = statusLine(overview, policy?.target);
+  const happening = isVisible(movement)
+    ? (movementCopy(movement)?.headline ?? null)
+    : null;
+  const line = statusLine(overview, policy?.target, happening);
   if (!line) return <Skeleton className="-mt-4 h-4 w-64" />;
   return (
     <p className="-mt-4 flex items-center gap-2 text-sm text-fg-muted">
@@ -973,7 +980,11 @@ export function StoragePage() {
 
   return (
     <div>
-      <StatusLine overview={overview} policy={policy} />
+      <StatusLine
+        overview={overview}
+        policy={policy}
+        movement={movement.data}
+      />
 
       <div className="mt-6 space-y-4 empty:hidden">
         <ForceHealCard />

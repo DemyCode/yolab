@@ -95,6 +95,7 @@ export function placesFor(osds: Osd[], domain: Domain): number {
 export function statusLine(
   overview: StorageOverview | undefined,
   target: StorageTarget | null | undefined,
+  happening: string | null = null,
 ): { tone: Tone; text: string } | null {
   if (!overview) return null;
   const disks = overview.osds.filter((o) => o.weight > 0).length;
@@ -114,7 +115,10 @@ export function statusLine(
     case "HEALTH_ERR":
       return { tone: "bad", text: `Needs you now · ${detail}` };
     default:
-      return { tone: "warn", text: `Needs attention · ${detail}` };
+      return {
+        tone: "warn",
+        text: `${happening ?? "Needs attention"} · ${detail}`,
+      };
   }
 }
 

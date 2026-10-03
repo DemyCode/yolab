@@ -209,6 +209,32 @@ describe("statusLine", () => {
     expect([warn?.tone, err?.tone]).toEqual(["warn", "bad"]);
   });
 
+  it("names the job behind a warning instead of asking for attention", () => {
+    const line = statusLine(
+      overview({ health: "HEALTH_WARN" }),
+      target(),
+      "Adding a third copy of every file",
+    );
+    expect(line).toEqual({
+      tone: "warn",
+      text: "Adding a third copy of every file · 2 copies of everything · 2 disks · 2 machines",
+    });
+  });
+
+  it("asks for attention when no job explains the warning", () => {
+    expect(
+      statusLine(overview({ health: "HEALTH_WARN" }), target(), null)?.text,
+    ).toMatch(/^Needs attention · /);
+  });
+
+  it("keeps ceph's own word when it is healthy or in error", () => {
+    const busy = "Adding a third copy of every file";
+    expect(statusLine(overview(), target(), busy)?.text).toMatch(/^Healthy · /);
+    expect(
+      statusLine(overview({ health: "HEALTH_ERR" }), target(), busy)?.text,
+    ).toMatch(/^Needs you now · /);
+  });
+
   it("says nothing before the first answer", () => {
     expect(statusLine(undefined, target())).toBeNull();
   });
