@@ -3430,14 +3430,21 @@ mod tests {
     }
 
     #[test]
-    fn a_drain_with_fewer_places_than_copies_still_empties_the_disk_and_says_how_many_copies_are_left() {
+    fn a_drain_with_fewer_places_than_copies_still_empties_the_disk_and_says_how_many_copies_are_left(
+    ) {
         let m = drain_message(2, Some(3));
         assert!(!m.contains("cannot be emptied"), "{m}");
         assert!(!m.contains("Lower the number of copies"), "{m}");
-        assert!(m.starts_with("Moving this disk's files onto the others."), "{m}");
+        assert!(
+            m.starts_with("Moving this disk's files onto the others."),
+            "{m}"
+        );
         assert!(m.contains("You asked for 3 copies"), "{m}");
         assert!(m.contains("only 2 places"), "{m}");
-        assert!(m.contains("everything keeps 2 copies until you add another disk"), "{m}");
+        assert!(
+            m.contains("everything keeps 2 copies until you add another disk"),
+            "{m}"
+        );
         assert!(m.contains("until this finishes"), "{m}");
     }
 
