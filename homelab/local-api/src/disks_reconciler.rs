@@ -1828,15 +1828,15 @@ async fn write_status<H: Host>(host: &H, node: &str, meta: &HashMap<String, Disk
         .iter()
         .map(|(k, d)| (k.as_str(), d.to_value()))
         .collect();
-    let payload = json!({ "disks": wire }).to_string();
+    let payload = settings::ascii_json(&json!({ "disks": wire }).to_string());
     if last_published(node).as_deref() == Some(payload.as_str()) {
         return;
     }
     let key = format!("{}{node}", settings::DISK_STATUS);
-    settings::set(host, &key, &payload)
-        .await
-        .warn_on_err("publish this node's disk inventory");
-    remember_published(node, payload);
+    match settings::set(host, &key, &payload).await {
+        Ok(()) => remember_published(node, payload),
+        Err(e) => tracing::warn!("publish this node's disk inventory: {e}"),
+    }
 }
 
 static PUBLISHED_STATUS: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
@@ -2973,6 +2973,41 @@ mod tests {
             "nothing changed, so nothing should be written: {:?}",
             second.calls()
         );
+    }
+
+    #[tokio::test]
+    async fn an_inventory_ceph_refused_is_sent_again_next_tick() {
+        let meta = HashMap::from([("dev-sdb".to_string(), disk(Ownership::Blank))]);
+        let refusing = FakeHost::new().fail(
+            "ceph config-key set yolab/disk-status/node-refused",
+            "Error EINVAL: invalid command",
+        );
+        write_status(&refusing, "node-refused", &meta).await;
+
+        let accepting =
+            FakeHost::new().ok("ceph config-key set yolab/disk-status/node-refused", "");
+        write_status(&accepting, "node-refused", &meta).await;
+        assert!(
+            accepting.ran("ceph config-key set yolab/disk-status/node-refused"),
+            "a refused write must not count as published: {:?}",
+            accepting.calls()
+        );
+    }
+
+    #[tokio::test]
+    async fn an_inventory_whose_text_has_a_dash_reaches_ceph_as_ascii() {
+        let mut d = disk(Ownership::Blank);
+        d.model = "easystore — 2647".into();
+        let meta = HashMap::from([("dev-sdb".to_string(), d)]);
+        let host = FakeHost::new().ok("ceph config-key set yolab/disk-status/node-dash", "");
+        write_status(&host, "node-dash", &meta).await;
+        let sent = host
+            .calls()
+            .into_iter()
+            .find(|c| c.contains("yolab/disk-status/node-dash"))
+            .unwrap();
+        assert!(sent.is_ascii(), "{sent}");
+        assert!(sent.contains(r"easystore — 2647"), "{sent}");
     }
 
     #[tokio::test]

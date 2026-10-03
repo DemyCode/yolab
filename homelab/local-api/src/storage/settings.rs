@@ -53,6 +53,21 @@ pub async fn get_json<H: Host, T: DeserializeOwned>(
     }
 }
 
+pub fn ascii_json(json: &str) -> String {
+    let mut out = String::with_capacity(json.len());
+    let mut units = [0u16; 2];
+    for c in json.chars() {
+        if c.is_ascii() {
+            out.push(c);
+        } else {
+            for u in c.encode_utf16(&mut units) {
+                out.push_str(&format!("\\u{u:04x}"));
+            }
+        }
+    }
+    out
+}
+
 pub async fn set_json<H: Host, T: Serialize>(
     host: &H,
     key: &str,
@@ -60,7 +75,7 @@ pub async fn set_json<H: Host, T: Serialize>(
 ) -> Result<(), CmdError> {
     let raw =
         serde_json::to_string(value).map_err(|e| CmdError::parse(format!("serialise {key}"), e))?;
-    set(host, key, &raw).await
+    set(host, key, &ascii_json(&raw)).await
 }
 
 #[cfg(test)]
@@ -99,6 +114,24 @@ mod tests {
         assert!(get_json::<_, serde_json::Value>(&junk, STORAGE_POLICY)
             .await
             .is_err());
+    }
+
+    #[test]
+    fn ceph_only_takes_printable_ascii_so_other_characters_are_escaped_and_read_back_unchanged() {
+        let text = "Finishing up — do not unplug yet. Can’t 🙂";
+        let raw = ascii_json(&serde_json::json!({ "message": text }).to_string());
+        assert!(raw.chars().all(|c| c.is_ascii() && !c.is_ascii_control()), "{raw}");
+        let back: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(back["message"], text);
+    }
+
+    #[tokio::test]
+    async fn a_value_with_a_dash_is_sent_to_ceph_as_ascii() {
+        let host = FakeHost::new().ok("ceph config-key set yolab/storage-policy", "");
+        set_json(&host, STORAGE_POLICY, &serde_json::json!({"note": "a — b"}))
+            .await
+            .unwrap();
+        assert!(host.ran(r#"{"note":"a — b"}"#), "{:?}", host.calls());
     }
 
     #[tokio::test]
