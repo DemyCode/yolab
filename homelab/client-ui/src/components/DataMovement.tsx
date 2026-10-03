@@ -178,7 +178,11 @@ export function MovementSummary() {
   const copy = movementCopy(data);
   if (!copy) return null;
   const progress = overallProgress(data);
-  if (data.state === "unavailable" || copy.jobs.length === 0 || progress === null)
+  if (
+    data.state === "unavailable" ||
+    copy.jobs.length === 0 ||
+    progress === null
+  )
     return <>{copy.headline}</>;
   return (
     <>
