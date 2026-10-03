@@ -134,7 +134,11 @@ mod tests {
         set_json(&host, STORAGE_POLICY, &serde_json::json!({"note": "a — b"}))
             .await
             .unwrap();
-        assert!(host.ran(r#"{"note":"a — b"}"#), "{:?}", host.calls());
+        let sent = host.calls().pop().unwrap();
+        assert!(sent.is_ascii(), "{sent}");
+        let (_, payload) = sent.split_once("yolab/storage-policy ").unwrap();
+        let back: serde_json::Value = serde_json::from_str(payload).unwrap();
+        assert_eq!(back["note"], "a — b");
     }
 
     #[tokio::test]

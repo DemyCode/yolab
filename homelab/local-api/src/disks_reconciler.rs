@@ -3012,7 +3012,9 @@ mod tests {
             .find(|c| c.contains("yolab/disk-status/node-dash"))
             .unwrap();
         assert!(sent.is_ascii(), "{sent}");
-        assert!(sent.contains(r"easystore — 2647"), "{sent}");
+        let (_, payload) = sent.split_once("node-dash ").unwrap();
+        let back: Value = serde_json::from_str(payload).unwrap();
+        assert_eq!(back["disks"]["dev-sdb"]["model"], "easystore — 2647");
     }
 
     #[tokio::test]
