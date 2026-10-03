@@ -527,12 +527,17 @@ fn drain_message(targets: usize, size: Option<u32>) -> String {
     }
 
     if targets < size as usize {
+        let kept = if targets == 1 {
+            "1 copy".to_string()
+        } else {
+            format!("{targets} copies")
+        };
         return format!(
-            "This disk cannot be emptied yet. You have asked for {size} copies of \
-             everything, and taking this disk out leaves only {targets} other \
-             place{plural} to keep them — so there is nowhere for its files to go. \
-             Lower the number of copies to {targets}, or add another disk, and this \
-             finishes on its own.",
+            "Moving this disk's files onto the others. You asked for {size} copies, \
+             but without this disk there {are} only {targets} place{plural} to keep \
+             them, so everything keeps {kept} until you add another disk. Do not \
+             unplug it until this finishes.",
+            are = if targets == 1 { "is" } else { "are" },
             plural = if targets == 1 { "" } else { "s" }
         );
     }
@@ -3425,15 +3430,22 @@ mod tests {
     }
 
     #[test]
-    fn a_drain_with_nowhere_to_go_says_so_and_says_what_to_do() {
+    fn a_drain_with_fewer_places_than_copies_still_empties_the_disk_and_says_how_many_copies_are_left() {
         let m = drain_message(2, Some(3));
-        assert!(m.contains("cannot be emptied"), "{m}");
-        assert!(m.contains("Lower the number of copies to 2"), "{m}");
-        assert!(m.contains("add another disk"), "{m}");
-        assert!(
-            !m.contains("until this finishes"),
-            "must not promise completion it cannot deliver: {m}"
-        );
+        assert!(!m.contains("cannot be emptied"), "{m}");
+        assert!(!m.contains("Lower the number of copies"), "{m}");
+        assert!(m.starts_with("Moving this disk's files onto the others."), "{m}");
+        assert!(m.contains("You asked for 3 copies"), "{m}");
+        assert!(m.contains("only 2 places"), "{m}");
+        assert!(m.contains("everything keeps 2 copies until you add another disk"), "{m}");
+        assert!(m.contains("until this finishes"), "{m}");
+    }
+
+    #[test]
+    fn a_single_place_left_is_named_in_the_singular() {
+        let m = drain_message(1, Some(2));
+        assert!(m.contains("there is only 1 place to keep"), "{m}");
+        assert!(m.contains("everything keeps 1 copy until"), "{m}");
     }
 
     #[test]
