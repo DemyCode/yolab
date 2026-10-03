@@ -164,10 +164,13 @@ export function movementCopy(m: Movement): MovementCopy | null {
         headline: m.waiting_for.length
           ? `Waiting for ${list(m.waiting_for)}`
           : "Some of your files can't be reached",
-        safety:
-          "Some files can't be opened until it's back. Apps that use them may pause.",
+        safety: m.waiting_for.length
+          ? "Some files can't be opened until it's back. Apps that use them may pause."
+          : jobs.length
+            ? "Some files can't be opened until enough copies are made. Apps that use them may pause."
+            : "Some files can't be opened right now. Apps that use them may pause.",
         tone: "error",
-        jobs: [],
+        jobs,
       };
     case "no_room":
       return {

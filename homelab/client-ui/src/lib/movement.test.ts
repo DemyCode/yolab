@@ -97,7 +97,33 @@ describe("movementCopy", () => {
     );
     expect(copy?.headline).toBe("Waiting for node1 and node2");
     expect(copy?.tone).toBe("error");
+    expect(copy?.safety).toMatch(/until it's back/);
+  });
+
+  it("keeps showing the copying while files are out of reach with every disk up", () => {
+    const copy = movementCopy(
+      movement({
+        state: "unavailable",
+        jobs: [
+          job({
+            kind: "add_copies",
+            to_move_bytes: 100,
+            moved_bytes: 40,
+            progress: 0.4,
+          }),
+        ],
+        copies: 3,
+      }),
+    );
+    expect(copy?.headline).toBe("Some of your files can't be reached");
+    expect(copy?.jobs.map((j) => j.job.kind)).toEqual(["add_copies"]);
+    expect(copy?.safety).toMatch(/until enough copies are made/);
+  });
+
+  it("does not wait for a machine when none is down and nothing is copying", () => {
+    const copy = movementCopy(movement({ state: "unavailable", jobs: [] }));
     expect(copy?.jobs).toEqual([]);
+    expect(copy?.safety).not.toMatch(/until it's back/);
   });
 
   it("says nothing when everything is in place or unknown", () => {

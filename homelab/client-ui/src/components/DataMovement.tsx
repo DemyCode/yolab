@@ -178,7 +178,8 @@ export function MovementSummary() {
   const copy = movementCopy(data);
   if (!copy) return null;
   const progress = overallProgress(data);
-  if (copy.jobs.length === 0 || progress === null) return <>{copy.headline}</>;
+  if (data.state === "unavailable" || copy.jobs.length === 0 || progress === null)
+    return <>{copy.headline}</>;
   return (
     <>
       {copy.jobs.length > 1 ? "Reorganising files" : "Moving files"},{" "}

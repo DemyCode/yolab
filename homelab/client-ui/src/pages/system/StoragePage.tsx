@@ -27,7 +27,6 @@ import { ForceHealCard } from "@/components/ForceHeal";
 import {
   DataMovementCard,
   DrainProgress,
-  MovementBanner,
 } from "@/components/DataMovement";
 import {
   AnimatedList,
@@ -982,7 +981,7 @@ export function StoragePage() {
       <div className="mt-6 space-y-4 empty:hidden">
         <ForceHealCard />
         {banner === "movement" ? (
-          <MovementBanner />
+          <DataMovementCard />
         ) : (
           banner && (
             <Banner tone={banner.tone} title={banner.title}>
