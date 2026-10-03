@@ -728,7 +728,11 @@ mod tests {
                 .ok("ceph osd crush rule ls", "replicated_osd\n")
                 .ok("ceph osd pool set", "");
             apply_pools(&host, &target(3, "osd")).await;
-            assert!(!host.ran("ceph osd pool set images size"), "{:?}", host.calls());
+            assert!(
+                !host.ran("ceph osd pool set images size"),
+                "{:?}",
+                host.calls()
+            );
             assert!(host.ran("ceph osd pool set images min_size 1"));
         }
 

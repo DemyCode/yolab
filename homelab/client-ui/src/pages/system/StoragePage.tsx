@@ -24,10 +24,7 @@ import {
 } from "@/components/ui/list";
 import { AppIcon } from "@/components/AppIcon";
 import { ForceHealCard } from "@/components/ForceHeal";
-import {
-  DataMovementCard,
-  DrainProgress,
-} from "@/components/DataMovement";
+import { DataMovementCard, DrainProgress } from "@/components/DataMovement";
 import {
   AnimatedList,
   Collapse,
