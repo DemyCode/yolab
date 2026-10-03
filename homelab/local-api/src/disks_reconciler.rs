@@ -575,7 +575,7 @@ fn decide_steer(
             None
         };
         let (phase, message) = if state.up {
-            (Phase::Active, "In use, storing your files.".to_string())
+            (Phase::Active, String::new())
         } else {
             (
                 Phase::Retrying,
@@ -1075,7 +1075,7 @@ async fn create_osd<H: Host>(host: &H, disk_id: &str, dev_path: &str) {
                 let want = canonical_device(dev_path);
                 if let Some((_, osd_id)) = local.iter().find(|(d, _)| canonical_device(d) == want) {
                     start_osd_unit(host, *osd_id).await;
-                    set_phase(disk_id, Phase::Active, "Added to the storage pool.");
+                    set_phase(disk_id, Phase::Active, "");
                     if let Ok(mut p) = PROGRESS.lock() {
                         let e = p.entry(disk_id.to_string()).or_default();
                         e.attempts = 0;
@@ -3080,6 +3080,12 @@ mod tests {
         assert!(is_running(Some("reloading")));
         assert!(!is_running(Some("inactive")));
         assert!(!is_running(None));
+    }
+
+    #[test]
+    fn a_disk_in_use_adds_no_line_under_its_in_use_label() {
+        let steer = decide_steer(true, 0, seen(1.0, 1.0, 0, true), 0, &[], "osd", None);
+        assert_eq!(steer_report(&steer, true), (Phase::Active, String::new()));
     }
 
     #[test]
