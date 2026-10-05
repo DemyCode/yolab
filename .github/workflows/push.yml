@@ -27,13 +27,14 @@ jobs:
         run: |
           set -euo pipefail
           {
-            nix eval --json '.#packages.x86_64-linux' --apply 'a: builtins.map (n: "packages.x86_64-linux.${n}") (builtins.attrNames a)'
-            nix eval --json '.#checks.x86_64-linux' --apply 'a: builtins.map (n: "checks.x86_64-linux.${n}") (builtins.attrNames a)'
-            nix eval --json '.#checks.aarch64-linux' --apply 'a: builtins.map (n: "checks.aarch64-linux.${n}") (builtins.attrNames a)'
-            nix eval --json '.#devShells.x86_64-linux' --apply 'a: builtins.map (n: "devShells.x86_64-linux.${n}") (builtins.attrNames a)'
+            for system in x86_64-linux aarch64-linux; do
+              for kind in packages checks devShells; do
+                nix eval --json ".#${kind}.${system}" --apply "a: builtins.map (n: \"${kind}.${system}.\${n}\") (builtins.attrNames a)"
+              done
+              printf '["formatter.%s"]' "$system"
+            done
             nix eval --json '.#nixosConfigurations' --apply 'a: builtins.map (n: "nixosConfigurations.${n}.config.system.build.toplevel") (builtins.attrNames a)'
-            printf '["formatter.x86_64-linux"]'
-          } | jq --slurp --compact-output 'add | map({target: ., runner: (if test("aarch64") then "ubuntu-24.04-arm" else "ubuntu-latest" end)})' > matrix.json
+          } | jq --slurp --compact-output 'add | map(select(. != "packages.aarch64-linux.android-apk")) | map({target: ., runner: (if test("aarch64") then "ubuntu-24.04-arm" else "ubuntu-latest" end)})' > matrix.json
           cat matrix.json
           echo "jobs=$(cat matrix.json)" >> "$GITHUB_OUTPUT"
 

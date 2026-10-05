@@ -46,10 +46,6 @@
 
     rust = rustFor.x86_64-linux;
 
-    treefmtEval = inputs.treefmt-nix.lib.evalModule pkgs (
-      import ./nix/treefmt.nix {inherit (rust) rustToolchain;}
-    );
-
     machineConfig = "${inputs.yolab-machine}/config.toml";
     machineHardware = "${inputs.yolab-machine}/hardware-configuration.nix";
     machineFacter = "${inputs.yolab-machine}/facter.json";
@@ -109,19 +105,6 @@
 
     nixosSystems =
       {
-        yolab-ci = mkYolabSystem {
-          configPath = ./homelab/ci-config.toml;
-          modules = baseModules;
-        };
-        yolab-ci-join = mkYolabSystem {
-          configPath = ./homelab/ci-join-config.toml;
-          modules = baseModules;
-        };
-        yolab-ci-aarch64 = mkYolabSystem {
-          system = "aarch64-linux";
-          configPath = ./homelab/ci-config.toml;
-          modules = baseModules;
-        };
         yolab-installer = mkInstaller "x86_64-linux";
         yolab-installer-aarch64 = mkInstaller "aarch64-linux";
       }
@@ -137,14 +120,100 @@
         };
       };
 
-    allChecks = import ./nix/checks.nix {
-      inherit
-        pkgs
-        treefmtEval
-        rust
-        nixosSystems
-        ;
-      androidApk = self.packages.x86_64-linux.android-apk;
+    ciSystemsFor = system: {
+      yolab-ci = mkYolabSystem {
+        inherit system;
+        configPath = ./homelab/ci-config.toml;
+        modules = baseModules;
+      };
+      yolab-ci-join = mkYolabSystem {
+        inherit system;
+        configPath = ./homelab/ci-join-config.toml;
+        modules = baseModules;
+      };
+      yolab-ci-aarch64 = mkYolabSystem {
+        system = "aarch64-linux";
+        configPath = ./homelab/ci-config.toml;
+        modules = baseModules;
+      };
+    };
+
+    treefmtFor = lib.genAttrs systems (system:
+      inputs.treefmt-nix.lib.evalModule (pkgsFor system) (
+        import ./nix/treefmt.nix {inherit (rustFor.${system}) rustToolchain;}
+      ));
+
+    androidApk = import ./nix/android.nix {
+      inherit pkgs rust;
+      signingKey = inputs.yolab-android-key;
+    };
+
+    checksFor = system: let
+      all = import ./nix/checks.nix {
+        pkgs = pkgsFor system;
+        treefmtEval = treefmtFor.${system};
+        rust = rustFor.${system};
+        nixosSystems = ciSystemsFor system;
+        inherit androidApk;
+      };
+    in
+      if system == "x86_64-linux"
+      then all
+      else builtins.removeAttrs all ["android-apk-is-signed-so-android-will-install-it"];
+
+    devShellsFor = system: let
+      p = pkgsFor system;
+      r = rustFor.${system};
+      fmt = treefmtFor.${system};
+    in {
+      default = p.mkShell {
+        packages =
+          (with p; [
+            statix
+            deadnix
+            shellcheck
+            hadolint
+            kubernetes-helm
+            pkg-config
+            openssl
+            uv
+            nodejs
+            pre-commit
+            busybox
+            jq
+            (python3.withPackages (ps: [ps.pyyaml]))
+          ])
+          ++ [r.rustToolchain]
+          ++ builtins.attrValues fmt.config.build.programs
+          ++ [fmt.config.build.wrapper];
+
+        shellHook = ''
+          echo "yolab devshell"
+        '';
+      };
+
+      desktop = p.mkShell {
+        packages =
+          (with p; [
+            pkg-config
+            webkitgtk_4_1
+            gtk3
+            libsoup_3
+            glib
+            cairo
+            pango
+            gdk-pixbuf
+            atk
+            librsvg
+            dbus
+            openssl
+          ])
+          ++ [r.rustToolchain];
+
+        shellHook = ''
+          echo "yolab desktop shell — cd shells/desktop && cargo check"
+        '';
+      };
     };
   in {
     nixosConfigurations =
@@ -153,81 +222,23 @@
       }
       // lib.optionalAttrs isMachine {yolab = nixosSystems.yolab;};
 
-    checks.x86_64-linux = allChecks;
+    checks = lib.genAttrs systems checksFor;
 
-    checks.aarch64-linux = let
-      arm = rustFor.aarch64-linux.crates;
-    in {
-      local-api-tests = arm.local-api.tests;
-      installer-tests = arm.installer.tests;
-      nixos-create = nixosSystems.yolab-ci-aarch64.config.system.build.toplevel;
-    };
+    formatter = lib.genAttrs systems (system: treefmtFor.${system}.config.build.wrapper);
 
-    formatter.x86_64-linux = treefmtEval.config.build.wrapper;
+    packages = lib.genAttrs systems (system: {
+      desktop-client = rustFor.${system}.crates.desktop-client.package;
+      android-apk = androidApk;
+    });
 
-    packages.x86_64-linux = {
-      desktop-client = rust.crates.desktop-client.package;
-      android-apk = import ./nix/android.nix {
-        inherit pkgs rust;
-        signingKey = inputs.yolab-android-key;
-      };
-    };
-
-    apps.x86_64-linux = {
+    apps = lib.genAttrs systems (system: {
       desktop-client = {
         type = "app";
-        program = "${self.packages.x86_64-linux.desktop-client}/bin/yolab-desktop";
+        program = "${self.packages.${system}.desktop-client}/bin/yolab-desktop";
         meta.description = "Open the YoLab desktop window";
       };
-    };
+    });
 
-    devShells.x86_64-linux.default = pkgs.mkShell {
-      packages =
-        (with pkgs; [
-          statix
-          deadnix
-          shellcheck
-          hadolint
-          kubernetes-helm
-          pkg-config
-          openssl
-          uv
-          nodejs
-          pre-commit
-          busybox
-          jq
-          (python3.withPackages (ps: [ps.pyyaml]))
-        ])
-        ++ [rust.rustToolchain]
-        ++ builtins.attrValues treefmtEval.config.build.programs
-        ++ [treefmtEval.config.build.wrapper];
-
-      shellHook = ''
-        echo "yolab devshell"
-      '';
-    };
-
-    devShells.x86_64-linux.desktop = pkgs.mkShell {
-      packages =
-        (with pkgs; [
-          pkg-config
-          webkitgtk_4_1
-          gtk3
-          libsoup_3
-          glib
-          cairo
-          pango
-          gdk-pixbuf
-          atk
-          librsvg
-          dbus
-          openssl
-        ])
-        ++ [rust.rustToolchain];
-
-      shellHook = ''
-        echo "yolab desktop shell — cd shells/desktop && cargo check"
-      '';
-    };
+    devShells = lib.genAttrs systems devShellsFor;
   };
 }
