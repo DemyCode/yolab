@@ -173,6 +173,11 @@ async fn run_restore<H: Host>(
                     d.name
                 ));
         }
+        hold_daemonsets(&b.kube, namespace, false)
+            .await
+            .warn_on_err(format!(
+                "restore of {namespace} failed; release its DaemonSets"
+            ));
     }
     result
 }
@@ -186,6 +191,7 @@ async fn restore_inner<H: Host>(
     for d in read_deployment_scales(&b.kube, namespace).await? {
         scale(&b.kube, namespace, &d.name, 0).await?;
     }
+    hold_daemonsets(&b.kube, namespace, true).await?;
 
     let repo = cfg.restic_repo("cluster-backup");
     cfg.unlock(&b.host, "cluster-backup").await;
@@ -241,6 +247,7 @@ async fn restore_inner<H: Host>(
             }
         }
     }
+    hold_daemonsets(&b.kube, namespace, false).await?;
 
     tracing::info!("restore: {namespace} restored from {snapshot_id}");
     Ok(!backed_up.is_empty())
@@ -1219,6 +1226,9 @@ async fn scale_back_abandoned<H: Host>(b: &Backend<H>, node: &str) -> anyhow::Re
                 .await
                 .warn_on_err(format!("restore {}: scale {} back up", set.id, d.name));
         }
+        hold_daemonsets(&b.kube, &set.namespace, false)
+            .await
+            .warn_on_err(format!("restore {}: release its DaemonSets", set.id));
     }
     Ok(Tick::Done)
 }
@@ -1638,6 +1648,31 @@ mod tests {
             json!({ "metadata": { "name": name, "namespace": "yolab-notes" }, "spec": { "replicas": replicas } })
         }
 
+        fn daemonsets(names: &[&str]) -> Mock {
+            let items = names
+                .iter()
+                .map(|n| json!({ "metadata": { "name": n, "namespace": "yolab-notes" } }))
+                .collect();
+            Mock::given(method("GET"))
+                .and(path("/apis/apps/v1/namespaces/yolab-notes/daemonsets"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(list("DaemonSet", items)))
+        }
+
+        fn held(name: &str, hold: bool) -> Mock {
+            let value = if hold { json!("true") } else { Value::Null };
+            Mock::given(method("PATCH"))
+                .and(path(format!(
+                    "/apis/apps/v1/namespaces/yolab-notes/daemonsets/{name}"
+                )))
+                .and(body_partial_json(json!({ "spec": { "template": { "spec": {
+                    "nodeSelector": { RESTORE_HOLD_LABEL: value }
+                } } } })))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "apiVersion": "apps/v1", "kind": "DaemonSet",
+                    "metadata": { "name": name, "namespace": "yolab-notes" }
+                })))
+        }
+
         fn scaled(name: &str, replicas: u32) -> Mock {
             Mock::given(method("PATCH"))
                 .and(path(format!(
@@ -1653,7 +1688,7 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn a_restore_stops_every_deployment_before_reading_the_backup() {
+        async fn a_restore_stops_every_deployment_and_daemonset_before_reading_the_backup() {
             let (server, kube) = api_server().await;
             Mock::given(method("GET"))
                 .and(path("/apis/apps/v1/namespaces/yolab-notes/deployments"))
@@ -1665,6 +1700,8 @@ mod tests {
                 .await;
             scaled("web", 0).expect(1).mount(&server).await;
             scaled("worker", 0).expect(1).mount(&server).await;
+            daemonsets(&["engine"]).mount(&server).await;
+            held("engine", true).expect(1).mount(&server).await;
             let b = Backend {
                 kube,
                 host: FakeHost::new().fail("restic restore", "repository is locked"),
@@ -1772,6 +1809,8 @@ mod tests {
         async fn an_abandoned_restore_scales_the_app_back_to_what_it_was() {
             let (server, kube) = api_server().await;
             scaled("web", 3).expect(1).mount(&server).await;
+            daemonsets(&["engine"]).mount(&server).await;
+            held("engine", false).expect(1).mount(&server).await;
             let running = json!([{
                 "id": "rs-1", "namespace": "yolab-notes", "started_at": "2026-09-28T00:00:00Z",
                 "state": "running", "scaled_deployments": [{ "name": "web", "replicas": 3 }],

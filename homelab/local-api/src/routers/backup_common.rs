@@ -564,6 +564,44 @@ pub(crate) async fn scale(
     .await
 }
 
+pub(crate) const RESTORE_HOLD_LABEL: &str = "yolab.io/held-for-restore";
+
+pub(crate) fn daemonset_hold(namespace: &str, name: &str, hold: bool) -> serde_json::Value {
+    let value = if hold {
+        serde_json::Value::String("true".into())
+    } else {
+        serde_json::Value::Null
+    };
+    serde_json::json!({
+        "apiVersion": "apps/v1",
+        "kind": "DaemonSet",
+        "metadata": { "name": name, "namespace": namespace },
+        "spec": { "template": { "spec": { "nodeSelector": { RESTORE_HOLD_LABEL: value } } } }
+    })
+}
+
+pub(crate) async fn hold_daemonsets(
+    client: &Client,
+    namespace: &str,
+    hold: bool,
+) -> anyhow::Result<()> {
+    let items = crate::k8s::list(
+        client,
+        "apps/v1",
+        "DaemonSet",
+        Some(namespace),
+        &Default::default(),
+    )
+    .await?;
+    for d in items {
+        let Some(name) = d["metadata"]["name"].as_str() else {
+            continue;
+        };
+        crate::k8s::merge_patch(client, &daemonset_hold(namespace, name, hold)).await?;
+    }
+    Ok(())
+}
+
 pub(crate) fn destination_pvc(
     name: &str,
     namespace: &str,
@@ -1520,6 +1558,41 @@ mod tests {
                 .await;
 
             scale(&client, "yolab-a", "web", 0).await.unwrap();
+        }
+
+        #[tokio::test]
+        async fn a_held_daemonset_runs_nowhere_and_a_released_one_goes_back_where_it_was() {
+            let (server, client) = api_server().await;
+            crate::k8s::testing::serve(
+                &server,
+                "/apis/apps/v1/namespaces/yolab-ai/daemonsets",
+                200,
+                crate::k8s::testing::list(
+                    "DaemonSet",
+                    vec![json!({ "metadata": { "name": "ollama-nvidia" } })],
+                ),
+            )
+            .await;
+            crate::k8s::testing::accept_patches(&server).await;
+
+            hold_daemonsets(&client, "yolab-ai", true).await.unwrap();
+            hold_daemonsets(&client, "yolab-ai", false).await.unwrap();
+
+            let patches = crate::k8s::testing::patched(&server).await;
+            let selector = |p: &serde_json::Value| {
+                p["spec"]["template"]["spec"]["nodeSelector"][RESTORE_HOLD_LABEL].clone()
+            };
+            assert_eq!(patches.len(), 2);
+            assert_eq!(selector(&patches[0]), json!("true"));
+            let released = patches[1]["spec"]["template"]["spec"]["nodeSelector"]
+                .as_object()
+                .unwrap();
+            assert_eq!(
+                released.get(RESTORE_HOLD_LABEL),
+                Some(&serde_json::Value::Null),
+                "a merge patch null removes only the hold, keeping the vendor selector"
+            );
+            assert_eq!(released.len(), 1);
         }
 
         #[test]
