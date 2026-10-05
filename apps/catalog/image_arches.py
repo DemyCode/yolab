@@ -19,7 +19,7 @@ from concurrent.futures import ThreadPoolExecutor
 HERE = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.join(HERE, "image_arches.json")
 PINNED = re.compile(
-    r"[a-z0-9.\-]+(?:/[a-zA-Z0-9._\-]+)+(?::[A-Za-z0-9._\-]+)?@sha256:[0-9a-f]{64}"
+    r"(?<![\w/.\-])[a-z0-9.\-]+(?:/[a-zA-Z0-9._\-]+)*(?::[A-Za-z0-9._\-]+)?@sha256:[0-9a-f]{64}"
 )
 OWN = "ghcr.io/demycode/"
 

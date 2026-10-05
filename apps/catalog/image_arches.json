@@ -27,6 +27,18 @@
     "amd64",
     "arm64"
   ],
+  "busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0": [
+    "amd64",
+    "arm64"
+  ],
+  "busybox:1@sha256:dc2d74b28e4cf8984fa52af1f39bc7c3d9c73760b41a74d629f5d11b1ab28616": [
+    "amd64",
+    "arm64"
+  ],
+  "caddy:2@sha256:ec18ee54aab3315c22e25f3b2babda73ff8007d39b13b3bd1bfffa2f0444c7d9": [
+    "amd64",
+    "arm64"
+  ],
   "cgr.dev/chainguard/minio:latest@sha256:4cf4831a2bbcf13ddca09c1cbcc9faff716dd3c4247e0babc32864b8ee8e0034": [
     "amd64",
     "arm64"
@@ -211,6 +223,10 @@
     "amd64",
     "arm64"
   ],
+  "ghost:5-alpine@sha256:a0506f3f05f5bdc6c950c5113cdcdb1e1f96fbf15f6dc0a39fc093c25348bdb5": [
+    "amd64",
+    "arm64"
+  ],
   "grafana/grafana:latest@sha256:d177053ab62253815f130d81504f77063baf5fd4ca93299d6048453bd31e047a": [
     "amd64",
     "arm64"
@@ -309,6 +325,14 @@
     "amd64",
     "arm64"
   ],
+  "mariadb:11.4@sha256:611a2fcc5fa7c6ceb8644c6f74b25ede004ff6c3a6b38c8f8c23d3bbf6c26430": [
+    "amd64",
+    "arm64"
+  ],
+  "mariadb:11@sha256:d9f7eb2637296652f24b484afd5d246f759f49f5babcadc6a9e344c9acb75fbf": [
+    "amd64",
+    "arm64"
+  ],
   "matrixdotorg/synapse:latest@sha256:6345789f58048687f3024a99d3d59b5444fc9cc1de61d2947000cbac89573fcb": [
     "amd64",
     "arm64"
@@ -317,10 +341,18 @@
     "amd64",
     "arm64"
   ],
+  "mongo:7.0@sha256:b6421fd6d1c5ded6377b397d8983e2f82e2100dc5123332dcfda2065a472be5b": [
+    "amd64",
+    "arm64"
+  ],
   "monicahq/monicahq:latest@sha256:b797b9b2ab1e64a4a4b7dadf820875743671c3bcc6916420298dd315153c99a7": [
     "amd64"
   ],
   "n8nio/n8n:latest@sha256:769d3a624534ff8b5f3316ef71d4653f48794c47e4339436be7a308d6d6a1cc9": [
+    "amd64",
+    "arm64"
+  ],
+  "nextcloud:31-apache@sha256:07ec73cc816e58d6f45a162cd53ef886462c29271a23fc68d0124cec276e3767": [
     "amd64",
     "arm64"
   ],
@@ -342,7 +374,23 @@
   "postgis/postgis:17-3.5-alpine@sha256:978a2e6671c956d650d1f240dba7c73b8519a5f5af8685165fca616cc4ae3568": [
     "amd64"
   ],
+  "postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777": [
+    "amd64",
+    "arm64"
+  ],
+  "postgres:17-alpine@sha256:742f40ea20b9ff2ff31db5458d127452988a2164df9e17441e191f3b72252193": [
+    "amd64",
+    "arm64"
+  ],
   "qmcgaw/gluetun:v3@sha256:fa19cc76b2af13d57a8d3dc3066f2ada061b1c761b8aecf989b3877c0486e027": [
+    "amd64",
+    "arm64"
+  ],
+  "redis:7-alpine@sha256:e7723ff73d963f5cc6d9c4643ea3d989527a402a319239054e9472a7fb9219a2": [
+    "amd64",
+    "arm64"
+  ],
+  "redis:7.4-alpine@sha256:e7723ff73d963f5cc6d9c4643ea3d989527a402a319239054e9472a7fb9219a2": [
     "amd64",
     "arm64"
   ],

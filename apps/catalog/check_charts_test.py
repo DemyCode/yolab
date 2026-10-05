@@ -512,6 +512,15 @@ class Architectures(Workloads):
         own = "ghcr.io/demycode/engine@sha256:0"
         self.assertEqual(self.failures(own, arches={}), [])
 
+    def test_an_official_image_without_a_namespace_is_found(self):
+        import image_arches
+
+        digest = "@sha256:" + "a" * 64
+        found = image_arches.PINNED.findall(
+            f"image: caddy:2{digest}\n  image: ghcr.io/x/y:1{digest}"
+        )
+        self.assertEqual(found, [f"caddy:2{digest}", f"ghcr.io/x/y:1{digest}"])
+
     def test_every_pinned_catalog_image_is_recorded(self):
         import image_arches
 
