@@ -8,6 +8,7 @@ export interface NodeInfo {
 }
 
 export interface NodeHardware {
+  arch?: string | null;
   accelerator: "nvidia" | "amd" | "intel" | "cpu" | null;
   vram_gib: number | null;
   ram_gib: number | null;

@@ -150,6 +150,7 @@ pub fn label_patch(
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct NodeHardware {
+    pub arch: Option<String>,
     pub accelerator: Option<String>,
     pub vram_gib: Option<u64>,
     pub ram_gib: Option<u64>,
@@ -161,6 +162,7 @@ impl NodeHardware {
         let get = |k: &str| labels.get(k).and_then(Value::as_str);
         let number = |k: &str| get(k).and_then(|v| v.parse().ok());
         NodeHardware {
+            arch: get("kubernetes.io/arch").map(String::from),
             accelerator: get(LABEL_ACCELERATOR).map(String::from),
             vram_gib: number(LABEL_VRAM_GIB),
             ram_gib: number(LABEL_RAM_GIB),
@@ -362,13 +364,15 @@ mod tests {
             game_input: true,
             ..Default::default()
         };
-        let labels: serde_json::Map<String, Value> = labels(&inv)
+        let mut labels: serde_json::Map<String, Value> = labels(&inv)
             .into_iter()
             .filter_map(|(k, v)| Some((k.to_string(), Value::String(v?))))
             .collect();
+        labels.insert("kubernetes.io/arch".into(), "arm64".into());
         assert_eq!(
             NodeHardware::from_labels(&Value::Object(labels)),
             NodeHardware {
+                arch: Some("arm64".into()),
                 accelerator: Some("amd".into()),
                 vram_gib: Some(24),
                 ram_gib: Some(64),

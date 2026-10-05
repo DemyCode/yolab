@@ -25,6 +25,20 @@ describe("hardwareDetail", () => {
     expect(hardwareDetail(machine)).toBe("24 GB VRAM · 64 GB RAM");
   });
 
+  it("names the processor first, so an ARM machine like a DGX Spark stands out", () => {
+    expect(
+      hardwareDetail({
+        ...machine,
+        arch: "arm64",
+        vram_gib: null,
+        ram_gib: 128,
+      }),
+    ).toBe("ARM · 128 GB RAM");
+    expect(hardwareDetail({ ...machine, arch: "amd64" })).toBe(
+      "x86 · 24 GB VRAM · 64 GB RAM",
+    );
+  });
+
   it("leaves out what is unknown", () => {
     expect(hardwareDetail({ ...machine, vram_gib: null })).toBe("64 GB RAM");
     expect(
