@@ -1,4 +1,3 @@
-import { useEffect, useState } from "react";
 import { ExternalLink, AlertTriangle } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -10,37 +9,17 @@ import {
 } from "@/components/ui/card";
 import type { NodeInfo, NodeLink } from "@/types/nodes";
 import type { PathStatus } from "@/types/mesh";
-import { fetchList } from "@/lib/api";
+import { useApi } from "@/lib/useResource";
 import { hardwareDetail, hardwareLabel } from "@/lib/hardware";
-import { AnimatedList, Swap } from "@/components/motion";
+import { AnimatedList, RollingNumber, Swap } from "@/components/motion";
 
 export function NodesPage() {
-  const [nodes, setNodes] = useState<NodeInfo[] | null>(null);
-  const [links, setLinks] = useState<NodeLink[]>([]);
-  const [paths, setPaths] = useState<PathStatus[]>([]);
-  const [stale, setStale] = useState(false);
-
-  useEffect(() => {
-    void fetchList<NodeInfo>("/api/nodes").then((res) => {
-      if (res.ok) {
-        setNodes(res.data);
-        setStale(false);
-      } else {
-        setStale(true);
-        setNodes((prev) => prev ?? []);
-      }
-    });
-
-    fetch("/api/nodes/links")
-      .then((r) => r.json())
-      .then((l: NodeLink[]) => setLinks((prev) => (l.length > 0 ? l : prev)))
-      .catch(() => {});
-
-    fetch("/api/mesh/paths")
-      .then((r) => (r.ok ? r.json() : []))
-      .then((p: PathStatus[]) => setPaths(p))
-      .catch(() => {});
-  }, []);
+  const nodesRes = useApi<NodeInfo[]>("nodes", "/api/nodes");
+  const links = useApi<NodeLink[]>("node-links", "/api/nodes/links").data ?? [];
+  const paths =
+    useApi<PathStatus[]>("mesh-paths", "/api/mesh/paths").data ?? [];
+  const stale = nodesRes.stale;
+  const nodes = nodesRes.data ?? (stale ? [] : null);
 
   const urlFor = (name: string) =>
     links.find((l) => l.name === name)?.url ?? null;
@@ -64,7 +43,8 @@ export function NodesPage() {
           <CardTitle>Cluster machines</CardTitle>
           {nodes && !stale && (
             <CardDescription>
-              {`${nodes.filter((n) => n.ready).length} of ${nodes.length} ready`}
+              <RollingNumber value={nodes.filter((n) => n.ready).length} /> of{" "}
+              <RollingNumber value={nodes.length} /> ready
             </CardDescription>
           )}
         </CardHeader>
@@ -136,7 +116,7 @@ export function NodesPage() {
                                       : "success"
                                   }
                                 >
-                                  {hardware}
+                                  <Swap id={hardware}>{hardware}</Swap>
                                 </Badge>
                                 {hardwareMore && (
                                   <span className="text-xs text-fg-muted whitespace-nowrap">
@@ -172,14 +152,19 @@ export function NodesPage() {
                                       : "neutral"
                                   }
                                 >
-                                  {path.path === "direct"
-                                    ? "Direct"
-                                    : "Relayed"}
+                                  <Swap id={path.path}>
+                                    {path.path === "direct"
+                                      ? "Direct"
+                                      : "Relayed"}
+                                  </Swap>
                                 </Badge>
                                 {path.path === "direct" && path.endpoint && (
-                                  <span className="text-xs text-fg-muted">
+                                  <Swap
+                                    id={path.endpoint}
+                                    className="text-xs text-fg-muted"
+                                  >
                                     {path.endpoint}
-                                  </span>
+                                  </Swap>
                                 )}
                               </div>
                             ) : (
@@ -190,15 +175,17 @@ export function NodesPage() {
                           </td>
                           <td className="py-3">
                             {url ? (
-                              <a
-                                href={url}
-                                target="_blank"
-                                rel="noreferrer"
-                                className="inline-flex items-center gap-1.5 text-sm text-primary hover:text-primary transition-colors"
-                              >
-                                {url.replace(/^https?:\/\//, "")}
-                                <ExternalLink className="h-3.5 w-3.5 flex-shrink-0" />
-                              </a>
+                              <Swap id={url}>
+                                <a
+                                  href={url}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="inline-flex items-center gap-1.5 text-sm text-primary hover:text-primary transition-colors"
+                                >
+                                  {url.replace(/^https?:\/\//, "")}
+                                  <ExternalLink className="h-3.5 w-3.5 flex-shrink-0" />
+                                </a>
+                              </Swap>
                             ) : (
                               <span className="text-xs text-border-strong">
                                 —
