@@ -35,7 +35,7 @@ in {
     openssl
     wireguard-tools
     nixos-facter
-    inputs.disko.packages.${pkgs.system}.disko
+    inputs.disko.packages.${pkgs.stdenv.hostPlatform.system}.disko
     yolabInstaller
   ];
 
