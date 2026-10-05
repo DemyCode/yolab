@@ -14,6 +14,8 @@ import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 import { streamEvents } from "@/lib/api";
+import { useApi } from "@/lib/useResource";
+import { Swap } from "@/components/motion";
 import type { StatusInfo, RebuildLog, ChannelInfo } from "@/types/status";
 import { NotificationsCard } from "@/components/NotificationsCard";
 
@@ -44,17 +46,36 @@ function LogLine({ line }: { line: string }) {
   );
 }
 
+function SwapText({ text }: { text: string }) {
+  return (
+    <Swap id={text} className="block truncate">
+      {text}
+    </Swap>
+  );
+}
+
 export function UpdatesPage() {
-  const [status, setStatus] = useState<StatusInfo | null>(null);
+  const statusRes = useApi<StatusInfo>("status", "/api/status");
+  const status = statusRes.data;
   const [log, setLog] = useState<string[]>([]);
   const [phase, setPhase] = useState<Phase>("idle");
   const logRef = useRef<HTMLDivElement>(null);
   const rebuildOffsetRef = useRef(0);
 
-  const [channel, setChannel] = useState<ChannelInfo | null>(null);
+  const channelRes = useApi<ChannelInfo>(
+    "update-channel",
+    "/api/update/channel",
+  );
+  const channel = channelRes.data;
   const [channelOpen, setChannelOpen] = useState(false);
   const [editUrl, setEditUrl] = useState("");
   const [editRef, setEditRef] = useState("");
+
+  useEffect(() => {
+    if (!channel || channelOpen) return;
+    setEditUrl(channel.url);
+    setEditRef(channel.ref);
+  }, [channel, channelOpen]);
   const [channelSaving, setChannelSaving] = useState(false);
 
   const [rebootConfirm, setRebootConfirm] = useState(false);
@@ -83,10 +104,7 @@ export function UpdatesPage() {
           setTimeout(tick, 2000);
         } else {
           setPhase("done");
-          fetch("/api/status")
-            .then((r) => r.json())
-            .then((s) => setStatus(s as StatusInfo))
-            .catch(() => {});
+          void statusRes.refresh();
         }
       } catch {
         if (!cancelled) setTimeout(tick, 2000);
@@ -98,22 +116,7 @@ export function UpdatesPage() {
     };
   }
 
-  function loadChannel() {
-    fetch("/api/update/channel")
-      .then((r) => r.json())
-      .then((d: ChannelInfo) => {
-        setChannel(d);
-        setEditUrl(d.url);
-        setEditRef(d.ref);
-      })
-      .catch(() => {});
-  }
-
   useEffect(() => {
-    fetch("/api/status")
-      .then((r) => r.json())
-      .then((s) => setStatus(s as StatusInfo))
-      .catch(() => setStatus(null));
     fetch("/api/rebuild-log")
       .then((r) => r.json())
       .then((d: RebuildLog) => {
@@ -128,7 +131,6 @@ export function UpdatesPage() {
         }
       })
       .catch(() => {});
-    loadChannel();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function streamUpdate(url: string) {
@@ -170,7 +172,7 @@ export function UpdatesPage() {
           ref: editRef.trim(),
         }),
       });
-      loadChannel();
+      void channelRes.refresh();
       setChannelOpen(false);
     } finally {
       setChannelSaving(false);
@@ -211,10 +213,10 @@ export function UpdatesPage() {
             <div className="min-w-0">
               <p className="text-xs text-fg-muted">Platform</p>
               <p className="text-sm font-medium text-fg truncate mt-0.5">
-                {status?.platform ?? "—"}
+                <SwapText text={status?.platform ?? "—"} />
               </p>
               <p className="text-xs text-fg-subtle truncate">
-                {status?.flake_target ?? "—"}
+                <SwapText text={status?.flake_target ?? "—"} />
               </p>
             </div>
           </CardContent>
@@ -227,10 +229,10 @@ export function UpdatesPage() {
             <div className="min-w-0">
               <p className="text-xs text-fg-muted">Commit</p>
               <p className="text-sm font-medium text-fg font-mono mt-0.5">
-                {shortHash}
+                <SwapText text={shortHash} />
               </p>
               <p className="text-xs text-fg-subtle truncate">
-                {status?.commit_message || "—"}
+                <SwapText text={status?.commit_message || "—"} />
               </p>
             </div>
           </CardContent>
@@ -242,7 +244,9 @@ export function UpdatesPage() {
             </div>
             <div className="min-w-0">
               <p className="text-xs text-fg-muted">Built at</p>
-              <p className="text-sm font-medium text-fg mt-0.5">{commitDate}</p>
+              <p className="text-sm font-medium text-fg mt-0.5">
+                <SwapText text={commitDate} />
+              </p>
             </div>
           </CardContent>
         </Card>
@@ -303,7 +307,9 @@ export function UpdatesPage() {
               className="flex items-center gap-1.5 text-xs text-fg-muted hover:text-fg-muted transition-colors"
             >
               <GitBranch className="h-3.5 w-3.5" />
-              <span className="font-mono">{channelLabel}</span>
+              <Swap id={channelLabel} className="inline-block font-mono">
+                {channelLabel}
+              </Swap>
               <ChevronDown
                 className={cn(
                   "h-3 w-3 transition-transform",

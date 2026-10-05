@@ -12,6 +12,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { api } from "@/lib/api";
 import { useApi } from "@/lib/useResource";
+import { AnimatedList } from "@/components/motion";
 
 interface ChartRepo {
   name: string;
@@ -171,8 +172,14 @@ export function AppSources({ onChanged }: { onChanged?: () => void }) {
         {repos.loading && (
           <li className="py-2 text-sm text-fg-muted">Loading…</li>
         )}
-        {repos.data?.map((r) => (
-          <li key={r.name} className="flex items-center gap-3 py-2">
+        <AnimatedList
+          as="li"
+          items={repos.data ?? []}
+          keyOf={(r) => r.name}
+          itemClassName="flex items-center gap-3 py-2"
+        >
+          {(r) => (
+            <>
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2">
                 <span className="font-medium text-fg">{r.name}</span>
@@ -195,8 +202,9 @@ export function AppSources({ onChanged }: { onChanged?: () => void }) {
                 <Trash2 className="h-4 w-4" />
               </button>
             )}
-          </li>
-        ))}
+            </>
+          )}
+        </AnimatedList>
       </ul>
 
       <div className="mt-4 border-t border-border pt-4">

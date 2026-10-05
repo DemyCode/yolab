@@ -555,15 +555,19 @@ function DisksSection({
               label={`${past.length} ${past.length === 1 ? "disk" : "disks"} seen before but not connected`}
             >
               <div className="-mx-5 divide-y divide-border opacity-70">
-                {past.map(([node, disk]) => (
-                  <DiskRow
-                    key={`${node}/${disk.id}`}
-                    node={node}
-                    disk={disk}
-                    osd={osdFor(disk)}
-                    onChanged={onChanged}
-                  />
-                ))}
+                <AnimatedList
+                  items={past}
+                  keyOf={([node, disk]) => `${node}/${disk.id}`}
+                >
+                  {([node, disk]) => (
+                    <DiskRow
+                      node={node}
+                      disk={disk}
+                      osd={osdFor(disk)}
+                      onChanged={onChanged}
+                    />
+                  )}
+                </AnimatedList>
               </div>
             </DisclosureRow>
           )}
@@ -763,19 +767,23 @@ function Table({
           </tr>
         </thead>
         <tbody className="divide-y divide-border font-mono tabular-nums text-fg">
-          {rows.map((r) => (
-            <tr key={r.key}>
-              {r.cells.map((c, i) => (
+          <AnimatedList as="tr" items={rows} keyOf={(r) => r.key}>
+            {(r) =>
+              r.cells.map((c, i) => (
                 <td key={i} className="whitespace-nowrap px-3 py-2">
                   {c}
                 </td>
-              ))}
-            </tr>
-          ))}
+              ))
+            }
+          </AnimatedList>
         </tbody>
       </table>
     </div>
   );
+}
+
+function SwapText({ text }: { text: string }) {
+  return <Swap id={text}>{text}</Swap>;
 }
 
 function verdict(list: number[] | undefined, id: number): string {
@@ -788,12 +796,11 @@ function TechnicalBody({
 }: {
   overview: StorageOverview | undefined;
 }) {
-  const status = useResource<{ text: string }>("ceph-status-text", () =>
-    api.get<{ text: string }>("/api/storage/ceph-status"),
+  const status = useApi<{ text: string }>(
+    "ceph-status-text",
+    "/api/storage/ceph-status",
   );
-  const checks = useResource<OsdChecks>("storage-checks", () =>
-    api.get<OsdChecks>("/api/storage/checks"),
-  );
+  const checks = useApi<OsdChecks>("storage-checks", "/api/storage/checks");
   const creds = useResource<{ username: string; password: string }>(
     "ceph-dashboard-creds",
     () =>
@@ -824,7 +831,13 @@ function TechnicalBody({
           </div>
         </div>
         <pre className="max-h-80 overflow-auto rounded-control bg-surface-2 p-3 font-mono text-xs leading-relaxed text-fg">
-          {status.data?.text ?? (status.error ? status.error : "Asking Ceph…")}
+          <Swap
+            id={status.data?.text ?? status.error ?? ""}
+            className="block"
+          >
+            {status.data?.text ??
+              (status.error ? status.error : "Asking Ceph…")}
+          </Swap>
         </pre>
       </div>
 
@@ -853,18 +866,46 @@ function TechnicalBody({
                 o.name,
                 o.host || "—",
                 o.class || "—",
-                formatCephBytes(o.size_bytes),
-                formatCephBytes(o.used_bytes),
-                formatCephBytes(o.avail_bytes),
-                <span key="f" className={TONE_TEXT[fillTone(o.utilization)]}>
-                  {o.utilization.toFixed(1)}%
-                </span>,
-                o.pgs,
-                o.var.toFixed(2),
-                o.up ? "up" : "down",
-                o.weight > 0 && o.reweight > 0 ? "in" : "out",
-                verdict(checks.data?.ok_to_stop, o.id),
-                verdict(checks.data?.safe_to_destroy, o.id),
+                <RollingNumber
+                  key="size"
+                  value={o.size_bytes}
+                  format={formatCephBytes}
+                />,
+                <RollingNumber
+                  key="used"
+                  value={o.used_bytes}
+                  format={formatCephBytes}
+                />,
+                <RollingNumber
+                  key="free"
+                  value={o.avail_bytes}
+                  format={formatCephBytes}
+                />,
+                <RollingNumber
+                  key="f"
+                  value={o.utilization}
+                  format={(n) => `${n.toFixed(1)}%`}
+                  className={TONE_TEXT[fillTone(o.utilization)]}
+                />,
+                <RollingNumber key="pgs" value={o.pgs} />,
+                <RollingNumber
+                  key="var"
+                  value={o.var}
+                  format={(n) => n.toFixed(2)}
+                />,
+                <SwapText key="up" text={o.up ? "up" : "down"} />,
+                <SwapText
+                  key="in"
+                  text={o.weight > 0 && o.reweight > 0 ? "in" : "out"}
+                />,
+                <SwapText
+                  key="stop"
+                  text={verdict(checks.data?.ok_to_stop, o.id)}
+                />,
+                <SwapText
+                  key="destroy"
+                  text={verdict(checks.data?.safe_to_destroy, o.id)}
+                />,
               ],
             }))}
           />
@@ -885,11 +926,23 @@ function TechnicalBody({
               key: String(p.id),
               cells: [
                 p.name,
-                p.copies,
-                p.min_copies,
-                formatCephBytes(p.stored_bytes),
-                formatCephBytes(p.used_bytes),
-                formatCephBytes(p.max_avail_bytes),
+                <RollingNumber key="copies" value={p.copies} />,
+                <RollingNumber key="min" value={p.min_copies} />,
+                <RollingNumber
+                  key="stored"
+                  value={p.stored_bytes}
+                  format={formatCephBytes}
+                />,
+                <RollingNumber
+                  key="used"
+                  value={p.used_bytes}
+                  format={formatCephBytes}
+                />,
+                <RollingNumber
+                  key="avail"
+                  value={p.max_avail_bytes}
+                  format={formatCephBytes}
+                />,
               ],
             }))}
           />

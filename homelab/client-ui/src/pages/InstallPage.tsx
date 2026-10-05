@@ -33,6 +33,7 @@ import { AppIconTile } from "@/components/AppIcon";
 import { configSchemaOf, generatedFields, uiSchemaFor } from "@/lib/schema";
 import { taglineFor } from "@/catalog/meta";
 import { cn } from "@/lib/utils";
+import { Swap } from "@/components/motion";
 import type {
   AppDefinition,
   AppInfo,
@@ -297,6 +298,15 @@ export function InstallPage() {
     </Banner>
   ) : null;
 
+  const tagline =
+    origin.mode === "duplicate"
+      ? "A separate app from the same settings, with its own address and storage."
+      : origin.mode === "restore"
+        ? "Its settings come back from the backup; change any of them before it is installed."
+        : installedOfThisApp.length > 0
+          ? `${taglineFor(app)} You already have ${installedOfThisApp.length === 1 ? "one" : installedOfThisApp.length}; this adds a separate one.`
+          : taglineFor(app);
+
   return (
     <Page>
       <Link
@@ -318,13 +328,9 @@ export function InstallPage() {
                 : app.name}
           </h1>
           <p className="mt-1 text-sm text-fg-muted">
-            {origin.mode === "duplicate"
-              ? "A separate app from the same settings, with its own address and storage."
-              : origin.mode === "restore"
-                ? "Its settings come back from the backup; change any of them before it is installed."
-                : installedOfThisApp.length > 0
-                  ? `${taglineFor(app)} You already have ${installedOfThisApp.length === 1 ? "one" : installedOfThisApp.length}; this adds a separate one.`
-                  : taglineFor(app)}
+            <Swap id={tagline} className="block">
+              {tagline}
+            </Swap>
           </p>
           {app.home && origin.mode === "fresh" && (
             <a

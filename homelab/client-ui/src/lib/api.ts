@@ -154,20 +154,3 @@ export async function streamEvents(
 
   return outcome ?? DROPPED;
 }
-
-export type ListResult<T> =
-  | { ok: true; data: T[] }
-  | { ok: false; reason: "unreachable" | "unauthorized" };
-
-export async function fetchList<T>(url: string): Promise<ListResult<T>> {
-  try {
-    const body = await api.get<unknown>(url);
-    if (!Array.isArray(body)) return { ok: false, reason: "unreachable" };
-    return { ok: true, data: body as T[] };
-  } catch (e) {
-    if (e instanceof ApiError && e.isUnauthorized) {
-      return { ok: false, reason: "unauthorized" };
-    }
-    return { ok: false, reason: "unreachable" };
-  }
-}

@@ -14,6 +14,7 @@ import { buttonClass } from "@/components/ui/button-variants";
 import { Input } from "@/components/ui/input";
 import { api } from "@/lib/api";
 import { useApi } from "@/lib/useResource";
+import { AnimatedList } from "@/components/motion";
 
 interface CustomApp {
   id: string;
@@ -331,8 +332,14 @@ export default function CustomAppPage() {
               Your own apps
             </h2>
             <ul className="divide-y divide-border rounded-card border border-border bg-surface">
-              {apps.data?.map((a) => (
-                <li key={a.id} className="flex items-center gap-3 p-3">
+              <AnimatedList
+                as="li"
+                items={apps.data ?? []}
+                keyOf={(a) => a.id}
+                itemClassName="flex items-center gap-3 p-3"
+              >
+                {(a) => (
+                  <>
                   <span className="text-lg">{a.icon || "🔧"}</span>
                   <div className="min-w-0 flex-1">
                     <div className="font-medium text-fg">{a.display_name}</div>
@@ -356,8 +363,9 @@ export default function CustomAppPage() {
                   >
                     <Trash2 className="h-4 w-4" />
                   </button>
-                </li>
-              ))}
+                  </>
+                )}
+              </AnimatedList>
             </ul>
           </section>
         )}

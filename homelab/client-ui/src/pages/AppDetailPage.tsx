@@ -266,14 +266,25 @@ function TechnicalDetails({ app }: { app: AppInfo }) {
             Installed with
           </h3>
           <dl className="space-y-1 rounded-control bg-surface-2 p-3">
-            {settings.map(([k, v]) => (
-              <div key={k} className="flex gap-3 text-xs">
-                <dt className="shrink-0 text-fg-subtle">{k}</dt>
-                <dd className="min-w-0 flex-1 break-all font-mono text-fg-muted">
-                  {typeof v === "string" ? v : JSON.stringify(v)}
-                </dd>
-              </div>
-            ))}
+            <AnimatedList
+              items={settings}
+              keyOf={([k]) => k}
+              itemClassName="flex gap-3 text-xs"
+            >
+              {([k, v]) => {
+                const text = typeof v === "string" ? v : JSON.stringify(v);
+                return (
+                  <>
+                    <dt className="shrink-0 text-fg-subtle">{k}</dt>
+                    <dd className="min-w-0 flex-1 break-all font-mono text-fg-muted">
+                      <Swap id={text} className="inline">
+                        {text}
+                      </Swap>
+                    </dd>
+                  </>
+                );
+              }}
+            </AnimatedList>
           </dl>
         </div>
       )}
@@ -376,11 +387,12 @@ function RestoreSheet({
         </p>
       ) : (
         <div className="divide-y divide-border rounded-card border border-border">
-          {snapshots.map((s, i) => (
-            <label
-              key={s.id}
-              className="flex cursor-pointer items-center gap-3 px-4 py-3 hover:bg-surface-2"
-            >
+          <AnimatedList
+            items={snapshots.map((s, i) => ({ s, i }))}
+            keyOf={({ s }) => s.id}
+          >
+            {({ s, i }) => (
+            <label className="flex cursor-pointer items-center gap-3 px-4 py-3 hover:bg-surface-2">
               <input
                 type="radio"
                 name="restore-snapshot"
@@ -395,7 +407,8 @@ function RestoreSheet({
                 <span className="text-xs text-fg-subtle">Latest</span>
               )}
             </label>
-          ))}
+            )}
+          </AnimatedList>
         </div>
       )}
 

@@ -3,6 +3,7 @@ import { ChevronRight, History } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Sheet } from "@/components/ui/sheet";
 import { useApi } from "@/lib/useResource";
+import { AnimatedList, RollingNumber } from "@/components/motion";
 import { RestorePointList } from "@/components/RestorePoints";
 import { useRestorePoints } from "@/lib/useRestorePoints";
 
@@ -98,8 +99,12 @@ export function AddFromBackupButton() {
             )}
             {data && data.apps.length > 0 && (
               <ul className="divide-y divide-border">
-                {data.apps.map((app) => (
-                  <li key={app.namespace}>
+                <AnimatedList
+                  as="li"
+                  items={data.apps}
+                  keyOf={(app) => app.namespace}
+                >
+                  {(app) => (
                     <button
                       onClick={() => setChosen(app)}
                       className="flex w-full items-center justify-between gap-3 py-3 text-left"
@@ -109,15 +114,15 @@ export function AddFromBackupButton() {
                           {app.instance_name}
                         </div>
                         <div className="text-xs text-fg-muted">
-                          {app.versions.length} point
+                          <RollingNumber value={app.versions.length} /> point
                           {app.versions.length === 1 ? "" : "s"} in time
                           {app.installed ? " · already installed" : ""}
                         </div>
                       </div>
                       <ChevronRight className="h-4 w-4 shrink-0 text-fg-subtle" />
                     </button>
-                  </li>
-                ))}
+                  )}
+                </AnimatedList>
               </ul>
             )}
           </>
