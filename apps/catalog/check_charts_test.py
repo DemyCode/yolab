@@ -811,6 +811,11 @@ class ImmichMachineLearning(RenderedChart):
         self.assertIn(":release-openvino@sha256:", c["image"])
         self.assertEqual(c["resources"]["limits"], {"yolab.io/dri": "1"})
 
+    def test_an_intel_machine_is_chosen_by_its_compute_label_not_its_video_one(self):
+        gpu = Path(check_charts.HERE, "immich", "templates", "_gpu.tpl").read_text()
+        self.assertIn('"intel" "yolab.io/gpu-intel-compute"', gpu)
+        self.assertNotIn('printf "yolab.io/gpu-%s"', gpu)
+
     def test_without_a_gpu_it_keeps_the_cpu_build_and_runs_anywhere(self):
         spec, c = self.ml()
         self.assertIn(":release@sha256:", c["image"])

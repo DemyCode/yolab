@@ -8,6 +8,7 @@ use serde_json::{json, Value};
 pub const LABEL_NVIDIA: &str = "yolab.io/gpu-nvidia";
 pub const LABEL_AMD: &str = "yolab.io/gpu-amd";
 pub const LABEL_INTEL: &str = "yolab.io/gpu-intel";
+pub const LABEL_INTEL_COMPUTE: &str = "yolab.io/gpu-intel-compute";
 pub const LABEL_ACCELERATOR: &str = "yolab.io/accelerator";
 pub const LABEL_VRAM_GIB: &str = "yolab.io/vram-gib";
 pub const LABEL_RAM_GIB: &str = "yolab.io/ram-gib";
@@ -20,6 +21,7 @@ pub struct Inventory {
     pub nvidia: bool,
     pub amd: bool,
     pub intel: bool,
+    pub intel_compute: bool,
     pub vram_bytes: Option<u64>,
     pub ram_bytes: Option<u64>,
     pub game_input: bool,
@@ -31,7 +33,7 @@ impl Inventory {
             "nvidia"
         } else if self.amd {
             "amd"
-        } else if self.intel {
+        } else if self.intel_compute {
             "intel"
         } else {
             "cpu"
@@ -44,9 +46,10 @@ pub fn probe(root: &Path) -> Inventory {
     Inventory {
         nvidia: root.join(NVIDIA_CDI_SPEC).is_file(),
         amd: root.join("dev/kfd").exists() && drm.iter().any(|d| d.driver == "amdgpu"),
-        intel: drm
+        intel: drm.iter().any(DrmDevice::is_intel_render),
+        intel_compute: drm
             .iter()
-            .any(|d| (d.driver == "i915" || d.driver == "xe") && d.render_node),
+            .any(|d| d.is_intel_render() && intel_computes(&d.driver, d.device_id)),
         vram_bytes: drm.iter().filter_map(|d| d.vram_bytes).max(),
         ram_bytes: std::fs::read_to_string(root.join("proc/meminfo"))
             .ok()
@@ -59,7 +62,40 @@ struct DrmDevice {
     driver: String,
     render_node: bool,
     vram_bytes: Option<u64>,
+    device_id: Option<u16>,
 }
+
+impl DrmDevice {
+    fn is_intel_render(&self) -> bool {
+        (self.driver == "i915" || self.driver == "xe") && self.render_node
+    }
+}
+
+fn intel_computes(driver: &str, device_id: Option<u16>) -> bool {
+    driver == "xe"
+        || device_id.is_none_or(|id| INTEL_PRE_GEN9_DEVICE_IDS.binary_search(&id).is_err())
+}
+
+fn pci_device_id(text: &str) -> Option<u16> {
+    u16::from_str_radix(text.trim().strip_prefix("0x")?, 16).ok()
+}
+
+const INTEL_PRE_GEN9_DEVICE_IDS: [u16; 140] = [
+    0x0042, 0x0046, 0x0102, 0x0106, 0x010A, 0x0112, 0x0116, 0x0122, 0x0126, 0x0152,
+    0x0156, 0x015A, 0x0162, 0x0166, 0x016A, 0x0402, 0x0406, 0x040A, 0x040B, 0x040E,
+    0x0412, 0x0416, 0x041A, 0x041B, 0x041E, 0x0422, 0x0426, 0x042A, 0x042B, 0x042E,
+    0x0A02, 0x0A06, 0x0A0A, 0x0A0B, 0x0A0E, 0x0A12, 0x0A16, 0x0A1A, 0x0A1B, 0x0A1E,
+    0x0A22, 0x0A26, 0x0A2A, 0x0A2B, 0x0A2E, 0x0C02, 0x0C06, 0x0C0A, 0x0C0B, 0x0C0E,
+    0x0C12, 0x0C16, 0x0C1A, 0x0C1B, 0x0C1E, 0x0C22, 0x0C26, 0x0C2A, 0x0C2B, 0x0C2E,
+    0x0D02, 0x0D06, 0x0D0A, 0x0D0B, 0x0D0E, 0x0D12, 0x0D16, 0x0D1A, 0x0D1B, 0x0D1E,
+    0x0D22, 0x0D26, 0x0D2A, 0x0D2B, 0x0D2E, 0x0F30, 0x0F31, 0x0F32, 0x0F33, 0x1132,
+    0x1602, 0x1606, 0x160A, 0x160B, 0x160D, 0x160E, 0x1612, 0x1616, 0x161A, 0x161B,
+    0x161D, 0x161E, 0x1622, 0x1626, 0x162A, 0x162B, 0x162D, 0x162E, 0x1632, 0x1636,
+    0x163A, 0x163B, 0x163D, 0x163E, 0x22B0, 0x22B1, 0x22B2, 0x22B3, 0x2562, 0x2572,
+    0x2582, 0x258A, 0x2592, 0x2772, 0x27A2, 0x27AE, 0x2972, 0x2982, 0x2992, 0x29A2,
+    0x29B2, 0x29C2, 0x29D2, 0x2A02, 0x2A12, 0x2A42, 0x2E02, 0x2E12, 0x2E22, 0x2E32,
+    0x2E42, 0x2E92, 0x3577, 0x3582, 0x358E, 0x7121, 0x7123, 0x7125, 0xA001, 0xA011,
+];
 
 fn drm_devices(root: &Path) -> Vec<DrmDevice> {
     let class = root.join("sys/class/drm");
@@ -80,10 +116,14 @@ fn drm_devices(root: &Path) -> Vec<DrmDevice> {
             let vram_bytes = std::fs::read_to_string(device.join("mem_info_vram_total"))
                 .ok()
                 .and_then(|t| t.trim().parse().ok());
+            let device_id = std::fs::read_to_string(device.join("device"))
+                .ok()
+                .and_then(|t| pci_device_id(&t));
             Some(DrmDevice {
                 driver,
                 render_node: name.starts_with("renderD"),
                 vram_bytes,
+                device_id,
             })
         })
         .collect()
@@ -116,6 +156,7 @@ pub fn labels(inv: &Inventory) -> BTreeMap<&'static str, Option<String>> {
         (LABEL_NVIDIA, flag(inv.nvidia)),
         (LABEL_AMD, flag(inv.amd)),
         (LABEL_INTEL, flag(inv.intel)),
+        (LABEL_INTEL_COMPUTE, flag(inv.intel_compute)),
         (LABEL_ACCELERATOR, Some(inv.accelerator().to_string())),
         (LABEL_VRAM_GIB, inv.vram_bytes.map(gib)),
         (LABEL_RAM_GIB, inv.ram_bytes.map(gib)),
@@ -248,6 +289,10 @@ mod tests {
             .unwrap();
             self
         }
+        fn pci(self, node: &str, driver: &str, device_id: &str) -> Self {
+            let rel = format!("sys/class/drm/{node}/device/device");
+            self.drm(node, driver).file(&rel, &format!("{device_id}\n"))
+        }
     }
 
     #[test]
@@ -287,6 +332,72 @@ mod tests {
         assert!(!probe(Machine::new().drm("card0", "i915").path()).intel);
         assert!(probe(Machine::new().drm("renderD128", "i915").path()).intel);
         assert!(probe(Machine::new().drm("renderD128", "xe").path()).intel);
+    }
+
+    #[test]
+    fn a_haswell_gpu_decodes_video_but_is_not_an_accelerator() {
+        let inv = probe(Machine::new().pci("renderD128", "i915", "0x0416").path());
+        assert!(inv.intel);
+        assert!(!inv.intel_compute);
+        assert_eq!(inv.accelerator(), "cpu");
+        let labels = labels(&inv);
+        assert_eq!(labels[LABEL_INTEL].as_deref(), Some("true"));
+        assert_eq!(labels[LABEL_INTEL_COMPUTE], None);
+        assert_eq!(labels[LABEL_ACCELERATOR].as_deref(), Some("cpu"));
+    }
+
+    #[test]
+    fn a_gen9_or_newer_intel_gpu_is_an_accelerator() {
+        for (driver, id) in [("i915", "0x1916"), ("i915", "0x5917"), ("i915", "0x9a49")] {
+            let inv = probe(Machine::new().pci("renderD128", driver, id).path());
+            assert!(inv.intel_compute, "{driver} {id}");
+            assert_eq!(inv.accelerator(), "intel", "{driver} {id}");
+        }
+    }
+
+    #[test]
+    fn the_xe_driver_only_drives_gpus_that_compute() {
+        let inv = probe(Machine::new().pci("renderD128", "xe", "0x0416").path());
+        assert!(inv.intel_compute);
+    }
+
+    #[test]
+    fn an_intel_gpu_whose_pci_id_cannot_be_read_keeps_counting_as_an_accelerator() {
+        let inv = probe(Machine::new().drm("renderD128", "i915").path());
+        assert!(inv.intel_compute);
+        let garbled = Machine::new().pci("renderD128", "i915", "not-hex");
+        assert!(probe(garbled.path()).intel_compute);
+    }
+
+    #[test]
+    fn the_pre_gen9_table_is_sorted_so_binary_search_finds_every_entry() {
+        assert!(INTEL_PRE_GEN9_DEVICE_IDS.windows(2).all(|w| w[0] < w[1]));
+        for id in INTEL_PRE_GEN9_DEVICE_IDS {
+            assert!(!intel_computes("i915", Some(id)), "{id:#06x}");
+        }
+    }
+
+    #[test]
+    fn the_pre_gen9_table_ends_where_skylake_begins() {
+        for skylake in [0x1902, 0x1906, 0x1912, 0x1916, 0x191B, 0x1926, 0x193B] {
+            assert!(intel_computes("i915", Some(skylake)), "{skylake:#06x}");
+        }
+        for broadwell in [0x1602, 0x1616, 0x162B, 0x163E] {
+            assert!(!intel_computes("i915", Some(broadwell)), "{broadwell:#06x}");
+        }
+    }
+
+    #[test]
+    fn pci_ids_are_read_as_sysfs_writes_them() {
+        assert_eq!(pci_device_id("0x0416\n"), Some(0x0416));
+        assert_eq!(pci_device_id("0x9a49"), Some(0x9A49));
+        assert_eq!(pci_device_id("0416"), None);
+        assert_eq!(pci_device_id(""), None);
+    }
+
+    #[test]
+    fn the_compute_label_is_the_one_the_immich_chart_reads() {
+        assert_eq!(LABEL_INTEL_COMPUTE, "yolab.io/gpu-intel-compute");
     }
 
     #[test]
