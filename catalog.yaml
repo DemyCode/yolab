@@ -63,7 +63,7 @@ charts:
   - name: homepage
     version: "0.1.11"
   - name: immich
-    version: "0.2.5"
+    version: "0.2.6"
   - name: it-tools
     version: "0.1.11"
   - name: jellyfin
