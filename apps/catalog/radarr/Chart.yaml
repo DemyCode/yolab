@@ -3,11 +3,11 @@ name: radarr
 description: "Follows films you want and fetches them when they become available"
 home: https://radarr.video
 type: application
-version: 0.1.10
+version: 0.1.11
 
 dependencies:
   - name: yolab-common
-    version: "0.1.9"
+    version: "0.1.10"
     repository: "oci://ghcr.io/demycode/charts"
 
 annotations:

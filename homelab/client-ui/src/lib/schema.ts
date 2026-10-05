@@ -57,6 +57,9 @@ function fieldUi(prop: SchemaProp, domain: string): UiSchema | undefined {
   if (prop.format === "tunnel") {
     return { "ui:widget": "TunnelWidget", "ui:options": { domain } };
   }
+  if (prop.format === "yolab-token") {
+    return { "ui:widget": "YolabTokenWidget" };
+  }
   if (prop.writeOnly) {
     return {
       "ui:widget": "PasswordWidget",
@@ -136,7 +139,34 @@ export function generatedFields(schema: ConfigSchema): [string, string][] {
 }
 
 export function addressField(schema: ConfigSchema): string | undefined {
-  return Object.entries(schema.properties ?? {}).find(
+  const top = Object.entries(schema.properties ?? {}).find(
     ([, p]) => p.format === "tunnel",
   )?.[0];
+  if (top) return top;
+  const switched = schema.dependencies?.yolab_enabled?.oneOf ?? [];
+  for (const branch of switched) {
+    const found = Object.entries(branch.properties ?? {}).find(
+      ([, p]) => p.format === "tunnel",
+    )?.[0];
+    if (found) return found;
+  }
+  return undefined;
+}
+
+export function chosenBranchDefaults(
+  schema: ConfigSchema,
+  values: Record<string, unknown>,
+): Record<string, unknown> {
+  const defaults: Record<string, unknown> = {};
+  for (const [toggle, dep] of Object.entries(schema.dependencies ?? {})) {
+    const branch = (dep.oneOf ?? []).find(
+      (b) => b.properties?.[toggle]?.const === values[toggle],
+    );
+    for (const [name, prop] of Object.entries(branch?.properties ?? {})) {
+      if (name === toggle || prop.writeOnly || prop.default === undefined)
+        continue;
+      if (values[name] === undefined) defaults[name] = prop.default;
+    }
+  }
+  return defaults;
 }

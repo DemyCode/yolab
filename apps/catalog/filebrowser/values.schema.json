@@ -9,15 +9,14 @@
       "title": "File Browser",
       "type": "object",
       "required": [
-        "subdomain",
         "password"
       ],
       "properties": {
-        "subdomain": {
-          "type": "string",
-          "title": "Subdomain",
-          "format": "tunnel",
-          "default": "filebrowser"
+        "yolab_enabled": {
+          "type": "boolean",
+          "title": "YoLab address",
+          "default": true,
+          "description": "Reachable from anywhere at https://<subdomain>.<your-number>.yolab.io, through your YoLab tunnel. Visitors need IPv6."
         },
         "password": {
           "type": "string",
@@ -33,6 +32,45 @@
           "default": "50Gi",
           "description": "How much CephFS storage to allocate (e.g. 20Gi, 100Gi, 500Gi)"
         }
+      },
+      "dependencies": {
+        "yolab_enabled": {
+          "oneOf": [
+            {
+              "properties": {
+                "yolab_enabled": {
+                  "const": false
+                }
+              },
+              "required": [
+                "yolab_enabled"
+              ]
+            },
+            {
+              "properties": {
+                "yolab_enabled": {
+                  "const": true
+                },
+                "subdomain": {
+                  "type": "string",
+                  "title": "Subdomain",
+                  "format": "tunnel",
+                  "default": "filebrowser"
+                },
+                "yolab_token": {
+                  "type": "string",
+                  "title": "YoLab token",
+                  "format": "yolab-token",
+                  "writeOnly": true,
+                  "description": "Leave it as it is to use this box's YoLab account."
+                }
+              },
+              "required": [
+                "subdomain"
+              ]
+            }
+          ]
+        }
       }
     },
     "outputs": {
@@ -45,6 +83,13 @@
           "format": "uri",
           "source": {
             "logs": "YOLAB_OUTPUT url (\\S+)"
+          },
+          "when": {
+            "properties": {
+              "yolab_enabled": {
+                "const": true
+              }
+            }
           }
         },
         "password": {

@@ -35,6 +35,57 @@ export function TunnelWidget(props: WidgetProps) {
   );
 }
 
+export function YolabTokenWidget(props: WidgetProps) {
+  const { value, onChange, disabled, readonly, id } = props;
+  const v = typeof value === "string" ? value : "";
+  const [own, setOwn] = useState(v !== "");
+
+  if (!own) {
+    return (
+      <div className="flex items-center justify-between gap-3">
+        <p id={id} className="text-sm text-fg-muted">
+          <span className="mr-2 font-mono tracking-widest text-fg">
+            ••••••••
+          </span>
+          Uses this box&apos;s YoLab account
+        </p>
+        <button
+          type="button"
+          disabled={disabled || readonly}
+          onClick={() => setOwn(true)}
+          className="rounded-control px-2 py-1 text-sm text-primary hover:bg-surface-2"
+        >
+          Use another token
+        </button>
+      </div>
+    );
+  }
+  return (
+    <div className="flex items-center gap-2">
+      <Input
+        id={id}
+        type="password"
+        value={v}
+        autoComplete="off"
+        disabled={disabled || readonly}
+        onChange={(e) => onChange(e.target.value)}
+        className="flex-1 font-mono"
+      />
+      <button
+        type="button"
+        disabled={disabled || readonly}
+        onClick={() => {
+          onChange(undefined);
+          setOwn(false);
+        }}
+        className="rounded-control px-2 py-1 text-sm text-primary hover:bg-surface-2"
+      >
+        Use this box&apos;s
+      </button>
+    </div>
+  );
+}
+
 export function PasswordWidget(props: WidgetProps) {
   const { value, onChange, disabled, readonly, id, schema, options } = props;
   const [shown, setShown] = useState(false);

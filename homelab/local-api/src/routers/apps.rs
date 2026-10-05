@@ -519,8 +519,19 @@ fn resolve_service_name(schema: &Value, config: &serde_json::Map<String, Value>)
 
     let nested = schema["properties"]["config"]["properties"].as_object();
     let top = schema["properties"].as_object();
+    let behind_switch = [
+        &schema["properties"]["config"]["dependencies"][YOLAB_SWITCH]["oneOf"],
+        &schema["dependencies"][YOLAB_SWITCH]["oneOf"],
+    ]
+    .into_iter()
+    .filter_map(Value::as_array)
+    .flatten()
+    .find_map(|branch| tunnel_field(branch["properties"].as_object()));
 
-    let Some((field, spec)) = tunnel_field(nested).or_else(|| tunnel_field(top)) else {
+    let Some((field, spec)) = tunnel_field(nested)
+        .or(behind_switch)
+        .or_else(|| tunnel_field(top))
+    else {
         return String::new();
     };
 
@@ -548,25 +559,75 @@ fn build_values(
     .to_string()
 }
 
+pub(crate) const YOLAB_SWITCH: &str = "yolab_enabled";
+pub(crate) const YOLAB_TOKEN_FIELD: &str = "yolab_token";
+const TUNNEL_SECRET: &str = "yolab-tunnel-credentials";
+const LABEL_TOKEN_SOURCE: &str = "yolab.io/token-source";
+const TOKEN_FROM_FORM: &str = "form";
+
+pub(crate) fn take_yolab_token(config: &mut serde_json::Map<String, Value>) -> Option<String> {
+    let token = config.remove(YOLAB_TOKEN_FIELD)?;
+    let token = token.as_str()?.trim();
+    (!token.is_empty() && token != REDACTED).then(|| token.to_string())
+}
+
+pub(crate) fn way_in_refused(
+    config_schema: &Value,
+    config: &serde_json::Map<String, Value>,
+) -> Option<&'static str> {
+    if config_schema["properties"][YOLAB_SWITCH].is_null() {
+        return None;
+    }
+    let on = |key: &str| config.get(key) == Some(&Value::Bool(true));
+    let yolab = config.get(YOLAB_SWITCH) != Some(&Value::Bool(false));
+    (!(yolab || on("tor_enabled") || on("tailscale_enabled"))).then_some(
+        "Turn on at least one way to reach this app: the YoLab address, Tor or Tailscale.",
+    )
+}
+
+fn box_token(tunnel_cfg: &toml::Table) -> &str {
+    tunnel_cfg
+        .get("account_token")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+}
+
+fn tunnel_secret(ns: &str, token: &str, source: &str) -> Value {
+    crate::k8s::secret_manifest(
+        TUNNEL_SECRET,
+        ns,
+        &[("account-token", token)],
+        &[
+            ("app.kubernetes.io/managed-by", "yolab"),
+            (LABEL_TOKEN_SOURCE, source),
+        ],
+    )
+}
+
+pub(crate) async fn store_form_token(client: &Client, ns: &str, token: &str) -> anyhow::Result<()> {
+    crate::k8s::apply(client, &tunnel_secret(ns, token, TOKEN_FROM_FORM)).await
+}
+
+fn keeps_form_token(existing: Option<&Value>) -> bool {
+    existing.is_some_and(|s| {
+        s["metadata"]["labels"][LABEL_TOKEN_SOURCE].as_str() == Some(TOKEN_FROM_FORM)
+    })
+}
+
 async fn ensure_tunnel_credentials(
     client: &Client,
     ns: &str,
     tunnel_cfg: &toml::Table,
 ) -> anyhow::Result<()> {
-    let token = tunnel_cfg
-        .get("account_token")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-    crate::k8s::apply(
+    let existing = crate::k8s::get(
         client,
-        &crate::k8s::secret_manifest(
-            "yolab-tunnel-credentials",
-            ns,
-            &[("account-token", token)],
-            &[("app.kubernetes.io/managed-by", "yolab")],
-        ),
+        &crate::k8s::reference("v1", "Secret", ns, TUNNEL_SECRET),
     )
-    .await
+    .await?;
+    if keeps_form_token(existing.as_ref()) {
+        return Ok(());
+    }
+    crate::k8s::apply(client, &tunnel_secret(ns, box_token(tunnel_cfg), "box")).await
 }
 
 async fn ensure_app_namespace(
@@ -1399,11 +1460,19 @@ pub async fn install_app(
     if !install::is_instance_name(&body.instance_name) {
         return refuse("the name may only use lowercase letters, numbers and hyphens".into());
     }
+    let mut body = body;
+    let form_token = take_yolab_token(&mut body.config);
     if let Err(e) = validate_config_values(&body.config) {
         return refuse(format!("invalid config: {e}"));
     }
     if !state.config.catalog_dir().join(&id).exists() {
         return (StatusCode::NOT_FOUND, format!("App '{id}' not found")).into_response();
+    }
+    if let Some(why) = way_in_refused(
+        &app_schema(&state.config.catalog_dir(), &id).config(),
+        &body.config,
+    ) {
+        return refuse(why.into());
     }
 
     let sources = match install::resolve_sources(body.source.as_ref()) {
@@ -1435,6 +1504,11 @@ pub async fn install_app(
 
     if let Err(e) = open_app_namespace(&b.kube, &id, &instance_name, None).await {
         return (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")).into_response();
+    }
+    if let Some(token) = form_token.as_deref() {
+        if let Err(e) = store_form_token(&b.kube, &format!("yolab-{instance_name}"), token).await {
+            return (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")).into_response();
+        }
     }
     install::start(b, state.config.clone(), plan);
     (
@@ -1585,16 +1659,25 @@ pub async fn update_app(
         }
     };
 
-    let config = match body.and_then(|b| b.0.config) {
+    let mut config = match body.and_then(|b| b.0.config) {
         Some(incoming) => merge_credentials(incoming, &stored_config, &app),
         None => stored_config,
     };
+    let form_token = take_yolab_token(&mut config);
 
     if let Err(e) = validate_config_values(&config) {
         return (StatusCode::BAD_REQUEST, format!("invalid config: {e}")).into_response();
     }
     if id.is_empty() || !state.config.catalog_dir().join(&id).exists() {
         return (StatusCode::BAD_REQUEST, "App not found in catalog").into_response();
+    }
+    if let Some(why) = way_in_refused(&app.config(), &config) {
+        return (StatusCode::BAD_REQUEST, why).into_response();
+    }
+    if let Some(token) = form_token.as_deref() {
+        if let Err(e) = store_form_token(&client, &ns, token).await {
+            return (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")).into_response();
+        }
     }
 
     let plan = install::UpgradePlan {
@@ -3592,5 +3675,108 @@ mod tests {
                 .await;
             assert!(follow_pod_logs(&kube, "yolab-notes", "nope").await.is_err());
         }
+    }
+
+    fn switched_schema() -> Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "yolab_enabled": {"type": "boolean", "default": true},
+                "tor_enabled": {"type": "boolean"},
+                "tailscale_enabled": {"type": "boolean"}
+            },
+            "dependencies": {
+                "yolab_enabled": {"oneOf": [
+                    {"properties": {"yolab_enabled": {"const": false}}, "required": ["yolab_enabled"]},
+                    {"properties": {
+                        "yolab_enabled": {"const": true},
+                        "subdomain": {"type": "string", "format": "tunnel", "default": "jellyfin"},
+                        "yolab_token": {"type": "string", "format": "yolab-token", "writeOnly": true}
+                    }, "required": ["subdomain"]}
+                ]}
+            }
+        })
+    }
+
+    fn json_cfg(v: Value) -> serde_json::Map<String, Value> {
+        v.as_object().cloned().unwrap()
+    }
+
+    #[test]
+    fn the_subdomain_behind_the_yolab_switch_names_the_service() {
+        assert_eq!(
+            resolve_service_name(&switched_schema(), &cfg(&[("subdomain", "films")])),
+            "films"
+        );
+        let whole = serde_json::json!({"properties": {"config": switched_schema()}});
+        assert_eq!(
+            resolve_service_name(&whole, &cfg(&[("subdomain", "films")])),
+            "films"
+        );
+    }
+
+    #[test]
+    fn with_the_yolab_address_off_the_service_keeps_its_default_name() {
+        let off = json_cfg(serde_json::json!({"yolab_enabled": false}));
+        assert_eq!(resolve_service_name(&switched_schema(), &off), "jellyfin");
+    }
+
+    #[test]
+    fn the_form_token_never_stays_in_the_saved_settings() {
+        let mut c = json_cfg(serde_json::json!({"subdomain": "x", "yolab_token": "  tok-123 "}));
+        assert_eq!(take_yolab_token(&mut c).as_deref(), Some("tok-123"));
+        assert!(!c.contains_key("yolab_token"));
+    }
+
+    #[test]
+    fn an_empty_or_untouched_token_field_means_this_box_s_account() {
+        for value in [
+            serde_json::json!(""),
+            serde_json::json!("   "),
+            serde_json::json!(REDACTED),
+        ] {
+            let mut c = json_cfg(serde_json::json!({"yolab_token": value}));
+            assert_eq!(take_yolab_token(&mut c), None);
+            assert!(!c.contains_key("yolab_token"));
+        }
+        let mut none = cfg(&[("subdomain", "x")]);
+        assert_eq!(take_yolab_token(&mut none), None);
+    }
+
+    #[test]
+    fn an_app_with_every_way_in_switched_off_is_refused() {
+        let schema = switched_schema();
+        let refused = |v: Value| way_in_refused(&schema, &json_cfg(v)).is_some();
+        assert!(refused(serde_json::json!({"yolab_enabled": false})));
+        assert!(refused(
+            serde_json::json!({"yolab_enabled": false, "tor_enabled": false})
+        ));
+        assert!(!refused(
+            serde_json::json!({"yolab_enabled": false, "tor_enabled": true})
+        ));
+        assert!(!refused(
+            serde_json::json!({"yolab_enabled": false, "tailscale_enabled": true})
+        ));
+        assert!(!refused(serde_json::json!({"yolab_enabled": true})));
+        assert!(!refused(
+            serde_json::json!({"subdomain": "from-before-the-switch"})
+        ));
+    }
+
+    #[test]
+    fn apps_without_the_switch_are_not_judged() {
+        let no_switch = serde_json::json!({"properties": {"subdomain": {"format": "tunnel"}}});
+        assert_eq!(way_in_refused(&no_switch, &cfg(&[])), None);
+    }
+
+    #[test]
+    fn a_token_someone_typed_in_survives_upgrades_and_the_box_s_does_not_block_rotation() {
+        let typed = tunnel_secret("yolab-x", "tok-typed", TOKEN_FROM_FORM);
+        let boxed = tunnel_secret("yolab-x", "tok-box", "box");
+        assert!(keeps_form_token(Some(&typed)));
+        assert!(!keeps_form_token(Some(&boxed)));
+        assert!(!keeps_form_token(None));
+        assert_eq!(typed["metadata"]["name"], "yolab-tunnel-credentials");
+        assert_eq!(typed["stringData"]["account-token"], "tok-typed");
     }
 }

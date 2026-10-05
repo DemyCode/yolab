@@ -1,5 +1,10 @@
 import type { AppDefinition } from "@/types/apps";
-import { addressField, revealedFields, type ConfigSchema } from "./schema";
+import {
+  addressField,
+  chosenBranchDefaults,
+  revealedFields,
+  type ConfigSchema,
+} from "./schema";
 
 export type InstallMode = "fresh" | "duplicate" | "restore";
 
@@ -126,6 +131,7 @@ export function seedForm(
       seed[name] = generate(Math.max(24, prop.minLength ?? 0));
     }
   }
+  Object.assign(seed, chosenBranchDefaults(schema, seed));
   const address = addressField(schema);
   if (source && address && !keepsSourceAddress(mode)) {
     delete seed[address];

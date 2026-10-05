@@ -1117,5 +1117,117 @@ class PrivateAccessRendered(RenderedChart):
         self.assertIn("onion service does not point at Caddy", found[0])
 
 
+YOLAB_TUNNEL = {"type": "string", "title": "Subdomain", "format": "tunnel"}
+YOLAB_TOKEN = {"type": "string", "format": "yolab-token", "writeOnly": True}
+
+
+def yolab_switch_schema(
+    top_tunnel=False, off_required=True, token=YOLAB_TOKEN, url_when=True
+):
+    off = {"properties": {"yolab_enabled": {"const": False}}}
+    if off_required:
+        off["required"] = ["yolab_enabled"]
+    on_props = {"yolab_enabled": {"const": True}, "subdomain": YOLAB_TUNNEL}
+    if token is not None:
+        on_props["yolab_token"] = token
+    config = {"yolab_enabled": {"type": "boolean", "default": True}}
+    if top_tunnel:
+        config["subdomain"] = YOLAB_TUNNEL
+    s = schema(
+        config=config,
+        outputs={
+            "url": logs(
+                r"YOLAB_OUTPUT url (\S+)",
+                format="uri",
+                **({"when": check_charts.YOLAB_ON} if url_when else {}),
+            )
+        },
+    )
+    s["properties"]["config"]["dependencies"] = {
+        "yolab_enabled": {
+            "oneOf": [off, {"properties": on_props, "required": ["subdomain"]}]
+        }
+    }
+    return s
+
+
+class YolabSwitch(unittest.TestCase):
+    def test_a_switch_hiding_the_subdomain_and_token_passes(self):
+        self.assertEqual(failures(yolab_switch_schema()), [])
+
+    def test_a_subdomain_shown_while_off_is_refused(self):
+        found = failures(yolab_switch_schema(top_tunnel=True))
+        self.assertTrue(
+            any("shown even with the YoLab address off" in f for f in found), found
+        )
+
+    def test_an_off_branch_that_old_installs_also_match_is_refused(self):
+        found = failures(yolab_switch_schema(off_required=False))
+        self.assertTrue(any("upgrade is refused" in f for f in found), found)
+
+    def test_the_token_field_the_box_fills_in_is_required(self):
+        found = failures(yolab_switch_schema(token=None))
+        self.assertTrue(any("yolab_token" in f for f in found), found)
+
+    def test_the_address_is_not_shown_while_switched_off(self):
+        found = failures(yolab_switch_schema(url_when=False))
+        self.assertTrue(
+            any("only show when yolab_enabled is on" in f for f in found), found
+        )
+
+    def test_every_app_with_a_subdomain_has_the_switch(self):
+        import json
+
+        for path in Path(check_charts.HERE).glob("*/values.schema.json"):
+            config = json.loads(path.read_text())["properties"]["config"]
+            deps = config.get("dependencies") or {}
+            has_address = "yolab_enabled" in deps or any(
+                p.get("format") == "tunnel"
+                for p in (config.get("properties") or {}).values()
+            )
+            if has_address:
+                self.assertIn("yolab_enabled", config["properties"], path.parent.name)
+
+
+YOLAB_OFF = {**PRIVATE_ON, "config.yolab_enabled": "false"}
+
+
+class YolabOffRendered(RenderedChart):
+    CHART = "vaultwarden"
+
+    def test_on_by_default_the_tunnel_is_registered_as_before(self):
+        spec = self.deployments(self.docs())["gateway"]
+        self.assertIn("wg-register", {c["name"] for c in spec["initContainers"]})
+        self.assertIn("wireguard", {c["name"] for c in spec["containers"]})
+
+    def test_off_no_tunnel_wireguard_explorer_or_public_site(self):
+        docs = self.docs(YOLAB_OFF)
+        found = []
+        check_charts.check_yolab_off(
+            "vaultwarden", docs, lambda app, msg: found.append(msg)
+        )
+        self.assertEqual(found, [])
+        spec = self.deployments(docs)["gateway"]
+        self.assertEqual([c["name"] for c in spec["initContainers"]][:1], ["yolab-env"])
+
+    def test_switching_off_removes_the_old_tunnel_and_keeps_scripts_working(self):
+        spec = self.deployments(self.docs(YOLAB_OFF))["gateway"]
+        init = next(c for c in spec["initContainers"] if c["name"] == "yolab-env")
+        script = init["command"][2]
+        self.assertIn("-X DELETE", script)
+        self.assertIn("rm -f /state/wg-state.json", script)
+        self.assertIn("> /yolab/env", script)
+
+    def test_a_tunnel_left_running_while_off_is_reported(self):
+        docs = self.docs(YOLAB_OFF)
+        spec = self.deployments(docs)["gateway"]
+        spec["containers"].append({"name": "wireguard", "image": "x"})
+        found = []
+        check_charts.check_yolab_off(
+            "vaultwarden", docs, lambda app, msg: found.append(msg)
+        )
+        self.assertEqual(len(found), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

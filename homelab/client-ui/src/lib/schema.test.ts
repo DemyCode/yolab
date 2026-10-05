@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   addressField,
+  chosenBranchDefaults,
   configSchemaOf,
   generatedFields,
   revealedBy,
@@ -148,5 +149,74 @@ describe("addressField", () => {
   it("is the field whose format is tunnel", () => {
     expect(addressField(codeServer)).toBe("subdomain");
     expect(addressField({ properties: {} })).toBeUndefined();
+  });
+});
+
+const switched: ConfigSchema = {
+  type: "object",
+  properties: {
+    yolab_enabled: { type: "boolean", default: true },
+    storage_size: { type: "string" },
+  },
+  dependencies: {
+    yolab_enabled: {
+      oneOf: [
+        { properties: { yolab_enabled: { const: false } } },
+        {
+          properties: {
+            yolab_enabled: { const: true },
+            subdomain: {
+              type: "string",
+              format: "tunnel",
+              default: "jellyfin",
+            },
+            yolab_token: {
+              type: "string",
+              format: "yolab-token",
+              writeOnly: true,
+            },
+          },
+        },
+      ],
+    },
+  },
+};
+
+describe("the YoLab address switch", () => {
+  it("finds the subdomain behind the switch", () => {
+    expect(addressField(switched)).toBe("subdomain");
+  });
+
+  it("shows the subdomain and token right under the switch", () => {
+    const order = uiSchemaFor(switched, "6.yolab.io")["ui:order"] as string[];
+    expect(order.slice(0, 3)).toEqual([
+      "yolab_enabled",
+      "subdomain",
+      "yolab_token",
+    ]);
+  });
+
+  it("gives the token the box-fills-it-in widget, not a password box", () => {
+    const ui = uiSchemaFor(switched, "6.yolab.io") as Record<
+      string,
+      Record<string, unknown>
+    >;
+    expect(ui.yolab_token["ui:widget"]).toBe("YolabTokenWidget");
+    expect(ui.subdomain["ui:widget"]).toBe("TunnelWidget");
+  });
+
+  it("prefills the branch the switch selects, without touching what is set", () => {
+    expect(chosenBranchDefaults(switched, { yolab_enabled: true })).toEqual({
+      subdomain: "jellyfin",
+    });
+    expect(
+      chosenBranchDefaults(switched, {
+        yolab_enabled: true,
+        subdomain: "films",
+      }),
+    ).toEqual({});
+    expect(chosenBranchDefaults(switched, { yolab_enabled: false })).toEqual(
+      {},
+    );
   });
 });

@@ -9,15 +9,14 @@
       "title": "Wallabag",
       "type": "object",
       "required": [
-        "subdomain",
         "app_secret"
       ],
       "properties": {
-        "subdomain": {
-          "type": "string",
-          "title": "Subdomain",
-          "format": "tunnel",
-          "default": "wallabag"
+        "yolab_enabled": {
+          "type": "boolean",
+          "title": "YoLab address",
+          "default": true,
+          "description": "Reachable from anywhere at https://<subdomain>.<your-number>.yolab.io, through your YoLab tunnel. Visitors need IPv6."
         },
         "app_secret": {
           "type": "string",
@@ -41,6 +40,43 @@
         }
       },
       "dependencies": {
+        "yolab_enabled": {
+          "oneOf": [
+            {
+              "properties": {
+                "yolab_enabled": {
+                  "const": false
+                }
+              },
+              "required": [
+                "yolab_enabled"
+              ]
+            },
+            {
+              "properties": {
+                "yolab_enabled": {
+                  "const": true
+                },
+                "subdomain": {
+                  "type": "string",
+                  "title": "Subdomain",
+                  "format": "tunnel",
+                  "default": "wallabag"
+                },
+                "yolab_token": {
+                  "type": "string",
+                  "title": "YoLab token",
+                  "format": "yolab-token",
+                  "writeOnly": true,
+                  "description": "Leave it as it is to use this box's YoLab account."
+                }
+              },
+              "required": [
+                "subdomain"
+              ]
+            }
+          ]
+        },
         "file_explorer_enabled": {
           "oneOf": [
             {
@@ -96,6 +132,13 @@
           "format": "uri",
           "source": {
             "logs": "YOLAB_OUTPUT url (\\S+)"
+          },
+          "when": {
+            "properties": {
+              "yolab_enabled": {
+                "const": true
+              }
+            }
           }
         },
         "app_secret": {

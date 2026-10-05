@@ -11,7 +11,17 @@ yolab-tunnel-credentials
 {{- end -}}
 
 
+{{- define "yolab-common.yolab.enabled" -}}
+{{- $cfg := (.Values.config) | default dict -}}
+{{- if and (hasKey $cfg "yolab_enabled") (eq (get $cfg "yolab_enabled") false) -}}
+{{- else -}}true{{- end -}}
+{{- end -}}
+
+
 {{- define "yolab-common.wgRegisterInit" -}}
+{{- if ne (include "yolab-common.yolab.enabled" .) "true" }}
+{{ include "yolab-common.yolabOffInit" . }}
+{{- else }}
 - name: wg-register
   image: {{ include "yolab-common.image.wgRegister" . }}
   imagePullPolicy: IfNotPresent
@@ -51,11 +61,55 @@ yolab-tunnel-credentials
     - name: data
       mountPath: /state
       subPath: {{ printf "%s/yolab-state" .Release.Name | quote }}
+{{- end }}
+{{- end -}}
+
+
+{{- define "yolab-common.yolabOffInit" -}}
+- name: yolab-env
+  image: {{ include "yolab-common.image.wgRegister" . }}
+  imagePullPolicy: IfNotPresent
+  env:
+    - name: ACCOUNT_TOKEN
+      valueFrom:
+        secretKeyRef:
+          name: {{ include "yolab-common.tunnelSecretName" . }}
+          key: account-token
+          optional: true
+    - name: PLATFORM_API_URL
+      value: {{ ((.Values.yolab).platformApiUrl) | default "" | quote }}
+  command:
+    - /bin/sh
+    - -c
+    - |
+      set -u
+      TUNNEL_ID=$(jq -r '.tunnel_id // empty' /state/wg-state.json 2>/dev/null || true)
+      if [ -n "$TUNNEL_ID" ]; then
+        STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE \
+          -H "Authorization: Bearer ${ACCOUNT_TOKEN:-}" \
+          "$PLATFORM_API_URL/tunnels/$TUNNEL_ID" || echo 000)
+        case "$STATUS" in
+          2??|404)
+            rm -f /state/wg-state.json
+            echo "YoLab address switched off: tunnel $TUNNEL_ID removed" ;;
+          *)
+            echo "YoLab address switched off, but removing tunnel $TUNNEL_ID returned HTTP $STATUS; will retry on the next start" ;;
+        esac
+      fi
+      printf 'export YOLAB_FQDN=\nexport YOLAB_URL=\n' > /yolab/env
+  volumeMounts:
+    - name: yolab
+      mountPath: /yolab
+    - name: data
+      mountPath: /state
+      subPath: {{ printf "%s/yolab-state" .Release.Name | quote }}
 {{- end -}}
 
 
 {{- define "yolab-common.gatewayContainers" -}}
+{{- if eq (include "yolab-common.yolab.enabled" .) "true" }}
 {{ include "yolab-common.wireguardContainer" . }}
+{{- end }}
 {{ include "yolab-common.caddyContainer" . }}
 {{- end -}}
 
@@ -83,11 +137,13 @@ yolab-tunnel-credentials
   ports:
     - containerPort: 80
     - containerPort: 443
+  {{- if eq (include "yolab-common.yolab.enabled" .) "true" }}
   readinessProbe:
     tcpSocket:
       port: 80
     initialDelaySeconds: 5
     periodSeconds: 10
+  {{- end }}
   volumeMounts:
     - name: data
       mountPath: /data
@@ -129,6 +185,7 @@ data:
   Caddyfile: |
     {{- if (((.Values.yolab).gateway).caddyfile) }}
     {{- .Values.yolab.gateway.caddyfile | nindent 4 }}
+    {{- else if ne (include "yolab-common.yolab.enabled" .) "true" }}
     {{- else if eq (include "yolab-common.auth.enabled" .) "true" }}
     {$YOLAB_FQDN} {
       # The portal, on this app's own domain. Must be matched BEFORE the
@@ -165,6 +222,10 @@ data:
     - /bin/sh
     - -c
     - |
+      {{- if ne (include "yolab-common.yolab.enabled" .) "true" }}
+      printf 'export YOLAB_FQDN=\nexport YOLAB_URL=\n' > /yolab/env
+      exit 0
+      {{- end }}
       until [ -s /state/wg-state.json ]; do
         echo "waiting for the tunnel to be registered..."
         sleep 2

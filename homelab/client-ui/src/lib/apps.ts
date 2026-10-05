@@ -27,7 +27,8 @@ export function appLinks(app: AppInfo, tunnelDomain: string): AppLink[] {
   }
 
   const subdomain = app.config?.subdomain;
-  if (typeof subdomain === "string" && subdomain && tunnelDomain) {
+  const yolabOn = app.config?.yolab_enabled !== false;
+  if (yolabOn && typeof subdomain === "string" && subdomain && tunnelDomain) {
     const derived = `https://${subdomain}.${tunnelDomain}`;
     const already = [...seen].some(
       (u) => u.replace(/\/$/, "") === derived.replace(/\/$/, ""),

@@ -1,6 +1,7 @@
 {{- define "yolab-common.fileExplorer.enabled" -}}
 {{- $cfg := (.Values.config) | default dict -}}
-{{- if and (hasKey $cfg "file_explorer_enabled") (eq (get $cfg "file_explorer_enabled") false) -}}
+{{- if ne (include "yolab-common.yolab.enabled" .) "true" -}}
+{{- else if and (hasKey $cfg "file_explorer_enabled") (eq (get $cfg "file_explorer_enabled") false) -}}
 {{- else -}}true{{- end -}}
 {{- end -}}
 

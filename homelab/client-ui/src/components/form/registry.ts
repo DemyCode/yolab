@@ -8,6 +8,7 @@ import {
   PasswordWidget,
   TextareaWidget,
   TunnelWidget,
+  YolabTokenWidget,
 } from "./widgets";
 
 export const templates = {
@@ -18,6 +19,7 @@ export const templates = {
 
 export const widgets = {
   TunnelWidget,
+  YolabTokenWidget,
   PasswordWidget,
   CheckboxWidget,
   TextareaWidget,

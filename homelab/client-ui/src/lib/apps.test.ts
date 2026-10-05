@@ -97,6 +97,15 @@ describe("appLinks", () => {
     ).toEqual([{ label: "Open", url: "https://git.box.yolab.io" }]);
   });
 
+  it("offers no YoLab address when the app has it switched off", () => {
+    expect(
+      appLinks(
+        app({ config: { subdomain: "git", yolab_enabled: false } }),
+        "box.yolab.io",
+      ),
+    ).toEqual([]);
+  });
+
   it("does not offer the same address twice under two labels", () => {
     const links = appLinks(
       app({

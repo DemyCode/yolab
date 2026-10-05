@@ -10,17 +10,16 @@
       "description": "Runs Steam on your best graphics card. Play in a browser from anywhere, or with the free Moonlight app on a TV, phone or laptop at home. Moonlight connects to the machine's address on your home network.",
       "type": "object",
       "required": [
-        "subdomain",
         "auth_users",
         "desktop_password",
         "sunshine_password"
       ],
       "properties": {
-        "subdomain": {
-          "type": "string",
-          "title": "Subdomain",
-          "format": "tunnel",
-          "default": "games"
+        "yolab_enabled": {
+          "type": "boolean",
+          "title": "YoLab address",
+          "default": true,
+          "description": "Reachable from anywhere at https://<subdomain>.<your-number>.yolab.io, through your YoLab tunnel. Visitors need IPv6."
         },
         "storage_size": {
           "type": "string",
@@ -82,6 +81,45 @@
           "writeOnly": true,
           "generate": true
         }
+      },
+      "dependencies": {
+        "yolab_enabled": {
+          "oneOf": [
+            {
+              "properties": {
+                "yolab_enabled": {
+                  "const": false
+                }
+              },
+              "required": [
+                "yolab_enabled"
+              ]
+            },
+            {
+              "properties": {
+                "yolab_enabled": {
+                  "const": true
+                },
+                "subdomain": {
+                  "type": "string",
+                  "title": "Subdomain",
+                  "format": "tunnel",
+                  "default": "games"
+                },
+                "yolab_token": {
+                  "type": "string",
+                  "title": "YoLab token",
+                  "format": "yolab-token",
+                  "writeOnly": true,
+                  "description": "Leave it as it is to use this box's YoLab account."
+                }
+              },
+              "required": [
+                "subdomain"
+              ]
+            }
+          ]
+        }
       }
     },
     "outputs": {
@@ -94,6 +132,13 @@
           "format": "uri",
           "source": {
             "logs": "YOLAB_OUTPUT url (\\S+)"
+          },
+          "when": {
+            "properties": {
+              "yolab_enabled": {
+                "const": true
+              }
+            }
           }
         },
         "desktop_password": {

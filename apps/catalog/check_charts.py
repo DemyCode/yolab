@@ -99,7 +99,7 @@ WORKLOAD_KINDS = ("Deployment", "DaemonSet", "StatefulSet")
 OWN_IMAGES = "ghcr.io/demycode/"
 with open(os.path.join(HERE, "image_arches.json")) as _f:
     ARCHES = json.load(_f)
-TOKEN_CONTAINERS = ("wg-register", "cleanup")
+TOKEN_CONTAINERS = ("wg-register", "cleanup", "yolab-env")
 
 
 class Failures:
@@ -264,24 +264,42 @@ def check(app, docs, fail, chart_yaml="", schema=None, arches=None):
             for c in d["spec"]["template"]["spec"].get("initContainers") or []
         )
     ]
-    if len(tunnel_pods) != 1:
+    off_pods = [
+        (n, d["spec"]["template"]["spec"])
+        for n, d in deploys.items()
+        if any(
+            c["name"] == "yolab-env"
+            for c in d["spec"]["template"]["spec"].get("initContainers") or []
+        )
+        and any(
+            c["name"] == "caddy"
+            for c in d["spec"]["template"]["spec"].get("containers") or []
+        )
+    ]
+    if not tunnel_pods and len(off_pods) == 1:
+        gw_name, gw = off_pods[0]
+        conts = {c["name"]: c for c in gw.get("containers") or []}
+        if "wireguard" in conts:
+            fail(app, "the YoLab address is off but the tunnel sidecar still runs")
+    elif len(tunnel_pods) != 1:
         fail(
             app,
             f"expected exactly one pod running wg-register, found {len(tunnel_pods)}",
         )
         return
-    gw_name, gw = tunnel_pods[0]
-    conts = {c["name"]: c for c in gw.get("containers") or []}
+    else:
+        gw_name, gw = tunnel_pods[0]
+        conts = {c["name"]: c for c in gw.get("containers") or []}
 
-    for req in GATEWAY_CONTAINERS if has_caddy else ("wireguard",):
-        if req not in conts:
-            fail(app, f"pod {gw_name} missing {req} container")
+        for req in GATEWAY_CONTAINERS if has_caddy else ("wireguard",):
+            if req not in conts:
+                fail(app, f"pod {gw_name} missing {req} container")
 
-    if (
-        conts.get("wireguard", {}).get("securityContext", {}).get("privileged")
-        is not True
-    ):
-        fail(app, "wireguard sidecar is not privileged (the tunnel cannot come up)")
+        if (
+            conts.get("wireguard", {}).get("securityContext", {}).get("privileged")
+            is not True
+        ):
+            fail(app, "wireguard sidecar is not privileged (the tunnel cannot come up)")
 
     for name, c in conts.items():
         if name != "wireguard" and c.get("securityContext", {}).get("privileged"):
@@ -790,6 +808,22 @@ def check_private_access(app, docs, offered, fail):
             )
 
 
+def check_yolab_off(app, docs, fail):
+    for name, spec in pod_specs(docs):
+        names = {c["name"] for c in (spec.get("containers") or [])} | {
+            c["name"] for c in (spec.get("initContainers") or [])
+        }
+        if names & {"wg-register", "wireguard", "file-explorer"}:
+            fail(
+                app,
+                f"pod {name} still registers a tunnel, runs WireGuard or the file "
+                f"explorer with the YoLab address off",
+            )
+    caddyfile = configmap_data(docs, "-caddy", "Caddyfile") or ""
+    if "YOLAB_FQDN" in caddyfile:
+        fail(app, "Caddy still serves the YoLab address with it switched off")
+
+
 def check_sourced_secrets_reach_the_program(app, docs, fail):
     bare = sorted(set(BARE_SECRET.findall(json.dumps(docs))))
     if not bare:
@@ -816,6 +850,68 @@ OUTPUT_FORMATS = {"text", "uri", "secret", "multiline"}
 LEGACY_ANNOTATIONS = ("yolab.io/uischema", "yolab.io/outputs")
 
 
+YOLAB_ON = {"properties": {"yolab_enabled": {"const": True}}}
+
+
+def check_yolab_switch(app, config_obj, props, fail):
+    config = config_obj.get("properties") or {}
+    if "yolab_enabled" not in config:
+        return
+    if any(p.get("format") == "tunnel" for p in config.values()):
+        fail(
+            app,
+            "the subdomain is shown even with the YoLab address off; it belongs "
+            "in the yolab_enabled switch's on branch",
+        )
+    branches = ((config_obj.get("dependencies") or {}).get("yolab_enabled") or {}).get(
+        "oneOf"
+    ) or []
+    on = next(
+        (
+            b
+            for b in branches
+            if (b.get("properties") or {}).get("yolab_enabled") == {"const": True}
+        ),
+        None,
+    )
+    off = next(
+        (
+            b
+            for b in branches
+            if (b.get("properties") or {}).get("yolab_enabled") == {"const": False}
+        ),
+        None,
+    )
+    if on is None or off is None:
+        fail(app, "yolab_enabled needs an on branch and an off branch")
+        return
+    on_props = on.get("properties") or {}
+    tunnel = [n for n, p in on_props.items() if p.get("format") == "tunnel"]
+    if len(tunnel) != 1 or tunnel[0] not in (on.get("required") or []):
+        fail(app, "the YoLab address on branch must require exactly one subdomain")
+    token = on_props.get("yolab_token") or {}
+    if token.get("format") != "yolab-token" or token.get("writeOnly") is not True:
+        fail(
+            app,
+            "the YoLab address on branch needs a write-only yolab_token the box fills in",
+        )
+    if "yolab_enabled" not in (off.get("required") or []):
+        fail(
+            app,
+            "the off branch must require yolab_enabled, or an install from before "
+            "the switch matches both branches and its upgrade is refused",
+        )
+    outputs = (props.get("outputs") or {}).get("properties") or {}
+    for key, out in outputs.items():
+        logs = (out.get("source") or {}).get("logs") or ""
+        if logs.startswith("YOLAB_OUTPUT url ") and out.get("when") != YOLAB_ON:
+            fail(
+                app,
+                f"outputs.{key} is the YoLab address and must only show when "
+                f"yolab_enabled is on",
+            )
+
+
 def check_schema(app, schema, chart_yaml, fail):
     try:
         annotations = (yaml.safe_load(chart_yaml) or {}).get("annotations") or {}
@@ -837,10 +933,24 @@ def check_schema(app, schema, chart_yaml, fail):
             "they are injected by YoLab, not chosen by whoever installs the app",
         )
 
-    config = (props.get("config") or {}).get("properties") or {}
-    tunnels = [n for n, p in config.items() if p.get("format") == "tunnel"]
+    config_obj = props.get("config") or {}
+    config = config_obj.get("properties") or {}
+    branches = {}
+    yolab_dep = (config_obj.get("dependencies") or {}).get("yolab_enabled") or {}
+    for branch in yolab_dep.get("oneOf") or []:
+        for name, prop in (branch.get("properties") or {}).items():
+            if name != "yolab_enabled":
+                branches[name] = prop
+    tunnels = sorted(
+        {
+            n
+            for n, p in {**config, **branches}.items()
+            if isinstance(p, dict) and p.get("format") == "tunnel"
+        }
+    )
     if len(tunnels) > 1:
         fail(app, f"more than one address field: {', '.join(tunnels)}")
+    check_yolab_switch(app, config_obj, props, fail)
     for name, prop in config.items():
         if prop.get("generate") and not prop.get("writeOnly"):
             fail(app, f"config.{name} is generated but not marked writeOnly")
@@ -974,6 +1084,27 @@ def main(argv):
                     variant_docs = [d for d in yaml.safe_load_all(variant) if d]
                     check(app, variant_docs, fail, text, schema)
                     check_private_access(app, variant_docs, offered, fail)
+                config_props = (
+                    (schema.get("properties") or {}).get("config") or {}
+                ).get("properties") or {}
+                if "yolab_enabled" in config_props:
+                    off, err = render(
+                        chart_dir,
+                        library_tgz,
+                        tmp,
+                        {**extra, "config.yolab_enabled": "false"},
+                    )
+                    if off is None:
+                        fail(
+                            app,
+                            f"helm template with the YoLab address off failed: "
+                            f"{err.splitlines()[-1] if err else 'unknown'}",
+                        )
+                    else:
+                        off_docs = [d for d in yaml.safe_load_all(off) if d]
+                        check(app, off_docs, fail, text, schema)
+                        check_private_access(app, off_docs, offered, fail)
+                        check_yolab_off(app, off_docs, fail)
 
             for extra in VARIANTS.get(app, []):
                 variant, err = render(chart_dir, library_tgz, tmp, extra)

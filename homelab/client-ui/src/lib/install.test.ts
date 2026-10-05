@@ -426,3 +426,36 @@ describe("seedForm", () => {
     expect(seed.storage_size).toBe("50Gi");
   });
 });
+
+describe("seedForm with the YoLab address switch", () => {
+  const schema: ConfigSchema = {
+    properties: { yolab_enabled: { type: "boolean", default: true } },
+    dependencies: {
+      yolab_enabled: {
+        oneOf: [
+          { properties: { yolab_enabled: { const: false } } },
+          {
+            properties: {
+              yolab_enabled: { const: true },
+              subdomain: {
+                type: "string",
+                format: "tunnel",
+                default: "jellyfin",
+              },
+              yolab_token: {
+                type: "string",
+                format: "yolab-token",
+                writeOnly: true,
+              },
+            },
+          },
+        ],
+      },
+    },
+  };
+
+  it("starts a new install on, with the app's subdomain and no token", () => {
+    const seed = seedForm(schema, null, "fresh", () => "x");
+    expect(seed).toEqual({ yolab_enabled: true, subdomain: "jellyfin" });
+  });
+});

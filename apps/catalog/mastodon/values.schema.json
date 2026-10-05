@@ -9,17 +9,15 @@
       "title": "Mastodon",
       "type": "object",
       "required": [
-        "subdomain",
         "owner_username",
         "owner_email"
       ],
       "properties": {
-        "subdomain": {
-          "type": "string",
-          "title": "Subdomain",
-          "format": "tunnel",
-          "default": "mastodon",
-          "description": "This becomes your server's permanent address and part of every username on it. Mastodon cannot change it later without breaking every follow — pick the one you want to keep."
+        "yolab_enabled": {
+          "type": "boolean",
+          "title": "YoLab address",
+          "default": true,
+          "description": "Reachable from anywhere at https://<subdomain>.<your-number>.yolab.io, through your YoLab tunnel. Visitors need IPv6."
         },
         "owner_username": {
           "type": "string",
@@ -79,6 +77,44 @@
         }
       },
       "dependencies": {
+        "yolab_enabled": {
+          "oneOf": [
+            {
+              "properties": {
+                "yolab_enabled": {
+                  "const": false
+                }
+              },
+              "required": [
+                "yolab_enabled"
+              ]
+            },
+            {
+              "properties": {
+                "yolab_enabled": {
+                  "const": true
+                },
+                "subdomain": {
+                  "type": "string",
+                  "title": "Subdomain",
+                  "format": "tunnel",
+                  "default": "mastodon",
+                  "description": "This becomes your server's permanent address and part of every username on it. Mastodon cannot change it later without breaking every follow — pick the one you want to keep."
+                },
+                "yolab_token": {
+                  "type": "string",
+                  "title": "YoLab token",
+                  "format": "yolab-token",
+                  "writeOnly": true,
+                  "description": "Leave it as it is to use this box's YoLab account."
+                }
+              },
+              "required": [
+                "subdomain"
+              ]
+            }
+          ]
+        },
         "file_explorer_enabled": {
           "oneOf": [
             {
