@@ -18,6 +18,7 @@ pub struct NodeInfo {
     pub ready: bool,
     pub roles: Vec<String>,
     pub joined_at: String,
+    pub hardware: crate::hardware::NodeHardware,
 }
 
 #[derive(Serialize, Debug)]
@@ -64,6 +65,7 @@ pub async fn nodes(State(state): State<AppState>) -> Result<Json<Vec<NodeInfo>>>
                     ready,
                     roles,
                     joined_at: meta["creationTimestamp"].as_str().unwrap_or("").to_string(),
+                    hardware: crate::hardware::NodeHardware::from_labels(&meta["labels"]),
                 }
             })
             .collect(),

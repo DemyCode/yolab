@@ -765,6 +765,134 @@ in let
         touch $out
       '';
 
+    gpu-detection-picks-the-driver-each-card-can-run = let
+      inherit (pkgs) lib;
+      detect = import ../homelab/nixos/gpu/detect.nix lib;
+      card = vendor: device: drivers: {
+        vendor = {
+          hex = vendor;
+          value = lib.fromHexString vendor;
+        };
+        device = {
+          hex = device;
+          value = lib.fromHexString device;
+        };
+        driver_modules = drivers;
+      };
+      rtx3060 = card "10de" "2504" ["nouveau"];
+      gtx1080 = card "10de" "1b80" ["nouveau"];
+      gtx680 = card "10de" "1180" ["nouveau"];
+      rx7900 = card "1002" "744c" ["amdgpu"];
+      iris = card "8086" "a7a0" ["i915"];
+      on = cards: detect {hardware.graphics_card = cards;};
+      cases = {
+        "no report enables nothing" = {
+          got = detect {};
+          want = {
+            any = false;
+            nvidia.present = false;
+            amd = false;
+            intel = false;
+          };
+        };
+        "a Turing-or-newer card runs the current driver with the open module" = {
+          got = on [rtx3060];
+          want = {
+            any = true;
+            nvidia = {
+              present = true;
+              branch = "stable";
+              open = true;
+            };
+          };
+        };
+        "a Pascal card runs the 580 branch, the last that supports it, with the closed module" = {
+          got = on [gtx1080];
+          want.nvidia = {
+            present = true;
+            branch = "legacy_580";
+            open = false;
+          };
+        };
+        "one old card beside a new one pulls the whole machine to the branch both run on" = {
+          got = on [gtx1080 rtx3060];
+          want.nvidia = {
+            branch = "legacy_580";
+            open = false;
+          };
+        };
+        "a Kepler card has no driver, so it is reported and left alone" = {
+          got = on [gtx680];
+          want = {
+            any = false;
+            nvidia = {
+              present = false;
+              unsupported = true;
+              branch = null;
+            };
+          };
+        };
+        "an AMD card is found by vendor" = {
+          got = on [rx7900];
+          want = {
+            any = true;
+            amd = true;
+            nvidia.present = false;
+          };
+        };
+        "an Intel iGPU is found by vendor" = {
+          got = on [iris];
+          want = {
+            any = true;
+            intel = true;
+          };
+        };
+        "a card without vendor ids is still found by its kernel driver" = {
+          got = on [{driver_modules = ["nouveau"];}];
+          want.nvidia = {
+            present = true;
+            branch = "stable";
+          };
+        };
+        "a laptop with an Intel iGPU and an NVIDIA dGPU drives both" = {
+          got = on [iris rtx3060];
+          want = {
+            intel = true;
+            nvidia.present = true;
+          };
+        };
+      };
+      matches = want: got:
+        lib.all (
+          k:
+            if builtins.isAttrs want.${k}
+            then matches want.${k} got.${k}
+            else want.${k} == got.${k}
+        ) (builtins.attrNames want);
+      failures = lib.filter (name: !(matches cases.${name}.want cases.${name}.got)) (builtins.attrNames cases);
+
+      nvidiaReport = builtins.toFile "facter-nvidia.json" (builtins.toJSON {hardware.graphics_card = [rtx3060];});
+      withNvidia = nixosSystems.yolab-ci.extendModules {specialArgs.yolabFacterPath = nvidiaReport;};
+      plain = nixosSystems.yolab-ci.config;
+      systemProblems =
+        lib.optional plain.hardware.nvidia-container-toolkit.enable
+        "a machine without a report turned the NVIDIA container toolkit on"
+        ++ lib.optional (!plain.hardware.uinput.enable)
+        "game streaming needs /dev/uinput on every machine"
+        ++ lib.optional (!withNvidia.config.hardware.nvidia-container-toolkit.enable)
+        "an NVIDIA report did not turn on the CDI spec the device plugin reads"
+        ++ lib.optional (!(builtins.elem "nvidia" withNvidia.config.services.xserver.videoDrivers))
+        "an NVIDIA report did not load the nvidia driver";
+      nvidiaToplevel = withNvidia.config.system.build.toplevel.drvPath;
+    in
+      pkgs.runCommand "gpu-detection-picks-the-driver-each-card-can-run" {} ''
+        ${lib.concatMapStrings (n: "echo ${lib.escapeShellArg "detect: ${n}"} >&2\n") failures}
+        ${lib.concatMapStrings (p: "echo ${lib.escapeShellArg p} >&2\n") systemProblems}
+        ${lib.optionalString (failures != [] || systemProblems != []) "exit 1"}
+        echo ${lib.escapeShellArg nvidiaToplevel} > /dev/null
+        touch $out
+      '';
+
     deadnix =
       pkgs.runCommand "deadnix"
       {

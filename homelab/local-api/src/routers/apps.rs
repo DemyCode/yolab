@@ -368,26 +368,40 @@ fn requested_resources(items: &[Value]) -> ResourceSpec {
                 .into_iter()
                 .flatten()
             {
-                let Some(req) = c["resources"]["requests"].as_object() else {
-                    continue;
-                };
+                let empty = serde_json::Map::new();
+                let req = c["resources"]["requests"].as_object().unwrap_or(&empty);
+                let limits = c["resources"]["limits"].as_object().unwrap_or(&empty);
                 if let Some(cpu) = req.get("cpu").and_then(|v| v.as_str()) {
                     resources.cpu_millicores += parse_cpu_millicores(cpu) * replicas;
                 }
                 if let Some(mem) = req.get("memory").and_then(|v| v.as_str()) {
                     resources.memory_bytes += parse_memory_bytes(mem) * replicas;
                 }
-                for (k, v) in req {
-                    if k.ends_with("/gpu") {
-                        if let Some(n) = v.as_str().and_then(|s| s.parse::<u64>().ok()) {
-                            resources.gpu += n * replicas;
-                        }
+                let gpus = req
+                    .keys()
+                    .chain(limits.keys())
+                    .filter(|k| is_gpu_resource(k))
+                    .collect::<std::collections::BTreeSet<_>>();
+                for k in gpus {
+                    let n = req
+                        .get(k)
+                        .or_else(|| limits.get(k))
+                        .and_then(|v| v.as_str())
+                        .and_then(|s| s.parse::<u64>().ok());
+                    if let Some(n) = n {
+                        resources.gpu += n * replicas;
                     }
                 }
             }
         }
     }
     resources
+}
+
+fn is_gpu_resource(name: &str) -> bool {
+    name.ends_with("/gpu")
+        || name.starts_with("nvidia.com/gpu-")
+        || matches!(name, "yolab.io/dri" | "yolab.io/kfd")
 }
 
 pub(crate) fn parse_cpu_millicores(s: &str) -> u64 {
@@ -3202,6 +3216,16 @@ mod tests {
         assert_eq!(r.cpu_millicores, 1500);
         assert_eq!(r.memory_bytes, 2 * 64 * 1024 * 1024);
         assert_eq!(r.gpu, 2);
+    }
+
+    #[test]
+    fn a_gpu_from_any_of_the_cluster_device_plugins_is_counted_once() {
+        let items = vec![json!({ "spec": { "template": { "spec": { "containers": [
+            { "resources": { "limits": { "nvidia.com/gpu-all": "1" } } },
+            { "resources": { "requests": { "yolab.io/kfd": "1" }, "limits": { "yolab.io/kfd": "1" } } },
+            { "resources": { "limits": { "yolab.io/dri": "1", "yolab.io/uinput": "1" } } }
+        ] } } } })];
+        assert_eq!(requested_resources(&items).gpu, 3);
     }
 
     mod against_the_cluster {

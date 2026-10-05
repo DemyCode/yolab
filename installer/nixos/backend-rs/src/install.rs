@@ -14,6 +14,16 @@ const CLONE_MACHINE_DIR: &str = "homelab/machine";
 const MACHINE_DIR: &str = "/var/lib/yolab/machine";
 const MACHINE_FILES: [&str; 2] = ["config.toml", "hardware-configuration.nix"];
 
+const HARDWARE_REPORT: &str = "facter.json";
+
+fn machine_files(report_written: bool) -> Vec<&'static str> {
+    let mut files = MACHINE_FILES.to_vec();
+    if report_written {
+        files.push(HARDWARE_REPORT);
+    }
+    files
+}
+
 pub struct InstallParams {
     pub disk: String,
     pub timezone: String,
@@ -329,7 +339,10 @@ async fn do_install(
 async fn install_machine_files(tx: &mpsc::UnboundedSender<AppEvent>) -> anyhow::Result<()> {
     let target = format!("/mnt{MACHINE_DIR}");
     stream_command("install", &["-d", "-m", "0700", &target], tx).await?;
-    for file in MACHINE_FILES {
+    let report_written = tokio::fs::try_exists(format!("{CODE_DIR}/{CLONE_MACHINE_DIR}/{HARDWARE_REPORT}"))
+        .await
+        .unwrap_or(false);
+    for file in machine_files(report_written) {
         let from = format!("{CODE_DIR}/{CLONE_MACHINE_DIR}/{file}");
         let to = format!("{target}/{file}");
         stream_command("install", &["-m", "0600", &from, &to], tx).await?;
@@ -381,6 +394,16 @@ async fn partition_and_install(
     .context("nixos-generate-config")?;
     tokio::fs::write(format!("{machine_dir}/hardware-configuration.nix"), hw_nix).await?;
     log!("✓ Hardware config generated");
+
+    log!("Recording this machine's hardware…");
+    let report = format!("{machine_dir}/{HARDWARE_REPORT}");
+    match stream_command("nixos-facter", &["-o", &report], tx).await {
+        Ok(()) => log!("✓ Hardware recorded"),
+        Err(e) => {
+            let _ = tokio::fs::remove_file(&report).await;
+            log!("Could not record the hardware ({e:#}); graphics cards stay unused until the machine records it itself");
+        }
+    }
 
     let flake_ref = format!("path:{CODE_DIR}#yolab");
 
@@ -451,6 +474,18 @@ mod tests {
     fn rendered(req: &InstallParams) -> toml::Table {
         let text = render_config_toml(req, &tunnel(), "node1", "$6$salt$hash").unwrap();
         toml::from_str(&text).expect("installer must emit parseable TOML")
+    }
+
+    #[test]
+    fn the_hardware_report_ships_with_the_machine_only_when_it_was_recorded() {
+        assert_eq!(
+            machine_files(true),
+            vec!["config.toml", "hardware-configuration.nix", "facter.json"]
+        );
+        assert_eq!(
+            machine_files(false),
+            vec!["config.toml", "hardware-configuration.nix"]
+        );
     }
 
     #[test]

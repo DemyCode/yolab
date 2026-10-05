@@ -49,6 +49,7 @@ in {
     ./ceph/filesystem.nix
     ./ceph/maintenance.nix
     ./ceph/dashboard.nix
+    ./gpu
   ];
 
   options.yolab = {
@@ -547,6 +548,7 @@ in {
       "L+ /var/lib/rancher/k3s/server/manifests/snap-2-controller.yaml               - - - - ${./external-snapshotter/controller.yaml}"
       "L+ /var/lib/rancher/k3s/server/manifests/volsync.yaml                         - - - - ${./volsync/helmchart.yaml}"
       "L+ /var/lib/rancher/k3s/server/manifests/volsync-snapshotclass.yaml           - - - - ${./volsync/snapshotclass.yaml}"
+      "L+ /var/lib/rancher/k3s/server/manifests/gpu-device-plugins.yaml               - - - - ${./gpu/device-plugins.yaml}"
     ];
 
     system.activationScripts.yolabVersion = ''

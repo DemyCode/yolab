@@ -44,11 +44,13 @@
 
     machineConfig = "${inputs.yolab-machine}/config.toml";
     machineHardware = "${inputs.yolab-machine}/hardware-configuration.nix";
+    machineFacter = "${inputs.yolab-machine}/facter.json";
     isMachine = builtins.pathExists machineConfig;
 
     yolabSpecialArgs = configPath: {
       inherit rust;
       yolabConfigPath = configPath;
+      yolabFacterPath = null;
       localApiEnv = rust.crates.local-api.package;
       yolabRev = self.rev or self.dirtyRev or "";
       yolabLastModified = self.lastModified or null;
@@ -56,12 +58,13 @@
 
     mkYolabSystem = {
       configPath,
+      facterPath ? null,
       modules,
     }:
       nixpkgs.lib.nixosSystem {
         system = "x86_64-linux";
         inherit modules;
-        specialArgs = yolabSpecialArgs configPath;
+        specialArgs = yolabSpecialArgs configPath // {yolabFacterPath = facterPath;};
       };
 
     baseModules = [
@@ -92,6 +95,10 @@
       // lib.optionalAttrs isMachine {
         yolab = mkYolabSystem {
           configPath = machineConfig;
+          facterPath =
+            if builtins.pathExists machineFacter
+            then machineFacter
+            else null;
           modules = baseModules ++ lib.optional (builtins.pathExists machineHardware) machineHardware;
         };
       };
