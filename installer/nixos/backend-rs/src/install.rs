@@ -399,7 +399,9 @@ async fn partition_and_install(
     log!("Recording this machine's hardware…");
     let report = format!("{machine_dir}/{HARDWARE_REPORT}");
     match stream_command("nixos-facter", &["-o", &report], tx).await {
-        Ok(()) => log!("✓ Hardware recorded"),
+        Ok(()) => {
+            log!("✓ Hardware recorded");
+        }
         Err(e) => {
             let _ = tokio::fs::remove_file(&report).await;
             log!("Could not record the hardware ({e:#}); graphics cards stay unused until the machine records it itself");
