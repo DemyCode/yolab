@@ -23,7 +23,7 @@ spec:
       - operator: Exists
       containers:
       - name: generic-cdi-plugin
-        image: ghcr.io/olfillasodikno/generic-cdi-plugin:main@sha256:5399b02c75e7e1ef2f9f4d2ab75e05cfa66fac6e30bd2a8ea1045f8c02bda4ec
+        image: ghcr.io/demycode/generic-cdi-plugin:7d12b0c@sha256:436e6f9091ebe27645f365140a0f28a244d8f5b4a7c518a7760e8d47f6561ede
         imagePullPolicy: IfNotPresent
         command:
         - /generic-cdi-plugin

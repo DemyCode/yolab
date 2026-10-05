@@ -937,6 +937,21 @@ in let
       touch $out
     '';
 
+    device-plugins-run-on-every-processor = pkgs.runCommand "device-plugins-run-on-every-processor" {nativeBuildInputs = [pkgs.gnugrep];} ''
+      manifest=${../homelab/nixos/gpu/device-plugins.yaml}
+      grep -oE 'image: \S+' "$manifest" | sed 's/image: //' > images
+      if grep -v '@sha256:' images; then
+        echo "a device plugin image above is not pinned by digest" >&2
+        exit 1
+      fi
+      if grep 'olfillasodikno/' images; then
+        echo "upstream generic-cdi-plugin is built for x86 only; run the one CI builds for both" >&2
+        exit 1
+      fi
+      grep -q '^ghcr.io/demycode/generic-cdi-plugin:' images
+      touch $out
+    '';
+
     deadnix =
       pkgs.runCommand "deadnix"
       {
