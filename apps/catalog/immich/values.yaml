@@ -1,5 +1,7 @@
 config:
   subdomain: immich
+  hardware_acceleration: true
+gpu: {}
 yolab:
   fileExplorer:
     protect:

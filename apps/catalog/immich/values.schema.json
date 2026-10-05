@@ -18,6 +18,12 @@
           "format": "tunnel",
           "default": "immich"
         },
+        "hardware_acceleration": {
+          "type": "boolean",
+          "title": "Use a graphics card for face and search recognition",
+          "default": true,
+          "description": "Runs Immich's machine learning on the machine with the strongest graphics card (NVIDIA first, then AMD, then Intel), so recognising faces and searching photos by what is in them goes many times faster."
+        },
         "file_explorer_enabled": {
           "type": "boolean",
           "title": "File explorer",

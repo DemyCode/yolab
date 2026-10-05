@@ -639,5 +639,30 @@ class JellyfinTranscoding(RenderedChart):
         self.assertNotIn("resources", c)
 
 
+class ImmichMachineLearning(RenderedChart):
+    CHART = "immich"
+
+    def ml(self, extra=None):
+        spec = self.deployments(self.docs(extra))["immich-ml"]
+        return spec, spec["containers"][0]
+
+    def test_an_nvidia_machine_runs_the_cuda_build_on_its_device(self):
+        spec, c = self.ml(check_charts.VARIANTS["immich"][0])
+        self.assertIn(":release-cuda@sha256:", c["image"])
+        self.assertEqual(spec["nodeSelector"], {"kubernetes.io/hostname": "gpu-box"})
+        self.assertEqual(c["resources"]["limits"], {"nvidia.com/gpu-all": "1"})
+
+    def test_an_intel_machine_runs_the_openvino_build_on_dev_dri(self):
+        _, c = self.ml(check_charts.VARIANTS["immich"][1])
+        self.assertIn(":release-openvino@sha256:", c["image"])
+        self.assertEqual(c["resources"]["limits"], {"yolab.io/dri": "1"})
+
+    def test_without_a_gpu_it_keeps_the_cpu_build_and_runs_anywhere(self):
+        spec, c = self.ml()
+        self.assertIn(":release@sha256:", c["image"])
+        self.assertNotIn("nodeSelector", spec)
+        self.assertNotIn("resources", c)
+
+
 if __name__ == "__main__":
     unittest.main()

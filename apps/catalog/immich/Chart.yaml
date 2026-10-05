@@ -3,7 +3,7 @@ name: immich
 description: "Self-hosted photo and video backup"
 home: https://immich.app
 type: application
-version: 0.1.11
+version: 0.2.0
 
 dependencies:
   - name: yolab-common

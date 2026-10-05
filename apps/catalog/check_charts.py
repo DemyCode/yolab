@@ -80,6 +80,10 @@ VARIANTS = {
         {"gpu.name": "nuc", "gpu.accelerator": "intel"},
         {"gpu.name": "gpu-box", "gpu.accelerator": "nvidia"},
     ],
+    "immich": [
+        {"gpu.name": "gpu-box", "gpu.accelerator": "nvidia"},
+        {"gpu.name": "nuc", "gpu.accelerator": "intel"},
+    ],
     "steam-headless": [
         {"machine.name": "gpu-box", "machine.accelerator": "nvidia"},
         {"machine.name": "nuc", "machine.accelerator": "intel"},

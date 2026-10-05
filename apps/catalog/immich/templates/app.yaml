@@ -136,6 +136,8 @@ spec:
   ports:
   - port: 2283
     targetPort: 2283
+{{- $gpu := include "immich.gpu" . | fromJson }}
+{{- $device := include "immich.mlDevice" $gpu }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -154,10 +156,19 @@ spec:
       labels:
         app: immich-ml
     spec:
+      {{- if $gpu.name }}
+      nodeSelector:
+        kubernetes.io/hostname: {{ $gpu.name | quote }}
+      {{- end }}
       containers:
       - name: immich-ml
-        image: ghcr.io/immich-app/immich-machine-learning:release@sha256:e16c2f166a8174901959fdf85e2e4c7bd1ebc4b37e0b6655de97c41408a260c4
+        image: {{ include "immich.mlImage" $gpu }}
         imagePullPolicy: IfNotPresent
+        {{- if $device }}
+        resources:
+          limits:
+            {{ $device }}: "1"
+        {{- end }}
         volumeMounts:
         - name: data
           mountPath: /cache
