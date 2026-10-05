@@ -1,10 +1,12 @@
 {
   modulesPath,
   yolabConfigPath,
+  pkgs,
   ...
 }: let
   homelabConfig = builtins.fromTOML (builtins.readFile yolabConfigPath);
   bootMode = homelabConfig.homelab.boot_mode or "uefi";
+  removableEfi = pkgs.stdenv.hostPlatform.isAarch64;
 in {
   imports = [
     (modulesPath + "/installer/scan/not-detected.nix")
@@ -18,7 +20,8 @@ in {
     if bootMode == "bios"
     then ""
     else "nodev";
-  boot.loader.efi.canTouchEfiVariables = bootMode != "bios";
+  boot.loader.grub.efiInstallAsRemovable = removableEfi;
+  boot.loader.efi.canTouchEfiVariables = bootMode != "bios" && !removableEfi;
 
   networking.networkmanager.enable = true;
   users.users.homelab.extraGroups = ["networkmanager"];

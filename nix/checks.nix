@@ -893,6 +893,40 @@ in let
         touch $out
       '';
 
+    a-machine-builds-for-the-processor-it-has = let
+      inherit (pkgs) lib;
+      systems = ["x86_64-linux" "aarch64-linux"];
+      pick = config: facter: import ./machine-system.nix {inherit config facter systems;};
+      cases = {
+        "a machine that says nothing is a PC, as every machine before ARM was" = {
+          got = pick {} {};
+          want = "x86_64-linux";
+        };
+        "the installer's answer wins" = {
+          got = pick {homelab.system = "aarch64-linux";} {system = "x86_64-linux";};
+          want = "aarch64-linux";
+        };
+        "without one, the hardware report says what the processor is" = {
+          got = pick {homelab = {};} {system = "aarch64-linux";};
+          want = "aarch64-linux";
+        };
+      };
+      failures = lib.filter (n: cases.${n}.got != cases.${n}.want) (builtins.attrNames cases);
+      unknown = builtins.tryEval (pick {homelab.system = "riscv64-linux";} {});
+      problems =
+        map (n: "machine-system: ${n}") failures
+        ++ lib.optional unknown.success "an unsupported processor was accepted instead of stopping the rebuild"
+        ++ lib.optional (nixosSystems.yolab-ci-aarch64.pkgs.stdenv.hostPlatform.system != "aarch64-linux")
+        "the aarch64 CI system is not built for aarch64"
+        ++ lib.optional (nixosSystems.yolab-ci-aarch64._module.specialArgs.localApiEnv.system != "aarch64-linux")
+        "the aarch64 system would run a local-api built for another processor";
+    in
+      pkgs.runCommand "a-machine-builds-for-the-processor-it-has" {} ''
+        ${lib.concatMapStrings (p: "echo ${lib.escapeShellArg p} >&2\n") problems}
+        ${lib.optionalString (problems != []) "exit 1"}
+        touch $out
+      '';
+
     deadnix =
       pkgs.runCommand "deadnix"
       {

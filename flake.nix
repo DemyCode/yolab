@@ -33,10 +33,18 @@
     disko,
     ...
   } @ inputs: let
-    pkgs = nixpkgs.legacyPackages.x86_64-linux;
+    systems = ["x86_64-linux" "aarch64-linux"];
+    pkgsFor = system: nixpkgs.legacyPackages.${system};
+    rustFor = lib.genAttrs systems (system:
+      import ./nix/rust.nix {
+        pkgs = pkgsFor system;
+        inherit inputs;
+      });
+
+    pkgs = pkgsFor "x86_64-linux";
     inherit (nixpkgs) lib;
 
-    rust = import ./nix/rust.nix {inherit pkgs inputs;};
+    rust = rustFor.x86_64-linux;
 
     treefmtEval = inputs.treefmt-nix.lib.evalModule pkgs (
       import ./nix/treefmt.nix {inherit (rust) rustToolchain;}
@@ -46,25 +54,53 @@
     machineHardware = "${inputs.yolab-machine}/hardware-configuration.nix";
     machineFacter = "${inputs.yolab-machine}/facter.json";
     isMachine = builtins.pathExists machineConfig;
+    hasFacter = builtins.pathExists machineFacter;
 
-    yolabSpecialArgs = configPath: {
-      inherit rust;
+    machineSystem = import ./nix/machine-system.nix {
+      config =
+        if isMachine
+        then builtins.fromTOML (builtins.readFile machineConfig)
+        else {};
+      facter =
+        if hasFacter
+        then lib.importJSON machineFacter
+        else {};
+      inherit systems;
+    };
+
+    specialArgsFor = system: configPath: {
+      rust = rustFor.${system};
       yolabConfigPath = configPath;
       yolabFacterPath = null;
-      localApiEnv = rust.crates.local-api.package;
+      localApiEnv = rustFor.${system}.crates.local-api.package;
       yolabRev = self.rev or self.dirtyRev or "";
       yolabLastModified = self.lastModified or null;
     };
 
+    yolabSpecialArgs = specialArgsFor "x86_64-linux";
+
     mkYolabSystem = {
+      system ? "x86_64-linux",
       configPath,
       facterPath ? null,
       modules,
     }:
       nixpkgs.lib.nixosSystem {
-        system = "x86_64-linux";
-        inherit modules;
-        specialArgs = yolabSpecialArgs configPath // {yolabFacterPath = facterPath;};
+        inherit system modules;
+        specialArgs = specialArgsFor system configPath // {yolabFacterPath = facterPath;};
+      };
+
+    mkInstaller = system:
+      nixpkgs.lib.nixosSystem {
+        inherit system;
+        modules = [
+          "${nixpkgs}/nixos/modules/installer/cd-dvd/installation-cd-minimal.nix"
+          ./installer/nixos/iso-config.nix
+        ];
+        specialArgs = {
+          inherit inputs;
+          rust = rustFor.${system};
+        };
       };
 
     baseModules = [
@@ -83,20 +119,20 @@
           configPath = ./homelab/ci-join-config.toml;
           modules = baseModules;
         };
-        yolab-installer = nixpkgs.lib.nixosSystem {
-          system = "x86_64-linux";
-          modules = [
-            "${nixpkgs}/nixos/modules/installer/cd-dvd/installation-cd-minimal.nix"
-            ./installer/nixos/iso-config.nix
-          ];
-          specialArgs = {inherit inputs rust;};
+        yolab-ci-aarch64 = mkYolabSystem {
+          system = "aarch64-linux";
+          configPath = ./homelab/ci-config.toml;
+          modules = baseModules;
         };
+        yolab-installer = mkInstaller "x86_64-linux";
+        yolab-installer-aarch64 = mkInstaller "aarch64-linux";
       }
       // lib.optionalAttrs isMachine {
         yolab = mkYolabSystem {
+          system = machineSystem;
           configPath = machineConfig;
           facterPath =
-            if builtins.pathExists machineFacter
+            if hasFacter
             then machineFacter
             else null;
           modules = baseModules ++ lib.optional (builtins.pathExists machineHardware) machineHardware;
@@ -115,11 +151,19 @@
   in {
     nixosConfigurations =
       {
-        yolab-installer = nixosSystems.yolab-installer;
+        inherit (nixosSystems) yolab-installer yolab-installer-aarch64;
       }
       // lib.optionalAttrs isMachine {yolab = nixosSystems.yolab;};
 
     checks.x86_64-linux = allChecks;
+
+    checks.aarch64-linux = let
+      arm = rustFor.aarch64-linux.crates;
+    in {
+      local-api-tests = arm.local-api.tests;
+      installer-tests = arm.installer.tests;
+      nixos-create = nixosSystems.yolab-ci-aarch64.config.system.build.toplevel;
+    };
 
     formatter.x86_64-linux = treefmtEval.config.build.wrapper;
 

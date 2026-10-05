@@ -29,21 +29,22 @@ jobs:
           {
             nix eval --json '.#packages.x86_64-linux' --apply 'a: builtins.map (n: "packages.x86_64-linux.${n}") (builtins.attrNames a)'
             nix eval --json '.#checks.x86_64-linux' --apply 'a: builtins.map (n: "checks.x86_64-linux.${n}") (builtins.attrNames a)'
+            nix eval --json '.#checks.aarch64-linux' --apply 'a: builtins.map (n: "checks.aarch64-linux.${n}") (builtins.attrNames a)'
             nix eval --json '.#devShells.x86_64-linux' --apply 'a: builtins.map (n: "devShells.x86_64-linux.${n}") (builtins.attrNames a)'
             nix eval --json '.#nixosConfigurations' --apply 'a: builtins.map (n: "nixosConfigurations.${n}.config.system.build.toplevel") (builtins.attrNames a)'
             printf '["formatter.x86_64-linux"]'
-          } | jq --slurp --compact-output 'add' > matrix.json
+          } | jq --slurp --compact-output 'add | map({target: ., runner: (if test("aarch64") then "ubuntu-24.04-arm" else "ubuntu-latest" end)})' > matrix.json
           cat matrix.json
           echo "jobs=$(cat matrix.json)" >> "$GITHUB_OUTPUT"
 
   build:
-    name: ${{ matrix.target }}
+    name: ${{ matrix.job.target }}
     needs: configure
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.job.runner }}
     strategy:
       fail-fast: false
       matrix:
-        target: ${{ fromJSON(needs.configure.outputs.jobs) }}
+        job: ${{ fromJSON(needs.configure.outputs.jobs) }}
     steps:
       - uses: actions/checkout@v5
 
@@ -79,7 +80,7 @@ jobs:
       - name: Build
         run: |
           set -euo pipefail
-          nix build ".#${{ matrix.target }}" -L --no-link --print-out-paths > /tmp/out.txt
+          nix build ".#${{ matrix.job.target }}" -L --no-link --print-out-paths > /tmp/out.txt
           cat /tmp/out.txt
 
       - name: Push to the Nix cache
@@ -106,6 +107,12 @@ jobs:
         run: echo "value=$(echo '${{ github.ref_name }}' | sed 's|/|-|g')" >>
           $GITHUB_OUTPUT
 
+      - name: Emulate arm64 for the image builds
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up buildx
+        uses: docker/setup-buildx-action@v3
+
       - name: Log in to ghcr.io
         uses: docker/login-action@v3
         with:
@@ -117,6 +124,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: apps/wg-sidecar
+          platforms: linux/amd64,linux/arm64
           push: true
           tags: ghcr.io/demycode/wg-sidecar:${{ steps.tag.outputs.value }}-latest
 
@@ -124,6 +132,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: apps/wg-register
+          platforms: linux/amd64,linux/arm64
           push: true
           tags: ghcr.io/demycode/wg-register:${{ steps.tag.outputs.value }}-latest
 
@@ -131,8 +140,17 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: apps/ollama-vulkan
+          platforms: linux/amd64,linux/arm64
           push: true
           tags: ghcr.io/demycode/ollama-vulkan:0.35.1
+
+      - name: Build and push generic-cdi-plugin
+        uses: docker/build-push-action@v6
+        with:
+          context: https://github.com/OlfillasOdikno/generic-cdi-plugin.git#7d12b0c5fcb6f8f9424c43cb1e7b056402de3f41
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ghcr.io/demycode/generic-cdi-plugin:7d12b0c
 
   charts:
     runs-on: ubuntu-latest
@@ -366,7 +384,18 @@ jobs:
           exit 1
 
   build-iso:
-    runs-on: ubuntu-latest
+    name: build-iso (${{ matrix.iso.system }})
+    runs-on: ${{ matrix.iso.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        iso:
+          - system: x86_64-linux
+            runner: ubuntu-latest
+            config: yolab-installer
+          - system: aarch64-linux
+            runner: ubuntu-24.04-arm
+            config: yolab-installer-aarch64
     permissions:
       contents: write
     concurrency:
@@ -402,7 +431,7 @@ jobs:
           # both runners, neither able to use the cache the other had just filled.
           # A machine's own files come in through the `yolab-machine` input
           # instead (see flake.nix), which is why nothing needs `path:` any more.
-          ISO_OUT=$(nix build .#nixosConfigurations.yolab-installer.config.system.build.isoImage --no-link --print-build-logs --print-out-paths)
+          ISO_OUT=$(nix build .#nixosConfigurations.${{ matrix.iso.config }}.config.system.build.isoImage --no-link --print-build-logs --print-out-paths)
           echo "store_path=$ISO_OUT" >> "$GITHUB_OUTPUT"
           echo "ISO store path: $ISO_OUT"
 
@@ -455,7 +484,7 @@ jobs:
       - name: Upload ISO as artifact
         uses: actions/upload-artifact@v7
         with:
-          name: nixos-homelab-installer-${{ steps.tag.outputs.value }}-${{ github.sha }}
+          name: nixos-homelab-installer-${{ steps.tag.outputs.value }}-${{ matrix.iso.system }}-${{ github.sha }}
           path: ${{ steps.iso_info.outputs.iso_path }}
           retention-days: 7
 

@@ -57,6 +57,7 @@ struct HomelabSection {
     allowed_ssh_keys: Vec<String>,
     homelab_password_hash: String,
     boot_mode: String,
+    system: String,
 }
 
 #[derive(Serialize)]
@@ -141,6 +142,7 @@ fn build_config(
             allowed_ssh_keys: vec![],
             homelab_password_hash: password_hash.to_string(),
             boot_mode: req.boot_mode.clone(),
+            system: nix_system(std::env::consts::ARCH),
         },
         disk: DiskSection {
             device: req.disk.clone(),
@@ -175,6 +177,10 @@ fn build_config(
             fsid: req.ceph_fsid.clone().unwrap_or_else(gen_ceph_fsid),
         },
     }
+}
+
+fn nix_system(arch: &str) -> String {
+    format!("{arch}-linux")
 }
 
 fn render_config_toml(
@@ -571,6 +577,16 @@ mod tests {
         assert_eq!(
             rendered(&params())["homelab"]["hostname"].as_str(),
             Some("node1")
+        );
+    }
+
+    #[test]
+    fn the_machine_records_the_processor_the_installer_runs_on() {
+        assert_eq!(nix_system("x86_64"), "x86_64-linux");
+        assert_eq!(nix_system("aarch64"), "aarch64-linux");
+        assert_eq!(
+            rendered(&params())["homelab"]["system"].as_str(),
+            Some(nix_system(std::env::consts::ARCH).as_str())
         );
     }
 
