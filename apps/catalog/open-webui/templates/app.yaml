@@ -18,7 +18,7 @@ spec:
   resources:
     requests:
       storage: 50Gi
-{{- $engines := include "open-webui.engines" . | fromJsonArray }}
+{{- $onGpu := include "open-webui.onGpu" . }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -68,7 +68,7 @@ spec:
       containers:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
-      {{- if not $engines }}
+      {{- if not $onGpu }}
       - name: ollama
         image: ollama/ollama:0.35.1@sha256:292ee7945dfc3d5840a181f3ab86fedb1e66703e02c8af98b50f4da56b7e278c
         imagePullPolicy: IfNotPresent
@@ -95,13 +95,8 @@ spec:
           initialDelaySeconds: 15
           periodSeconds: 10
         env:
-        {{- if $engines }}
-        - name: OLLAMA_BASE_URLS
-          value: {{ include "open-webui.ollamaUrls" . | quote }}
-        {{- else }}
         - name: OLLAMA_BASE_URL
-          value: http://localhost:11434
-        {{- end }}
+          value: {{ if $onGpu }}http://ollama:11434{{ else }}http://localhost:11434{{ end }}
         volumeMounts:
         - name: data
           mountPath: /app/backend/data
@@ -109,32 +104,27 @@ spec:
       volumes:
       {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
-{{- range $engines }}
+{{- if $onGpu }}
+{{- range (include "open-webui.engines" . | fromJsonArray) }}
 ---
 apiVersion: apps/v1
-kind: Deployment
+kind: DaemonSet
 metadata:
-  name: ollama-{{ .slug }}
+  name: ollama-{{ .vendor }}
   namespace: {{ $.Release.Namespace }}
-  labels:
-    app: ollama
-    yolab.io/accelerator: {{ .accelerator }}
 spec:
-  replicas: 1
-  strategy:
-    type: Recreate
   selector:
     matchLabels:
       app: ollama
-      engine: {{ .slug }}
+      engine: {{ .vendor }}
   template:
     metadata:
       labels:
         app: ollama
-        engine: {{ .slug }}
+        engine: {{ .vendor }}
     spec:
       nodeSelector:
-        kubernetes.io/hostname: {{ .machine | quote }}
+        yolab.io/accelerator: {{ .vendor }}
       containers:
       - name: ollama
         image: {{ .image }}
@@ -160,16 +150,16 @@ spec:
       - name: data
         persistentVolumeClaim:
           claimName: {{ include "yolab-common.gateway.pvcName" $ }}
+{{- end }}
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: ollama-{{ .slug }}
-  namespace: {{ $.Release.Namespace }}
+  name: ollama
+  namespace: {{ .Release.Namespace }}
 spec:
   selector:
     app: ollama
-    engine: {{ .slug }}
   ports:
   - name: http
     port: 11434

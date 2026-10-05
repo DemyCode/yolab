@@ -439,6 +439,48 @@ class SourcedSecrets(unittest.TestCase):
         self.assertEqual(len(sourcing_failures(web)), 1)
 
 
+class Workloads(unittest.TestCase):
+    def failures(self, image):
+        daemonset = {
+            "kind": "DaemonSet",
+            "metadata": {"name": "engine"},
+            "spec": {
+                "template": {
+                    "metadata": {"labels": {"app": "engine"}},
+                    "spec": {
+                        "containers": [
+                            {
+                                "name": "engine",
+                                "image": image,
+                                "imagePullPolicy": "IfNotPresent",
+                            }
+                        ]
+                    },
+                }
+            },
+        }
+        service = {
+            "kind": "Service",
+            "metadata": {"name": "engine"},
+            "spec": {"selector": {"app": "engine"}, "ports": [{"port": 1}]},
+        }
+        found = []
+        check_charts.check(
+            "demo",
+            rendered_explorer() + [daemonset, service],
+            lambda app, msg: found.append(msg),
+        )
+        return [f for f in found if "engine" in f]
+
+    def test_a_service_may_front_a_daemonset(self):
+        self.assertEqual(self.failures("example/engine@sha256:0"), [])
+
+    def test_a_daemonset_image_must_be_pinned_like_any_other(self):
+        found = self.failures("example/engine:latest")
+        self.assertEqual(len(found), 1)
+        self.assertIn("not digest-pinned", found[0])
+
+
 class RenderedChart(unittest.TestCase):
     CHART = None
 
@@ -493,9 +535,21 @@ class RenderedChart(unittest.TestCase):
 class OpenWebUiEngines(RenderedChart):
     CHART = "open-webui"
 
+    def engines(self, docs):
+        return {
+            d["metadata"]["name"]: d["spec"]["template"]["spec"]
+            for d in docs
+            if d["kind"] == "DaemonSet"
+        }
+
+    def gpu_cluster(self):
+        return self.docs(check_charts.VARIANTS["open-webui"][0])
+
     def test_without_a_gpu_ollama_runs_beside_the_ui(self):
-        pods = self.deployments(self.docs())
+        docs = self.docs()
+        pods = self.deployments(docs)
         self.assertEqual(list(pods), ["gateway"])
+        self.assertEqual(self.engines(docs), {})
         names = [c["name"] for c in pods["gateway"]["containers"]]
         self.assertIn("ollama", names)
         self.assertEqual(
@@ -503,63 +557,76 @@ class OpenWebUiEngines(RenderedChart):
             "http://localhost:11434",
         )
 
-    def test_each_gpu_machine_gets_its_own_engine_on_its_own_device(self):
-        pods = self.deployments(self.docs(check_charts.VARIANTS["open-webui"][0]))
-        self.assertEqual(
-            sorted(pods), ["gateway", "ollama-gpu-box", "ollama-radeon-laptop"]
-        )
-        nvidia = pods["ollama-gpu-box"]
-        self.assertEqual(nvidia["nodeSelector"], {"kubernetes.io/hostname": "gpu-box"})
+    def test_each_vendor_s_engine_lands_only_where_that_vendor_is_the_best_card(self):
+        engines = self.engines(self.gpu_cluster())
+        self.assertEqual(sorted(engines), ["ollama-amd", "ollama-nvidia"])
+        nvidia = engines["ollama-nvidia"]
+        self.assertEqual(nvidia["nodeSelector"], {"yolab.io/accelerator": "nvidia"})
         self.assertEqual(
             nvidia["containers"][0]["resources"]["limits"], {"nvidia.com/gpu-all": "1"}
         )
-        amd = pods["ollama-radeon-laptop"]
-        self.assertEqual(
-            amd["nodeSelector"], {"kubernetes.io/hostname": "Radeon.Laptop"}
-        )
+        amd = engines["ollama-amd"]
+        self.assertEqual(amd["nodeSelector"], {"yolab.io/accelerator": "amd"})
         self.assertIn("-rocm@sha256:", amd["containers"][0]["image"])
         self.assertEqual(
             amd["containers"][0]["resources"]["limits"], {"yolab.io/kfd": "1"}
         )
 
-    def test_the_ui_spreads_requests_over_every_engine_and_none_runs_beside_it(self):
-        pods = self.deployments(self.docs(check_charts.VARIANTS["open-webui"][0]))
+    def test_a_gpu_machine_that_joins_later_gets_an_engine_without_a_re_render(self):
+        nvidia_only = {
+            "machines[0].name": "gpu-box",
+            "machines[0].accelerator": "nvidia",
+        }
+        self.assertEqual(
+            sorted(self.engines(self.docs(nvidia_only))),
+            ["ollama-amd", "ollama-nvidia"],
+        )
+
+    def test_the_ui_talks_to_every_engine_through_one_service(self):
+        docs = self.gpu_cluster()
+        pods = self.deployments(docs)
         self.assertNotIn("ollama", [c["name"] for c in pods["gateway"]["containers"]])
         self.assertEqual(
-            self.env(pods["gateway"], "open-webui")["OLLAMA_BASE_URLS"],
-            "http://ollama-gpu-box:11434;http://ollama-radeon-laptop:11434",
+            self.env(pods["gateway"], "open-webui")["OLLAMA_BASE_URL"],
+            "http://ollama:11434",
         )
+        service = next(
+            d
+            for d in docs
+            if d["kind"] == "Service" and d["metadata"]["name"] == "ollama"
+        )
+        self.assertEqual(service["spec"]["selector"], {"app": "ollama"})
 
     def test_every_engine_shares_one_model_store_and_never_prunes_another_s_download(
         self,
     ):
-        pods = self.deployments(self.docs(check_charts.VARIANTS["open-webui"][0]))
-        for name in ("ollama-gpu-box", "ollama-radeon-laptop"):
-            c = pods[name]["containers"][0]
-            self.assertEqual(self.env(pods[name], "ollama")["OLLAMA_NOPRUNE"], "1")
+        for name, spec in self.engines(self.gpu_cluster()).items():
+            c = spec["containers"][0]
+            self.assertEqual(self.env(spec, "ollama")["OLLAMA_NOPRUNE"], "1", name)
             self.assertEqual(
                 [(m["mountPath"], m["subPath"]) for m in c["volumeMounts"]],
                 [("/root/.ollama", "release/ollama")],
             )
 
-    def test_how_long_a_model_holds_the_card_is_the_user_s_choice_on_every_engine(self):
+    def test_how_long_a_model_holds_the_card_is_the_user_s_choice_on_every_engine(
+        self,
+    ):
         extra = {**check_charts.VARIANTS["open-webui"][0], "config.unload_after": "1m"}
-        pods = self.deployments(self.docs(extra))
-        for name in ("ollama-gpu-box", "ollama-radeon-laptop"):
-            self.assertEqual(self.env(pods[name], "ollama")["OLLAMA_KEEP_ALIVE"], "1m")
+        for spec in self.engines(self.docs(extra)).values():
+            self.assertEqual(self.env(spec, "ollama")["OLLAMA_KEEP_ALIVE"], "1m")
         cpu = self.deployments(self.docs({"config.unload_after": "30m"}))["gateway"]
         self.assertEqual(self.env(cpu, "ollama")["OLLAMA_KEEP_ALIVE"], "30m")
 
     def test_an_intel_machine_waits_for_a_pinned_vulkan_image(self):
         intel = {"machines[0].name": "nuc", "machines[0].accelerator": "intel"}
-        self.assertEqual(list(self.deployments(self.docs(intel))), ["gateway"])
+        self.assertEqual(self.engines(self.docs(intel)), {})
         pinned = {
             **intel,
             "vulkanImage": "ghcr.io/demycode/ollama-vulkan:0.35.1@sha256:" + "0" * 64,
         }
-        pods = self.deployments(self.docs(pinned))
+        engines = self.engines(self.docs(pinned))
         self.assertEqual(
-            pods["ollama-nuc"]["containers"][0]["resources"]["limits"],
+            engines["ollama-intel"]["containers"][0]["resources"]["limits"],
             {"yolab.io/dri": "1"},
         )
 

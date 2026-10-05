@@ -95,6 +95,7 @@ VARIANTS = {
 }
 
 GATEWAY_CONTAINERS = ("wireguard", "caddy")
+WORKLOAD_KINDS = ("Deployment", "DaemonSet", "StatefulSet")
 TOKEN_CONTAINERS = ("wg-register", "cleanup")
 
 
@@ -368,9 +369,10 @@ def check(app, docs, fail, chart_yaml="", schema=None):
                         f"upstream {up}: Service {host} exposes {sorted(exposed)}, not {port}",
                     )
 
+    workloads = [d for kind in WORKLOAD_KINDS for d in kinds.get(kind, [])]
     pod_labels = [
         tuple(sorted(d["spec"]["template"]["metadata"]["labels"].items()))
-        for d in deploys.values()
+        for d in workloads
     ]
     for s in kinds.get("Service", []):
         sel = tuple(sorted(s["spec"]["selector"].items()))
@@ -380,7 +382,7 @@ def check(app, docs, fail, chart_yaml="", schema=None):
                 f"Service {s['metadata']['name']} selector {dict(sel)} matches no pod",
             )
 
-    for d in list(deploys.values()) + kinds.get("Job", []):
+    for d in workloads + kinds.get("Job", []):
         spec = d["spec"]["template"]["spec"]
         for c in (spec.get("containers") or []) + (spec.get("initContainers") or []):
             if "@sha256:" not in c["image"]:
