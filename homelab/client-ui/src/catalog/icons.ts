@@ -24,7 +24,7 @@ export const CATALOG_ICONS: Record<string, string> = {
   immich: "/icons/immich.svg",
   "it-tools": "/icons/it-tools.svg",
   jellyfin: "/icons/jellyfin.svg",
-  jellyseerr: "/icons/jellyseerr.svg",
+  jellyseerr: "/icons/seerr.svg",
   karakeep: "/icons/karakeep.svg",
   kavita: "/icons/kavita.svg",
   librespeed: "/icons/librespeed.svg",
