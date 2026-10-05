@@ -400,7 +400,7 @@ jobs:
     permissions:
       contents: write
     concurrency:
-      group: build-iso-${{ github.ref_name }}
+      group: build-iso-${{ github.ref_name }}-${{ matrix.iso.runner }}
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@v5
