@@ -1,6 +1,8 @@
 config:
   subdomain: frigate
   storage_size: 100Gi
+  hardware_acceleration: true
+gpu: {}
 
 yolab:
   platformApiUrl: ""

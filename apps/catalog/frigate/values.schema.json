@@ -18,6 +18,12 @@
           "format": "tunnel",
           "default": "frigate"
         },
+        "hardware_acceleration": {
+          "type": "boolean",
+          "title": "Use a graphics card for video and detection",
+          "default": true,
+          "description": "Runs Frigate on the machine with the best graphics card for video (Intel first, then NVIDIA, then AMD) so decoding camera streams does not load the processor. On Intel it also spots people and objects on the graphics card. Applies to the settings Frigate starts with; later changes are yours to make in its config."
+        },
         "storage_size": {
           "type": "string",
           "title": "Storage size",

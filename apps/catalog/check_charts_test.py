@@ -664,5 +664,41 @@ class ImmichMachineLearning(RenderedChart):
         self.assertNotIn("resources", c)
 
 
+class FrigateAcceleration(RenderedChart):
+    CHART = "frigate"
+
+    def seeded(self, extra=None):
+        spec = self.deployments(self.docs(extra))["gateway"]
+        seed = next(c for c in spec["initContainers"] if c["name"] == "seed-config")
+        script = seed["command"][2]
+        body = script.split("<<'EOF'\n", 1)[1].split("\nEOF", 1)[0]
+        frigate = next(c for c in spec["containers"] if c["name"] == "frigate")
+        return spec, frigate, yaml.safe_load(body)
+
+    def test_an_intel_machine_decodes_with_vaapi_and_detects_with_openvino(self):
+        spec, frigate, config = self.seeded(check_charts.VARIANTS["frigate"][0])
+        self.assertEqual(spec["nodeSelector"], {"kubernetes.io/hostname": "nuc"})
+        self.assertEqual(frigate["resources"]["limits"], {"yolab.io/dri": "1"})
+        self.assertEqual(config["ffmpeg"]["hwaccel_args"], "preset-vaapi")
+        self.assertEqual(
+            config["detectors"]["ov"], {"type": "openvino", "device": "GPU"}
+        )
+
+    def test_an_nvidia_machine_decodes_with_nvdec(self):
+        _, frigate, config = self.seeded(check_charts.VARIANTS["frigate"][1])
+        self.assertEqual(frigate["resources"]["limits"], {"nvidia.com/gpu-all": "1"})
+        self.assertEqual(config["ffmpeg"]["hwaccel_args"], "preset-nvidia")
+        self.assertNotIn("detectors", config)
+
+    def test_without_a_gpu_the_first_config_is_unchanged(self):
+        spec, frigate, config = self.seeded()
+        self.assertNotIn("nodeSelector", spec)
+        self.assertNotIn("resources", frigate)
+        self.assertEqual(
+            config,
+            {"mqtt": {"enabled": False}, "tls": {"enabled": False}, "cameras": {}},
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

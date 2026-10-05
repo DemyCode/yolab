@@ -18,6 +18,7 @@ spec:
   resources:
     requests:
       storage: {{ .Values.config.storage_size | default "100Gi" | quote }}
+{{- $gpu := include "frigate.gpu" . | fromJson }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -36,6 +37,10 @@ spec:
       labels:
         app: gateway
     spec:
+      {{- if $gpu.name }}
+      nodeSelector:
+        kubernetes.io/hostname: {{ $gpu.name | quote }}
+      {{- end }}
       initContainers:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
@@ -56,6 +61,26 @@ spec:
             tls:
               enabled: false
             cameras: {}
+            {{- if eq ($gpu.accelerator | default "") "nvidia" }}
+            ffmpeg:
+              hwaccel_args: preset-nvidia
+            {{- else if $gpu.accelerator }}
+            ffmpeg:
+              hwaccel_args: preset-vaapi
+            {{- end }}
+            {{- if eq ($gpu.accelerator | default "") "intel" }}
+            detectors:
+              ov:
+                type: openvino
+                device: GPU
+            model:
+              width: 300
+              height: 300
+              input_tensor: nhwc
+              input_pixel_format: bgr
+              path: /openvino-model/ssdlite_mobilenet_v2.xml
+              labelmap_path: /openvino-model/coco_91cl_bkgr.txt
+            {{- end }}
             EOF
               echo "wrote initial config.yml"
             fi
@@ -74,6 +99,18 @@ spec:
             port: 8971
           initialDelaySeconds: 30
           periodSeconds: 10
+        {{- if eq ($gpu.accelerator | default "") "nvidia" }}
+        env:
+          - name: NVIDIA_VISIBLE_DEVICES
+            value: all
+          - name: NVIDIA_DRIVER_CAPABILITIES
+            value: all
+        {{- end }}
+        {{- if $gpu.accelerator }}
+        resources:
+          limits:
+            {{ if eq $gpu.accelerator "nvidia" }}nvidia.com/gpu-all{{ else }}yolab.io/dri{{ end }}: "1"
+        {{- end }}
         volumeMounts:
           - name: data
             mountPath: /config
