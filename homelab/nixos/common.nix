@@ -51,7 +51,6 @@ in {
     ./ceph/dashboard.nix
     ./gpu
   ];
-  boot.binfmt.emulatedSystems = ["aarch64-linux"];
 
   options.yolab = {
     platform = lib.mkOption {

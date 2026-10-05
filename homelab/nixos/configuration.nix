@@ -14,6 +14,7 @@ in {
     ./common.nix
   ];
 
+  boot.binfmt.emulatedSystems = ["aarch64-linux"];
   boot.loader.grub.enable = true;
   boot.loader.grub.efiSupport = bootMode != "bios";
   boot.loader.grub.device =
