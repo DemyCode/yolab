@@ -18,6 +18,13 @@
           "format": "tunnel",
           "default": "open-webui"
         },
+        "unload_after": {
+          "type": "string",
+          "title": "Free the graphics card after",
+          "default": "5m",
+          "enum": ["1m", "5m", "30m", "24h"],
+          "description": "How long a model stays in graphics memory after its last answer. Shorter frees the card sooner for games and other apps; longer answers the next question faster."
+        },
         "file_explorer_enabled": {
           "type": "boolean",
           "title": "File explorer",

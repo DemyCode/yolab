@@ -72,6 +72,9 @@ spec:
       - name: ollama
         image: ollama/ollama:0.35.1@sha256:292ee7945dfc3d5840a181f3ab86fedb1e66703e02c8af98b50f4da56b7e278c
         imagePullPolicy: IfNotPresent
+        env:
+        - name: OLLAMA_KEEP_ALIVE
+          value: {{ .Values.config.unload_after | default "5m" | quote }}
         readinessProbe:
           tcpSocket:
             port: 11434
@@ -139,6 +142,8 @@ spec:
         env:
         - name: OLLAMA_NOPRUNE
           value: "1"
+        - name: OLLAMA_KEEP_ALIVE
+          value: {{ $.Values.config.unload_after | default "5m" | quote }}
         readinessProbe:
           tcpSocket:
             port: 11434

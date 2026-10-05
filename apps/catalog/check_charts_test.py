@@ -542,6 +542,14 @@ class OpenWebUiEngines(RenderedChart):
                 [("/root/.ollama", "release/ollama")],
             )
 
+    def test_how_long_a_model_holds_the_card_is_the_user_s_choice_on_every_engine(self):
+        extra = {**check_charts.VARIANTS["open-webui"][0], "config.unload_after": "1m"}
+        pods = self.deployments(self.docs(extra))
+        for name in ("ollama-gpu-box", "ollama-radeon-laptop"):
+            self.assertEqual(self.env(pods[name], "ollama")["OLLAMA_KEEP_ALIVE"], "1m")
+        cpu = self.deployments(self.docs({"config.unload_after": "30m"}))["gateway"]
+        self.assertEqual(self.env(cpu, "ollama")["OLLAMA_KEEP_ALIVE"], "30m")
+
     def test_an_intel_machine_waits_for_a_pinned_vulkan_image(self):
         intel = {"machines[0].name": "nuc", "machines[0].accelerator": "intel"}
         self.assertEqual(list(self.deployments(self.docs(intel))), ["gateway"])

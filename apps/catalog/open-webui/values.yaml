@@ -1,5 +1,6 @@
 config:
   subdomain: open-webui
+  unload_after: 5m
 machines: []
 vulkanImage: ''
 yolab:
