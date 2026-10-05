@@ -93,10 +93,25 @@ spec:
             echo "YOLAB_OUTPUT bazarr_url https://$BAZARR_FQDN"
             echo "YOLAB_OUTPUT cleanuparr_url https://$CLEANUPARR_FQDN"
             echo "YOLAB_OUTPUT torrents_url https://$TORRENTS_FQDN"
-            echo "YOLAB_OUTPUT wiring Library in /data/media, downloads in /data/torrents. Sonarr, Radarr, Lidarr, LazyLibrarian and Prowlarr share one host: qBittorrent is localhost:8080, Prowlarr localhost:9696, FlareSolverr http://localhost:8191, Sonarr localhost:8989, Radarr localhost:7878, Lidarr localhost:8686. From Jellyseerr, Bazarr and Cleanuparr: Jellyfin is http://localhost:8096 and the same tools are at downloads:<port>, e.g. http://downloads:8989."
+            echo "YOLAB_OUTPUT wiring Library in /data/media, downloads in /data/torrents. Sonarr, Radarr, Lidarr, LazyLibrarian and Prowlarr share one host: qBittorrent is localhost:8080, Prowlarr localhost:9696, FlareSolverr http://localhost:8191, Sonarr localhost:8989, Radarr localhost:7878, Lidarr localhost:8686. From Seerr, Bazarr and Cleanuparr: Jellyfin is http://localhost:8096 and the same tools are at downloads:<port>, e.g. http://downloads:8989."
         volumeMounts:
           - name: yolab
             mountPath: /yolab
+      - name: seerr-config-owner
+        image: ghcr.io/seerr-team/seerr:v3.5.0@sha256:27602401178d54f1964442287b9f23f67a3fa2252645ee8065839ea1c3f69e45
+        imagePullPolicy: IfNotPresent
+        securityContext:
+          runAsUser: 0
+          runAsGroup: 0
+        command:
+          - chown
+          - -R
+          - 1000:1000
+          - /app/config
+        volumeMounts:
+          - name: data
+            mountPath: /app/config
+            subPath: {{ .Release.Name }}/config/jellyseerr
       containers:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
@@ -134,8 +149,8 @@ spec:
             readOnly: true
           - name: yolab
             mountPath: /yolab
-      - name: jellyseerr
-        image: fallenbagel/jellyseerr:latest@sha256:4538137bc5af902dece165f2bf73776d9cf4eafb6dd714670724af8f3eb77764
+      - name: seerr
+        image: ghcr.io/seerr-team/seerr:v3.5.0@sha256:27602401178d54f1964442287b9f23f67a3fa2252645ee8065839ea1c3f69e45
         imagePullPolicy: IfNotPresent
         env:
           - name: TZ

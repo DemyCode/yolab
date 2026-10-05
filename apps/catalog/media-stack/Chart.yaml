@@ -3,7 +3,7 @@ name: media-stack
 description: "Jellyfin with the full *arr stack: requests, automatic downloads behind a Mullvad VPN, subtitles and clean-up, sharing one media library"
 home: https://wiki.servarr.com
 type: application
-version: 0.1.4
+version: 0.1.5
 appVersion: "1"
 
 dependencies:

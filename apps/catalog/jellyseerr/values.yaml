@@ -1,6 +1,6 @@
 
 config:
-  subdomain: jellyseerr
+  subdomain: seerr
   storage_size: 5Gi
 
 yolab:

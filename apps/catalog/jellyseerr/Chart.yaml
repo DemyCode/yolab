@@ -1,10 +1,10 @@
 apiVersion: v2
 name: jellyseerr
-description: "Request manager for Jellyfin media libraries"
-home: https://github.com/fallenbagel/jellyseerr
+description: "Request manager for Jellyfin, Plex and Emby libraries"
+home: https://github.com/seerr-team/seerr
 type: application
-version: 0.1.10
-appVersion: "2"
+version: 0.1.11
+appVersion: "3.5.0"
 
 dependencies:
   - name: yolab-common
@@ -12,6 +12,6 @@ dependencies:
     repository: "oci://ghcr.io/demycode/charts"
 
 annotations:
-  yolab.io/display-name: "Jellyseerr"
+  yolab.io/display-name: "Seerr"
   yolab.io/icon: "🎬"
   yolab.io/category: "media"

@@ -6,7 +6,7 @@
   ],
   "properties": {
     "config": {
-      "title": "Jellyseerr",
+      "title": "Seerr",
       "type": "object",
       "required": [
         "subdomain"
@@ -16,7 +16,7 @@
           "type": "string",
           "title": "Subdomain",
           "format": "tunnel",
-          "default": "jellyseerr"
+          "default": "seerr"
         },
         "storage_size": {
           "type": "string",

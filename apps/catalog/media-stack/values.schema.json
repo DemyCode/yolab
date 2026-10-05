@@ -148,7 +148,7 @@
         },
         "requests_url": {
           "type": "string",
-          "title": "Requests (Jellyseerr)",
+          "title": "Requests (Seerr)",
           "format": "uri",
           "source": {
             "logs": "YOLAB_OUTPUT requests_url (\\S+)"
