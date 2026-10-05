@@ -152,6 +152,7 @@ data:
     }
     {{- end }}
     {{- include "yolab-common.fileExplorer.caddySite" . | nindent 4 }}
+    {{- include "yolab-common.privateAccess.caddySites" . | nindent 4 }}
 {{- end -}}
 
 

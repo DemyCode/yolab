@@ -4,6 +4,8 @@
 ---
 {{ include "yolab-common.fileExplorerConfigMap" . }}
 ---
+{{ include "yolab-common.privateAccessResources" . }}
+---
 {{ include "yolab-common.uninstallHook" . }}
 ---
 apiVersion: v1
@@ -44,9 +46,11 @@ spec:
       initContainers:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessInit" . | nindent 6 }}
       containers:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
       - name: jellyfin
         image: lscr.io/linuxserver/jellyfin:latest@sha256:b8dcc7b71d0ea872b74314da4b995c0cf282b1778438c295996e7be88c70fdda
         imagePullPolicy: IfNotPresent
@@ -96,3 +100,4 @@ spec:
       volumes:
       {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}

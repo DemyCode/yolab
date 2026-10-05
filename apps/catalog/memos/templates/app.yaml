@@ -4,6 +4,8 @@
 ---
 {{ include "yolab-common.fileExplorerConfigMap" . }}
 ---
+{{ include "yolab-common.privateAccessResources" . }}
+---
 {{ include "yolab-common.uninstallHook" . }}
 ---
 apiVersion: v1
@@ -39,9 +41,11 @@ spec:
       initContainers:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessInit" . | nindent 6 }}
       containers:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
       - name: memos
         image: ghcr.io/usememos/memos:stable@sha256:71a5b4738d1bed96e92112004054f0888e92791b64eb78afd79077c96e6f9327
         imagePullPolicy: IfNotPresent
@@ -57,3 +61,4 @@ spec:
       volumes:
       {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}

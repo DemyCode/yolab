@@ -23,6 +23,18 @@
           "title": "File explorer",
           "default": true,
           "description": "A password-protected file manager for this app's own data on its own address: browse, download, upload, rename and delete files without needing a terminal. Folders holding a database server (Postgres, MariaDB, Redis, MongoDB, MinIO) always stay read-only."
+        },
+        "tor_enabled": {
+          "type": "boolean",
+          "title": "Tor",
+          "default": false,
+          "description": "Also reachable as a .onion address in Tor Browser, from any network and without IPv6. Slower than the normal address, and visitors never learn your home's IP address."
+        },
+        "tailscale_enabled": {
+          "type": "boolean",
+          "title": "Tailscale",
+          "default": false,
+          "description": "Also reachable from your own devices in your Tailscale network, at https://<name>.<your-tailnet>.ts.net, from any network and without IPv6. Turn on HTTPS certificates in the Tailscale admin console (DNS page) first."
         }
       },
       "dependencies": {
@@ -66,6 +78,40 @@
                   "description": "Only browse and download. Nothing can be uploaded, renamed, edited or deleted through the file explorer."
                 }
               }
+            }
+          ]
+        },
+        "tailscale_enabled": {
+          "oneOf": [
+            {
+              "properties": {
+                "tailscale_enabled": {
+                  "const": false
+                }
+              }
+            },
+            {
+              "properties": {
+                "tailscale_enabled": {
+                  "const": true
+                },
+                "tailscale_auth_key": {
+                  "type": "string",
+                  "title": "Tailscale auth key",
+                  "writeOnly": true,
+                  "pattern": "^tskey-",
+                  "description": "Create one in the Tailscale admin console under Settings, Keys. It is used only the first time; after that the app stays signed in."
+                },
+                "tailscale_hostname": {
+                  "type": "string",
+                  "title": "Tailscale name",
+                  "pattern": "^[a-z0-9]([a-z0-9-]*[a-z0-9])?$",
+                  "description": "This app's device name in your tailnet. Leave empty to use its subdomain."
+                }
+              },
+              "required": [
+                "tailscale_auth_key"
+              ]
             }
           ]
         }
@@ -122,6 +168,36 @@
           "when": {
             "properties": {
               "file_explorer_enabled": {
+                "const": true
+              }
+            }
+          }
+        },
+        "tor_url": {
+          "type": "string",
+          "title": "Tor address",
+          "format": "uri",
+          "source": {
+            "logs": "YOLAB_OUTPUT tor_url (\\S+)"
+          },
+          "when": {
+            "properties": {
+              "tor_enabled": {
+                "const": true
+              }
+            }
+          }
+        },
+        "tailscale_url": {
+          "type": "string",
+          "title": "Tailscale address",
+          "format": "uri",
+          "source": {
+            "logs": "YOLAB_OUTPUT tailscale_url (\\S+)"
+          },
+          "when": {
+            "properties": {
+              "tailscale_enabled": {
                 "const": true
               }
             }

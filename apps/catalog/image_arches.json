@@ -55,6 +55,14 @@
     "amd64",
     "arm64"
   ],
+  "docker.io/osminogin/tor-simple:0.4.9.13@sha256:9cd994f3bb813ae4ebd148ef077f8a61fd4420899e7ed5bcaa24aabd2d119648": [
+    "amd64",
+    "arm64"
+  ],
+  "docker.io/tailscale/tailscale:v1.102.5@sha256:c507f3a2a6ab1cabd8d809b98edeb41edbd5c3fb6ad9632ffd098b4c7d0b4065": [
+    "amd64",
+    "arm64"
+  ],
   "docker.io/valkey/valkey:8-bookworm@sha256:fea8b3e67b15729d4bb70589eb03367bab9ad1ee89c876f54327fc7c6e618571": [
     "amd64",
     "arm64"

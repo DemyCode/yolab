@@ -635,6 +635,161 @@ SOURCED = re.compile(r"^\s*\.\s+(\S+)", re.MULTILINE)
 BARE_SECRET = re.compile(r"printf '([A-Z_][A-Z0-9_]*)=%s")
 
 
+PRIVATE_ACCESS = {
+    "tor_enabled": {
+        "container": "tor",
+        "state": "tor",
+        "output": "tor_url",
+        "port": 18792,
+    },
+    "tailscale_enabled": {
+        "container": "tailscale",
+        "state": "tailscale",
+        "output": "tailscale_url",
+        "port": 18791,
+    },
+}
+PRIVATE_ACCESS_ON = {
+    "tor_enabled": {"config.tor_enabled": "true"},
+    "tailscale_enabled": {
+        "config.tailscale_enabled": "true",
+        "config.tailscale_auth_key": "tskey-auth-placeholder",
+    },
+}
+
+
+def offered_private_access(schema):
+    config = ((schema.get("properties") or {}).get("config") or {}).get(
+        "properties"
+    ) or {}
+    return [k for k in PRIVATE_ACCESS if k in config]
+
+
+def check_private_access_offer(app, schema, values_text, fail):
+    offered = offered_private_access(schema)
+    if not offered:
+        return
+    props = schema.get("properties") or {}
+    config = (props.get("config") or {}).get("properties") or {}
+    if "auth_enabled" in config:
+        fail(
+            app,
+            "offers Tor or Tailscale next to an Authelia login: those addresses "
+            "reach the app directly and would skip the login",
+        )
+    values = yaml.safe_load(values_text or "") or {}
+    gateway = ((values.get("yolab") or {}).get("gateway")) or {}
+    if gateway.get("caddyfile"):
+        fail(
+            app,
+            "offers Tor or Tailscale with its own Caddyfile: their entry points "
+            "only know the single upstream a standard gateway proxies to",
+        )
+    elif not gateway.get("upstream"):
+        fail(app, "offers Tor or Tailscale but declares no yolab.gateway.upstream")
+    outputs = (props.get("outputs") or {}).get("properties") or {}
+    for key in offered:
+        out = outputs.get(PRIVATE_ACCESS[key]["output"])
+        when = (((out or {}).get("when") or {}).get("properties") or {}).get(key)
+        if out is None:
+            fail(
+                app,
+                f"offers {key} but has no {PRIVATE_ACCESS[key]['output']} output, "
+                f"so its address is never shown",
+            )
+        elif when != {"const": True}:
+            fail(
+                app,
+                f"outputs.{PRIVATE_ACCESS[key]['output']} must only show when "
+                f"{key} is on",
+            )
+
+
+def configmap_data(docs, suffix, key):
+    for d in docs:
+        if d.get("kind") == "ConfigMap" and d["metadata"]["name"].endswith(suffix):
+            return (d.get("data") or {}).get(key)
+    return None
+
+
+def check_private_access(app, docs, offered, fail):
+    pod = next(
+        (
+            (name, spec)
+            for name, spec in pod_specs(docs)
+            if any(c["name"] == "caddy" for c in spec.get("containers") or [])
+        ),
+        None,
+    )
+    if pod is None:
+        fail(app, "offers Tor or Tailscale but renders no gateway pod with Caddy")
+        return
+    pod_name, spec = pod
+    containers = {c["name"]: c for c in spec.get("containers") or []}
+    caddyfile = configmap_data(docs, "-caddy", "Caddyfile") or ""
+    for key in offered:
+        want = PRIVATE_ACCESS[key]
+        c = containers.get(want["container"])
+        if c is None:
+            fail(
+                app,
+                f"{key} is on but pod {pod_name} has no {want['container']} "
+                f"container next to Caddy",
+            )
+            continue
+        if (c.get("securityContext") or {}).get("privileged"):
+            fail(app, f"the {want['container']} container must not run privileged")
+        state = [s for _, s, _ in claim_mounts(spec, c)]
+        if not any(s.strip('"').endswith(f"/{want['state']}") for s in state):
+            fail(
+                app,
+                f"the {want['container']} container keeps no state on the app's "
+                f"volume, so its address changes on every restart and is lost on restore",
+            )
+        site = f"http://:{want['port']} {{\n  bind 127.0.0.1\n"
+        if site not in caddyfile:
+            fail(
+                app,
+                f"Caddy has no loopback-only entry point on port {want['port']} "
+                f"for {want['container']}",
+            )
+    if "tor_enabled" in offered:
+        torrc = configmap_data(docs, "-tor", "torrc") or ""
+        if (
+            f"HiddenServicePort 80 127.0.0.1:{PRIVATE_ACCESS['tor_enabled']['port']}"
+            not in torrc
+        ):
+            fail(app, "the onion service does not point at Caddy's Tor entry point")
+        if "SocksPort 0" not in torrc:
+            fail(app, "the Tor sidecar must not open a SOCKS proxy inside the pod")
+    if "tailscale_enabled" in offered:
+        serve = configmap_data(docs, "-tailscale", "serve.json") or "{}"
+        try:
+            web = json.loads(serve).get("Web") or {}
+        except json.JSONDecodeError:
+            web = {}
+        targets = [
+            h.get("Proxy")
+            for site in web.values()
+            for h in (site.get("Handlers") or {}).values()
+        ]
+        wanted = f"http://127.0.0.1:{PRIVATE_ACCESS['tailscale_enabled']['port']}"
+        if targets != [wanted]:
+            fail(app, f"Tailscale serves {targets}, not Caddy's entry point {wanted}")
+        env = {
+            e["name"]: e.get("value")
+            for e in containers.get("tailscale", {}).get("env") or []
+        }
+        if env.get("TS_USERSPACE") != "true":
+            fail(app, "Tailscale must run in userspace: the pod has no TUN device")
+        if env.get("TS_KUBE_SECRET") != "":
+            fail(
+                app,
+                "Tailscale would keep its identity in a Kubernetes Secret the app "
+                "may not write; TS_KUBE_SECRET must be empty",
+            )
+
+
 def check_sourced_secrets_reach_the_program(app, docs, fail):
     bare = sorted(set(BARE_SECRET.findall(json.dumps(docs))))
     if not bare:
@@ -796,6 +951,29 @@ def main(argv):
             check_schema(app, schema, text, fail)
             check(app, docs, fail, text, schema)
             check_file_explorer(app, docs, fail)
+            values_path = Path(chart_dir, "values.yaml")
+            check_private_access_offer(
+                app,
+                schema,
+                values_path.read_text() if values_path.exists() else "",
+                fail,
+            )
+            offered = offered_private_access(schema)
+            if offered:
+                extra = {}
+                for key in offered:
+                    extra.update(PRIVATE_ACCESS_ON[key])
+                variant, err = render(chart_dir, library_tgz, tmp, extra)
+                if variant is None:
+                    fail(
+                        app,
+                        f"helm template with Tor/Tailscale on failed: "
+                        f"{err.splitlines()[-1] if err else 'unknown'}",
+                    )
+                else:
+                    variant_docs = [d for d in yaml.safe_load_all(variant) if d]
+                    check(app, variant_docs, fail, text, schema)
+                    check_private_access(app, variant_docs, offered, fail)
 
             for extra in VARIANTS.get(app, []):
                 variant, err = render(chart_dir, library_tgz, tmp, extra)

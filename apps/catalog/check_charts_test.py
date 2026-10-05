@@ -911,5 +911,206 @@ class ReactiveResumeMinio(MinioStorage, RenderedChart):
     CHART = "reactive-resume"
 
 
+PA_VALUES = "yolab:\n  gateway:\n    upstream: localhost:8080\n"
+TOR_SWITCH = {"type": "boolean", "default": False}
+TS_SWITCH = {"type": "boolean", "default": False}
+
+
+def pa_output(key):
+    return logs(
+        rf"YOLAB_OUTPUT {key}_url (\S+)",
+        format="uri",
+        when={"properties": {f"{key}_enabled": {"const": True}}},
+    )
+
+
+def offer_failures(s, values=PA_VALUES):
+    found = []
+    check_charts.check_private_access_offer(
+        "demo", s, values, lambda app, msg: found.append(msg)
+    )
+    return found
+
+
+class PrivateAccessOffer(unittest.TestCase):
+    def offered(self, config=None, outputs=None):
+        return schema(
+            config={
+                "tor_enabled": TOR_SWITCH,
+                "tailscale_enabled": TS_SWITCH,
+                **(config or {}),
+            },
+            outputs=outputs
+            if outputs is not None
+            else {"tor_url": pa_output("tor"), "tailscale_url": pa_output("tailscale")},
+        )
+
+    def test_an_app_offering_both_with_their_addresses_passes(self):
+        self.assertEqual(offer_failures(self.offered()), [])
+
+    def test_an_app_offering_nothing_is_not_judged(self):
+        self.assertEqual(offer_failures(schema(), values=""), [])
+
+    def test_offering_it_next_to_an_authelia_login_is_refused(self):
+        found = offer_failures(
+            self.offered(config={"auth_enabled": {"type": "boolean"}})
+        )
+        self.assertTrue(any("skip the login" in f for f in found), found)
+
+    def test_offering_it_with_a_custom_caddyfile_is_refused(self):
+        found = offer_failures(
+            self.offered(), values="yolab:\n  gateway:\n    caddyfile: ':80 {}'\n"
+        )
+        self.assertTrue(any("own Caddyfile" in f for f in found), found)
+
+    def test_an_address_never_shown_is_reported(self):
+        found = offer_failures(self.offered(outputs={"tor_url": pa_output("tor")}))
+        self.assertEqual(len(found), 1)
+        self.assertIn("tailscale_url", found[0])
+
+    def test_an_address_shown_while_switched_off_is_reported(self):
+        always = logs(r"YOLAB_OUTPUT tor_url (\S+)", format="uri")
+        found = offer_failures(
+            self.offered(
+                outputs={"tor_url": always, "tailscale_url": pa_output("tailscale")}
+            )
+        )
+        self.assertEqual(len(found), 1)
+        self.assertIn("only show when tor_enabled is on", found[0])
+
+
+PRIVATE_BOTH = frozenset(
+    {
+        "actual",
+        "audiobookshelf",
+        "calibre-web",
+        "changedetection",
+        "cinny",
+        "code-server",
+        "freshrss",
+        "grafana",
+        "grocy",
+        "home-assistant",
+        "it-tools",
+        "jellyseerr",
+        "kavita",
+        "mealie",
+        "memos",
+        "n8n",
+        "navidrome",
+        "open-webui",
+        "romm",
+        "searxng",
+        "stirling-pdf",
+        "uptime-kuma",
+        "vaultwarden",
+        "vikunja",
+        "wallos",
+    }
+)
+PRIVATE_TAILSCALE_ONLY = frozenset({"jellyfin", "immich", "photoprism", "frigate"})
+
+
+class PrivateAccessChoice(unittest.TestCase):
+    def offers(self):
+        import json
+
+        found = {}
+        for path in Path(check_charts.HERE).glob("*/values.schema.json"):
+            offered = check_charts.offered_private_access(json.loads(path.read_text()))
+            if offered:
+                found[path.parent.name] = set(offered)
+        return found
+
+    def test_tor_and_tailscale_are_offered_on_apps_that_work_on_any_address(self):
+        offers = self.offers()
+        both = {
+            a for a, o in offers.items() if o == {"tor_enabled", "tailscale_enabled"}
+        }
+        self.assertEqual(both, PRIVATE_BOTH)
+
+    def test_video_and_photo_apps_get_tailscale_but_not_tor_which_is_too_slow(self):
+        offers = self.offers()
+        only = {a for a, o in offers.items() if o == {"tailscale_enabled"}}
+        self.assertEqual(only, PRIVATE_TAILSCALE_ONLY)
+
+    def test_apps_that_pin_their_own_address_offer_neither(self):
+        offers = self.offers()
+        for pinned in ("nextcloud", "gitea", "paperless-ngx", "bookstack", "mastodon"):
+            self.assertNotIn(pinned, offers)
+
+
+PRIVATE_ON = {
+    "config.tor_enabled": "true",
+    "config.tailscale_enabled": "true",
+    "config.tailscale_auth_key": "tskey-auth-placeholder",
+}
+
+
+class PrivateAccessRendered(RenderedChart):
+    CHART = "vaultwarden"
+
+    def names(self, docs):
+        spec = self.deployments(docs)["gateway"]
+        return {c["name"] for c in spec["containers"]}, {
+            c["name"] for c in spec.get("initContainers") or []
+        }
+
+    def test_switched_off_nothing_extra_runs(self):
+        docs = self.docs()
+        containers, inits = self.names(docs)
+        self.assertFalse({"tor", "tailscale"} & containers)
+        self.assertNotIn("tor-state", inits)
+        caddyfile = check_charts.configmap_data(docs, "-caddy", "Caddyfile")
+        self.assertNotIn("bind 127.0.0.1", caddyfile)
+
+    def test_switched_on_both_sit_next_to_caddy_and_pass_the_checks(self):
+        docs = self.docs(PRIVATE_ON)
+        containers, inits = self.names(docs)
+        self.assertTrue({"caddy", "tor", "tailscale"} <= containers)
+        self.assertIn("tor-state", inits)
+        found = []
+        check_charts.check_private_access(
+            "vaultwarden",
+            docs,
+            ["tor_enabled", "tailscale_enabled"],
+            lambda app, msg: found.append(msg),
+        )
+        self.assertEqual(found, [])
+
+    def test_tailscale_cannot_be_switched_on_without_a_key(self):
+        text, err = check_charts.render(
+            self.chart,
+            self.library,
+            self.tmp.name,
+            {"config.tailscale_enabled": "true"},
+        )
+        self.assertIsNone(text)
+        self.assertIn("tailscale_auth_key", err)
+
+    def test_the_file_explorer_cannot_change_the_onion_key_or_tailscale_identity(self):
+        spec = self.deployments(self.docs(PRIVATE_ON))["gateway"]
+        explorer = next(c for c in spec["containers"] if c["name"] == "file-explorer")
+        read_only = {
+            m.get("subPath")
+            for m in explorer["volumeMounts"]
+            if m.get("readOnly") is True
+        }
+        self.assertIn("release/tor", read_only)
+        self.assertIn("release/tailscale", read_only)
+
+    def test_a_sidecar_pointed_elsewhere_is_reported(self):
+        docs = self.docs(PRIVATE_ON)
+        for d in docs:
+            if d.get("kind") == "ConfigMap" and d["metadata"]["name"].endswith("-tor"):
+                d["data"]["torrc"] = d["data"]["torrc"].replace("18792", "8080")
+        found = []
+        check_charts.check_private_access(
+            "vaultwarden", docs, ["tor_enabled"], lambda app, msg: found.append(msg)
+        )
+        self.assertEqual(len(found), 1)
+        self.assertIn("onion service does not point at Caddy", found[0])
+
+
 if __name__ == "__main__":
     unittest.main()

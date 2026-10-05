@@ -4,6 +4,8 @@
 ---
 {{ include "yolab-common.fileExplorerConfigMap" . }}
 ---
+{{ include "yolab-common.privateAccessResources" . }}
+---
 {{ include "yolab-common.uninstallHook" . }}
 ---
 apiVersion: v1
@@ -41,9 +43,11 @@ spec:
       initContainers:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessInit" . | nindent 6 }}
       containers:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
       - name: n8n
         image: n8nio/n8n:latest@sha256:769d3a624534ff8b5f3316ef71d4653f48794c47e4339436be7a308d6d6a1cc9
         imagePullPolicy: IfNotPresent
@@ -66,3 +70,4 @@ spec:
       volumes:
       {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}

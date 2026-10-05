@@ -4,6 +4,8 @@
 ---
 {{ include "yolab-common.fileExplorerConfigMap" . }}
 ---
+{{ include "yolab-common.privateAccessResources" . }}
+---
 {{ include "yolab-common.uninstallHook" . }}
 ---
 apiVersion: v1
@@ -40,6 +42,7 @@ spec:
       initContainers:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessInit" . | nindent 6 }}
       - name: ollama-connections
         image: ghcr.io/open-webui/open-webui:main@sha256:6a773e5c3a246b65cbe74ce942b294292c0e5f81c138f703d111bc162f7d7c3d
         imagePullPolicy: IfNotPresent
@@ -68,6 +71,7 @@ spec:
       containers:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
       {{- if not $onGpu }}
       - name: ollama
         image: ollama/ollama:0.35.1@sha256:292ee7945dfc3d5840a181f3ab86fedb1e66703e02c8af98b50f4da56b7e278c
@@ -104,6 +108,7 @@ spec:
       volumes:
       {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}
 {{- if $onGpu }}
 {{- range (include "open-webui.engines" . | fromJsonArray) }}
 ---

@@ -24,7 +24,7 @@
 
 
 {{- define "yolab-common.fileExplorer.protected" -}}
-{{- $folders := list "caddy" "file-explorer" "yolab-state" -}}
+{{- $folders := list "caddy" "file-explorer" "yolab-state" "tor" "tailscale" -}}
 {{- range ((((.Values.yolab).fileExplorer).protect) | default list) -}}
 {{- $folders = append $folders . -}}
 {{- end -}}
