@@ -273,7 +273,8 @@ fn rebase_job_manifest(
 ) -> Value {
     let command = format!(
         "if [ -d /data/{source_dir} ] && [ ! -e /data/{dest_dir} ]; then \
-         mv /data/{source_dir} /data/{dest_dir}; fi"
+         mv /data/{source_dir} /data/{dest_dir} && \
+         rm -rf /data/{dest_dir}/tor /data/{dest_dir}/tailscale; fi"
     );
     json!({
         "apiVersion": "batch/v1",
@@ -773,6 +774,28 @@ mod tests {
         assert_eq!(
             m["spec"]["template"]["spec"]["volumes"][0]["persistentVolumeClaim"]["claimName"],
             "gitea-cd34-data"
+        );
+    }
+
+    #[test]
+    fn a_copy_gets_its_own_onion_address_and_tailscale_device() {
+        let m = rebase_job_manifest(
+            "yolab-rebase-abcd",
+            "yolab-gitea-cd34",
+            "gitea-cd34-data",
+            "gitea-ab12",
+            "gitea-cd34",
+        );
+        let command = m["spec"]["template"]["spec"]["containers"][0]["args"][0]
+            .as_str()
+            .unwrap();
+        assert!(
+            command.contains("rm -rf /data/gitea-cd34/tor /data/gitea-cd34/tailscale"),
+            "{command}"
+        );
+        assert!(
+            !command.contains("rm -rf /data/gitea-ab12"),
+            "the original keeps its identities: {command}"
         );
     }
 
