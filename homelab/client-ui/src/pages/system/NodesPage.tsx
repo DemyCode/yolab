@@ -11,6 +11,7 @@ import {
 import type { NodeInfo, NodeLink } from "@/types/nodes";
 import type { PathStatus } from "@/types/mesh";
 import { fetchList } from "@/lib/api";
+import { hardwareDetail, hardwareLabel } from "@/lib/hardware";
 import { AnimatedList, Swap } from "@/components/motion";
 
 export function NodesPage() {
@@ -84,6 +85,9 @@ export function NodesPage() {
                       Status
                     </th>
                     <th className="py-2.5 pr-4 text-left text-xs font-medium text-fg-muted">
+                      Hardware
+                    </th>
+                    <th className="py-2.5 pr-4 text-left text-xs font-medium text-fg-muted">
                       Joined
                     </th>
                     <th className="py-2.5 pr-4 text-left text-xs font-medium text-fg-muted">
@@ -104,6 +108,8 @@ export function NodesPage() {
                     {(n) => {
                       const url = urlFor(n.name);
                       const path = pathFor(n.ip);
+                      const hardware = hardwareLabel(n.hardware);
+                      const hardwareMore = hardwareDetail(n.hardware);
                       return (
                         <>
                           <td className="py-3 pr-4 font-medium text-fg whitespace-nowrap">
@@ -118,6 +124,30 @@ export function NodesPage() {
                                   {n.ready ? "Ready" : "Not Ready"}
                                 </Swap>
                               </Badge>
+                            )}
+                          </td>
+                          <td className="py-3 pr-4">
+                            {hardware ? (
+                              <div className="flex flex-col gap-0.5">
+                                <Badge
+                                  variant={
+                                    n.hardware?.accelerator === "cpu"
+                                      ? "neutral"
+                                      : "success"
+                                  }
+                                >
+                                  {hardware}
+                                </Badge>
+                                {hardwareMore && (
+                                  <span className="text-xs text-fg-muted whitespace-nowrap">
+                                    {hardwareMore}
+                                  </span>
+                                )}
+                              </div>
+                            ) : (
+                              <span className="text-xs text-border-strong">
+                                —
+                              </span>
                             )}
                           </td>
                           <td className="py-3 pr-4 text-xs text-fg-muted whitespace-nowrap">

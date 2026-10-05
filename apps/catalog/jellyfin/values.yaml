@@ -1,5 +1,7 @@
 config:
   subdomain: jellyfin
+  hardware_transcoding: true
+gpu: {}
 yolab:
   platformApiUrl: ''
   accountToken: ''

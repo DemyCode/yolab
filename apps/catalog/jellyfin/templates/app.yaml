@@ -18,6 +18,7 @@ spec:
   resources:
     requests:
       storage: 50Gi
+{{- $gpu := include "jellyfin.gpu" . | fromJson }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -36,6 +37,10 @@ spec:
       labels:
         app: gateway
     spec:
+      {{- if $gpu.name }}
+      nodeSelector:
+        kubernetes.io/hostname: {{ $gpu.name | quote }}
+      {{- end }}
       initContainers:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
@@ -68,6 +73,17 @@ spec:
           value: '1000'
         - name: TZ
           value: Etc/UTC
+        {{- if eq ($gpu.accelerator | default "") "nvidia" }}
+        - name: NVIDIA_VISIBLE_DEVICES
+          value: all
+        - name: NVIDIA_DRIVER_CAPABILITIES
+          value: all
+        {{- end }}
+        {{- if $gpu.accelerator }}
+        resources:
+          limits:
+            {{ if eq $gpu.accelerator "nvidia" }}nvidia.com/gpu-all{{ else }}yolab.io/dri{{ end }}: "1"
+        {{- end }}
         volumeMounts:
         - name: data
           mountPath: /config

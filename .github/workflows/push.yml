@@ -261,6 +261,8 @@ jobs:
               --set config.vpn_addresses=10.64.0.2/32 \
               --set 'config.auth_users[0].username=admin' \
               --set 'config.auth_users[0].password=PlaceholderPw2026' \
+              --set config.desktop_password=PlaceholderPw2026 \
+              --set config.sunshine_password=PlaceholderPw2026 \
               --set config.subdomain=example || { failed="$failed $name(lint)"; continue; }
 
             helm package "$chart" --version "${base}${SUFFIX}" --destination /tmp/pkg

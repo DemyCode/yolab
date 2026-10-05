@@ -18,6 +18,12 @@
           "format": "tunnel",
           "default": "jellyfin"
         },
+        "hardware_transcoding": {
+          "type": "boolean",
+          "title": "Hardware transcoding",
+          "default": true,
+          "description": "Run Jellyfin on the machine with the best graphics card for video (Intel first, then NVIDIA, then AMD) so it can convert films for phones and browsers without straining the processor. Turn it on in Jellyfin too: Dashboard, Playback, Transcoding."
+        },
         "file_explorer_enabled": {
           "type": "boolean",
           "title": "File explorer",

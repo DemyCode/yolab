@@ -4,6 +4,14 @@ export interface NodeInfo {
   ready: boolean;
   roles: string[];
   joined_at: string;
+  hardware?: NodeHardware;
+}
+
+export interface NodeHardware {
+  accelerator: "nvidia" | "amd" | "intel" | "cpu" | null;
+  vram_gib: number | null;
+  ram_gib: number | null;
+  game_input: boolean;
 }
 
 export interface NodeLink {

@@ -602,5 +602,35 @@ class SteamHeadless(RenderedChart):
         self.assertIn("forward_auth", caddy)
 
 
+
+class JellyfinTranscoding(RenderedChart):
+    CHART = "jellyfin"
+
+    def jellyfin(self, extra=None):
+        spec = self.deployments(self.docs(extra))["gateway"]
+        return spec, next(c for c in spec["containers"] if c["name"] == "jellyfin")
+
+    def test_an_intel_machine_lends_jellyfin_its_dev_dri(self):
+        spec, c = self.jellyfin(check_charts.VARIANTS["jellyfin"][0])
+        self.assertEqual(spec["nodeSelector"], {"kubernetes.io/hostname": "nuc"})
+        self.assertEqual(c["resources"]["limits"], {"yolab.io/dri": "1"})
+
+    def test_an_nvidia_machine_lends_jellyfin_its_cdi_device_and_driver(self):
+        spec, c = self.jellyfin(check_charts.VARIANTS["jellyfin"][1])
+        self.assertEqual(c["resources"]["limits"], {"nvidia.com/gpu-all": "1"})
+        self.assertEqual(self.env(spec, "jellyfin")["NVIDIA_DRIVER_CAPABILITIES"], "all")
+
+    def test_turning_it_off_leaves_jellyfin_free_to_run_anywhere(self):
+        off = {**check_charts.VARIANTS["jellyfin"][0], "config.hardware_transcoding": "false"}
+        spec, c = self.jellyfin(off)
+        self.assertNotIn("nodeSelector", spec)
+        self.assertNotIn("resources", c)
+
+    def test_with_no_gpu_in_the_cluster_nothing_changes(self):
+        spec, c = self.jellyfin()
+        self.assertNotIn("nodeSelector", spec)
+        self.assertNotIn("resources", c)
+
+
 if __name__ == "__main__":
     unittest.main()
