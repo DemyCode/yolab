@@ -1006,9 +1006,12 @@ PRIVATE_BOTH = frozenset(
         "vaultwarden",
         "vikunja",
         "wallos",
+        "jellyfin",
+        "immich",
+        "photoprism",
+        "frigate",
     }
 )
-PRIVATE_TAILSCALE_ONLY = frozenset({"jellyfin", "immich", "photoprism", "frigate"})
 
 
 class PrivateAccessChoice(unittest.TestCase):
@@ -1029,10 +1032,12 @@ class PrivateAccessChoice(unittest.TestCase):
         }
         self.assertEqual(both, PRIVATE_BOTH)
 
-    def test_video_and_photo_apps_get_tailscale_but_not_tor_which_is_too_slow(self):
+    def test_every_app_offering_one_way_in_offers_both_even_slow_video_over_tor(self):
         offers = self.offers()
-        only = {a for a, o in offers.items() if o == {"tailscale_enabled"}}
-        self.assertEqual(only, PRIVATE_TAILSCALE_ONLY)
+        partial = {
+            a for a, o in offers.items() if o != {"tor_enabled", "tailscale_enabled"}
+        }
+        self.assertEqual(partial, set())
 
     def test_apps_that_pin_their_own_address_offer_neither(self):
         offers = self.offers()

@@ -3,7 +3,7 @@ name: photoprism
 description: "AI-powered photo library with face and object recognition"
 home: https://www.photoprism.app
 type: application
-version: 0.1.10
+version: 0.1.11
 appVersion: "240915"
 
 dependencies:

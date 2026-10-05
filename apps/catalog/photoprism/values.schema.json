@@ -39,6 +39,12 @@
           "default": true,
           "description": "A password-protected file manager for this app's own data on its own address: browse, download, upload, rename and delete files without needing a terminal. Folders holding a database server (Postgres, MariaDB, Redis, MongoDB, MinIO) always stay read-only."
         },
+        "tor_enabled": {
+          "type": "boolean",
+          "title": "Tor",
+          "default": false,
+          "description": "Also reachable as a .onion address in Tor Browser, from any network and without IPv6. Slower than the normal address, and visitors never learn your home's IP address."
+        },
         "tailscale_enabled": {
           "type": "boolean",
           "title": "Tailscale",
@@ -185,6 +191,21 @@
           "when": {
             "properties": {
               "file_explorer_enabled": {
+                "const": true
+              }
+            }
+          }
+        },
+        "tor_url": {
+          "type": "string",
+          "title": "Tor address",
+          "format": "uri",
+          "source": {
+            "logs": "YOLAB_OUTPUT tor_url (\\S+)"
+          },
+          "when": {
+            "properties": {
+              "tor_enabled": {
                 "const": true
               }
             }
