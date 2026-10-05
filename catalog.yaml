@@ -47,7 +47,7 @@ charts:
   - name: freshrss
     version: "0.1.8"
   - name: frigate
-    version: "0.1.8"
+    version: "0.2.0"
   - name: ghost
     version: "0.1.8"
   - name: gitea
@@ -63,11 +63,11 @@ charts:
   - name: homepage
     version: "0.1.8"
   - name: immich
-    version: "0.1.11"
+    version: "0.2.0"
   - name: it-tools
     version: "0.1.8"
   - name: jellyfin
-    version: "0.1.8"
+    version: "0.2.0"
   - name: jellyseerr
     version: "0.1.8"
   - name: karakeep
@@ -107,7 +107,7 @@ charts:
   - name: onlyoffice
     version: "0.1.8"
   - name: open-webui
-    version: "0.1.8"
+    version: "0.2.0"
   - name: openclaw
     version: "0.1.8"
   - name: pairdrop
@@ -136,6 +136,8 @@ charts:
     version: "0.1.8"
   - name: speedtest-tracker
     version: "0.1.8"
+  - name: steam-headless
+    version: "0.1.0"
   - name: stirling-pdf
     version: "0.1.8"
   - name: strfry
