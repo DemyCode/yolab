@@ -68,7 +68,7 @@ pub fn spawn_all(leader: Leadership) {
     spawn(crate::topology::TopologyController, &leader);
     spawn(crate::mesh::MeshPathsController::new(), &leader);
     spawn(crate::mesh::MeshDiscoveryController::new(), &leader);
-    spawn(crate::hardware::HardwareLabelsController, &leader);
+    spawn(crate::hardware::HardwareLabelsController::real(), &leader);
     spawn(crate::charts::ChartSyncController, &leader);
     spawn(
         crate::heal::HealController {
@@ -173,7 +173,9 @@ pub async fn run_named(name: &str) -> anyhow::Result<runtime::Tick> {
         }
         "mesh-paths" => runtime::run_once(&crate::mesh::MeshPathsController::new()).await,
         "mesh-discovery" => runtime::run_once(&crate::mesh::MeshDiscoveryController::new()).await,
-        "hardware-labels" => runtime::run_once(&crate::hardware::HardwareLabelsController).await,
+        "hardware-labels" => {
+            runtime::run_once(&crate::hardware::HardwareLabelsController::real()).await
+        }
         "chart-sync" => runtime::run_once(&crate::charts::ChartSyncController).await,
         "osd-activate" => runtime::run_once(&storage::OsdActivateController { env }).await,
         "system-osd" => runtime::run_once(&storage::SystemOsdController { env }).await,

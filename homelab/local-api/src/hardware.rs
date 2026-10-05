@@ -169,7 +169,19 @@ impl NodeHardware {
     }
 }
 
-pub struct HardwareLabelsController;
+pub struct HardwareLabelsController {
+    pub kube: crate::k8s::Kube,
+    pub root: std::path::PathBuf,
+}
+
+impl HardwareLabelsController {
+    pub fn real() -> Self {
+        Self {
+            kube: crate::k8s::Kube::from_environment(),
+            root: "/".into(),
+        }
+    }
+}
 
 impl crate::runtime::Controller for HardwareLabelsController {
     fn name(&self) -> &'static str {
@@ -186,12 +198,12 @@ impl crate::runtime::Controller for HardwareLabelsController {
     }
     async fn reconcile(&self, ctx: &crate::runtime::Ctx) -> anyhow::Result<crate::runtime::Tick> {
         use k8s_openapi::api::core::v1::Node;
-        let client = crate::k8s::client().await?;
+        let client = self.kube.client().await?;
         let node = kube::Api::<Node>::all(client.clone())
             .get(&ctx.node)
             .await?;
         let current = node.metadata.labels.unwrap_or_default();
-        let inventory = probe(Path::new("/"));
+        let inventory = probe(&self.root);
         if let Some(patch) = label_patch(&ctx.node, &current, &labels(&inventory)) {
             tracing::info!(
                 "hardware: {} now offers {}",
@@ -375,6 +387,41 @@ mod tests {
             NodeHardware::from_labels(&Value::Null),
             NodeHardware::default()
         );
+    }
+
+    #[tokio::test]
+    async fn a_tick_labels_the_node_with_what_this_machine_offers() {
+        use crate::runtime::Controller as _;
+        let (server, client) = crate::k8s::testing::api_server().await;
+        crate::k8s::testing::serve(
+            &server,
+            "/api/v1/nodes/node1",
+            200,
+            json!({ "apiVersion": "v1", "kind": "Node", "metadata": { "name": "node1", "labels": {} } }),
+        )
+        .await;
+        crate::k8s::testing::accept_patches(&server).await;
+        let machine = Machine::new()
+            .drm("renderD128", "i915")
+            .file("dev/uinput", "");
+        let controller = HardwareLabelsController {
+            kube: crate::k8s::Kube::with(client),
+            root: machine.path().to_path_buf(),
+        };
+
+        controller
+            .reconcile(&crate::runtime::Ctx {
+                node: "node1".into(),
+            })
+            .await
+            .unwrap();
+
+        let patches = crate::k8s::testing::patched(&server).await;
+        assert_eq!(patches.len(), 1);
+        let labels = &patches[0]["metadata"]["labels"];
+        assert_eq!(labels[LABEL_INTEL], "true");
+        assert_eq!(labels[LABEL_ACCELERATOR], "intel");
+        assert_eq!(labels[LABEL_GAME_INPUT], "true");
     }
 
     #[test]
