@@ -27,6 +27,10 @@
     "amd64",
     "arm64"
   ],
+  "cgr.dev/chainguard/minio:latest@sha256:4cf4831a2bbcf13ddca09c1cbcc9faff716dd3c4247e0babc32864b8ee8e0034": [
+    "amd64",
+    "arm64"
+  ],
   "deluan/navidrome:latest@sha256:9012939114fbb1bb641b81cf96dec5ded15f0aafefe8d47a511d7cb919658e40": [
     "amd64",
     "arm64"
@@ -313,7 +317,6 @@
     "amd64",
     "arm64"
   ],
-  "minio/minio:latest@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e": [],
   "monicahq/monicahq:latest@sha256:b797b9b2ab1e64a4a4b7dadf820875743671c3bcc6916420298dd315153c99a7": [
     "amd64"
   ],

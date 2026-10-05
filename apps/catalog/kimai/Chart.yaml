@@ -3,10 +3,10 @@ name: kimai
 description: "Track time against projects and turn it into an invoice"
 home: https://www.kimai.org
 type: application
-version: 0.1.8
+version: 0.1.9
 dependencies:
   - name: yolab-common
-    version: "0.1.7"
+    version: "0.1.8"
     repository: "oci://ghcr.io/demycode/charts"
 annotations:
   yolab.io/display-name: "Kimai"

@@ -184,12 +184,13 @@ spec:
       labels:
         app: minio
     spec:
-      nodeSelector:
-        kubernetes.io/arch: amd64
       containers:
       - name: minio
-        image: minio/minio:latest@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
+        image: cgr.dev/chainguard/minio:latest@sha256:4cf4831a2bbcf13ddca09c1cbcc9faff716dd3c4247e0babc32864b8ee8e0034
         imagePullPolicy: IfNotPresent
+        securityContext:
+          runAsUser: 0
+          runAsGroup: 0
         readinessProbe:
           httpGet:
             path: /minio/health/live
@@ -197,6 +198,7 @@ spec:
           initialDelaySeconds: 10
           periodSeconds: 10
         command:
+        - minio
         - server
         - /data
         env:

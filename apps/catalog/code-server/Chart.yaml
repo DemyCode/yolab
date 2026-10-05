@@ -3,12 +3,12 @@ name: code-server
 description: "VS Code in the browser, running on your own hardware"
 home: https://coder.com/docs/code-server
 type: application
-version: 0.1.8
+version: 0.1.9
 appVersion: "4"
 
 dependencies:
   - name: yolab-common
-    version: "0.1.7"
+    version: "0.1.8"
     repository: "oci://ghcr.io/demycode/charts"
 
 annotations:

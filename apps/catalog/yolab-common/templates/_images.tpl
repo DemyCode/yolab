@@ -1,11 +1,11 @@
 
 
 {{- define "yolab-common.image.wgRegister" -}}
-{{- (((.Values.yolab).images).wgRegister) | default "ghcr.io/demycode/wg-register:main-latest@sha256:23cedfe6e8a7291a98d4e44207bf30b742a5314dbece3b45eed83caccec22236" -}}
+{{- (((.Values.yolab).images).wgRegister) | default "ghcr.io/demycode/wg-register:main-latest@sha256:d245bfb81ced1730b31a93a3073d37e672c1c79f19f5aba1688f5376f8434945" -}}
 {{- end -}}
 
 {{- define "yolab-common.image.wgSidecar" -}}
-{{- (((.Values.yolab).images).wgSidecar) | default "ghcr.io/demycode/wg-sidecar:latest@sha256:d7706338f231b0e54a8ac6c4a2940f5d9d8c2ac017a69dd378250359ee3d98c1" -}}
+{{- (((.Values.yolab).images).wgSidecar) | default "ghcr.io/demycode/wg-sidecar:main-latest@sha256:ec53881e1fb804129706a7dc1bbe129b2c9baed610bb527bc80673baeea37e25" -}}
 {{- end -}}
 
 {{- define "yolab-common.image.caddy" -}}

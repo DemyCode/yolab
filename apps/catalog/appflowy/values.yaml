@@ -22,9 +22,13 @@ yolab:
           uri strip_prefix /gotrue
           reverse_proxy gotrue:9999
         }
-        handle /minio-api/* {
+        @presigned expression `path("/minio-api/*") && {query.X-Amz-Signature} != "" && {header.Authorization} == ""`
+        handle @presigned {
           uri strip_prefix /minio-api
           reverse_proxy minio:9000
+        }
+        handle /minio-api/* {
+          respond 403
         }
         handle /ws/* {
           reverse_proxy cloud:8000

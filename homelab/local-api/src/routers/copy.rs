@@ -12,7 +12,7 @@ const CLONE_WAIT_SECS: u64 = 6 * 60 * 60;
 const POLL_SECS: u64 = 5;
 const REBASE_WAIT_SECS: u64 = 300;
 const REBASE_IMAGE: &str =
-    "ghcr.io/demycode/wg-register:main-latest@sha256:1f68d09b5e4ef2a83b0b50df83633ca397be772cd8d72ebdf8c971f1677f414a";
+    "ghcr.io/demycode/wg-register:main-latest@sha256:d245bfb81ced1730b31a93a3073d37e672c1c79f19f5aba1688f5376f8434945";
 const COPY_LABEL: &str = "yolab.io/copy";
 const COPY_SELECTOR: &str = "yolab.io/copy=true";
 const ANN_DEST_NAMESPACE: &str = "yolab.io/copy-dest-namespace";

@@ -599,7 +599,9 @@ class OpenWebUiEngines(RenderedChart):
 
     def test_each_vendor_s_engine_lands_only_where_that_vendor_is_the_best_card(self):
         engines = self.engines(self.gpu_cluster())
-        self.assertEqual(sorted(engines), ["ollama-amd", "ollama-nvidia"])
+        self.assertEqual(
+            sorted(engines), ["ollama-amd", "ollama-intel", "ollama-nvidia"]
+        )
         nvidia = engines["ollama-nvidia"]
         self.assertEqual(nvidia["nodeSelector"], {"yolab.io/accelerator": "nvidia"})
         self.assertEqual(
@@ -630,7 +632,7 @@ class OpenWebUiEngines(RenderedChart):
         }
         self.assertEqual(
             sorted(self.engines(self.docs(nvidia_only))),
-            ["ollama-amd", "ollama-nvidia"],
+            ["ollama-amd", "ollama-intel", "ollama-nvidia"],
         )
 
     def test_the_ui_talks_to_every_engine_through_one_service(self):
@@ -668,18 +670,25 @@ class OpenWebUiEngines(RenderedChart):
         cpu = self.deployments(self.docs({"config.unload_after": "30m"}))["gateway"]
         self.assertEqual(self.env(cpu, "ollama")["OLLAMA_KEEP_ALIVE"], "30m")
 
-    def test_an_intel_machine_waits_for_a_pinned_vulkan_image(self):
+    def test_an_intel_machine_runs_the_vulkan_engine_on_x86_only(self):
         intel = {"machines[0].name": "nuc", "machines[0].accelerator": "intel"}
-        self.assertEqual(self.engines(self.docs(intel)), {})
-        pinned = {
-            **intel,
-            "vulkanImage": "ghcr.io/demycode/ollama-vulkan:0.35.1@sha256:" + "0" * 64,
-        }
-        engines = self.engines(self.docs(pinned))
+        engine = self.engines(self.docs(intel))["ollama-intel"]
+        c = engine["containers"][0]
+        self.assertTrue(c["image"].startswith("ghcr.io/demycode/ollama-vulkan:"))
+        self.assertIn("@sha256:", c["image"])
+        self.assertEqual(c["resources"]["limits"], {"yolab.io/dri": "1"})
         self.assertEqual(
-            engines["ollama-intel"]["containers"][0]["resources"]["limits"],
-            {"yolab.io/dri": "1"},
+            engine["nodeSelector"],
+            {"yolab.io/accelerator": "intel", "kubernetes.io/arch": "amd64"},
         )
+
+    def test_without_a_vulkan_image_an_intel_machine_gets_no_engine(self):
+        intel = {
+            "machines[0].name": "nuc",
+            "machines[0].accelerator": "intel",
+            "vulkanImage": "",
+        }
+        self.assertEqual(self.engines(self.docs(intel)), {})
 
 
 class SteamHeadless(RenderedChart):
@@ -834,6 +843,63 @@ class FrigateAcceleration(RenderedChart):
             config,
             {"mqtt": {"enabled": False}, "tls": {"enabled": False}, "cameras": {}},
         )
+
+
+class MinioStorage:
+    def minio(self):
+        spec = self.deployments(self.docs())["minio"]
+        return spec, spec["containers"][0]
+
+    def test_minio_comes_from_an_image_that_still_exists_for_both_processors(self):
+        spec, c = self.minio()
+        self.assertTrue(c["image"].startswith("cgr.dev/chainguard/minio:"))
+        self.assertEqual(check_charts.ARCHES[c["image"]], ["amd64", "arm64"])
+        self.assertNotIn("kubernetes.io/arch", spec.get("nodeSelector") or {})
+
+    def test_minio_keeps_reading_the_data_root_wrote_before(self):
+        _, c = self.minio()
+        self.assertEqual(c["securityContext"], {"runAsUser": 0, "runAsGroup": 0})
+
+    def test_minio_is_started_by_name_because_the_image_s_entrypoint_is_minio_itself(
+        self,
+    ):
+        _, c = self.minio()
+        self.assertEqual(c["command"][:3], ["minio", "server", "/data"])
+
+
+class AppflowyMinio(MinioStorage, RenderedChart):
+    CHART = "appflowy"
+
+    def caddyfile(self):
+        return next(
+            d["data"]["Caddyfile"]
+            for d in self.docs()
+            if d["kind"] == "ConfigMap" and "Caddyfile" in (d.get("data") or {})
+        )
+
+    def test_the_public_minio_route_forwards_only_presigned_requests(self):
+        caddy = self.caddyfile()
+        matcher = next(
+            line for line in caddy.splitlines() if line.strip().startswith("@presigned")
+        )
+        self.assertIn('path("/minio-api/*")', matcher)
+        self.assertIn('{query.X-Amz-Signature} != ""', matcher)
+        self.assertIn('{header.Authorization} == ""', matcher)
+        presigned = caddy.split("handle @presigned {", 1)[1].split("}", 1)[0]
+        self.assertIn("reverse_proxy minio:9000", presigned)
+        self.assertEqual(caddy.count("reverse_proxy minio:9000"), 1)
+
+    def test_anything_else_on_the_minio_route_is_refused(self):
+        caddy = self.caddyfile()
+        refused = caddy.split("handle /minio-api/* {", 1)[1].split("}", 1)[0]
+        self.assertIn("respond 403", refused)
+        self.assertLess(
+            caddy.index("handle @presigned"), caddy.index("handle /minio-api/*")
+        )
+
+
+class ReactiveResumeMinio(MinioStorage, RenderedChart):
+    CHART = "reactive-resume"
 
 
 if __name__ == "__main__":

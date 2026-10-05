@@ -927,6 +927,16 @@ in let
         touch $out
       '';
 
+    copies-use-the-same-wg-register-the-apps-do = pkgs.runCommand "copies-use-the-same-wg-register-the-apps-do" {nativeBuildInputs = [pkgs.gnugrep];} ''
+      image=$(grep -oE 'ghcr\.io/demycode/wg-register:[^"]+' ${treeSrc}/homelab/local-api/src/routers/copy.rs)
+      if ! grep -qF "$image" ${treeSrc}/apps/catalog/yolab-common/templates/_images.tpl; then
+        echo "copy.rs runs $image, but yolab-common pins a different wg-register." >&2
+        echo "Two pins drift: one gets rebuilt for ARM and the other does not." >&2
+        exit 1
+      fi
+      touch $out
+    '';
+
     deadnix =
       pkgs.runCommand "deadnix"
       {

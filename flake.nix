@@ -77,8 +77,6 @@
       yolabLastModified = self.lastModified or null;
     };
 
-    yolabSpecialArgs = specialArgsFor "x86_64-linux";
-
     mkYolabSystem = {
       system ? "x86_64-linux",
       configPath,
