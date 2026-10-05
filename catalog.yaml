@@ -47,7 +47,7 @@ charts:
   - name: freshrss
     version: "0.1.10"
   - name: frigate
-    version: "0.2.3"
+    version: "0.2.4"
   - name: ghost
     version: "0.1.10"
   - name: gitea
@@ -63,13 +63,13 @@ charts:
   - name: homepage
     version: "0.1.10"
   - name: immich
-    version: "0.2.3"
+    version: "0.2.4"
   - name: it-tools
     version: "0.1.10"
   - name: jellyfin
-    version: "0.2.3"
+    version: "0.2.4"
   - name: jellyseerr
-    version: "0.1.10"
+    version: "0.1.11"
   - name: karakeep
     version: "0.1.10"
   - name: kavita
@@ -85,7 +85,7 @@ charts:
   - name: mealie
     version: "0.1.10"
   - name: media-stack
-    version: "0.1.4"
+    version: "0.1.5"
   - name: memos
     version: "0.1.10"
   - name: metube
@@ -115,7 +115,7 @@ charts:
   - name: paperless-ngx
     version: "0.1.10"
   - name: photoprism
-    version: "0.1.10"
+    version: "0.1.11"
   - name: planka
     version: "0.1.10"
   - name: prowlarr
