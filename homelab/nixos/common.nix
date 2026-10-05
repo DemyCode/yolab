@@ -51,6 +51,7 @@ in {
     ./ceph/dashboard.nix
     ./gpu
   ];
+  boot.binfmt.emulatedSystems = ["aarch64-linux"];
 
   options.yolab = {
     platform = lib.mkOption {
@@ -127,13 +128,17 @@ in {
           # B. Source policy: public address always exits wg0.
           ip -6 rule add from ${s.tunnelCfg.sub_ipv6} lookup 51820 priority 100 2>/dev/null || true
           ip -6 route replace ::/0 dev wg0 table 51820 2>/dev/null || true
-          ${lib.optionalString (yolabRange != null) "ip -6 route replace ${yolabRange} dev wg0 2>/dev/null || true"}
+          ${lib.optionalString (
+            yolabRange != null
+          ) "ip -6 route replace ${yolabRange} dev wg0 2>/dev/null || true"}
         '';
 
         preShutdown = ''
           ip -6 rule del from ${s.tunnelCfg.sub_ipv6} lookup 51820 priority 100 2>/dev/null || true
           ip -6 route del ::/0 dev wg0 table 51820 2>/dev/null || true
-          ${lib.optionalString (yolabRange != null) "ip -6 route del ${yolabRange} dev wg0 2>/dev/null || true"}
+          ${lib.optionalString (
+            yolabRange != null
+          ) "ip -6 route del ${yolabRange} dev wg0 2>/dev/null || true"}
         '';
 
         peers = [
@@ -346,8 +351,14 @@ in {
     };
 
     systemd.services.caddy = {
-      after = ["wireguard-wg0.service" "yolab-caddy-credentials.service"];
-      wants = ["wireguard-wg0.service" "yolab-caddy-credentials.service"];
+      after = [
+        "wireguard-wg0.service"
+        "yolab-caddy-credentials.service"
+      ];
+      wants = [
+        "wireguard-wg0.service"
+        "yolab-caddy-credentials.service"
+      ];
       serviceConfig.EnvironmentFile = "-/var/lib/yolab/caddy/acme.env";
     };
 
@@ -447,35 +458,45 @@ in {
       };
     };
 
-    systemd.services.yolab-reset-wipe = lib.mkIf config.yolab.ceph.enable (let
-      host = config.networking.hostName;
-    in {
-      description = "Wipe this machine's cluster state for a FORCE HEAL";
-      wantedBy = ["multi-user.target"];
-      after = ["local-fs.target" "systemd-tmpfiles-setup.service"];
-      before = [
-        "yolab-ceph-bootstrap.service"
-        "ceph-mon-${host}.service"
-        "ceph-mgr-${host}.service"
-        "ceph-mds-${host}.service"
-        "k3s-node-ip.service"
-        "k3s.service"
-        "yolab-local-api.service"
-      ];
-      requiredBy = [
-        "yolab-ceph-bootstrap.service"
-        "k3s.service"
-      ];
-      restartIfChanged = false;
-      path = with pkgs; [ceph lvm2 util-linux coreutils];
-      environment.YOLAB_MACHINE_DIR = config.yolab.machineDir;
-      serviceConfig = {
-        Type = "oneshot";
-        RemainAfterExit = true;
-        TimeoutStartSec = "1800s";
-        ExecStart = "${s.localApiEnv}/bin/local-api storage reset-wipe";
-      };
-    });
+    systemd.services.yolab-reset-wipe = lib.mkIf config.yolab.ceph.enable (
+      let
+        host = config.networking.hostName;
+      in {
+        description = "Wipe this machine's cluster state for a FORCE HEAL";
+        wantedBy = ["multi-user.target"];
+        after = [
+          "local-fs.target"
+          "systemd-tmpfiles-setup.service"
+        ];
+        before = [
+          "yolab-ceph-bootstrap.service"
+          "ceph-mon-${host}.service"
+          "ceph-mgr-${host}.service"
+          "ceph-mds-${host}.service"
+          "k3s-node-ip.service"
+          "k3s.service"
+          "yolab-local-api.service"
+        ];
+        requiredBy = [
+          "yolab-ceph-bootstrap.service"
+          "k3s.service"
+        ];
+        restartIfChanged = false;
+        path = with pkgs; [
+          ceph
+          lvm2
+          util-linux
+          coreutils
+        ];
+        environment.YOLAB_MACHINE_DIR = config.yolab.machineDir;
+        serviceConfig = {
+          Type = "oneshot";
+          RemainAfterExit = true;
+          TimeoutStartSec = "1800s";
+          ExecStart = "${s.localApiEnv}/bin/local-api storage reset-wipe";
+        };
+      }
+    );
 
     users.users.root.openssh.authorizedKeys.keys =
       lib.optional (s.rootSshKey != "") s.rootSshKey
@@ -554,11 +575,9 @@ in {
     system.activationScripts.yolabVersion = ''
       mkdir -p /var/lib/yolab
       printf '%s' ${lib.escapeShellArg yolabRev} > /var/lib/yolab/built-hash
-      ${
-        lib.optionalString (yolabLastModified != null) ''
-          ${pkgs.coreutils}/bin/date -u -d @${toString yolabLastModified} +%Y-%m-%dT%H:%M:%SZ > /var/lib/yolab/built-date
-        ''
-      }
+      ${lib.optionalString (yolabLastModified != null) ''
+        ${pkgs.coreutils}/bin/date -u -d @${toString yolabLastModified} +%Y-%m-%dT%H:%M:%SZ > /var/lib/yolab/built-date
+      ''}
       : > /var/lib/yolab/built-message
     '';
 
