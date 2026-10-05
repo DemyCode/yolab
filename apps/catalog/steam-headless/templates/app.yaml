@@ -75,6 +75,7 @@ spec:
     spec:
       nodeSelector:
         yolab.io/game-input: "true"
+        kubernetes.io/arch: amd64
         {{- if $machine.name }}
         kubernetes.io/hostname: {{ $machine.name | quote }}
         {{- end }}

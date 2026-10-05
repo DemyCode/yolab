@@ -96,6 +96,9 @@ VARIANTS = {
 
 GATEWAY_CONTAINERS = ("wireguard", "caddy")
 WORKLOAD_KINDS = ("Deployment", "DaemonSet", "StatefulSet")
+OWN_IMAGES = "ghcr.io/demycode/"
+with open(os.path.join(HERE, "image_arches.json")) as _f:
+    ARCHES = json.load(_f)
 TOKEN_CONTAINERS = ("wg-register", "cleanup")
 
 
@@ -206,7 +209,31 @@ def check_db_init_is_idempotent(app, script, container, fail):
                 )
 
 
-def check(app, docs, fail, chart_yaml="", schema=None):
+def check_arch(app, workload, fail, arches):
+    spec = workload["spec"]["template"]["spec"]
+    images = [
+        c["image"]
+        for c in (spec.get("containers") or []) + (spec.get("initContainers") or [])
+        if not c["image"].startswith(OWN_IMAGES)
+    ]
+    unknown = [i for i in images if i not in arches]
+    for image in unknown:
+        fail(
+            app,
+            f"{image} is not in image_arches.json, so nothing says which processors "
+            f"it runs on: run image_arches.py",
+        )
+    x86_only = [i for i in images if i in arches and "arm64" not in arches[i]]
+    pinned = (spec.get("nodeSelector") or {}).get("kubernetes.io/arch") == "amd64"
+    if x86_only and not pinned:
+        fail(
+            app,
+            f"{workload['kind']} {workload['metadata']['name']} runs {x86_only[0]}, "
+            f"which has no arm64 build, but is not pinned to kubernetes.io/arch: amd64",
+        )
+
+
+def check(app, docs, fail, chart_yaml="", schema=None, arches=None):
     kinds = {}
     for d in docs:
         kinds.setdefault(d["kind"], []).append(d)
@@ -381,6 +408,9 @@ def check(app, docs, fail, chart_yaml="", schema=None):
                 app,
                 f"Service {s['metadata']['name']} selector {dict(sel)} matches no pod",
             )
+
+    for d in workloads + kinds.get("Job", []):
+        check_arch(app, d, fail, ARCHES if arches is None else arches)
 
     for d in workloads + kinds.get("Job", []):
         spec = d["spec"]["template"]["spec"]

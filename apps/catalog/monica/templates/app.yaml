@@ -73,6 +73,8 @@ spec:
       labels:
         app: monica
     spec:
+      nodeSelector:
+        kubernetes.io/arch: amd64
       initContainers:
       {{- include "yolab-common.yolabEnvInit" . | nindent 6 }}
       containers:

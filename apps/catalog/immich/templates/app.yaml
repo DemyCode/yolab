@@ -159,6 +159,7 @@ spec:
       {{- if $gpu.name }}
       nodeSelector:
         kubernetes.io/hostname: {{ $gpu.name | quote }}
+        kubernetes.io/arch: amd64
       {{- end }}
       containers:
       - name: immich-ml

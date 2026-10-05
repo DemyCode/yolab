@@ -3,7 +3,7 @@ name: valheim
 description: "Valheim dedicated game server"
 home: https://www.valheimgame.com
 type: application
-version: 0.1.8
+version: 0.1.9
 
 dependencies:
   - name: yolab-common

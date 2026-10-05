@@ -8,10 +8,12 @@
 {{- $rank := dict "nvidia" 3 "amd" 2 "intel" 1 -}}
 {{- range ((lookup "v1" "Node" "" "").items | default list) -}}
 {{- $labels := .metadata.labels | default dict -}}
+{{- if eq (get $labels "kubernetes.io/arch") "amd64" -}}
 {{- $node := .metadata.name -}}
 {{- range $vendor := list "nvidia" "amd" "intel" -}}
 {{- if and (eq (get $labels (printf "yolab.io/gpu-%s" $vendor)) "true") (gt (int (get $rank $vendor)) (int (get $rank ($best.accelerator | default "none") | default 0))) -}}
 {{- $best = dict "name" $node "accelerator" $vendor -}}
+{{- end -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}

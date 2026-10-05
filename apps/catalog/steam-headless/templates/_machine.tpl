@@ -6,10 +6,12 @@
 {{- $rank := dict "nvidia" 3 "amd" 2 "intel" 1 -}}
 {{- range ((lookup "v1" "Node" "" "").items | default list) -}}
 {{- $labels := .metadata.labels | default dict -}}
+{{- if eq (get $labels "kubernetes.io/arch") "amd64" -}}
 {{- $accelerator := get $labels "yolab.io/accelerator" -}}
 {{- if and (eq (get $labels "yolab.io/game-input") "true") (hasKey $rank $accelerator) -}}
 {{- if gt (int (get $rank $accelerator)) (int (get $rank ($best.accelerator | default "none") | default 0)) -}}
 {{- $best = dict "name" .metadata.name "accelerator" $accelerator -}}
+{{- end -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}

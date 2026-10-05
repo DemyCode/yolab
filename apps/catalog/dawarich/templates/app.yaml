@@ -232,6 +232,8 @@ spec:
       labels:
         app: postgres
     spec:
+      nodeSelector:
+        kubernetes.io/arch: amd64
       containers:
       - name: postgres
         image: postgis/postgis:17-3.5-alpine@sha256:978a2e6671c956d650d1f240dba7c73b8519a5f5af8685165fca616cc4ae3568

@@ -1,9 +1,9 @@
 {{- define "open-webui.engines" -}}
 {{- $engines := list
   (dict "vendor" "nvidia" "image" "ollama/ollama:0.35.1@sha256:292ee7945dfc3d5840a181f3ab86fedb1e66703e02c8af98b50f4da56b7e278c" "device" "nvidia.com/gpu-all")
-  (dict "vendor" "amd" "image" "ollama/ollama:0.35.1-rocm@sha256:c716013d3bbf1753ad82cfa0ccdb8bd3252afc6cc16ec37330e49d829560dd4f" "device" "yolab.io/kfd") -}}
+  (dict "vendor" "amd" "image" "ollama/ollama:0.35.1-rocm@sha256:c716013d3bbf1753ad82cfa0ccdb8bd3252afc6cc16ec37330e49d829560dd4f" "device" "yolab.io/kfd" "x86Only" true) -}}
 {{- if .Values.vulkanImage -}}
-{{- $engines = append $engines (dict "vendor" "intel" "image" .Values.vulkanImage "device" "yolab.io/dri") -}}
+{{- $engines = append $engines (dict "vendor" "intel" "image" .Values.vulkanImage "device" "yolab.io/dri" "x86Only" true) -}}
 {{- end -}}
 {{- toJson $engines -}}
 {{- end -}}

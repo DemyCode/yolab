@@ -125,6 +125,9 @@ spec:
     spec:
       nodeSelector:
         yolab.io/accelerator: {{ .vendor }}
+        {{- if .x86Only }}
+        kubernetes.io/arch: amd64
+        {{- end }}
       containers:
       - name: ollama
         image: {{ .image }}

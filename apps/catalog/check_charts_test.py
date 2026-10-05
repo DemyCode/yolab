@@ -440,7 +440,7 @@ class SourcedSecrets(unittest.TestCase):
 
 
 class Workloads(unittest.TestCase):
-    def failures(self, image):
+    def failures(self, image, node_selector=None, arches=None):
         daemonset = {
             "kind": "DaemonSet",
             "metadata": {"name": "engine"},
@@ -448,13 +448,14 @@ class Workloads(unittest.TestCase):
                 "template": {
                     "metadata": {"labels": {"app": "engine"}},
                     "spec": {
+                        "nodeSelector": node_selector or {},
                         "containers": [
                             {
                                 "name": "engine",
                                 "image": image,
                                 "imagePullPolicy": "IfNotPresent",
                             }
-                        ]
+                        ],
                     },
                 }
             },
@@ -469,6 +470,12 @@ class Workloads(unittest.TestCase):
             "demo",
             rendered_explorer() + [daemonset, service],
             lambda app, msg: found.append(msg),
+            arches=arches
+            if arches is not None
+            else {
+                "example/engine@sha256:0": ["amd64", "arm64"],
+                "example/engine:latest": ["amd64", "arm64"],
+            },
         )
         return [f for f in found if "engine" in f]
 
@@ -479,6 +486,39 @@ class Workloads(unittest.TestCase):
         found = self.failures("example/engine:latest")
         self.assertEqual(len(found), 1)
         self.assertIn("not digest-pinned", found[0])
+
+
+X86_ONLY = {"example/engine@sha256:0": ["amd64"]}
+
+
+class Architectures(Workloads):
+    def test_an_x86_only_image_must_be_pinned_to_x86_machines(self):
+        found = self.failures("example/engine@sha256:0", arches=X86_ONLY)
+        self.assertEqual(len(found), 1)
+        self.assertIn("no arm64 build", found[0])
+
+    def test_an_x86_only_image_pinned_to_x86_machines_passes(self):
+        pinned = {"kubernetes.io/arch": "amd64"}
+        self.assertEqual(
+            self.failures("example/engine@sha256:0", pinned, arches=X86_ONLY), []
+        )
+
+    def test_an_image_nobody_recorded_is_refused(self):
+        found = self.failures("example/engine@sha256:0", arches={})
+        self.assertEqual(len(found), 1)
+        self.assertIn("image_arches.py", found[0])
+
+    def test_yolab_s_own_images_are_built_for_both_and_need_no_record(self):
+        own = "ghcr.io/demycode/engine@sha256:0"
+        self.assertEqual(self.failures(own, arches={}), [])
+
+    def test_every_pinned_catalog_image_is_recorded(self):
+        import image_arches
+
+        missing = [
+            i for i in image_arches.pinned_images() if i not in check_charts.ARCHES
+        ]
+        self.assertEqual(missing, [])
 
 
 class RenderedChart(unittest.TestCase):
@@ -566,10 +606,21 @@ class OpenWebUiEngines(RenderedChart):
             nvidia["containers"][0]["resources"]["limits"], {"nvidia.com/gpu-all": "1"}
         )
         amd = engines["ollama-amd"]
-        self.assertEqual(amd["nodeSelector"], {"yolab.io/accelerator": "amd"})
+        self.assertEqual(
+            amd["nodeSelector"],
+            {"yolab.io/accelerator": "amd", "kubernetes.io/arch": "amd64"},
+        )
         self.assertIn("-rocm@sha256:", amd["containers"][0]["image"])
         self.assertEqual(
             amd["containers"][0]["resources"]["limits"], {"yolab.io/kfd": "1"}
+        )
+
+    def test_the_nvidia_engine_also_runs_on_arm_machines_like_a_dgx_spark(self):
+        nvidia = self.engines(self.gpu_cluster())["ollama-nvidia"]
+        self.assertNotIn("kubernetes.io/arch", nvidia["nodeSelector"])
+        self.assertIn(
+            "arm64",
+            check_charts.ARCHES[nvidia["containers"][0]["image"]],
         )
 
     def test_a_gpu_machine_that_joins_later_gets_an_engine_without_a_re_render(self):
@@ -641,7 +692,11 @@ class SteamHeadless(RenderedChart):
         spec = self.game(check_charts.VARIANTS["steam-headless"][0])
         self.assertEqual(
             spec["nodeSelector"],
-            {"yolab.io/game-input": "true", "kubernetes.io/hostname": "gpu-box"},
+            {
+                "yolab.io/game-input": "true",
+                "kubernetes.io/arch": "amd64",
+                "kubernetes.io/hostname": "gpu-box",
+            },
         )
         self.assertEqual(
             spec["containers"][0]["resources"]["limits"],
@@ -657,7 +712,10 @@ class SteamHeadless(RenderedChart):
 
     def test_without_a_known_gpu_it_still_lands_where_game_input_exists(self):
         spec = self.game()
-        self.assertEqual(spec["nodeSelector"], {"yolab.io/game-input": "true"})
+        self.assertEqual(
+            spec["nodeSelector"],
+            {"yolab.io/game-input": "true", "kubernetes.io/arch": "amd64"},
+        )
         self.assertEqual(
             spec["containers"][0]["resources"]["limits"], {"yolab.io/uinput": "1"}
         )
@@ -724,7 +782,10 @@ class ImmichMachineLearning(RenderedChart):
     def test_an_nvidia_machine_runs_the_cuda_build_on_its_device(self):
         spec, c = self.ml(check_charts.VARIANTS["immich"][0])
         self.assertIn(":release-cuda@sha256:", c["image"])
-        self.assertEqual(spec["nodeSelector"], {"kubernetes.io/hostname": "gpu-box"})
+        self.assertEqual(
+            spec["nodeSelector"],
+            {"kubernetes.io/hostname": "gpu-box", "kubernetes.io/arch": "amd64"},
+        )
         self.assertEqual(c["resources"]["limits"], {"nvidia.com/gpu-all": "1"})
 
     def test_an_intel_machine_runs_the_openvino_build_on_dev_dri(self):

@@ -3,7 +3,7 @@ name: monica
 description: "Personal CRM for remembering the people in your life"
 home: https://www.monicahq.com
 type: application
-version: 0.1.8
+version: 0.1.9
 appVersion: "latest"
 
 dependencies:
