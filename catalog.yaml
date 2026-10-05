@@ -17,7 +17,7 @@ charts:
   - name: actual
     version: "0.1.8"
   - name: appflowy
-    version: "0.2.8"
+    version: "0.2.9"
   - name: audiobookshelf
     version: "0.1.8"
   - name: babybuddy
@@ -33,7 +33,7 @@ charts:
   - name: code-server
     version: "0.1.8"
   - name: dawarich
-    version: "0.1.10"
+    version: "0.1.11"
   - name: docmost
     version: "0.1.8"
   - name: emulatorjs
@@ -47,7 +47,7 @@ charts:
   - name: freshrss
     version: "0.1.8"
   - name: frigate
-    version: "0.2.0"
+    version: "0.2.1"
   - name: ghost
     version: "0.1.8"
   - name: gitea
@@ -63,11 +63,11 @@ charts:
   - name: homepage
     version: "0.1.8"
   - name: immich
-    version: "0.2.0"
+    version: "0.2.1"
   - name: it-tools
     version: "0.1.8"
   - name: jellyfin
-    version: "0.2.0"
+    version: "0.2.1"
   - name: jellyseerr
     version: "0.1.8"
   - name: karakeep
@@ -95,7 +95,7 @@ charts:
   - name: miniflux
     version: "0.1.8"
   - name: monica
-    version: "0.1.8"
+    version: "0.1.9"
   - name: n8n
     version: "0.1.8"
   - name: navidrome
@@ -105,9 +105,9 @@ charts:
   - name: ntfy
     version: "0.1.8"
   - name: onlyoffice
-    version: "0.1.8"
+    version: "0.1.9"
   - name: open-webui
-    version: "0.2.0"
+    version: "0.2.1"
   - name: openclaw
     version: "0.1.8"
   - name: pairdrop
@@ -125,7 +125,7 @@ charts:
   - name: radarr
     version: "0.1.8"
   - name: reactive-resume
-    version: "0.1.9"
+    version: "0.1.10"
   - name: romm
     version: "0.1.8"
   - name: searxng
@@ -137,7 +137,7 @@ charts:
   - name: speedtest-tracker
     version: "0.1.8"
   - name: steam-headless
-    version: "0.1.0"
+    version: "0.1.1"
   - name: stirling-pdf
     version: "0.1.8"
   - name: strfry
@@ -153,7 +153,7 @@ charts:
   - name: uptime-kuma
     version: "0.1.8"
   - name: valheim
-    version: "0.1.8"
+    version: "0.1.9"
   - name: vaultwarden
     version: "0.1.8"
   - name: vikunja
