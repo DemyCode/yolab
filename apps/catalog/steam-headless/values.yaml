@@ -1,0 +1,15 @@
+config:
+  subdomain: games
+  storage_size: 200Gi
+  auth_enabled: true
+  auth_users: []
+  sunshine_username: admin
+machine: {}
+yolab:
+  platformApiUrl: ''
+  accountToken: ''
+  serviceName: ''
+  images:
+    authelia: docker.io/authelia/authelia:4.39.1@sha256:e325963609cc928861ffe8130c09111862df88dd8fcafbcd2c47e5ff0a4ae268
+  gateway:
+    upstream: steam-headless:8083

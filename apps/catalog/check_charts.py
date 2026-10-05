@@ -61,6 +61,25 @@ LINT_VALUES = {
     "config.vpn_addresses": "10.64.0.2/32",
     "config.auth_users[0].username": "admin",
     "config.auth_users[0].password": "PlaceholderPw2026",
+    "config.desktop_password": "PlaceholderPw2026",
+    "config.sunshine_password": "PlaceholderPw2026",
+}
+
+VARIANTS = {
+    "open-webui": [
+        {
+            "machines[0].name": "gpu-box",
+            "machines[0].accelerator": "nvidia",
+            "machines[1].name": "Radeon.Laptop",
+            "machines[1].accelerator": "amd",
+            "machines[2].name": "old-pc",
+            "machines[2].accelerator": "cpu",
+        },
+    ],
+    "steam-headless": [
+        {"machine.name": "gpu-box", "machine.accelerator": "nvidia"},
+        {"machine.name": "nuc", "machine.accelerator": "intel"},
+    ],
 }
 
 GATEWAY_CONTAINERS = ("wireguard", "caddy")
@@ -733,6 +752,23 @@ def main(argv):
             check_schema(app, schema, text, fail)
             check(app, docs, fail, text, schema)
             check_file_explorer(app, docs, fail)
+
+            for extra in VARIANTS.get(app, []):
+                variant, err = render(chart_dir, library_tgz, tmp, extra)
+                if variant is None:
+                    fail(
+                        app,
+                        f"helm template with {extra} failed: "
+                        f"{err.splitlines()[-1] if err else 'unknown'}",
+                    )
+                    continue
+                check(
+                    app,
+                    [d for d in yaml.safe_load_all(variant) if d],
+                    fail,
+                    text,
+                    schema,
+                )
 
             if explorer_pod(docs)[1] is None:
                 continue

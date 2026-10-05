@@ -1,0 +1,17 @@
+apiVersion: v2
+name: steam-headless
+description: "Your games on any screen: Steam on a GPU machine, streamed to Moonlight or a browser"
+home: https://github.com/Steam-Headless/docker-steam-headless
+type: application
+version: 0.1.0
+appVersion: "2.44.20261004.1"
+
+dependencies:
+  - name: yolab-common
+    version: "0.1.7"
+    repository: "oci://ghcr.io/demycode/charts"
+
+annotations:
+  yolab.io/display-name: "Steam Headless"
+  yolab.io/icon: "🎮"
+  yolab.io/category: "gaming"

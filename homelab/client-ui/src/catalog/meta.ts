@@ -147,6 +147,10 @@ export const APP_META: Record<string, AppMeta> = {
     tagline: "A Valheim server for you and your friends",
     group: "home",
   },
+  "steam-headless": {
+    tagline: "Play your PC games on any screen in the house",
+    group: "home",
+  },
   ntfy: { tagline: "Send yourself notifications from anything", group: "home" },
   "home-assistant": {
     tagline: "Control your lights, thermostat and smart devices",
@@ -189,7 +193,7 @@ export const APP_META: Record<string, AppMeta> = {
   },
   n8n: { tagline: "Connect your apps together, like Zapier", group: "tools" },
   "open-webui": {
-    tagline: "Chat with AI models, like ChatGPT",
+    tagline: "Chat with AI on your own graphics cards, like ChatGPT",
     group: "tools",
   },
   "reactive-resume": { tagline: "Build a CV that looks good", group: "tools" },

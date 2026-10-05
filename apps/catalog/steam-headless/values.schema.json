@@ -1,0 +1,118 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": [
+    "config"
+  ],
+  "properties": {
+    "config": {
+      "title": "Steam Headless",
+      "description": "Runs Steam on your best graphics card. Play in a browser from anywhere, or with the free Moonlight app on a TV, phone or laptop at home. Moonlight connects to the machine's address on your home network.",
+      "type": "object",
+      "required": [
+        "subdomain",
+        "auth_users",
+        "desktop_password",
+        "sunshine_password"
+      ],
+      "properties": {
+        "subdomain": {
+          "type": "string",
+          "title": "Subdomain",
+          "format": "tunnel",
+          "default": "games"
+        },
+        "storage_size": {
+          "type": "string",
+          "title": "Storage for games",
+          "default": "200Gi",
+          "description": "Room for your Steam library and settings (e.g. 200Gi, 500Gi, 1Ti). Games are large."
+        },
+        "auth_users": {
+          "type": "array",
+          "title": "Logins",
+          "description": "Who can open the desktop in a browser. Each person gets their own username and password.",
+          "minItems": 1,
+          "default": [
+            {
+              "username": "player"
+            }
+          ],
+          "items": {
+            "type": "object",
+            "required": [
+              "username",
+              "password"
+            ],
+            "properties": {
+              "username": {
+                "type": "string",
+                "title": "Username",
+                "minLength": 1
+              },
+              "password": {
+                "type": "string",
+                "title": "Password",
+                "minLength": 8,
+                "writeOnly": true,
+                "generate": true
+              }
+            }
+          }
+        },
+        "desktop_password": {
+          "type": "string",
+          "title": "Desktop password",
+          "description": "The password of the account inside the desktop, asked when something needs administrator rights.",
+          "minLength": 8,
+          "writeOnly": true,
+          "generate": true
+        },
+        "sunshine_username": {
+          "type": "string",
+          "title": "Moonlight pairing username",
+          "default": "admin",
+          "pattern": "^[A-Za-z0-9._-]+$"
+        },
+        "sunshine_password": {
+          "type": "string",
+          "title": "Moonlight pairing password",
+          "description": "Opens the pairing page at https://<this machine's home address>:47990, where you type the PIN Moonlight shows you.",
+          "minLength": 8,
+          "writeOnly": true,
+          "generate": true
+        }
+      }
+    },
+    "outputs": {
+      "type": "object",
+      "readOnly": true,
+      "properties": {
+        "url": {
+          "type": "string",
+          "title": "Web URL",
+          "format": "uri",
+          "source": {
+            "logs": "YOLAB_OUTPUT url (\\S+)"
+          }
+        },
+        "desktop_password": {
+          "type": "string",
+          "title": "Desktop password",
+          "format": "secret",
+          "source": {
+            "config": "desktop_password"
+          }
+        },
+        "sunshine_password": {
+          "type": "string",
+          "title": "Moonlight pairing password",
+          "format": "secret",
+          "source": {
+            "config": "sunshine_password"
+          }
+        }
+      }
+    }
+  }
+}

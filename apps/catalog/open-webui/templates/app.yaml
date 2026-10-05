@@ -18,6 +18,7 @@ spec:
   resources:
     requests:
       storage: 50Gi
+{{- $engines := include "open-webui.engines" . | fromJsonArray }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -39,11 +40,37 @@ spec:
       initContainers:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
+      - name: ollama-connections
+        image: ghcr.io/open-webui/open-webui:main@sha256:6a773e5c3a246b65cbe74ce942b294292c0e5f81c138f703d111bc162f7d7c3d
+        imagePullPolicy: IfNotPresent
+        command:
+        - python3
+        - -c
+        - |
+          import json, os, sqlite3
+          db = "/app/backend/data/webui.db"
+          if os.path.exists(db):
+              c = sqlite3.connect(db)
+              cols = [r[1] for r in c.execute("PRAGMA table_info(config)")]
+              if "key" in cols:
+                  c.execute("DELETE FROM config WHERE key IN ('ollama.base_urls', 'ollama.api_configs')")
+              elif "data" in cols:
+                  for rid, data in c.execute("SELECT id, data FROM config").fetchall():
+                      d = json.loads(data)
+                      (d.get("ollama") or {}).pop("base_urls", None)
+                      (d.get("ollama") or {}).pop("api_configs", None)
+                      c.execute("UPDATE config SET data = ? WHERE id = ?", (json.dumps(d), rid))
+              c.commit()
+        volumeMounts:
+        - name: data
+          mountPath: /app/backend/data
+          subPath: {{ .Release.Name }}/open-webui
       containers:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
+      {{- if not $engines }}
       - name: ollama
-        image: ollama/ollama:latest@sha256:4dea9fb511947e24a84237bb636b0203abcb2ff0d3fbc7b4ff865deb91362131
+        image: ollama/ollama:0.35.1@sha256:292ee7945dfc3d5840a181f3ab86fedb1e66703e02c8af98b50f4da56b7e278c
         imagePullPolicy: IfNotPresent
         readinessProbe:
           tcpSocket:
@@ -54,6 +81,7 @@ spec:
         - name: data
           mountPath: /root/.ollama
           subPath: {{ .Release.Name }}/ollama
+      {{- end }}
       - name: open-webui
         image: ghcr.io/open-webui/open-webui:main@sha256:6a773e5c3a246b65cbe74ce942b294292c0e5f81c138f703d111bc162f7d7c3d
         imagePullPolicy: IfNotPresent
@@ -64,8 +92,13 @@ spec:
           initialDelaySeconds: 15
           periodSeconds: 10
         env:
+        {{- if $engines }}
+        - name: OLLAMA_BASE_URLS
+          value: {{ include "open-webui.ollamaUrls" . | quote }}
+        {{- else }}
         - name: OLLAMA_BASE_URL
           value: http://localhost:11434
+        {{- end }}
         volumeMounts:
         - name: data
           mountPath: /app/backend/data
@@ -73,3 +106,67 @@ spec:
       volumes:
       {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
+{{- range $engines }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ollama-{{ .slug }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    app: ollama
+    yolab.io/accelerator: {{ .accelerator }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: ollama
+      engine: {{ .slug }}
+  template:
+    metadata:
+      labels:
+        app: ollama
+        engine: {{ .slug }}
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: {{ .machine | quote }}
+      containers:
+      - name: ollama
+        image: {{ .image }}
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: OLLAMA_NOPRUNE
+          value: "1"
+        readinessProbe:
+          tcpSocket:
+            port: 11434
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        resources:
+          limits:
+            {{ .device }}: "1"
+        volumeMounts:
+        - name: data
+          mountPath: /root/.ollama
+          subPath: {{ $.Release.Name }}/ollama
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: {{ include "yolab-common.gateway.pvcName" $ }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ollama-{{ .slug }}
+  namespace: {{ $.Release.Namespace }}
+spec:
+  selector:
+    app: ollama
+    engine: {{ .slug }}
+  ports:
+  - name: http
+    port: 11434
+    targetPort: 11434
+{{- end }}

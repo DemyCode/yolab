@@ -438,5 +438,169 @@ class SourcedSecrets(unittest.TestCase):
         self.assertEqual(len(sourcing_failures(web)), 1)
 
 
+
+class RenderedChart(unittest.TestCase):
+    CHART = None
+
+    @classmethod
+    def setUpClass(cls):
+        import glob
+        import os
+        import subprocess
+        import tempfile
+
+        cls.tmp = tempfile.TemporaryDirectory()
+        version = check_charts.chart_field(
+            open(os.path.join(check_charts.LIBRARY, "Chart.yaml")).read(), "version"
+        )
+        subprocess.run(
+            ["helm", "package", check_charts.LIBRARY, "--version", version,
+             "--destination", cls.tmp.name],
+            check=True,
+            capture_output=True,
+        )
+        cls.library = glob.glob(os.path.join(cls.tmp.name, "yolab-common-*.tgz"))[0]
+        cls.chart = os.path.join(check_charts.HERE, cls.CHART)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def docs(self, extra=None):
+        text, err = check_charts.render(self.chart, self.library, self.tmp.name, extra)
+        self.assertIsNone(err)
+        return [d for d in yaml.safe_load_all(text) if d]
+
+    def deployments(self, docs):
+        return {
+            d["metadata"]["name"]: d["spec"]["template"]["spec"]
+            for d in docs
+            if d["kind"] == "Deployment"
+        }
+
+    def env(self, spec, container):
+        c = next(c for c in spec["containers"] if c["name"] == container)
+        return {e["name"]: e.get("value") for e in c.get("env") or []}
+
+
+class OpenWebUiEngines(RenderedChart):
+    CHART = "open-webui"
+
+    def test_without_a_gpu_ollama_runs_beside_the_ui(self):
+        pods = self.deployments(self.docs())
+        self.assertEqual(list(pods), ["gateway"])
+        names = [c["name"] for c in pods["gateway"]["containers"]]
+        self.assertIn("ollama", names)
+        self.assertEqual(
+            self.env(pods["gateway"], "open-webui")["OLLAMA_BASE_URL"],
+            "http://localhost:11434",
+        )
+
+    def test_each_gpu_machine_gets_its_own_engine_on_its_own_device(self):
+        pods = self.deployments(
+            self.docs(check_charts.VARIANTS["open-webui"][0])
+        )
+        self.assertEqual(
+            sorted(pods), ["gateway", "ollama-gpu-box", "ollama-radeon-laptop"]
+        )
+        nvidia = pods["ollama-gpu-box"]
+        self.assertEqual(nvidia["nodeSelector"], {"kubernetes.io/hostname": "gpu-box"})
+        self.assertEqual(
+            nvidia["containers"][0]["resources"]["limits"], {"nvidia.com/gpu-all": "1"}
+        )
+        amd = pods["ollama-radeon-laptop"]
+        self.assertEqual(
+            amd["nodeSelector"], {"kubernetes.io/hostname": "Radeon.Laptop"}
+        )
+        self.assertIn("-rocm@sha256:", amd["containers"][0]["image"])
+        self.assertEqual(
+            amd["containers"][0]["resources"]["limits"], {"yolab.io/kfd": "1"}
+        )
+
+    def test_the_ui_spreads_requests_over_every_engine_and_none_runs_beside_it(self):
+        pods = self.deployments(
+            self.docs(check_charts.VARIANTS["open-webui"][0])
+        )
+        self.assertNotIn(
+            "ollama", [c["name"] for c in pods["gateway"]["containers"]]
+        )
+        self.assertEqual(
+            self.env(pods["gateway"], "open-webui")["OLLAMA_BASE_URLS"],
+            "http://ollama-gpu-box:11434;http://ollama-radeon-laptop:11434",
+        )
+
+    def test_every_engine_shares_one_model_store_and_never_prunes_another_s_download(self):
+        pods = self.deployments(
+            self.docs(check_charts.VARIANTS["open-webui"][0])
+        )
+        for name in ("ollama-gpu-box", "ollama-radeon-laptop"):
+            c = pods[name]["containers"][0]
+            self.assertEqual(self.env(pods[name], "ollama")["OLLAMA_NOPRUNE"], "1")
+            self.assertEqual(
+                [(m["mountPath"], m["subPath"]) for m in c["volumeMounts"]],
+                [("/root/.ollama", "release/ollama")],
+            )
+
+    def test_an_intel_machine_waits_for_a_pinned_vulkan_image(self):
+        intel = {"machines[0].name": "nuc", "machines[0].accelerator": "intel"}
+        self.assertEqual(list(self.deployments(self.docs(intel))), ["gateway"])
+        pinned = {**intel, "vulkanImage": "ghcr.io/demycode/ollama-vulkan:0.35.1@sha256:" + "0" * 64}
+        pods = self.deployments(self.docs(pinned))
+        self.assertEqual(
+            pods["ollama-nuc"]["containers"][0]["resources"]["limits"],
+            {"yolab.io/dri": "1"},
+        )
+
+
+
+class SteamHeadless(RenderedChart):
+    CHART = "steam-headless"
+
+    def game(self, extra=None):
+        return self.deployments(self.docs(extra))["steam-headless"]
+
+    def test_an_nvidia_machine_is_used_through_its_cdi_device(self):
+        spec = self.game(check_charts.VARIANTS["steam-headless"][0])
+        self.assertEqual(
+            spec["nodeSelector"],
+            {"yolab.io/game-input": "true", "kubernetes.io/hostname": "gpu-box"},
+        )
+        self.assertEqual(
+            spec["containers"][0]["resources"]["limits"],
+            {"yolab.io/uinput": "1", "nvidia.com/gpu-all": "1"},
+        )
+
+    def test_an_intel_or_amd_machine_is_used_through_dev_dri(self):
+        spec = self.game(check_charts.VARIANTS["steam-headless"][1])
+        self.assertEqual(
+            spec["containers"][0]["resources"]["limits"],
+            {"yolab.io/uinput": "1", "yolab.io/dri": "1"},
+        )
+
+    def test_without_a_known_gpu_it_still_lands_where_game_input_exists(self):
+        spec = self.game()
+        self.assertEqual(spec["nodeSelector"], {"yolab.io/game-input": "true"})
+        self.assertEqual(
+            spec["containers"][0]["resources"]["limits"], {"yolab.io/uinput": "1"}
+        )
+
+    def test_the_desktop_is_reachable_only_through_the_login(self):
+        spec = self.game(check_charts.VARIANTS["steam-headless"][0])
+        self.assertFalse(spec.get("hostNetwork", False))
+        published = {
+            p["containerPort"]
+            for p in spec["containers"][0]["ports"]
+            if "hostPort" in p
+        }
+        self.assertNotIn(8083, published)
+        self.assertEqual(published, {47984, 47989, 47990, 48010, 47998, 47999, 48000})
+        caddy = next(
+            d["data"]["Caddyfile"]
+            for d in self.docs()
+            if d["kind"] == "ConfigMap" and "Caddyfile" in (d.get("data") or {})
+        )
+        self.assertIn("forward_auth", caddy)
+
+
 if __name__ == "__main__":
     unittest.main()

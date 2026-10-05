@@ -1,5 +1,7 @@
 config:
   subdomain: open-webui
+machines: []
+vulkanImage: ''
 yolab:
   platformApiUrl: ''
   accountToken: ''

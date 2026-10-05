@@ -127,6 +127,13 @@ jobs:
           push: true
           tags: ghcr.io/demycode/wg-register:${{ steps.tag.outputs.value }}-latest
 
+      - name: Build and push ollama-vulkan
+        uses: docker/build-push-action@v6
+        with:
+          context: apps/ollama-vulkan
+          push: true
+          tags: ghcr.io/demycode/ollama-vulkan:0.35.1
+
   charts:
     runs-on: ubuntu-latest
     permissions:

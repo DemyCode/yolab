@@ -1,0 +1,217 @@
+{{- $machine := include "steam-headless.machine" . | fromJson }}
+{{- $device := include "steam-headless.device" $machine }}
+{{ include "yolab-common.caddyConfigMap" . }}
+---
+{{ include "yolab-common.autheliaSecret" . }}
+---
+{{ include "yolab-common.uninstallHook" . }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Release.Name }}-passwords
+  namespace: {{ .Release.Namespace }}
+type: Opaque
+stringData:
+  desktop: {{ required "config.desktop_password is required" .Values.config.desktop_password | quote }}
+  sunshine: {{ required "config.sunshine_password is required" .Values.config.sunshine_password | quote }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-data
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes:
+  - ReadWriteMany
+  storageClassName: yolab-cephfs
+  resources:
+    requests:
+      storage: {{ .Values.config.storage_size | default "200Gi" | quote }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      initContainers:
+      {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      {{- include "yolab-common.autheliaInit" . | nindent 6 }}
+      containers:
+      {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      {{- include "yolab-common.autheliaContainer" . | nindent 6 }}
+      volumes:
+      {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+      {{- include "yolab-common.autheliaVolumes" . | nindent 6 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: steam-headless
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: steam-headless
+  template:
+    metadata:
+      labels:
+        app: steam-headless
+    spec:
+      nodeSelector:
+        yolab.io/game-input: "true"
+        {{- if $machine.name }}
+        kubernetes.io/hostname: {{ $machine.name | quote }}
+        {{- end }}
+      containers:
+      - name: steam-headless
+        image: josh5/steam-headless:2.44.20261004.1@sha256:28acbee506844b60fe0a49f1f2a85f4a0a8dbccf8a83db7af73aacbb08d20f74
+        imagePullPolicy: IfNotPresent
+        securityContext:
+          privileged: true
+        ports:
+        - name: sunshine-https
+          containerPort: 47984
+          hostPort: 47984
+          protocol: TCP
+        - name: sunshine-http
+          containerPort: 47989
+          hostPort: 47989
+          protocol: TCP
+        - name: sunshine-web
+          containerPort: 47990
+          hostPort: 47990
+          protocol: TCP
+        - name: sunshine-rtsp
+          containerPort: 48010
+          hostPort: 48010
+          protocol: TCP
+        - name: sunshine-video
+          containerPort: 47998
+          hostPort: 47998
+          protocol: UDP
+        - name: sunshine-control
+          containerPort: 47999
+          hostPort: 47999
+          protocol: UDP
+        - name: sunshine-audio
+          containerPort: 48000
+          hostPort: 48000
+          protocol: UDP
+        - name: desktop
+          containerPort: 8083
+          protocol: TCP
+        readinessProbe:
+          tcpSocket:
+            port: 8083
+          initialDelaySeconds: 60
+          periodSeconds: 15
+        env:
+        - name: NAME
+          value: {{ .Release.Name | quote }}
+        - name: TZ
+          value: Etc/UTC
+        - name: USER_LOCALES
+          value: en_US.UTF-8 UTF-8
+        - name: DISPLAY
+          value: ":55"
+        - name: PUID
+          value: "1000"
+        - name: PGID
+          value: "1000"
+        - name: UMASK
+          value: "000"
+        - name: USER_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: {{ .Release.Name }}-passwords
+              key: desktop
+        - name: MODE
+          value: primary
+        - name: WEB_UI_MODE
+          value: vnc
+        - name: ENABLE_VNC_AUDIO
+          value: "true"
+        - name: PORT_NOVNC_WEB
+          value: "8083"
+        - name: ENABLE_STEAM
+          value: "true"
+        - name: STEAM_ARGS
+          value: -silent
+        - name: ENABLE_SUNSHINE
+          value: "true"
+        - name: SUNSHINE_USER
+          value: {{ .Values.config.sunshine_username | default "admin" | quote }}
+        - name: SUNSHINE_PASS
+          valueFrom:
+            secretKeyRef:
+              name: {{ .Release.Name }}-passwords
+              key: sunshine
+        - name: ENABLE_EVDEV_INPUTS
+          value: "true"
+        - name: FORCE_X11_DUMMY_CONFIG
+          value: "false"
+        - name: NVIDIA_DRIVER_CAPABILITIES
+          value: all
+        - name: NVIDIA_VISIBLE_DEVICES
+          value: all
+        resources:
+          requests:
+            cpu: "1"
+            memory: 2Gi
+          limits:
+            yolab.io/uinput: "1"
+            {{- if $device }}
+            {{ $device }}: "1"
+            {{- end }}
+        volumeMounts:
+        - name: data
+          mountPath: /home/default
+          subPath: {{ .Release.Name }}/home
+        - name: data
+          mountPath: /mnt/games
+          subPath: {{ .Release.Name }}/games
+        - name: input
+          mountPath: /dev/input
+        - name: shm
+          mountPath: /dev/shm
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: {{ include "yolab-common.gateway.pvcName" . }}
+      - name: input
+        hostPath:
+          path: /dev/input
+          type: Directory
+      - name: shm
+        emptyDir:
+          medium: Memory
+          sizeLimit: 2Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: steam-headless
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    app: steam-headless
+  ports:
+  - name: desktop
+    port: 8083
+    targetPort: 8083
