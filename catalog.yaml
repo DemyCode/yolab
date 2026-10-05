@@ -10,157 +10,157 @@ registry: oci://ghcr.io/demycode/charts
 # chart built on it renders on a node, but never listed on the storefront.
 library:
   name: yolab-common
-  version: "0.1.9"
+  version: "0.1.10"
 charts:
   - name: 2fauth
-    version: "0.1.10"
+    version: "0.1.11"
   - name: actual
-    version: "0.1.10"
+    version: "0.1.11"
   - name: appflowy
-    version: "0.2.11"
+    version: "0.2.12"
   - name: audiobookshelf
-    version: "0.1.10"
+    version: "0.1.11"
   - name: babybuddy
-    version: "0.1.10"
+    version: "0.1.11"
   - name: bookstack
-    version: "0.1.10"
+    version: "0.1.11"
   - name: calibre-web
-    version: "0.1.10"
+    version: "0.1.11"
   - name: changedetection
-    version: "0.1.10"
+    version: "0.1.11"
   - name: cinny
-    version: "0.1.10"
+    version: "0.1.11"
   - name: code-server
-    version: "0.1.10"
+    version: "0.1.11"
   - name: dawarich
-    version: "0.1.13"
+    version: "0.1.14"
   - name: docmost
-    version: "0.1.10"
+    version: "0.1.11"
   - name: emulatorjs
-    version: "0.1.10"
+    version: "0.1.11"
   - name: excalidraw
-    version: "0.1.10"
+    version: "0.1.11"
   - name: filebrowser
-    version: "0.1.13"
+    version: "0.1.14"
   - name: firefly-iii
-    version: "0.1.10"
+    version: "0.1.11"
   - name: freshrss
-    version: "0.1.10"
+    version: "0.1.11"
   - name: frigate
-    version: "0.2.4"
+    version: "0.2.5"
   - name: ghost
-    version: "0.1.10"
+    version: "0.1.11"
   - name: gitea
-    version: "0.1.10"
+    version: "0.1.11"
   - name: grafana
-    version: "0.1.10"
+    version: "0.1.11"
   - name: grocy
-    version: "0.1.10"
+    version: "0.1.11"
   - name: healthchecks
-    version: "0.1.10"
+    version: "0.1.11"
   - name: home-assistant
-    version: "0.1.10"
+    version: "0.1.11"
   - name: homepage
-    version: "0.1.10"
+    version: "0.1.11"
   - name: immich
-    version: "0.2.4"
+    version: "0.2.5"
   - name: it-tools
-    version: "0.1.10"
+    version: "0.1.11"
   - name: jellyfin
-    version: "0.2.4"
+    version: "0.2.5"
   - name: jellyseerr
-    version: "0.1.11"
-  - name: karakeep
-    version: "0.1.10"
-  - name: kavita
-    version: "0.1.10"
-  - name: kimai
-    version: "0.1.10"
-  - name: librespeed
-    version: "0.1.10"
-  - name: linkwarden
-    version: "0.1.10"
-  - name: mastodon
-    version: "0.1.10"
-  - name: mealie
-    version: "0.1.10"
-  - name: media-stack
-    version: "0.1.5"
-  - name: memos
-    version: "0.1.10"
-  - name: metube
-    version: "0.1.10"
-  - name: minecraft
-    version: "0.1.10"
-  - name: miniflux
-    version: "0.1.10"
-  - name: monica
-    version: "0.1.11"
-  - name: n8n
-    version: "0.1.10"
-  - name: navidrome
-    version: "0.1.10"
-  - name: nextcloud
-    version: "0.1.10"
-  - name: ntfy
-    version: "0.1.10"
-  - name: onlyoffice
-    version: "0.1.11"
-  - name: open-webui
-    version: "0.2.3"
-  - name: openclaw
-    version: "0.1.10"
-  - name: pairdrop
-    version: "0.1.10"
-  - name: paperless-ngx
-    version: "0.1.10"
-  - name: photoprism
-    version: "0.1.11"
-  - name: planka
-    version: "0.1.10"
-  - name: prowlarr
-    version: "0.1.10"
-  - name: qbittorrent
-    version: "0.1.11"
-  - name: radarr
-    version: "0.1.10"
-  - name: reactive-resume
     version: "0.1.12"
+  - name: karakeep
+    version: "0.1.11"
+  - name: kavita
+    version: "0.1.11"
+  - name: kimai
+    version: "0.1.11"
+  - name: librespeed
+    version: "0.1.11"
+  - name: linkwarden
+    version: "0.1.11"
+  - name: mastodon
+    version: "0.1.11"
+  - name: mealie
+    version: "0.1.11"
+  - name: media-stack
+    version: "0.1.6"
+  - name: memos
+    version: "0.1.11"
+  - name: metube
+    version: "0.1.11"
+  - name: minecraft
+    version: "0.1.11"
+  - name: miniflux
+    version: "0.1.11"
+  - name: monica
+    version: "0.1.12"
+  - name: n8n
+    version: "0.1.11"
+  - name: navidrome
+    version: "0.1.11"
+  - name: nextcloud
+    version: "0.1.11"
+  - name: ntfy
+    version: "0.1.11"
+  - name: onlyoffice
+    version: "0.1.12"
+  - name: open-webui
+    version: "0.2.4"
+  - name: openclaw
+    version: "0.1.11"
+  - name: pairdrop
+    version: "0.1.11"
+  - name: paperless-ngx
+    version: "0.1.11"
+  - name: photoprism
+    version: "0.1.12"
+  - name: planka
+    version: "0.1.11"
+  - name: prowlarr
+    version: "0.1.11"
+  - name: qbittorrent
+    version: "0.1.12"
+  - name: radarr
+    version: "0.1.11"
+  - name: reactive-resume
+    version: "0.1.13"
   - name: romm
-    version: "0.1.10"
+    version: "0.1.11"
   - name: searxng
-    version: "0.1.10"
+    version: "0.1.11"
   - name: shlink
-    version: "0.1.11"
+    version: "0.1.12"
   - name: sonarr
-    version: "0.1.10"
-  - name: speedtest-tracker
-    version: "0.1.10"
-  - name: steam-headless
-    version: "0.1.3"
-  - name: stirling-pdf
-    version: "0.1.10"
-  - name: strfry
-    version: "0.1.10"
-  - name: synapse
-    version: "0.1.10"
-  - name: syncthing
-    version: "0.1.10"
-  - name: umami
-    version: "0.1.10"
-  - name: unifi
-    version: "0.1.10"
-  - name: uptime-kuma
-    version: "0.1.10"
-  - name: valheim
     version: "0.1.11"
+  - name: speedtest-tracker
+    version: "0.1.11"
+  - name: steam-headless
+    version: "0.1.4"
+  - name: stirling-pdf
+    version: "0.1.11"
+  - name: strfry
+    version: "0.1.11"
+  - name: synapse
+    version: "0.1.11"
+  - name: syncthing
+    version: "0.1.11"
+  - name: umami
+    version: "0.1.11"
+  - name: unifi
+    version: "0.1.11"
+  - name: uptime-kuma
+    version: "0.1.11"
+  - name: valheim
+    version: "0.1.12"
   - name: vaultwarden
-    version: "0.1.10"
+    version: "0.1.11"
   - name: vikunja
-    version: "0.1.10"
+    version: "0.1.11"
   - name: wallabag
-    version: "0.1.10"
+    version: "0.1.11"
   - name: wallos
-    version: "0.1.10"
+    version: "0.1.11"
   - name: your-spotify
-    version: "0.1.10"
+    version: "0.1.11"
