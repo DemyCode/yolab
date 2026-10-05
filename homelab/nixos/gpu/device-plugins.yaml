@@ -1,25 +1,20 @@
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: yolab-gpu
----
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
-  name: nvidia-cdi-plugin
-  namespace: yolab-gpu
+  name: yolab-nvidia-cdi-plugin
+  namespace: kube-system
   labels:
-    app.kubernetes.io/name: nvidia-cdi-plugin
+    app.kubernetes.io/name: yolab-nvidia-cdi-plugin
 spec:
   selector:
     matchLabels:
-      app.kubernetes.io/name: nvidia-cdi-plugin
+      app.kubernetes.io/name: yolab-nvidia-cdi-plugin
   updateStrategy:
     type: RollingUpdate
   template:
     metadata:
       labels:
-        app.kubernetes.io/name: nvidia-cdi-plugin
+        app.kubernetes.io/name: yolab-nvidia-cdi-plugin
     spec:
       priorityClassName: system-node-critical
       nodeSelector:
@@ -59,20 +54,20 @@ spec:
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
-  name: device-plugin
-  namespace: yolab-gpu
+  name: yolab-device-plugin
+  namespace: kube-system
   labels:
-    app.kubernetes.io/name: device-plugin
+    app.kubernetes.io/name: yolab-device-plugin
 spec:
   selector:
     matchLabels:
-      app.kubernetes.io/name: device-plugin
+      app.kubernetes.io/name: yolab-device-plugin
   updateStrategy:
     type: RollingUpdate
   template:
     metadata:
       labels:
-        app.kubernetes.io/name: device-plugin
+        app.kubernetes.io/name: yolab-device-plugin
     spec:
       priorityClassName: system-node-critical
       tolerations:
