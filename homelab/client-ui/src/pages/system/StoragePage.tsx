@@ -831,10 +831,7 @@ function TechnicalBody({
           </div>
         </div>
         <pre className="max-h-80 overflow-auto rounded-control bg-surface-2 p-3 font-mono text-xs leading-relaxed text-fg">
-          <Swap
-            id={status.data?.text ?? status.error ?? ""}
-            className="block"
-          >
+          <Swap id={status.data?.text ?? status.error ?? ""} className="block">
             {status.data?.text ??
               (status.error ? status.error : "Asking Ceph…")}
           </Swap>

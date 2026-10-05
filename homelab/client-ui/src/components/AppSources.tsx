@@ -180,28 +180,28 @@ export function AppSources({ onChanged }: { onChanged?: () => void }) {
         >
           {(r) => (
             <>
-            <div className="min-w-0 flex-1">
-              <div className="flex items-center gap-2">
-                <span className="font-medium text-fg">{r.name}</span>
-                {!r.removable && (
-                  <span className="rounded-full bg-surface-2 px-2 py-0.5 text-xs text-fg-muted">
-                    Built in
-                  </span>
-                )}
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2">
+                  <span className="font-medium text-fg">{r.name}</span>
+                  {!r.removable && (
+                    <span className="rounded-full bg-surface-2 px-2 py-0.5 text-xs text-fg-muted">
+                      Built in
+                    </span>
+                  )}
+                </div>
+                <p className="truncate text-xs text-fg-subtle">{r.url}</p>
               </div>
-              <p className="truncate text-xs text-fg-subtle">{r.url}</p>
-            </div>
-            {r.removable && (
-              <button
-                type="button"
-                onClick={() => remove(r)}
-                disabled={busy}
-                aria-label={`Remove ${r.name}`}
-                className="shrink-0 rounded-control p-1.5 text-fg-subtle transition-colors hover:bg-surface-2 hover:text-danger disabled:opacity-50"
-              >
-                <Trash2 className="h-4 w-4" />
-              </button>
-            )}
+              {r.removable && (
+                <button
+                  type="button"
+                  onClick={() => remove(r)}
+                  disabled={busy}
+                  aria-label={`Remove ${r.name}`}
+                  className="shrink-0 rounded-control p-1.5 text-fg-subtle transition-colors hover:bg-surface-2 hover:text-danger disabled:opacity-50"
+                >
+                  <Trash2 className="h-4 w-4" />
+                </button>
+              )}
             </>
           )}
         </AnimatedList>

@@ -392,21 +392,21 @@ function RestoreSheet({
             keyOf={({ s }) => s.id}
           >
             {({ s, i }) => (
-            <label className="flex cursor-pointer items-center gap-3 px-4 py-3 hover:bg-surface-2">
-              <input
-                type="radio"
-                name="restore-snapshot"
-                checked={selected === s.id}
-                onChange={() => setSelected(s.id)}
-                className="accent-primary"
-              />
-              <span className="flex-1 text-sm text-fg">
-                {formatDateTime(s.time)}
-              </span>
-              {i === 0 && (
-                <span className="text-xs text-fg-subtle">Latest</span>
-              )}
-            </label>
+              <label className="flex cursor-pointer items-center gap-3 px-4 py-3 hover:bg-surface-2">
+                <input
+                  type="radio"
+                  name="restore-snapshot"
+                  checked={selected === s.id}
+                  onChange={() => setSelected(s.id)}
+                  className="accent-primary"
+                />
+                <span className="flex-1 text-sm text-fg">
+                  {formatDateTime(s.time)}
+                </span>
+                {i === 0 && (
+                  <span className="text-xs text-fg-subtle">Latest</span>
+                )}
+              </label>
             )}
           </AnimatedList>
         </div>

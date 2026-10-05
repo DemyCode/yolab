@@ -340,29 +340,31 @@ export default function CustomAppPage() {
               >
                 {(a) => (
                   <>
-                  <span className="text-lg">{a.icon || "🔧"}</span>
-                  <div className="min-w-0 flex-1">
-                    <div className="font-medium text-fg">{a.display_name}</div>
-                    <p className="truncate text-xs text-fg-subtle">
-                      {a.description || a.id}
-                    </p>
-                  </div>
-                  <Button
-                    size="sm"
-                    variant="secondary"
-                    onClick={() => navigate(`/add/${a.id}`)}
-                  >
-                    Install
-                  </Button>
-                  <button
-                    type="button"
-                    onClick={() => remove(a)}
-                    disabled={busy}
-                    aria-label={`Remove ${a.display_name}`}
-                    className="rounded-control p-1.5 text-fg-subtle transition-colors hover:bg-surface-2 hover:text-danger disabled:opacity-50"
-                  >
-                    <Trash2 className="h-4 w-4" />
-                  </button>
+                    <span className="text-lg">{a.icon || "🔧"}</span>
+                    <div className="min-w-0 flex-1">
+                      <div className="font-medium text-fg">
+                        {a.display_name}
+                      </div>
+                      <p className="truncate text-xs text-fg-subtle">
+                        {a.description || a.id}
+                      </p>
+                    </div>
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      onClick={() => navigate(`/add/${a.id}`)}
+                    >
+                      Install
+                    </Button>
+                    <button
+                      type="button"
+                      onClick={() => remove(a)}
+                      disabled={busy}
+                      aria-label={`Remove ${a.display_name}`}
+                      className="rounded-control p-1.5 text-fg-subtle transition-colors hover:bg-surface-2 hover:text-danger disabled:opacity-50"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </button>
                   </>
                 )}
               </AnimatedList>
