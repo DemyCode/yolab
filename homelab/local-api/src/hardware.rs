@@ -91,7 +91,8 @@ fn drm_devices(root: &Path) -> Vec<DrmDevice> {
 
 fn is_device_node(name: &str) -> bool {
     let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
-    name.strip_prefix("renderD").is_some_and(digits) || name.strip_prefix("card").is_some_and(digits)
+    name.strip_prefix("renderD").is_some_and(digits)
+        || name.strip_prefix("card").is_some_and(digits)
 }
 
 fn driver_name(link: &Path) -> Option<String> {
@@ -186,7 +187,9 @@ impl crate::runtime::Controller for HardwareLabelsController {
     async fn reconcile(&self, ctx: &crate::runtime::Ctx) -> anyhow::Result<crate::runtime::Tick> {
         use k8s_openapi::api::core::v1::Node;
         let client = crate::k8s::client().await?;
-        let node = kube::Api::<Node>::all(client.clone()).get(&ctx.node).await?;
+        let node = kube::Api::<Node>::all(client.clone())
+            .get(&ctx.node)
+            .await?;
         let current = node.metadata.labels.unwrap_or_default();
         let inventory = probe(Path::new("/"));
         if let Some(patch) = label_patch(&ctx.node, &current, &labels(&inventory)) {
@@ -224,7 +227,11 @@ mod tests {
         fn drm(self, node: &str, driver: &str) -> Self {
             let device = self.path().join("sys/class/drm").join(node).join("device");
             std::fs::create_dir_all(&device).unwrap();
-            symlink(format!("../../../../bus/pci/drivers/{driver}"), device.join("driver")).unwrap();
+            symlink(
+                format!("../../../../bus/pci/drivers/{driver}"),
+                device.join("driver"),
+            )
+            .unwrap();
             self
         }
     }
@@ -250,7 +257,10 @@ mod tests {
         let compute = Machine::new()
             .drm("renderD128", "amdgpu")
             .file("dev/kfd", "")
-            .file("sys/class/drm/card0/device/mem_info_vram_total", "17163091968\n")
+            .file(
+                "sys/class/drm/card0/device/mem_info_vram_total",
+                "17163091968\n",
+            )
             .drm("card0", "amdgpu");
         let inv = probe(compute.path());
         assert!(inv.amd);
@@ -290,7 +300,10 @@ mod tests {
 
     #[test]
     fn ram_is_read_from_meminfo_and_rounded_to_whole_gib() {
-        let m = Machine::new().file("proc/meminfo", "MemTotal:       32765432 kB\nMemFree: 1 kB\n");
+        let m = Machine::new().file(
+            "proc/meminfo",
+            "MemTotal:       32765432 kB\nMemFree: 1 kB\n",
+        );
         let inv = probe(m.path());
         assert_eq!(inv.ram_bytes, Some(32_765_432 * 1024));
         assert_eq!(labels(&inv)[LABEL_RAM_GIB].as_deref(), Some("31"));
@@ -354,14 +367,22 @@ mod tests {
 
     #[test]
     fn a_node_that_was_never_labelled_reports_nothing_rather_than_cpu() {
-        assert_eq!(NodeHardware::from_labels(&json!({})), NodeHardware::default());
-        assert_eq!(NodeHardware::from_labels(&Value::Null), NodeHardware::default());
+        assert_eq!(
+            NodeHardware::from_labels(&json!({})),
+            NodeHardware::default()
+        );
+        assert_eq!(
+            NodeHardware::from_labels(&Value::Null),
+            NodeHardware::default()
+        );
     }
 
     #[test]
     fn labels_this_node_does_not_own_are_left_alone() {
         let current = BTreeMap::from([("kubernetes.io/hostname".to_string(), "node1".to_string())]);
         let patch = label_patch("node1", &current, &labels(&Inventory::default())).unwrap();
-        assert!(patch["metadata"]["labels"].get("kubernetes.io/hostname").is_none());
+        assert!(patch["metadata"]["labels"]
+            .get("kubernetes.io/hostname")
+            .is_none());
     }
 }

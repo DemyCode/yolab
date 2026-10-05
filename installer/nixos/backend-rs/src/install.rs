@@ -339,9 +339,10 @@ async fn do_install(
 async fn install_machine_files(tx: &mpsc::UnboundedSender<AppEvent>) -> anyhow::Result<()> {
     let target = format!("/mnt{MACHINE_DIR}");
     stream_command("install", &["-d", "-m", "0700", &target], tx).await?;
-    let report_written = tokio::fs::try_exists(format!("{CODE_DIR}/{CLONE_MACHINE_DIR}/{HARDWARE_REPORT}"))
-        .await
-        .unwrap_or(false);
+    let report_written =
+        tokio::fs::try_exists(format!("{CODE_DIR}/{CLONE_MACHINE_DIR}/{HARDWARE_REPORT}"))
+            .await
+            .unwrap_or(false);
     for file in machine_files(report_written) {
         let from = format!("{CODE_DIR}/{CLONE_MACHINE_DIR}/{file}");
         let to = format!("{target}/{file}");

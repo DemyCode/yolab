@@ -1,4 +1,5 @@
 import unittest
+from pathlib import Path
 
 import check_charts
 import yaml
@@ -438,7 +439,6 @@ class SourcedSecrets(unittest.TestCase):
         self.assertEqual(len(sourcing_failures(web)), 1)
 
 
-
 class RenderedChart(unittest.TestCase):
     CHART = None
 
@@ -451,11 +451,18 @@ class RenderedChart(unittest.TestCase):
 
         cls.tmp = tempfile.TemporaryDirectory()
         version = check_charts.chart_field(
-            open(os.path.join(check_charts.LIBRARY, "Chart.yaml")).read(), "version"
+            Path(check_charts.LIBRARY, "Chart.yaml").read_text(), "version"
         )
         subprocess.run(
-            ["helm", "package", check_charts.LIBRARY, "--version", version,
-             "--destination", cls.tmp.name],
+            [
+                "helm",
+                "package",
+                check_charts.LIBRARY,
+                "--version",
+                version,
+                "--destination",
+                cls.tmp.name,
+            ],
             check=True,
             capture_output=True,
         )
@@ -497,9 +504,7 @@ class OpenWebUiEngines(RenderedChart):
         )
 
     def test_each_gpu_machine_gets_its_own_engine_on_its_own_device(self):
-        pods = self.deployments(
-            self.docs(check_charts.VARIANTS["open-webui"][0])
-        )
+        pods = self.deployments(self.docs(check_charts.VARIANTS["open-webui"][0]))
         self.assertEqual(
             sorted(pods), ["gateway", "ollama-gpu-box", "ollama-radeon-laptop"]
         )
@@ -518,21 +523,17 @@ class OpenWebUiEngines(RenderedChart):
         )
 
     def test_the_ui_spreads_requests_over_every_engine_and_none_runs_beside_it(self):
-        pods = self.deployments(
-            self.docs(check_charts.VARIANTS["open-webui"][0])
-        )
-        self.assertNotIn(
-            "ollama", [c["name"] for c in pods["gateway"]["containers"]]
-        )
+        pods = self.deployments(self.docs(check_charts.VARIANTS["open-webui"][0]))
+        self.assertNotIn("ollama", [c["name"] for c in pods["gateway"]["containers"]])
         self.assertEqual(
             self.env(pods["gateway"], "open-webui")["OLLAMA_BASE_URLS"],
             "http://ollama-gpu-box:11434;http://ollama-radeon-laptop:11434",
         )
 
-    def test_every_engine_shares_one_model_store_and_never_prunes_another_s_download(self):
-        pods = self.deployments(
-            self.docs(check_charts.VARIANTS["open-webui"][0])
-        )
+    def test_every_engine_shares_one_model_store_and_never_prunes_another_s_download(
+        self,
+    ):
+        pods = self.deployments(self.docs(check_charts.VARIANTS["open-webui"][0]))
         for name in ("ollama-gpu-box", "ollama-radeon-laptop"):
             c = pods[name]["containers"][0]
             self.assertEqual(self.env(pods[name], "ollama")["OLLAMA_NOPRUNE"], "1")
@@ -544,13 +545,15 @@ class OpenWebUiEngines(RenderedChart):
     def test_an_intel_machine_waits_for_a_pinned_vulkan_image(self):
         intel = {"machines[0].name": "nuc", "machines[0].accelerator": "intel"}
         self.assertEqual(list(self.deployments(self.docs(intel))), ["gateway"])
-        pinned = {**intel, "vulkanImage": "ghcr.io/demycode/ollama-vulkan:0.35.1@sha256:" + "0" * 64}
+        pinned = {
+            **intel,
+            "vulkanImage": "ghcr.io/demycode/ollama-vulkan:0.35.1@sha256:" + "0" * 64,
+        }
         pods = self.deployments(self.docs(pinned))
         self.assertEqual(
             pods["ollama-nuc"]["containers"][0]["resources"]["limits"],
             {"yolab.io/dri": "1"},
         )
-
 
 
 class SteamHeadless(RenderedChart):
@@ -602,7 +605,6 @@ class SteamHeadless(RenderedChart):
         self.assertIn("forward_auth", caddy)
 
 
-
 class JellyfinTranscoding(RenderedChart):
     CHART = "jellyfin"
 
@@ -618,10 +620,15 @@ class JellyfinTranscoding(RenderedChart):
     def test_an_nvidia_machine_lends_jellyfin_its_cdi_device_and_driver(self):
         spec, c = self.jellyfin(check_charts.VARIANTS["jellyfin"][1])
         self.assertEqual(c["resources"]["limits"], {"nvidia.com/gpu-all": "1"})
-        self.assertEqual(self.env(spec, "jellyfin")["NVIDIA_DRIVER_CAPABILITIES"], "all")
+        self.assertEqual(
+            self.env(spec, "jellyfin")["NVIDIA_DRIVER_CAPABILITIES"], "all"
+        )
 
     def test_turning_it_off_leaves_jellyfin_free_to_run_anywhere(self):
-        off = {**check_charts.VARIANTS["jellyfin"][0], "config.hardware_transcoding": "false"}
+        off = {
+            **check_charts.VARIANTS["jellyfin"][0],
+            "config.hardware_transcoding": "false",
+        }
         spec, c = self.jellyfin(off)
         self.assertNotIn("nodeSelector", spec)
         self.assertNotIn("resources", c)
