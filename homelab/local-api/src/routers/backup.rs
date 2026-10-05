@@ -648,6 +648,7 @@ const CLUSTER_SCOPED_EXPORT: &[(&str, &str)] = &[
 
 const NAMESPACED_EXPORT: &[(&str, &str)] = &[
     ("apps/v1", "Deployment"),
+    ("apps/v1", "DaemonSet"),
     ("v1", "Service"),
     ("v1", "Secret"),
     ("v1", "ConfigMap"),
@@ -1709,6 +1710,43 @@ mod tests {
                 .expect("the namespace is exported even though another kind failed");
             assert_eq!(ns["apiVersion"], "v1");
             assert_eq!(ns["kind"], "Namespace");
+        }
+
+        #[tokio::test]
+        async fn an_app_export_keeps_its_daemonsets() {
+            let (server, kube) = api_server().await;
+            for (p, kind, items) in [
+                (
+                    "/apis/apps/v1/namespaces/yolab-ai/deployments",
+                    "Deployment",
+                    vec![],
+                ),
+                (
+                    "/apis/apps/v1/namespaces/yolab-ai/daemonsets",
+                    "DaemonSet",
+                    vec![
+                        json!({ "metadata": { "name": "ollama-nvidia", "namespace": "yolab-ai" } }),
+                    ],
+                ),
+                ("/api/v1/namespaces/yolab-ai/services", "Service", vec![]),
+                ("/api/v1/namespaces/yolab-ai/secrets", "Secret", vec![]),
+                (
+                    "/api/v1/namespaces/yolab-ai/configmaps",
+                    "ConfigMap",
+                    vec![],
+                ),
+            ] {
+                Mock::given(method("GET"))
+                    .and(path(p))
+                    .respond_with(ResponseTemplate::new(200).set_body_json(list(kind, items)))
+                    .mount(&server)
+                    .await;
+            }
+
+            let items = namespace_objects(&kube, "yolab-ai").await.unwrap();
+            assert!(items
+                .iter()
+                .any(|i| i["kind"] == "DaemonSet" && i["metadata"]["name"] == "ollama-nvidia"));
         }
 
         #[tokio::test]
