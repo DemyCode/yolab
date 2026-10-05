@@ -8,9 +8,11 @@
 {{- $rank := dict "intel" 3 "nvidia" 2 "amd" 1 -}}
 {{- range ((lookup "v1" "Node" "" "").items | default list) -}}
 {{- $labels := .metadata.labels | default dict -}}
-{{- $accelerator := get $labels "yolab.io/accelerator" -}}
-{{- if and (hasKey $rank $accelerator) (gt (int (get $rank $accelerator)) (int (get $rank ($best.accelerator | default "none") | default 0))) -}}
-{{- $best = dict "name" .metadata.name "accelerator" $accelerator -}}
+{{- $node := .metadata.name -}}
+{{- range $vendor := list "intel" "nvidia" "amd" -}}
+{{- if and (eq (get $labels (printf "yolab.io/gpu-%s" $vendor)) "true") (gt (int (get $rank $vendor)) (int (get $rank ($best.accelerator | default "none") | default 0))) -}}
+{{- $best = dict "name" $node "accelerator" $vendor -}}
+{{- end -}}
 {{- end -}}
 {{- end -}}
 {{- toJson $best -}}
