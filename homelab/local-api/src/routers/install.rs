@@ -707,13 +707,16 @@ pub(crate) fn start(
     b: Backend,
     cfg: Arc<Config>,
     plan: InstallPlan,
+    http: crate::http::Client,
 ) -> tokio::task::JoinHandle<()> {
     let subject = format!("install yolab-{}", plan.instance_name);
     let ns = format!("yolab-{}", plan.instance_name);
     let kube = b.kube.clone();
     let log = Log::to_tracing(subject.clone());
     run_detached(kube, ns, subject, async move {
-        execute(&b, &cfg, &plan, &log).await
+        execute(&b, &cfg, &plan, &log).await?;
+        crate::routers::store::report_install(&b.kube, &http, &cfg, &plan.app_id).await;
+        Ok(())
     })
 }
 

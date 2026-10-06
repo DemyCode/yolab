@@ -8,7 +8,7 @@ use tower_http::cors::{Any, CorsLayer};
 use crate::auth::auth_middleware;
 use crate::routers::{
     apps, backups, ceph as ceph_api, ceph_join, custom_app, disks, logs, nodes, reboot, rebuild,
-    status, update,
+    status, store, update,
 };
 use crate::{auth, heal, mesh, notify, runtime, topology, AppState};
 
@@ -128,6 +128,18 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route("/api/tunnel/domain", get(apps::tunnel_domain))
         .route("/api/apps/catalog", get(apps::catalog))
+        .route("/api/store/stats", get(store::stats))
+        .route("/api/store/settings", get(store::settings).put(store::set_settings))
+        .route(
+            "/api/store/apps/:id/rating",
+            get(store::my_rating).put(store::rate),
+        )
+        .route(
+            "/api/store/apps/:id/comments",
+            get(store::comments).post(store::post_comment),
+        )
+        .route("/api/store/comments/:id", delete(store::delete_comment))
+        .route("/api/store/comments/:id/report", post(store::report_comment))
         .route(
             "/api/apps/catalog/:id/refresh",
             post(apps::refresh_catalog_app),

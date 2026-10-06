@@ -1421,7 +1421,7 @@ pub async fn install_app(
             return (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")).into_response();
         }
     }
-    install::start(b, state.config.clone(), plan);
+    install::start(b, state.config.clone(), plan, state.http.clone());
     (
         StatusCode::ACCEPTED,
         Json(serde_json::json!({ "instance_name": instance_name })),
