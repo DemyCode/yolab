@@ -193,9 +193,9 @@ describe("factsSentence", () => {
   });
 
   it("works with whatever half it has", () => {
-    expect(
-      factsSentence({ stars: 120, pushed_at: null }, undefined, now),
-    ).toBe("120 people starred it on GitHub.");
+    expect(factsSentence({ stars: 120, pushed_at: null }, undefined, now)).toBe(
+      "120 people starred it on GitHub.",
+    );
     expect(
       factsSentence(
         { stars: null, pushed_at: "2026-10-05T12:00:00Z" },
@@ -206,8 +206,8 @@ describe("factsSentence", () => {
   });
 
   it("says nothing rather than an empty sentence", () => {
-    expect(factsSentence({ stars: null, pushed_at: null }, undefined, now)).toBe(
-      null,
-    );
+    expect(
+      factsSentence({ stars: null, pushed_at: null }, undefined, now),
+    ).toBe(null);
   });
 });

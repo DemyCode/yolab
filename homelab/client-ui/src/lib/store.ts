@@ -144,10 +144,7 @@ export function hasCommunity(app: Pick<CatalogApp, "repo">): boolean {
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-export function updatedAgo(
-  iso: string,
-  now: Date = new Date(),
-): string | null {
+export function updatedAgo(iso: string, now: Date = new Date()): string | null {
   const days = Math.floor((now.getTime() - new Date(iso).getTime()) / DAY_MS);
   if (!Number.isFinite(days) || days < 0) return null;
   if (days === 0) return "today";
