@@ -1,0 +1,110 @@
+{{ include "yolab-common.caddyConfigMap" . }}
+---
+{{ include "yolab-common.fileExplorerSecret" . }}
+---
+{{ include "yolab-common.fileExplorerConfigMap" . }}
+---
+{{ include "yolab-common.privateAccessResources" . }}
+---
+{{ include "yolab-common.uninstallHook" . }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-data
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: yolab-cephfs
+  resources:
+    requests:
+      storage: {{ .Values.config.storage_size | default "50Gi" | quote }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Release.Name }}-secrets
+  namespace: {{ .Release.Namespace }}
+type: Opaque
+stringData:
+  admin_password: {{ required "config.admin_password is required" .Values.config.admin_password | quote }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      initContainers:
+      {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessInit" . | nindent 6 }}
+      - name: copyparty-accounts
+        image: ghcr.io/9001/copyparty-ac:1.20.25@sha256:b05d9cc2c54c6295901d4e57461a6aaa3890e1a89144b31dc1cd7aa28432c245
+        imagePullPolicy: IfNotPresent
+        command:
+          - /bin/ash
+          - -c
+          - |
+            set -eu
+            case "$ADMIN_USERNAME" in
+              ""|*[!A-Za-z0-9._-]*) echo "admin username may only use letters, digits, '.', '_' and '-'" >&2; exit 1 ;;
+            esac
+            umask 077
+            cat > /cfg/yolab.conf <<EOF
+            [accounts]
+              ${ADMIN_USERNAME}: ${ADMIN_PASSWORD}
+
+            [/]
+              /w
+              accs:
+                rwmda: ${ADMIN_USERNAME}
+            EOF
+        env:
+          - name: ADMIN_USERNAME
+            value: {{ .Values.config.admin_username | default "admin" | quote }}
+          - name: ADMIN_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: {{ .Release.Name }}-secrets
+                key: admin_password
+        volumeMounts:
+          - name: copyparty-config
+            mountPath: /cfg
+      containers:
+      {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
+      - name: copyparty
+        image: ghcr.io/9001/copyparty-ac:1.20.25@sha256:b05d9cc2c54c6295901d4e57461a6aaa3890e1a89144b31dc1cd7aa28432c245
+        imagePullPolicy: IfNotPresent
+        readinessProbe:
+          tcpSocket:
+            port: 3923
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        volumeMounts:
+          - name: copyparty-config
+            mountPath: /cfg
+            readOnly: true
+          - name: data
+            mountPath: /w
+            subPath: {{ .Release.Name }}/files
+      volumes:
+      {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}
+      - name: copyparty-config
+        emptyDir: {}

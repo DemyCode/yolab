@@ -1,0 +1,11 @@
+config:
+  subdomain: copyparty
+  storage_size: 50Gi
+  admin_username: admin
+  admin_password: ''
+yolab:
+  platformApiUrl: ''
+  accountToken: ''
+  serviceName: ''
+  gateway:
+    upstream: localhost:3923
