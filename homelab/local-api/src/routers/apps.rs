@@ -1970,12 +1970,17 @@ pub async fn uninstall_app(
     }
 
     let instance_owned = instance_name.clone();
-    let task = tokio::spawn(async move {
-        run_teardown(&b, &instance_owned, &ns).await;
-    });
-    if let Err(e) = task.await {
-        tracing::error!("uninstall {instance_name}: teardown task failed: {e}");
-        return Err(anyhow::anyhow!("the uninstall did not finish: {e}").into());
+    let task = tokio::spawn(async move { run_teardown(&b, &instance_owned, &ns).await });
+    match task.await {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => {
+            tracing::error!("uninstall {instance_name}: {e:#}");
+            return Err(e.into());
+        }
+        Err(e) => {
+            tracing::error!("uninstall {instance_name}: teardown task failed: {e}");
+            return Err(anyhow::anyhow!("the uninstall did not finish: {e}").into());
+        }
     }
 
     Ok(Json(serde_json::json!({"ok": true})))
@@ -1991,14 +1996,54 @@ async fn namespace_is_terminating(client: &Client, ns: &str) -> bool {
 
 const HELM_UNINSTALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 
-async fn run_teardown<H: crate::host::Host>(b: &Backend<H>, instance_name: &str, ns: &str) {
+const VOLUME_DELETE_WAIT: std::time::Duration = std::time::Duration::from_secs(600);
+const VOLUME_DELETE_POLL: std::time::Duration = std::time::Duration::from_secs(5);
+
+fn volumes_of(pvs: &[Value], ns: &str) -> Vec<String> {
+    pvs.iter()
+        .filter(|pv| pv["spec"]["claimRef"]["namespace"].as_str() == Some(ns))
+        .filter_map(|pv| pv["metadata"]["name"].as_str().map(str::to_string))
+        .collect()
+}
+
+async fn wait_for_volumes_deleted(
+    client: &Client,
+    ns: &str,
+    wait: std::time::Duration,
+    poll: std::time::Duration,
+) -> anyhow::Result<()> {
+    let deadline = tokio::time::Instant::now() + wait;
+    loop {
+        let left = crate::k8s::list(client, "v1", "PersistentVolume", None, &Default::default())
+            .await
+            .map(|pvs| volumes_of(&pvs, ns));
+        match left {
+            Ok(left) if left.is_empty() => return Ok(()),
+            _ if tokio::time::Instant::now() < deadline => tokio::time::sleep(poll).await,
+            Ok(left) => anyhow::bail!(
+                "the app is gone but its volumes {} were not deleted, so their data is still on the disks",
+                left.join(", ")
+            ),
+            Err(e) => anyhow::bail!(
+                "the app is gone but whether its volumes were deleted could not be checked: {e}"
+            ),
+        }
+    }
+}
+
+async fn run_teardown<H: crate::host::Host>(
+    b: &Backend<H>,
+    instance_name: &str,
+    ns: &str,
+) -> anyhow::Result<()> {
     if namespace_is_terminating(&b.kube, ns).await {
         tracing::info!(
             "uninstall {instance_name}: namespace is already terminating — waiting for it \
              to finish rather than re-running helm"
         );
         delete_namespace_with_retry(&b.kube, ns).await;
-        return;
+        return wait_for_volumes_deleted(&b.kube, ns, VOLUME_DELETE_WAIT, VOLUME_DELETE_POLL)
+            .await;
     }
 
     let out = b
@@ -2028,6 +2073,7 @@ async fn run_teardown<H: crate::host::Host>(b: &Backend<H>, instance_name: &str,
     }
 
     delete_namespace_with_retry(&b.kube, ns).await;
+    wait_for_volumes_deleted(&b.kube, ns, VOLUME_DELETE_WAIT, VOLUME_DELETE_POLL).await
 }
 
 fn abandoned_in(namespaces: &[Value]) -> Vec<(String, String)> {
@@ -2087,7 +2133,9 @@ async fn finish_abandoned_uninstalls<H: crate::host::Host>(
             "uninstall {instance}: claim is stale and nothing is driving it — \
              finishing the teardown"
         );
-        run_teardown(b, &instance, &ns).await;
+        if let Err(e) = run_teardown(b, &instance, &ns).await {
+            tracing::error!("uninstall {instance}: {e:#}");
+        }
     }
     Ok(crate::runtime::Tick::Done)
 }
@@ -3383,6 +3431,78 @@ mod tests {
             status(404, "NotFound")
         }
 
+        async fn volumes_are(server: &MockServer, pvs: Vec<Value>) {
+            Mock::given(method("GET"))
+                .and(path("/api/v1/persistentvolumes"))
+                .respond_with(
+                    ResponseTemplate::new(200).set_body_json(list("PersistentVolume", pvs)),
+                )
+                .mount(server)
+                .await;
+        }
+
+        fn pv(name: &str, claim_namespace: &str) -> Value {
+            json!({
+                "metadata": { "name": name },
+                "spec": { "claimRef": { "namespace": claim_namespace, "name": "data" } },
+                "status": { "phase": "Released" }
+            })
+        }
+
+        #[test]
+        fn an_apps_volumes_are_the_ones_its_claims_were_bound_to() {
+            let pvs = vec![
+                pv("pvc-notes", "yolab-notes"),
+                pv("pvc-notes-2", "yolab-notes-2"),
+                json!({ "metadata": { "name": "pvc-unbound" }, "spec": {} }),
+            ];
+            assert_eq!(volumes_of(&pvs, "yolab-notes"), vec!["pvc-notes"]);
+        }
+
+        #[tokio::test]
+        async fn an_uninstall_whose_volume_outlives_it_says_the_data_is_still_there() {
+            let (server, kube) = api_server().await;
+            volumes_are(
+                &server,
+                vec![pv("pvc-notes", "yolab-notes"), pv("pvc-other", "yolab-other")],
+            )
+            .await;
+            let e = wait_for_volumes_deleted(
+                &kube,
+                "yolab-notes",
+                std::time::Duration::ZERO,
+                std::time::Duration::ZERO,
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+            assert!(e.contains("pvc-notes"), "{e}");
+            assert!(!e.contains("pvc-other"), "{e}");
+            assert!(e.contains("data is still on the disks"), "{e}");
+        }
+
+        #[tokio::test]
+        async fn volumes_that_cannot_be_listed_are_not_taken_as_deleted() {
+            let (server, kube) = api_server().await;
+            Mock::given(method("GET"))
+                .and(path("/api/v1/persistentvolumes"))
+                .respond_with(
+                    ResponseTemplate::new(503).set_body_json(status(503, "ServiceUnavailable")),
+                )
+                .mount(&server)
+                .await;
+            let e = wait_for_volumes_deleted(
+                &kube,
+                "yolab-notes",
+                std::time::Duration::ZERO,
+                std::time::Duration::ZERO,
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+            assert!(e.contains("could not be checked"), "{e}");
+        }
+
         #[tokio::test]
         async fn an_app_that_is_already_gone_may_be_uninstalled() {
             let (server, kube) = api_server().await;
@@ -3449,12 +3569,13 @@ mod tests {
                 .expect(1)
                 .mount(&server)
                 .await;
+            volumes_are(&server, vec![]).await;
             let b = Backend {
                 kube,
                 host: FakeHost::new().ok("helm uninstall", ""),
             };
 
-            run_teardown(&b, "notes", "yolab-notes").await;
+            run_teardown(&b, "notes", "yolab-notes").await.unwrap();
             assert!(b
                 .host
                 .ran("helm uninstall notes -n yolab-notes --ignore-not-found --wait"));
@@ -3468,12 +3589,13 @@ mod tests {
                 .respond_with(ResponseTemplate::new(404).set_body_json(gone()))
                 .mount(&server)
                 .await;
+            volumes_are(&server, vec![]).await;
             let b = Backend {
                 kube,
                 host: FakeHost::new(),
             };
 
-            run_teardown(&b, "notes", "yolab-notes").await;
+            run_teardown(&b, "notes", "yolab-notes").await.unwrap();
             assert!(b.host.calls().is_empty(), "{:?}", b.host.calls());
         }
 
@@ -3489,11 +3611,12 @@ mod tests {
                 .expect(1)
                 .mount(&server)
                 .await;
+            volumes_are(&server, vec![]).await;
             let b = Backend {
                 kube,
                 host: FakeHost::new().fail("helm uninstall", "timed out"),
             };
-            run_teardown(&b, "notes", "yolab-notes").await;
+            run_teardown(&b, "notes", "yolab-notes").await.unwrap();
         }
 
         #[tokio::test]

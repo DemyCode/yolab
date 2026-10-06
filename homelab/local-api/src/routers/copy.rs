@@ -206,7 +206,7 @@ fn rebind_content_manifest(
         "kind": "VolumeSnapshotContent",
         "metadata": { "name": name },
         "spec": {
-            "deletionPolicy": "Retain",
+            "deletionPolicy": "Delete",
             "driver": snap_ref.driver,
             "source": { "snapshotHandle": snap_ref.handle },
             "volumeSnapshotRef": {
@@ -713,7 +713,11 @@ mod tests {
             },
         );
         assert_eq!(m["spec"]["source"]["snapshotHandle"], "0xabc");
-        assert_eq!(m["spec"]["deletionPolicy"], "Retain");
+        assert_eq!(
+            m["spec"]["deletionPolicy"],
+            "Delete",
+            "whichever side is deleted first takes the ceph snapshot with it, so none outlives the copy"
+        );
         assert_eq!(m["spec"]["volumeSnapshotRef"]["name"], "s");
         assert_eq!(
             m["spec"]["volumeSnapshotRef"]["namespace"],
