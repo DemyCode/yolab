@@ -222,9 +222,13 @@ pub async fn rescan_all(
     let apps = crate::routers::apps::installed_apps(client).await?;
     let mut failed = Vec::new();
     for app in &apps {
-        let schema =
-            crate::routers::apps::installed_schema(client, &app.namespace, &app.app_id, catalog_dir)
-                .await;
+        let schema = crate::routers::apps::installed_schema(
+            client,
+            &app.namespace,
+            &app.app_id,
+            catalog_dir,
+        )
+        .await;
         if let Err(e) = rescan(client, &app.namespace, &schema, &app.settings).await {
             tracing::debug!("{}: outputs could not be rescanned ({e})", app.namespace);
             failed.push(app.namespace.clone());

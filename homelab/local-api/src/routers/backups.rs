@@ -347,11 +347,8 @@ pub(crate) async fn setup_namespace_backup<H: Host>(
     for pvc in pvcs.into_iter().filter(|p| p.namespace == namespace) {
         allow_privileged_movers(&b.kube, &pvc.namespace).await;
         restic_secret(&b.kube, &pvc.namespace, &pvc.namespace, &pvc.name, &cfg).await?;
-        cfg.unlock(
-            &b.host,
-            &format!("volsync/{}/{}", pvc.namespace, pvc.name),
-        )
-        .await;
+        cfg.unlock(&b.host, &format!("volsync/{}/{}", pvc.namespace, pvc.name))
+            .await;
         replication_source(&b.kube, &pvc, false).await?;
     }
     Ok(())

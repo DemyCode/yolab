@@ -960,7 +960,6 @@ async fn wait_for_rd(client: &Client, namespace: &str, dest_name: &str) -> anyho
     .await
 }
 
-
 async fn read_deployment_scales(client: &Client, ns: &str) -> anyhow::Result<Vec<DeploymentScale>> {
     let items = crate::k8s::list(
         client,

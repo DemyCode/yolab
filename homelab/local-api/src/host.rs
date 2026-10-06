@@ -590,11 +590,18 @@ mod tests {
             .ok("ceph-authtool", "")
             .fail("monmaptool", "no")
             .effect("", move |bin, args| {
-                log.lock().unwrap().push(format!("{bin} {}", args.join(" ")));
+                log.lock()
+                    .unwrap()
+                    .push(format!("{bin} {}", args.join(" ")));
             });
-        let _ = host.run_cmd("ceph-authtool", &["--create-keyring", "/k"]).await;
+        let _ = host
+            .run_cmd("ceph-authtool", &["--create-keyring", "/k"])
+            .await;
         let _ = host.run_cmd("monmaptool", &["/m"]).await;
-        assert_eq!(*seen.lock().unwrap(), vec!["ceph-authtool --create-keyring /k"]);
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec!["ceph-authtool --create-keyring /k"]
+        );
     }
 
     #[tokio::test]

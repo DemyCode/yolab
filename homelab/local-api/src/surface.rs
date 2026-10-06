@@ -115,7 +115,9 @@ mod tests {
     fn no_route_runs_a_command_the_caller_typed() {
         for (path, _) in ROUTE_TABLE {
             assert!(
-                !["terminal", "exec", "shell"].iter().any(|w| path.contains(w)),
+                !["terminal", "exec", "shell"]
+                    .iter()
+                    .any(|w| path.contains(w)),
                 "{path} looks like a way to run commands on the machine over the web"
             );
         }

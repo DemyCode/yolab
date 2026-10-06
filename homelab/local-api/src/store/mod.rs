@@ -360,7 +360,6 @@ impl Store {
             }
         }))
     }
-
 }
 
 fn disk_key(node: &str, disk_id: &str) -> String {

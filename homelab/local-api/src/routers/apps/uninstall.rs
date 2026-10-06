@@ -134,7 +134,6 @@ pub(crate) async fn wait_for_volumes_deleted(
     .await
 }
 
-
 pub(crate) async fn run_teardown<H: crate::host::Host>(
     b: &Backend<H>,
     instance_name: &str,

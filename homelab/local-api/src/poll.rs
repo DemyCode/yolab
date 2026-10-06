@@ -37,7 +37,10 @@ mod tests {
 
     #[tokio::test]
     async fn a_check_that_is_already_done_returns_its_value() {
-        assert_eq!(until(NOW, NOW, || async { Step::Done(7) }).await.unwrap(), 7);
+        assert_eq!(
+            until(NOW, NOW, || async { Step::Done(7) }).await.unwrap(),
+            7
+        );
     }
 
     #[tokio::test]

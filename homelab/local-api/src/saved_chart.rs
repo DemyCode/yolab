@@ -38,7 +38,10 @@ pub(crate) fn is_saved_chart(item: &Value) -> bool {
 
 pub(crate) fn is_kept_with_app(item: &Value) -> bool {
     item["kind"].as_str() == Some("ConfigMap")
-        && matches!(item["metadata"]["name"].as_str(), Some(CONFIG_MAP | SCHEMA_MAP))
+        && matches!(
+            item["metadata"]["name"].as_str(),
+            Some(CONFIG_MAP | SCHEMA_MAP)
+        )
 }
 
 pub(crate) fn in_objects(objects: &Value) -> Option<Vec<u8>> {
@@ -149,7 +152,6 @@ pub(crate) async fn all_schemas(
         .collect())
 }
 
-
 pub(crate) async fn read(client: &Client, namespace: &str) -> anyhow::Result<Option<Vec<u8>>> {
     let found = crate::k8s::get(
         client,
@@ -251,7 +253,10 @@ mod tests {
     #[test]
     fn a_backup_gives_back_the_schema_it_was_taken_with() {
         let schema = json!({ "type": "object" });
-        let items = vec![manifest("yolab-x", &[1]), schema_manifest("yolab-x", &schema)];
+        let items = vec![
+            manifest("yolab-x", &[1]),
+            schema_manifest("yolab-x", &schema),
+        ];
         let objects = json!({ "items": items });
         assert_eq!(schema_in_objects(&objects), Some(schema));
         assert_eq!(in_objects(&objects), Some(vec![1]));

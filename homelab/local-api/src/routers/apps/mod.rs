@@ -1084,7 +1084,9 @@ pub async fn list_apps(State(state): State<AppState>) -> Result<Json<Vec<AppInfo
     let client = &state.kube.client().await?;
     let catalog_dir = state.config.catalog_dir();
     let backup_status = crate::routers::backup::app_backup_status(client).await;
-    let schemas = crate::saved_chart::all_schemas(client).await.unwrap_or_default();
+    let schemas = crate::saved_chart::all_schemas(client)
+        .await
+        .unwrap_or_default();
     let managed = kube::api::ListParams::default().labels(&format!("{LABEL_MANAGED}=true"));
     let everything = kube::api::ListParams::default();
     let (ns_out, pods_out, deployments_out, pvcs_out, events_out, mut remembered) = tokio::join!(
@@ -1362,7 +1364,6 @@ pub async fn install_app(
         Ok(p) => p,
         Err(e) => return refuse(e),
     };
-
 
     let opened = match plan.chart.recorded() {
         None => open_app_namespace(
@@ -3056,22 +3057,30 @@ mod tests {
                 "pin": { "type": "string", "writeOnly": true }
             }}}});
             Mock::given(method("GET"))
-                .and(path("/api/v1/namespaces/yolab-notes/configmaps/yolab-schema"))
-                .respond_with(ResponseTemplate::new(200).set_body_json(
-                    crate::saved_chart::schema_manifest("yolab-notes", &saved),
+                .and(path(
+                    "/api/v1/namespaces/yolab-notes/configmaps/yolab-schema",
                 ))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_json(crate::saved_chart::schema_manifest("yolab-notes", &saved)),
+                )
                 .mount(&server)
                 .await;
             let empty_catalog = tempfile::tempdir().unwrap();
             let app = installed_schema(&kube, "yolab-notes", "notes", empty_catalog.path()).await;
-            assert_eq!(app.credentials(), std::collections::HashSet::from(["pin".to_string()]));
+            assert_eq!(
+                app.credentials(),
+                std::collections::HashSet::from(["pin".to_string()])
+            );
         }
 
         #[tokio::test]
         async fn an_app_installed_before_schemas_were_kept_falls_back_to_its_chart_cache() {
             let (server, kube) = api_server().await;
             Mock::given(method("GET"))
-                .and(path("/api/v1/namespaces/yolab-notes/configmaps/yolab-schema"))
+                .and(path(
+                    "/api/v1/namespaces/yolab-notes/configmaps/yolab-schema",
+                ))
                 .respond_with(ResponseTemplate::new(404).set_body_json(gone()))
                 .mount(&server)
                 .await;
@@ -3085,7 +3094,10 @@ mod tests {
             )
             .unwrap();
             let app = installed_schema(&kube, "yolab-notes", "notes", catalog.path()).await;
-            assert_eq!(app.credentials(), std::collections::HashSet::from(["key".to_string()]));
+            assert_eq!(
+                app.credentials(),
+                std::collections::HashSet::from(["key".to_string()])
+            );
         }
 
         async fn volumes_are(server: &MockServer, pvs: Vec<Value>) {
