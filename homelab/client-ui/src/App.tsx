@@ -38,11 +38,6 @@ const UpdatesPage = lazy(() =>
     default: m.UpdatesPage,
   })),
 );
-const TerminalPage = lazy(() =>
-  import("@/pages/system/TerminalPage").then((m) => ({
-    default: m.TerminalPage,
-  })),
-);
 const LogsPage = lazy(() =>
   import("@/pages/system/LogsPage").then((m) => ({ default: m.LogsPage })),
 );
@@ -158,19 +153,6 @@ export default function App() {
                 >
                   <Suspense fallback={<Loading />}>
                     <LogsPage />
-                  </Suspense>
-                </SystemSubPage>
-              }
-            />
-            <Route
-              path="/system/terminal"
-              element={
-                <SystemSubPage
-                  title="Terminal"
-                  subtitle="Run commands directly on the machine."
-                >
-                  <Suspense fallback={<Loading />}>
-                    <TerminalPage />
                   </Suspense>
                 </SystemSubPage>
               }

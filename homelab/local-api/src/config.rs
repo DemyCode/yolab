@@ -93,10 +93,21 @@ pub struct Config {
     pub rebuild_pid: PathBuf,
     pub built_dir: PathBuf,
     pub channel_file: PathBuf,
-    pub terminal_enabled: bool,
 }
 
 impl Config {
+    pub fn listen_addrs(&self) -> Vec<String> {
+        let mut addrs = vec![
+            format!("[::1]:{}", self.port),
+            format!("127.0.0.1:{}", self.port),
+        ];
+        let mesh = self.node_ipv6.trim();
+        if !mesh.is_empty() && mesh != "::1" {
+            addrs.push(format!("[{mesh}]:{}", self.port));
+        }
+        addrs
+    }
+
     pub fn from_env() -> Self {
         let built_dir = PathBuf::from("/var/lib/yolab");
         let machine_dir = machine_dir().to_string_lossy().into_owned();
@@ -114,9 +125,6 @@ impl Config {
             rebuild_log: PathBuf::from("/var/log/yolab-rebuild.log"),
             rebuild_pid: PathBuf::from("/run/yolab-rebuild.pid"),
             channel_file: built_dir.join("channel.json"),
-            terminal_enabled: std::env::var("YOLAB_TERMINAL_ENABLED")
-                .map(|v| v != "0" && !v.eq_ignore_ascii_case("false"))
-                .unwrap_or(true),
             built_dir,
         }
     }
@@ -188,7 +196,6 @@ impl Config {
             rebuild_pid: PathBuf::from("/nonexistent/rebuild.pid"),
             built_dir: PathBuf::from("/nonexistent/built"),
             channel_file: PathBuf::from("/nonexistent/channel.json"),
-            terminal_enabled: true,
         }
     }
 }
@@ -203,6 +210,26 @@ mod tests {
         std::fs::write(&path, body).unwrap();
         let cfg = Config::for_test(&path);
         (dir, cfg)
+    }
+
+    #[test]
+    fn the_api_listens_on_loopback_and_the_mesh_never_on_every_address() {
+        let mut cfg = Config::for_test(std::path::Path::new("/tmp/config.toml"));
+        cfg.node_ipv6 = "fd00:cafe::8".into();
+        assert_eq!(
+            cfg.listen_addrs(),
+            vec!["[::1]:3001", "127.0.0.1:3001", "[fd00:cafe::8]:3001"]
+        );
+        assert!(!cfg
+            .listen_addrs()
+            .iter()
+            .any(|a| a.starts_with("[::]") || a.starts_with("0.0.0.0")));
+    }
+
+    #[test]
+    fn a_node_without_a_mesh_address_listens_on_loopback_only() {
+        let cfg = Config::for_test(std::path::Path::new("/tmp/config.toml"));
+        assert_eq!(cfg.listen_addrs(), vec!["[::1]:3001", "127.0.0.1:3001"]);
     }
 
     #[test]

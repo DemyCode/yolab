@@ -77,7 +77,6 @@ pub(crate) const ROUTE_TABLE: &[(&str, &[&str])] = &[
     ("/api/apps/:id/scan-outputs", &["POST"]),
     ("/api/apps/:id/pods", &["GET"]),
     ("/api/apps/:id/logs/:pod_name", &["GET"]),
-    ("/api/terminal/exec", &["POST"]),
 ];
 
 pub(crate) const PUBLIC_ROUTES: &[&str] = &["/api/login"];
@@ -111,6 +110,16 @@ mod tests {
                 other => panic!("unknown method in ROUTE_TABLE: {other}"),
             })
             .collect()
+    }
+
+    #[test]
+    fn no_route_runs_a_command_the_caller_typed() {
+        for (path, _) in ROUTE_TABLE {
+            assert!(
+                !["terminal", "exec", "shell"].iter().any(|w| path.contains(w)),
+                "{path} looks like a way to run commands on the machine over the web"
+            );
+        }
     }
 
     #[test]

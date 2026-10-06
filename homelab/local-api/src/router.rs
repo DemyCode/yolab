@@ -8,7 +8,7 @@ use tower_http::cors::{Any, CorsLayer};
 use crate::auth::auth_middleware;
 use crate::routers::{
     apps, backups, ceph as ceph_api, ceph_join, custom_app, disks, logs, nodes, reboot, rebuild,
-    status, terminal, update,
+    status, update,
 };
 use crate::{auth, heal, mesh, notify, runtime, topology, AppState};
 
@@ -145,7 +145,6 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/apps/:id/scan-outputs", post(apps::scan_outputs))
         .route("/api/apps/:id/pods", get(apps::list_pods))
         .route("/api/apps/:id/logs/:pod_name", get(apps::pod_logs))
-        .route("/api/terminal/exec", post(terminal::exec))
         .layer(middleware::from_fn_with_state(auth_state, auth_middleware))
         .layer(cors)
         .with_state(state)

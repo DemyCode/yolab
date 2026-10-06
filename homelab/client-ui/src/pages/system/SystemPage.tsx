@@ -9,7 +9,6 @@ import {
   LogOut,
   Server,
   ScrollText,
-  TerminalSquare,
   Wrench,
 } from "lucide-react";
 import { Page } from "@/components/AppShell";
@@ -258,12 +257,6 @@ export function SystemPage() {
           icon={ScrollText}
           label="Logs"
           detail="What the machine has been saying"
-        />
-        <NavRow
-          to="/system/terminal"
-          icon={TerminalSquare}
-          label="Terminal"
-          detail="Run commands on the machine"
         />
       </Card>
 

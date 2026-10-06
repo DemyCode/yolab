@@ -116,7 +116,22 @@ in {
     networking = {
       hostName = s.hostname;
       enableIPv6 = true;
-      firewall.enable = false;
+      firewall = {
+        enable = true;
+        allowedTCPPorts = [
+          80
+          443
+          s.sshPort
+        ];
+        allowedUDPPorts = [51821];
+        trustedInterfaces = [
+          "wg1"
+          "cni0"
+          "flannel.1"
+          "flannel-v6.1"
+        ];
+        checkReversePath = false;
+      };
 
       wireguard.interfaces.wg0 = {
         ips = ["${s.tunnelCfg.sub_ipv6}/128"];

@@ -21,7 +21,6 @@ mod mesh;
 mod notify;
 mod ops;
 mod outputs;
-mod proc;
 mod records;
 mod router;
 mod routers;
@@ -118,15 +117,33 @@ async fn main() {
 
     controllers::spawn_all(runtime::leader::start(system::hostname(), kube));
 
-    let addr = format!("[::]:{}", cfg.port);
+    let mut servers = tokio::task::JoinSet::new();
+    for addr in cfg.listen_addrs() {
+        servers.spawn(serve_on(addr, app.clone()));
+    }
+    while servers.join_next().await.is_some() {}
+    panic!("every listener stopped");
+}
+
+const BIND_RETRY: std::time::Duration = std::time::Duration::from_secs(5);
+
+async fn serve_on(addr: String, app: axum::Router) {
+    let listener = loop {
+        match tokio::net::TcpListener::bind(&addr).await {
+            Ok(l) => break l,
+            Err(e) => {
+                tracing::warn!("could not bind {addr} yet ({e}), retrying");
+                tokio::time::sleep(BIND_RETRY).await;
+            }
+        }
+    };
     tracing::info!("listening on {addr}");
-    let listener = tokio::net::TcpListener::bind(&addr)
-        .await
-        .unwrap_or_else(|e| panic!("could not bind {addr}: {e}"));
-    axum::serve(
+    if let Err(e) = axum::serve(
         listener,
         app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
     )
     .await
-    .expect("axum server exited unexpectedly");
+    {
+        tracing::error!("listener on {addr} stopped: {e}");
+    }
 }

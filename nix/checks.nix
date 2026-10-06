@@ -377,7 +377,6 @@ in let
         "routers/disks.rs" = 4;
         "routers/logs.rs" = 1;
         "routers/reboot.rs" = 2;
-        "routers/terminal.rs" = 1;
         "routers/update.rs" = 3;
         "runtime/activity.rs" = 3;
         "runtime/resource.rs" = 1;
