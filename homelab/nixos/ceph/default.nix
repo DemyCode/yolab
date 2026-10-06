@@ -38,11 +38,8 @@ in {
         The WireGuard mesh that every node's cluster address lives in, used as
         Ceph's public_network.
 
-        It must be the SUBNET, never this node's own /128. public_network is how
-        a daemon picks which local address to bind, and a /128 describes a
-        network containing exactly one machine — which is precisely why the
-        original config could not grow: every node's ceph.conf described a
-        different, one-member cluster.
+        It must be the subnet, never this node's own /128: public_network is how
+        a daemon picks which local address to bind.
       '';
     };
 

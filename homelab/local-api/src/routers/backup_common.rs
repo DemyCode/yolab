@@ -46,23 +46,8 @@ pub(crate) fn random_hex(bytes: usize) -> String {
 pub(crate) struct S3StorageInfo {
     pub bucket_name: String,
     pub endpoint: String,
-    #[allow(dead_code)]
-    pub region: String,
     pub access_key_id: String,
     pub secret_access_key: String,
-    #[allow(dead_code)]
-    pub created_at: String,
-}
-
-pub(crate) fn canonical_pvc_id(pvc_name: &str) -> String {
-    let mut id = pvc_name;
-    while let Some(stripped) = id
-        .strip_prefix("volsync-emergency-restore-")
-        .and_then(|s| s.strip_suffix("-dest"))
-    {
-        id = stripped;
-    }
-    id.to_string()
 }
 
 pub(crate) const MASTER_SECRET: &str = "yolab-backup-config";
@@ -311,7 +296,7 @@ pub(crate) async fn restic_secret(
     pvc: &str,
     cfg: &BackupConfig,
 ) -> anyhow::Result<()> {
-    let cid = canonical_pvc_id(pvc);
+    let cid = pvc;
     let secret_name = format!("{cid}{RESTIC_SECRET_SUFFIX}");
     let repo = cfg.restic_repo(&format!("volsync/{repo_ns}/{cid}"));
     apply_secret(
@@ -384,7 +369,7 @@ pub(crate) async fn managed_namespaces(client: &Client) -> anyhow::Result<Vec<St
 }
 
 pub(crate) fn replication_source_name(pvc_name: &str) -> String {
-    format!("volsync-{}", canonical_pvc_id(pvc_name))
+    format!("volsync-{pvc_name}")
 }
 
 pub(crate) async fn replication_source(
@@ -392,7 +377,7 @@ pub(crate) async fn replication_source(
     pvc: &PvcInfo,
     trigger_now: bool,
 ) -> anyhow::Result<Option<String>> {
-    let cid = canonical_pvc_id(&pvc.name);
+    let cid = &pvc.name;
     let rs_name = replication_source_name(&pvc.name);
     let secret_name = format!("{cid}{RESTIC_SECRET_SUFFIX}");
 
@@ -656,25 +641,6 @@ mod tests {
              interrupted one blocks that repository's retention forever — add \
              \"--no-lock\": {offenders:?}"
         );
-    }
-
-    #[test]
-    fn canonical_pvc_id_passes_through_plain_names() {
-        assert_eq!(canonical_pvc_id("gitea-data"), "gitea-data");
-    }
-
-    #[test]
-    fn canonical_pvc_id_strips_one_restore_layer() {
-        assert_eq!(
-            canonical_pvc_id("volsync-emergency-restore-gitea-data-dest"),
-            "gitea-data"
-        );
-    }
-
-    #[test]
-    fn canonical_pvc_id_strips_nested_restore_layers() {
-        let mangled = "volsync-emergency-restore-volsync-emergency-restore-gitea-data-dest-dest";
-        assert_eq!(canonical_pvc_id(mangled), "gitea-data");
     }
 
     #[test]

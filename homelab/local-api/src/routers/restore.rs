@@ -305,7 +305,7 @@ async fn volume_snapshots<H: Host>(
     pvc: &str,
     cfg: &BackupConfig,
 ) -> anyhow::Result<Vec<SnapshotEntry>> {
-    let repo = cfg.restic_repo(&format!("volsync/{namespace}/{}", canonical_pvc_id(pvc)));
+    let repo = cfg.restic_repo(&format!("volsync/{namespace}/{}", pvc));
     let out = restic_with(
         host,
         &repo,
@@ -853,7 +853,7 @@ async fn restore_into<H: Host>(
     cfg: &BackupConfig,
     restore_as_of: Option<&str>,
 ) -> anyhow::Result<()> {
-    let cid = canonical_pvc_id(source_pvc);
+    let cid = source_pvc;
     let pvc_repo = cfg.restic_repo(&format!("volsync/{source_namespace}/{cid}"));
     restic_unlock_with(
         &b.host,
@@ -878,7 +878,7 @@ async fn restore_into<H: Host>(
     if let Some(t) = restore_as_of {
         restic_spec["restoreAsOf"] = Value::String(t.to_string());
     }
-    let dest_name = format!("emergency-restore-{cid}");
+    let dest_name = format!("restore-{cid}");
     let manifest = json!({
         "apiVersion": "volsync.backube/v1alpha1",
         "kind": "ReplicationDestination",

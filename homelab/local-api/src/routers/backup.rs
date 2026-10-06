@@ -492,11 +492,7 @@ async fn pin_volume_snapshot<H: Host>(
     rs: &Value,
 ) -> Option<VolumeSnapshot> {
     let short = saved_snapshot_id(mover_logs(rs)?.as_str())?;
-    let repo = cfg.restic_repo(&format!(
-        "volsync/{}/{}",
-        pvc.namespace,
-        canonical_pvc_id(&pvc.name)
-    ));
+    let repo = cfg.restic_repo(&format!("volsync/{}/{}", pvc.namespace, pvc.name));
     let out = restic_with(
         host,
         &repo,

@@ -345,7 +345,7 @@ pub(crate) async fn setup_namespace_backup<H: Host>(
         restic_secret(&b.kube, &pvc.namespace, &pvc.namespace, &pvc.name, &cfg).await?;
         cfg.unlock(
             &b.host,
-            &format!("volsync/{}/{}", pvc.namespace, canonical_pvc_id(&pvc.name)),
+            &format!("volsync/{}/{}", pvc.namespace, pvc.name),
         )
         .await;
         replication_source(&b.kube, &pvc, false).await?;
@@ -530,7 +530,7 @@ pub(crate) async fn sweep_locks<H: Host>(b: &Backend<H>) -> anyhow::Result<crate
     };
     cfg.unlock(&b.host, "cluster-backup").await;
     for pvc in user_pvcs(&b.kube).await? {
-        let path = format!("volsync/{}/{}", pvc.namespace, canonical_pvc_id(&pvc.name));
+        let path = format!("volsync/{}/{}", pvc.namespace, pvc.name);
         cfg.unlock(&b.host, &path).await;
     }
     Ok(crate::runtime::Tick::Done)
@@ -699,10 +699,7 @@ mod tests {
                 unlocked_repos(&b.host),
                 vec![
                     "s3:https://s3.example/bucket-1/cluster-backup".to_string(),
-                    format!(
-                        "s3:https://s3.example/bucket-1/volsync/yolab-notes/{}",
-                        canonical_pvc_id("data")
-                    ),
+                    "s3:https://s3.example/bucket-1/volsync/yolab-notes/data".to_string(),
                 ]
             );
         }

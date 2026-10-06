@@ -304,16 +304,6 @@ in {
           handle /api/* {
             reverse_proxy [::1]:3001
           }
-          # To local-api, not to a fixed address. This used to point at
-          # [fd00:43::cefd]:7000 — the ClusterIP of Rook's dashboard Service —
-          # which stopped existing when Ceph moved out of Kubernetes, and the
-          # link has returned 502 ever since.
-          #
-          # It cannot point at the local mgr either: the dashboard is served by
-          # the ACTIVE mgr, every node runs one, and a standby answers with a
-          # redirect to an address on the WireGuard mesh that no browser can
-          # reach. local-api asks Ceph which mgr is active and forwards there,
-          # so a failover changes nothing here.
           handle /ceph-dashboard* {
             forward_auth [::1]:3001 {
               uri /api/auth/check
@@ -323,16 +313,6 @@ in {
           handle {
             root * ${s.clientUi}
             try_files {path} /index.html
-            # Vite gives every asset a content hash in its filename, so those
-            # are safe to cache forever — a new build produces new names.
-            # index.html is the one file whose name never changes, and it is
-            # what points at those hashed names. Cached, it keeps requesting
-            # yesterday's bundle, so a deployed fix stays invisible until
-            # someone happens to hard-refresh. That wasted a debugging session
-            # chasing UI bugs that were already fixed on disk.
-            # Two matchers, deliberately disjoint. A bare `header` block would
-            # also match the hashed assets and cancel the immutable caching,
-            # since Caddy applies every matching header directive.
             @hashed path_regexp \.[0-9a-zA-Z_-]{8,}\.(js|css|woff2?|png|svg|jpg|webp)$
             header @hashed Cache-Control "public, max-age=31536000, immutable"
             @entry path / /index.html
