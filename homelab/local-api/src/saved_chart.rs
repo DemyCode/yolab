@@ -9,6 +9,8 @@ use crate::host::Host;
 
 pub(crate) const CONFIG_MAP: &str = "yolab-chart";
 const KEY: &str = "chart.tgz";
+pub(crate) const SCHEMA_MAP: &str = "yolab-schema";
+const SCHEMA_KEY: &str = "values.schema.json";
 const MAX_BYTES: usize = 900 * 1024;
 const RUN_TIMEOUT: Duration = Duration::from_secs(120);
 
@@ -32,6 +34,11 @@ pub(crate) fn tgz_of(config_map: &Value) -> Option<Vec<u8>> {
 pub(crate) fn is_saved_chart(item: &Value) -> bool {
     item["kind"].as_str() == Some("ConfigMap")
         && item["metadata"]["name"].as_str() == Some(CONFIG_MAP)
+}
+
+pub(crate) fn is_kept_with_app(item: &Value) -> bool {
+    item["kind"].as_str() == Some("ConfigMap")
+        && matches!(item["metadata"]["name"].as_str(), Some(CONFIG_MAP | SCHEMA_MAP))
 }
 
 pub(crate) fn in_objects(objects: &Value) -> Option<Vec<u8>> {
@@ -86,8 +93,62 @@ pub(crate) async fn save<H: Host>(
     chart_dir: &Path,
 ) -> anyhow::Result<()> {
     let tgz = package(host, chart_dir).await?;
-    crate::k8s::apply(client, &manifest(namespace, &tgz)).await
+    crate::k8s::apply(client, &manifest(namespace, &tgz)).await?;
+    let schema = tokio::fs::read_to_string(chart_dir.join("values.schema.json"))
+        .await
+        .ok()
+        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+        .unwrap_or(Value::Null);
+    crate::k8s::apply(client, &schema_manifest(namespace, &schema)).await
 }
+
+pub(crate) fn schema_manifest(namespace: &str, schema: &Value) -> Value {
+    json!({
+        "apiVersion": "v1",
+        "kind": "ConfigMap",
+        "metadata": { "name": SCHEMA_MAP, "namespace": namespace },
+        "data": { SCHEMA_KEY: schema.to_string() },
+    })
+}
+
+pub(crate) fn schema_of(config_map: &Value) -> Option<Value> {
+    serde_json::from_str(config_map["data"][SCHEMA_KEY].as_str()?).ok()
+}
+
+pub(crate) fn schema_in_objects(objects: &Value) -> Option<Value> {
+    objects["items"]
+        .as_array()?
+        .iter()
+        .find(|i| {
+            i["kind"].as_str() == Some("ConfigMap")
+                && i["metadata"]["name"].as_str() == Some(SCHEMA_MAP)
+        })
+        .and_then(schema_of)
+}
+
+pub(crate) async fn read_schema(client: &Client, namespace: &str) -> anyhow::Result<Option<Value>> {
+    let found = crate::k8s::get(
+        client,
+        &crate::k8s::reference("v1", "ConfigMap", namespace, SCHEMA_MAP),
+    )
+    .await?;
+    Ok(found.as_ref().and_then(schema_of))
+}
+
+pub(crate) async fn all_schemas(
+    client: &Client,
+) -> anyhow::Result<std::collections::HashMap<String, Value>> {
+    let named = kube::api::ListParams::default().fields(&format!("metadata.name={SCHEMA_MAP}"));
+    let maps = crate::k8s::list(client, "v1", "ConfigMap", None, &named).await?;
+    Ok(maps
+        .iter()
+        .filter_map(|m| {
+            let ns = m["metadata"]["namespace"].as_str()?.to_string();
+            Some((ns, schema_of(m)?))
+        })
+        .collect())
+}
+
 
 pub(crate) async fn read(client: &Client, namespace: &str) -> anyhow::Result<Option<Vec<u8>>> {
     let found = crate::k8s::get(
@@ -168,6 +229,42 @@ mod tests {
         ]});
         assert_eq!(in_objects(&objects), Some(tgz));
         assert_eq!(in_objects(&json!({ "items": [] })), None);
+    }
+
+    #[test]
+    fn a_saved_schema_reads_back_as_the_same_json() {
+        let schema = json!({ "properties": { "config": { "properties": {
+            "admin_password": { "type": "string", "writeOnly": true }
+        }}}});
+        let m = schema_manifest("yolab-notes-ab12", &schema);
+        assert_eq!(m["metadata"]["name"], SCHEMA_MAP);
+        assert_eq!(schema_of(&m), Some(schema));
+    }
+
+    #[test]
+    fn a_schema_map_that_is_missing_or_garbled_is_no_schema() {
+        assert_eq!(schema_of(&json!({ "data": {} })), None);
+        let garbled = json!({ "data": { SCHEMA_KEY: "{not json" } });
+        assert_eq!(schema_of(&garbled), None);
+    }
+
+    #[test]
+    fn a_backup_gives_back_the_schema_it_was_taken_with() {
+        let schema = json!({ "type": "object" });
+        let items = vec![manifest("yolab-x", &[1]), schema_manifest("yolab-x", &schema)];
+        let objects = json!({ "items": items });
+        assert_eq!(schema_in_objects(&objects), Some(schema));
+        assert_eq!(in_objects(&objects), Some(vec![1]));
+    }
+
+    #[test]
+    fn only_the_chart_and_schema_kept_for_an_app_are_bookkeeping() {
+        assert!(is_kept_with_app(&manifest("yolab-x", &[1])));
+        assert!(is_kept_with_app(&schema_manifest("yolab-x", &json!(null))));
+        let caddy = json!({ "kind": "ConfigMap", "metadata": { "name": "notes-caddy" } });
+        let secret = json!({ "kind": "Secret", "metadata": { "name": "yolab-chart" } });
+        assert!(!is_kept_with_app(&caddy));
+        assert!(!is_kept_with_app(&secret));
     }
 
     #[tokio::test]

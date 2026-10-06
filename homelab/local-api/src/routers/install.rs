@@ -98,6 +98,7 @@ impl ChartPin {
 pub(crate) struct Source {
     pub(crate) definition: AppDefinition,
     pub(crate) chart: Option<Vec<u8>>,
+    pub(crate) schema: Option<Value>,
 }
 
 pub(crate) fn pin_chart(source: Option<&Source>) -> Result<ChartPin, String> {
@@ -295,7 +296,12 @@ pub(crate) async fn source<H: Host>(
         ConfigOrigin::LiveApp { namespace } => {
             let definition = crate::routers::apps::read_definition(&b.kube, namespace).await?;
             let chart = crate::saved_chart::read(&b.kube, namespace).await?;
-            Ok(Some(Source { definition, chart }))
+            let schema = crate::saved_chart::read_schema(&b.kube, namespace).await?;
+            Ok(Some(Source {
+                definition,
+                chart,
+                schema,
+            }))
         }
         ConfigOrigin::Backup {
             namespace,
@@ -303,9 +309,13 @@ pub(crate) async fn source<H: Host>(
         } => {
             let definition =
                 crate::routers::restore::definition_from_backup(b, namespace, snapshot_id).await?;
-            let chart =
-                crate::routers::restore::chart_from_backup(b, namespace, snapshot_id).await?;
-            Ok(Some(Source { definition, chart }))
+            let (chart, schema) =
+                crate::routers::restore::kept_from_backup(b, namespace, snapshot_id).await?;
+            Ok(Some(Source {
+                definition,
+                chart,
+                schema,
+            }))
         }
     }
 }
@@ -782,6 +792,7 @@ mod tests {
         Source {
             definition: def.clone(),
             chart: None,
+            schema: None,
         }
     }
 
@@ -847,6 +858,7 @@ mod tests {
         let source = Source {
             definition: definition("gitea"),
             chart: Some(vec![1, 2, 3]),
+            schema: None,
         };
         assert_eq!(
             pin_chart(Some(&source)),

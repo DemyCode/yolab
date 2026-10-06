@@ -277,9 +277,8 @@ pub(crate) async fn read_definition_opt(client: &Client, ns: &str) -> Option<App
 
 pub(crate) fn redact_definition(
     def: &AppDefinition,
-    catalog_dir: &std::path::Path,
+    app: &crate::appschema::AppSchema,
 ) -> AppDefinition {
-    let app = app_schema(catalog_dir, &def.app_id);
     let mut d = def.clone();
     d.config = redact_credentials(&def.config, &app.credentials());
     d
@@ -497,6 +496,26 @@ pub(crate) fn app_schema(catalog_dir: &std::path::Path, id: &str) -> crate::apps
         Some(meta) => meta.app,
         None => crate::appschema::AppSchema::new(Value::Null),
     }
+}
+
+pub(crate) async fn installed_schema(
+    client: &Client,
+    ns: &str,
+    app_id: &str,
+    fallback_catalog: &std::path::Path,
+) -> crate::appschema::AppSchema {
+    match crate::saved_chart::read_schema(client, ns).await {
+        Ok(Some(schema)) => crate::appschema::AppSchema::new(schema),
+        _ => app_schema(fallback_catalog, app_id),
+    }
+}
+
+pub(crate) async fn chart_schema(
+    client: &Client,
+    app_id: &str,
+) -> Option<crate::appschema::AppSchema> {
+    let (_, dir) = crate::charts::resolve_chart(client, app_id, None).await?;
+    read_chart(&dir).map(|meta| meta.app)
 }
 
 fn resolve_service_name(schema: &Value, config: &serde_json::Map<String, Value>) -> String {
@@ -1234,6 +1253,7 @@ pub async fn list_apps(State(state): State<AppState>) -> Result<Json<Vec<AppInfo
     let client = &state.kube.client().await?;
     let catalog_dir = state.config.catalog_dir();
     let backup_status = crate::routers::backup::app_backup_status(client).await;
+    let schemas = crate::saved_chart::all_schemas(client).await.unwrap_or_default();
     let managed = kube::api::ListParams::default().labels(&format!("{LABEL_MANAGED}=true"));
     let everything = kube::api::ListParams::default();
     let (ns_out, pods_out, deployments_out, pvcs_out, events_out, mut remembered) = tokio::join!(
@@ -1356,8 +1376,13 @@ pub async fn list_apps(State(state): State<AppState>) -> Result<Json<Vec<AppInfo
             .unwrap_or("")
             .to_string();
         let config = saved_settings(&ann);
+        let schema = schemas
+            .get(&format!("yolab-{name}"))
+            .cloned()
+            .map(crate::appschema::AppSchema::new)
+            .unwrap_or_else(|| app_schema(&catalog_dir, &id));
         let outputs = listed_outputs(
-            &app_schema(&catalog_dir, &id),
+            &schema,
             remembered
                 .remove(&format!("yolab-{name}"))
                 .unwrap_or_default(),
@@ -1470,17 +1495,6 @@ pub async fn install_app(
         Ok(s) => s,
         Err(e) => return refuse(e),
     };
-    let fresh = sources.config == install::ConfigOrigin::Fresh;
-    if fresh && !state.config.catalog_dir().join(&id).exists() {
-        return (StatusCode::NOT_FOUND, format!("App '{id}' not found")).into_response();
-    }
-    if let Some(why) = way_in_refused(
-        &app_schema(&state.config.catalog_dir(), &id).config(),
-        &body.config,
-    ) {
-        return refuse(why.into());
-    }
-
     let b = match state.backend().await {
         Ok(b) => b,
         Err(e) => return (StatusCode::SERVICE_UNAVAILABLE, format!("{e:#}")).into_response(),
@@ -1489,6 +1503,20 @@ pub async fn install_app(
         Ok(s) => s,
         Err(e) => return refuse(format!("{e}")),
     };
+    let saved = source.as_ref().and_then(|s| s.schema.clone());
+    let app = match saved {
+        Some(schema) => crate::appschema::AppSchema::new(schema),
+        None => match chart_schema(&b.kube, &id).await {
+            Some(app) => app,
+            None if source.is_some() => crate::appschema::AppSchema::new(Value::Null),
+            None => {
+                return (StatusCode::NOT_FOUND, format!("App '{id}' not found")).into_response()
+            }
+        },
+    };
+    if let Some(why) = way_in_refused(&app.config(), &body.config) {
+        return refuse(why.into());
+    }
     let Some(instance_name) = unique_instance_name(&b.kube, &body.instance_name).await else {
         return refuse("could not derive a unique name for this app".into());
     };
@@ -1498,11 +1526,12 @@ pub async fn install_app(
         body.config,
         source.as_ref(),
         sources.data,
-        &app_schema(&state.config.catalog_dir(), &id),
+        &app,
     ) {
         Ok(p) => p,
         Err(e) => return refuse(e),
     };
+
 
     let opened = match plan.chart.recorded() {
         None => open_app_namespace(
@@ -1680,7 +1709,7 @@ pub async fn update_app(
             .map(str::to_string)
     };
     let id = annotation(ANN_APP_ID).unwrap_or_default();
-    let app = app_schema(&state.config.catalog_dir(), &id);
+    let app = installed_schema(&client, &ns, &id, &state.config.catalog_dir()).await;
     let stored_config = match read_config(&client, &ns).await {
         Ok(c) => c,
         Err(e) => {
@@ -1701,8 +1730,17 @@ pub async fn update_app(
     if let Err(e) = validate_config_values(&config) {
         return (StatusCode::BAD_REQUEST, format!("invalid config: {e}")).into_response();
     }
-    if id.is_empty() || !state.config.catalog_dir().join(&id).exists() {
-        return (StatusCode::BAD_REQUEST, "App not found in catalog").into_response();
+    let repo = annotation(ANN_CHART_REPO);
+    if id.is_empty()
+        || crate::charts::resolve_chart(&client, &id, repo.as_deref())
+            .await
+            .is_none()
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            "this app's chart is in none of the chart repositories",
+        )
+            .into_response();
     }
     if let Some(why) = way_in_refused(&app.config(), &config) {
         return (StatusCode::BAD_REQUEST, why).into_response();
@@ -1752,7 +1790,7 @@ pub async fn set_backup_policy(
         enabled: body.enabled,
         schedule: body.schedule,
     };
-    let app = app_schema(&state.config.catalog_dir(), &def.app_id);
+    let app = installed_schema(&client, &ns, &def.app_id, &state.config.catalog_dir()).await;
     write_definition(&client, &ns, &def, &app).await?;
     Ok(Json(serde_json::json!({ "ok": true })))
 }
@@ -1762,8 +1800,10 @@ pub async fn app_definition(
     Path(instance_name): Path<String>,
 ) -> Result<Json<AppDefinition>> {
     let ns = format!("yolab-{instance_name}");
-    let def = read_definition(&state.kube.client().await?, &ns).await?;
-    Ok(Json(redact_definition(&def, &state.config.catalog_dir())))
+    let client = state.kube.client().await?;
+    let def = read_definition(&client, &ns).await?;
+    let app = installed_schema(&client, &ns, &def.app_id, &state.config.catalog_dir()).await;
+    Ok(Json(redact_definition(&def, &app)))
 }
 
 fn saved_settings(ann: &serde_json::Map<String, Value>) -> serde_json::Map<String, Value> {
@@ -1833,7 +1873,7 @@ pub(crate) async fn known_outputs(
         .cloned()
         .unwrap_or_default();
     let id = ann.get(ANN_APP_ID).and_then(|v| v.as_str()).unwrap_or("");
-    let app = app_schema(catalog_dir, id);
+    let app = installed_schema(client, ns, id, catalog_dir).await;
     let settings = saved_settings(&ann);
 
     let remembered = if rescan_first {
@@ -3422,6 +3462,45 @@ mod tests {
 
         fn gone() -> Value {
             status(404, "NotFound")
+        }
+
+        #[tokio::test]
+        async fn an_installed_app_is_read_with_the_schema_it_was_installed_with() {
+            let (server, kube) = api_server().await;
+            let saved = json!({ "properties": { "config": { "properties": {
+                "pin": { "type": "string", "writeOnly": true }
+            }}}});
+            Mock::given(method("GET"))
+                .and(path("/api/v1/namespaces/yolab-notes/configmaps/yolab-schema"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(
+                    crate::saved_chart::schema_manifest("yolab-notes", &saved),
+                ))
+                .mount(&server)
+                .await;
+            let empty_catalog = tempfile::tempdir().unwrap();
+            let app = installed_schema(&kube, "yolab-notes", "notes", empty_catalog.path()).await;
+            assert_eq!(app.credentials(), std::collections::HashSet::from(["pin".to_string()]));
+        }
+
+        #[tokio::test]
+        async fn an_app_installed_before_schemas_were_kept_falls_back_to_its_chart_cache() {
+            let (server, kube) = api_server().await;
+            Mock::given(method("GET"))
+                .and(path("/api/v1/namespaces/yolab-notes/configmaps/yolab-schema"))
+                .respond_with(ResponseTemplate::new(404).set_body_json(gone()))
+                .mount(&server)
+                .await;
+            let catalog = tempfile::tempdir().unwrap();
+            let chart = catalog.path().join("notes");
+            std::fs::create_dir_all(&chart).unwrap();
+            std::fs::write(chart.join("Chart.yaml"), "name: notes\nversion: 1.0.0\n").unwrap();
+            std::fs::write(
+                chart.join("values.schema.json"),
+                r#"{"properties":{"config":{"properties":{"key":{"type":"string","writeOnly":true}}}}}"#,
+            )
+            .unwrap();
+            let app = installed_schema(&kube, "yolab-notes", "notes", catalog.path()).await;
+            assert_eq!(app.credentials(), std::collections::HashSet::from(["key".to_string()]));
         }
 
         async fn volumes_are(server: &MockServer, pvs: Vec<Value>) {

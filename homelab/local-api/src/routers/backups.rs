@@ -324,9 +324,13 @@ pub async fn app_definition_from_backup(
     Path(namespace): Path<String>,
     axum::extract::Query(q): axum::extract::Query<DefinitionQuery>,
 ) -> Result<Json<serde_json::Value>> {
-    let def = restore::definition_from_backup(&state.backend().await?, &namespace, &q.snapshot_id)
-        .await?;
-    let redacted = crate::routers::apps::redact_definition(&def, &state.config.catalog_dir());
+    let b = state.backend().await?;
+    let def = restore::definition_from_backup(&b, &namespace, &q.snapshot_id).await?;
+    let app = match restore::kept_from_backup(&b, &namespace, &q.snapshot_id).await {
+        Ok((_, Some(schema))) => crate::appschema::AppSchema::new(schema),
+        _ => crate::routers::apps::app_schema(&state.config.catalog_dir(), &def.app_id),
+    };
+    let redacted = crate::routers::apps::redact_definition(&def, &app);
     Ok(Json(
         serde_json::to_value(redacted).unwrap_or(serde_json::Value::Null),
     ))
