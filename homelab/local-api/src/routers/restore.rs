@@ -915,7 +915,7 @@ async fn wait_for_pvc_deleted(client: &Client, namespace: &str, pvc: &str) -> an
                     "PVC still present after {PVC_DELETE_TIMEOUT_SECS}s — a pod may still be mounting it"
                 )
             };
-            match crate::k8s::exists(client, &claim).await {
+            match crate::k8s::exists(client, claim).await {
                 Ok(false) => Step::Done(()),
                 Ok(true) => Step::Pending(still()),
                 Err(e) => {
@@ -942,7 +942,7 @@ async fn wait_for_rd(client: &Client, namespace: &str, dest_name: &str) -> anyho
         Duration::from_secs(RD_TIMEOUT_SECS),
         RD_POLL,
         move || async move {
-            let v = crate::k8s::get(client, &destination).await.ok().flatten();
+            let v = crate::k8s::get(client, destination).await.ok().flatten();
             match v
                 .as_ref()
                 .and_then(|v| v["status"]["latestMoverStatus"]["result"].as_str())

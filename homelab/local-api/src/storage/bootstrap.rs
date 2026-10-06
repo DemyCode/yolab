@@ -355,9 +355,9 @@ mod tests {
         run(&host, dir.path(), "yolab-n1", &args).await.unwrap();
 
         assert!(mon_dir(dir.path(), "yolab-n1").join("keyring").exists());
-        assert!(host.inner.ran("monmaptool"));
+        assert!(host.ran("monmaptool"));
         assert!(
-            !host.inner.ran("mon getmap"),
+            !host.ran("mon getmap"),
             "the create path must never fetch a monmap over the network"
         );
     }
@@ -484,7 +484,7 @@ mod tests {
         );
         assert!(mon_dir(&j.root(), "yolab-n2").join("keyring").exists());
         assert!(!tmp_mon_keyring_path(&j.root()).exists());
-        assert!(!host.inner.ran("ceph-authtool"));
+        assert!(!host.ran("ceph-authtool"));
     }
 
     #[tokio::test]
@@ -499,7 +499,7 @@ mod tests {
 
         assert!(err.to_string().contains("refusing to join"));
         assert!(!admin_keyring_path(&j.root()).exists());
-        assert!(host.inner.calls().is_empty());
+        assert!(host.calls().is_empty());
     }
 
     #[tokio::test]
