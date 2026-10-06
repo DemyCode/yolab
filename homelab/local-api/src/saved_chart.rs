@@ -197,5 +197,4 @@ mod tests {
         let e = unpack(&host, &[1, 2, 3], "immich").await.err().unwrap();
         assert!(e.to_string().contains("not immich"), "{e}");
     }
-
 }

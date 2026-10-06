@@ -2042,8 +2042,7 @@ async fn run_teardown<H: crate::host::Host>(
              to finish rather than re-running helm"
         );
         delete_namespace_with_retry(&b.kube, ns).await;
-        return wait_for_volumes_deleted(&b.kube, ns, VOLUME_DELETE_WAIT, VOLUME_DELETE_POLL)
-            .await;
+        return wait_for_volumes_deleted(&b.kube, ns, VOLUME_DELETE_WAIT, VOLUME_DELETE_POLL).await;
     }
 
     let out = b
@@ -3464,7 +3463,10 @@ mod tests {
             let (server, kube) = api_server().await;
             volumes_are(
                 &server,
-                vec![pv("pvc-notes", "yolab-notes"), pv("pvc-other", "yolab-other")],
+                vec![
+                    pv("pvc-notes", "yolab-notes"),
+                    pv("pvc-other", "yolab-other"),
+                ],
             )
             .await;
             let e = wait_for_volumes_deleted(
