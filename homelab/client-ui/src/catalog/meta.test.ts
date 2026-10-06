@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { APP_GROUP, GROUPS, groupFor, groupLabel, taglineFor } from "./meta";
+import {
+  APP_GROUP,
+  GROUPS,
+  countByGroup,
+  groupFor,
+  groupLabel,
+  taglineFor,
+} from "./meta";
 
 describe("APP_GROUP", () => {
   const groupIds = new Set(GROUPS.map((g) => g.id));
@@ -85,5 +92,23 @@ describe("groupLabel", () => {
 
   it("says Other rather than nothing for a group it does not know", () => {
     expect(groupLabel("does-not-exist")).toBe("Other");
+  });
+});
+
+describe("countByGroup", () => {
+  it("counts each app once, under the group its chip filters to", () => {
+    const counts = countByGroup([
+      { id: "immich" },
+      { id: "photoprism" },
+      { id: "jellyfin" },
+      { id: "unknown-game", category: "gaming" },
+      { id: "unknown-thing" },
+    ]);
+    expect(Object.fromEntries(counts)).toEqual({
+      photos: 2,
+      watch: 1,
+      home: 1,
+      tools: 1,
+    });
   });
 });

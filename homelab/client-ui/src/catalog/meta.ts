@@ -109,3 +109,14 @@ export function groupFor(app: { id: string; category?: string }): string {
 export function groupLabel(id: string): string {
   return GROUPS.find((g) => g.id === id)?.label ?? "Other";
 }
+
+export function countByGroup(
+  apps: { id: string; category?: string }[],
+): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const app of apps) {
+    const g = groupFor(app);
+    counts.set(g, (counts.get(g) ?? 0) + 1);
+  }
+  return counts;
+}
