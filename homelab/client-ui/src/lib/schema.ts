@@ -15,14 +15,17 @@ export interface SchemaProp {
 
 interface Branch {
   properties?: Record<string, SchemaProp>;
+  dependencies?: Dependencies;
 }
+
+type Dependencies = Record<string, { oneOf?: Branch[]; properties?: unknown }>;
 
 export interface ConfigSchema {
   type?: string;
   title?: string;
   properties?: Record<string, SchemaProp>;
   required?: string[];
-  dependencies?: Record<string, { oneOf?: Branch[]; properties?: unknown }>;
+  dependencies?: Dependencies;
 }
 
 export type UiSchema = Record<string, unknown>;
@@ -37,9 +40,18 @@ export function configSchemaOf(schema: object | undefined): ConfigSchema {
   return s.properties ? s : {};
 }
 
+function switches(
+  dependencies: Dependencies | undefined,
+): [string, { oneOf?: Branch[] }][] {
+  return Object.entries(dependencies ?? {}).flatMap(([toggle, dep]) => [
+    [toggle, dep] as [string, { oneOf?: Branch[] }],
+    ...(dep.oneOf ?? []).flatMap((branch) => switches(branch.dependencies)),
+  ]);
+}
+
 export function revealedBy(schema: ConfigSchema): Map<string, string[]> {
   const revealed = new Map<string, string[]>();
-  for (const [toggle, dep] of Object.entries(schema.dependencies ?? {})) {
+  for (const [toggle, dep] of switches(schema.dependencies)) {
     const fields = new Set<string>();
     for (const branch of dep.oneOf ?? []) {
       for (const name of Object.keys(branch.properties ?? {})) {
@@ -48,7 +60,10 @@ export function revealedBy(schema: ConfigSchema): Map<string, string[]> {
         }
       }
     }
-    if (fields.size > 0) revealed.set(toggle, [...fields]);
+    if (fields.size > 0) {
+      const before = revealed.get(toggle) ?? [];
+      revealed.set(toggle, [...new Set([...before, ...fields])]);
+    }
   }
   return revealed;
 }
@@ -98,14 +113,20 @@ export function uiSchemaFor(schema: ConfigSchema, domain: string): UiSchema {
     if (Object.keys(entry).length > 0) ui[name] = entry;
   };
 
+  const reveal = (toggle: string) => {
+    for (const dependent of revealed.get(toggle) ?? []) {
+      if (order.includes(dependent)) continue;
+      order.push(dependent);
+      const prop = branchProp(schema, toggle, dependent);
+      if (prop) describe(dependent, prop, true);
+      reveal(dependent);
+    }
+  };
+
   for (const [name, prop] of Object.entries(schema.properties ?? {})) {
     order.push(name);
     describe(name, prop, false);
-    for (const dependent of revealed.get(name) ?? []) {
-      order.push(dependent);
-      const prop = branchProp(schema, name, dependent);
-      if (prop) describe(dependent, prop, true);
-    }
+    reveal(name);
   }
   ui["ui:order"] = [...order, "*"];
   return ui;
@@ -116,9 +137,12 @@ function branchProp(
   toggle: string,
   name: string,
 ): SchemaProp | undefined {
-  for (const branch of schema.dependencies?.[toggle]?.oneOf ?? []) {
-    const prop = branch.properties?.[name];
-    if (prop) return prop;
+  for (const [switched, dep] of switches(schema.dependencies)) {
+    if (switched !== toggle) continue;
+    for (const branch of dep.oneOf ?? []) {
+      const prop = branch.properties?.[name];
+      if (prop) return prop;
+    }
   }
   return undefined;
 }
@@ -158,15 +182,23 @@ export function chosenBranchDefaults(
   values: Record<string, unknown>,
 ): Record<string, unknown> {
   const defaults: Record<string, unknown> = {};
-  for (const [toggle, dep] of Object.entries(schema.dependencies ?? {})) {
-    const branch = (dep.oneOf ?? []).find(
-      (b) => b.properties?.[toggle]?.const === values[toggle],
-    );
-    for (const [name, prop] of Object.entries(branch?.properties ?? {})) {
-      if (name === toggle || prop.writeOnly || prop.default === undefined)
-        continue;
-      if (values[name] === undefined) defaults[name] = prop.default;
+  const seen = { ...values };
+  const fill = (dependencies: Dependencies | undefined) => {
+    for (const [toggle, dep] of Object.entries(dependencies ?? {})) {
+      const branch = (dep.oneOf ?? []).find(
+        (b) => b.properties?.[toggle]?.const === seen[toggle],
+      );
+      for (const [name, prop] of Object.entries(branch?.properties ?? {})) {
+        if (name === toggle || prop.writeOnly || prop.default === undefined)
+          continue;
+        if (seen[name] === undefined) {
+          defaults[name] = prop.default;
+          seen[name] = prop.default;
+        }
+      }
+      fill(branch?.dependencies);
     }
-  }
+  };
+  fill(schema.dependencies);
   return defaults;
 }

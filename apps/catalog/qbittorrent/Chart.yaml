@@ -3,12 +3,12 @@ name: qbittorrent
 description: "BitTorrent client with a web interface"
 home: https://www.qbittorrent.org
 type: application
-version: 0.1.12
+version: 0.1.13
 appVersion: "5"
 
 dependencies:
   - name: yolab-common
-    version: "0.1.10"
+    version: "0.1.11"
     repository: "oci://ghcr.io/demycode/charts"
 
 annotations:

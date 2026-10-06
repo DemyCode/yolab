@@ -3,11 +3,11 @@ name: 2fauth
 description: "Web app for managing two-factor authentication codes"
 home: https://docs.2fauth.app
 type: application
-version: 0.1.11
+version: 0.1.12
 
 dependencies:
   - name: yolab-common
-    version: "0.1.10"
+    version: "0.1.11"
     repository: "oci://ghcr.io/demycode/charts"
 
 annotations:

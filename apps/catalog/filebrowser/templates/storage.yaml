@@ -13,6 +13,8 @@ spec:
 ---
 {{ include "yolab-common.caddyConfigMap" . }}
 ---
+{{ include "yolab-common.privateAccessResources" . }}
+---
 apiVersion: v1
 kind: Secret
 metadata:

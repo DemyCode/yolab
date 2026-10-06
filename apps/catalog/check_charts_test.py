@@ -150,11 +150,25 @@ def rendered_explorer():
 
 
 EXPLORER_URL = logs(
-    r"YOLAB_OUTPUT file_explorer_url (\S+)", format="uri", when=EXPLORER_ON
+    r"YOLAB_OUTPUT file_explorer_url (\S+)",
+    format="uri",
+    when=check_charts.EXPLORER_PUBLIC,
 )
 EXPLORER_PASSWORD = logs(
     r"YOLAB_OUTPUT file_explorer_password (\S+)", format="secret", when=EXPLORER_ON
 )
+EXPLORER_PRIVATE = {
+    "file_explorer_tor_url": logs(
+        r"YOLAB_OUTPUT file_explorer_tor_url (\S+)",
+        format="uri",
+        when=check_charts.explorer_way_on("file_explorer_tor_enabled"),
+    ),
+    "file_explorer_tailscale_url": logs(
+        r"YOLAB_OUTPUT file_explorer_tailscale_url (\S+)",
+        format="uri",
+        when=check_charts.explorer_way_on("file_explorer_tailscale_enabled"),
+    ),
+}
 
 
 class FileExplorerOutputs(unittest.TestCase):
@@ -165,17 +179,46 @@ class FileExplorerOutputs(unittest.TestCase):
         )
         return [f for f in found if "file explorer" in f or "file_explorer" in f]
 
-    def test_both_explorer_outputs_with_their_condition_pass(self):
+    def test_every_explorer_output_with_its_condition_passes(self):
         s = schema(
             outputs={
                 "file_explorer_url": EXPLORER_URL,
                 "file_explorer_password": EXPLORER_PASSWORD,
+                **EXPLORER_PRIVATE,
             }
         )
         self.assertEqual(self.explorer_failures(s), [])
 
+    def test_an_explorer_address_shown_while_its_yolab_address_is_off_is_reported(self):
+        s = schema(
+            outputs={
+                "file_explorer_url": {**EXPLORER_URL, "when": EXPLORER_ON},
+                "file_explorer_password": EXPLORER_PASSWORD,
+                **EXPLORER_PRIVATE,
+            }
+        )
+        found = self.explorer_failures(s)
+        self.assertEqual(len(found), 1)
+        self.assertIn("file_explorer_url", found[0])
+
+    def test_a_missing_explorer_tor_address_is_reported(self):
+        s = schema(
+            outputs={
+                "file_explorer_url": EXPLORER_URL,
+                "file_explorer_password": EXPLORER_PASSWORD,
+                "file_explorer_tailscale_url": EXPLORER_PRIVATE[
+                    "file_explorer_tailscale_url"
+                ],
+            }
+        )
+        found = self.explorer_failures(s)
+        self.assertEqual(len(found), 1)
+        self.assertIn("do not declare file_explorer_tor_url", found[0])
+
     def test_a_missing_explorer_output_is_reported(self):
-        s = schema(outputs={"file_explorer_password": EXPLORER_PASSWORD})
+        s = schema(
+            outputs={"file_explorer_password": EXPLORER_PASSWORD, **EXPLORER_PRIVATE}
+        )
         found = self.explorer_failures(s)
         self.assertEqual(len(found), 1)
         self.assertIn("do not declare file_explorer_url", found[0])
@@ -186,6 +229,7 @@ class FileExplorerOutputs(unittest.TestCase):
             outputs={
                 "file_explorer_url": unconditioned,
                 "file_explorer_password": EXPLORER_PASSWORD,
+                **EXPLORER_PRIVATE,
             }
         )
         found = self.explorer_failures(s)
@@ -1011,6 +1055,7 @@ PRIVATE_BOTH = frozenset(
         "vaultwarden",
         "vikunja",
         "wallos",
+        "filebrowser",
         "jellyfin",
         "immich",
         "photoprism",
@@ -1232,6 +1277,150 @@ class YolabOffRendered(RenderedChart):
             "vaultwarden", docs, lambda app, msg: found.append(msg)
         )
         self.assertEqual(len(found), 1)
+
+
+EXPLORER_WAYS_ON = check_charts.EXPLORER_WAYS_ON
+
+
+class FileExplorerWaysRendered(RenderedChart):
+    CHART = "vaultwarden"
+
+    def gateway(self, docs):
+        return self.deployments(docs)["gateway"]
+
+    def names(self, spec, key="containers"):
+        return {c["name"] for c in spec.get(key) or []}
+
+    def ways_failures(self, docs):
+        found = []
+        check_charts.check_file_explorer_ways(
+            "vaultwarden", docs, lambda app, msg: found.append(msg)
+        )
+        return found
+
+    def test_by_default_the_explorer_has_only_its_yolab_address(self):
+        docs = self.docs()
+        containers = self.names(self.gateway(docs))
+        self.assertIn("file-explorer", containers)
+        self.assertFalse({"file-explorer-tor", "file-explorer-tailscale"} & containers)
+        caddyfile = check_charts.configmap_data(docs, "-caddy", "Caddyfile")
+        self.assertIn("{$FILE_EXPLORER_FQDN}", caddyfile)
+        self.assertNotIn("18793", caddyfile)
+        self.assertNotIn("18794", caddyfile)
+
+    def test_switched_on_the_explorer_s_tor_and_tailscale_pass_the_checks(self):
+        docs = self.docs(EXPLORER_WAYS_ON)
+        self.assertTrue(
+            {"file-explorer", "file-explorer-tor", "file-explorer-tailscale"}
+            <= self.names(self.gateway(docs))
+        )
+        self.assertIn(
+            "file-explorer-tor-state",
+            self.names(self.gateway(docs), "initContainers"),
+        )
+        self.assertEqual(self.ways_failures(docs), [])
+
+    def test_the_explorer_s_tailscale_cannot_be_switched_on_without_its_own_key(self):
+        text, err = check_charts.render(
+            self.chart,
+            self.library,
+            self.tmp.name,
+            {"config.file_explorer_tailscale_enabled": "true"},
+        )
+        self.assertIsNone(text)
+        self.assertIn("file_explorer_tailscale_auth_key", err)
+
+    def test_the_explorer_keeps_identities_apart_from_the_app_s(self):
+        spec = self.gateway(self.docs({**PRIVATE_ON, **EXPLORER_WAYS_ON}))
+        mounts = {
+            c["name"]: {m.get("subPath") for m in c.get("volumeMounts") or []}
+            for c in spec["containers"]
+        }
+        self.assertIn("release/tor", mounts["tor"])
+        self.assertIn("release/file-explorer-tor", mounts["file-explorer-tor"])
+        self.assertIn("release/tailscale", mounts["tailscale"])
+        self.assertIn(
+            "release/file-explorer-tailscale", mounts["file-explorer-tailscale"]
+        )
+        self.assertNotEqual(
+            self.env(spec, "tailscale")["TS_HOSTNAME"],
+            self.env(spec, "file-explorer-tailscale")["TS_HOSTNAME"],
+        )
+
+    def test_the_explorer_cannot_change_its_own_onion_key_or_tailscale_identity(self):
+        spec = self.gateway(self.docs(EXPLORER_WAYS_ON))
+        explorer = next(c for c in spec["containers"] if c["name"] == "file-explorer")
+        read_only = {
+            m.get("subPath")
+            for m in explorer["volumeMounts"]
+            if m.get("readOnly") is True
+        }
+        self.assertIn("release/file-explorer-tor", read_only)
+        self.assertIn("release/file-explorer-tailscale", read_only)
+
+    def test_two_tailscale_devices_in_one_pod_do_not_fight_over_a_port(self):
+        spec = self.gateway(self.docs({**PRIVATE_ON, **EXPLORER_WAYS_ON}))
+        self.assertEqual(
+            self.env(spec, "file-explorer-tailscale")["TS_TAILSCALED_EXTRA_ARGS"],
+            "--port=0",
+        )
+
+    def test_an_explorer_entry_point_without_the_login_is_reported(self):
+        docs = self.docs(EXPLORER_WAYS_ON)
+        for d in docs:
+            if d.get("kind") == "ConfigMap" and "Caddyfile" in (d.get("data") or {}):
+                d["data"]["Caddyfile"] = d["data"]["Caddyfile"].replace(
+                    "http://:18794 {\n  bind 127.0.0.1\n  basic_auth",
+                    "http://:18794 {\n  bind 127.0.0.1\n  log",
+                )
+        found = self.ways_failures(docs)
+        self.assertEqual(len(found), 1)
+        self.assertIn("18794", found[0])
+
+    def test_app_address_off_and_explorer_s_on_registers_only_the_explorer(self):
+        docs = self.docs(
+            {
+                "config.yolab_enabled": "false",
+                "config.tor_enabled": "true",
+                "config.file_explorer_yolab_enabled": "true",
+            }
+        )
+        spec = self.gateway(docs)
+        register = next(c for c in spec["initContainers"] if c["name"] == "wg-register")
+        env = {e["name"]: e.get("value") for e in register["env"]}
+        self.assertEqual(env["SERVICE_NAME"], "")
+        self.assertTrue(env["ALIASES"].startswith("FILE_EXPLORER_FQDN="))
+        self.assertIn("wireguard", self.names(spec))
+        caddyfile = check_charts.configmap_data(docs, "-caddy", "Caddyfile")
+        self.assertIn("{$FILE_EXPLORER_FQDN}", caddyfile)
+        self.assertNotIn("YOLAB_FQDN", caddyfile)
+
+    def test_an_explorer_reached_only_over_tor_needs_no_tunnel(self):
+        docs = self.docs(
+            {
+                "config.yolab_enabled": "false",
+                "config.tor_enabled": "true",
+                "config.file_explorer_yolab_enabled": "false",
+                "config.file_explorer_tor_enabled": "true",
+            }
+        )
+        spec = self.gateway(docs)
+        inits = self.names(spec, "initContainers")
+        self.assertNotIn("wg-register", inits)
+        self.assertIn("yolab-env", inits)
+        self.assertFalse({"wireguard"} & self.names(spec))
+        self.assertIn("file-explorer-tor", self.names(spec))
+        explorer_init = next(
+            c for c in spec["initContainers"] if c["name"] == "file-explorer-init"
+        )
+        self.assertNotIn("FILE_EXPLORER_FQDN", explorer_init["command"][2])
+        caddyfile = check_charts.configmap_data(docs, "-caddy", "Caddyfile")
+        self.assertNotIn("FILE_EXPLORER_FQDN", caddyfile)
+
+    def test_from_before_the_switches_the_explorer_follows_the_app_s_address(self):
+        spec = self.gateway(self.docs(YOLAB_OFF))
+        self.assertNotIn("file-explorer", self.names(spec))
+        self.assertNotIn("wg-register", self.names(spec, "initContainers"))
 
 
 if __name__ == "__main__":

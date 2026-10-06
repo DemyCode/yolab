@@ -3,12 +3,12 @@ name: it-tools
 description: "Collection of handy developer and sysadmin utilities"
 home: https://it-tools.tech
 type: application
-version: 0.1.11
+version: 0.1.12
 appVersion: "2024"
 
 dependencies:
   - name: yolab-common
-    version: "0.1.10"
+    version: "0.1.11"
     repository: "oci://ghcr.io/demycode/charts"
 
 annotations:

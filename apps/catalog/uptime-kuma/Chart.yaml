@@ -3,12 +3,12 @@ name: uptime-kuma
 description: "Self-hosted uptime monitor with status pages and alerting"
 home: https://uptime.kuma.pet
 type: application
-version: 0.1.11
+version: 0.1.12
 appVersion: "1"
 
 dependencies:
   - name: yolab-common
-    version: "0.1.10"
+    version: "0.1.11"
     repository: "oci://ghcr.io/demycode/charts"
 
 annotations:

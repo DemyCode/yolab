@@ -18,7 +18,10 @@ spec:
     spec:
       initContainers:
         {{- include "yolab-common.wgRegisterInit" . | nindent 8 }}
+        {{- include "yolab-common.privateAccessInit" . | nindent 8 }}
       containers:
         {{- include "yolab-common.gatewayContainers" . | nindent 8 }}
+        {{- include "yolab-common.privateAccessContainers" . | nindent 8 }}
       volumes:
         {{- include "yolab-common.gatewayVolumes" . | nindent 8 }}
+        {{- include "yolab-common.privateAccessVolumes" . | nindent 8 }}

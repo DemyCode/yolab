@@ -3,12 +3,12 @@ name: shlink
 description: "URL shortener with click statistics and a REST API"
 home: https://shlink.io
 type: application
-version: 0.1.12
+version: 0.1.13
 appVersion: "4"
 
 dependencies:
   - name: yolab-common
-    version: "0.1.10"
+    version: "0.1.11"
     repository: "oci://ghcr.io/demycode/charts"
 
 annotations:

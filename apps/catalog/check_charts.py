@@ -472,14 +472,14 @@ def check(app, docs, fail, chart_yaml="", schema=None, arches=None):
     if renders_file_explorer:
         outputs = ((schema or {}).get("properties") or {}).get("outputs") or {}
         declared = outputs.get("properties") or {}
-        for key in ("file_explorer_url", "file_explorer_password"):
+        for key, when in EXPLORER_OUTPUTS.items():
             if key not in declared:
                 fail(
                     app,
                     f"renders the file explorer but its schema's outputs "
                     f"do not declare {key}",
                 )
-            elif declared[key].get("when") != EXPLORER_ON:
+            elif declared[key].get("when") != when:
                 fail(
                     app,
                     f"output {key} is not conditioned on the file explorer being "
@@ -808,6 +808,88 @@ def check_private_access(app, docs, offered, fail):
             )
 
 
+EXPLORER_WAYS = {
+    "file_explorer_tor_enabled": {
+        "container": "file-explorer-tor",
+        "state": "file-explorer-tor",
+        "port": 18794,
+    },
+    "file_explorer_tailscale_enabled": {
+        "container": "file-explorer-tailscale",
+        "state": "file-explorer-tailscale",
+        "port": 18793,
+    },
+}
+EXPLORER_WAYS_ON = {
+    "config.file_explorer_tor_enabled": "true",
+    "config.file_explorer_tailscale_enabled": "true",
+    "config.file_explorer_tailscale_auth_key": "tskey-auth-placeholder",
+}
+
+
+def check_file_explorer_ways(app, docs, fail):
+    pod_name, spec = explorer_pod(docs)
+    if spec is None:
+        fail(app, "the file explorer's Tor and Tailscale are on but it does not run")
+        return
+    containers = {c["name"]: c for c in spec.get("containers") or []}
+    caddyfile = configmap_data(docs, "-caddy", "Caddyfile") or ""
+    for key, want in EXPLORER_WAYS.items():
+        c = containers.get(want["container"])
+        if c is None:
+            fail(app, f"{key} is on but pod {pod_name} has no {want['container']}")
+            continue
+        if (c.get("securityContext") or {}).get("privileged"):
+            fail(app, f"the {want['container']} container must not run privileged")
+        state = [sub.strip('"') for _, sub, _ in claim_mounts(spec, c)]
+        if not any(sub.endswith(f"/{want['state']}") for sub in state):
+            fail(
+                app,
+                f"the {want['container']} container keeps no state of its own on "
+                f"the app's volume, so its address changes on every restart",
+            )
+        site = f"http://:{want['port']} {{\n  bind 127.0.0.1\n  basic_auth {{"
+        if site not in caddyfile:
+            fail(
+                app,
+                f"Caddy has no loopback-only entry point behind the explorer's "
+                f"login on port {want['port']} for {want['container']}",
+            )
+    torrc = configmap_data(docs, "-file-explorer", "torrc") or ""
+    port = EXPLORER_WAYS["file_explorer_tor_enabled"]["port"]
+    if f"HiddenServicePort 80 127.0.0.1:{port}" not in torrc:
+        fail(
+            app, "the explorer's onion service does not point at its Caddy entry point"
+        )
+    if "SocksPort 0" not in torrc:
+        fail(app, "the explorer's Tor must not open a SOCKS proxy inside the pod")
+    serve = configmap_data(docs, "-file-explorer", "serve.json") or "{}"
+    try:
+        web = json.loads(serve).get("Web") or {}
+    except json.JSONDecodeError:
+        web = {}
+    targets = [
+        h.get("Proxy")
+        for site in web.values()
+        for h in (site.get("Handlers") or {}).values()
+    ]
+    tailscale_port = EXPLORER_WAYS["file_explorer_tailscale_enabled"]["port"]
+    wanted = f"http://127.0.0.1:{tailscale_port}"
+    if targets != [wanted]:
+        fail(app, f"the explorer's Tailscale serves {targets}, not {wanted}")
+    env = {
+        e["name"]: e.get("value")
+        for e in containers.get("file-explorer-tailscale", {}).get("env") or []
+    }
+    if env.get("TS_USERSPACE") != "true":
+        fail(app, "the explorer's Tailscale must run in userspace")
+    if env.get("TS_KUBE_SECRET") != "":
+        fail(
+            app,
+            "the explorer's Tailscale would keep its identity in a Kubernetes Secret",
+        )
+
+
 def check_yolab_off(app, docs, fail):
     for name, spec in pod_specs(docs):
         names = {c["name"] for c in (spec.get("containers") or [])} | {
@@ -846,6 +928,36 @@ def check_sourced_secrets_reach_the_program(app, docs, fail):
 
 
 EXPLORER_ON = {"properties": {"file_explorer_enabled": {"const": True}}}
+EXPLORER_PUBLIC = {
+    "properties": {"file_explorer_enabled": {"const": True}},
+    "anyOf": [
+        {
+            "properties": {"file_explorer_yolab_enabled": {"const": True}},
+            "required": ["file_explorer_yolab_enabled"],
+        },
+        {
+            "not": {"required": ["file_explorer_yolab_enabled"]},
+            "properties": {"yolab_enabled": {"not": {"const": False}}},
+        },
+    ],
+}
+
+
+def explorer_way_on(switch):
+    return {
+        "properties": {
+            "file_explorer_enabled": {"const": True},
+            switch: {"const": True},
+        }
+    }
+
+
+EXPLORER_OUTPUTS = {
+    "file_explorer_url": EXPLORER_PUBLIC,
+    "file_explorer_password": EXPLORER_ON,
+    "file_explorer_tor_url": explorer_way_on("file_explorer_tor_enabled"),
+    "file_explorer_tailscale_url": explorer_way_on("file_explorer_tailscale_enabled"),
+}
 OUTPUT_FORMATS = {"text", "uri", "secret", "multiline"}
 LEGACY_ANNOTATIONS = ("yolab.io/uischema", "yolab.io/outputs")
 
@@ -1125,6 +1237,18 @@ def main(argv):
 
             if explorer_pod(docs)[1] is None:
                 continue
+            ways, err = render(chart_dir, library_tgz, tmp, EXPLORER_WAYS_ON)
+            if ways is None:
+                fail(
+                    app,
+                    f"helm template with the file explorer's Tor and Tailscale on "
+                    f"failed: {err.splitlines()[-1] if err else 'unknown'}",
+                )
+            else:
+                ways_docs = [d for d in yaml.safe_load_all(ways) if d]
+                check(app, ways_docs, fail, text, schema)
+                check_file_explorer(app, ways_docs, fail)
+                check_file_explorer_ways(app, ways_docs, fail)
             rendered, err = render(
                 chart_dir,
                 library_tgz,

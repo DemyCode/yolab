@@ -274,7 +274,8 @@ fn rebase_job_manifest(
     let command = format!(
         "if [ -d /data/{source_dir} ] && [ ! -e /data/{dest_dir} ]; then \
          mv /data/{source_dir} /data/{dest_dir} && \
-         rm -rf /data/{dest_dir}/tor /data/{dest_dir}/tailscale; fi"
+         rm -rf /data/{dest_dir}/tor /data/{dest_dir}/tailscale \
+         /data/{dest_dir}/file-explorer-tor /data/{dest_dir}/file-explorer-tailscale; fi"
     );
     json!({
         "apiVersion": "batch/v1",
@@ -792,6 +793,12 @@ mod tests {
         assert!(
             command.contains("rm -rf /data/gitea-cd34/tor /data/gitea-cd34/tailscale"),
             "{command}"
+        );
+        assert!(
+            command.contains(
+                "/data/gitea-cd34/file-explorer-tor /data/gitea-cd34/file-explorer-tailscale"
+            ),
+            "the copy's file explorer gets its own onion address and device too: {command}"
         );
         assert!(
             !command.contains("rm -rf /data/gitea-ab12"),

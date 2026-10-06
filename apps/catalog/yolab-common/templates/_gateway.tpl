@@ -18,8 +18,13 @@ yolab-tunnel-credentials
 {{- end -}}
 
 
+{{- define "yolab-common.tunnel.enabled" -}}
+{{- if or (eq (include "yolab-common.yolab.enabled" .) "true") (eq (include "yolab-common.fileExplorer.yolab" .) "true") -}}true{{- end -}}
+{{- end -}}
+
+
 {{- define "yolab-common.wgRegisterInit" -}}
-{{- if ne (include "yolab-common.yolab.enabled" .) "true" }}
+{{- if ne (include "yolab-common.tunnel.enabled" .) "true" }}
 {{ include "yolab-common.yolabOffInit" . }}
 {{- else }}
 - name: wg-register
@@ -34,14 +39,15 @@ yolab-tunnel-credentials
         secretKeyRef:
           name: {{ include "yolab-common.tunnelSecretName" . }}
           key: account-token
+    {{- $appOn := eq (include "yolab-common.yolab.enabled" .) "true" }}
     - name: SERVICE_NAME
-      value: {{ ((.Values.yolab).serviceName) | default "" | quote }}
+      value: {{ ternary (((.Values.yolab).serviceName) | default "") "" $appOn | quote }}
     {{- $aliases := list }}
-    {{- if eq (include "yolab-common.fileExplorer.enabled" .) "true" }}
+    {{- if eq (include "yolab-common.fileExplorer.yolab" .) "true" }}
     {{- $aliases = append $aliases (printf "FILE_EXPLORER_FQDN=%s" (include "yolab-common.fileExplorer.subdomain" .)) }}
     {{- end }}
     {{- $base := ((.Values.yolab).serviceName) | default .Release.Name }}
-    {{- $extra := (((.Values.yolab).gateway).aliases) | default dict }}
+    {{- $extra := ternary ((((.Values.yolab).gateway).aliases) | default dict) (dict) $appOn }}
     {{- range $var := keys $extra | sortAlpha }}
     {{- $aliases = append $aliases (printf "%s=%s-%s" $var $base (get $extra $var)) }}
     {{- end }}
@@ -107,7 +113,7 @@ yolab-tunnel-credentials
 
 
 {{- define "yolab-common.gatewayContainers" -}}
-{{- if eq (include "yolab-common.yolab.enabled" .) "true" }}
+{{- if eq (include "yolab-common.tunnel.enabled" .) "true" }}
 {{ include "yolab-common.wireguardContainer" . }}
 {{- end }}
 {{ include "yolab-common.caddyContainer" . }}
@@ -137,7 +143,7 @@ yolab-tunnel-credentials
   ports:
     - containerPort: 80
     - containerPort: 443
-  {{- if eq (include "yolab-common.yolab.enabled" .) "true" }}
+  {{- if eq (include "yolab-common.tunnel.enabled" .) "true" }}
   readinessProbe:
     tcpSocket:
       port: 80

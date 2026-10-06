@@ -220,3 +220,120 @@ describe("the YoLab address switch", () => {
     );
   });
 });
+
+const explorer: ConfigSchema = {
+  type: "object",
+  properties: {
+    file_explorer_enabled: { type: "boolean", default: true },
+    storage_size: { type: "string" },
+  },
+  dependencies: {
+    file_explorer_enabled: {
+      oneOf: [
+        { properties: { file_explorer_enabled: { const: false } } },
+        {
+          properties: {
+            file_explorer_enabled: { const: true },
+            file_explorer_yolab_enabled: { type: "boolean", default: true },
+            file_explorer_tailscale_enabled: {
+              type: "boolean",
+              default: false,
+            },
+            file_explorer_password: {
+              type: "string",
+              writeOnly: true,
+              generate: true,
+            },
+          },
+          dependencies: {
+            file_explorer_yolab_enabled: {
+              oneOf: [
+                {
+                  properties: { file_explorer_yolab_enabled: { const: false } },
+                },
+                {
+                  properties: {
+                    file_explorer_yolab_enabled: { const: true },
+                    file_explorer_subdomain: {
+                      type: "string",
+                      format: "tunnel",
+                      default: "app-files",
+                    },
+                  },
+                },
+              ],
+            },
+            file_explorer_tailscale_enabled: {
+              oneOf: [
+                {
+                  properties: {
+                    file_explorer_tailscale_enabled: { const: false },
+                  },
+                },
+                {
+                  properties: {
+                    file_explorer_tailscale_enabled: { const: true },
+                    file_explorer_tailscale_auth_key: {
+                      type: "string",
+                      writeOnly: true,
+                    },
+                  },
+                },
+              ],
+            },
+          },
+        },
+      ],
+    },
+  },
+};
+
+describe("the file explorer's own ways in", () => {
+  it("places each nested switch's fields right under it, inside the explorer", () => {
+    const order = uiSchemaFor(explorer, "6.yolab.io")["ui:order"] as string[];
+    expect(order).toEqual([
+      "file_explorer_enabled",
+      "file_explorer_yolab_enabled",
+      "file_explorer_subdomain",
+      "file_explorer_tailscale_enabled",
+      "file_explorer_tailscale_auth_key",
+      "file_explorer_password",
+      "storage_size",
+      "*",
+    ]);
+  });
+
+  it("gives nested fields their widgets and attaches them", () => {
+    const ui = uiSchemaFor(explorer, "6.yolab.io") as Record<
+      string,
+      Record<string, unknown>
+    >;
+    expect(ui.file_explorer_subdomain["ui:widget"]).toBe("TunnelWidget");
+    expect(ui.file_explorer_tailscale_auth_key["ui:widget"]).toBe(
+      "PasswordWidget",
+    );
+    expect(ui.file_explorer_tailscale_auth_key["ui:options"]).toMatchObject({
+      attached: true,
+    });
+  });
+
+  it("prefills the explorer's switches and then the branches they select", () => {
+    expect(
+      chosenBranchDefaults(explorer, { file_explorer_enabled: true }),
+    ).toEqual({
+      file_explorer_yolab_enabled: true,
+      file_explorer_tailscale_enabled: false,
+      file_explorer_subdomain: "app-files",
+    });
+  });
+
+  it("prefills nothing of the explorer while it is off", () => {
+    expect(
+      chosenBranchDefaults(explorer, { file_explorer_enabled: false }),
+    ).toEqual({});
+  });
+
+  it("does not take the explorer's address for the app's own", () => {
+    expect(addressField(explorer)).toBeUndefined();
+  });
+});

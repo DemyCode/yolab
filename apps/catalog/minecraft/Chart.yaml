@@ -3,11 +3,11 @@ name: minecraft
 description: "Minecraft Java Edition server"
 home: https://www.minecraft.net
 type: application
-version: 0.1.11
+version: 0.1.12
 
 dependencies:
   - name: yolab-common
-    version: "0.1.10"
+    version: "0.1.11"
     repository: "oci://ghcr.io/demycode/charts"
 
 annotations:

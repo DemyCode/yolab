@@ -3,11 +3,11 @@ name: dawarich
 description: "Self-hosted location history and travel tracking"
 home: https://dawarich.app
 type: application
-version: 0.1.14
+version: 0.1.15
 
 dependencies:
   - name: yolab-common
-    version: "0.1.10"
+    version: "0.1.11"
     repository: "oci://ghcr.io/demycode/charts"
 
 annotations:
