@@ -177,8 +177,12 @@ async fn pull_into<H: Host>(
     Ok(())
 }
 
+fn http() -> crate::http::Client {
+    crate::http::client()
+}
+
 async fn fetch_manifest(repo: &ChartRepo) -> anyhow::Result<CatalogManifest> {
-    let body = crate::http::client()
+    let body = http()
         .get(&repo.url)
         .timeout(std::time::Duration::from_secs(30))
         .send()
@@ -259,6 +263,27 @@ pub async fn fetch_exact<H: Host>(
 #[derive(Deserialize)]
 struct ChartVersion {
     version: String,
+}
+
+#[derive(Deserialize, Default)]
+struct ChartAnnotations {
+    #[serde(default)]
+    annotations: std::collections::HashMap<String, String>,
+}
+
+pub fn github_repos(dirs: &[PathBuf]) -> Vec<String> {
+    let mut repos: Vec<String> = dirs
+        .iter()
+        .filter_map(|dir| std::fs::read_dir(dir).ok())
+        .flat_map(|entries| entries.flatten())
+        .filter_map(|entry| std::fs::read_to_string(entry.path().join("Chart.yaml")).ok())
+        .filter_map(|text| serde_norway::from_str::<ChartAnnotations>(&text).ok())
+        .filter_map(|chart| chart.annotations.get("yolab.io/github").cloned())
+        .filter(|repo| crate::github::is_repo(repo))
+        .collect();
+    repos.sort();
+    repos.dedup();
+    repos
 }
 
 pub fn cached_at_version(
@@ -370,6 +395,21 @@ impl crate::runtime::Controller for ChartSyncController {
     }
 }
 
+async fn refresh_github_stars(client: &Client) {
+    let dirs: Vec<PathBuf> = chart_sources(client)
+        .await
+        .into_iter()
+        .map(|(_, dir)| dir)
+        .collect();
+    let repos = github_repos(&dirs);
+    let now = i64::try_from(crate::system::now_secs()).unwrap_or(i64::MAX);
+    match crate::github::refresh(client, &http(), crate::github::API, &repos, now).await {
+        Ok(n) if n > 0 => tracing::info!("chart sync: GitHub stars refreshed for {n} project(s)"),
+        Ok(_) => {}
+        Err(e) => tracing::warn!("chart sync: GitHub stars not refreshed: {e:#}"),
+    }
+}
+
 async fn sync_all<H: Host>(client: &Client, host: &H) -> anyhow::Result<crate::runtime::Tick> {
     let mut failed = Vec::new();
     for repo in list_repos(client).await {
@@ -379,6 +419,7 @@ async fn sync_all<H: Host>(client: &Client, host: &H) -> anyhow::Result<crate::r
             Err(e) => failed.push(format!("{}: {e}", repo.name)),
         }
     }
+    refresh_github_stars(client).await;
     if failed.is_empty() {
         Ok(crate::runtime::Tick::Done)
     } else {
@@ -389,6 +430,32 @@ async fn sync_all<H: Host>(client: &Client, host: &H) -> anyhow::Result<crate::r
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn chart_in(root: &Path, name: &str, annotations: &str) {
+        let dir = root.join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("Chart.yaml"),
+            format!("name: {name}\nversion: 1.0.0\nannotations:\n{annotations}"),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn every_repository_and_zip_chart_s_github_project_is_collected_once() {
+        let official = tempfile::tempdir().unwrap();
+        let custom = tempfile::tempdir().unwrap();
+        chart_in(official.path(), "immich", "  yolab.io/github: immich-app/immich\n");
+        chart_in(official.path(), "media-stack", "  yolab.io/tagline: no project\n");
+        chart_in(official.path(), "broken", "  yolab.io/github: not a path\n");
+        chart_in(custom.path(), "my-immich", "  yolab.io/github: immich-app/immich\n");
+        chart_in(custom.path(), "notes", "  yolab.io/github: someone/notes\n");
+        let dirs = vec![official.path().to_path_buf(), custom.path().to_path_buf()];
+        assert_eq!(
+            github_repos(&dirs),
+            vec!["immich-app/immich".to_string(), "someone/notes".to_string()]
+        );
+    }
 
     #[test]
     fn repo_names_are_constrained() {

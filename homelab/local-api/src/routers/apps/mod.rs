@@ -83,6 +83,11 @@ pub struct CatalogApp {
     pub home: String,
     pub icon: String,
     pub category: String,
+    pub github: String,
+    pub tagline: String,
+    pub collections: Vec<String>,
+    pub stars: Option<u64>,
+    pub pushed_at: Option<String>,
     pub chart_version: String,
     pub schema: Value,
 }
@@ -266,6 +271,9 @@ fn tunnel_config(cfg: &Config) -> anyhow::Result<toml::Table> {
 const ANN_DISPLAY_NAME: &str = "yolab.io/display-name";
 const ANN_ICON: &str = "yolab.io/icon";
 const ANN_CATEGORY: &str = "yolab.io/category";
+const ANN_GITHUB: &str = "yolab.io/github";
+const ANN_TAGLINE: &str = "yolab.io/tagline";
+const ANN_COLLECTIONS: &str = "yolab.io/collections";
 
 #[derive(Deserialize, Default)]
 struct ChartYaml {
@@ -554,7 +562,13 @@ pub async fn tunnel_domain(State(state): State<AppState>) -> Result<Json<DomainR
     }))
 }
 
-fn catalog_entry_from(repo: String, meta: ChartMeta) -> CatalogApp {
+fn catalog_entry_from(
+    repo: String,
+    meta: ChartMeta,
+    stars: &std::collections::HashMap<String, crate::github::RepoStats>,
+) -> CatalogApp {
+    let github = meta.ann(ANN_GITHUB).to_string();
+    let known = stars.get(&github).filter(|s| !s.archived || s.stars > 0);
     CatalogApp {
         id: meta.chart.name.clone(),
         repo,
@@ -563,6 +577,17 @@ fn catalog_entry_from(repo: String, meta: ChartMeta) -> CatalogApp {
         home: meta.chart.home.clone(),
         icon: meta.ann(ANN_ICON).to_string(),
         category: meta.ann(ANN_CATEGORY).to_string(),
+        tagline: meta.ann(ANN_TAGLINE).to_string(),
+        collections: meta
+            .ann(ANN_COLLECTIONS)
+            .split(',')
+            .map(str::trim)
+            .filter(|c| !c.is_empty())
+            .map(str::to_string)
+            .collect(),
+        stars: known.map(|s| s.stars),
+        pushed_at: known.and_then(|s| s.pushed_at.clone()),
+        github,
         chart_version: meta.chart.version.clone(),
         schema: meta.app.config(),
     }
@@ -586,12 +611,13 @@ pub async fn refresh_catalog_app(
         Err(e) => (false, e.to_string()),
     };
 
+    let stars = crate::github::read_all(&b.kube).await.unwrap_or_default();
     let entry = crate::charts::chart_sources(&b.kube)
         .await
         .into_iter()
         .find_map(|(repo, dir)| {
             let m = read_chart(&dir.join(&id))?;
-            Some(catalog_entry_from(repo, m))
+            Some(catalog_entry_from(repo, m, &stars))
         });
 
     Ok(Json(serde_json::json!({
@@ -605,7 +631,9 @@ pub async fn catalog(State(state): State<AppState>) -> Result<Json<Vec<CatalogAp
     let mut apps: Vec<CatalogApp> = vec![];
     let mut seen: std::collections::HashSet<String> = Default::default();
 
-    for (repo, dir) in crate::charts::chart_sources(&state.kube.client().await?).await {
+    let client = state.kube.client().await?;
+    let stars = crate::github::read_all(&client).await.unwrap_or_default();
+    for (repo, dir) in crate::charts::chart_sources(&client).await {
         let Ok(rd) = std::fs::read_dir(&dir) else {
             continue;
         };
@@ -616,7 +644,7 @@ pub async fn catalog(State(state): State<AppState>) -> Result<Json<Vec<CatalogAp
             if !seen.insert(meta.chart.name.clone()) {
                 continue;
             }
-            apps.push(catalog_entry_from(repo.clone(), meta));
+            apps.push(catalog_entry_from(repo.clone(), meta, &stars));
         }
     }
     apps.sort_by_key(|a| a.name.to_lowercase());
