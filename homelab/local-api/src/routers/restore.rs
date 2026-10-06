@@ -8,6 +8,7 @@ use serde_json::{json, Value};
 use crate::error::Outcome;
 use crate::host::Host;
 use crate::ops::{self, Claim, Claimed, InFlight, Liveness, FAILED, RUNNING, SUCCEEDED};
+use crate::poll::Step;
 use crate::records::Store;
 use crate::routers::backup_common::*;
 use crate::runtime::{Controller, Ctx, Requirement, Scope, Tick};
@@ -901,20 +902,29 @@ async fn restore_into<H: Host>(
 
 async fn wait_for_pvc_deleted(client: &Client, namespace: &str, pvc: &str) -> anyhow::Result<()> {
     let claim = crate::k8s::reference("v1", "PersistentVolumeClaim", namespace, pvc);
-    let deadline = std::time::Instant::now() + Duration::from_secs(PVC_DELETE_TIMEOUT_SECS);
-    while std::time::Instant::now() < deadline {
-        match crate::k8s::exists(client, &claim).await {
-            Ok(false) => return Ok(()),
-            Ok(true) => {}
-            Err(e) => {
-                tracing::debug!("restore: cannot tell yet whether {namespace}/{pvc} is gone ({e})")
+    let claim = &claim;
+    crate::poll::until(
+        Duration::from_secs(PVC_DELETE_TIMEOUT_SECS),
+        PVC_DELETE_POLL,
+        move || async move {
+            let still = || {
+                anyhow::anyhow!(
+                    "PVC still present after {PVC_DELETE_TIMEOUT_SECS}s — a pod may still be mounting it"
+                )
+            };
+            match crate::k8s::exists(client, &claim).await {
+                Ok(false) => Step::Done(()),
+                Ok(true) => Step::Pending(still()),
+                Err(e) => {
+                    tracing::debug!(
+                        "restore: cannot tell yet whether {namespace}/{pvc} is gone ({e})"
+                    );
+                    Step::Pending(still())
+                }
             }
-        }
-        tokio::time::sleep(PVC_DELETE_POLL).await;
-    }
-    anyhow::bail!(
-        "PVC still present after {PVC_DELETE_TIMEOUT_SECS}s — a pod may still be mounting it"
+        },
     )
+    .await
 }
 
 async fn wait_for_rd(client: &Client, namespace: &str, dest_name: &str) -> anyhow::Result<()> {
@@ -924,26 +934,29 @@ async fn wait_for_rd(client: &Client, namespace: &str, dest_name: &str) -> anyho
         namespace,
         dest_name,
     );
-    let deadline = std::time::Instant::now() + Duration::from_secs(RD_TIMEOUT_SECS);
-    loop {
-        let v = crate::k8s::get(client, &destination).await.ok().flatten();
-        let result = v.as_ref().and_then(|v| {
-            v["status"]["latestMoverStatus"]["result"]
-                .as_str()
-                .map(String::from)
-        });
-        match result.as_deref() {
-            Some("Successful") => return Ok(()),
-            Some("Failed") => anyhow::bail!("ReplicationDestination reported failure"),
-            _ => {
-                if std::time::Instant::now() > deadline {
-                    anyhow::bail!("restore timed out after {}s", RD_TIMEOUT_SECS);
+    let destination = &destination;
+    crate::poll::until(
+        Duration::from_secs(RD_TIMEOUT_SECS),
+        RD_POLL,
+        move || async move {
+            let v = crate::k8s::get(client, &destination).await.ok().flatten();
+            match v
+                .as_ref()
+                .and_then(|v| v["status"]["latestMoverStatus"]["result"].as_str())
+            {
+                Some("Successful") => Step::Done(()),
+                Some("Failed") => {
+                    Step::Failed(anyhow::anyhow!("ReplicationDestination reported failure"))
                 }
-                tokio::time::sleep(RD_POLL).await;
+                _ => Step::Pending(anyhow::anyhow!(
+                    "restore timed out after {RD_TIMEOUT_SECS}s"
+                )),
             }
-        }
-    }
+        },
+    )
+    .await
 }
+
 
 async fn read_deployment_scales(client: &Client, ns: &str) -> anyhow::Result<Vec<DeploymentScale>> {
     let items = crate::k8s::list(

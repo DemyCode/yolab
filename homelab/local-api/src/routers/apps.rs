@@ -2001,26 +2001,25 @@ async fn wait_for_volumes_deleted(
     client: &Client,
     ns: &str,
     wait: std::time::Duration,
-    poll: std::time::Duration,
+    every: std::time::Duration,
 ) -> anyhow::Result<()> {
-    let deadline = tokio::time::Instant::now() + wait;
-    loop {
-        let left = crate::k8s::list(client, "v1", "PersistentVolume", None, &Default::default())
-            .await
-            .map(|pvs| volumes_of(&pvs, ns));
-        match left {
-            Ok(left) if left.is_empty() => return Ok(()),
-            _ if tokio::time::Instant::now() < deadline => tokio::time::sleep(poll).await,
-            Ok(left) => anyhow::bail!(
-                "the app is gone but its volumes {} were not deleted, so their data is still on the disks",
-                left.join(", ")
-            ),
-            Err(e) => anyhow::bail!(
+    crate::poll::until(wait, every, move || async move {
+        match crate::k8s::list(client, "v1", "PersistentVolume", None, &Default::default()).await {
+            Ok(pvs) => match volumes_of(&pvs, ns) {
+                left if left.is_empty() => crate::poll::Step::Done(()),
+                left => crate::poll::Step::Pending(anyhow::anyhow!(
+                    "the app is gone but its volumes {} were not deleted, so their data is still on the disks",
+                    left.join(", ")
+                )),
+            },
+            Err(e) => crate::poll::Step::Pending(anyhow::anyhow!(
                 "the app is gone but whether its volumes were deleted could not be checked: {e}"
-            ),
+            )),
         }
-    }
+    })
+    .await
 }
+
 
 async fn run_teardown<H: crate::host::Host>(
     b: &Backend<H>,

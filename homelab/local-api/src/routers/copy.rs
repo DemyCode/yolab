@@ -3,6 +3,7 @@ use std::time::Duration;
 use serde_json::{json, Value};
 
 use crate::error::Outcome;
+use crate::poll::Step;
 use kube::Client;
 
 const SNAPSHOT_CLASS: &str = "csi-cephfs-snapclass";
@@ -310,31 +311,34 @@ async fn wait_for_snapshot_ready(
     namespace: &str,
     snapshot: &str,
 ) -> anyhow::Result<()> {
-    let deadline = std::time::Instant::now() + Duration::from_secs(SNAPSHOT_WAIT_SECS);
-    loop {
-        let v = crate::k8s::get(client, &volume_snapshot(namespace, snapshot))
-            .await
-            .ok()
-            .flatten();
-        if let Some(err) = v
-            .as_ref()
-            .and_then(|v| v["status"]["error"]["message"].as_str())
-        {
-            anyhow::bail!("snapshot {namespace}/{snapshot} failed: {err}");
-        }
-        if v.as_ref()
-            .and_then(|v| v["status"]["readyToUse"].as_bool())
-            .unwrap_or(false)
-        {
-            return Ok(());
-        }
-        if std::time::Instant::now() > deadline {
-            anyhow::bail!(
+    crate::poll::until(
+        Duration::from_secs(SNAPSHOT_WAIT_SECS),
+        Duration::from_secs(POLL_SECS),
+        move || async move {
+            let v = crate::k8s::get(client, &volume_snapshot(namespace, snapshot))
+                .await
+                .ok()
+                .flatten();
+            if let Some(err) = v
+                .as_ref()
+                .and_then(|v| v["status"]["error"]["message"].as_str())
+            {
+                return Step::Failed(anyhow::anyhow!(
+                    "snapshot {namespace}/{snapshot} failed: {err}"
+                ));
+            }
+            if v.as_ref()
+                .and_then(|v| v["status"]["readyToUse"].as_bool())
+                .unwrap_or(false)
+            {
+                return Step::Done(());
+            }
+            Step::Pending(anyhow::anyhow!(
                 "snapshot {namespace}/{snapshot} was not ready after {SNAPSHOT_WAIT_SECS}s"
-            );
-        }
-        tokio::time::sleep(Duration::from_secs(POLL_SECS)).await;
-    }
+            ))
+        },
+    )
+    .await
 }
 
 async fn wait_for_pvc_bound(
@@ -343,25 +347,30 @@ async fn wait_for_pvc_bound(
     pvc: &str,
     timeout_secs: u64,
 ) -> anyhow::Result<()> {
-    let deadline = std::time::Instant::now() + Duration::from_secs(timeout_secs);
-    loop {
-        match crate::k8s::get(client, &claim(namespace, pvc)).await {
-            Ok(None) => anyhow::bail!("{namespace}/{pvc} was removed before it bound"),
-            Err(_) => {}
-            Ok(Some(v)) => match v["status"]["phase"].as_str() {
-                Some("Bound") => return Ok(()),
-                Some(other) if other != "Pending" => {
-                    anyhow::bail!("{namespace}/{pvc} entered {other} instead of binding")
-                }
-                _ => {}
-            },
-        }
-        if std::time::Instant::now() > deadline {
-            anyhow::bail!("{namespace}/{pvc} did not bind after {timeout_secs}s");
-        }
-        tokio::time::sleep(Duration::from_secs(POLL_SECS)).await;
-    }
+    crate::poll::until(
+        Duration::from_secs(timeout_secs),
+        Duration::from_secs(POLL_SECS),
+        move || async move {
+            let not_yet =
+                || anyhow::anyhow!("{namespace}/{pvc} did not bind after {timeout_secs}s");
+            match crate::k8s::get(client, &claim(namespace, pvc)).await {
+                Ok(None) => Step::Failed(anyhow::anyhow!(
+                    "{namespace}/{pvc} was removed before it bound"
+                )),
+                Err(_) => Step::Pending(not_yet()),
+                Ok(Some(v)) => match v["status"]["phase"].as_str() {
+                    Some("Bound") => Step::Done(()),
+                    Some(other) if other != "Pending" => Step::Failed(anyhow::anyhow!(
+                        "{namespace}/{pvc} entered {other} instead of binding"
+                    )),
+                    _ => Step::Pending(not_yet()),
+                },
+            }
+        },
+    )
+    .await
 }
+
 
 async fn cleanup(client: &Client, name: &str, source_namespace: &str, dest_namespace: &str) {
     let steps = [
