@@ -134,8 +134,8 @@ pub fn build_router(state: AppState) -> Router {
             get(store::settings).put(store::set_settings),
         )
         .route(
-            "/api/store/apps/:id/rating",
-            get(store::my_rating).put(store::rate),
+            "/api/store/apps/:id/heart",
+            get(store::my_heart).put(store::set_heart),
         )
         .route(
             "/api/store/apps/:id/comments",

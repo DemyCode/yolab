@@ -1,12 +1,13 @@
 import { useState } from "react";
-import { ExternalLink, Star } from "lucide-react";
+import { Heart } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { buttonClass } from "@/components/ui/button-variants";
 import { Card } from "@/components/ui/card";
 import { Switch } from "@/components/ui/input";
 import { Row, Section } from "@/components/ui/list";
 import { api, ApiError } from "@/lib/api";
 import { formatDateTime, relativeTime } from "@/lib/format";
-import { githubUrl, hasCommunity, type StoreComment } from "@/lib/store";
+import { formatCount, hasCommunity, type StoreComment } from "@/lib/store";
 import { useApi } from "@/lib/useResource";
 import { cn } from "@/lib/utils";
 import type { CatalogApp } from "@/types/apps";
@@ -19,89 +20,83 @@ function reasonOf(e: unknown): string {
     : "The YoLab platform did not answer.";
 }
 
-function YourRating({ appId }: { appId: string }) {
-  const mine = useApi<{ stars: number | null }>(
-    `store-rating-${appId}`,
-    `/api/store/apps/${appId}/rating`,
+export function HeartButton({
+  app,
+  count,
+}: {
+  app: CatalogApp;
+  count: number;
+}) {
+  const community = hasCommunity(app);
+  const mine = useApi<{ hearted: boolean }>(
+    community ? `store-heart-${app.id}` : null,
+    `/api/store/apps/${app.id}/heart`,
   );
-  const [saved, setSaved] = useState(false);
+  const [delta, setDelta] = useState(0);
+  const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const current = mine.data?.stars ?? null;
 
-  async function choose(stars: number) {
-    const next = stars === current ? null : stars;
+  if (!community) return null;
+
+  const hearted = mine.data?.hearted ?? false;
+  const unavailable = !mine.data && !!mine.error;
+  const shown = Math.max(0, count + delta);
+
+  async function toggle() {
+    const next = !hearted;
+    setBusy(true);
     setError(null);
+    mine.mutate({ hearted: next });
+    setDelta((d) => d + (next ? 1 : -1));
     try {
-      await api.put(`/api/store/apps/${appId}/rating`, { stars: next });
-      mine.mutate({ stars: next });
-      setSaved(true);
+      await api.put(`/api/store/apps/${app.id}/heart`, { hearted: next });
     } catch (e) {
+      mine.mutate({ hearted: !next });
+      setDelta((d) => d - (next ? 1 : -1));
       setError(reasonOf(e));
+    } finally {
+      setBusy(false);
     }
   }
 
   return (
-    <Row
-      label="Your rating"
-      detail={
-        error ??
-        (saved
-          ? "Saved"
-          : current
-            ? "Click your rating again to remove it"
-            : "")
-      }
-      trailing={
-        <div className="flex shrink-0 gap-0.5" role="group" aria-label="Rate">
-          {[1, 2, 3, 4, 5].map((n) => (
-            <button
-              key={n}
-              type="button"
-              onClick={() => void choose(n)}
-              aria-label={`${n} star${n === 1 ? "" : "s"}`}
-              aria-pressed={current !== null && n <= current}
-              className="rounded-control p-1 text-fg-subtle transition-colors hover:text-fg focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
-            >
-              <Star
-                className={cn(
-                  "h-5 w-5",
-                  current !== null && n <= current && "fill-current text-fg",
-                )}
-                aria-hidden
-              />
-            </button>
-          ))}
-        </div>
-      }
-    />
-  );
-}
-
-export function AppAbout({ app }: { app: CatalogApp }) {
-  const repo = githubUrl(app);
-  const community = hasCommunity(app);
-  if (!repo && !community) return null;
-
-  return (
-    <Section title="About">
-      {repo && (
-        <a
-          href={repo}
-          target="_blank"
-          rel="noreferrer noopener"
-          className="flex items-center gap-4 px-5 py-4 transition-colors hover:bg-surface-2 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-primary"
-        >
-          <div className="min-w-0 flex-1">
-            <div className="text-sm font-medium text-fg">On GitHub</div>
-            <div className="mt-0.5 font-mono text-sm tabular-nums text-fg-muted">
-              {app.github}
-            </div>
-          </div>
-          <ExternalLink className="h-4 w-4 shrink-0 text-fg-subtle" />
-        </a>
+    <div className="flex flex-col items-start gap-1 sm:items-end">
+      <button
+        type="button"
+        onClick={() => void toggle()}
+        disabled={busy || unavailable || mine.loading}
+        aria-pressed={hearted}
+        aria-label={
+          hearted
+            ? `Take back your heart for ${app.name}`
+            : `Give ${app.name} a heart`
+        }
+        title={
+          unavailable
+            ? "Hearts need this server to be connected to YoLab"
+            : undefined
+        }
+        className={cn(
+          buttonClass({ variant: "secondary", size: "lg" }),
+          "group gap-2.5 px-4",
+          hearted && "border-fg",
+        )}
+      >
+        <Heart
+          aria-hidden
+          className={cn(
+            "h-5 w-5 transition-transform duration-200 ease-out group-active:scale-75",
+            hearted ? "fill-current text-fg" : "text-fg-muted",
+          )}
+        />
+        <span className="font-mono tabular-nums">{formatCount(shown)}</span>
+      </button>
+      {error && (
+        <p className="text-xs text-danger" role="alert">
+          {error}
+        </p>
       )}
-      {community && <YourRating appId={app.id} />}
-    </Section>
+    </div>
   );
 }
 

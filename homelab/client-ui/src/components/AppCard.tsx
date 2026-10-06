@@ -1,8 +1,9 @@
 import { Link } from "react-router-dom";
-import { Check, Star } from "lucide-react";
+import { Check, Heart } from "lucide-react";
 import { AppIconTile } from "@/components/AppIcon";
+import { GitHubMark } from "@/components/GitHubMark";
 import { taglineFor } from "@/catalog/meta";
-import { formatCount, shownRating, type AppStats } from "@/lib/store";
+import { formatCount, type AppStats } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import type { CatalogApp } from "@/types/apps";
 
@@ -23,23 +24,27 @@ function Installed({ count }: { count: number }) {
 }
 
 function Facts({ app, stats }: { app: CatalogApp; stats?: AppStats }) {
-  const rating = shownRating(stats);
-  const starred = app.stars !== null && app.stars > 0;
-  if (!starred && !rating) return null;
+  const hearts = stats?.hearts ?? 0;
+  const stars = app.stars ?? 0;
+  if (hearts === 0 && stars === 0) return null;
   return (
     <div className="flex items-center gap-3 font-mono text-xs tabular-nums text-fg-subtle">
-      {starred && (
+      {hearts > 0 && (
         <span
           className="inline-flex items-center gap-1"
-          title={`${app.stars!.toLocaleString()} stars on GitHub`}
+          title={`${hearts.toLocaleString()} YoLab ${hearts === 1 ? "heart" : "hearts"}`}
         >
-          <Star className="h-3 w-3" aria-hidden />
-          {formatCount(app.stars!)}
+          <Heart className="h-3 w-3" aria-hidden />
+          {formatCount(hearts)}
         </span>
       )}
-      {rating && (
-        <span title={`Rated ${rating.average} by ${rating.count} YoLab users`}>
-          {rating.average}/5
+      {stars > 0 && (
+        <span
+          className="inline-flex items-center gap-1"
+          title={`${stars.toLocaleString()} stars on GitHub`}
+        >
+          <GitHubMark className="h-3 w-3" />
+          {formatCount(stars)}
         </span>
       )}
     </div>

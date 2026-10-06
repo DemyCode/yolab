@@ -124,20 +124,14 @@ pub async fn stats(State(state): State<AppState>) -> Response {
     forward(&state, Verb::Get, "/catalog/stats".into(), None).await
 }
 
-pub async fn my_rating(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+pub async fn my_heart(State(state): State<AppState>, Path(id): Path<String>) -> Response {
     if !valid_app_id(&id) {
         return bad_app();
     }
-    forward(
-        &state,
-        Verb::Get,
-        format!("/catalog/apps/{id}/rating"),
-        None,
-    )
-    .await
+    forward(&state, Verb::Get, format!("/catalog/apps/{id}/heart"), None).await
 }
 
-pub async fn rate(
+pub async fn set_heart(
     State(state): State<AppState>,
     Path(id): Path<String>,
     Json(body): Json<Value>,
@@ -145,9 +139,9 @@ pub async fn rate(
     if !valid_app_id(&id) {
         return bad_app();
     }
-    let stars = body.get("stars").cloned().unwrap_or(Value::Null);
-    let path = format!("/catalog/apps/{id}/rating");
-    forward(&state, Verb::Put, path, Some(json!({ "stars": stars }))).await
+    let hearted = body.get("hearted").and_then(Value::as_bool).unwrap_or(false);
+    let path = format!("/catalog/apps/{id}/heart");
+    forward(&state, Verb::Put, path, Some(json!({ "hearted": hearted }))).await
 }
 
 pub async fn comments(State(state): State<AppState>, Path(id): Path<String>) -> Response {
@@ -298,25 +292,25 @@ mod tests {
     async fn a_call_carries_the_account_token_and_the_body() {
         let server = MockServer::start().await;
         Mock::given(method("PUT"))
-            .and(path("/catalog/apps/immich/rating"))
+            .and(path("/catalog/apps/immich/heart"))
             .and(header("authorization", "Bearer acct"))
-            .and(body_json(json!({ "stars": 5 })))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "stars": 5 })))
+            .and(body_json(json!({ "hearted": true })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "hearted": true })))
             .expect(1)
             .mount(&server)
             .await;
-        let body = json!({ "stars": 5 });
+        let body = json!({ "hearted": true });
         let (status, got) = call(
             &crate::testkit::http(),
             &platform_at(&server),
             Verb::Put,
-            "/catalog/apps/immich/rating",
+            "/catalog/apps/immich/heart",
             Some(&body),
         )
         .await
         .unwrap();
         assert_eq!(status, 200);
-        assert_eq!(got, json!({ "stars": 5 }));
+        assert_eq!(got, json!({ "hearted": true }));
     }
 
     #[tokio::test]

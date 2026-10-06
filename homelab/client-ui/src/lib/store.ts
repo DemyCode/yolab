@@ -1,10 +1,10 @@
 import type { CatalogApp } from "@/types/apps";
+import { groupFor } from "@/catalog/meta";
 
 export interface AppStats {
   app_id: string;
   installs: number;
-  rating_count: number;
-  rating_average: number | null;
+  hearts: number;
   comment_count: number;
 }
 
@@ -62,8 +62,6 @@ export const COLLECTIONS: Collection[] = [
 ];
 
 export const COLLECTION_SIZE = 6;
-export const INSTALLS_SHOWN_FROM = 10;
-export const RATING_SHOWN_FROM = 3;
 
 export type SortOrder = "popular" | "name" | "updated";
 
@@ -81,25 +79,11 @@ export function statsById(
   return new Map((stats ?? []).map((s) => [s.app_id, s]));
 }
 
-export function shownInstalls(stats: AppStats | undefined): number | null {
-  if (!stats || stats.installs < INSTALLS_SHOWN_FROM) return null;
-  return stats.installs;
-}
 
-export function shownRating(
-  stats: AppStats | undefined,
-): { average: number; count: number } | null {
-  if (!stats || stats.rating_average === null) return null;
-  if (stats.rating_count < RATING_SHOWN_FROM) return null;
-  return {
-    average: Math.round(stats.rating_average * 10) / 10,
-    count: stats.rating_count,
-  };
-}
 
 function popularity(app: CatalogApp, stats: Map<string, AppStats>): number {
-  const installs = shownInstalls(stats.get(app.id)) ?? 0;
-  return installs * 1000 + (app.stars ?? 0);
+  const s = stats.get(app.id);
+  return ((s?.installs ?? 0) + (s?.hearts ?? 0)) * 1000 + (app.stars ?? 0);
 }
 
 export function sortApps(
@@ -155,37 +139,29 @@ export function updatedAgo(iso: string, now: Date = new Date()): string | null {
   return "over a year ago";
 }
 
-export function factsSentence(
-  app: Pick<CatalogApp, "stars" | "pushed_at">,
-  stats: AppStats | undefined,
-  now: Date = new Date(),
-): string | null {
-  const starred =
-    app.stars && app.stars > 0
-      ? `${app.stars.toLocaleString("en-US")} people starred it on GitHub`
-      : null;
-  const ago = app.pushed_at ? updatedAgo(app.pushed_at, now) : null;
-  const updated = ago ? `updated ${ago}` : null;
-  const upstream =
-    starred && updated
-      ? `${starred}, and it was ${updated}.`
-      : starred
-        ? `${starred}.`
-        : updated
-          ? `It was ${updated}.`
-          : null;
+export const SIMILAR_SIZE = 6;
 
-  const installs = shownInstalls(stats);
-  const rating = shownRating(stats);
-  const yolab =
-    installs !== null && rating
-      ? `${installs.toLocaleString("en-US")} YoLab users run it, and they rate it ${rating.average} out of 5.`
-      : installs !== null
-        ? `${installs.toLocaleString("en-US")} YoLab users run it.`
-        : rating
-          ? `${rating.count} YoLab users rate it ${rating.average} out of 5.`
-          : null;
-
-  const said = [upstream, yolab].filter(Boolean).join(" ");
-  return said || null;
+export function similarApps(
+  app: CatalogApp,
+  apps: CatalogApp[],
+  stats: Map<string, AppStats>,
+): CatalogApp[] {
+  const group = groupFor(app);
+  const mine = new Set(app.collections ?? []);
+  const closeness = (other: CatalogApp) =>
+    (groupFor(other) === group ? 3 : 0) +
+    (other.collections ?? []).filter((c) => mine.has(c)).length;
+  const scored = apps
+    .filter((other) => other.id !== app.id)
+    .map((other) => ({ other, score: closeness(other) }))
+    .filter(({ score }) => score > 0);
+  return scored
+    .sort(
+      (a, b) =>
+        b.score - a.score ||
+        popularity(b.other, stats) - popularity(a.other, stats) ||
+        a.other.name.localeCompare(b.other.name),
+    )
+    .slice(0, SIMILAR_SIZE)
+    .map(({ other }) => other);
 }

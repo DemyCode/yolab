@@ -3,13 +3,12 @@ import type { CatalogApp } from "@/types/apps";
 import {
   COLLECTIONS,
   COLLECTION_SIZE,
-  factsSentence,
   formatCount,
   githubUrl,
   hasCommunity,
   inCollection,
-  shownInstalls,
-  shownRating,
+  similarApps,
+  SIMILAR_SIZE,
   sortApps,
   statsById,
   updatedAgo,
@@ -40,8 +39,7 @@ function stats(app_id: string, extra: Partial<AppStats> = {}): AppStats {
   return {
     app_id,
     installs: 0,
-    rating_count: 0,
-    rating_average: null,
+    hearts: 0,
     comment_count: 0,
     ...extra,
   };
@@ -62,21 +60,6 @@ describe("formatCount", () => {
   });
 });
 
-describe("what the store dares to show", () => {
-  it("hides YoLab installs until there are enough to mean something", () => {
-    expect(shownInstalls(stats("a", { installs: 9 }))).toBeNull();
-    expect(shownInstalls(stats("a", { installs: 10 }))).toBe(10);
-    expect(shownInstalls(undefined)).toBeNull();
-  });
-
-  it("hides a rating until three accounts have rated", () => {
-    const two = stats("a", { rating_count: 2, rating_average: 5 });
-    expect(shownRating(two)).toBeNull();
-    const three = stats("a", { rating_count: 3, rating_average: 4.666 });
-    expect(shownRating(three)).toEqual({ average: 4.7, count: 3 });
-  });
-});
-
 describe("sortApps", () => {
   const apps = [
     app("b", { stars: 10, pushed_at: "2026-01-01T00:00:00Z" }),
@@ -89,7 +72,7 @@ describe("sortApps", () => {
     expect(order.map((a) => a.id)).toEqual(["a", "b", "c"]);
   });
 
-  it("lets enough YoLab installs outrank stars", () => {
+  it("lets YoLab installs outrank GitHub stars", () => {
     const byId = statsById([stats("c", { installs: 12 })]);
     expect(sortApps(apps, "popular", byId)[0].id).toBe("c");
   });
@@ -142,7 +125,7 @@ describe("links and community", () => {
     expect(githubUrl({ github: "javascript:alert(1)" })).toBeNull();
   });
 
-  it("opens ratings and comments only for official catalog apps", () => {
+  it("opens hearts and comments only for official catalog apps", () => {
     expect(hasCommunity({ repo: "official" })).toBe(true);
     expect(hasCommunity({ repo: "custom" })).toBe(false);
   });
@@ -166,48 +149,58 @@ describe("updatedAgo", () => {
   });
 });
 
-describe("factsSentence", () => {
-  const now = new Date("2026-10-06T12:00:00Z");
-  const upstream = { stars: 52_300, pushed_at: "2026-10-02T12:00:00Z" };
+describe("sortApps with hearts", () => {
+  it("counts a heart as much as an install", () => {
+    const apps = [app("a", { stars: 900 }), app("b"), app("c")];
+    const byId = statsById([
+      stats("b", { hearts: 2 }),
+      stats("c", { installs: 1 }),
+    ]);
+    expect(sortApps(apps, "popular", byId).map((a) => a.id)).toEqual([
+      "b",
+      "c",
+      "a",
+    ]);
+  });
+});
 
-  it("tells the project's story in one plain sentence", () => {
-    expect(factsSentence(upstream, undefined, now)).toBe(
-      "52,300 people starred it on GitHub, and it was updated 4 days ago.",
+describe("similarApps", () => {
+  const immich = app("immich", { collections: ["replace-google", "family"] });
+
+  it("puts apps of the same kind first, then those sharing collections", () => {
+    const found = similarApps(
+      immich,
+      [
+        immich,
+        app("nextcloud", { collections: ["replace-google"] }),
+        app("photoprism"),
+        app("mealie", { collections: ["family"] }),
+        app("gitea", { collections: ["for-developers"] }),
+      ],
+      new Map(),
     );
+    expect(found.map((a) => a.id)).toEqual([
+      "photoprism",
+      "mealie",
+      "nextcloud",
+    ]);
   });
 
-  it("adds what YoLab users think once there are enough of them", () => {
-    const enough = stats("immich", {
-      installs: 18,
-      rating_count: 5,
-      rating_average: 4.66,
-    });
-    expect(factsSentence(upstream, enough, now)).toBe(
-      "52,300 people starred it on GitHub, and it was updated 4 days ago. " +
-        "18 YoLab users run it, and they rate it 4.7 out of 5.",
+  it("never suggests the app itself or anything unrelated", () => {
+    const found = similarApps(
+      immich,
+      [immich, app("gitea", { collections: ["for-developers"] })],
+      new Map(),
     );
-    const few = stats("immich", { installs: 3, rating_count: 1 });
-    expect(factsSentence(upstream, few, now)).toBe(
-      "52,300 people starred it on GitHub, and it was updated 4 days ago.",
-    );
+    expect(found).toEqual([]);
   });
 
-  it("works with whatever half it has", () => {
-    expect(factsSentence({ stars: 120, pushed_at: null }, undefined, now)).toBe(
-      "120 people starred it on GitHub.",
+  it("keeps the most popular when there are too many", () => {
+    const many = Array.from({ length: SIMILAR_SIZE + 3 }, (_, i) =>
+      app(`x${i}`, { collections: ["family"], stars: i }),
     );
-    expect(
-      factsSentence(
-        { stars: null, pushed_at: "2026-10-05T12:00:00Z" },
-        undefined,
-        now,
-      ),
-    ).toBe("It was updated yesterday.");
-  });
-
-  it("says nothing rather than an empty sentence", () => {
-    expect(
-      factsSentence({ stars: null, pushed_at: null }, undefined, now),
-    ).toBe(null);
+    const found = similarApps(immich, many, new Map());
+    expect(found).toHaveLength(SIMILAR_SIZE);
+    expect(found[0].id).toBe(`x${SIMILAR_SIZE + 2}`);
   });
 });

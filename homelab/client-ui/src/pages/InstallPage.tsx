@@ -5,7 +5,7 @@ import {
   useParams,
   useSearchParams,
 } from "react-router-dom";
-import { ArrowLeft, ExternalLink } from "lucide-react";
+import { ArrowLeft, Download, ExternalLink } from "lucide-react";
 import { Page } from "@/components/AppShell";
 import { Button } from "@/components/ui/button";
 import { buttonClass } from "@/components/ui/button-variants";
@@ -32,8 +32,18 @@ import {
 import { AppIconTile } from "@/components/AppIcon";
 import { configSchemaOf, generatedFields, uiSchemaFor } from "@/lib/schema";
 import { taglineFor } from "@/catalog/meta";
-import { AppAbout, AppComments } from "@/components/StoreCommunity";
-import { factsSentence, githubUrl, type AppStats } from "@/lib/store";
+import { AppComments, HeartButton } from "@/components/StoreCommunity";
+import { AppCard } from "@/components/AppCard";
+import { GitHubMark } from "@/components/GitHubMark";
+import {
+  formatCount,
+  githubUrl,
+  hasCommunity,
+  similarApps,
+  statsById,
+  updatedAgo,
+  type AppStats,
+} from "@/lib/store";
 import { cn } from "@/lib/utils";
 import { Swap } from "@/components/motion";
 import type {
@@ -51,6 +61,7 @@ export function InstallPage() {
   const domain = useApi<DomainResponse>("domain", "/api/tunnel/domain");
   const apps = useApi<AppInfo[]>("apps", "/api/apps");
   const stats = useApi<AppStats[]>("store-stats", "/api/store/stats");
+  const statsMap = useMemo(() => statsById(stats.data), [stats.data]);
 
   const cached = catalog.data?.find((a) => a.id === appId);
 
@@ -72,7 +83,11 @@ export function InstallPage() {
     };
   }, [appId]);
 
-  const app = fresh ?? cached;
+  const app = fresh?.id === appId ? fresh : cached;
+
+  useEffect(() => {
+    window.scrollTo({ top: 0 });
+  }, [appId]);
 
   const [params, setParams] = useSearchParams();
   const origin = useMemo(() => installOrigin(params), [params]);
@@ -325,16 +340,18 @@ export function InstallPage() {
 
   if (!configuring) {
     const tagline = taglineFor(app);
-    const facts = factsSentence(
-      app,
-      stats.data?.find((s) => s.app_id === app.id),
-    );
+    const appStats = statsMap.get(app.id);
+    const installs = appStats?.installs ?? 0;
     const repo = githubUrl(app);
     const website = app.home && app.home !== repo ? app.home : null;
+    const updated = app.pushed_at ? updatedAgo(app.pushed_at) : null;
     const explains = app.description && app.description !== tagline;
+    const similar = similarApps(app, catalog.data ?? [], statsMap);
+    const factLink =
+      "inline-flex items-center gap-1.5 rounded-control transition-colors hover:text-fg focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary";
 
     return (
-      <Page>
+      <Page wide>
         <Link to="/add" className={backLink}>
           <ArrowLeft className="h-4 w-4" />
           All apps
@@ -358,9 +375,16 @@ export function InstallPage() {
               </p>
             </div>
             <div className="flex flex-col gap-2 sm:items-end">
-              <Button size="lg" onClick={openSettings}>
-                Install {app.name}
-              </Button>
+              <div className="flex items-start gap-2">
+                <Button size="lg" onClick={openSettings}>
+                  Install {app.name}
+                </Button>
+                <HeartButton
+                  key={app.id}
+                  app={app}
+                  count={appStats?.hearts ?? 0}
+                />
+              </div>
               {installedOfThisApp.length > 0 && (
                 <p className="text-xs text-fg-subtle">
                   Installing again adds a separate copy
@@ -369,69 +393,109 @@ export function InstallPage() {
             </div>
           </header>
 
-          {(facts || website || repo) && (
-            <div className="mt-6 max-w-[60ch] border-t border-border pt-5">
-              {facts && (
-                <p className="text-[0.95rem] leading-relaxed text-fg">
-                  {facts}
-                </p>
-              )}
-              <div className="mt-3 flex flex-wrap gap-x-5 gap-y-2 text-sm">
-                {website && (
-                  <a
-                    href={website}
-                    target="_blank"
-                    rel="noreferrer noopener"
-                    className="inline-flex items-center gap-1 rounded-control text-fg-muted transition-colors hover:text-fg focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
-                  >
-                    Project website
-                    <ExternalLink className="h-3.5 w-3.5" />
-                  </a>
-                )}
-                {repo && (
-                  <a
-                    href={repo}
-                    target="_blank"
-                    rel="noreferrer noopener"
-                    className="inline-flex items-center gap-1 rounded-control text-fg-muted transition-colors hover:text-fg focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
-                  >
-                    Source code
-                    <ExternalLink className="h-3.5 w-3.5" />
-                  </a>
-                )}
-              </div>
-            </div>
-          )}
+          <ul className="mt-8 flex flex-wrap items-center gap-x-6 gap-y-3 border-y border-border py-4 text-sm text-fg-muted">
+            {hasCommunity(app) && (
+              <li
+                className="inline-flex items-center gap-1.5"
+                title="YoLab accounts that installed it"
+              >
+                <Download className="h-4 w-4" aria-hidden />
+                <span className="font-mono tabular-nums text-fg">
+                  {formatCount(installs)}
+                </span>
+                {installs === 1 ? "install" : "installs"}
+              </li>
+            )}
+            {repo && (
+              <li>
+                <a
+                  href={repo}
+                  target="_blank"
+                  rel="noreferrer noopener"
+                  className={factLink}
+                  title={`${app.github} on GitHub`}
+                >
+                  <GitHubMark className="h-3.5 w-3.5" />
+                  {app.stars !== null && app.stars > 0 ? (
+                    <>
+                      <span className="font-mono tabular-nums text-fg">
+                        {formatCount(app.stars)}
+                      </span>
+                      stars
+                    </>
+                  ) : (
+                    "Source code"
+                  )}
+                </a>
+              </li>
+            )}
+            {updated && <li>Updated {updated}</li>}
+            {website && (
+              <li className="sm:ml-auto">
+                <a
+                  href={website}
+                  target="_blank"
+                  rel="noreferrer noopener"
+                  className={factLink}
+                >
+                  Project website
+                  <ExternalLink className="h-3.5 w-3.5" aria-hidden />
+                </a>
+              </li>
+            )}
+          </ul>
         </Swap>
 
         {notice && <div className="mt-8">{notice}</div>}
 
-        {explains && (
-          <section className="mt-10">
-            <h2 className="mb-2 px-1 text-sm font-semibold text-fg-muted">
-              What it does
+        <div className="max-w-3xl">
+          {explains && (
+            <section className="mt-10">
+              <h2 className="mb-2 px-1 text-sm font-semibold text-fg-muted">
+                What it does
+              </h2>
+              <p className="max-w-[62ch] px-1 leading-relaxed text-fg">
+                {app.description}
+              </p>
+            </section>
+          )}
+
+          {installedOfThisApp.length > 0 && (
+            <Section title="You already run">
+              {installedOfThisApp.map((a) => (
+                <Row
+                  key={a.instance_name}
+                  label={a.instance_name}
+                  detail={a.detail}
+                  onClick={() => navigate(`/app/${a.instance_name}`)}
+                />
+              ))}
+            </Section>
+          )}
+
+          <AppComments app={app} />
+        </div>
+
+        {similar.length > 0 && (
+          <section className="mt-14 border-t border-border pt-8">
+            <h2 className="font-display text-xl font-semibold tracking-tight text-fg">
+              Similar apps
             </h2>
-            <p className="max-w-[62ch] px-1 leading-relaxed text-fg">
-              {app.description}
-            </p>
+            <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              {similar.map((other) => (
+                <AppCard
+                  key={`${other.repo}/${other.id}`}
+                  app={other}
+                  count={
+                    (apps.data ?? []).filter((a) => a.app_id === other.id)
+                      .length
+                  }
+                  stats={statsMap.get(other.id)}
+                />
+              ))}
+            </div>
           </section>
         )}
-
-        {installedOfThisApp.length > 0 && (
-          <Section title="You already run">
-            {installedOfThisApp.map((a) => (
-              <Row
-                key={a.instance_name}
-                label={a.instance_name}
-                detail={a.detail}
-                onClick={() => navigate(`/app/${a.instance_name}`)}
-              />
-            ))}
-          </Section>
-        )}
-
-        <AppAbout app={app} />
-        <AppComments app={app} />
       </Page>
     );
   }
