@@ -243,8 +243,9 @@ jobs:
           set -euo pipefail
           mkdir -p /tmp/pkg
           base=$(grep '^version:' apps/catalog/yolab-common/Chart.yaml | head -1 | awk '{print $2}' | tr -d '"')
-          echo "LIB_VERSION=${base}${SUFFIX}" >> "$GITHUB_ENV"
-          helm package apps/catalog/yolab-common --version "${base}${SUFFIX}" --destination /tmp/pkg
+          LIB_VERSION="${base}${SUFFIX}"
+          echo "LIB_VERSION=${LIB_VERSION}" >> "$GITHUB_ENV"
+          helm package apps/catalog/yolab-common --version "${LIB_VERSION}" --destination /tmp/pkg
           for attempt in 1 2 3 4 5; do
             helm push /tmp/pkg/yolab-common-*.tgz "${REGISTRY}" && break
             sleep $((attempt * 15))
