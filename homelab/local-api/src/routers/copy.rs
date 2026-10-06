@@ -275,8 +275,7 @@ fn rebase_job_manifest(
         "if [ -d /data/{source_dir} ] && [ ! -e /data/{dest_dir} ]; then \
          mv /data/{source_dir} /data/{dest_dir} && \
          rm -rf /data/{dest_dir}/tor /data/{dest_dir}/tailscale \
-         /data/{dest_dir}/file-explorer-tor /data/{dest_dir}/file-explorer-tailscale \
-         /data/{dest_dir}/yolab-state; fi"
+         /data/{dest_dir}/file-explorer-tor /data/{dest_dir}/file-explorer-tailscale; fi"
     );
     json!({
         "apiVersion": "batch/v1",
@@ -804,25 +803,6 @@ mod tests {
         assert!(
             !command.contains("rm -rf /data/gitea-ab12"),
             "the original keeps its identities: {command}"
-        );
-    }
-
-    #[test]
-    fn a_copy_registers_its_own_tunnel_instead_of_taking_over_the_live_originals() {
-        let m = rebase_job_manifest(
-            "yolab-rebase-abcd",
-            "yolab-immich-ntsp",
-            "immich-ntsp-data",
-            "immich-hd6s",
-            "immich-ntsp",
-        );
-        let command = m["spec"]["template"]["spec"]["containers"][0]["args"][0]
-            .as_str()
-            .unwrap();
-        assert!(command.contains("/data/immich-ntsp/yolab-state"), "{command}");
-        assert!(
-            !command.contains("/data/immich-hd6s/yolab-state"),
-            "the original keeps its tunnel: {command}"
         );
     }
 

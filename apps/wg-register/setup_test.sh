@@ -415,17 +415,20 @@ assert_eq "$(state_field wg_private_key)" "PRIVKEY-generated" "state keeps the f
 assert_eq "$(state_field owner)" "yolab-myapp-cd34" "state belongs to the restore"
 case_end
 
-case_start "a restore of a tunnel that never handshook takes it over"
+case_start "a copy of a tunnel the platform has no handshake for registers its own address"
 write_state <<EOF
 $COPIED_STATE
 EOF
 respond verify 200 "$NEVER_SEEN_TUNNEL"
-respond rotate 200 '{}'
+respond create 200 "$TUNNEL_BODY"
 respond records 200 "$RECORD_BODY"
 run_setup
 assert_eq "$RC" "0" "exit code"
-assert_not_called "POST create" "the address must be kept"
-assert_called "PUT rotate" "takeover"
+assert_called "POST create" "no handshake on record is not proof the original is gone"
+assert_not_called "PUT rotate" "the original, possibly live, must keep its key"
+assert_missing "$(wg_conf)" 'PRIVKEY-cached' "the original's key must never be shared"
+assert_eq "$(state_field tunnel_id)" "77" "state holds the new tunnel"
+assert_eq "$(state_field owner)" "yolab-myapp-cd34" "state belongs to the copy"
 case_end
 
 case_start "a restore that loses the takeover race registers its own address"
@@ -500,6 +503,19 @@ run_setup
 assert_eq "$RC" "0" "exit code"
 assert_not_called "POST create" "upgrading must not move every app to a new address"
 assert_eq "$(state_field owner)" "yolab-myapp-cd34" "the state is claimed"
+case_end
+
+case_start "pre-ownership state with no handshake on record stays on its address"
+write_state <<EOF
+$CACHED_STATE
+EOF
+respond verify 200 "$NEVER_SEEN_TUNNEL"
+respond rotate 200 '{}'
+respond records 200 "$RECORD_BODY"
+run_setup
+assert_eq "$RC" "0" "exit code"
+assert_not_called "POST create" "upgrading must not move every app to a new address"
+assert_contains "$(wg_conf)" '2001:db8::42/128' "wg0.conf keeps the address"
 case_end
 
 case_start "pre-ownership state whose tunnel keeps handshaking is another live instance"

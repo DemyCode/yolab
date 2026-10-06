@@ -126,6 +126,9 @@ if [ "$REUSE" = "1" ]; then
         elif [ -z "$PLATFORM_KEY" ]; then
             echo "State was copied from $STATE_OWNER and the platform cannot say whether it is live, registering a new tunnel..."
             REUSE=0
+        elif [ -n "$STATE_OWNER" ] && [ -z "$(tunnel_field last_handshake_age_secs)" ]; then
+            echo "State was copied from $STATE_OWNER and the platform has no handshake for tunnel $TUNNEL_ID, so it cannot tell whether $STATE_OWNER is still live; registering a new tunnel..."
+            REUSE=0
         elif holder_is_live; then
             echo "Tunnel $TUNNEL_ID is live in ${STATE_OWNER:-another instance}; this is a copy, registering its own tunnel..."
             REUSE=0
