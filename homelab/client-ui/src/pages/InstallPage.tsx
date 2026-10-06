@@ -33,7 +33,7 @@ import { AppIconTile } from "@/components/AppIcon";
 import { configSchemaOf, generatedFields, uiSchemaFor } from "@/lib/schema";
 import { taglineFor } from "@/catalog/meta";
 import { AppAbout, AppComments } from "@/components/StoreCommunity";
-import type { AppStats } from "@/lib/store";
+import { factsSentence, githubUrl, type AppStats } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import { Swap } from "@/components/motion";
 import type {
@@ -74,8 +74,27 @@ export function InstallPage() {
 
   const app = fresh ?? cached;
 
-  const [params] = useSearchParams();
+  const [params, setParams] = useSearchParams();
   const origin = useMemo(() => installOrigin(params), [params]);
+  const configuring =
+    origin.mode !== "fresh" || params.get("step") === "settings";
+
+  function openSettings() {
+    setParams((p) => {
+      const next = new URLSearchParams(p);
+      next.set("step", "settings");
+      return next;
+    });
+    window.scrollTo({ top: 0 });
+  }
+
+  function backToOverview() {
+    setParams((p) => {
+      const next = new URLSearchParams(p);
+      next.delete("step");
+      return next;
+    });
+  }
   const [sourceDef, setSourceDef] = useState<AppDefinition | null>(null);
   const [copyData, setCopyData] = useState(copiesDataByDefault(origin.mode));
   const [snapshots, setSnapshots] = useState<
@@ -301,62 +320,163 @@ export function InstallPage() {
     </Banner>
   ) : null;
 
-  const tagline =
+  const backLink =
+    "mb-6 inline-flex items-center gap-1.5 rounded-control text-sm text-fg-muted hover:text-fg focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary";
+
+  if (!configuring) {
+    const tagline = taglineFor(app);
+    const facts = factsSentence(
+      app,
+      stats.data?.find((s) => s.app_id === app.id),
+    );
+    const repo = githubUrl(app);
+    const website = app.home && app.home !== repo ? app.home : null;
+    const explains = app.description && app.description !== tagline;
+
+    return (
+      <Page>
+        <Link to="/add" className={backLink}>
+          <ArrowLeft className="h-4 w-4" />
+          All apps
+        </Link>
+
+        <Swap id="overview" className="block">
+          <header className="grid gap-6 sm:grid-cols-[1fr_auto] sm:items-end">
+            <div className="min-w-0">
+              <AppIconTile
+                appId={app.id}
+                icon={app.icon}
+                name={app.name}
+                size="lg"
+                className="mb-6"
+              />
+              <h1 className="font-display text-[2.4rem] font-semibold leading-[1.05] tracking-[-0.025em] text-fg md:text-[3.25rem]">
+                {app.name}
+              </h1>
+              <p className="mt-3 max-w-[40ch] text-lg leading-snug text-fg-muted">
+                {tagline}
+              </p>
+            </div>
+            <div className="flex flex-col gap-2 sm:items-end">
+              <Button size="lg" onClick={openSettings}>
+                Install {app.name}
+              </Button>
+              {installedOfThisApp.length > 0 && (
+                <p className="text-xs text-fg-subtle">
+                  Installing again adds a separate copy
+                </p>
+              )}
+            </div>
+          </header>
+
+          {(facts || website || repo) && (
+            <div className="mt-6 max-w-[60ch] border-t border-border pt-5">
+              {facts && (
+                <p className="text-[0.95rem] leading-relaxed text-fg">
+                  {facts}
+                </p>
+              )}
+              <div className="mt-3 flex flex-wrap gap-x-5 gap-y-2 text-sm">
+                {website && (
+                  <a
+                    href={website}
+                    target="_blank"
+                    rel="noreferrer noopener"
+                    className="inline-flex items-center gap-1 rounded-control text-fg-muted transition-colors hover:text-fg focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+                  >
+                    Project website
+                    <ExternalLink className="h-3.5 w-3.5" />
+                  </a>
+                )}
+                {repo && (
+                  <a
+                    href={repo}
+                    target="_blank"
+                    rel="noreferrer noopener"
+                    className="inline-flex items-center gap-1 rounded-control text-fg-muted transition-colors hover:text-fg focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+                  >
+                    Source code
+                    <ExternalLink className="h-3.5 w-3.5" />
+                  </a>
+                )}
+              </div>
+            </div>
+          )}
+        </Swap>
+
+        {notice && <div className="mt-8">{notice}</div>}
+
+        {explains && (
+          <section className="mt-10">
+            <h2 className="mb-2 px-1 text-sm font-semibold text-fg-muted">
+              What it does
+            </h2>
+            <p className="max-w-[62ch] px-1 leading-relaxed text-fg">
+              {app.description}
+            </p>
+          </section>
+        )}
+
+        {installedOfThisApp.length > 0 && (
+          <Section title="You already run">
+            {installedOfThisApp.map((a) => (
+              <Row
+                key={a.instance_name}
+                label={a.instance_name}
+                detail={a.detail}
+                onClick={() => navigate(`/app/${a.instance_name}`)}
+              />
+            ))}
+          </Section>
+        )}
+
+        <AppAbout app={app} />
+        <AppComments app={app} />
+      </Page>
+    );
+  }
+
+  const heading =
+    origin.mode === "duplicate"
+      ? `Duplicate ${sourceName ?? app.name}`
+      : origin.mode === "restore"
+        ? `Restore ${sourceName ?? app.name}`
+        : `Install ${app.name}`;
+
+  const subtitle =
     origin.mode === "duplicate"
       ? "A separate app from the same settings, with its own address and storage."
       : origin.mode === "restore"
         ? "Its settings come back from the backup; change any of them before it is installed."
-        : installedOfThisApp.length > 0
-          ? `${taglineFor(app)} You already have ${installedOfThisApp.length === 1 ? "one" : installedOfThisApp.length}; this adds a separate one.`
-          : taglineFor(app);
+        : "Choose how it is set up. You can change these settings later.";
 
   return (
     <Page>
-      <Link
-        to="/add"
-        className="mb-5 inline-flex items-center gap-1.5 rounded-control text-sm text-fg-muted hover:text-fg focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
-      >
-        <ArrowLeft className="h-4 w-4" />
-        All apps
-      </Link>
+      {origin.mode === "fresh" ? (
+        <button type="button" onClick={backToOverview} className={backLink}>
+          <ArrowLeft className="h-4 w-4" />
+          {app.name}
+        </button>
+      ) : (
+        <Link to="/add" className={backLink}>
+          <ArrowLeft className="h-4 w-4" />
+          All apps
+        </Link>
+      )}
 
-      <header className="flex items-center gap-4">
-        <AppIconTile appId={app.id} icon={app.icon} name={app.name} />
-        <div className="min-w-0 flex-1">
-          <h1 className="font-display text-[1.75rem] leading-tight text-fg md:text-4xl">
-            {origin.mode === "duplicate"
-              ? `Duplicate ${sourceName ?? app.name}`
-              : origin.mode === "restore"
-                ? `Restore ${sourceName ?? app.name}`
-                : app.name}
-          </h1>
-          <p className="mt-1 text-sm text-fg-muted">
-            <Swap id={tagline} className="block">
-              {tagline}
-            </Swap>
-          </p>
-          {app.home && origin.mode === "fresh" && (
-            <a
-              href={app.home}
-              target="_blank"
-              rel="noreferrer noopener"
-              className="mt-1 inline-flex items-center gap-1 rounded-control text-sm text-fg-subtle transition-colors hover:text-fg focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
-            >
-              The project&rsquo;s website
-              <ExternalLink className="h-3.5 w-3.5" />
-            </a>
-          )}
-        </div>
-      </header>
+      <Swap id="settings" className="block">
+        <header className="flex items-center gap-4">
+          <AppIconTile appId={app.id} icon={app.icon} name={app.name} />
+          <div className="min-w-0 flex-1">
+            <h1 className="font-display text-[1.75rem] leading-tight text-fg md:text-4xl">
+              {heading}
+            </h1>
+            <p className="mt-1 text-sm text-fg-muted">{subtitle}</p>
+          </div>
+        </header>
+      </Swap>
 
       {notice && <div className="mt-6">{notice}</div>}
-
-      {origin.mode === "fresh" && (
-        <AppAbout
-          app={app}
-          stats={stats.data?.find((s) => s.app_id === app.id)}
-        />
-      )}
 
       <section className="mt-8">
         <h2 className="mb-2 px-1 text-sm font-semibold text-fg-muted">
@@ -458,8 +578,6 @@ export function InstallPage() {
           </p>
         )}
       </div>
-
-      {origin.mode === "fresh" && <AppComments app={app} />}
     </Page>
   );
 }

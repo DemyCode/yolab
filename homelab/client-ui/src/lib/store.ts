@@ -141,3 +141,54 @@ export function githubUrl(app: Pick<CatalogApp, "github">): string | null {
 export function hasCommunity(app: Pick<CatalogApp, "repo">): boolean {
   return app.repo === "official";
 }
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+export function updatedAgo(
+  iso: string,
+  now: Date = new Date(),
+): string | null {
+  const days = Math.floor((now.getTime() - new Date(iso).getTime()) / DAY_MS);
+  if (!Number.isFinite(days) || days < 0) return null;
+  if (days === 0) return "today";
+  if (days === 1) return "yesterday";
+  if (days < 30) return `${days} days ago`;
+  const months = Math.floor(days / 30);
+  if (months < 12) return months === 1 ? "a month ago" : `${months} months ago`;
+  return "over a year ago";
+}
+
+export function factsSentence(
+  app: Pick<CatalogApp, "stars" | "pushed_at">,
+  stats: AppStats | undefined,
+  now: Date = new Date(),
+): string | null {
+  const starred =
+    app.stars && app.stars > 0
+      ? `${app.stars.toLocaleString("en-US")} people starred it on GitHub`
+      : null;
+  const ago = app.pushed_at ? updatedAgo(app.pushed_at, now) : null;
+  const updated = ago ? `updated ${ago}` : null;
+  const upstream =
+    starred && updated
+      ? `${starred}, and it was ${updated}.`
+      : starred
+        ? `${starred}.`
+        : updated
+          ? `It was ${updated}.`
+          : null;
+
+  const installs = shownInstalls(stats);
+  const rating = shownRating(stats);
+  const yolab =
+    installs !== null && rating
+      ? `${installs.toLocaleString("en-US")} YoLab users run it, and they rate it ${rating.average} out of 5.`
+      : installs !== null
+        ? `${installs.toLocaleString("en-US")} YoLab users run it.`
+        : rating
+          ? `${rating.count} YoLab users rate it ${rating.average} out of 5.`
+          : null;
+
+  const said = [upstream, yolab].filter(Boolean).join(" ");
+  return said || null;
+}

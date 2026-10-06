@@ -3,6 +3,7 @@ import type { CatalogApp } from "@/types/apps";
 import {
   COLLECTIONS,
   COLLECTION_SIZE,
+  factsSentence,
   formatCount,
   githubUrl,
   hasCommunity,
@@ -11,6 +12,7 @@ import {
   shownRating,
   sortApps,
   statsById,
+  updatedAgo,
   type AppStats,
 } from "./store";
 
@@ -143,5 +145,69 @@ describe("links and community", () => {
   it("opens ratings and comments only for official catalog apps", () => {
     expect(hasCommunity({ repo: "official" })).toBe(true);
     expect(hasCommunity({ repo: "custom" })).toBe(false);
+  });
+});
+
+describe("updatedAgo", () => {
+  const now = new Date("2026-10-06T12:00:00Z");
+
+  it("speaks in days, then months, then gives up counting", () => {
+    expect(updatedAgo("2026-10-06T08:00:00Z", now)).toBe("today");
+    expect(updatedAgo("2026-10-05T08:00:00Z", now)).toBe("yesterday");
+    expect(updatedAgo("2026-10-02T12:00:00Z", now)).toBe("4 days ago");
+    expect(updatedAgo("2026-09-01T12:00:00Z", now)).toBe("a month ago");
+    expect(updatedAgo("2026-05-01T12:00:00Z", now)).toBe("5 months ago");
+    expect(updatedAgo("2024-01-01T12:00:00Z", now)).toBe("over a year ago");
+  });
+
+  it("says nothing about a date it cannot read or one in the future", () => {
+    expect(updatedAgo("not a date", now)).toBeNull();
+    expect(updatedAgo("2026-12-01T00:00:00Z", now)).toBeNull();
+  });
+});
+
+describe("factsSentence", () => {
+  const now = new Date("2026-10-06T12:00:00Z");
+  const upstream = { stars: 52_300, pushed_at: "2026-10-02T12:00:00Z" };
+
+  it("tells the project's story in one plain sentence", () => {
+    expect(factsSentence(upstream, undefined, now)).toBe(
+      "52,300 people starred it on GitHub, and it was updated 4 days ago.",
+    );
+  });
+
+  it("adds what YoLab users think once there are enough of them", () => {
+    const enough = stats("immich", {
+      installs: 18,
+      rating_count: 5,
+      rating_average: 4.66,
+    });
+    expect(factsSentence(upstream, enough, now)).toBe(
+      "52,300 people starred it on GitHub, and it was updated 4 days ago. " +
+        "18 YoLab users run it, and they rate it 4.7 out of 5.",
+    );
+    const few = stats("immich", { installs: 3, rating_count: 1 });
+    expect(factsSentence(upstream, few, now)).toBe(
+      "52,300 people starred it on GitHub, and it was updated 4 days ago.",
+    );
+  });
+
+  it("works with whatever half it has", () => {
+    expect(
+      factsSentence({ stars: 120, pushed_at: null }, undefined, now),
+    ).toBe("120 people starred it on GitHub.");
+    expect(
+      factsSentence(
+        { stars: null, pushed_at: "2026-10-05T12:00:00Z" },
+        undefined,
+        now,
+      ),
+    ).toBe("It was updated yesterday.");
+  });
+
+  it("says nothing rather than an empty sentence", () => {
+    expect(factsSentence({ stars: null, pushed_at: null }, undefined, now)).toBe(
+      null,
+    );
   });
 });

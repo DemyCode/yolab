@@ -6,15 +6,7 @@ import { Switch } from "@/components/ui/input";
 import { Row, Section } from "@/components/ui/list";
 import { api, ApiError } from "@/lib/api";
 import { formatDateTime, relativeTime } from "@/lib/format";
-import {
-  formatCount,
-  githubUrl,
-  hasCommunity,
-  shownInstalls,
-  shownRating,
-  type AppStats,
-  type StoreComment,
-} from "@/lib/store";
+import { githubUrl, hasCommunity, type StoreComment } from "@/lib/store";
 import { useApi } from "@/lib/useResource";
 import { cn } from "@/lib/utils";
 import type { CatalogApp } from "@/types/apps";
@@ -85,25 +77,10 @@ function YourRating({ appId }: { appId: string }) {
   );
 }
 
-export function AppAbout({
-  app,
-  stats,
-}: {
-  app: CatalogApp;
-  stats?: AppStats;
-}) {
+export function AppAbout({ app }: { app: CatalogApp }) {
   const repo = githubUrl(app);
-  const installs = shownInstalls(stats);
-  const rating = shownRating(stats);
   const community = hasCommunity(app);
   if (!repo && !community) return null;
-
-  const github = [
-    app.stars !== null ? `${app.stars.toLocaleString()} stars` : null,
-    app.pushed_at ? `updated ${relativeTime(app.pushed_at)}` : null,
-  ]
-    .filter(Boolean)
-    .join(" · ");
 
   return (
     <Section title="About">
@@ -117,32 +94,11 @@ export function AppAbout({
           <div className="min-w-0 flex-1">
             <div className="text-sm font-medium text-fg">On GitHub</div>
             <div className="mt-0.5 font-mono text-sm tabular-nums text-fg-muted">
-              {github || app.github}
+              {app.github}
             </div>
           </div>
           <ExternalLink className="h-4 w-4 shrink-0 text-fg-subtle" />
         </a>
-      )}
-      {installs !== null && (
-        <Row
-          label="Installed by YoLab users"
-          trailing={
-            <span className="font-mono text-sm tabular-nums text-fg">
-              {formatCount(installs)}
-            </span>
-          }
-        />
-      )}
-      {rating && (
-        <Row
-          label="Rating"
-          detail={`${rating.count} ratings from YoLab users`}
-          trailing={
-            <span className="font-mono text-sm tabular-nums text-fg">
-              {rating.average} / 5
-            </span>
-          }
-        />
       )}
       {community && <YourRating appId={app.id} />}
     </Section>
