@@ -3,7 +3,7 @@ name: reactive-resume
 description: "Free and open source resume builder"
 home: https://rxresu.me
 type: application
-version: 0.1.16
+version: 0.1.17
 
 dependencies:
   - name: yolab-common
@@ -14,3 +14,5 @@ annotations:
   yolab.io/display-name: "Reactive Resume"
   yolab.io/icon: "📄"
   yolab.io/category: "productivity"
+  yolab.io/github: "reactive-resume/reactive-resume"
+  yolab.io/tagline: "Build a beautiful résumé, privately"

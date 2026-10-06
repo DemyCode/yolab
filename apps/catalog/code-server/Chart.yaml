@@ -3,7 +3,7 @@ name: code-server
 description: "VS Code in the browser, running on your own hardware"
 home: https://coder.com/docs/code-server
 type: application
-version: 0.1.14
+version: 0.1.15
 appVersion: "4"
 
 dependencies:
@@ -15,3 +15,6 @@ annotations:
   yolab.io/display-name: "code-server"
   yolab.io/icon: "💻"
   yolab.io/category: "development"
+  yolab.io/github: "coder/code-server"
+  yolab.io/tagline: "VS Code in your browser, on your own machine"
+  yolab.io/collections: "for-developers"

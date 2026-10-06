@@ -3,7 +3,7 @@ name: memos
 description: "Lightweight, privacy-first note taking"
 home: https://usememos.com
 type: application
-version: 0.1.14
+version: 0.1.15
 appVersion: "stable"
 
 dependencies:
@@ -15,3 +15,6 @@ annotations:
   yolab.io/display-name: "Memos"
   yolab.io/icon: "📝"
   yolab.io/category: "productivity"
+  yolab.io/github: "usememos/memos"
+  yolab.io/tagline: "Quick private notes, like your own Google Keep"
+  yolab.io/collections: "replace-google"

@@ -3,7 +3,7 @@ name: pairdrop
 description: "Send files between your phone and computer, straight across the network"
 home: https://pairdrop.net
 type: application
-version: 0.1.14
+version: 0.1.15
 
 dependencies:
   - name: yolab-common
@@ -14,3 +14,6 @@ annotations:
   yolab.io/display-name: "PairDrop"
   yolab.io/icon: "📤"
   yolab.io/category: "productivity"
+  yolab.io/github: "schlagmichdoch/PairDrop"
+  yolab.io/tagline: "AirDrop between any devices, in the browser"
+  yolab.io/collections: "privacy"

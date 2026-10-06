@@ -3,7 +3,7 @@ name: photoprism
 description: "AI-powered photo library with face and object recognition"
 home: https://www.photoprism.app
 type: application
-version: 0.1.15
+version: 0.1.16
 appVersion: "240915"
 
 dependencies:
@@ -15,3 +15,6 @@ annotations:
   yolab.io/display-name: "PhotoPrism"
   yolab.io/icon: "📷"
   yolab.io/category: "media"
+  yolab.io/github: "photoprism/photoprism"
+  yolab.io/tagline: "Browse and organise your photos with AI"
+  yolab.io/collections: "replace-google"

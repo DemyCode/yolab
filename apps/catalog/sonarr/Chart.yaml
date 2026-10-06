@@ -3,7 +3,7 @@ name: sonarr
 description: "Follows your TV shows and fetches new episodes as they appear"
 home: https://sonarr.tv
 type: application
-version: 0.1.14
+version: 0.1.15
 
 dependencies:
   - name: yolab-common
@@ -14,3 +14,6 @@ annotations:
   yolab.io/display-name: "Sonarr"
   yolab.io/icon: "📺"
   yolab.io/category: "media"
+  yolab.io/github: "Sonarr/Sonarr"
+  yolab.io/tagline: "Automatically find and organise TV shows"
+  yolab.io/collections: "watch-and-listen"

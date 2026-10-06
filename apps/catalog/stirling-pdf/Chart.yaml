@@ -3,7 +3,7 @@ name: stirling-pdf
 description: "Local web toolkit for splitting, merging, and converting PDFs"
 home: https://www.stirlingpdf.com
 type: application
-version: 0.1.14
+version: 0.1.15
 appVersion: "0"
 
 dependencies:
@@ -15,3 +15,6 @@ annotations:
   yolab.io/display-name: "Stirling PDF"
   yolab.io/icon: "📄"
   yolab.io/category: "utilities"
+  yolab.io/github: "Stirling-Tools/Stirling-PDF"
+  yolab.io/tagline: "Merge, split, sign and convert PDFs privately"
+  yolab.io/collections: "privacy"

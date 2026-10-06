@@ -3,7 +3,7 @@ name: mealie
 description: "Recipe manager and meal planner with a shopping list"
 home: https://mealie.io
 type: application
-version: 0.1.14
+version: 0.1.15
 appVersion: "2"
 
 dependencies:
@@ -15,3 +15,6 @@ annotations:
   yolab.io/display-name: "Mealie"
   yolab.io/icon: "🍲"
   yolab.io/category: "productivity"
+  yolab.io/github: "mealie-recipes/mealie"
+  yolab.io/tagline: "Your recipes, meal plans and shopping lists"
+  yolab.io/collections: "family"

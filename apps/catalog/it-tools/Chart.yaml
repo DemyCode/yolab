@@ -3,7 +3,7 @@ name: it-tools
 description: "Collection of handy developer and sysadmin utilities"
 home: https://it-tools.tech
 type: application
-version: 0.1.14
+version: 0.1.15
 appVersion: "2024"
 
 dependencies:
@@ -15,3 +15,6 @@ annotations:
   yolab.io/display-name: "IT Tools"
   yolab.io/icon: "🧰"
   yolab.io/category: "utilities"
+  yolab.io/github: "CorentinTh/it-tools"
+  yolab.io/tagline: "Handy developer tools in one place"
+  yolab.io/collections: "for-developers"

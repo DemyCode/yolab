@@ -3,7 +3,7 @@ name: vaultwarden
 description: "Lightweight Bitwarden-compatible password manager"
 home: https://github.com/dani-garcia/vaultwarden
 type: application
-version: 0.1.14
+version: 0.1.15
 
 dependencies:
   - name: yolab-common
@@ -14,3 +14,6 @@ annotations:
   yolab.io/display-name: "Vaultwarden"
   yolab.io/icon: "🔐"
   yolab.io/category: "productivity"
+  yolab.io/github: "dani-garcia/vaultwarden"
+  yolab.io/tagline: "Your own Bitwarden password manager"
+  yolab.io/collections: "start-here,replace-google,privacy"

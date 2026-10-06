@@ -3,7 +3,7 @@ name: firefly-iii
 description: "Personal finance manager: budgets, accounts and reports"
 home: https://www.firefly-iii.org
 type: application
-version: 0.1.14
+version: 0.1.15
 appVersion: "6"
 
 dependencies:
@@ -15,3 +15,5 @@ annotations:
   yolab.io/display-name: "Firefly III"
   yolab.io/icon: "💰"
   yolab.io/category: "productivity"
+  yolab.io/github: "firefly-iii/firefly-iii"
+  yolab.io/tagline: "A personal finance manager for all your accounts"

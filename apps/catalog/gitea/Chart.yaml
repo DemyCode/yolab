@@ -3,7 +3,7 @@ name: gitea
 description: "Lightweight self-hosted Git service"
 home: https://about.gitea.com
 type: application
-version: 0.1.14
+version: 0.1.15
 
 dependencies:
   - name: yolab-common
@@ -14,3 +14,6 @@ annotations:
   yolab.io/display-name: "Gitea"
   yolab.io/icon: "🐙"
   yolab.io/category: "development"
+  yolab.io/github: "go-gitea/gitea"
+  yolab.io/tagline: "Your own GitHub: Git hosting with issues and CI"
+  yolab.io/collections: "for-developers"

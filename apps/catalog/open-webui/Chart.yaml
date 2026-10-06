@@ -3,7 +3,7 @@ name: open-webui
 description: "AI chat interface powered by Ollama — run LLMs locally"
 home: https://openwebui.com
 type: application
-version: 0.2.7
+version: 0.2.8
 
 dependencies:
   - name: yolab-common
@@ -14,3 +14,5 @@ annotations:
   yolab.io/display-name: "Open WebUI"
   yolab.io/icon: "🤖"
   yolab.io/category: "ai"
+  yolab.io/github: "open-webui/open-webui"
+  yolab.io/tagline: "A ChatGPT-style chat for your own AI models"

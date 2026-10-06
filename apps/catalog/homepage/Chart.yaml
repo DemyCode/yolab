@@ -3,7 +3,7 @@ name: homepage
 description: "Configurable start page and dashboard for your services"
 home: https://gethomepage.dev
 type: application
-version: 0.1.14
+version: 0.1.15
 appVersion: "1"
 
 dependencies:
@@ -15,3 +15,6 @@ annotations:
   yolab.io/display-name: "Homepage"
   yolab.io/icon: "🏠"
   yolab.io/category: "utilities"
+  yolab.io/github: "gethomepage/homepage"
+  yolab.io/tagline: "A start page for all your apps and services"
+  yolab.io/collections: "start-here"

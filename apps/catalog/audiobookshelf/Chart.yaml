@@ -3,7 +3,7 @@ name: audiobookshelf
 description: "Audiobook and podcast server with progress sync"
 home: https://www.audiobookshelf.org
 type: application
-version: 0.1.14
+version: 0.1.15
 appVersion: "2"
 
 dependencies:
@@ -15,3 +15,6 @@ annotations:
   yolab.io/display-name: "Audiobookshelf"
   yolab.io/icon: "🎧"
   yolab.io/category: "media"
+  yolab.io/github: "advplyr/audiobookshelf"
+  yolab.io/tagline: "Your audiobooks and podcasts, streamed anywhere"
+  yolab.io/collections: "watch-and-listen"

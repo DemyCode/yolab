@@ -3,7 +3,7 @@ name: wallos
 description: "Personal subscription tracker"
 home: https://wallosapp.com
 type: application
-version: 0.1.14
+version: 0.1.15
 appVersion: "latest"
 
 dependencies:
@@ -15,3 +15,6 @@ annotations:
   yolab.io/display-name: "Wallos"
   yolab.io/icon: "💳"
   yolab.io/category: "finance"
+  yolab.io/github: "ellite/Wallos"
+  yolab.io/tagline: "Track every subscription you pay for"
+  yolab.io/collections: "family"

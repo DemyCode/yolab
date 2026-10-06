@@ -3,7 +3,7 @@ name: strfry
 description: "Nostr relay"
 home: https://github.com/hoytech/strfry
 type: application
-version: 0.1.14
+version: 0.1.15
 
 dependencies:
   - name: yolab-common
@@ -14,3 +14,5 @@ annotations:
   yolab.io/display-name: "Strfry"
   yolab.io/icon: "📡"
   yolab.io/category: "communication"
+  yolab.io/github: "hoytech/strfry"
+  yolab.io/tagline: "A fast Nostr relay"

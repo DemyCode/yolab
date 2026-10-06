@@ -1055,11 +1055,39 @@ def check_yolab_switch(app, config_obj, props, fail):
             )
 
 
+COLLECTIONS = {
+    "start-here",
+    "replace-google",
+    "family",
+    "watch-and-listen",
+    "privacy",
+    "for-developers",
+    "play",
+}
+GITHUB_REPO = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+TAGLINE_MAX = 60
+
+
+def check_store_annotations(app, annotations, fail):
+    tagline = annotations.get("yolab.io/tagline")
+    if not isinstance(tagline, str) or not tagline.strip():
+        fail(app, "Chart.yaml has no yolab.io/tagline, the one line the store shows")
+    elif len(tagline) > TAGLINE_MAX:
+        fail(app, f"yolab.io/tagline is {len(tagline)} characters, over {TAGLINE_MAX}")
+    github = annotations.get("yolab.io/github")
+    if github is not None and not GITHUB_REPO.match(str(github)):
+        fail(app, f"yolab.io/github {github!r} is not an owner/repo path")
+    for slug in str(annotations.get("yolab.io/collections") or "").split(","):
+        if slug.strip() and slug.strip() not in COLLECTIONS:
+            fail(app, f"yolab.io/collections names {slug.strip()!r}, not a known collection")
+
+
 def check_schema(app, schema, chart_yaml, fail):
     try:
         annotations = (yaml.safe_load(chart_yaml) or {}).get("annotations") or {}
     except yaml.YAMLError:
         annotations = {}
+    check_store_annotations(app, annotations, fail)
     for legacy in LEGACY_ANNOTATIONS:
         if legacy in annotations:
             fail(

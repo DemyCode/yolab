@@ -3,7 +3,7 @@ name: babybuddy
 description: "Track feeds, sleep and nappies without handing a startup your baby's data"
 home: https://docs.baby-buddy.net
 type: application
-version: 0.1.14
+version: 0.1.15
 
 dependencies:
   - name: yolab-common
@@ -14,3 +14,6 @@ annotations:
   yolab.io/display-name: "Baby Buddy"
   yolab.io/icon: "👶"
   yolab.io/category: "productivity"
+  yolab.io/github: "babybuddy/babybuddy"
+  yolab.io/tagline: "Track your baby's sleep, feeding and diapers"
+  yolab.io/collections: "family"

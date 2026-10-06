@@ -3,7 +3,7 @@ name: planka
 description: "Kanban boards for projects and teams"
 home: https://planka.app
 type: application
-version: 0.1.14
+version: 0.1.15
 appVersion: "1"
 
 dependencies:
@@ -15,3 +15,5 @@ annotations:
   yolab.io/display-name: "Planka"
   yolab.io/icon: "📋"
   yolab.io/category: "productivity"
+  yolab.io/github: "plankanban/planka"
+  yolab.io/tagline: "Kanban boards, like Trello"

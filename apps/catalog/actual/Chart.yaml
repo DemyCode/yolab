@@ -3,7 +3,7 @@ name: actual
 description: "Local-first envelope budgeting with multi-device sync"
 home: https://actualbudget.org
 type: application
-version: 0.1.14
+version: 0.1.15
 appVersion: "25"
 
 dependencies:
@@ -15,3 +15,6 @@ annotations:
   yolab.io/display-name: "Actual Budget"
   yolab.io/icon: "💰"
   yolab.io/category: "productivity"
+  yolab.io/github: "actualbudget/actual"
+  yolab.io/tagline: "Envelope budgeting that keeps your finances private"
+  yolab.io/collections: "family"

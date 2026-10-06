@@ -3,7 +3,7 @@ name: grafana
 description: "Dashboards and visualisation for metrics and logs"
 home: https://grafana.com
 type: application
-version: 0.1.14
+version: 0.1.15
 appVersion: "11"
 
 dependencies:
@@ -15,3 +15,6 @@ annotations:
   yolab.io/display-name: "Grafana"
   yolab.io/icon: "📊"
   yolab.io/category: "monitoring"
+  yolab.io/github: "grafana/grafana"
+  yolab.io/tagline: "Dashboards for everything you measure"
+  yolab.io/collections: "for-developers"

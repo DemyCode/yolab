@@ -3,7 +3,7 @@ name: karakeep
 description: "Bookmark and read-later app with automatic tagging"
 home: https://karakeep.app
 type: application
-version: 0.1.14
+version: 0.1.15
 appVersion: "0.23"
 
 dependencies:
@@ -15,3 +15,5 @@ annotations:
   yolab.io/display-name: "Karakeep"
   yolab.io/icon: "🐿️"
   yolab.io/category: "productivity"
+  yolab.io/github: "karakeep-app/karakeep"
+  yolab.io/tagline: "Bookmark anything, with AI tagging and search"

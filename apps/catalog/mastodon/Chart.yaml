@@ -3,7 +3,7 @@ name: mastodon
 description: "Your own corner of the fediverse — a social server you run"
 home: https://joinmastodon.org
 type: application
-version: 0.1.14
+version: 0.1.15
 
 dependencies:
   - name: yolab-common
@@ -14,3 +14,5 @@ annotations:
   yolab.io/display-name: "Mastodon"
   yolab.io/icon: "🐘"
   yolab.io/category: "social"
+  yolab.io/github: "mastodon/mastodon"
+  yolab.io/tagline: "Run your own corner of the fediverse"

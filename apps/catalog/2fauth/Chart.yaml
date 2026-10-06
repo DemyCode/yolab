@@ -3,7 +3,7 @@ name: 2fauth
 description: "Web app for managing two-factor authentication codes"
 home: https://docs.2fauth.app
 type: application
-version: 0.1.14
+version: 0.1.15
 
 dependencies:
   - name: yolab-common
@@ -14,3 +14,6 @@ annotations:
   yolab.io/display-name: "2FAuth"
   yolab.io/icon: "🔑"
   yolab.io/category: "security"
+  yolab.io/github: "Bubka/2FAuth"
+  yolab.io/tagline: "Your two-factor codes, on your own server"
+  yolab.io/collections: "replace-google,privacy"

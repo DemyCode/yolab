@@ -3,7 +3,7 @@ name: metube
 description: "Web front-end for yt-dlp video downloads"
 home: https://github.com/alexta69/metube
 type: application
-version: 0.1.14
+version: 0.1.15
 appVersion: "2024"
 
 dependencies:
@@ -15,3 +15,6 @@ annotations:
   yolab.io/display-name: "MeTube"
   yolab.io/icon: "📥"
   yolab.io/category: "media"
+  yolab.io/github: "alexta69/metube"
+  yolab.io/tagline: "Download videos from YouTube and more"
+  yolab.io/collections: "watch-and-listen"

@@ -3,7 +3,7 @@ name: changedetection
 description: "Watch web pages and get notified when they change"
 home: https://changedetection.io
 type: application
-version: 0.1.14
+version: 0.1.15
 appVersion: "0"
 
 dependencies:
@@ -15,3 +15,6 @@ annotations:
   yolab.io/display-name: "Change Detection"
   yolab.io/icon: "👁️"
   yolab.io/category: "monitoring"
+  yolab.io/github: "dgtlmoon/changedetection.io"
+  yolab.io/tagline: "Get notified when a web page changes"
+  yolab.io/collections: "for-developers"

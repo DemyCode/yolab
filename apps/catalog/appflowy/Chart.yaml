@@ -3,7 +3,7 @@ name: appflowy
 description: "Open-source alternative to Notion. Docs, wikis, and projects in one place."
 home: https://appflowy.io
 type: application
-version: 0.2.15
+version: 0.2.16
 
 dependencies:
   - name: yolab-common
@@ -14,3 +14,5 @@ annotations:
   yolab.io/display-name: "AppFlowy"
   yolab.io/icon: "https://raw.githubusercontent.com/AppFlowy-IO/AppFlowy/main/frontend/resources/flowy_icons/ic_appflowy.png"
   yolab.io/category: "productivity"
+  yolab.io/github: "AppFlowy-IO/AppFlowy"
+  yolab.io/tagline: "An open alternative to Notion"

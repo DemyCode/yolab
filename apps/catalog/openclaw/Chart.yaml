@@ -1,9 +1,9 @@
 apiVersion: v2
 name: openclaw
 description: "Personal AI assistant that connects to WhatsApp, Telegram, Discord, and more"
-home: https://github.com/pjasicek/OpenClaw
+home: https://github.com/openclaw/openclaw
 type: application
-version: 0.1.14
+version: 0.1.15
 appVersion: "latest"
 
 dependencies:
@@ -15,3 +15,5 @@ annotations:
   yolab.io/display-name: "OpenClaw"
   yolab.io/icon: "🦞"
   yolab.io/category: "personal"
+  yolab.io/github: "openclaw/openclaw"
+  yolab.io/tagline: "A personal AI assistant on your chat apps"

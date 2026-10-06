@@ -3,7 +3,7 @@ name: cinny
 description: "Modern Matrix web client"
 home: https://cinny.in
 type: application
-version: 0.1.14
+version: 0.1.15
 
 dependencies:
   - name: yolab-common
@@ -14,3 +14,5 @@ annotations:
   yolab.io/display-name: "Cinny"
   yolab.io/icon: "💬"
   yolab.io/category: "communication"
+  yolab.io/github: "cinnyapp/cinny"
+  yolab.io/tagline: "A clean, modern Matrix chat client"

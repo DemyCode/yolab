@@ -3,7 +3,7 @@ name: n8n
 description: "Workflow automation you can host yourself"
 home: https://n8n.io
 type: application
-version: 0.1.14
+version: 0.1.15
 appVersion: "1"
 
 dependencies:
@@ -15,3 +15,6 @@ annotations:
   yolab.io/display-name: "n8n"
   yolab.io/icon: "🔗"
   yolab.io/category: "productivity"
+  yolab.io/github: "n8n-io/n8n"
+  yolab.io/tagline: "Automate workflows between all your apps"
+  yolab.io/collections: "for-developers"

@@ -3,7 +3,7 @@ name: paperless-ngx
 description: "Scan, OCR and archive your documents into a searchable library"
 home: https://github.com/paperless-ngx/paperless-ngx
 type: application
-version: 0.1.14
+version: 0.1.15
 appVersion: "2"
 
 dependencies:
@@ -15,3 +15,6 @@ annotations:
   yolab.io/display-name: "Paperless-ngx"
   yolab.io/icon: "📄"
   yolab.io/category: "productivity"
+  yolab.io/github: "paperless-ngx/paperless-ngx"
+  yolab.io/tagline: "Scan, index and find all your paper documents"
+  yolab.io/collections: "start-here"

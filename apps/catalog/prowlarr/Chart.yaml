@@ -3,7 +3,7 @@ name: prowlarr
 description: "One place to manage the indexers Sonarr and Radarr search"
 home: https://prowlarr.com
 type: application
-version: 0.1.14
+version: 0.1.15
 
 dependencies:
   - name: yolab-common
@@ -14,3 +14,6 @@ annotations:
   yolab.io/display-name: "Prowlarr"
   yolab.io/icon: "🔍"
   yolab.io/category: "media"
+  yolab.io/github: "Prowlarr/Prowlarr"
+  yolab.io/tagline: "Manage indexers for Sonarr and Radarr"
+  yolab.io/collections: "watch-and-listen"

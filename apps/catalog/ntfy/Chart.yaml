@@ -3,7 +3,7 @@ name: ntfy
 description: "Self-hosted push notification service"
 home: https://ntfy.sh
 type: application
-version: 0.1.14
+version: 0.1.15
 
 dependencies:
   - name: yolab-common
@@ -14,3 +14,6 @@ annotations:
   yolab.io/display-name: "ntfy"
   yolab.io/icon: "🔔"
   yolab.io/category: "utilities"
+  yolab.io/github: "binwiederhier/ntfy"
+  yolab.io/tagline: "Push notifications to your phone from anything"
+  yolab.io/collections: "privacy"

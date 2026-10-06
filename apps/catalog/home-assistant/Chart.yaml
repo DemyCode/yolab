@@ -3,7 +3,7 @@ name: home-assistant
 description: "Home automation and smart-home dashboard"
 home: https://www.home-assistant.io
 type: application
-version: 0.1.14
+version: 0.1.15
 appVersion: "stable"
 
 dependencies:
@@ -15,3 +15,6 @@ annotations:
   yolab.io/display-name: "Home Assistant"
   yolab.io/icon: "🏠"
   yolab.io/category: "home"
+  yolab.io/github: "home-assistant/core"
+  yolab.io/tagline: "Control and automate every device in your home"
+  yolab.io/collections: "start-here,family"

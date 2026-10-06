@@ -3,7 +3,7 @@ name: jellyseerr
 description: "Request manager for Jellyfin, Plex and Emby libraries"
 home: https://github.com/seerr-team/seerr
 type: application
-version: 0.1.15
+version: 0.1.16
 appVersion: "3.5.0"
 
 dependencies:
@@ -15,3 +15,6 @@ annotations:
   yolab.io/display-name: "Seerr"
   yolab.io/icon: "🎬"
   yolab.io/category: "media"
+  yolab.io/github: "seerr-team/seerr"
+  yolab.io/tagline: "Let your household request movies and shows"
+  yolab.io/collections: "watch-and-listen"

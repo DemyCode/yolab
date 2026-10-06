@@ -3,7 +3,7 @@ name: vikunja
 description: "Tasks, projects and kanban boards"
 home: https://vikunja.io
 type: application
-version: 0.1.14
+version: 0.1.15
 appVersion: "0.24"
 
 dependencies:
@@ -15,3 +15,5 @@ annotations:
   yolab.io/display-name: "Vikunja"
   yolab.io/icon: "✅"
   yolab.io/category: "productivity"
+  yolab.io/github: "go-vikunja/vikunja"
+  yolab.io/tagline: "To-do lists and projects, like Todoist"

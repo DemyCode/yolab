@@ -3,7 +3,7 @@ name: shlink
 description: "URL shortener with click statistics and a REST API"
 home: https://shlink.io
 type: application
-version: 0.1.15
+version: 0.1.16
 appVersion: "4"
 
 dependencies:
@@ -15,3 +15,6 @@ annotations:
   yolab.io/display-name: "Shlink"
   yolab.io/icon: "🔗"
   yolab.io/category: "utilities"
+  yolab.io/github: "shlinkio/shlink"
+  yolab.io/tagline: "Short links on your own domain"
+  yolab.io/collections: "for-developers"

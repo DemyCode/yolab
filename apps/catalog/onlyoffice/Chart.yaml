@@ -3,7 +3,7 @@ name: onlyoffice
 description: "Edit documents, spreadsheets and slides in the browser, next to Nextcloud"
 home: https://www.onlyoffice.com
 type: application
-version: 0.1.15
+version: 0.1.16
 dependencies:
   - name: yolab-common
     version: "0.1.13"
@@ -12,3 +12,6 @@ annotations:
   yolab.io/display-name: "ONLYOFFICE Docs"
   yolab.io/icon: "📝"
   yolab.io/category: "productivity"
+  yolab.io/github: "ONLYOFFICE/DocumentServer"
+  yolab.io/tagline: "Edit Word, Excel and PowerPoint files in the browser"
+  yolab.io/collections: "replace-google"

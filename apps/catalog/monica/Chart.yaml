@@ -3,7 +3,7 @@ name: monica
 description: "Personal CRM for remembering the people in your life"
 home: https://www.monicahq.com
 type: application
-version: 0.1.15
+version: 0.1.16
 appVersion: "latest"
 
 dependencies:
@@ -15,3 +15,6 @@ annotations:
   yolab.io/display-name: "Monica"
   yolab.io/icon: "🎂"
   yolab.io/category: "personal"
+  yolab.io/github: "monicahq/monica"
+  yolab.io/tagline: "Remember what matters about the people you love"
+  yolab.io/collections: "family"

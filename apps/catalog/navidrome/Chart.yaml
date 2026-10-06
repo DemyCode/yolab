@@ -3,7 +3,7 @@ name: navidrome
 description: "Music streaming server compatible with Subsonic clients"
 home: https://www.navidrome.org
 type: application
-version: 0.1.14
+version: 0.1.15
 appVersion: "0"
 
 dependencies:
@@ -15,3 +15,6 @@ annotations:
   yolab.io/display-name: "Navidrome"
   yolab.io/icon: "🎵"
   yolab.io/category: "media"
+  yolab.io/github: "navidrome/navidrome"
+  yolab.io/tagline: "Your own Spotify for the music you own"
+  yolab.io/collections: "watch-and-listen"

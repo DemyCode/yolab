@@ -3,7 +3,7 @@ name: nextcloud
 description: "Files, calendar, contacts and photos, self-hosted"
 home: https://nextcloud.com
 type: application
-version: 0.1.14
+version: 0.1.15
 appVersion: "31"
 
 dependencies:
@@ -15,3 +15,6 @@ annotations:
   yolab.io/display-name: "Nextcloud"
   yolab.io/icon: "☁️"
   yolab.io/category: "productivity"
+  yolab.io/github: "nextcloud/server"
+  yolab.io/tagline: "Files, calendar and contacts, like Google Drive"
+  yolab.io/collections: "start-here,replace-google"

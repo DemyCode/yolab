@@ -3,7 +3,7 @@ name: wallabag
 description: "Save articles to read later, stripped of ads and clutter"
 home: https://wallabag.org
 type: application
-version: 0.1.14
+version: 0.1.15
 appVersion: "2"
 
 dependencies:
@@ -15,3 +15,5 @@ annotations:
   yolab.io/display-name: "Wallabag"
   yolab.io/icon: "📑"
   yolab.io/category: "media"
+  yolab.io/github: "wallabag/wallabag"
+  yolab.io/tagline: "Save articles to read later, like Pocket"

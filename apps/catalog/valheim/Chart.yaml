@@ -3,7 +3,7 @@ name: valheim
 description: "Valheim dedicated game server"
 home: https://www.valheimgame.com
 type: application
-version: 0.1.15
+version: 0.1.16
 
 dependencies:
   - name: yolab-common
@@ -14,3 +14,6 @@ annotations:
   yolab.io/display-name: "Valheim"
   yolab.io/icon: "⚔️"
   yolab.io/category: "gaming"
+  yolab.io/github: "community-valheim-tools/valheim-server-docker"
+  yolab.io/tagline: "A dedicated Valheim server for your group"
+  yolab.io/collections: "play"

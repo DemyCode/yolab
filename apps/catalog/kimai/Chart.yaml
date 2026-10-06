@@ -3,7 +3,7 @@ name: kimai
 description: "Track time against projects and turn it into an invoice"
 home: https://www.kimai.org
 type: application
-version: 0.1.14
+version: 0.1.15
 dependencies:
   - name: yolab-common
     version: "0.1.13"
@@ -12,3 +12,5 @@ annotations:
   yolab.io/display-name: "Kimai"
   yolab.io/icon: "⏱️"
   yolab.io/category: "productivity"
+  yolab.io/github: "kimai/kimai"
+  yolab.io/tagline: "Time tracking for freelancers and teams"

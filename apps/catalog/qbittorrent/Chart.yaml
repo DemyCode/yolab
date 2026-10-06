@@ -3,7 +3,7 @@ name: qbittorrent
 description: "BitTorrent client with a web interface"
 home: https://www.qbittorrent.org
 type: application
-version: 0.1.15
+version: 0.1.16
 appVersion: "5"
 
 dependencies:
@@ -15,3 +15,6 @@ annotations:
   yolab.io/display-name: "qBittorrent"
   yolab.io/icon: "⬇️"
   yolab.io/category: "utilities"
+  yolab.io/github: "qbittorrent/qBittorrent"
+  yolab.io/tagline: "A torrent client you control from the browser"
+  yolab.io/collections: "watch-and-listen"

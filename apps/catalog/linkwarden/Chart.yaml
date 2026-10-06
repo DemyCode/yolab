@@ -3,7 +3,7 @@ name: linkwarden
 description: "Collect, organise and archive bookmarks as full page snapshots"
 home: https://linkwarden.app
 type: application
-version: 0.1.14
+version: 0.1.15
 appVersion: "2"
 
 dependencies:
@@ -15,3 +15,5 @@ annotations:
   yolab.io/display-name: "Linkwarden"
   yolab.io/icon: "🔖"
   yolab.io/category: "productivity"
+  yolab.io/github: "linkwarden/linkwarden"
+  yolab.io/tagline: "Save and archive links before they disappear"

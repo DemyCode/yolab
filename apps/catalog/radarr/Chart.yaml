@@ -3,7 +3,7 @@ name: radarr
 description: "Follows films you want and fetches them when they become available"
 home: https://radarr.video
 type: application
-version: 0.1.14
+version: 0.1.15
 
 dependencies:
   - name: yolab-common
@@ -14,3 +14,6 @@ annotations:
   yolab.io/display-name: "Radarr"
   yolab.io/icon: "🎬"
   yolab.io/category: "media"
+  yolab.io/github: "Radarr/Radarr"
+  yolab.io/tagline: "Automatically find and organise movies"
+  yolab.io/collections: "watch-and-listen"

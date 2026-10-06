@@ -3,7 +3,7 @@ name: your-spotify
 description: "Your own listening history and statistics, kept off Spotify's servers"
 home: https://github.com/Yooooomi/your_spotify
 type: application
-version: 0.1.14
+version: 0.1.15
 dependencies:
   - name: yolab-common
     version: "0.1.13"
@@ -12,3 +12,6 @@ annotations:
   yolab.io/display-name: "Your Spotify"
   yolab.io/icon: "🎧"
   yolab.io/category: "media"
+  yolab.io/github: "Yooooomi/your_spotify"
+  yolab.io/tagline: "Your Spotify listening stats, all-time"
+  yolab.io/collections: "watch-and-listen"

@@ -3,7 +3,7 @@ name: kavita
 description: "Fast reading server for comics, manga, and ebooks"
 home: https://www.kavitareader.com
 type: application
-version: 0.1.14
+version: 0.1.15
 appVersion: "0"
 
 dependencies:
@@ -15,3 +15,6 @@ annotations:
   yolab.io/display-name: "Kavita"
   yolab.io/icon: "📕"
   yolab.io/category: "media"
+  yolab.io/github: "Kareadita/Kavita"
+  yolab.io/tagline: "A reader for your manga, comics and books"
+  yolab.io/collections: "watch-and-listen"

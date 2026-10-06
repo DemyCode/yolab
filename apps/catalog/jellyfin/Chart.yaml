@@ -3,7 +3,7 @@ name: jellyfin
 description: "Free and open source media server"
 home: https://jellyfin.org
 type: application
-version: 0.2.8
+version: 0.2.9
 
 dependencies:
   - name: yolab-common
@@ -14,3 +14,6 @@ annotations:
   yolab.io/display-name: "Jellyfin"
   yolab.io/icon: "🎬"
   yolab.io/category: "media"
+  yolab.io/github: "jellyfin/jellyfin"
+  yolab.io/tagline: "Your own Netflix for the movies and shows you own"
+  yolab.io/collections: "start-here,family,watch-and-listen"

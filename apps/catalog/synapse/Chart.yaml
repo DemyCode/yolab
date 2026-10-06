@@ -3,7 +3,7 @@ name: synapse
 description: "Self-hosted Matrix homeserver with Element Web client. Federated, encrypted messaging."
 home: https://element-hq.github.io/synapse
 type: application
-version: 0.1.14
+version: 0.1.15
 
 dependencies:
   - name: yolab-common
@@ -14,3 +14,5 @@ annotations:
   yolab.io/display-name: "Matrix Synapse"
   yolab.io/icon: "https://matrix.org/images/matrix-logo.svg"
   yolab.io/category: "communication"
+  yolab.io/github: "element-hq/synapse"
+  yolab.io/tagline: "Your own Matrix chat server"

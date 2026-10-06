@@ -18,7 +18,13 @@ def schema(config=None, outputs=None, extra=None):
     return {"type": "object", "properties": props}
 
 
-def failures(s, chart_yaml="apiVersion: v2\nname: demo\n"):
+DEMO_CHART = (
+    "apiVersion: v2\nname: demo\nannotations:\n"
+    '  yolab.io/tagline: "A demo app"\n'
+)
+
+
+def failures(s, chart_yaml=DEMO_CHART):
     found = []
     check_charts.check_schema("demo", s, chart_yaml, lambda app, msg: found.append(msg))
     return found
@@ -60,10 +66,40 @@ class CheckSchema(unittest.TestCase):
         self.assertEqual(failures(schema(config={"subdomain": {"type": "string"}})), [])
 
     def test_the_old_annotations_are_refused(self):
-        chart = "annotations:\n  yolab.io/outputs: |\n    []\n  yolab.io/uischema: |\n    {}\n"
+        chart = (
+            "annotations:\n  yolab.io/tagline: demo\n"
+            "  yolab.io/outputs: |\n    []\n  yolab.io/uischema: |\n    {}\n"
+        )
         found = failures(GOOD, chart)
         self.assertEqual(len(found), 2)
         self.assertTrue(all("values.schema.json" in f for f in found))
+
+    def test_an_app_without_a_tagline_is_refused(self):
+        found = failures(GOOD, "apiVersion: v2\nname: demo\n")
+        self.assertEqual(len(found), 1)
+        self.assertIn("yolab.io/tagline", found[0])
+
+    def test_a_tagline_too_long_for_a_store_card_is_refused(self):
+        chart = "annotations:\n  yolab.io/tagline: " + "x" * 61 + "\n"
+        found = failures(GOOD, chart)
+        self.assertEqual(len(found), 1)
+        self.assertIn("over 60", found[0])
+
+    def test_a_github_path_must_be_owner_slash_repo(self):
+        for good in ("immich-app/immich", "dgtlmoon/changedetection.io"):
+            chart = DEMO_CHART + f"  yolab.io/github: {good}\n"
+            self.assertEqual(failures(GOOD, chart), [], good)
+        for bad in ("https://github.com/immich-app/immich", "immich", "a/b/c"):
+            chart = DEMO_CHART + f"  yolab.io/github: \"{bad}\"\n"
+            self.assertEqual(len(failures(GOOD, chart)), 1, bad)
+
+    def test_only_known_collections_may_be_named(self):
+        chart = DEMO_CHART + '  yolab.io/collections: "start-here,family"\n'
+        self.assertEqual(failures(GOOD, chart), [])
+        chart = DEMO_CHART + '  yolab.io/collections: "start-here,best-ever"\n'
+        found = failures(GOOD, chart)
+        self.assertEqual(len(found), 1)
+        self.assertIn("best-ever", found[0])
 
     def test_the_platform_section_is_refused(self):
         found = failures(schema(extra={"yolab": {"type": "object"}}))

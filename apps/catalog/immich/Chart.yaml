@@ -3,7 +3,7 @@ name: immich
 description: "Self-hosted photo and video backup"
 home: https://immich.app
 type: application
-version: 0.2.9
+version: 0.2.10
 
 dependencies:
   - name: yolab-common
@@ -14,3 +14,6 @@ annotations:
   yolab.io/display-name: "Immich"
   yolab.io/icon: "📸"
   yolab.io/category: "media"
+  yolab.io/github: "immich-app/immich"
+  yolab.io/tagline: "Your own Google Photos"
+  yolab.io/collections: "start-here,replace-google,family"

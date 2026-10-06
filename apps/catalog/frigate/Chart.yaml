@@ -3,7 +3,7 @@ name: frigate
 description: "AI-powered security camera NVR with real-time object detection"
 home: https://frigate.video
 type: application
-version: 0.2.8
+version: 0.2.9
 appVersion: "stable"
 
 dependencies:
@@ -15,3 +15,5 @@ annotations:
   yolab.io/display-name: "Frigate"
   yolab.io/icon: "📹"
   yolab.io/category: "home"
+  yolab.io/github: "blakeblackshear/frigate"
+  yolab.io/tagline: "Security camera recording with object detection"

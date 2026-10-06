@@ -3,7 +3,7 @@ name: minecraft
 description: "Minecraft Java Edition server"
 home: https://www.minecraft.net
 type: application
-version: 0.1.14
+version: 0.1.15
 
 dependencies:
   - name: yolab-common
@@ -14,3 +14,6 @@ annotations:
   yolab.io/display-name: "Minecraft"
   yolab.io/icon: "⛏️"
   yolab.io/category: "gaming"
+  yolab.io/github: "itzg/docker-minecraft-server"
+  yolab.io/tagline: "A Minecraft server for you and your friends"
+  yolab.io/collections: "play"

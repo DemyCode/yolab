@@ -3,7 +3,7 @@ name: docmost
 description: "Collaborative wiki and documentation workspace"
 home: https://docmost.com
 type: application
-version: 0.1.14
+version: 0.1.15
 appVersion: "0.10"
 
 dependencies:
@@ -15,3 +15,5 @@ annotations:
   yolab.io/display-name: "Docmost"
   yolab.io/icon: "📚"
   yolab.io/category: "productivity"
+  yolab.io/github: "docmost/docmost"
+  yolab.io/tagline: "Collaborative docs and wiki, like Confluence"

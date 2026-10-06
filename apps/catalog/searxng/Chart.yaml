@@ -3,7 +3,7 @@ name: searxng
 description: "Privacy-respecting metasearch engine"
 home: https://docs.searxng.org
 type: application
-version: 0.1.14
+version: 0.1.15
 appVersion: "1"
 
 dependencies:
@@ -15,3 +15,6 @@ annotations:
   yolab.io/display-name: "SearXNG"
   yolab.io/icon: "🔎"
   yolab.io/category: "utilities"
+  yolab.io/github: "searxng/searxng"
+  yolab.io/tagline: "Private web search without tracking"
+  yolab.io/collections: "replace-google,privacy"

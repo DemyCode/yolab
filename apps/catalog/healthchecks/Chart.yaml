@@ -3,7 +3,7 @@ name: healthchecks
 description: "Watches the jobs that are supposed to run, and tells you when one silently stops"
 home: https://healthchecks.io
 type: application
-version: 0.1.14
+version: 0.1.15
 
 dependencies:
   - name: yolab-common
@@ -14,3 +14,6 @@ annotations:
   yolab.io/display-name: "Healthchecks"
   yolab.io/icon: "🫀"
   yolab.io/category: "monitoring"
+  yolab.io/github: "healthchecks/healthchecks"
+  yolab.io/tagline: "Know when your scheduled jobs stop running"
+  yolab.io/collections: "for-developers"
