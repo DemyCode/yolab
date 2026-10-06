@@ -43,14 +43,7 @@ pub(crate) async fn copy_live_volumes(
         .collect::<Vec<_>>();
 
     for pvc in &sources {
-        copy_one(
-            client,
-            source_namespace,
-            dest_namespace,
-            release,
-            &pvc.name,
-        )
-        .await?;
+        copy_one(client, source_namespace, dest_namespace, release, &pvc.name).await?;
     }
     Ok(())
 }

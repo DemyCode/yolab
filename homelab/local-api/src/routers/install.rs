@@ -437,9 +437,7 @@ async fn apply_chart<H: Host + 'static>(
     match fill {
         DataFill::Backup(payload) => {
             log.say("Copying this app's files…");
-            payload
-                .fill_volumes(b, &staged.ns, job.release)
-                .await?;
+            payload.fill_volumes(b, &staged.ns, job.release).await?;
         }
         DataFill::Live { source_namespace } => {
             log.say("Copying this app's files…");
