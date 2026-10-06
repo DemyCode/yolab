@@ -1074,6 +1074,7 @@ PRIVATE_BOTH = frozenset(
         "changedetection",
         "cinny",
         "code-server",
+        "copyparty",
         "freshrss",
         "grafana",
         "grocy",
