@@ -402,14 +402,6 @@
             }
           }
         },
-        "admin_username": {
-          "type": "string",
-          "title": "Admin username",
-          "format": "text",
-          "source": {
-            "config": "admin_username"
-          }
-        },
         "admin_password": {
           "type": "string",
           "title": "Admin password",
