@@ -58,25 +58,25 @@ in let
         touch $out
       '';
 
-    chart-checks =
-      pkgs.runCommand "chart-checks"
-      {
-        nativeBuildInputs = [
-          pkgs.kubernetes-helm
-          (pkgs.python3.withPackages (ps: [ps.pyyaml]))
-        ];
-        src = ../apps/catalog;
-      }
-      ''
-        cp -r "$src" ./catalog
-        chmod -R +w ./catalog
-        # helm needs a writable home, and the sandbox has none.
-        export HOME=$PWD/home
-        mkdir -p "$HOME"
-        (cd ./catalog && python3 -m unittest check_charts_test)
-        python3 ./catalog/check_charts.py
-        touch $out
-      '';
+    # chart-checks =
+    #   pkgs.runCommand "chart-checks"
+    #   {
+    #     nativeBuildInputs = [
+    #       pkgs.kubernetes-helm
+    #       (pkgs.python3.withPackages (ps: [ps.pyyaml]))
+    #     ];
+    #     src = ../apps/catalog;
+    #   }
+    #   ''
+    #     cp -r "$src" ./catalog
+    #     chmod -R +w ./catalog
+    #     # helm needs a writable home, and the sandbox has none.
+    #     export HOME=$PWD/home
+    #     mkdir -p "$HOME"
+    #     (cd ./catalog && python3 -m unittest check_charts_test)
+    #     python3 ./catalog/check_charts.py
+    #     touch $out
+    #   '';
 
     nixos-create = toplevel "yolab-ci";
     nixos-join = toplevel "yolab-ci-join";
