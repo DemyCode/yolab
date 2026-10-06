@@ -233,6 +233,8 @@ spec:
       labels:
         app: supertokens
     spec:
+      nodeSelector:
+        kubernetes.io/arch: amd64
       containers:
       - name: supertokens
         image: supertokens/supertokens-postgresql:9.3@sha256:39c36693b19c4e231684c9e614422c1c95751c346c6fc3ffd74980161d0b041c

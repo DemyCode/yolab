@@ -68,6 +68,8 @@ spec:
       labels:
         app: web
     spec:
+      nodeSelector:
+        kubernetes.io/arch: amd64
       containers:
       - name: web
         image: rabbitcompany/passky-client:8.1.1@sha256:9c144ceb22920c60dc659c8635f48a92be4bffdb7dc768aba0d26a9a42c3005d

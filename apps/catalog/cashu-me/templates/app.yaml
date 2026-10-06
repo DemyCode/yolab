@@ -68,6 +68,8 @@ spec:
       labels:
         app: web
     spec:
+      nodeSelector:
+        kubernetes.io/arch: amd64
       containers:
       - name: web
         image: rstmsn/cashu-me:0.1.1@sha256:46cf3752f58e20b7fd191b270208f6f41aa143ba950fddb0efb390ed3ea2851b

@@ -38,6 +38,8 @@ spec:
       labels:
         app: gateway
     spec:
+      nodeSelector:
+        kubernetes.io/arch: amd64
       initContainers:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
@@ -76,6 +78,8 @@ spec:
       labels:
         app: api
     spec:
+      nodeSelector:
+        kubernetes.io/arch: amd64
       containers:
       - name: api
         image: secondark/bark-web-api:0.8.0@sha256:2ccf75c99873e99182d61f64cd2d9ff03fb376812bbc9a9e43abd10d9afc38ab
@@ -122,6 +126,8 @@ spec:
       labels:
         app: barkd
     spec:
+      nodeSelector:
+        kubernetes.io/arch: amd64
       containers:
       - name: barkd
         image: secondark/bark:0.6.2@sha256:30a91f2c31a16ec7d1a4d7744989ff2113fd003febb75aedfe2449db9133e671

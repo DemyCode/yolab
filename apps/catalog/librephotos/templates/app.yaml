@@ -68,6 +68,8 @@ spec:
       labels:
         app: proxy
     spec:
+      nodeSelector:
+        kubernetes.io/arch: amd64
       containers:
       - name: proxy
         image: reallibrephotos/librephotos-proxy:2026w14@sha256:c88c0a65b50ba7e4f65ccc9aa7d5002df9827cb79edb1f88a3a4c130d0b03be4
@@ -166,6 +168,8 @@ spec:
       labels:
         app: frontend
     spec:
+      nodeSelector:
+        kubernetes.io/arch: amd64
       containers:
       - name: frontend
         image: reallibrephotos/librephotos-frontend:2026w14@sha256:e2fb909607b1d9552c033a9432446eadb6b693289af2b4b016da55d50724afcb
@@ -192,6 +196,8 @@ spec:
       labels:
         app: backend
     spec:
+      nodeSelector:
+        kubernetes.io/arch: amd64
       containers:
       - name: backend
         image: reallibrephotos/librephotos:2026w14@sha256:3f4d6fa163bf41f2cd496aca342307fec8b827fe4a7ced1e7773a050ef7a5dca
