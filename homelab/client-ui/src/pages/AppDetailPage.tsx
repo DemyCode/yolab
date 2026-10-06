@@ -959,7 +959,7 @@ export function AppDetailPage() {
             label="What it is"
             detail={
               entry
-                ? taglineFor({ id: entry.id, description: entry.description })
+                ? taglineFor(entry)
                 : "Installed from a chart that is no longer in the catalog."
             }
           />

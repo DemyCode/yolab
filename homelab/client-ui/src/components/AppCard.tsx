@@ -1,10 +1,20 @@
 import { Link } from "react-router-dom";
-import { Check, ExternalLink } from "lucide-react";
+import { Check, ExternalLink, Star } from "lucide-react";
 import { AppIconTile } from "@/components/AppIcon";
 import { taglineFor } from "@/catalog/meta";
+import { formatCount, shownRating, type AppStats } from "@/lib/store";
 import type { CatalogApp } from "@/types/apps";
 
-export function AppCard({ app, count }: { app: CatalogApp; count: number }) {
+export function AppCard({
+  app,
+  count,
+  stats,
+}: {
+  app: CatalogApp;
+  count: number;
+  stats?: AppStats;
+}) {
+  const rating = shownRating(stats);
   return (
     <Link
       to={`/add/${app.id}`}
@@ -25,6 +35,23 @@ export function AppCard({ app, count }: { app: CatalogApp; count: number }) {
           {taglineFor(app)}
         </p>
         <div className="mt-1 flex items-center gap-3 text-xs">
+          {app.stars !== null && app.stars > 0 && (
+            <span
+              className="inline-flex items-center gap-1 font-mono tabular-nums text-fg-subtle"
+              title={`${app.stars.toLocaleString()} stars on GitHub`}
+            >
+              <Star className="h-3 w-3" aria-hidden />
+              {formatCount(app.stars)}
+            </span>
+          )}
+          {rating && (
+            <span
+              className="font-mono tabular-nums text-fg-subtle"
+              title={`Rated ${rating.average} by ${rating.count} YoLab users`}
+            >
+              {rating.average}/5
+            </span>
+          )}
           {count > 0 && (
             <span className="text-fg-subtle opacity-0 transition-opacity group-hover:opacity-100">
               Add another copy

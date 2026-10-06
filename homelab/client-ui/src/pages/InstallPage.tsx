@@ -32,6 +32,8 @@ import {
 import { AppIconTile } from "@/components/AppIcon";
 import { configSchemaOf, generatedFields, uiSchemaFor } from "@/lib/schema";
 import { taglineFor } from "@/catalog/meta";
+import { AppAbout, AppComments } from "@/components/StoreCommunity";
+import type { AppStats } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import { Swap } from "@/components/motion";
 import type {
@@ -48,6 +50,7 @@ export function InstallPage() {
   const catalog = useApi<CatalogApp[]>("catalog", "/api/apps/catalog");
   const domain = useApi<DomainResponse>("domain", "/api/tunnel/domain");
   const apps = useApi<AppInfo[]>("apps", "/api/apps");
+  const stats = useApi<AppStats[]>("store-stats", "/api/store/stats");
 
   const cached = catalog.data?.find((a) => a.id === appId);
 
@@ -348,6 +351,13 @@ export function InstallPage() {
 
       {notice && <div className="mt-6">{notice}</div>}
 
+      {origin.mode === "fresh" && (
+        <AppAbout
+          app={app}
+          stats={stats.data?.find((s) => s.app_id === app.id)}
+        />
+      )}
+
       <section className="mt-8">
         <h2 className="mb-2 px-1 text-sm font-semibold text-fg-muted">
           Settings
@@ -448,6 +458,8 @@ export function InstallPage() {
           </p>
         )}
       </div>
+
+      {origin.mode === "fresh" && <AppComments app={app} />}
     </Page>
   );
 }

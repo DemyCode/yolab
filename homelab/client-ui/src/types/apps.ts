@@ -59,6 +59,11 @@ export interface CatalogApp {
   home: string;
   icon: string;
   category: string;
+  github: string;
+  tagline: string;
+  collections: string[];
+  stars: number | null;
+  pushed_at: string | null;
   schema: object;
 }
 

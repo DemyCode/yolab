@@ -11,6 +11,14 @@ import { AppSources } from "@/components/AppSources";
 import { AddFromBackupButton } from "@/components/AddFromBackup";
 import { cn } from "@/lib/utils";
 import { AnimatedList, Collapse, RollingNumber } from "@/components/motion";
+import {
+  COLLECTIONS,
+  inCollection,
+  sortApps,
+  statsById,
+  type AppStats,
+  type SortOrder,
+} from "@/lib/store";
 import type { AppInfo, CatalogApp } from "@/types/apps";
 
 type Installed = "any" | "installed" | "not-installed";
@@ -25,9 +33,12 @@ export function AppsPage() {
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [source, setSource] = useState("any");
   const [installed, setInstalled] = useState<Installed>("any");
+  const [order, setOrder] = useState<SortOrder>("popular");
 
   const catalog = useApi<CatalogApp[]>("catalog", "/api/apps/catalog");
   const apps = useApi<AppInfo[]>("apps", "/api/apps");
+  const stats = useApi<AppStats[]>("store-stats", "/api/store/stats");
+  const statsMap = useMemo(() => statsById(stats.data), [stats.data]);
 
   const installedCounts = useMemo(
     () => installedByChart(apps.data),
@@ -42,33 +53,38 @@ export function AppsPage() {
 
   const matches = useMemo(() => {
     const q = query.trim().toLowerCase();
-    return (catalog.data ?? [])
-      .filter((a) => {
-        if (activeGroup && groupFor(a) !== activeGroup) return false;
-        if (source !== "any" && a.repo !== source) return false;
-        const n = installedCounts.get(a.id) ?? 0;
-        if (installed === "installed" && n === 0) return false;
-        if (installed === "not-installed" && n > 0) return false;
-        if (!q) return true;
-        return `${a.name} ${a.id} ${taglineFor(a)} ${a.description}`
-          .toLowerCase()
-          .includes(q);
-      })
-      .sort((a, b) => {
-        if (!q) return a.name.localeCompare(b.name);
-        const an = a.name.toLowerCase().startsWith(q)
-          ? 0
-          : a.name.toLowerCase().includes(q)
-            ? 1
-            : 2;
-        const bn = b.name.toLowerCase().startsWith(q)
-          ? 0
-          : b.name.toLowerCase().includes(q)
-            ? 1
-            : 2;
-        return an - bn || a.name.localeCompare(b.name);
-      });
-  }, [catalog.data, query, activeGroup, source, installed, installedCounts]);
+    const found = (catalog.data ?? []).filter((a) => {
+      if (activeGroup && groupFor(a) !== activeGroup) return false;
+      if (source !== "any" && a.repo !== source) return false;
+      const n = installedCounts.get(a.id) ?? 0;
+      if (installed === "installed" && n === 0) return false;
+      if (installed === "not-installed" && n > 0) return false;
+      if (!q) return true;
+      return `${a.name} ${a.id} ${taglineFor(a)} ${a.description}`
+        .toLowerCase()
+        .includes(q);
+    });
+    if (!q) return sortApps(found, order, statsMap);
+    const rank = (a: CatalogApp) =>
+      a.name.toLowerCase().startsWith(q)
+        ? 0
+        : a.name.toLowerCase().includes(q)
+          ? 1
+          : 2;
+    return found.sort(
+      (a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name),
+    );
+  }, [
+    catalog.data,
+    query,
+    activeGroup,
+    source,
+    installed,
+    installedCounts,
+    order,
+    statsMap,
+  ]);
+
 
   const browsing = !query.trim() && source === "any" && installed === "any";
   const filtersOn = source !== "any" || installed !== "any";
@@ -160,6 +176,19 @@ export function AppsPage() {
       <Collapse open={filtersOpen} className="pb-5">
         <div className="flex flex-wrap items-center gap-3 rounded-card border border-border bg-surface p-3 text-sm">
           <label className="flex items-center gap-2">
+            <span className="text-fg-muted">Sort</span>
+            <Select
+              value={order}
+              onChange={(e) => setOrder(e.target.value as SortOrder)}
+              className="h-9 w-auto"
+            >
+              <option value="popular">Most popular</option>
+              <option value="updated">Recently updated</option>
+              <option value="name">Name</option>
+            </Select>
+          </label>
+
+          <label className="flex items-center gap-2">
             <span className="text-fg-muted">Status</span>
             <Select
               value={installed}
@@ -237,6 +266,32 @@ export function AppsPage() {
         />
       ) : browsing ? (
         <div className="animate-fade-in space-y-8">
+          {activeGroup === null &&
+            COLLECTIONS.map((c) => {
+              const row = inCollection(catalog.data ?? [], c.id, statsMap);
+              if (row.length === 0) return null;
+              return (
+                <section key={c.id}>
+                  <h2 className="mb-3 text-sm font-semibold text-fg-muted">
+                    {c.title}
+                    <span className="ml-2 font-normal text-fg-subtle">
+                      {c.blurb}
+                    </span>
+                  </h2>
+                  <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                    <AnimatedList items={row} keyOf={catalogKey}>
+                      {(app) => (
+                        <AppCard
+                          app={app}
+                          count={installedCounts.get(app.id) ?? 0}
+                          stats={statsMap.get(app.id)}
+                        />
+                      )}
+                    </AnimatedList>
+                  </div>
+                </section>
+              );
+            })}
           {grouped.map(([groupId, groupApps]) => (
             <section key={groupId}>
               <h2 className="mb-3 text-sm font-semibold text-fg-muted">
@@ -248,6 +303,7 @@ export function AppsPage() {
                     <AppCard
                       app={app}
                       count={installedCounts.get(app.id) ?? 0}
+                      stats={statsMap.get(app.id)}
                     />
                   )}
                 </AnimatedList>
@@ -259,7 +315,11 @@ export function AppsPage() {
         <div className="grid animate-fade-in gap-3 sm:grid-cols-2 lg:grid-cols-3">
           <AnimatedList items={matches} keyOf={catalogKey}>
             {(app) => (
-              <AppCard app={app} count={installedCounts.get(app.id) ?? 0} />
+              <AppCard
+                app={app}
+                count={installedCounts.get(app.id) ?? 0}
+                stats={statsMap.get(app.id)}
+              />
             )}
           </AnimatedList>
         </div>

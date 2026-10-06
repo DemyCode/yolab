@@ -17,199 +17,70 @@ export const GROUPS: Group[] = [
   { id: "dev", label: "Developer" },
 ];
 
-interface AppMeta {
-  tagline: string;
-  group: string;
-}
-
-export const APP_META: Record<string, AppMeta> = {
-  immich: {
-    tagline: "Your photos and videos, like Google Photos",
-    group: "photos",
-  },
-  photoprism: {
-    tagline: "A photo library that can search itself",
-    group: "photos",
-  },
-
-  jellyfin: {
-    tagline: "Your films and TV, like Netflix but yours",
-    group: "watch",
-  },
-  jellyseerr: { tagline: "Ask for a film and have it appear", group: "watch" },
-  "media-stack": {
-    tagline: "Jellyfin plus everything that fills it, private behind a VPN",
-    group: "watch",
-  },
-  qbittorrent: { tagline: "Download large files", group: "watch" },
-  metube: {
-    tagline: "Save videos from the web to watch later",
-    group: "watch",
-  },
-
-  navidrome: {
-    tagline: "Your music collection, like Spotify",
-    group: "listen",
-  },
-  audiobookshelf: {
-    tagline: "Audiobooks and podcasts, like Audible",
-    group: "listen",
-  },
-  kavita: {
-    tagline: "Comics, manga and books in one library",
-    group: "listen",
-  },
-  "calibre-web": {
-    tagline: "Your ebooks, like a Kindle library",
-    group: "listen",
-  },
-
-  nextcloud: {
-    tagline: "Files, calendar and contacts, like Google Drive",
-    group: "files",
-  },
-  syncthing: {
-    tagline: "Keep folders in sync between your devices",
-    group: "files",
-  },
-  filebrowser: {
-    tagline: "Browse and share the files on your server",
-    group: "files",
-  },
-  "paperless-ngx": {
-    tagline: "Scan your paperwork and actually find it again",
-    group: "files",
-  },
-  "stirling-pdf": { tagline: "Merge, split and sign PDFs", group: "files" },
-
-  appflowy: {
-    tagline: "Notes, docs and projects, like Notion",
-    group: "notes",
-  },
-  docmost: { tagline: "Shared documents and a team wiki", group: "notes" },
-  memos: { tagline: "Quick notes you jot and forget", group: "notes" },
-  bookstack: {
-    tagline: "Organise what you know, like a personal wiki",
-    group: "notes",
-  },
-  excalidraw: { tagline: "Sketch ideas on a whiteboard", group: "notes" },
-  vikunja: { tagline: "To-do lists and plans, like Todoist", group: "notes" },
-  planka: {
-    tagline: "Task boards you drag around, like Trello",
-    group: "notes",
-  },
-
-  freshrss: {
-    tagline: "Follow sites without an algorithm, like Feedly",
-    group: "read",
-  },
-  miniflux: { tagline: "A very quiet news reader", group: "read" },
-  wallabag: {
-    tagline: "Save articles to read later, like Pocket",
-    group: "read",
-  },
-  linkwarden: {
-    tagline: "Bookmarks that keep a copy of the page",
-    group: "read",
-  },
-  karakeep: { tagline: "Everything you meant to come back to", group: "read" },
-
-  vaultwarden: { tagline: "Your passwords, like 1Password", group: "personal" },
-  "2fauth": { tagline: "Your two-factor codes, like Authy", group: "personal" },
-  actual: { tagline: "Budget your money, like YNAB", group: "personal" },
-  "firefly-iii": { tagline: "Track where your money goes", group: "personal" },
-  monica: {
-    tagline: "Remember birthdays, gifts and the people in your life",
-    group: "personal",
-  },
-  wallos: {
-    tagline: "See every subscription you're paying for, in one place",
-    group: "personal",
-  },
-  openclaw: {
-    tagline: "A personal AI assistant you can message like a friend",
-    group: "personal",
-  },
-
-  mealie: {
-    tagline: "Recipes and what you are eating this week",
-    group: "home",
-  },
-  dawarich: {
-    tagline: "Your own location history, kept private",
-    group: "home",
-  },
-  minecraft: {
-    tagline: "A Minecraft world for you and your friends",
-    group: "home",
-  },
-  valheim: {
-    tagline: "A Valheim server for you and your friends",
-    group: "home",
-  },
-  "steam-headless": {
-    tagline: "Play your PC games on any screen in the house",
-    group: "home",
-  },
-  ntfy: { tagline: "Send yourself notifications from anything", group: "home" },
-  "home-assistant": {
-    tagline: "Control your lights, thermostat and smart devices",
-    group: "home",
-  },
-  frigate: {
-    tagline: "Security cameras that recognise people, not just motion",
-    group: "home",
-  },
-  grocy: {
-    tagline: "Track groceries, chores and what's about to expire",
-    group: "home",
-  },
-  romm: {
-    tagline: "Your retro game collection, organised and playable",
-    group: "home",
-  },
-
-  ghost: { tagline: "Publish a blog or newsletter, like Medium", group: "web" },
-  shlink: { tagline: "Short links you own, like Bitly", group: "web" },
-  umami: {
-    tagline: "See who visits your site, without tracking them",
-    group: "web",
-  },
-  synapse: { tagline: "Run your own chat server", group: "web" },
-  cinny: { tagline: "A friendly way into your chat server", group: "web" },
-  strfry: {
-    tagline: "Carry your own corner of the Nostr network",
-    group: "web",
-  },
-
-  homepage: {
-    tagline: "A start page linking everything you run",
-    group: "tools",
-  },
-  searxng: { tagline: "Search the web without being profiled", group: "tools" },
-  changedetection: {
-    tagline: "Tell me when this web page changes",
-    group: "tools",
-  },
-  n8n: { tagline: "Connect your apps together, like Zapier", group: "tools" },
-  "open-webui": {
-    tagline: "Chat with AI on your own graphics cards, like ChatGPT",
-    group: "tools",
-  },
-  "reactive-resume": { tagline: "Build a CV that looks good", group: "tools" },
-  librespeed: {
-    tagline: "Test how fast your connection really is",
-    group: "tools",
-  },
-  "uptime-kuma": {
-    tagline: "Get told the moment a site goes down",
-    group: "tools",
-  },
-  grafana: { tagline: "Turn numbers into charts", group: "tools" },
-  "it-tools": { tagline: "A drawer of small, handy utilities", group: "tools" },
-
-  gitea: { tagline: "Host your code, like GitHub", group: "dev" },
-  "code-server": { tagline: "VS Code in a browser tab", group: "dev" },
+export const APP_GROUP: Record<string, string> = {
+  immich: "photos",
+  photoprism: "photos",
+  jellyfin: "watch",
+  jellyseerr: "watch",
+  "media-stack": "watch",
+  qbittorrent: "watch",
+  metube: "watch",
+  navidrome: "listen",
+  audiobookshelf: "listen",
+  kavita: "listen",
+  "calibre-web": "listen",
+  nextcloud: "files",
+  syncthing: "files",
+  filebrowser: "files",
+  "paperless-ngx": "files",
+  "stirling-pdf": "files",
+  appflowy: "notes",
+  docmost: "notes",
+  memos: "notes",
+  bookstack: "notes",
+  excalidraw: "notes",
+  vikunja: "notes",
+  planka: "notes",
+  freshrss: "read",
+  miniflux: "read",
+  wallabag: "read",
+  linkwarden: "read",
+  karakeep: "read",
+  vaultwarden: "personal",
+  "2fauth": "personal",
+  actual: "personal",
+  "firefly-iii": "personal",
+  monica: "personal",
+  wallos: "personal",
+  openclaw: "personal",
+  mealie: "home",
+  dawarich: "home",
+  minecraft: "home",
+  valheim: "home",
+  "steam-headless": "home",
+  ntfy: "home",
+  "home-assistant": "home",
+  frigate: "home",
+  grocy: "home",
+  romm: "home",
+  ghost: "web",
+  shlink: "web",
+  umami: "web",
+  synapse: "web",
+  cinny: "web",
+  strfry: "web",
+  homepage: "tools",
+  searxng: "tools",
+  changedetection: "tools",
+  n8n: "tools",
+  "open-webui": "tools",
+  "reactive-resume": "tools",
+  librespeed: "tools",
+  "uptime-kuma": "tools",
+  grafana: "tools",
+  "it-tools": "tools",
+  gitea: "dev",
+  "code-server": "dev",
 };
 
 const CATEGORY_TO_GROUP: Record<string, string> = {
@@ -224,13 +95,16 @@ const CATEGORY_TO_GROUP: Record<string, string> = {
   ai: "tools",
 };
 
-export function taglineFor(app: { id: string; description?: string }): string {
-  return APP_META[app.id]?.tagline ?? app.description ?? "";
+export function taglineFor(app: {
+  tagline?: string;
+  description?: string;
+}): string {
+  return app.tagline?.trim() || app.description || "";
 }
 
 export function groupFor(app: { id: string; category?: string }): string {
   return (
-    APP_META[app.id]?.group ?? CATEGORY_TO_GROUP[app.category ?? ""] ?? "tools"
+    APP_GROUP[app.id] ?? CATEGORY_TO_GROUP[app.category ?? ""] ?? "tools"
   );
 }
 

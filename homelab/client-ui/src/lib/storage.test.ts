@@ -126,6 +126,11 @@ const catalog: CatalogApp[] = [
     home: "",
     icon: "immich.svg",
     category: "media",
+    github: "immich-app/immich",
+    tagline: "Your own Google Photos",
+    collections: [],
+    stars: null,
+    pushed_at: null,
     schema: {},
   },
 ];

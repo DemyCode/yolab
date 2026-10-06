@@ -15,6 +15,7 @@ import { Page } from "@/components/AppShell";
 import { Card } from "@/components/ui/card";
 import { api } from "@/lib/api";
 import { useApi } from "@/lib/useResource";
+import { StoreSharing } from "@/components/StoreCommunity";
 import { RollingNumber } from "@/components/motion";
 import { MovementSummary } from "@/components/DataMovement";
 import { isVisible, useMovement } from "@/lib/movement";
@@ -243,6 +244,8 @@ export function SystemPage() {
         <div className="mb-3 text-sm font-medium text-fg">Appearance</div>
         <ThemeControl />
       </Card>
+
+      <StoreSharing />
 
       <h2 className="mb-2 mt-8 px-1 text-sm font-semibold text-fg-muted">
         Advanced

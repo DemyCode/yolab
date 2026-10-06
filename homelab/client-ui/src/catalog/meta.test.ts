@@ -1,32 +1,18 @@
 import { describe, expect, it } from "vitest";
-import { APP_META, GROUPS, groupFor, groupLabel, taglineFor } from "./meta";
+import { APP_GROUP, GROUPS, groupFor, groupLabel, taglineFor } from "./meta";
 
-describe("APP_META", () => {
+describe("APP_GROUP", () => {
   const groupIds = new Set(GROUPS.map((g) => g.id));
 
   it("puts every app in a group that exists", () => {
-    const wrong = Object.entries(APP_META)
-      .filter(([, m]) => !groupIds.has(m.group))
-      .map(([id, m]) => `${id} -> ${m.group}`);
+    const wrong = Object.entries(APP_GROUP)
+      .filter(([, group]) => !groupIds.has(group))
+      .map(([id, group]) => `${id} -> ${group}`);
     expect(wrong).toEqual([]);
   });
 
-  it("gives every app a tagline worth reading", () => {
-    const bad = Object.entries(APP_META)
-      .filter(([, m]) => m.tagline.trim().length < 10)
-      .map(([id]) => id);
-    expect(bad).toEqual([]);
-  });
-
-  it("keeps every tagline to one line", () => {
-    const multiline = Object.entries(APP_META)
-      .filter(([, m]) => m.tagline.includes("\n"))
-      .map(([id]) => id);
-    expect(multiline).toEqual([]);
-  });
-
   it("leaves no group heading empty", () => {
-    const used = new Set(Object.values(APP_META).map((m) => m.group));
+    const used = new Set(Object.values(APP_GROUP));
     const empty = GROUPS.filter((g) => !used.has(g.id)).map((g) => g.id);
     expect(empty).toEqual([]);
   });
@@ -37,26 +23,28 @@ describe("APP_META", () => {
 });
 
 describe("taglineFor", () => {
-  it("prefers the curated line", () => {
-    const [id, meta] = Object.entries(APP_META)[0];
-    expect(taglineFor({ id, description: "chart blurb" })).toBe(meta.tagline);
+  it("uses the line the chart itself declares", () => {
+    expect(
+      taglineFor({ tagline: "Your own Google Photos", description: "blurb" }),
+    ).toBe("Your own Google Photos");
   });
 
-  it("falls back to the chart's own description", () => {
-    expect(
-      taglineFor({ id: "not-in-the-catalog", description: "chart blurb" }),
-    ).toBe("chart blurb");
+  it("falls back to the chart's description when it declares no line", () => {
+    expect(taglineFor({ description: "chart blurb" })).toBe("chart blurb");
+    expect(taglineFor({ tagline: "  ", description: "chart blurb" })).toBe(
+      "chart blurb",
+    );
   });
 
   it("is empty rather than undefined when there is nothing to say", () => {
-    expect(taglineFor({ id: "not-in-the-catalog" })).toBe("");
+    expect(taglineFor({})).toBe("");
   });
 });
 
 describe("groupFor", () => {
   it("prefers the curated group", () => {
-    const [id, meta] = Object.entries(APP_META)[0];
-    expect(groupFor({ id, category: "media" })).toBe(meta.group);
+    const [id, group] = Object.entries(APP_GROUP)[0];
+    expect(groupFor({ id, category: "media" })).toBe(group);
   });
 
   it("maps a chart category when the app is not curated", () => {
