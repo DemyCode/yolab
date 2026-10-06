@@ -269,9 +269,14 @@ mod tests {
             })))
             .mount(&server)
             .await;
-        let got = fetch(&crate::testkit::http(), &server.uri(), "immich-app/immich", NOW)
-            .await
-            .unwrap();
+        let got = fetch(
+            &crate::testkit::http(),
+            &server.uri(),
+            "immich-app/immich",
+            NOW,
+        )
+        .await
+        .unwrap();
         assert!(matches!(got, Fetched::Stats(RepoStats { stars: 7, .. })));
     }
 

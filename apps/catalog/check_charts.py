@@ -1079,7 +1079,10 @@ def check_store_annotations(app, annotations, fail):
         fail(app, f"yolab.io/github {github!r} is not an owner/repo path")
     for slug in str(annotations.get("yolab.io/collections") or "").split(","):
         if slug.strip() and slug.strip() not in COLLECTIONS:
-            fail(app, f"yolab.io/collections names {slug.strip()!r}, not a known collection")
+            fail(
+                app,
+                f"yolab.io/collections names {slug.strip()!r}, not a known collection",
+            )
 
 
 def check_schema(app, schema, chart_yaml, fail):

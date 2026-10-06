@@ -19,8 +19,7 @@ def schema(config=None, outputs=None, extra=None):
 
 
 DEMO_CHART = (
-    "apiVersion: v2\nname: demo\nannotations:\n"
-    '  yolab.io/tagline: "A demo app"\n'
+    'apiVersion: v2\nname: demo\nannotations:\n  yolab.io/tagline: "A demo app"\n'
 )
 
 
@@ -90,7 +89,7 @@ class CheckSchema(unittest.TestCase):
             chart = DEMO_CHART + f"  yolab.io/github: {good}\n"
             self.assertEqual(failures(GOOD, chart), [], good)
         for bad in ("https://github.com/immich-app/immich", "immich", "a/b/c"):
-            chart = DEMO_CHART + f"  yolab.io/github: \"{bad}\"\n"
+            chart = DEMO_CHART + f'  yolab.io/github: "{bad}"\n'
             self.assertEqual(len(failures(GOOD, chart)), 1, bad)
 
     def test_only_known_collections_may_be_named(self):

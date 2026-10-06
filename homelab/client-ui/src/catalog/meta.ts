@@ -103,9 +103,7 @@ export function taglineFor(app: {
 }
 
 export function groupFor(app: { id: string; category?: string }): string {
-  return (
-    APP_GROUP[app.id] ?? CATEGORY_TO_GROUP[app.category ?? ""] ?? "tools"
-  );
+  return APP_GROUP[app.id] ?? CATEGORY_TO_GROUP[app.category ?? ""] ?? "tools";
 }
 
 export function groupLabel(id: string): string {

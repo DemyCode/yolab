@@ -128,7 +128,13 @@ pub async fn my_rating(State(state): State<AppState>, Path(id): Path<String>) ->
     if !valid_app_id(&id) {
         return bad_app();
     }
-    forward(&state, Verb::Get, format!("/catalog/apps/{id}/rating"), None).await
+    forward(
+        &state,
+        Verb::Get,
+        format!("/catalog/apps/{id}/rating"),
+        None,
+    )
+    .await
 }
 
 pub async fn rate(
@@ -148,7 +154,13 @@ pub async fn comments(State(state): State<AppState>, Path(id): Path<String>) -> 
     if !valid_app_id(&id) {
         return bad_app();
     }
-    forward(&state, Verb::Get, format!("/catalog/apps/{id}/comments"), None).await
+    forward(
+        &state,
+        Verb::Get,
+        format!("/catalog/apps/{id}/comments"),
+        None,
+    )
+    .await
 }
 
 #[derive(Deserialize)]
@@ -169,7 +181,13 @@ pub async fn post_comment(
 }
 
 pub async fn delete_comment(State(state): State<AppState>, Path(id): Path<i32>) -> Response {
-    forward(&state, Verb::Delete, format!("/catalog/comments/{id}"), None).await
+    forward(
+        &state,
+        Verb::Delete,
+        format!("/catalog/comments/{id}"),
+        None,
+    )
+    .await
 }
 
 pub async fn report_comment(State(state): State<AppState>, Path(id): Path<i32>) -> Response {
@@ -198,9 +216,7 @@ pub(crate) async fn share_installs(client: &Client) -> bool {
     }
 }
 
-pub async fn settings(
-    State(state): State<AppState>,
-) -> crate::error::Result<Json<StoreSettings>> {
+pub async fn settings(State(state): State<AppState>) -> crate::error::Result<Json<StoreSettings>> {
     let client = state.kube.client().await?;
     let cm = crate::k8s::get(&client, &settings_ref()).await?;
     Ok(Json(StoreSettings {
@@ -262,8 +278,12 @@ mod tests {
     fn sharing_installs_is_on_until_someone_turns_it_off() {
         assert!(share_installs_from(None));
         assert!(share_installs_from(Some(&json!({ "data": {} }))));
-        assert!(share_installs_from(Some(&json!({ "data": { "share_installs": "true" } }))));
-        assert!(!share_installs_from(Some(&json!({ "data": { "share_installs": "false" } }))));
+        assert!(share_installs_from(Some(
+            &json!({ "data": { "share_installs": "true" } })
+        )));
+        assert!(!share_installs_from(Some(
+            &json!({ "data": { "share_installs": "false" } })
+        )));
     }
 
     #[test]

@@ -85,7 +85,6 @@ export function AppsPage() {
     statsMap,
   ]);
 
-
   const browsing = !query.trim() && source === "any" && installed === "any";
   const filtersOn = source !== "any" || installed !== "any";
 

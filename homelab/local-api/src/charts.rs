@@ -445,10 +445,22 @@ mod tests {
     fn every_repository_and_zip_chart_s_github_project_is_collected_once() {
         let official = tempfile::tempdir().unwrap();
         let custom = tempfile::tempdir().unwrap();
-        chart_in(official.path(), "immich", "  yolab.io/github: immich-app/immich\n");
-        chart_in(official.path(), "media-stack", "  yolab.io/tagline: no project\n");
+        chart_in(
+            official.path(),
+            "immich",
+            "  yolab.io/github: immich-app/immich\n",
+        );
+        chart_in(
+            official.path(),
+            "media-stack",
+            "  yolab.io/tagline: no project\n",
+        );
         chart_in(official.path(), "broken", "  yolab.io/github: not a path\n");
-        chart_in(custom.path(), "my-immich", "  yolab.io/github: immich-app/immich\n");
+        chart_in(
+            custom.path(),
+            "my-immich",
+            "  yolab.io/github: immich-app/immich\n",
+        );
         chart_in(custom.path(), "notes", "  yolab.io/github: someone/notes\n");
         let dirs = vec![official.path().to_path_buf(), custom.path().to_path_buf()];
         assert_eq!(

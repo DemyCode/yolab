@@ -129,7 +129,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/tunnel/domain", get(apps::tunnel_domain))
         .route("/api/apps/catalog", get(apps::catalog))
         .route("/api/store/stats", get(store::stats))
-        .route("/api/store/settings", get(store::settings).put(store::set_settings))
+        .route(
+            "/api/store/settings",
+            get(store::settings).put(store::set_settings),
+        )
         .route(
             "/api/store/apps/:id/rating",
             get(store::my_rating).put(store::rate),
@@ -139,7 +142,10 @@ pub fn build_router(state: AppState) -> Router {
             get(store::comments).post(store::post_comment),
         )
         .route("/api/store/comments/:id", delete(store::delete_comment))
-        .route("/api/store/comments/:id/report", post(store::report_comment))
+        .route(
+            "/api/store/comments/:id/report",
+            post(store::report_comment),
+        )
         .route(
             "/api/apps/catalog/:id/refresh",
             post(apps::refresh_catalog_app),
