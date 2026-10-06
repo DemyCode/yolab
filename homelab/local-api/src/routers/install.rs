@@ -10,7 +10,8 @@ use crate::config::Config;
 use crate::host::Host;
 use crate::routers::apps::{
     app_schema, clear_install_failed, collect_runtime, mark_install_failed, merge_credentials,
-    stage_install, write_definition, AppDefinition, BackupPolicy, StagedInstall, DEFINITION_SCHEMA,
+    stage_install, write_definition, AppDefinition, BackupPolicy, ChartAt, StagedInstall,
+    DEFINITION_SCHEMA,
 };
 use crate::routers::backup_common::Backend;
 
@@ -69,12 +70,71 @@ pub(crate) struct Sources {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ChartPin {
+    Newest,
+    Saved {
+        repo: String,
+        version: String,
+        tgz: Vec<u8>,
+    },
+    Exact {
+        repo: String,
+        version: String,
+    },
+}
+
+impl ChartPin {
+    pub(crate) fn recorded(&self) -> Option<(&str, &str)> {
+        match self {
+            ChartPin::Newest => None,
+            ChartPin::Saved { repo, version, .. } | ChartPin::Exact { repo, version } => {
+                Some((repo, version))
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Source {
+    pub(crate) definition: AppDefinition,
+    pub(crate) chart: Option<Vec<u8>>,
+}
+
+pub(crate) fn pin_chart(source: Option<&Source>) -> Result<ChartPin, String> {
+    let Some(source) = source else {
+        return Ok(ChartPin::Newest);
+    };
+    let def = &source.definition;
+    let repo = if def.chart_repo.is_empty() {
+        crate::charts::OFFICIAL.to_string()
+    } else {
+        def.chart_repo.clone()
+    };
+    let version = def.chart_version.clone();
+    if let Some(tgz) = &source.chart {
+        return Ok(ChartPin::Saved {
+            repo,
+            version,
+            tgz: tgz.clone(),
+        });
+    }
+    if version.is_empty() {
+        return Err(
+            "the app you are copying never recorded which version of its chart it runs, so it cannot be copied exactly"
+                .to_string(),
+        );
+    }
+    Ok(ChartPin::Exact { repo, version })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct InstallPlan {
     pub(crate) app_id: String,
     pub(crate) instance_name: String,
     pub(crate) config: Map<String, Value>,
     pub(crate) backup: BackupPolicy,
     pub(crate) data: Option<DataOrigin>,
+    pub(crate) chart: ChartPin,
 }
 
 fn parse_kind(kind: &str) -> Result<SourceKind, String> {
@@ -200,7 +260,7 @@ pub(crate) fn plan(
     app_id: &str,
     instance_name: &str,
     config: Map<String, Value>,
-    source: Option<&AppDefinition>,
+    source: Option<&Source>,
     data: Option<DataOrigin>,
     app: &crate::appschema::AppSchema,
 ) -> Result<InstallPlan, String> {
@@ -210,8 +270,9 @@ pub(crate) fn plan(
         config,
         backup: BackupPolicy::default(),
         data,
+        chart: pin_chart(source)?,
     };
-    let Some(source) = source else {
+    let Some(source) = source.map(|s| &s.definition) else {
         return Ok(plan);
     };
     same_app(app_id, &source.app_id, "the app you are copying")?;
@@ -220,23 +281,98 @@ pub(crate) fn plan(
     Ok(plan)
 }
 
-pub(crate) async fn source_definition<H: Host>(
+pub(crate) async fn source<H: Host>(
     b: &Backend<H>,
     origin: &ConfigOrigin,
-) -> anyhow::Result<Option<AppDefinition>> {
+) -> anyhow::Result<Option<Source>> {
     match origin {
         ConfigOrigin::Fresh => Ok(None),
         ConfigOrigin::LiveApp { namespace } => {
-            crate::routers::apps::read_definition(&b.kube, namespace)
-                .await
-                .map(Some)
+            let definition = crate::routers::apps::read_definition(&b.kube, namespace).await?;
+            let chart = crate::saved_chart::read(&b.kube, namespace).await?;
+            Ok(Some(Source { definition, chart }))
         }
         ConfigOrigin::Backup {
             namespace,
             snapshot_id,
-        } => crate::routers::restore::definition_from_backup(b, namespace, snapshot_id)
+        } => {
+            let definition =
+                crate::routers::restore::definition_from_backup(b, namespace, snapshot_id).await?;
+            let chart =
+                crate::routers::restore::chart_from_backup(b, namespace, snapshot_id).await?;
+            Ok(Some(Source { definition, chart }))
+        }
+    }
+}
+
+struct PinnedChart {
+    repo: String,
+    dir: std::path::PathBuf,
+    _unpacked: Option<crate::saved_chart::Unpacked>,
+    _pulled: Option<tempfile::TempDir>,
+}
+
+impl PinnedChart {
+    fn at(&self) -> ChartAt<'_> {
+        ChartAt::Dir {
+            repo: &self.repo,
+            dir: &self.dir,
+        }
+    }
+}
+
+async fn pinned_chart<H: Host>(
+    b: &Backend<H>,
+    app_id: &str,
+    pin: &ChartPin,
+    log: &Log,
+) -> anyhow::Result<Option<PinnedChart>> {
+    match pin {
+        ChartPin::Newest => Ok(None),
+        ChartPin::Saved { repo, tgz, .. } => {
+            log.say("Using the exact chart the original runs…");
+            let unpacked = crate::saved_chart::unpack(&b.host, tgz, app_id).await?;
+            Ok(Some(PinnedChart {
+                repo: repo.clone(),
+                dir: unpacked.chart_dir().to_path_buf(),
+                _unpacked: Some(unpacked),
+                _pulled: None,
+            }))
+        }
+        ChartPin::Exact { repo, version } => {
+            let cache = std::path::Path::new(crate::charts::CACHE_DIR);
+            if let Some(dir) = crate::charts::cached_at_version(cache, repo, app_id, version) {
+                return Ok(Some(PinnedChart {
+                    repo: repo.clone(),
+                    dir,
+                    _unpacked: None,
+                    _pulled: None,
+                }));
+            }
+            log.say(format!("Fetching version {version} of {app_id}, the one the original runs…"));
+            let pulled = tempfile::tempdir()?;
+            let repos = crate::charts::list_repos(&b.kube).await;
+            let dir = crate::charts::fetch_exact(
+                &b.host,
+                pulled.path(),
+                &repos,
+                app_id,
+                version,
+                repo,
+            )
             .await
-            .map(Some),
+            .map_err(|e| {
+                anyhow::anyhow!(
+                    "no copy of this app's chart was kept, and version {version} could not be fetched again: {e:#}"
+                )
+            })?;
+            Ok(Some(PinnedChart {
+                repo: repo.clone(),
+                dir,
+                _unpacked: None,
+                _pulled: Some(pulled),
+            }))
+        }
     }
 }
 
@@ -262,7 +398,7 @@ struct ChartJob<'a> {
     app_id: &'a str,
     instance_name: &'a str,
     config: &'a Map<String, Value>,
-    chart_repo: Option<&'a str>,
+    chart: ChartAt<'a>,
     backup: &'a BackupPolicy,
     verb: &'static str,
 }
@@ -286,7 +422,7 @@ async fn apply_chart<H: Host + 'static>(
         job.app_id,
         job.instance_name,
         job.config,
-        job.chart_repo,
+        &job.chart,
     )
     .await?;
 
@@ -318,11 +454,20 @@ async fn apply_chart<H: Host + 'static>(
         payload.reapply(&b.kube).await?;
     }
 
+    if let Err(e) =
+        crate::saved_chart::save(&b.host, &b.kube, &staged.ns, &staged.chart_dir).await
+    {
+        log.say(format!(
+            "[WARN] could not keep a copy of this app's chart ({e:#}) — copying this app later will fetch version {} again",
+            staged.chart_version
+        ));
+    }
+
     let (volumes, resources) = collect_runtime(&b.kube, &staged.ns).await;
     let definition = AppDefinition {
         schema: DEFINITION_SCHEMA,
         app_id: job.app_id.to_string(),
-        chart_repo: job.chart_repo.unwrap_or(&staged.chart_repo).to_string(),
+        chart_repo: staged.chart_repo.clone(),
         chart_version: staged.chart_version.clone(),
         instance_name: job.instance_name.to_string(),
         service_name: staged.service_name.clone(),
@@ -335,7 +480,13 @@ async fn apply_chart<H: Host + 'static>(
         &b.kube,
         &staged.ns,
         &definition,
-        &app_schema(&cfg.catalog_dir(), job.app_id),
+        &app_schema(
+            staged
+                .chart_dir
+                .parent()
+                .unwrap_or(cfg.catalog_dir().as_path()),
+            job.app_id,
+        ),
     )
     .await
     .map_err(|e| anyhow::anyhow!("save this app's settings: {e}"))?;
@@ -385,11 +536,15 @@ async fn install_inner<H: Host + 'static>(
         None => DataFill::None,
     };
 
+    let pinned = pinned_chart(b, &plan.app_id, &plan.chart, log).await?;
     let job = ChartJob {
         app_id: &plan.app_id,
         instance_name: &plan.instance_name,
         config: &plan.config,
-        chart_repo: None,
+        chart: match &pinned {
+            Some(p) => p.at(),
+            None => ChartAt::Catalog { repo: None },
+        },
         backup: &plan.backup,
         verb: "Installing…",
     };
@@ -439,7 +594,7 @@ pub(crate) async fn upgrade<H: Host + 'static>(
         app_id: &plan.app_id,
         instance_name: &plan.instance_name,
         config: &plan.config,
-        chart_repo: from,
+        chart: ChartAt::Catalog { repo: from },
         backup: &plan.backup,
         verb: "Updating…",
     };
@@ -611,6 +766,90 @@ mod tests {
             resources: Default::default(),
             backup: BackupPolicy::default(),
         }
+    }
+
+    fn copied(def: &AppDefinition) -> Source {
+        Source {
+            definition: def.clone(),
+            chart: None,
+        }
+    }
+
+    #[test]
+    fn a_fresh_install_takes_the_newest_chart_from_the_catalog() {
+        assert_eq!(pin_chart(None), Ok(ChartPin::Newest));
+        let plan = plan("gitea", "gitea-ab12", Map::new(), None, None, &no_schema()).unwrap();
+        assert_eq!(plan.chart, ChartPin::Newest);
+        assert_eq!(plan.chart.recorded(), None);
+    }
+
+    #[test]
+    fn a_copy_installs_the_chart_kept_with_the_original_not_the_catalogs() {
+        let source = Source {
+            definition: definition("gitea"),
+            chart: Some(vec![1, 2, 3]),
+        };
+        assert_eq!(
+            pin_chart(Some(&source)),
+            Ok(ChartPin::Saved {
+                repo: "official".into(),
+                version: "1.0.0".into(),
+                tgz: vec![1, 2, 3],
+            })
+        );
+    }
+
+    #[test]
+    fn a_copy_of_an_app_with_no_kept_chart_fetches_the_originals_exact_version() {
+        let mut def = definition("gitea");
+        def.chart_repo = "community".into();
+        def.chart_version = "0.2.7".into();
+        let plan = plan(
+            "gitea",
+            "gitea-cd34",
+            Map::new(),
+            Some(&copied(&def)),
+            None,
+            &no_schema(),
+        )
+        .unwrap();
+        assert_eq!(
+            plan.chart,
+            ChartPin::Exact {
+                repo: "community".into(),
+                version: "0.2.7".into(),
+            }
+        );
+        assert_eq!(plan.chart.recorded(), Some(("community", "0.2.7")));
+    }
+
+    #[test]
+    fn a_copy_whose_repository_was_never_recorded_came_from_the_official_catalog() {
+        let mut def = definition("gitea");
+        def.chart_repo = String::new();
+        assert_eq!(
+            pin_chart(Some(&copied(&def))),
+            Ok(ChartPin::Exact {
+                repo: crate::charts::OFFICIAL.into(),
+                version: "1.0.0".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn a_copy_that_cannot_name_its_chart_version_is_refused_rather_than_upgraded() {
+        let mut def = definition("gitea");
+        def.chart_version = String::new();
+        let err = plan(
+            "gitea",
+            "gitea-cd34",
+            Map::new(),
+            Some(&copied(&def)),
+            None,
+            &no_schema(),
+        )
+        .unwrap_err();
+        assert!(err.contains("version"), "{err}");
     }
 
     #[test]
@@ -816,7 +1055,15 @@ mod tests {
             ("admin_password".into(), json!("__redacted__")),
             ("subdomain".into(), json!("git-copy")),
         ]);
-        let plan = plan("gitea", "gitea-cd34", form, Some(&source), None, &app).unwrap();
+        let plan = plan(
+            "gitea",
+            "gitea-cd34",
+            form,
+            Some(&copied(&source)),
+            None,
+            &app,
+        )
+        .unwrap();
         assert_eq!(plan.config["admin_password"], json!("original"));
         assert_eq!(plan.config["subdomain"], json!("git-copy"));
     }
@@ -832,7 +1079,7 @@ mod tests {
             "gitea",
             "gitea-cd34",
             Map::new(),
-            Some(&source),
+            Some(&copied(&source)),
             None,
             &no_schema(),
         )
@@ -847,7 +1094,7 @@ mod tests {
             "gitea",
             "gitea-cd34",
             Map::new(),
-            Some(&source),
+            Some(&copied(&source)),
             None,
             &no_schema(),
         )
@@ -862,7 +1109,7 @@ mod tests {
             "gitea",
             "gitea-cd34",
             Map::new(),
-            Some(&source),
+            Some(&copied(&source)),
             None,
             &no_schema()
         )

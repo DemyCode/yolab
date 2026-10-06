@@ -722,7 +722,37 @@ pub(crate) async fn definition_from_backup<H: Host>(
     })
 }
 
+pub(crate) async fn chart_from_backup<H: Host>(
+    b: &Backend<H>,
+    namespace: &str,
+    snapshot_id: &str,
+) -> anyhow::Result<Option<Vec<u8>>> {
+    crate::routers::install::check_backup_ref(namespace, snapshot_id)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let Some(cfg) = master_config(&b.kube).await? else {
+        anyhow::bail!("backup not configured");
+    };
+    let repo = cfg.restic_repo("cluster-backup");
+    cfg.unlock(&b.host, "cluster-backup").await;
+    let Some(path) = extract_file(
+        &b.host,
+        &repo,
+        &cfg,
+        snapshot_id,
+        &format!("**/{namespace}.yaml"),
+    )
+    .await?
+    else {
+        return Ok(None);
+    };
+    let objects: Value = serde_json::from_slice(&tokio::fs::read(&path).await?)?;
+    Ok(crate::saved_chart::in_objects(&objects))
+}
+
 fn keep_for_reinstall(item: &Value) -> bool {
+    if crate::saved_chart::is_saved_chart(item) {
+        return false;
+    }
     let kind = item["kind"].as_str().unwrap_or("");
     if matches!(kind, "Deployment" | "StatefulSet" | "DaemonSet" | "Service") {
         return false;
@@ -1269,6 +1299,7 @@ mod tests {
             {"kind": "Secret", "type": "helm.sh/release.v1", "metadata": {"name": "sh.helm.release.v1.filebrowser-yrrx.v1"}},
             {"kind": "Secret", "type": "Opaque", "metadata": {"name": "filebrowser-yrrx-admin"}},
             {"kind": "ConfigMap", "metadata": {"name": "filebrowser-yrrx-caddy"}},
+            {"kind": "ConfigMap", "metadata": {"name": "yolab-chart"}},
         ]});
         let kept = objects_to_reapply(&backed_up).unwrap();
         let names: Vec<&str> = kept["items"]

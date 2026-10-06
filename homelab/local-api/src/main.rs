@@ -26,6 +26,7 @@ mod records;
 mod router;
 mod routers;
 mod runtime;
+mod saved_chart;
 mod shared_names;
 mod storage;
 mod store;

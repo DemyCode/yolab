@@ -233,6 +233,46 @@ pub async fn fetch_newest<H: Host>(
     Err(last.unwrap_or_else(|| anyhow::anyhow!("no catalog to fetch {name} from")))
 }
 
+pub async fn fetch_exact<H: Host>(
+    host: &H,
+    dest: &Path,
+    repos: &[ChartRepo],
+    name: &str,
+    version: &str,
+    from: &str,
+) -> anyhow::Result<PathBuf> {
+    if !valid_chart_name(name) {
+        anyhow::bail!("unusable chart name {name:?}");
+    }
+    let Some(repo) = repos.iter().find(|r| r.name == from) else {
+        anyhow::bail!("{name} came from {from}, which is no longer a chart repository here");
+    };
+    let manifest = fetch_manifest(repo).await?;
+    let entry = CatalogEntry {
+        name: name.to_string(),
+        version: version.to_string(),
+    };
+    pull_into(host, dest, &manifest.registry, &entry).await?;
+    Ok(dest.join(name))
+}
+
+#[derive(Deserialize)]
+struct ChartVersion {
+    version: String,
+}
+
+pub fn cached_at_version(
+    cache_root: &Path,
+    repo: &str,
+    name: &str,
+    version: &str,
+) -> Option<PathBuf> {
+    let dir = cache_root.join(repo).join(name);
+    let text = std::fs::read_to_string(dir.join("Chart.yaml")).ok()?;
+    let found: ChartVersion = serde_norway::from_str(&text).ok()?;
+    (found.version == version).then_some(dir)
+}
+
 pub async fn sync_repo<H: Host>(
     host: &H,
     cache_root: &Path,
@@ -558,6 +598,64 @@ mod tests {
                 .await
                 .unwrap_err();
             assert!(e.to_string().contains("no catalog"), "{e}");
+        }
+
+        #[tokio::test]
+        async fn an_exact_chart_is_pulled_at_its_own_version_even_after_the_catalog_moved_on() {
+            let (_server, repo) = catalog(
+                "registry: oci://ghcr.io/x/charts\ncharts:\n  - name: notes\n    version: \"9.0.0\"\n",
+            )
+            .await;
+            let host = FakeHost::new().ok("helm pull", "");
+            let dest = tempfile::tempdir().unwrap();
+            let dir = fetch_exact(
+                &host,
+                dest.path(),
+                &[repo],
+                "notes",
+                "1.2.3",
+                "community",
+            )
+            .await
+            .unwrap();
+            assert_eq!(dir, dest.path().join("notes"));
+            assert!(host.ran("helm pull oci://ghcr.io/x/charts/notes --version 1.2.3 --untar"));
+            assert!(!host.ran("--version 9.0.0"));
+        }
+
+        #[tokio::test]
+        async fn an_exact_chart_from_a_removed_repository_is_refused_without_pulling() {
+            let (_server, repo) = catalog(
+                "registry: oci://ghcr.io/x/charts\ncharts:\n  - name: notes\n    version: \"1\"\n",
+            )
+            .await;
+            let host = FakeHost::new();
+            let dest = tempfile::tempdir().unwrap();
+            let e = fetch_exact(&host, dest.path(), &[repo], "notes", "1", "gone")
+                .await
+                .unwrap_err();
+            assert!(e.to_string().contains("gone"), "{e}");
+            assert!(host.calls().is_empty());
+        }
+
+        #[test]
+        fn a_cached_chart_is_used_only_at_the_exact_version_asked_for() {
+            let root = tempfile::tempdir().unwrap();
+            let dir = root.path().join(CUSTOM).join("notes");
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("Chart.yaml"), "name: notes\nversion: 1.2.3\n").unwrap();
+            assert_eq!(
+                cached_at_version(root.path(), CUSTOM, "notes", "1.2.3"),
+                Some(dir)
+            );
+            assert_eq!(
+                cached_at_version(root.path(), CUSTOM, "notes", "1.2.4"),
+                None
+            );
+            assert_eq!(
+                cached_at_version(root.path(), OFFICIAL, "notes", "1.2.3"),
+                None
+            );
         }
 
         #[tokio::test]

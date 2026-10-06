@@ -1478,7 +1478,12 @@ pub async fn install_app(
     if let Err(e) = validate_config_values(&body.config) {
         return refuse(format!("invalid config: {e}"));
     }
-    if !state.config.catalog_dir().join(&id).exists() {
+    let sources = match install::resolve_sources(body.source.as_ref()) {
+        Ok(s) => s,
+        Err(e) => return refuse(e),
+    };
+    let fresh = sources.config == install::ConfigOrigin::Fresh;
+    if fresh && !state.config.catalog_dir().join(&id).exists() {
         return (StatusCode::NOT_FOUND, format!("App '{id}' not found")).into_response();
     }
     if let Some(why) = way_in_refused(
@@ -1488,16 +1493,12 @@ pub async fn install_app(
         return refuse(why.into());
     }
 
-    let sources = match install::resolve_sources(body.source.as_ref()) {
-        Ok(s) => s,
-        Err(e) => return refuse(e),
-    };
     let b = match state.backend().await {
         Ok(b) => b,
         Err(e) => return (StatusCode::SERVICE_UNAVAILABLE, format!("{e:#}")).into_response(),
     };
-    let source_definition = match install::source_definition(&b, &sources.config).await {
-        Ok(d) => d,
+    let source = match install::source(&b, &sources.config).await {
+        Ok(s) => s,
         Err(e) => return refuse(format!("{e}")),
     };
     let Some(instance_name) = unique_instance_name(&b.kube, &body.instance_name).await else {
@@ -1507,7 +1508,7 @@ pub async fn install_app(
         &id,
         &instance_name,
         body.config,
-        source_definition.as_ref(),
+        source.as_ref(),
         sources.data,
         &app_schema(&state.config.catalog_dir(), &id),
     ) {
@@ -1515,7 +1516,27 @@ pub async fn install_app(
         Err(e) => return refuse(e),
     };
 
-    if let Err(e) = open_app_namespace(&b.kube, &id, &instance_name, None).await {
+    let opened = match plan.chart.recorded() {
+        None => open_app_namespace(
+            &b.kube,
+            &id,
+            &instance_name,
+            &ChartAt::Catalog { repo: None },
+        )
+        .await
+        .map(|_| ()),
+        Some((repo, version)) => {
+            ensure_app_namespace(
+                &b.kube,
+                &format!("yolab-{instance_name}"),
+                &id,
+                repo,
+                version,
+            )
+            .await
+        }
+    };
+    if let Err(e) = opened {
         return (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")).into_response();
     }
     if let Some(token) = form_token.as_deref() {
@@ -1568,15 +1589,27 @@ pub(crate) struct StagedInstall {
     pub(crate) values: tempfile::NamedTempFile,
 }
 
+pub(crate) enum ChartAt<'a> {
+    Catalog {
+        repo: Option<&'a str>,
+    },
+    Dir {
+        repo: &'a str,
+        dir: &'a std::path::Path,
+    },
+}
+
 async fn open_app_namespace(
     client: &Client,
     id: &str,
     instance_name: &str,
-    prefer_repo: Option<&str>,
+    chart: &ChartAt<'_>,
 ) -> anyhow::Result<(String, String, std::path::PathBuf, ChartMeta)> {
-    let Some((repo, chart_dir)) = crate::charts::resolve_chart(client, id, prefer_repo).await
-    else {
-        anyhow::bail!("no chart named {id} in any configured repository");
+    let (repo, chart_dir) = match chart {
+        ChartAt::Catalog { repo } => crate::charts::resolve_chart(client, id, *repo)
+            .await
+            .ok_or_else(|| anyhow::anyhow!("no chart named {id} in any configured repository"))?,
+        ChartAt::Dir { repo, dir } => (repo.to_string(), dir.to_path_buf()),
     };
     let Some(meta) = read_chart(&chart_dir) else {
         anyhow::bail!("{id} is not a valid chart");
@@ -1594,12 +1627,12 @@ pub(crate) async fn stage_install(
     id: &str,
     instance_name: &str,
     config: &serde_json::Map<String, Value>,
-    prefer_repo: Option<&str>,
+    chart: &ChartAt<'_>,
 ) -> anyhow::Result<StagedInstall> {
     let tunnel_cfg =
         tunnel_config(cfg).map_err(|_| anyhow::anyhow!("could not read tunnel config"))?;
     let (ns, repo, chart_dir, meta) =
-        open_app_namespace(client, id, instance_name, prefer_repo).await?;
+        open_app_namespace(client, id, instance_name, chart).await?;
     ensure_tunnel_credentials(client, &ns, &tunnel_cfg)
         .await
         .map_err(|e| anyhow::anyhow!("stage tunnel credentials: {e}"))?;
