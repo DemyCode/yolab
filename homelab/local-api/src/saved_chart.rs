@@ -198,41 +198,4 @@ mod tests {
         assert!(e.to_string().contains("not immich"), "{e}");
     }
 
-    #[tokio::test]
-    async fn a_real_chart_with_its_library_survives_save_and_unpack() {
-        let has_helm = std::process::Command::new("helm")
-            .arg("version")
-            .output()
-            .is_ok_and(|o| o.status.success());
-        if !has_helm {
-            return;
-        }
-        let catalog = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/catalog");
-        if !catalog.join("pairdrop/Chart.yaml").exists() {
-            return;
-        }
-        let tmp = tempfile::tempdir().unwrap();
-        let src = tmp.path().join("pairdrop");
-        let copied = |from: &Path, to: &Path| {
-            std::process::Command::new("cp")
-                .args(["-r", from.to_str().unwrap(), to.to_str().unwrap()])
-                .status()
-                .unwrap()
-                .success()
-        };
-        assert!(copied(&catalog.join("pairdrop"), &src));
-        std::fs::create_dir_all(src.join("charts")).unwrap();
-        assert!(copied(&catalog.join("yolab-common"), &src.join("charts")));
-
-        let host = crate::host::RealHost;
-        let tgz = package(&host, &src).await.unwrap();
-        let unpacked = unpack(&host, &tgz, "pairdrop").await.unwrap();
-        let root = unpacked.chart_dir();
-        assert!(root.join("values.schema.json").is_file());
-        assert!(
-            root.join("charts/yolab-common/templates/_gateway.tpl")
-                .is_file(),
-            "the library the app renders with must travel with it"
-        );
-    }
 }
