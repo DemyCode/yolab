@@ -489,23 +489,6 @@ pub(crate) fn sanitize_k8s_items_for_backup(items: &[serde_json::Value]) -> Vec<
         .collect()
 }
 
-pub(crate) fn parse_capacity_bytes(s: &str) -> u64 {
-    let s = s.trim();
-    if let Some(n) = s.strip_suffix("Ti") {
-        return n.trim().parse::<u64>().unwrap_or(0) * 1024 * 1024 * 1024 * 1024;
-    }
-    if let Some(n) = s.strip_suffix("Gi") {
-        return n.trim().parse::<u64>().unwrap_or(0) * 1024 * 1024 * 1024;
-    }
-    if let Some(n) = s.strip_suffix("Mi") {
-        return n.trim().parse::<u64>().unwrap_or(0) * 1024 * 1024;
-    }
-    if let Some(n) = s.strip_suffix("Ki") {
-        return n.trim().parse::<u64>().unwrap_or(0) * 1024;
-    }
-    s.parse::<u64>().unwrap_or(0)
-}
-
 pub(crate) async fn drop_replication_destination(client: &Client, name: &str, namespace: &str) {
     let release = serde_json::json!({
         "apiVersion": "volsync.backube/v1alpha1",
@@ -716,40 +699,6 @@ mod tests {
     #[test]
     fn hours_since_accepts_the_z_suffix_kubernetes_emits() {
         assert!(hours_since("2020-01-01T00:00:00Z").is_some());
-    }
-
-    #[test]
-    fn capacity_parses_binary_suffixes() {
-        assert_eq!(parse_capacity_bytes("1Ki"), 1024);
-        assert_eq!(parse_capacity_bytes("1Mi"), 1024 * 1024);
-        assert_eq!(parse_capacity_bytes("5Gi"), 5 * 1024 * 1024 * 1024);
-        assert_eq!(parse_capacity_bytes("2Ti"), 2 * 1024u64.pow(4));
-    }
-
-    #[test]
-    fn capacity_parses_a_bare_byte_count() {
-        assert_eq!(parse_capacity_bytes("1024"), 1024);
-    }
-
-    #[test]
-    fn capacity_tolerates_surrounding_whitespace() {
-        assert_eq!(parse_capacity_bytes("  5Gi "), 5 * 1024 * 1024 * 1024);
-        assert_eq!(parse_capacity_bytes("5 Gi"), 5 * 1024 * 1024 * 1024);
-    }
-
-    #[test]
-    fn an_unparseable_capacity_reads_as_zero() {
-        assert_eq!(parse_capacity_bytes(""), 0);
-        assert_eq!(parse_capacity_bytes("lots"), 0);
-        assert_eq!(parse_capacity_bytes("Gi"), 0);
-        assert_eq!(parse_capacity_bytes("-5Gi"), 0);
-        assert_eq!(parse_capacity_bytes("1.5Gi"), 0);
-    }
-
-    #[test]
-    fn decimal_suffixes_are_not_mistaken_for_byte_counts() {
-        assert_eq!(parse_capacity_bytes("5G"), 0);
-        assert_eq!(parse_capacity_bytes("5M"), 0);
     }
 
     #[test]

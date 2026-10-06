@@ -853,7 +853,7 @@ async fn snapshot_cluster_inner<H: Host>(
     let total_pvc_bytes: u64 = services
         .iter()
         .flat_map(|s| s["pvcs"].as_array().cloned().unwrap_or_default())
-        .map(|p| parse_capacity_bytes(p["capacity"].as_str().unwrap_or("0")))
+        .map(|p| crate::quantity::bytes(p["capacity"].as_str().unwrap_or("0")))
         .sum();
     let catalog = json!({
         "timestamp": Utc::now().to_rfc3339(),
@@ -932,7 +932,7 @@ async fn rebuild_manifest(client: &Client, services: &[Value]) -> Value {
                         cpu += crate::routers::apps::parse_cpu_millicores(&c.0);
                     }
                     if let Some(m) = allocatable.and_then(|a| a.get("memory")) {
-                        mem += crate::routers::apps::parse_memory_bytes(&m.0);
+                        mem += crate::quantity::bytes(&m.0);
                     }
                 }
                 (listed.items.len(), cpu, mem)

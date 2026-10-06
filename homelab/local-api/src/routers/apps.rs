@@ -388,7 +388,7 @@ fn requested_resources(items: &[Value]) -> ResourceSpec {
                     resources.cpu_millicores += parse_cpu_millicores(cpu) * replicas;
                 }
                 if let Some(mem) = req.get("memory").and_then(|v| v.as_str()) {
-                    resources.memory_bytes += parse_memory_bytes(mem) * replicas;
+                    resources.memory_bytes += crate::quantity::bytes(mem) * replicas;
                 }
                 let gpus = req
                     .keys()
@@ -426,30 +426,6 @@ pub(crate) fn parse_cpu_millicores(s: &str) -> u64 {
         return (n.trim().parse::<f64>().unwrap_or(0.0) / 1_000_000.0).round() as u64;
     }
     (s.parse::<f64>().unwrap_or(0.0) * 1000.0).round() as u64
-}
-
-pub(crate) fn parse_memory_bytes(s: &str) -> u64 {
-    let s = s.trim();
-    let (num, mult) = if let Some(n) = s.strip_suffix("Ki") {
-        (n, 1024u64)
-    } else if let Some(n) = s.strip_suffix("Mi") {
-        (n, 1024 * 1024)
-    } else if let Some(n) = s.strip_suffix("Gi") {
-        (n, 1024 * 1024 * 1024)
-    } else if let Some(n) = s.strip_suffix("Ti") {
-        (n, 1024 * 1024 * 1024 * 1024)
-    } else if let Some(n) = s.strip_suffix('k') {
-        (n, 1000)
-    } else if let Some(n) = s.strip_suffix('M') {
-        (n, 1_000_000)
-    } else if let Some(n) = s.strip_suffix('G') {
-        (n, 1_000_000_000)
-    } else if let Some(n) = s.strip_suffix('T') {
-        (n, 1_000_000_000_000)
-    } else {
-        (s, 1)
-    };
-    num.trim().parse::<f64>().unwrap_or(0.0) as u64 * mult
 }
 
 fn tunnel_config(cfg: &Config) -> anyhow::Result<toml::Table> {
