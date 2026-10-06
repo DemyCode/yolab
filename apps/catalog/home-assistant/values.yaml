@@ -1,6 +1,7 @@
 config:
   subdomain: home
   storage_size: 10Gi
+  node: ""
 
 yolab:
   platformApiUrl: ""

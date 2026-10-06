@@ -38,6 +38,13 @@ spec:
       labels:
         app: gateway
     spec:
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      {{- if .Values.config.node }}
+      nodeSelector:
+        kubernetes.io/hostname: {{ .Values.config.node | quote }}
+      {{- else }}
+      {{- end }}
       initContainers:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
@@ -83,7 +90,21 @@ spec:
           - name: data
             mountPath: /config
             subPath: {{ printf "%s/home-assistant" .Release.Name | quote }}
+          - name: data
+            mountPath: /media
+            subPath: {{ printf "%s/home-assistant/media" .Release.Name | quote }}
+          - name: dev
+            mountPath: /dev
+          - name: dbus
+            mountPath: /run/dbus
+            readOnly: true
       volumes:
       {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
       {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}
+      - name: dev
+        hostPath:
+          path: /dev
+      - name: dbus
+        hostPath:
+          path: /run/dbus

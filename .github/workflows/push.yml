@@ -172,6 +172,8 @@ jobs:
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
 
       - name: Install Helm
         uses: azure/setup-helm@v4
@@ -247,6 +249,18 @@ jobs:
             helm push /tmp/pkg/yolab-common-*.tgz "${REGISTRY}" && break
             sleep $((attempt * 15))
           done
+          verified=""
+          for attempt in 1 2 3 4 5; do
+            if helm show chart "${REGISTRY}/yolab-common" --version "${LIB_VERSION}" >/dev/null; then
+              verified=1
+              break
+            fi
+            sleep $((attempt * 15))
+          done
+          [ -n "$verified" ] || {
+            echo "::error::yolab-common ${LIB_VERSION} is not readable after push"
+            exit 1
+          }
           rm -f /tmp/pkg/yolab-common-*.tgz
 
       - name: Lint, package and push app charts
@@ -263,7 +277,12 @@ jobs:
             # Point the dependency at the version just published. Without this a branch
             # build vendors main's library and silently tests the wrong thing.
             sed -i "/- name: yolab-common/{n;s|version: .*|version: \"${LIB_VERSION}\"|}" "$chart/Chart.yaml"
-            helm dependency update "$chart" >/dev/null
+            dep=""
+            for attempt in 1 2 3 4 5; do
+              if helm dependency update "$chart" >/dev/null; then dep=1; break; fi
+              sleep $((attempt * 15))
+            done
+            [ -n "$dep" ] || { failed="$failed $name(dependency)"; continue; }
 
             # Every app must tear its tunnel down on uninstall — the shared pre-delete
             # hook is what does that (see yolab-common/templates/_uninstall.tpl). A
@@ -382,7 +401,14 @@ jobs:
           # No [skip ci]: the run this push triggers regenerates the same manifest,
           # finds it unchanged above, and stops there.
           git commit -m "Update catalog manifest from ${GITHUB_SHA::7}"
-          git push
+          pushed=""
+          for attempt in 1 2 3 4 5; do
+            if git push origin "HEAD:${GITHUB_REF_NAME}"; then pushed=1; break; fi
+            git fetch origin "${GITHUB_REF_NAME}"
+            git rebase "origin/${GITHUB_REF_NAME}" || { git rebase --abort; exit 1; }
+            sleep $((attempt * 5))
+          done
+          [ -n "$pushed" ] || { echo "::error::could not push the catalog manifest"; exit 1; }
 
       - name: Report unpublished charts
         if: steps.push.outputs.failed != ''
