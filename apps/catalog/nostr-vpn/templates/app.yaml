@@ -1,0 +1,147 @@
+{{ include "yolab-common.caddyConfigMap" . }}
+---
+{{ include "yolab-common.fileExplorerSecret" . }}
+---
+{{ include "yolab-common.fileExplorerConfigMap" . }}
+---
+{{ include "yolab-common.privateAccessResources" . }}
+---
+{{ include "yolab-common.uninstallHook" . }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-data
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: yolab-cephfs
+  resources:
+    requests:
+      storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      {{- if .Values.config.node }}
+      nodeSelector:
+        kubernetes.io/hostname: {{ .Values.config.node | quote }}
+        kubernetes.io/arch: amd64
+      {{- else }}
+      nodeSelector:
+        kubernetes.io/arch: amd64
+      {{- end }}
+      initContainers:
+      {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessInit" . | nindent 6 }}
+      containers:
+      {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
+      - name: web
+        image: ghcr.io/mmalmi/nostr-vpn-umbrel:v4.1.17@sha256:3cb353aa496ddc466ed485d7c05a426d64da773de03e56463eed47458e30bbb6
+        imagePullPolicy: IfNotPresent
+        args:
+        - --listen
+        - 0.0.0.0:38080
+        - --behind-trusted-proxy
+        - --config
+        - /data/config/nvpn/config.toml
+        env:
+        - name: ('HOME', '/data/home')
+          value: ''
+        - name: ('XDG_CONFIG_HOME', '/data/config')
+          value: ''
+        - name: ('NVPN_CLI_PATH', '/usr/local/bin/nvpn')
+          value: ''
+        - name: ('NVPN_DAEMON_STATUS_MODE', 'state-file')
+          value: ''
+        - name: ('NVPN_EXTERNAL_DAEMON', 'true')
+          value: ''
+        - name: ('RUST_LOG', 'info')
+          value: ''
+        ports:
+        - containerPort: 38080
+        readinessProbe:
+          tcpSocket:
+            port: 38080
+        volumeMounts:
+        - name: data
+          mountPath: /data
+          subPath: '{{ .Release.Name }}/data'
+      volumes:
+      {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: daemon
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: daemon
+  template:
+    metadata:
+      labels:
+        app: daemon
+    spec:
+      containers:
+      - name: daemon
+        image: ghcr.io/mmalmi/nostr-vpn-umbrel:v4.1.17@sha256:3cb353aa496ddc466ed485d7c05a426d64da773de03e56463eed47458e30bbb6
+        imagePullPolicy: IfNotPresent
+        command:
+        - /usr/local/bin/nvpn
+        args:
+        - daemon
+        - --config
+        - /data/config/nvpn/config.toml
+        env:
+        - name: ('HOME', '/data/home')
+          value: ''
+        - name: ('XDG_CONFIG_HOME', '/data/config')
+          value: ''
+        - name: ('RUST_LOG', 'info')
+          value: ''
+        securityContext:
+          capabilities:
+            add:
+            - NET_ADMIN
+        volumeMounts:
+        - name: data
+          mountPath: /data
+          subPath: '{{ .Release.Name }}/data'
+        - name: host-dev-net-tun
+          mountPath: /dev/net/tun
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: '{{ .Release.Name }}-data'
+      - name: host-dev-net-tun
+        hostPath:
+          path: /dev/net/tun
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      nodeSelector:
+        kubernetes.io/arch: amd64

@@ -50,12 +50,12 @@ spec:
         image: ghcr.io/booklore-app/booklore:v2.4.0@sha256:f92dae443c38098bf8348742465f6f3b17b619cb8f0e5c2cf195dcdfbb88eaeb
         imagePullPolicy: IfNotPresent
         env:
-        - name: DATABASE_URL
-          value: jdbc:mariadb://db:3306/booklore
-        - name: DATABASE_USERNAME
-          value: bookloreuser
-        - name: DATABASE_PASSWORD
-          value: booklorepass
+        - name: ('DATABASE_URL', 'jdbc:mariadb://booklore_db_1:3306/booklore')
+          value: ''
+        - name: ('DATABASE_USERNAME', 'bookloreuser')
+          value: ''
+        - name: ('DATABASE_PASSWORD', 'booklorepass')
+          value: ''
         ports:
         - containerPort: 6060
         readinessProbe:
@@ -98,14 +98,14 @@ spec:
         image: mariadb:12.0.2@sha256:b30cc65b57a11a2e791ad5c06284e599fe9f1bf3fe9081a88d85bcf36389be4a
         imagePullPolicy: IfNotPresent
         env:
-        - name: MARIADB_DATABASE
-          value: booklore
-        - name: MARIADB_USER
-          value: bookloreuser
-        - name: MARIADB_PASSWORD
-          value: booklorepass
-        - name: MARIADB_ROOT_PASSWORD
-          value: rootpass
+        - name: ('MARIADB_DATABASE', 'booklore')
+          value: ''
+        - name: ('MARIADB_USER', 'bookloreuser')
+          value: ''
+        - name: ('MARIADB_PASSWORD', 'booklorepass')
+          value: ''
+        - name: ('MARIADB_ROOT_PASSWORD', 'rootpass')
+          value: ''
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000

@@ -1,0 +1,17 @@
+apiVersion: v2
+name: esphome
+description: Intelligently manage all your ESP8266/ESP32 devices
+type: application
+version: 0.1.0
+appVersion: 2026.9.1
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: ESPHome
+  yolab.io/icon: 🤖
+  yolab.io/category: automation
+  yolab.io/tagline: Intelligently manage all your ESP8266/ESP32 devices
+  yolab.io/github: esphome/esphome
+home: https://esphome.io

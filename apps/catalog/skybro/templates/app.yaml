@@ -38,6 +38,8 @@ spec:
       labels:
         app: gateway
     spec:
+      nodeSelector:
+        kubernetes.io/arch: amd64
       initContainers:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
@@ -58,10 +60,16 @@ spec:
         - name: data
           mountPath: /data
           subPath: '{{ .Release.Name }}/data'
+        - name: host-etc-localtime
+          mountPath: /etc/localtime
+          readOnly: true
       volumes:
       {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
       {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}
+      - name: host-etc-localtime
+        hostPath:
+          path: /etc/localtime
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -88,7 +96,15 @@ spec:
         - name: data
           mountPath: /data
           subPath: '{{ .Release.Name }}/data'
+        - name: host-etc-localtime
+          mountPath: /etc/localtime
+          readOnly: true
       volumes:
       - name: data
         persistentVolumeClaim:
           claimName: '{{ .Release.Name }}-data'
+      - name: host-etc-localtime
+        hostPath:
+          path: /etc/localtime
+      nodeSelector:
+        kubernetes.io/arch: amd64

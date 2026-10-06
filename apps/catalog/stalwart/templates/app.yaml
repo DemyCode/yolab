@@ -21,15 +21,6 @@ spec:
     requests:
       storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
 ---
-apiVersion: v1
-kind: Secret
-metadata:
-  name: {{ .Release.Name }}-secrets
-  namespace: {{ .Release.Namespace }}
-type: Opaque
-stringData:
-  admin_password: {{ required "config.admin_password is required" .Values.config.admin_password | quote }}
----
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -59,15 +50,10 @@ spec:
         image: stalwartlabs/stalwart:v0.16.24@sha256:ec011be228596e37e65f41aab17deed573859614430472f7eeb42178c50d87b7
         imagePullPolicy: IfNotPresent
         env:
-        - name: APP_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: '{{ .Release.Name }}-secrets'
-              key: admin_password
-        - name: STALWART_RECOVERY_ADMIN
-          value: admin:$(APP_PASSWORD)
-        - name: STALWART_PUBLIC_URL
-          value: http://localhost:8745
+        - name: ('STALWART_RECOVERY_ADMIN', 'admin:${APP_PASSWORD}')
+          value: ''
+        - name: ('STALWART_PUBLIC_URL', 'http://${DEVICE_DOMAIN_NAME}:8745')
+          value: ''
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000

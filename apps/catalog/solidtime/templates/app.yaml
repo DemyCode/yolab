@@ -1,0 +1,568 @@
+{{ include "yolab-common.caddyConfigMap" . }}
+---
+{{ include "yolab-common.fileExplorerSecret" . }}
+---
+{{ include "yolab-common.fileExplorerConfigMap" . }}
+---
+{{ include "yolab-common.privateAccessResources" . }}
+---
+{{ include "yolab-common.uninstallHook" . }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-data
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: yolab-cephfs
+  resources:
+    requests:
+      storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: '{{ .Release.Name }}-seed'
+  namespace: '{{ .Release.Namespace }}'
+binaryData:
+  f0: ''
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      nodeSelector:
+        kubernetes.io/arch: amd64
+      initContainers:
+      {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessInit" . | nindent 6 }}
+      - name: seed
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - 'set -e
+
+          D=/data/{{ .Release.Name }}
+
+          [ -e "$D/keys.env" ] || cp /seed/f0 "$D/keys.env"
+
+          '
+        volumeMounts:
+        - name: seed
+          mountPath: /seed
+          readOnly: true
+        - name: data
+          mountPath: /data
+      containers:
+      {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
+      - name: app
+        image: solidtime/solidtime:0.21.0@sha256:30ab1ede2a28d782c1cc2f5407bb3e20798d717b3e9acc7a8d734fdc8258cb9e
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: ('CONTAINER_MODE', 'http')
+          value: ''
+        - name: ('AUTO_DB_MIGRATE', 'true')
+          value: ''
+        - name: ('APP_NAME', 'solidtime')
+          value: ''
+        - name: ('VITE_APP_NAME', 'solidtime')
+          value: ''
+        - name: ('APP_ENV', 'production')
+          value: ''
+        - name: ('APP_DEBUG', 'false')
+          value: ''
+        - name: ('APP_URL', 'http://${DEVICE_DOMAIN_NAME}:8770')
+          value: ''
+        - name: ('APP_FORCE_HTTPS', 'false')
+          value: ''
+        - name: ('TRUSTED_PROXIES', '0.0.0.0/0,2000:0:0:0:0:0:0:0/3')
+          value: ''
+        - name: ('TRUSTED_HOSTS', '${DEVICE_DOMAIN_NAME},${DEVICE_HOSTNAME},${APP_DOMAIN},${APP_HIDDEN_SERVICE},${APP_SOLIDTIME_LOCAL_IPS}')
+          value: ''
+        - name: ('SUPER_ADMINS', 'umbrel@umbrel.local')
+          value: ''
+        - name: ('LOG_CHANNEL', 'stderr_daily')
+          value: ''
+        - name: ('LOG_LEVEL', 'debug')
+          value: ''
+        - name: ('DB_CONNECTION', 'pgsql')
+          value: ''
+        - name: ('DB_HOST', 'solidtime_db_1')
+          value: ''
+        - name: ('DB_PORT', '5432')
+          value: ''
+        - name: ('DB_SSLMODE', 'require')
+          value: ''
+        - name: ('DB_DATABASE', 'solidtime')
+          value: ''
+        - name: ('DB_USERNAME', 'solidtime')
+          value: ''
+        - name: ('DB_PASSWORD', 'solidtime')
+          value: ''
+        - name: ('MAIL_MAILER', 'smtp')
+          value: ''
+        - name: ('MAIL_HOST', '')
+          value: ''
+        - name: ('MAIL_PORT', '')
+          value: ''
+        - name: ('MAIL_ENCRYPTION', 'tls')
+          value: ''
+        - name: ('MAIL_FROM_ADDRESS', 'no-reply@your-domain.com')
+          value: ''
+        - name: ('MAIL_FROM_NAME', 'solidtime')
+          value: ''
+        - name: ('MAIL_USERNAME', '')
+          value: ''
+        - name: ('MAIL_PASSWORD', '')
+          value: ''
+        - name: ('QUEUE_CONNECTION', 'database')
+          value: ''
+        - name: ('FILESYSTEM_DISK', 'local')
+          value: ''
+        - name: ('PUBLIC_FILESYSTEM_DISK', 'public')
+          value: ''
+        - name: ('GOTENBERG_URL', 'http://solidtime_gotenberg_1:3000')
+          value: ''
+        securityContext:
+          runAsUser: 1000
+          runAsGroup: 1000
+        ports:
+        - containerPort: 8000
+        readinessProbe:
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - curl --fail http://localhost:8000/health-check/up || exit 1
+        volumeMounts:
+        - name: data
+          mountPath: /var/www/html/storage
+          subPath: '{{ .Release.Name }}/data/app'
+      volumes:
+      {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}
+      - name: seed
+        configMap:
+          name: '{{ .Release.Name }}-seed'
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: scheduler
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: scheduler
+  template:
+    metadata:
+      labels:
+        app: scheduler
+    spec:
+      containers:
+      - name: scheduler
+        image: solidtime/solidtime:0.21.0@sha256:30ab1ede2a28d782c1cc2f5407bb3e20798d717b3e9acc7a8d734fdc8258cb9e
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: ('CONTAINER_MODE', 'scheduler')
+          value: ''
+        - name: ('APP_NAME', 'solidtime')
+          value: ''
+        - name: ('VITE_APP_NAME', 'solidtime')
+          value: ''
+        - name: ('APP_ENV', 'production')
+          value: ''
+        - name: ('APP_DEBUG', 'false')
+          value: ''
+        - name: ('APP_URL', 'http://${DEVICE_DOMAIN_NAME}:8770')
+          value: ''
+        - name: ('APP_FORCE_HTTPS', 'false')
+          value: ''
+        - name: ('TRUSTED_PROXIES', '0.0.0.0/0,2000:0:0:0:0:0:0:0/3')
+          value: ''
+        - name: ('TRUSTED_HOSTS', '${DEVICE_DOMAIN_NAME},${DEVICE_HOSTNAME},${APP_DOMAIN},${APP_HIDDEN_SERVICE},${APP_SOLIDTIME_LOCAL_IPS}')
+          value: ''
+        - name: ('SUPER_ADMINS', 'umbrel@umbrel.local')
+          value: ''
+        - name: ('LOG_CHANNEL', 'stderr_daily')
+          value: ''
+        - name: ('LOG_LEVEL', 'debug')
+          value: ''
+        - name: ('DB_CONNECTION', 'pgsql')
+          value: ''
+        - name: ('DB_HOST', 'solidtime_db_1')
+          value: ''
+        - name: ('DB_PORT', '5432')
+          value: ''
+        - name: ('DB_SSLMODE', 'require')
+          value: ''
+        - name: ('DB_DATABASE', 'solidtime')
+          value: ''
+        - name: ('DB_USERNAME', 'solidtime')
+          value: ''
+        - name: ('DB_PASSWORD', 'solidtime')
+          value: ''
+        - name: ('MAIL_MAILER', 'smtp')
+          value: ''
+        - name: ('MAIL_HOST', '')
+          value: ''
+        - name: ('MAIL_PORT', '')
+          value: ''
+        - name: ('MAIL_ENCRYPTION', 'tls')
+          value: ''
+        - name: ('MAIL_FROM_ADDRESS', 'no-reply@your-domain.com')
+          value: ''
+        - name: ('MAIL_FROM_NAME', 'solidtime')
+          value: ''
+        - name: ('MAIL_USERNAME', '')
+          value: ''
+        - name: ('MAIL_PASSWORD', '')
+          value: ''
+        - name: ('QUEUE_CONNECTION', 'database')
+          value: ''
+        - name: ('FILESYSTEM_DISK', 'local')
+          value: ''
+        - name: ('PUBLIC_FILESYSTEM_DISK', 'public')
+          value: ''
+        - name: ('GOTENBERG_URL', 'http://solidtime_gotenberg_1:3000')
+          value: ''
+        securityContext:
+          runAsUser: 1000
+          runAsGroup: 1000
+        readinessProbe:
+          exec:
+            command:
+            - healthcheck
+        volumeMounts:
+        - name: data
+          mountPath: /var/www/html/storage
+          subPath: '{{ .Release.Name }}/data/app'
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: '{{ .Release.Name }}-data'
+      - name: seed
+        configMap:
+          name: '{{ .Release.Name }}-seed'
+      initContainers:
+      - name: seed
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - 'set -e
+
+          D=/data/{{ .Release.Name }}
+
+          [ -e "$D/keys.env" ] || cp /seed/f0 "$D/keys.env"
+
+          '
+        volumeMounts:
+        - name: seed
+          mountPath: /seed
+          readOnly: true
+        - name: data
+          mountPath: /data
+      nodeSelector:
+        kubernetes.io/arch: amd64
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: queue
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: queue
+  template:
+    metadata:
+      labels:
+        app: queue
+    spec:
+      containers:
+      - name: queue
+        image: solidtime/solidtime:0.21.0@sha256:30ab1ede2a28d782c1cc2f5407bb3e20798d717b3e9acc7a8d734fdc8258cb9e
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: ('CONTAINER_MODE', 'worker')
+          value: ''
+        - name: ('WORKER_COMMAND', 'php /var/www/html/artisan queue:work')
+          value: ''
+        - name: ('APP_NAME', 'solidtime')
+          value: ''
+        - name: ('VITE_APP_NAME', 'solidtime')
+          value: ''
+        - name: ('APP_ENV', 'production')
+          value: ''
+        - name: ('APP_DEBUG', 'false')
+          value: ''
+        - name: ('APP_URL', 'http://${DEVICE_DOMAIN_NAME}:8770')
+          value: ''
+        - name: ('APP_FORCE_HTTPS', 'false')
+          value: ''
+        - name: ('TRUSTED_PROXIES', '0.0.0.0/0,2000:0:0:0:0:0:0:0/3')
+          value: ''
+        - name: ('TRUSTED_HOSTS', '${DEVICE_DOMAIN_NAME},${DEVICE_HOSTNAME},${APP_DOMAIN},${APP_HIDDEN_SERVICE},${APP_SOLIDTIME_LOCAL_IPS}')
+          value: ''
+        - name: ('SUPER_ADMINS', 'umbrel@umbrel.local')
+          value: ''
+        - name: ('LOG_CHANNEL', 'stderr_daily')
+          value: ''
+        - name: ('LOG_LEVEL', 'debug')
+          value: ''
+        - name: ('DB_CONNECTION', 'pgsql')
+          value: ''
+        - name: ('DB_HOST', 'solidtime_db_1')
+          value: ''
+        - name: ('DB_PORT', '5432')
+          value: ''
+        - name: ('DB_SSLMODE', 'require')
+          value: ''
+        - name: ('DB_DATABASE', 'solidtime')
+          value: ''
+        - name: ('DB_USERNAME', 'solidtime')
+          value: ''
+        - name: ('DB_PASSWORD', 'solidtime')
+          value: ''
+        - name: ('MAIL_MAILER', 'smtp')
+          value: ''
+        - name: ('MAIL_HOST', '')
+          value: ''
+        - name: ('MAIL_PORT', '')
+          value: ''
+        - name: ('MAIL_ENCRYPTION', 'tls')
+          value: ''
+        - name: ('MAIL_FROM_ADDRESS', 'no-reply@your-domain.com')
+          value: ''
+        - name: ('MAIL_FROM_NAME', 'solidtime')
+          value: ''
+        - name: ('MAIL_USERNAME', '')
+          value: ''
+        - name: ('MAIL_PASSWORD', '')
+          value: ''
+        - name: ('QUEUE_CONNECTION', 'database')
+          value: ''
+        - name: ('FILESYSTEM_DISK', 'local')
+          value: ''
+        - name: ('PUBLIC_FILESYSTEM_DISK', 'public')
+          value: ''
+        - name: ('GOTENBERG_URL', 'http://solidtime_gotenberg_1:3000')
+          value: ''
+        securityContext:
+          runAsUser: 1000
+          runAsGroup: 1000
+        readinessProbe:
+          exec:
+            command:
+            - healthcheck
+        volumeMounts:
+        - name: data
+          mountPath: /var/www/html/storage
+          subPath: '{{ .Release.Name }}/data/app'
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: '{{ .Release.Name }}-data'
+      - name: seed
+        configMap:
+          name: '{{ .Release.Name }}-seed'
+      initContainers:
+      - name: seed
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - 'set -e
+
+          D=/data/{{ .Release.Name }}
+
+          [ -e "$D/keys.env" ] || cp /seed/f0 "$D/keys.env"
+
+          '
+        volumeMounts:
+        - name: seed
+          mountPath: /seed
+          readOnly: true
+        - name: data
+          mountPath: /data
+      nodeSelector:
+        kubernetes.io/arch: amd64
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: db
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: db
+  template:
+    metadata:
+      labels:
+        app: db
+    spec:
+      containers:
+      - name: db
+        image: postgres:17.3@sha256:0321e2252ebfeecb8bc1a899755084d29bce872953e1a5a3e25ec0860b739098
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: ('PGPASSWORD', 'soldtime')
+          value: ''
+        - name: ('POSTGRES_DB', 'solidtime')
+          value: ''
+        - name: ('POSTGRES_USER', 'solidtime')
+          value: ''
+        - name: ('POSTGRES_PASSWORD', 'solidtime')
+          value: ''
+        securityContext:
+          runAsUser: 1000
+          runAsGroup: 1000
+        ports:
+        - containerPort: 5432
+        readinessProbe:
+          exec:
+            command:
+            - pg_isready
+            - -q
+            - -d
+            - solidtime
+            - -U
+            - solidtime
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/postgresql/data
+          subPath: '{{ .Release.Name }}/data/db'
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: '{{ .Release.Name }}-data'
+      - name: seed
+        configMap:
+          name: '{{ .Release.Name }}-seed'
+      initContainers:
+      - name: seed
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - 'set -e
+
+          D=/data/{{ .Release.Name }}
+
+          [ -e "$D/keys.env" ] || cp /seed/f0 "$D/keys.env"
+
+          '
+        volumeMounts:
+        - name: seed
+          mountPath: /seed
+          readOnly: true
+        - name: data
+          mountPath: /data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: db
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  selector:
+    app: db
+  ports:
+  - port: 5432
+    targetPort: 5432
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gotenberg
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gotenberg
+  template:
+    metadata:
+      labels:
+        app: gotenberg
+    spec:
+      containers:
+      - name: gotenberg
+        image: gotenberg/gotenberg:8.17.1@sha256:46e7b68adeadda1794a9ab194f1e2939f5b09ff21aadef6000e84102c9af6dd5
+        imagePullPolicy: IfNotPresent
+        securityContext:
+          runAsUser: 1000
+          runAsGroup: 1000
+        readinessProbe:
+          exec:
+            command:
+            - curl
+            - --silent
+            - --fail
+            - http://localhost:3000/health
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: '{{ .Release.Name }}-data'
+      - name: seed
+        configMap:
+          name: '{{ .Release.Name }}-seed'
+      initContainers:
+      - name: seed
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - 'set -e
+
+          D=/data/{{ .Release.Name }}
+
+          [ -e "$D/keys.env" ] || cp /seed/f0 "$D/keys.env"
+
+          '
+        volumeMounts:
+        - name: seed
+          mountPath: /seed
+          readOnly: true
+        - name: data
+          mountPath: /data
+      nodeSelector:
+        kubernetes.io/arch: amd64

@@ -50,10 +50,10 @@ spec:
         image: ghcr.io/besoeasy/originless:0.1.0@sha256:f4f232052e2763eb23bd9019da885f5700fae947b8760a695be6774bfc9c38b9
         imagePullPolicy: IfNotPresent
         env:
-        - name: NODE_ENV
-          value: production
-        - name: STORAGE_MAX
-          value: ${STORAGE_MAX:-20GB}
+        - name: ('NODE_ENV', 'production')
+          value: ''
+        - name: ('STORAGE_MAX', '${STORAGE_MAX:-20GB}')
+          value: ''
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000

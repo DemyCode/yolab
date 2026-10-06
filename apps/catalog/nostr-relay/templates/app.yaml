@@ -58,11 +58,11 @@ spec:
         - -c
         - 'set -e
 
-          D=/data/{{ .Release.Name }}/data
+          D=/data/{{ .Release.Name }}
 
-          mkdir -p "$D/relay"
+          mkdir -p "$D/data/relay"
 
-          [ -e "$D/relay/config.toml" ] || cp /seed/f0 "$D/relay/config.toml"
+          [ -e "$D/data/relay/config.toml" ] || cp /seed/f0 "$D/data/relay/config.toml"
 
           '
         volumeMounts:
@@ -79,14 +79,14 @@ spec:
         image: getumbrel/umbrel-nostr-relay:v1.1.0@sha256:21b67ab2e9d30b20e785497f19534e8e21b6da1bfe69e3ae5afe91b759f20488
         imagePullPolicy: IfNotPresent
         env:
-        - name: RELAY_HOST
-          value: relay
-        - name: RELAY_PORT
-          value: '8080'
-        - name: RELAY_PROXY_HOST
-          value: relay-proxy
-        - name: RELAY_PROXY_PORT
-          value: '80'
+        - name: ('RELAY_HOST', 'nostr-relay_relay_1')
+          value: ''
+        - name: ('RELAY_PORT', '8080')
+          value: ''
+        - name: ('RELAY_PROXY_HOST', 'nostr-relay_relay-proxy_1')
+          value: ''
+        - name: ('RELAY_PROXY_PORT', '80')
+          value: ''
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000
@@ -150,11 +150,11 @@ spec:
         - -c
         - 'set -e
 
-          D=/data/{{ .Release.Name }}/data
+          D=/data/{{ .Release.Name }}
 
-          mkdir -p "$D/relay"
+          mkdir -p "$D/data/relay"
 
-          [ -e "$D/relay/config.toml" ] || cp /seed/f0 "$D/relay/config.toml"
+          [ -e "$D/data/relay/config.toml" ] || cp /seed/f0 "$D/data/relay/config.toml"
 
           '
         volumeMounts:
@@ -186,10 +186,10 @@ spec:
         image: getumbrel/umbrel-nostr-relay-proxy:v1.1.0@sha256:6b335f4488f813475bb7c9d3bb6282fda081808e2d5447404fc8a1ffcc1279dc
         imagePullPolicy: IfNotPresent
         env:
-        - name: RELAY_HOST
-          value: relay
-        - name: RELAY_PORT
-          value: '8080'
+        - name: ('RELAY_HOST', 'nostr-relay_relay_1')
+          value: ''
+        - name: ('RELAY_PORT', '8080')
+          value: ''
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000
@@ -213,11 +213,11 @@ spec:
         - -c
         - 'set -e
 
-          D=/data/{{ .Release.Name }}/data
+          D=/data/{{ .Release.Name }}
 
-          mkdir -p "$D/relay"
+          mkdir -p "$D/data/relay"
 
-          [ -e "$D/relay/config.toml" ] || cp /seed/f0 "$D/relay/config.toml"
+          [ -e "$D/data/relay/config.toml" ] || cp /seed/f0 "$D/data/relay/config.toml"
 
           '
         volumeMounts:

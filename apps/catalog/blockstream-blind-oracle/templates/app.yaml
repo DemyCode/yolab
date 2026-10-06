@@ -47,6 +47,8 @@ spec:
       labels:
         app: gateway
     spec:
+      nodeSelector:
+        kubernetes.io/arch: amd64
       initContainers:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
@@ -59,11 +61,15 @@ spec:
         - -c
         - 'set -e
 
-          D=/data/{{ .Release.Name }}/data
+          D=/data/{{ .Release.Name }}
 
-          [ -e "$D/server_private_key.key" ] || cp /seed/f0 "$D/server_private_key.key"
+          mkdir -p "$D/data"
 
-          [ -e "$D/server_public_key.pub" ] || cp /seed/f1 "$D/server_public_key.pub"
+          [ -e "$D/data/server_private_key.key" ] || cp /seed/f0 "$D/data/server_private_key.key"
+
+          mkdir -p "$D/data"
+
+          [ -e "$D/data/server_public_key.pub" ] || cp /seed/f1 "$D/data/server_public_key.pub"
 
           '
         volumeMounts:
@@ -80,21 +86,21 @@ spec:
         image: tulipan81/pinserver_web:v0.0.36@sha256:a5214dbc14538478744a6a0c6bd40f03ab8ac2990abc9038139c18901064205b
         imagePullPolicy: IfNotPresent
         env:
-        - name: PINSERVER_URL_A
-          value: $(APP_PINSERVER_HIDDEN_SERVICE)
-        - name: PINSERVER_PORT_A
-          value: APP_PINSERVER_PORT
-        - name: PINSERVER_URL_B
-          value: $(APP_TAILSCALE_URL)
-        - name: PINSERVER_PORT_B
-          value: APP_PINSERVER_PORT
-        - name: PINSERVER_CERT
+        - name: ('PINSERVER_URL_A', '${APP_PINSERVER_HIDDEN_SERVICE}')
+          value: ''
+        - name: ('PINSERVER_PORT_A', '${APP_PINSERVER_PORT}')
+          value: ''
+        - name: ('PINSERVER_URL_B', '${APP_TAILSCALE_URL}')
+          value: ''
+        - name: ('PINSERVER_PORT_B', '${APP_PINSERVER_PORT}')
+          value: ''
+        - name: ('PINSERVER_CERT', '')
           value: ''
         ports:
-        - containerPort: 8080
+        - containerPort: 3344
         readinessProbe:
           tcpSocket:
-            port: 8080
+            port: 3344
         volumeMounts:
         - name: data
           mountPath: /app/server_public_key.pub
@@ -165,11 +171,15 @@ spec:
         - -c
         - 'set -e
 
-          D=/data/{{ .Release.Name }}/data
+          D=/data/{{ .Release.Name }}
 
-          [ -e "$D/server_private_key.key" ] || cp /seed/f0 "$D/server_private_key.key"
+          mkdir -p "$D/data"
 
-          [ -e "$D/server_public_key.pub" ] || cp /seed/f1 "$D/server_public_key.pub"
+          [ -e "$D/data/server_private_key.key" ] || cp /seed/f0 "$D/data/server_private_key.key"
+
+          mkdir -p "$D/data"
+
+          [ -e "$D/data/server_public_key.pub" ] || cp /seed/f1 "$D/data/server_public_key.pub"
 
           '
         volumeMounts:
@@ -178,6 +188,8 @@ spec:
           readOnly: true
         - name: data
           mountPath: /data
+      nodeSelector:
+        kubernetes.io/arch: amd64
 ---
 apiVersion: v1
 kind: Service
@@ -213,8 +225,8 @@ spec:
         image: ghcr.io/getumbrel/tor:0.4.9.11@sha256:e382b8629c0dfef6ceb396b062622d4e4e955b19d6f16b883fd2c0723ad5671a
         imagePullPolicy: IfNotPresent
         env:
-        - name: HOME
-          value: /tmp
+        - name: ('HOME', '/tmp')
+          value: ''
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000
@@ -242,11 +254,15 @@ spec:
         - -c
         - 'set -e
 
-          D=/data/{{ .Release.Name }}/data
+          D=/data/{{ .Release.Name }}
 
-          [ -e "$D/server_private_key.key" ] || cp /seed/f0 "$D/server_private_key.key"
+          mkdir -p "$D/data"
 
-          [ -e "$D/server_public_key.pub" ] || cp /seed/f1 "$D/server_public_key.pub"
+          [ -e "$D/data/server_private_key.key" ] || cp /seed/f0 "$D/data/server_private_key.key"
+
+          mkdir -p "$D/data"
+
+          [ -e "$D/data/server_public_key.pub" ] || cp /seed/f1 "$D/data/server_public_key.pub"
 
           '
         volumeMounts:

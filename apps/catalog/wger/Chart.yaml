@@ -1,0 +1,18 @@
+apiVersion: v2
+name: wger
+description: A fitness tracker for workouts and nutrition
+type: application
+version: 0.1.0
+appVersion: '2.7'
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: wger
+  yolab.io/icon: 📁
+  yolab.io/category: files
+  yolab.io/tagline: A fitness tracker for workouts and nutrition
+  yolab.io/github: wger-project/wger
+  yolab.io/collections: replace-google
+home: https://wger.de/

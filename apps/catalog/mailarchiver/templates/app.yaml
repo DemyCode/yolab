@@ -59,13 +59,15 @@ spec:
         - -c
         - 'set -e
 
-          D=/data/{{ .Release.Name }}/data
+          D=/data/{{ .Release.Name }}
 
-          [ -e "$D/appsettings.json" ] || cp /seed/f0 "$D/appsettings.json"
+          mkdir -p "$D/data"
 
-          mkdir -p "$D/database"
+          [ -e "$D/data/appsettings.json" ] || cp /seed/f0 "$D/data/appsettings.json"
 
-          [ -e "$D/database/.gitignore" ] || cp /seed/f1 "$D/database/.gitignore"
+          mkdir -p "$D/data/database"
+
+          [ -e "$D/data/database/.gitignore" ] || cp /seed/f1 "$D/data/database/.gitignore"
 
           '
         volumeMounts:
@@ -123,12 +125,12 @@ spec:
         image: postgres:18.3-alpine3.23@sha256:4da1a4828be12604092fa55311276f08f9224a74a62dcb4708bd7439e2a03911
         imagePullPolicy: IfNotPresent
         env:
-        - name: POSTGRES_DB
-          value: mailarchiver
-        - name: POSTGRES_USER
-          value: mailarchiver
-        - name: POSTGRES_PASSWORD
-          value: mailarchiver
+        - name: ('POSTGRES_DB', 'mailarchiver')
+          value: ''
+        - name: ('POSTGRES_USER', 'mailarchiver')
+          value: ''
+        - name: ('POSTGRES_PASSWORD', 'mailarchiver')
+          value: ''
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000
@@ -162,13 +164,15 @@ spec:
         - -c
         - 'set -e
 
-          D=/data/{{ .Release.Name }}/data
+          D=/data/{{ .Release.Name }}
 
-          [ -e "$D/appsettings.json" ] || cp /seed/f0 "$D/appsettings.json"
+          mkdir -p "$D/data"
 
-          mkdir -p "$D/database"
+          [ -e "$D/data/appsettings.json" ] || cp /seed/f0 "$D/data/appsettings.json"
 
-          [ -e "$D/database/.gitignore" ] || cp /seed/f1 "$D/database/.gitignore"
+          mkdir -p "$D/data/database"
+
+          [ -e "$D/data/database/.gitignore" ] || cp /seed/f1 "$D/data/database/.gitignore"
 
           '
         volumeMounts:

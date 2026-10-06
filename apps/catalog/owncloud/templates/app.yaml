@@ -21,15 +21,6 @@ spec:
     requests:
       storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
 ---
-apiVersion: v1
-kind: Secret
-metadata:
-  name: {{ .Release.Name }}-secrets
-  namespace: {{ .Release.Namespace }}
-type: Opaque
-stringData:
-  admin_password: {{ required "config.admin_password is required" .Values.config.admin_password | quote }}
----
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -59,37 +50,32 @@ spec:
         image: owncloud/server:11.0.1@sha256:ba0446b240da1d0aa48ce2f673b97993adacfc02c81affdfcb632abbbe39cf9e
         imagePullPolicy: IfNotPresent
         env:
-        - name: APP_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: '{{ .Release.Name }}-secrets'
-              key: admin_password
-        - name: OWNCLOUD_DOMAIN
-          value: localhost:8080
-        - name: OWNCLOUD_TRUSTED_DOMAINS
-          value: localhost,localhost,$(APP_OWNCLOUD_LOCAL_IPS)
-        - name: OWNCLOUD_DB_TYPE
-          value: mysql
-        - name: OWNCLOUD_DB_NAME
-          value: owncloud
-        - name: OWNCLOUD_DB_USERNAME
-          value: owncloud
-        - name: OWNCLOUD_DB_PASSWORD
-          value: owncloud
-        - name: OWNCLOUD_DB_HOST
-          value: mariadb
-        - name: OWNCLOUD_ADMIN_USERNAME
-          value: admin
-        - name: OWNCLOUD_ADMIN_PASSWORD
-          value: $(APP_PASSWORD)
-        - name: OWNCLOUD_MYSQL_UTF8MB4
-          value: 'true'
-        - name: OWNCLOUD_REDIS_ENABLED
-          value: 'true'
-        - name: OWNCLOUD_REDIS_HOST
-          value: redis
-        - name: OWNCLOUD_LOG_LEVEL
-          value: '2'
+        - name: ('OWNCLOUD_DOMAIN', '${DEVICE_DOMAIN_NAME}:8080')
+          value: ''
+        - name: ('OWNCLOUD_TRUSTED_DOMAINS', '${DEVICE_DOMAIN_NAME},${DEVICE_HOSTNAME},${APP_OWNCLOUD_LOCAL_IPS}')
+          value: ''
+        - name: ('OWNCLOUD_DB_TYPE', 'mysql')
+          value: ''
+        - name: ('OWNCLOUD_DB_NAME', 'owncloud')
+          value: ''
+        - name: ('OWNCLOUD_DB_USERNAME', 'owncloud')
+          value: ''
+        - name: ('OWNCLOUD_DB_PASSWORD', 'owncloud')
+          value: ''
+        - name: ('OWNCLOUD_DB_HOST', 'owncloud_mariadb_1')
+          value: ''
+        - name: ('OWNCLOUD_ADMIN_USERNAME', 'admin')
+          value: ''
+        - name: ('OWNCLOUD_ADMIN_PASSWORD', '${APP_PASSWORD}')
+          value: ''
+        - name: ('OWNCLOUD_MYSQL_UTF8MB4', 'true')
+          value: ''
+        - name: ('OWNCLOUD_REDIS_ENABLED', 'true')
+          value: ''
+        - name: ('OWNCLOUD_REDIS_HOST', 'owncloud_redis_1')
+          value: ''
+        - name: ('OWNCLOUD_LOG_LEVEL', '2')
+          value: ''
         ports:
         - containerPort: 8080
         readinessProbe:
@@ -134,21 +120,16 @@ spec:
         - --max-allowed-packet=128M
         - --innodb-log-file-size=64M
         env:
-        - name: APP_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: '{{ .Release.Name }}-secrets'
-              key: admin_password
-        - name: MYSQL_ROOT_PASSWORD
-          value: owncloud
-        - name: MYSQL_USER
-          value: owncloud
-        - name: MYSQL_PASSWORD
-          value: owncloud
-        - name: MYSQL_DATABASE
-          value: owncloud
-        - name: MARIADB_AUTO_UPGRADE
-          value: '1'
+        - name: ('MYSQL_ROOT_PASSWORD', 'owncloud')
+          value: ''
+        - name: ('MYSQL_USER', 'owncloud')
+          value: ''
+        - name: ('MYSQL_PASSWORD', 'owncloud')
+          value: ''
+        - name: ('MYSQL_DATABASE', 'owncloud')
+          value: ''
+        - name: ('MARIADB_AUTO_UPGRADE', '1')
+          value: ''
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000
@@ -208,12 +189,6 @@ spec:
         args:
         - --databases
         - '1'
-        env:
-        - name: APP_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: '{{ .Release.Name }}-secrets'
-              key: admin_password
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000

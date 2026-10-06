@@ -58,9 +58,11 @@ spec:
         - -c
         - 'set -e
 
-          D=/data/{{ .Release.Name }}/data
+          D=/data/{{ .Release.Name }}
 
-          [ -e "$D/config.json" ] || cp /seed/f0 "$D/config.json"
+          mkdir -p "$D/data"
+
+          [ -e "$D/data/config.json" ] || cp /seed/f0 "$D/data/config.json"
 
           '
         volumeMounts:
@@ -128,9 +130,11 @@ spec:
         - -c
         - 'set -e
 
-          D=/data/{{ .Release.Name }}/data
+          D=/data/{{ .Release.Name }}
 
-          [ -e "$D/config.json" ] || cp /seed/f0 "$D/config.json"
+          mkdir -p "$D/data"
+
+          [ -e "$D/data/config.json" ] || cp /seed/f0 "$D/data/config.json"
 
           '
         volumeMounts:

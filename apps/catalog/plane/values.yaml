@@ -1,0 +1,15 @@
+config:
+  subdomain: plane
+  storage_size: 10Gi
+yolab:
+  platformApiUrl: ''
+  accountToken: ''
+  serviceName: ''
+  gateway:
+    upstream: localhost:8762
+  fileExplorer:
+    protect:
+    - data/db
+    - data/rabbitmq
+    - data/redis
+    - data/uploads

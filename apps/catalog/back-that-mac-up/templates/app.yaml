@@ -73,8 +73,8 @@ spec:
         image: getumbrel/umbrel-back-that-mac-up:1.0.1@sha256:d9561eebd791fcaaddb9885b9ace25dec42374c4ab0fe17035493a264081688c
         imagePullPolicy: IfNotPresent
         env:
-        - name: TIME_MACHINE_DIR
-          value: /timemachine
+        - name: ('TIME_MACHINE_DIR', '/timemachine')
+          value: ''
         ports:
         - containerPort: 80
         readinessProbe:
@@ -123,48 +123,48 @@ spec:
         image: mbentley/timemachine:smb-20231122@sha256:861560184a5c9f3b4f2a8bef4549ef4168d80c57a9de81b16bc5e6eead24ff3f
         imagePullPolicy: IfNotPresent
         env:
-        - name: ADVERTISED_HOSTNAME
-          value: umbrel
-        - name: CUSTOM_SMB_CONF
-          value: 'false'
-        - name: CUSTOM_USER
-          value: 'false'
-        - name: DEBUG_LEVEL
-          value: '1'
-        - name: HIDE_SHARES
-          value: 'no'
-        - name: EXTERNAL_CONF
+        - name: ('ADVERTISED_HOSTNAME', 'umbrel')
           value: ''
-        - name: MIMIC_MODEL
-          value: TimeCapsule8,119
-        - name: TM_USERNAME
-          value: timemachine
-        - name: TM_GROUPNAME
-          value: timemachine
-        - name: TM_UID
-          value: '1000'
-        - name: TM_GID
-          value: '1000'
-        - name: PASSWORD
-          value: timemachine
-        - name: SET_PERMISSIONS
-          value: 'false'
-        - name: SHARE_NAME
-          value: Umbrel - Time Machine
-        - name: SMB_INHERIT_PERMISSIONS
-          value: 'no'
-        - name: SMB_NFS_ACES
-          value: 'no'
-        - name: SMB_METADATA
-          value: stream
-        - name: SMB_PORT
-          value: '445'
-        - name: SMB_VFS_OBJECTS
-          value: acl_xattr fruit streams_xattr
-        - name: VOLUME_SIZE_LIMIT
-          value: '0'
-        - name: WORKGROUP
-          value: WORKGROUP
+        - name: ('CUSTOM_SMB_CONF', 'false')
+          value: ''
+        - name: ('CUSTOM_USER', 'false')
+          value: ''
+        - name: ('DEBUG_LEVEL', '1')
+          value: ''
+        - name: ('HIDE_SHARES', 'no')
+          value: ''
+        - name: ('EXTERNAL_CONF', '')
+          value: ''
+        - name: ('MIMIC_MODEL', 'TimeCapsule8,119')
+          value: ''
+        - name: ('TM_USERNAME', 'timemachine')
+          value: ''
+        - name: ('TM_GROUPNAME', 'timemachine')
+          value: ''
+        - name: ('TM_UID', '1000')
+          value: ''
+        - name: ('TM_GID', '1000')
+          value: ''
+        - name: ('PASSWORD', 'timemachine')
+          value: ''
+        - name: ('SET_PERMISSIONS', 'false')
+          value: ''
+        - name: ('SHARE_NAME', 'Umbrel - Time Machine')
+          value: ''
+        - name: ('SMB_INHERIT_PERMISSIONS', 'no')
+          value: ''
+        - name: ('SMB_NFS_ACES', 'no')
+          value: ''
+        - name: ('SMB_METADATA', 'stream')
+          value: ''
+        - name: ('SMB_PORT', '445')
+          value: ''
+        - name: ('SMB_VFS_OBJECTS', 'acl_xattr fruit streams_xattr')
+          value: ''
+        - name: ('VOLUME_SIZE_LIMIT', '0')
+          value: ''
+        - name: ('WORKGROUP', 'WORKGROUP')
+          value: ''
         ports:
         - containerPort: 137
         readinessProbe:

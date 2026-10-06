@@ -73,8 +73,8 @@ spec:
         image: ghcr.io/wavelog/wavelog:3.2.3@sha256:600c3205ca2b5d7976beedabd023cb91e3f3dfdf45b5d58708dab75ade3b94e3
         imagePullPolicy: IfNotPresent
         env:
-        - name: CI_ENV
-          value: docker
+        - name: ('CI_ENV', 'docker')
+          value: ''
         ports:
         - containerPort: 80
         readinessProbe:
@@ -129,14 +129,14 @@ spec:
         image: mariadb:11.4@sha256:39596f079862334be04f4231664862e55d4febe54309cc62f750f2297de85b06
         imagePullPolicy: IfNotPresent
         env:
-        - name: MARIADB_RANDOM_ROOT_PASSWORD
-          value: 'True'
-        - name: MARIADB_DATABASE
-          value: wavelog
-        - name: MARIADB_USER
-          value: wavelog
-        - name: MARIADB_PASSWORD
-          value: wavelog
+        - name: ('MARIADB_RANDOM_ROOT_PASSWORD', True)
+          value: ''
+        - name: ('MARIADB_DATABASE', 'wavelog')
+          value: ''
+        - name: ('MARIADB_USER', 'wavelog')
+          value: ''
+        - name: ('MARIADB_PASSWORD', 'wavelog')
+          value: ''
         ports:
         - containerPort: 3306
         readinessProbe:

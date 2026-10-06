@@ -1,0 +1,18 @@
+apiVersion: v2
+name: arcane
+description: An easy and modern Docker management platform
+type: application
+version: 0.1.0
+appVersion: 2.15.0
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: Arcane
+  yolab.io/icon: 🛠
+  yolab.io/category: developer
+  yolab.io/tagline: An easy and modern Docker management platform
+  yolab.io/github: getarcaneapp/arcane
+  yolab.io/collections: for-developers
+home: https://getarcane.app/

@@ -1,0 +1,10 @@
+config:
+  subdomain: netbird
+  storage_size: 10Gi
+  node: ''
+yolab:
+  platformApiUrl: ''
+  accountToken: ''
+  serviceName: ''
+  gateway:
+    upstream: web:80

@@ -21,16 +21,6 @@ spec:
     requests:
       storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
 ---
-apiVersion: v1
-kind: Secret
-metadata:
-  name: {{ .Release.Name }}-secrets
-  namespace: {{ .Release.Namespace }}
-type: Opaque
-stringData:
-  app_secret: {{ required "config.app_secret is required" .Values.config.app_secret | quote }}
-  admin_password: {{ required "config.admin_password is required" .Values.config.admin_password | quote }}
----
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -60,22 +50,12 @@ spec:
         image: ghcr.io/perber/leafwiki:v0.13.0@sha256:c40904dafd9db81ca2c9334e8c67fb168d175876111fc1fd9a00e3715b66775b
         imagePullPolicy: IfNotPresent
         env:
-        - name: APP_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: '{{ .Release.Name }}-secrets'
-              key: admin_password
-        - name: APP_SEED
-          valueFrom:
-            secretKeyRef:
-              name: '{{ .Release.Name }}-secrets'
-              key: app_secret
-        - name: LEAFWIKI_JWT_SECRET
-          value: $(APP_SEED)
-        - name: LEAFWIKI_ADMIN_PASSWORD
-          value: $(APP_PASSWORD)
-        - name: LEAFWIKI_ALLOW_INSECURE
-          value: 'true'
+        - name: ('LEAFWIKI_JWT_SECRET', '${APP_SEED}')
+          value: ''
+        - name: ('LEAFWIKI_ADMIN_PASSWORD', '${APP_PASSWORD}')
+          value: ''
+        - name: ('LEAFWIKI_ALLOW_INSECURE', 'true')
+          value: ''
         ports:
         - containerPort: 8080
         readinessProbe:

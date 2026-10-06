@@ -21,15 +21,6 @@ spec:
     requests:
       storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
 ---
-apiVersion: v1
-kind: Secret
-metadata:
-  name: {{ .Release.Name }}-secrets
-  namespace: {{ .Release.Namespace }}
-type: Opaque
-stringData:
-  app_secret: {{ required "config.app_secret is required" .Values.config.app_secret | quote }}
----
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -59,27 +50,22 @@ spec:
         image: ghcr.io/getalby/hub:v1.24.0@sha256:0227bdc79afd20eb689c922c96cf0546576b608c5cbb07b13658956d54e8133d
         imagePullPolicy: IfNotPresent
         env:
-        - name: APP_SEED
-          valueFrom:
-            secretKeyRef:
-              name: '{{ .Release.Name }}-secrets'
-              key: app_secret
-        - name: LN_BACKEND_TYPE
-          value: ${APP_ALBYHUB_LN_BACKEND:-LDK}
-        - name: LND_ADDRESS
-          value: $(APP_ALBYHUB_LND_ADDRESS)
-        - name: LND_CERT_FILE
-          value: $(APP_ALBYHUB_LND_CERT_FILE)
-        - name: LND_MACAROON_FILE
-          value: $(APP_ALBYHUB_LND_MACAROON_FILE)
-        - name: WORK_DIR
-          value: /data/albyhub
-        - name: COOKIE_SECRET
-          value: $(APP_SEED)
-        - name: HIDE_UPDATE_BANNER
-          value: 'true'
-        - name: LOG_EVENTS
-          value: 'true'
+        - name: ('LN_BACKEND_TYPE', '${APP_ALBYHUB_LN_BACKEND:-LDK}')
+          value: ''
+        - name: ('LND_ADDRESS', '${APP_ALBYHUB_LND_ADDRESS}')
+          value: ''
+        - name: ('LND_CERT_FILE', '${APP_ALBYHUB_LND_CERT_FILE}')
+          value: ''
+        - name: ('LND_MACAROON_FILE', '${APP_ALBYHUB_LND_MACAROON_FILE}')
+          value: ''
+        - name: ('WORK_DIR', '/data/albyhub')
+          value: ''
+        - name: ('COOKIE_SECRET', '${APP_SEED}')
+          value: ''
+        - name: ('HIDE_UPDATE_BANNER', 'true')
+          value: ''
+        - name: ('LOG_EVENTS', 'true')
+          value: ''
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000

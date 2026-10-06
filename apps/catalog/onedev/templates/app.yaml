@@ -1,0 +1,280 @@
+{{ include "yolab-common.caddyConfigMap" . }}
+---
+{{ include "yolab-common.fileExplorerSecret" . }}
+---
+{{ include "yolab-common.fileExplorerConfigMap" . }}
+---
+{{ include "yolab-common.privateAccessResources" . }}
+---
+{{ include "yolab-common.uninstallHook" . }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-data
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: yolab-cephfs
+  resources:
+    requests:
+      storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: '{{ .Release.Name }}-seed'
+  namespace: '{{ .Release.Namespace }}'
+binaryData:
+  f0: IyEvYmluL3NoCgpwaWRmaWxlPSIvdmFyL3J1bi9kb2NrZXIucGlkIgppZiBbWyAtZiAiJHtwaWRmaWxlfSIgXV0KdGhlbgogICAgcm0gLWYgIiR7cGlkZmlsZX0iCmZpCgpmb3IgY29tbWFuZCBpbiBpcHRhYmxlcyBpcHRhYmxlcy1yZXN0b3JlIGlwdGFibGVzLXJlc3RvcmUtdHJhbnNsYXRlIGlwdGFibGVzLXNhdmUgaXB0YWJsZXMtdHJhbnNsYXRlCmRvCiAgICBsbiAtc2YgL3NiaW4veHRhYmxlcy1uZnQtbXVsdGkgL3NiaW4vJGNvbW1hbmQKZG9uZQoKZW5zdXJlX2JyaWRnZV9leGlzdHMoKSB7CiAgICBsb2NhbCBuYW1lPSIkezF9IgogICAgbG9jYWwgaXBfcmFuZ2U9IiR7Mn0iCiAgICBpZiBpcCBsaW5rIHNob3cgIiR7bmFtZX0iICY+L2Rldi9udWxsCiAgICB0aGVuCiAgICAgICAgZWNobyAiQnJpZGdlICcke25hbWV9JyBhbHJlYWR5IGV4aXN0cy4gU2tpcHBpbmcgY3JlYXRpb24uIgogICAgICAgIGlwIGFkZHIgc2hvdyAiJHtuYW1lfSIKICAgICAgICByZXR1cm4KICAgIGZpCiAgICBlY2hvICJCcmlkZ2UgJyR7bmFtZX0nIGRvZXMgbm90IGV4aXN0LiBDcmVhdGluZy4uLiIKICAgIGlwIGxpbmsgYWRkICIke25hbWV9IiB0eXBlIGJyaWRnZQogICAgaXAgYWRkciBhZGQgIiR7aXBfcmFuZ2V9IiBkZXYgIiR7bmFtZX0iCiAgICBpcCBsaW5rIHNldCAiJHtuYW1lfSIgdXAKICAgIGVjaG8gIkJyaWRnZSAnJHtuYW1lfScgaXMgbm93IHVwIHdpdGggSVAgcmFuZ2UgJyR7aXBfcmFuZ2V9Jy4iCiAgICBpcCBhZGRyIHNob3cgIiR7bmFtZX0iCn0KCmlmIFtbICIke0RPQ0tFUl9FTlNVUkVfQlJJREdFfSIgIT0gIiIgXV0KdGhlbgogICAgYnJpZGdlPSIke0RPQ0tFUl9FTlNVUkVfQlJJREdFJSU6Kn0iCiAgICBpcF9yYW5nZT0iJHtET0NLRVJfRU5TVVJFX0JSSURHRSMqOn0iCiAgICBlbnN1cmVfYnJpZGdlX2V4aXN0cyAiJHticmlkZ2V9IiAiJHtpcF9yYW5nZX0iCmZpCgpleGVjIGRvY2tlcmQtZW50cnlwb2ludC5zaCAkQAo=
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      {{- if .Values.config.node }}
+      nodeSelector:
+        kubernetes.io/hostname: {{ .Values.config.node | quote }}
+        kubernetes.io/arch: amd64
+      {{- else }}
+      nodeSelector:
+        kubernetes.io/arch: amd64
+      {{- end }}
+      initContainers:
+      {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessInit" . | nindent 6 }}
+      - name: seed
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - 'set -e
+
+          D=/data/{{ .Release.Name }}
+
+          [ -e "$D/entrypoint.sh" ] || cp /seed/f0 "$D/entrypoint.sh"
+
+          '
+        volumeMounts:
+        - name: seed
+          mountPath: /seed
+          readOnly: true
+        - name: data
+          mountPath: /data
+      containers:
+      {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
+      - name: web
+        image: 1dev/server:16.8.4@sha256:d2347bd1c66f92b66268561aa989801d98f7fe02ca659a2869a79f1266aa99a3
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: ('ONEDEV_SERVICE_HOST', '${DEVICE_DOMAIN_NAME}:${APP_PROXY_PORT}')
+          value: ''
+        - name: ('hibernate_connection_password', '${APP_SEED}')
+          value: ''
+        - name: ('hibernate_dialect', 'io.onedev.server.persistence.PostgreSQLDialect')
+          value: ''
+        - name: ('hibernate_connection_driver_class', 'org.postgresql.Driver')
+          value: ''
+        - name: ('hibernate_connection_url', 'jdbc:postgresql://onedev_postgres_1:5432/onedev')
+          value: ''
+        - name: ('hibernate_connection_username', 'postgres')
+          value: ''
+        - name: ('DOCKER_HOST', 'unix:///var/run/docker.sock')
+          value: ''
+        ports:
+        - containerPort: 6610
+        readinessProbe:
+          tcpSocket:
+            port: 6610
+        volumeMounts:
+        - name: data
+          mountPath: /opt/onedev
+          subPath: '{{ .Release.Name }}/data/onedev'
+        - name: data
+          mountPath: /var/run
+          subPath: '{{ .Release.Name }}/data/docker'
+      volumes:
+      {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}
+      - name: seed
+        configMap:
+          name: '{{ .Release.Name }}-seed'
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: docker
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: docker
+  template:
+    metadata:
+      labels:
+        app: docker
+    spec:
+      containers:
+      - name: docker
+        image: docker:27.2.0-dind@sha256:f9f72ad901a78f27be922b2d320bbc263174f12919c1b37e6a01f828fa904565
+        imagePullPolicy: IfNotPresent
+        command:
+        - /entrypoint.sh
+        args:
+        - dockerd
+        - --bridge
+        - dind0
+        - --data-root
+        - /data/data
+        - --exec-root
+        - /data/exec
+        - --host
+        - unix:///data/docker.sock
+        - --pidfile
+        - /data/docker.pid
+        env:
+        - name: ('DOCKER_ENSURE_BRIDGE', 'dind0:10.32.0.1/16')
+          value: ''
+        volumeMounts:
+        - name: data
+          mountPath: /entrypoint.sh
+          subPath: '{{ .Release.Name }}/entrypoint.sh'
+        - name: data
+          mountPath: /data
+          subPath: '{{ .Release.Name }}/data/docker'
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: '{{ .Release.Name }}-data'
+      - name: seed
+        configMap:
+          name: '{{ .Release.Name }}-seed'
+      initContainers:
+      - name: seed
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - 'set -e
+
+          D=/data/{{ .Release.Name }}
+
+          [ -e "$D/entrypoint.sh" ] || cp /seed/f0 "$D/entrypoint.sh"
+
+          '
+        volumeMounts:
+        - name: seed
+          mountPath: /seed
+          readOnly: true
+        - name: data
+          mountPath: /data
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      nodeSelector:
+        kubernetes.io/arch: amd64
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:17.10-alpine@sha256:742f40ea20b9ff2ff31db5458d127452988a2164df9e17441e191f3b72252193
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: ('POSTGRES_PASSWORD', '${APP_SEED}')
+          value: ''
+        - name: ('POSTGRES_USER', 'postgres')
+          value: ''
+        - name: ('POSTGRES_DB', 'onedev')
+          value: ''
+        ports:
+        - containerPort: 5432
+        readinessProbe:
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - pg_isready -U postgres -d onedev
+          periodSeconds: 5
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/postgresql/data
+          subPath: '{{ .Release.Name }}/data/postgres'
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: '{{ .Release.Name }}-data'
+      - name: seed
+        configMap:
+          name: '{{ .Release.Name }}-seed'
+      initContainers:
+      - name: seed
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - 'set -e
+
+          D=/data/{{ .Release.Name }}
+
+          [ -e "$D/entrypoint.sh" ] || cp /seed/f0 "$D/entrypoint.sh"
+
+          '
+        volumeMounts:
+        - name: seed
+          mountPath: /seed
+          readOnly: true
+        - name: data
+          mountPath: /data
+      nodeSelector:
+        kubernetes.io/arch: amd64
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  selector:
+    app: postgres
+  ports:
+  - port: 5432
+    targetPort: 5432

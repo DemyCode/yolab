@@ -1,0 +1,91 @@
+{{ include "yolab-common.caddyConfigMap" . }}
+---
+{{ include "yolab-common.fileExplorerSecret" . }}
+---
+{{ include "yolab-common.fileExplorerConfigMap" . }}
+---
+{{ include "yolab-common.privateAccessResources" . }}
+---
+{{ include "yolab-common.uninstallHook" . }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-data
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: yolab-cephfs
+  resources:
+    requests:
+      storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      {{- if .Values.config.node }}
+      nodeSelector:
+        kubernetes.io/hostname: {{ .Values.config.node | quote }}
+        kubernetes.io/arch: amd64
+      {{- else }}
+      nodeSelector:
+        kubernetes.io/arch: amd64
+      {{- end }}
+      initContainers:
+      {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessInit" . | nindent 6 }}
+      containers:
+      {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
+      - name: web
+        image: tailscale/tailscale:v1.102.5@sha256:c507f3a2a6ab1cabd8d809b98edeb41edbd5c3fb6ad9632ffd098b4c7d0b4065
+        imagePullPolicy: IfNotPresent
+        args:
+        - sh
+        - -c
+        - "tailscale web --listen 0.0.0.0:8240 &\n\n(\n  for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do\n    if tailscale set --accept-routes=false >/dev/null 2>&1; then\n      exit 0\n    fi\n    sleep 1\n  done\n\n  echo \"Warning: failed to disable Tailscale accept-routes; continuing\"\n) &\n\nexec tailscaled\n"
+        env:
+        - name: ('TS_DEBUG_FIREWALL_MODE', 'nftables')
+          value: ''
+        securityContext:
+          capabilities:
+            add:
+            - NET_ADMIN
+            - NET_RAW
+        ports:
+        - containerPort: 8240
+        readinessProbe:
+          tcpSocket:
+            port: 8240
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib
+          subPath: '{{ .Release.Name }}/data'
+        - name: host-dev-net-tun
+          mountPath: /dev/net/tun
+      volumes:
+      {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}
+      - name: host-dev-net-tun
+        hostPath:
+          path: /dev/net/tun

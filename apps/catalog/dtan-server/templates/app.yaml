@@ -46,6 +46,8 @@ spec:
       labels:
         app: gateway
     spec:
+      nodeSelector:
+        kubernetes.io/arch: amd64
       initContainers:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
@@ -58,11 +60,11 @@ spec:
         - -c
         - 'set -e
 
-          D=/data/{{ .Release.Name }}/data
+          D=/data/{{ .Release.Name }}
 
-          mkdir -p "$D/config"
+          mkdir -p "$D/data/config"
 
-          [ -e "$D/config/config.yml" ] || cp /seed/f0 "$D/config/config.yml"
+          [ -e "$D/data/config/config.yml" ] || cp /seed/f0 "$D/data/config/config.yml"
 
           '
         volumeMounts:
@@ -79,8 +81,8 @@ spec:
         image: voidic/dtan-server:v0.2.0@sha256:8ffce76cc82d00fbe8571bedfd6699fbd91e97d89ff5e6cbc32dbf03b9d58ad1
         imagePullPolicy: IfNotPresent
         env:
-        - name: RUST_LOG
-          value: info
+        - name: ('RUST_LOG', 'info')
+          value: ''
         ports:
         - containerPort: 8000
         readinessProbe:

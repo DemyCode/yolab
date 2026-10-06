@@ -1,0 +1,472 @@
+{{ include "yolab-common.caddyConfigMap" . }}
+---
+{{ include "yolab-common.fileExplorerSecret" . }}
+---
+{{ include "yolab-common.fileExplorerConfigMap" . }}
+---
+{{ include "yolab-common.privateAccessResources" . }}
+---
+{{ include "yolab-common.uninstallHook" . }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-data
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: yolab-cephfs
+  resources:
+    requests:
+      storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: '{{ .Release.Name }}-seed'
+  namespace: '{{ .Release.Namespace }}'
+binaryData:
+  f0: IyEvYmluL3NoCgojIFRoaXMgaGFjayBjYW4gYmUgcmVtb3ZlZCBpZiBodHRwczovL2dpdGh1Yi5jb20vZG9ja2VyLWxpYnJhcnkvZG9ja2VyL3B1bGwvNDQ0IGdldHMgbWVyZ2VkLgoKIyBSZW1vdmUgZG9ja2VyIHBpZGZpbGUgaWYgaXQgZXhpc3RzIHRvIGVuc3VyZSBEb2NrZXIgY2FuIHN0YXJ0IHVwIGFmdGVyIGEgYmFkIHNodXRkb3duCnBpZGZpbGU9Ii92YXIvcnVuL2RvY2tlci5waWQiCmlmIFtbIC1mICIke3BpZGZpbGV9IiBdXQp0aGVuCiAgICBybSAtZiAiJHtwaWRmaWxlfSIKZmkKCiMgVXNlIG5mdGFibGVzIGFzIHRoZSBiYWNrZW5kIGZvciBpcHRhYmxlcwpmb3IgY29tbWFuZCBpbiBpcHRhYmxlcyBpcHRhYmxlcy1yZXN0b3JlIGlwdGFibGVzLXJlc3RvcmUtdHJhbnNsYXRlIGlwdGFibGVzLXNhdmUgaXB0YWJsZXMtdHJhbnNsYXRlCmRvCiAgICBsbiAtc2YgL3NiaW4veHRhYmxlcy1uZnQtbXVsdGkgL3NiaW4vJGNvbW1hbmQKZG9uZQoKIyBFbnN1cmUgdGhhdCBhIGJyaWRnZSBleGlzdHMgd2l0aCB0aGUgZ2l2ZW4gbmFtZQplbnN1cmVfYnJpZGdlX2V4aXN0cygpIHsKICAgIGxvY2FsIG5hbWU9IiR7MX0iCiAgICBsb2NhbCBpcF9yYW5nZT0iJHsyfSIKCiAgICAjIENoZWNrIGlmIHRoZSBicmlkZ2UgYWxyZWFkeSBleGlzdHMKICAgIGlmIGlwIGxpbmsgc2hvdyAiJHtuYW1lfSIgJj4vZGV2L251bGwKICAgIHRoZW4KICAgICAgICBlY2hvICJCcmlkZ2UgJyR7bmFtZX0nIGFscmVhZHkgZXhpc3RzLiBTa2lwcGluZyBjcmVhdGlvbi4iCiAgICAgICAgaXAgYWRkciBzaG93ICIke25hbWV9IgogICAgICAgIHJldHVybgogICAgZmkKCiAgICBlY2hvICJCcmlkZ2UgJyR7bmFtZX0nIGRvZXMgbm90IGV4aXN0LiBDcmVhdGluZy4uLiIKICAgIGlwIGxpbmsgYWRkICIke25hbWV9IiB0eXBlIGJyaWRnZQogICAgaXAgYWRkciBhZGQgIiR7aXBfcmFuZ2V9IiBkZXYgIiR7bmFtZX0iCiAgICBpcCBsaW5rIHNldCAiJHtuYW1lfSIgdXAKCiAgICBlY2hvICJCcmlkZ2UgJyR7bmFtZX0nIGlzIG5vdyB1cCB3aXRoIElQIHJhbmdlICcke2lwX3JhbmdlfScuIgogICAgaXAgYWRkciBzaG93ICIke25hbWV9Igp9CgppZiBbWyAiJHtET0NLRVJfRU5TVVJFX0JSSURHRX0iICE9ICIiIF1dCnRoZW4KICAgIGJyaWRnZT0iJHtET0NLRVJfRU5TVVJFX0JSSURHRSUlOip9IgogICAgaXBfcmFuZ2U9IiR7RE9DS0VSX0VOU1VSRV9CUklER0UjKjp9IgogICAgZW5zdXJlX2JyaWRnZV9leGlzdHMgIiR7YnJpZGdlfSIgIiR7aXBfcmFuZ2V9IgpmaQoKZXhlYyBkb2NrZXJkLWVudHJ5cG9pbnQuc2ggJEAK
+  f1: VFo9IkV1cm9wZS9CZXJsaW4iCktPTU9ET19IT1NUPWNoYW5nZW1lCktPTU9ET19USVRMRT1Lb21vZG8KS09NT0RPX0xPQ0FMX0FVVEg9InRydWUiCktPTU9ET19ESVNBQkxFX1VTRVJfUkVHSVNUUkFUSU9OPSJmYWxzZSIKS09NT0RPX0VOQUJMRV9ORVdfVVNFUlM9ImZhbHNlIgpLT01PRE9fRElTQUJMRV9OT05fQURNSU5fQ1JFQVRFPSJmYWxzZSIKS09NT0RPX1RSQU5TUEFSRU5UX01PREU9ImZhbHNlIgpLT01PRE9fTE9HR0lOR19QUkVUVFk9ImZhbHNlIgpLT01PRE9fUFJFVFRZX1NUQVJUVVBfQ09ORklHPSJmYWxzZSIKS09NT0RPX09JRENfRU5BQkxFRD0iZmFsc2UiCktPTU9ET19HSVRIVUJfT0FVVEhfRU5BQkxFRD0iZmFsc2UiCktPTU9ET19HT09HTEVfT0FVVEhfRU5BQkxFRD0iZmFsc2UiCktPTU9ET19ESVNBQkxFX0NPTkZJUk1fRElBTE9HPSJmYWxzZSIKS09NT0RPX01PTklUT1JJTkdfSU5URVJWQUw9IjE1LXNlYyIKS09NT0RPX1JFU09VUkNFX1BPTExfSU5URVJWQUw9IjEtaHIiCktPTU9ET19XRUJIT09LX1NFQ1JFVD1XM2JoMDBrUzNjcmV0ITIwMjUKS09NT0RPX0pXVF9UVEw9IjEtZGF5IgojS09NT0RPX0FXU19BQ0NFU1NfS0VZX0lEPQojS09NT0RPX0FXU19TRUNSRVRfQUNDRVNTX0tFWT0K
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      {{- if .Values.config.node }}
+      nodeSelector:
+        kubernetes.io/hostname: {{ .Values.config.node | quote }}
+        kubernetes.io/arch: amd64
+      {{- else }}
+      nodeSelector:
+        kubernetes.io/arch: amd64
+      {{- end }}
+      initContainers:
+      {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessInit" . | nindent 6 }}
+      - name: seed
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - 'set -e
+
+          D=/data/{{ .Release.Name }}
+
+          [ -e "$D/entrypoint.sh" ] || cp /seed/f0 "$D/entrypoint.sh"
+
+          [ -e "$D/settings.env" ] || cp /seed/f1 "$D/settings.env"
+
+          '
+        volumeMounts:
+        - name: seed
+          mountPath: /seed
+          readOnly: true
+        - name: data
+          mountPath: /data
+      containers:
+      {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
+      - name: core
+        image: ghcr.io/moghtech/komodo-core:2.3.3@sha256:bca73d0eee143066228fb9b80c38a5a2726e573ad2758f7aa92b5c91a8aef1c7
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: ('TZ', 'Europe/Berlin')
+          value: ''
+        - name: ('KOMODO_HOST', 'changeme')
+          value: ''
+        - name: ('KOMODO_TITLE', 'Komodo')
+          value: ''
+        - name: ('KOMODO_LOCAL_AUTH', 'true')
+          value: ''
+        - name: ('KOMODO_DISABLE_USER_REGISTRATION', 'false')
+          value: ''
+        - name: ('KOMODO_ENABLE_NEW_USERS', 'false')
+          value: ''
+        - name: ('KOMODO_DISABLE_NON_ADMIN_CREATE', 'false')
+          value: ''
+        - name: ('KOMODO_TRANSPARENT_MODE', 'false')
+          value: ''
+        - name: ('KOMODO_LOGGING_PRETTY', 'false')
+          value: ''
+        - name: ('KOMODO_PRETTY_STARTUP_CONFIG', 'false')
+          value: ''
+        - name: ('KOMODO_OIDC_ENABLED', 'false')
+          value: ''
+        - name: ('KOMODO_GITHUB_OAUTH_ENABLED', 'false')
+          value: ''
+        - name: ('KOMODO_GOOGLE_OAUTH_ENABLED', 'false')
+          value: ''
+        - name: ('KOMODO_DISABLE_CONFIRM_DIALOG', 'false')
+          value: ''
+        - name: ('KOMODO_MONITORING_INTERVAL', '15-sec')
+          value: ''
+        - name: ('KOMODO_RESOURCE_POLL_INTERVAL', '1-hr')
+          value: ''
+        - name: ('KOMODO_WEBHOOK_SECRET', 'W3bh00kS3cret!2025')
+          value: ''
+        - name: ('KOMODO_JWT_TTL', '1-day')
+          value: ''
+        - name: ('KOMODO_DATABASE_ADDRESS', 'komodo_ferretdb_1:27017')
+          value: ''
+        - name: ('KOMODO_DATABASE_USERNAME', 'admin')
+          value: ''
+        - name: ('KOMODO_DATABASE_PASSWORD', 'admin')
+          value: ''
+        - name: ('KOMODO_PASSKEY', '${APP_PASSWORD}')
+          value: ''
+        - name: ('KOMODO_FIRST_SERVER', 'https://komodo_periphery_1:8120')
+          value: ''
+        - name: ('KOMODO_JWT_SECRET', '${APP_SEED}')
+          value: ''
+        securityContext:
+          runAsUser: 1000
+          runAsGroup: 1000
+        ports:
+        - containerPort: 9120
+        readinessProbe:
+          tcpSocket:
+            port: 9120
+        volumeMounts:
+        - name: data
+          mountPath: /backups
+          subPath: '{{ .Release.Name }}/data/core'
+        - name: data
+          mountPath: /config/keys
+          subPath: '{{ .Release.Name }}/data/keys'
+      volumes:
+      {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}
+      - name: seed
+        configMap:
+          name: '{{ .Release.Name }}-seed'
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: docker
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: docker
+  template:
+    metadata:
+      labels:
+        app: docker
+    spec:
+      containers:
+      - name: docker
+        image: docker:28.3.0-dind@sha256:d33eb93fe02683e984e6f8a93c0b3d85bb74f56ec83922bc39fb34ba23ab42bc
+        imagePullPolicy: IfNotPresent
+        command:
+        - /entrypoint.sh
+        args:
+        - dockerd
+        - --bridge
+        - dind0
+        - --data-root
+        - /data/data
+        - --exec-root
+        - /data/exec
+        - --host
+        - unix:///data/docker.sock
+        - --pidfile
+        - /data/docker.pid
+        env:
+        - name: ('DOCKER_ENSURE_BRIDGE', 'dind0:10.32.0.1/16')
+          value: ''
+        volumeMounts:
+        - name: data
+          mountPath: /entrypoint.sh
+          subPath: '{{ .Release.Name }}/entrypoint.sh'
+        - name: data
+          mountPath: /data
+          subPath: '{{ .Release.Name }}/data/docker'
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: '{{ .Release.Name }}-data'
+      - name: seed
+        configMap:
+          name: '{{ .Release.Name }}-seed'
+      initContainers:
+      - name: seed
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - 'set -e
+
+          D=/data/{{ .Release.Name }}
+
+          [ -e "$D/entrypoint.sh" ] || cp /seed/f0 "$D/entrypoint.sh"
+
+          [ -e "$D/settings.env" ] || cp /seed/f1 "$D/settings.env"
+
+          '
+        volumeMounts:
+        - name: seed
+          mountPath: /seed
+          readOnly: true
+        - name: data
+          mountPath: /data
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      nodeSelector:
+        kubernetes.io/arch: amd64
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+      - name: postgres
+        image: ghcr.io/ferretdb/postgres-documentdb:17-0.104.0@sha256:1d709fc03dcb82faa2e3aa02c0f80ea10e483b38aff08a05da36a6faa2098608
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: ('POSTGRES_USER', 'admin')
+          value: ''
+        - name: ('POSTGRES_PASSWORD', 'admin')
+          value: ''
+        - name: ('POSTGRES_DB', 'postgres')
+          value: ''
+        securityContext:
+          runAsUser: 1000
+          runAsGroup: 1000
+        ports:
+        - containerPort: 5432
+        readinessProbe:
+          tcpSocket:
+            port: 5432
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/postgresql/data
+          subPath: '{{ .Release.Name }}/data/postgres'
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: '{{ .Release.Name }}-data'
+      - name: seed
+        configMap:
+          name: '{{ .Release.Name }}-seed'
+      initContainers:
+      - name: seed
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - 'set -e
+
+          D=/data/{{ .Release.Name }}
+
+          [ -e "$D/entrypoint.sh" ] || cp /seed/f0 "$D/entrypoint.sh"
+
+          [ -e "$D/settings.env" ] || cp /seed/f1 "$D/settings.env"
+
+          '
+        volumeMounts:
+        - name: seed
+          mountPath: /seed
+          readOnly: true
+        - name: data
+          mountPath: /data
+      nodeSelector:
+        kubernetes.io/arch: amd64
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  selector:
+    app: postgres
+  ports:
+  - port: 5432
+    targetPort: 5432
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ferretdb
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: ferretdb
+  template:
+    metadata:
+      labels:
+        app: ferretdb
+    spec:
+      containers:
+      - name: ferretdb
+        image: ghcr.io/ferretdb/ferretdb:2.3.1@sha256:1170bd36c39378614edd3f1d2b92f0c5a9b30e482a79ea0c3fc0fe11baba3afa
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: ('FERRETDB_POSTGRESQL_URL', 'postgres://admin:admin@komodo_postgres_1:5432/postgres')
+          value: ''
+        securityContext:
+          runAsUser: 1000
+          runAsGroup: 1000
+        volumeMounts:
+        - name: data
+          mountPath: /state
+          subPath: '{{ .Release.Name }}/data/ferretdb'
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: '{{ .Release.Name }}-data'
+      - name: seed
+        configMap:
+          name: '{{ .Release.Name }}-seed'
+      initContainers:
+      - name: seed
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - 'set -e
+
+          D=/data/{{ .Release.Name }}
+
+          [ -e "$D/entrypoint.sh" ] || cp /seed/f0 "$D/entrypoint.sh"
+
+          [ -e "$D/settings.env" ] || cp /seed/f1 "$D/settings.env"
+
+          '
+        volumeMounts:
+        - name: seed
+          mountPath: /seed
+          readOnly: true
+        - name: data
+          mountPath: /data
+      nodeSelector:
+        kubernetes.io/arch: amd64
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: periphery
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: periphery
+  template:
+    metadata:
+      labels:
+        app: periphery
+    spec:
+      containers:
+      - name: periphery
+        image: ghcr.io/moghtech/komodo-periphery:2.3.3@sha256:fa3f1a641a265216066676950d5eecdf506955a7bafe2f01996135ae93115cd5
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: ('COMPOSE_KOMODO_IMAGE_TAG', 'latest')
+          value: ''
+        - name: ('KOMODO_PASSKEY', '${APP_PASSWORD}')
+          value: ''
+        - name: ('TZ', 'Europe/Berlin')
+          value: ''
+        - name: ('PERIPHERY_ROOT_DIRECTORY', '/etc/komodo')
+          value: ''
+        - name: ('PERIPHERY_PASSKEYS', '${APP_PASSWORD}')
+          value: ''
+        - name: ('PERIPHERY_DISABLE_TERMINALS', 'false')
+          value: ''
+        - name: ('PERIPHERY_SSL_ENABLED', 'true')
+          value: ''
+        - name: ('PERIPHERY_INCLUDE_DISK_MOUNTS', '/etc/hostname')
+          value: ''
+        - name: ('PERIPHERY_LOGGING_PRETTY', 'false')
+          value: ''
+        - name: ('PERIPHERY_PRETTY_STARTUP_CONFIG', 'false')
+          value: ''
+        volumeMounts:
+        - name: data
+          mountPath: /var/run
+          subPath: '{{ .Release.Name }}/data/docker'
+        - name: host-proc
+          mountPath: /proc
+        - name: data
+          mountPath: /etc/komodo
+          subPath: '{{ .Release.Name }}/data/periphery'
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: '{{ .Release.Name }}-data'
+      - name: host-proc
+        hostPath:
+          path: /proc
+      - name: seed
+        configMap:
+          name: '{{ .Release.Name }}-seed'
+      initContainers:
+      - name: seed
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - 'set -e
+
+          D=/data/{{ .Release.Name }}
+
+          [ -e "$D/entrypoint.sh" ] || cp /seed/f0 "$D/entrypoint.sh"
+
+          [ -e "$D/settings.env" ] || cp /seed/f1 "$D/settings.env"
+
+          '
+        volumeMounts:
+        - name: seed
+          mountPath: /seed
+          readOnly: true
+        - name: data
+          mountPath: /data
+      nodeSelector:
+        kubernetes.io/arch: amd64

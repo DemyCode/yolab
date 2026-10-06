@@ -1,0 +1,10 @@
+config:
+  subdomain: dockge
+  storage_size: 10Gi
+  node: ''
+yolab:
+  platformApiUrl: ''
+  accountToken: ''
+  serviceName: ''
+  gateway:
+    upstream: localhost:5001

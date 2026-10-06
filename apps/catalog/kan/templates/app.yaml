@@ -21,15 +21,6 @@ spec:
     requests:
       storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
 ---
-apiVersion: v1
-kind: Secret
-metadata:
-  name: {{ .Release.Name }}-secrets
-  namespace: {{ .Release.Namespace }}
-type: Opaque
-stringData:
-  app_secret: {{ required "config.app_secret is required" .Values.config.app_secret | quote }}
----
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -59,19 +50,14 @@ spec:
         image: ghcr.io/kanbn/kan:0.6.0@sha256:0087a72a123d8462c66ddce3a303049d4ec92f03cfba297d41466605ef8cb5b5
         imagePullPolicy: IfNotPresent
         env:
-        - name: APP_SEED
-          valueFrom:
-            secretKeyRef:
-              name: '{{ .Release.Name }}-secrets'
-              key: app_secret
-        - name: NEXT_PUBLIC_BASE_URL
-          value: http://localhost:8373
-        - name: BETTER_AUTH_SECRET
-          value: $(APP_SEED)
-        - name: POSTGRES_URL
-          value: postgresql://kanuser:kanpassword@db:5432/kan?sslmode=disable
-        - name: NEXT_PUBLIC_ALLOW_CREDENTIALS
-          value: 'true'
+        - name: ('NEXT_PUBLIC_BASE_URL', 'http://${DEVICE_DOMAIN_NAME}:8373')
+          value: ''
+        - name: ('BETTER_AUTH_SECRET', '${APP_SEED}')
+          value: ''
+        - name: ('POSTGRES_URL', 'postgresql://kanuser:kanpassword@kan_db_1:5432/kan?sslmode
+          value: disable')
+        - name: ('NEXT_PUBLIC_ALLOW_CREDENTIALS', 'true')
+          value: ''
         ports:
         - containerPort: 3000
         readinessProbe:
@@ -104,8 +90,8 @@ spec:
         image: ghcr.io/kanbn/kan-migrate:0.6.0@sha256:3296fd28e037a93dda478981494a72c6905ecd4f0d0739e79139172844acbc4b
         imagePullPolicy: IfNotPresent
         env:
-        - name: POSTGRES_URL
-          value: postgresql://kanuser:kanpassword@db:5432/kan?sslmode=disable
+        - name: ('POSTGRES_URL', 'postgresql://kanuser:kanpassword@kan_db_1:5432/kan?sslmode
+          value: disable')
       volumes:
       - name: data
         persistentVolumeClaim:
@@ -133,17 +119,12 @@ spec:
         image: postgres:17.3@sha256:0321e2252ebfeecb8bc1a899755084d29bce872953e1a5a3e25ec0860b739098
         imagePullPolicy: IfNotPresent
         env:
-        - name: APP_SEED
-          valueFrom:
-            secretKeyRef:
-              name: '{{ .Release.Name }}-secrets'
-              key: app_secret
-        - name: POSTGRES_DB
-          value: kan
-        - name: POSTGRES_USER
-          value: kanuser
-        - name: POSTGRES_PASSWORD
-          value: kanpassword
+        - name: ('POSTGRES_DB', 'kan')
+          value: ''
+        - name: ('POSTGRES_USER', 'kanuser')
+          value: ''
+        - name: ('POSTGRES_PASSWORD', 'kanpassword')
+          value: ''
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000

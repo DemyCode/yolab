@@ -38,6 +38,8 @@ spec:
       labels:
         app: gateway
     spec:
+      nodeSelector:
+        kubernetes.io/arch: amd64
       initContainers:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
@@ -50,18 +52,18 @@ spec:
         image: twentycrm/twenty:v2.44.0@sha256:01fb6d2c00397976fd7613dbeb9703b514b52fb6270339b7a326a2a975d15b26
         imagePullPolicy: IfNotPresent
         env:
-        - name: NODE_PORT
-          value: '3000'
-        - name: PG_DATABASE_URL
-          value: postgres://postgres:postgres@db:5432/default
-        - name: SERVER_URL
-          value: http://localhost:2020
-        - name: FRONT_AUTO_BASE_URL
-          value: 'true'
-        - name: REDIS_URL
-          value: redis://redis:6379
-        - name: APP_SECRET
-          value: 2Gn5puuVCH0SI386E9RqOqHm0hGIAyrB
+        - name: ('NODE_PORT', 3000)
+          value: ''
+        - name: ('PG_DATABASE_URL', 'postgres://postgres:postgres@twenty_db_1:5432/default')
+          value: ''
+        - name: ('SERVER_URL', 'http://${DEVICE_DOMAIN_NAME}:2020')
+          value: ''
+        - name: ('FRONT_AUTO_BASE_URL', 'true')
+          value: ''
+        - name: ('REDIS_URL', 'redis://twenty_redis_1:6379')
+          value: ''
+        - name: ('APP_SECRET', '2Gn5puuVCH0SI386E9RqOqHm0hGIAyrB')
+          value: ''
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000
@@ -112,18 +114,18 @@ spec:
         - yarn
         - worker:prod
         env:
-        - name: PG_DATABASE_URL
-          value: postgres://postgres:postgres@db:5432/default
-        - name: SERVER_URL
-          value: http://localhost:2020
-        - name: REDIS_URL
-          value: redis://redis:6379
-        - name: DISABLE_DB_MIGRATIONS
-          value: 'true'
-        - name: DISABLE_CRON_JOBS_REGISTRATION
-          value: 'true'
-        - name: APP_SECRET
-          value: 2Gn5puuVCH0SI386E9RqOqHm0hGIAyrB
+        - name: ('PG_DATABASE_URL', 'postgres://postgres:postgres@twenty_db_1:5432/default')
+          value: ''
+        - name: ('SERVER_URL', 'http://${DEVICE_DOMAIN_NAME}:2020')
+          value: ''
+        - name: ('REDIS_URL', 'redis://twenty_redis_1:6379')
+          value: ''
+        - name: ('DISABLE_DB_MIGRATIONS', 'true')
+          value: ''
+        - name: ('DISABLE_CRON_JOBS_REGISTRATION', 'true')
+          value: ''
+        - name: ('APP_SECRET', '2Gn5puuVCH0SI386E9RqOqHm0hGIAyrB')
+          value: ''
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000
@@ -135,6 +137,8 @@ spec:
       - name: data
         persistentVolumeClaim:
           claimName: '{{ .Release.Name }}-data'
+      nodeSelector:
+        kubernetes.io/arch: amd64
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -158,12 +162,12 @@ spec:
         image: postgres:16.8@sha256:74e7a26f7db1d5bbce23b4132fb4855ed0987ec9dc44f6d078ba8800892dc927
         imagePullPolicy: IfNotPresent
         env:
-        - name: POSTGRES_DB
-          value: default
-        - name: POSTGRES_USER
-          value: postgres
-        - name: POSTGRES_PASSWORD
-          value: postgres
+        - name: ('POSTGRES_DB', 'default')
+          value: ''
+        - name: ('POSTGRES_USER', 'postgres')
+          value: ''
+        - name: ('POSTGRES_PASSWORD', 'postgres')
+          value: ''
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000

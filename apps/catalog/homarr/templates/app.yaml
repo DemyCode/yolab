@@ -21,15 +21,6 @@ spec:
     requests:
       storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
 ---
-apiVersion: v1
-kind: Secret
-metadata:
-  name: {{ .Release.Name }}-secrets
-  namespace: {{ .Release.Namespace }}
-type: Opaque
-stringData:
-  app_secret: {{ required "config.app_secret is required" .Values.config.app_secret | quote }}
----
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -59,15 +50,10 @@ spec:
         image: ghcr.io/homarr-labs/homarr:v2.2.0@sha256:1b4ea544e2678d88ea949aeb1eb39cb162154c9fcecf581ade0c47f4d2098814
         imagePullPolicy: IfNotPresent
         env:
-        - name: APP_SEED
-          valueFrom:
-            secretKeyRef:
-              name: '{{ .Release.Name }}-secrets'
-              key: app_secret
-        - name: AUTH_SECRET
-          value: $(APP_SEED)
-        - name: SECRET_ENCRYPTION_KEY
-          value: $(APP_SEED)
+        - name: ('AUTH_SECRET', '${APP_SEED}')
+          value: ''
+        - name: ('SECRET_ENCRYPTION_KEY', '${APP_SEED}')
+          value: ''
         ports:
         - containerPort: 7575
         readinessProbe:

@@ -50,10 +50,10 @@ spec:
         image: dennysubke/torbrowser:15.0.17@sha256:b0c12dbc6b93338ef02f57186f47a57952f864e31f015a9fb47fa6c5afc0d0b1
         imagePullPolicy: IfNotPresent
         env:
-        - name: DARK_MODE
-          value: '1'
-        - name: WEB_AUDIO
-          value: '1'
+        - name: ('DARK_MODE', '1')
+          value: ''
+        - name: ('WEB_AUDIO', '1')
+          value: ''
         ports:
         - containerPort: 5800
         readinessProbe:

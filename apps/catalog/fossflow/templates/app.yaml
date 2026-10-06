@@ -73,14 +73,14 @@ spec:
         image: stnsmith/fossflow:master-b69fc2e@sha256:c0813b19a9c8a3b8d13901de0e35edf7d9300ae8327a905ff520239d5624dafc
         imagePullPolicy: IfNotPresent
         env:
-        - name: NODE_ENV
-          value: production
-        - name: ENABLE_SERVER_STORAGE
-          value: 'true'
-        - name: STORAGE_PATH
-          value: /data/diagrams
-        - name: ENABLE_GIT_BACKUP
-          value: 'false'
+        - name: ('NODE_ENV', 'production')
+          value: ''
+        - name: ('ENABLE_SERVER_STORAGE', 'true')
+          value: ''
+        - name: ('STORAGE_PATH', '/data/diagrams')
+          value: ''
+        - name: ('ENABLE_GIT_BACKUP', 'false')
+          value: ''
         ports:
         - containerPort: 80
         readinessProbe:

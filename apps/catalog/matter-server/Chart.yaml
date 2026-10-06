@@ -1,0 +1,17 @@
+apiVersion: v2
+name: matter-server
+description: A Matter Controller Server over WebSockets
+type: application
+version: 0.1.0
+appVersion: 8.1.2-patch.1
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: Matter Server
+  yolab.io/icon: 🤖
+  yolab.io/category: automation
+  yolab.io/tagline: A Matter Controller Server over WebSockets
+  yolab.io/github: matter-js/python-matter-server
+home: https://home-assistant.io

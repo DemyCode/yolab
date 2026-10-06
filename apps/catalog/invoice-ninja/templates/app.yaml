@@ -22,13 +22,12 @@ spec:
       storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
 ---
 apiVersion: v1
-kind: Secret
+kind: ConfigMap
 metadata:
-  name: {{ .Release.Name }}-secrets
-  namespace: {{ .Release.Namespace }}
-type: Opaque
-stringData:
-  admin_password: {{ required "config.admin_password is required" .Values.config.admin_password | quote }}
+  name: '{{ .Release.Name }}-seed'
+  namespace: '{{ .Release.Namespace }}'
+binaryData:
+  f0: IyBVbWJyZWwgSW52b2ljZS1OaW5qYSBjYW5vbmljYWwgbmdpbnguY29uZiAyNy1NYXktMjAyNQoKIyBJbnZvaWNlLU5pbmphIHJlY29tbWVuZGVkIG5naW54LmNvbmYgZm9yIExhcmF2ZWwKIyBodHRwczovL2dpdGh1Yi5jb20vaW52b2ljZW5pbmphL2RvY2tlcmZpbGVzL2Jsb2IvZWQ5YzIzZDljNzRhMmE5ZjQ3YjlkY2I1NDk0NjcyNmFiODE2YjZiYy9kZWJpYW4vbmdpbngvbGFyYXZlbC5jb25mCgojIGh0dHBzOi8vbGFyYXZlbC5jb20vZG9jcy9tYXN0ZXIvZGVwbG95bWVudCNuZ2lueApzZXJ2ZXIgewogICAgbGlzdGVuIDgwIGRlZmF1bHRfc2VydmVyOwogICAgc2VydmVyX25hbWUgXzsKICAgIHJvb3QgL3Zhci93d3cvaHRtbC9wdWJsaWM7CgogICAgYWRkX2hlYWRlciBYLUZyYW1lLU9wdGlvbnMgIlNBTUVPUklHSU4iOwogICAgYWRkX2hlYWRlciBYLUNvbnRlbnQtVHlwZS1PcHRpb25zICJub3NuaWZmIjsKCiAgICBpbmRleCBpbmRleC5waHA7CiAgICBjaGFyc2V0IHV0Zi04OwoKICAgIGxvY2F0aW9uIC8gewogICAgICAgIHRyeV9maWxlcyAkdXJpICR1cmkvIC9pbmRleC5waHA/JHF1ZXJ5X3N0cmluZzsKICAgIH0KCiAgICBsb2NhdGlvbiA9IC9mYXZpY29uLmljbyB7IGFjY2Vzc19sb2cgb2ZmOyBsb2dfbm90X2ZvdW5kIG9mZjsgfQogICAgbG9jYXRpb24gPSAvcm9ib3RzLnR4dCAgeyBhY2Nlc3NfbG9nIG9mZjsgbG9nX25vdF9mb3VuZCBvZmY7IH0KCiAgICBlcnJvcl9wYWdlIDQwNCAvaW5kZXgucGhwOwoKICAgIGxvY2F0aW9uIH4gXC5waHAkIHsKICAgICAgICBmYXN0Y2dpX3Bhc3MgaW52b2ljZS1uaW5qYV9hcHBfMTo5MDAwOwogICAgICAgIGZhc3RjZ2lfcGFyYW0gU0NSSVBUX0ZJTEVOQU1FICRyZWFscGF0aF9yb290JGZhc3RjZ2lfc2NyaXB0X25hbWU7CiAgICAgICAgaW5jbHVkZSBmYXN0Y2dpX3BhcmFtczsKICAgIH0KCiAgICBsb2NhdGlvbiB+IC9cLig/IXdlbGwta25vd24pLiogewogICAgICAgIGRlbnkgYWxsOwogICAgfQp9CgojIEludm9pY2UtTmluamEgcmVjb21tZW5kZWQgZ2xvYmFsL3NlcnZlciBkaXJlY3RpdmVzCiMgaHR0cHM6Ly9naXRodWIuY29tL2ludm9pY2VuaW5qYS9kb2NrZXJmaWxlcy9ibG9iL2VkOWMyM2Q5Yzc0YTJhOWY0N2I5ZGNiNTQ5NDY3MjZhYjgxNmI2YmMvZGViaWFuL25naW54L2ludm9pY2VuaW5qYS5jb25mCgojIGh0dHBzOi8vbmdpbngub3JnL2VuL2RvY3MvaHR0cC9uZ3hfaHR0cF9jb3JlX21vZHVsZS5odG1sCmNsaWVudF9tYXhfYm9keV9zaXplIDEwTTsKY2xpZW50X2JvZHlfYnVmZmVyX3NpemUgMTBNOwpzZXJ2ZXJfdG9rZW5zIG9mZjsKCiMgaHR0cHM6Ly9uZ2lueC5vcmcvZW4vZG9jcy9odHRwL25neF9odHRwX2Zhc3RjZ2lfbW9kdWxlLmh0bWwKZmFzdGNnaV9idWZmZXJzIDMyIDE2SzsKCiMgaHR0cHM6Ly9uZ2lueC5vcmcvZW4vZG9jcy9odHRwL25neF9odHRwX2d6aXBfbW9kdWxlLmh0bWwKZ3ppcCBvbjsKZ3ppcF9jb21wX2xldmVsIDI7Cmd6aXBfbWluX2xlbmd0aCAxTTsKZ3ppcF9wcm94aWVkIGFueTsKZ3ppcF90eXBlcyAqOwoK
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -51,6 +50,27 @@ spec:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
       {{- include "yolab-common.privateAccessInit" . | nindent 6 }}
+      - name: seed
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - 'set -e
+
+          D=/data/{{ .Release.Name }}
+
+          mkdir -p "$D/config"
+
+          [ -e "$D/config/nginx.conf" ] || cp /seed/f0 "$D/config/nginx.conf"
+
+          '
+        volumeMounts:
+        - name: seed
+          mountPath: /seed
+          readOnly: true
+        - name: data
+          mountPath: /data
       containers:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
@@ -59,6 +79,9 @@ spec:
       {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
       {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}
+      - name: seed
+        configMap:
+          name: '{{ .Release.Name }}-seed'
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -103,6 +126,31 @@ spec:
       - name: data
         persistentVolumeClaim:
           claimName: '{{ .Release.Name }}-data'
+      - name: seed
+        configMap:
+          name: '{{ .Release.Name }}-seed'
+      initContainers:
+      - name: seed
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - 'set -e
+
+          D=/data/{{ .Release.Name }}
+
+          mkdir -p "$D/config"
+
+          [ -e "$D/config/nginx.conf" ] || cp /seed/f0 "$D/config/nginx.conf"
+
+          '
+        volumeMounts:
+        - name: seed
+          mountPath: /seed
+          readOnly: true
+        - name: data
+          mountPath: /data
 ---
 apiVersion: v1
 kind: Service
@@ -138,49 +186,44 @@ spec:
         image: invoiceninja/invoiceninja-debian:5.13.43@sha256:c052414958dce9bb186f3da83c8066c84d419092e7a55025b5a7c201eff75387
         imagePullPolicy: IfNotPresent
         env:
-        - name: APP_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: '{{ .Release.Name }}-secrets'
-              key: admin_password
-        - name: APP_URL
-          value: http://localhost:8676
-        - name: APP_KEY
-          value: ${APP_KEY:-unset}
-        - name: APP_ENV
-          value: production
-        - name: APP_DEBUG
-          value: 'false'
-        - name: REQUIRE_HTTPS
-          value: 'false'
-        - name: DB_HOST
-          value: db
-        - name: DB_DATABASE
-          value: invoiceninja
-        - name: DB_USERNAME
-          value: invoiceninja
-        - name: DB_PASSWORD
-          value: moneyprintergobrrr
-        - name: IN_USER_EMAIL
-          value: admin@example.com
-        - name: IN_PASSWORD
-          value: $(APP_PASSWORD)
-        - name: IS_DOCKER
-          value: 'true'
-        - name: CACHE_DRIVER
-          value: redis
-        - name: QUEUE_CONNECTION
-          value: redis
-        - name: SESSION_DRIVER
-          value: redis
-        - name: REDIS_HOST
-          value: redis
-        - name: REDIS_PASSWORD
+        - name: ('APP_URL', 'http://${APP_DOMAIN}:8676')
           value: ''
-        - name: REDIS_PORT
-          value: '6379'
-        - name: FILESYSTEM_DISK
-          value: debian_docker
+        - name: ('APP_KEY', '${APP_KEY:-unset}')
+          value: ''
+        - name: ('APP_ENV', 'production')
+          value: ''
+        - name: ('APP_DEBUG', 'false')
+          value: ''
+        - name: ('REQUIRE_HTTPS', 'false')
+          value: ''
+        - name: ('DB_HOST', 'invoice-ninja_db_1')
+          value: ''
+        - name: ('DB_DATABASE', 'invoiceninja')
+          value: ''
+        - name: ('DB_USERNAME', 'invoiceninja')
+          value: ''
+        - name: ('DB_PASSWORD', 'moneyprintergobrrr')
+          value: ''
+        - name: ('IN_USER_EMAIL', 'admin@example.com')
+          value: ''
+        - name: ('IN_PASSWORD', '$APP_PASSWORD')
+          value: ''
+        - name: ('IS_DOCKER', 'true')
+          value: ''
+        - name: ('CACHE_DRIVER', 'redis')
+          value: ''
+        - name: ('QUEUE_CONNECTION', 'redis')
+          value: ''
+        - name: ('SESSION_DRIVER', 'redis')
+          value: ''
+        - name: ('REDIS_HOST', 'invoice-ninja_redis_1')
+          value: ''
+        - name: ('REDIS_PASSWORD', None)
+          value: ''
+        - name: ('REDIS_PORT', 6379)
+          value: ''
+        - name: ('FILESYSTEM_DISK', 'debian_docker')
+          value: ''
         volumeMounts:
         - name: data
           mountPath: /var/www/html/public
@@ -192,6 +235,31 @@ spec:
       - name: data
         persistentVolumeClaim:
           claimName: '{{ .Release.Name }}-data'
+      - name: seed
+        configMap:
+          name: '{{ .Release.Name }}-seed'
+      initContainers:
+      - name: seed
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - 'set -e
+
+          D=/data/{{ .Release.Name }}
+
+          mkdir -p "$D/config"
+
+          [ -e "$D/config/nginx.conf" ] || cp /seed/f0 "$D/config/nginx.conf"
+
+          '
+        volumeMounts:
+        - name: seed
+          mountPath: /seed
+          readOnly: true
+        - name: data
+          mountPath: /data
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -215,21 +283,16 @@ spec:
         image: mariadb:11.4.5@sha256:5dfb3093333fa0ea53194ddef0a2bfa21d3b1e1353bd228b22610cd6fc0c04da
         imagePullPolicy: IfNotPresent
         env:
-        - name: APP_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: '{{ .Release.Name }}-secrets'
-              key: admin_password
-        - name: MYSQL_ROOT_PASSWORD
-          value: invoiceninja
-        - name: MYSQL_USER
-          value: invoiceninja
-        - name: MYSQL_PASSWORD
-          value: moneyprintergobrrr
-        - name: MYSQL_DATABASE
-          value: invoiceninja
-        - name: MARIADB_AUTO_UPGRADE
-          value: 'true'
+        - name: ('MYSQL_ROOT_PASSWORD', 'invoiceninja')
+          value: ''
+        - name: ('MYSQL_USER', 'invoiceninja')
+          value: ''
+        - name: ('MYSQL_PASSWORD', 'moneyprintergobrrr')
+          value: ''
+        - name: ('MYSQL_DATABASE', 'invoiceninja')
+          value: ''
+        - name: ('MARIADB_AUTO_UPGRADE', 'true')
+          value: ''
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000
@@ -251,6 +314,31 @@ spec:
       - name: data
         persistentVolumeClaim:
           claimName: '{{ .Release.Name }}-data'
+      - name: seed
+        configMap:
+          name: '{{ .Release.Name }}-seed'
+      initContainers:
+      - name: seed
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - 'set -e
+
+          D=/data/{{ .Release.Name }}
+
+          mkdir -p "$D/config"
+
+          [ -e "$D/config/nginx.conf" ] || cp /seed/f0 "$D/config/nginx.conf"
+
+          '
+        volumeMounts:
+        - name: seed
+          mountPath: /seed
+          readOnly: true
+        - name: data
+          mountPath: /data
 ---
 apiVersion: v1
 kind: Service
@@ -285,12 +373,6 @@ spec:
       - name: redis
         image: redis:7.4.3@sha256:ee8ec723c831b815c3e2f2c6fbd1c145c68d1c04ba284f044ec1434fbca0fee8
         imagePullPolicy: IfNotPresent
-        env:
-        - name: APP_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: '{{ .Release.Name }}-secrets'
-              key: admin_password
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000
@@ -310,6 +392,31 @@ spec:
       - name: data
         persistentVolumeClaim:
           claimName: '{{ .Release.Name }}-data'
+      - name: seed
+        configMap:
+          name: '{{ .Release.Name }}-seed'
+      initContainers:
+      - name: seed
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - 'set -e
+
+          D=/data/{{ .Release.Name }}
+
+          mkdir -p "$D/config"
+
+          [ -e "$D/config/nginx.conf" ] || cp /seed/f0 "$D/config/nginx.conf"
+
+          '
+        volumeMounts:
+        - name: seed
+          mountPath: /seed
+          readOnly: true
+        - name: data
+          mountPath: /data
 ---
 apiVersion: v1
 kind: Service

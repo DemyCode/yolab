@@ -1,0 +1,17 @@
+apiVersion: v2
+name: homebridge
+description: HomeKit support for the impatient
+type: application
+version: 0.1.0
+appVersion: 2.4.0-2026-09-25
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: Homebridge
+  yolab.io/icon: 🤖
+  yolab.io/category: automation
+  yolab.io/tagline: HomeKit support for the impatient
+  yolab.io/github: homebridge/homebridge
+home: https://homebridge.io/

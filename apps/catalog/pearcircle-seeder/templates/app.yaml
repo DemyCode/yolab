@@ -50,14 +50,14 @@ spec:
         image: ghcr.io/peerloomllc/pearcircle-seeder:1.1.4@sha256:ad80eaa9156c19f13c02c19f0d70602724ec2bec8002dfb25cb580e18f35f400
         imagePullPolicy: IfNotPresent
         env:
-        - name: SEEDER_HOST
-          value: 0.0.0.0
-        - name: SEEDER_PORT
-          value: '8730'
-        - name: SEEDER_NO_AUTH
-          value: '1'
-        - name: SEEDER_NO_UPDATE_CHECK
-          value: '1'
+        - name: ('SEEDER_HOST', '0.0.0.0')
+          value: ''
+        - name: ('SEEDER_PORT', '8730')
+          value: ''
+        - name: ('SEEDER_NO_AUTH', '1')
+          value: ''
+        - name: ('SEEDER_NO_UPDATE_CHECK', '1')
+          value: ''
         ports:
         - containerPort: 8730
         readinessProbe:

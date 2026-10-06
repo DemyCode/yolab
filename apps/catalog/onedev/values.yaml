@@ -1,0 +1,13 @@
+config:
+  subdomain: onedev
+  storage_size: 10Gi
+  node: ''
+yolab:
+  platformApiUrl: ''
+  accountToken: ''
+  serviceName: ''
+  gateway:
+    upstream: localhost:6610
+  fileExplorer:
+    protect:
+    - data/postgres

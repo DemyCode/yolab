@@ -73,14 +73,14 @@ spec:
         image: wordpress:7.1.2@sha256:bb209c8ab111746f22f578b870d866eb3f3da6028998a608202b706675450ecd
         imagePullPolicy: IfNotPresent
         env:
-        - name: WORDPRESS_DB_HOST
-          value: db
-        - name: WORDPRESS_DB_NAME
-          value: wordpress
-        - name: WORDPRESS_DB_USER
-          value: umbrel
-        - name: WORDPRESS_DB_PASSWORD
-          value: umbrelwordpress
+        - name: ('WORDPRESS_DB_HOST', 'wordpress_db_1')
+          value: ''
+        - name: ('WORDPRESS_DB_NAME', 'wordpress')
+          value: ''
+        - name: ('WORDPRESS_DB_USER', 'umbrel')
+          value: ''
+        - name: ('WORDPRESS_DB_PASSWORD', 'umbrelwordpress')
+          value: ''
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000
@@ -97,6 +97,8 @@ spec:
       - name: data
         persistentVolumeClaim:
           claimName: '{{ .Release.Name }}-data'
+      nodeSelector:
+        kubernetes.io/arch: amd64
 ---
 apiVersion: v1
 kind: Service
@@ -132,14 +134,14 @@ spec:
         image: mariadb:11.5.2@sha256:2d50fe0f77dac919396091e527e5e148a9de690e58f32875f113bef6506a17f5
         imagePullPolicy: IfNotPresent
         env:
-        - name: MYSQL_ROOT_PASSWORD
-          value: umbrelwordpressroot
-        - name: MYSQL_DATABASE
-          value: wordpress
-        - name: MYSQL_USER
-          value: umbrel
-        - name: MYSQL_PASSWORD
-          value: umbrelwordpress
+        - name: ('MYSQL_ROOT_PASSWORD', 'umbrelwordpressroot')
+          value: ''
+        - name: ('MYSQL_DATABASE', 'wordpress')
+          value: ''
+        - name: ('MYSQL_USER', 'umbrel')
+          value: ''
+        - name: ('MYSQL_PASSWORD', 'umbrelwordpress')
+          value: ''
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000

@@ -50,10 +50,10 @@ spec:
         image: linuxserver/obsidian:1.8.10@sha256:b85e75e572e75f5e00062fb564102eaad8e19970938ee8ec7bae0a96566c1400
         imagePullPolicy: IfNotPresent
         env:
-        - name: PUID
-          value: '1000'
-        - name: PGID
-          value: '1000'
+        - name: ('PUID', '1000')
+          value: ''
+        - name: ('PGID', '1000')
+          value: ''
         ports:
         - containerPort: 3000
         readinessProbe:

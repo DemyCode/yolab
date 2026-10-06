@@ -21,15 +21,6 @@ spec:
     requests:
       storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
 ---
-apiVersion: v1
-kind: Secret
-metadata:
-  name: {{ .Release.Name }}-secrets
-  namespace: {{ .Release.Namespace }}
-type: Opaque
-stringData:
-  app_secret: {{ required "config.app_secret is required" .Values.config.app_secret | quote }}
----
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -82,25 +73,20 @@ spec:
         image: ghcr.io/basecamp/once-campfire:1.5.1@sha256:75a3e9a8cd473e696a174e79298dab261ab6690f3f4f5c540ce3870656c1c3d4
         imagePullPolicy: IfNotPresent
         env:
-        - name: APP_SEED
-          valueFrom:
-            secretKeyRef:
-              name: '{{ .Release.Name }}-secrets'
-              key: app_secret
-        - name: RAILS_ENV
-          value: production
-        - name: SECRET_KEY_BASE
-          value: $(APP_SEED)
-        - name: REDIS_URL
-          value: redis://redis:6379
-        - name: DISABLE_SSL
-          value: 'true'
-        - name: VAPID_PUBLIC_KEY
-          value: ${VAPID_PUBLIC_KEY:-}
-        - name: VAPID_PRIVATE_KEY
-          value: ${VAPID_PRIVATE_KEY:-}
-        - name: SENTRY_DSN
-          value: ${SENTRY_DSN:-}
+        - name: ('RAILS_ENV', 'production')
+          value: ''
+        - name: ('SECRET_KEY_BASE', '${APP_SEED}')
+          value: ''
+        - name: ('REDIS_URL', 'redis://campfire_redis_1:6379')
+          value: ''
+        - name: ('DISABLE_SSL', 'true')
+          value: ''
+        - name: ('VAPID_PUBLIC_KEY', '${VAPID_PUBLIC_KEY:-}')
+          value: ''
+        - name: ('VAPID_PRIVATE_KEY', '${VAPID_PRIVATE_KEY:-}')
+          value: ''
+        - name: ('SENTRY_DSN', '${SENTRY_DSN:-}')
+          value: ''
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000
@@ -166,12 +152,6 @@ spec:
         - 'yes'
         - --loglevel
         - warning
-        env:
-        - name: APP_SEED
-          valueFrom:
-            secretKeyRef:
-              name: '{{ .Release.Name }}-secrets'
-              key: app_secret
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000

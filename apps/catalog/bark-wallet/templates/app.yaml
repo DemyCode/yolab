@@ -81,20 +81,20 @@ spec:
         image: secondark/bark-web-api:0.8.0@sha256:2ccf75c99873e99182d61f64cd2d9ff03fb376812bbc9a9e43abd10d9afc38ab
         imagePullPolicy: IfNotPresent
         env:
-        - name: PORT
-          value: '4001'
-        - name: WALLET_DIR
-          value: /wallet-data/.bark
-        - name: WALLET_DATA_PATH
-          value: /Apps/bark-wallet/data/wallet/.bark/
-        - name: BARKD_URL
-          value: http://barkd:4000
-        - name: ARK_SERVER
-          value: https://ark.second.tech
-        - name: CHAIN_SOURCE
-          value: https://mempool.second.tech/api
-        - name: BARK_NETWORK
-          value: mainnet
+        - name: ('PORT', 4001)
+          value: ''
+        - name: ('WALLET_DIR', '/wallet-data/.bark')
+          value: ''
+        - name: ('WALLET_DATA_PATH', '/Apps/bark-wallet/data/wallet/.bark/')
+          value: ''
+        - name: ('BARKD_URL', 'http://barkd:4000')
+          value: ''
+        - name: ('ARK_SERVER', 'https://ark.second.tech')
+          value: ''
+        - name: ('CHAIN_SOURCE', 'https://mempool.second.tech/api')
+          value: ''
+        - name: ('BARK_NETWORK', 'mainnet')
+          value: ''
         volumeMounts:
         - name: data
           mountPath: /wallet-data

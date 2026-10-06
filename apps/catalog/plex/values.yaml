@@ -1,0 +1,10 @@
+config:
+  subdomain: plex
+  storage_size: 10Gi
+  node: ''
+yolab:
+  platformApiUrl: ''
+  accountToken: ''
+  serviceName: ''
+  gateway:
+    upstream: localhost:32400

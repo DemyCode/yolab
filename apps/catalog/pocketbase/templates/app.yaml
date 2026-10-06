@@ -58,11 +58,11 @@ spec:
         - -c
         - 'set -e
 
-          D=/data/{{ .Release.Name }}/data
+          D=/data/{{ .Release.Name }}
 
-          mkdir -p "$D/migrations"
+          mkdir -p "$D/data/migrations"
 
-          [ -e "$D/migrations/initial_superuser.js" ] || cp /seed/f0 "$D/migrations/initial_superuser.js"
+          [ -e "$D/data/migrations/initial_superuser.js" ] || cp /seed/f0 "$D/data/migrations/initial_superuser.js"
 
           '
         volumeMounts:

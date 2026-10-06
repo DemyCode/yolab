@@ -38,6 +38,8 @@ spec:
       labels:
         app: gateway
     spec:
+      nodeSelector:
+        kubernetes.io/arch: amd64
       initContainers:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
@@ -50,20 +52,23 @@ spec:
         image: uusec/openresty-manager:2.4.6@sha256:003a57fbbe23c6844ac68a924496df9d8edb15307220f792cedbf724ee9d67cb
         imagePullPolicy: IfNotPresent
         env:
-        - name: OM_USE_HTTPS
-          value: 'no'
-        - name: NGINX_RESOLVER
-          value: resolver 127.0.0.11 valid=30s ipv6=off local=on;
-        - name: PUID
-          value: '1000'
-        - name: PGID
-          value: '1000'
+        - name: ('OM_USE_HTTPS', 'no')
+          value: ''
+        - name: ('NGINX_RESOLVER', 'resolver 127.0.0.11 valid
+          value: 30s ipv6=off local=on;')
+        - name: ('PUID', '1000')
+          value: ''
+        - name: ('PGID', '1000')
+          value: ''
         ports:
         - containerPort: 34567
         readinessProbe:
           tcpSocket:
             port: 34567
         volumeMounts:
+        - name: host-etc-localtime
+          mountPath: /etc/localtime
+          readOnly: true
         - name: data
           mountPath: /opt/om/acme
           subPath: '{{ .Release.Name }}/data/acme'
@@ -80,3 +85,6 @@ spec:
       {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
       {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}
+      - name: host-etc-localtime
+        hostPath:
+          path: /etc/localtime

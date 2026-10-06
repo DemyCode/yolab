@@ -46,6 +46,8 @@ spec:
       labels:
         app: gateway
     spec:
+      nodeSelector:
+        kubernetes.io/arch: amd64
       initContainers:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
@@ -58,11 +60,11 @@ spec:
         - -c
         - 'set -e
 
-          D=/data/{{ .Release.Name }}/data
+          D=/data/{{ .Release.Name }}
 
-          mkdir -p "$D/proxy"
+          mkdir -p "$D/data/proxy"
 
-          [ -e "$D/proxy/nginx.conf" ] || cp /seed/f0 "$D/proxy/nginx.conf"
+          [ -e "$D/data/proxy/nginx.conf" ] || cp /seed/f0 "$D/data/proxy/nginx.conf"
 
           '
         volumeMounts:
@@ -79,8 +81,8 @@ spec:
         image: toshimoto821/toshi-moto:1.37.3@sha256:e2d7270473dda60c34afac9ed28b267540fd4ca0d6aabf12fa37a7d0c597634e
         imagePullPolicy: IfNotPresent
         env:
-        - name: PORT
-          value: '8021'
+        - name: ('PORT', 8021)
+          value: ''
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000
@@ -124,10 +126,10 @@ spec:
         image: toshimoto821/toshi-moto-api:1.8.4@sha256:750927ef2d0b0bbcffcbb57632d861e567a8b7243381c0285b2b2660dc31244a
         imagePullPolicy: IfNotPresent
         env:
-        - name: PORT
-          value: '8121'
-        - name: MONGODB_URI
-          value: mongodb://mongodb:27017/toshi-moto
+        - name: ('PORT', 8121)
+          value: ''
+        - name: ('MONGODB_URI', 'mongodb://toshi-moto_mongodb_1:27017/toshi-moto')
+          value: ''
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000
@@ -147,11 +149,11 @@ spec:
         - -c
         - 'set -e
 
-          D=/data/{{ .Release.Name }}/data
+          D=/data/{{ .Release.Name }}
 
-          mkdir -p "$D/proxy"
+          mkdir -p "$D/data/proxy"
 
-          [ -e "$D/proxy/nginx.conf" ] || cp /seed/f0 "$D/proxy/nginx.conf"
+          [ -e "$D/data/proxy/nginx.conf" ] || cp /seed/f0 "$D/data/proxy/nginx.conf"
 
           '
         volumeMounts:
@@ -160,6 +162,8 @@ spec:
           readOnly: true
         - name: data
           mountPath: /data
+      nodeSelector:
+        kubernetes.io/arch: amd64
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -213,11 +217,11 @@ spec:
         - -c
         - 'set -e
 
-          D=/data/{{ .Release.Name }}/data
+          D=/data/{{ .Release.Name }}
 
-          mkdir -p "$D/proxy"
+          mkdir -p "$D/data/proxy"
 
-          [ -e "$D/proxy/nginx.conf" ] || cp /seed/f0 "$D/proxy/nginx.conf"
+          [ -e "$D/data/proxy/nginx.conf" ] || cp /seed/f0 "$D/data/proxy/nginx.conf"
 
           '
         volumeMounts:

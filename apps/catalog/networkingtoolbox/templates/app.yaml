@@ -50,12 +50,12 @@ spec:
         image: ghcr.io/lissy93/networking-toolbox:1.6.0@sha256:4e97330fb310e1a5fbe185b1bf859270902ddef7934b88cecc6b3def98d21eaa
         imagePullPolicy: IfNotPresent
         env:
-        - name: NODE_ENV
-          value: production
-        - name: PORT
-          value: '3000'
-        - name: HOST
-          value: 0.0.0.0
+        - name: ('NODE_ENV', 'production')
+          value: ''
+        - name: ('PORT', 3000)
+          value: ''
+        - name: ('HOST', '0.0.0.0')
+          value: ''
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000

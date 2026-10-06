@@ -50,16 +50,16 @@ spec:
         image: localai/localai:v4.11.0@sha256:f1bc435659b9da49180e868fdd0361915171a740cd947bf081b62a896a7ea8d0
         imagePullPolicy: IfNotPresent
         env:
-        - name: MODELS_PATH
-          value: /models
-        - name: LOCALAI_BACKENDS_PATH
-          value: /backends
-        - name: LOCALAI_EXTERNAL_BACKENDS
-          value: cpu-llama-cpp
-        - name: LOCALAI_FORCE_META_BACKEND_CAPABILITY_RUN_FILE
-          value: /nonexistent
-        - name: NVIDIA_DISABLE_REQUIRE
-          value: 'true'
+        - name: ('MODELS_PATH', '/models')
+          value: ''
+        - name: ('LOCALAI_BACKENDS_PATH', '/backends')
+          value: ''
+        - name: ('LOCALAI_EXTERNAL_BACKENDS', 'cpu-llama-cpp')
+          value: ''
+        - name: ('LOCALAI_FORCE_META_BACKEND_CAPABILITY_RUN_FILE', '/nonexistent')
+          value: ''
+        - name: ('NVIDIA_DISABLE_REQUIRE', 'true')
+          value: ''
         ports:
         - containerPort: 8080
         readinessProbe:

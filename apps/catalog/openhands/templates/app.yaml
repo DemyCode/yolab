@@ -1,0 +1,204 @@
+{{ include "yolab-common.caddyConfigMap" . }}
+---
+{{ include "yolab-common.fileExplorerSecret" . }}
+---
+{{ include "yolab-common.fileExplorerConfigMap" . }}
+---
+{{ include "yolab-common.privateAccessResources" . }}
+---
+{{ include "yolab-common.uninstallHook" . }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-data
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: yolab-cephfs
+  resources:
+    requests:
+      storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: '{{ .Release.Name }}-seed'
+  namespace: '{{ .Release.Namespace }}'
+binaryData:
+  f0: IyEvYmluL3NoCgojIFRoaXMgaGFjayBjYW4gYmUgcmVtb3ZlZCBpZiBodHRwczovL2dpdGh1Yi5jb20vZG9ja2VyLWxpYnJhcnkvZG9ja2VyL3B1bGwvNDQ0IGdldHMgbWVyZ2VkLgoKIyBSZW1vdmUgZG9ja2VyIHBpZGZpbGUgaWYgaXQgZXhpc3RzIHRvIGVuc3VyZSBEb2NrZXIgY2FuIHN0YXJ0IHVwIGFmdGVyIGEgYmFkIHNodXRkb3duCnBpZGZpbGU9Ii92YXIvcnVuL2RvY2tlci5waWQiCmlmIFtbIC1mICIke3BpZGZpbGV9IiBdXQp0aGVuCiAgICBybSAtZiAiJHtwaWRmaWxlfSIKZmkKCiMgVXNlIG5mdGFibGVzIGFzIHRoZSBiYWNrZW5kIGZvciBpcHRhYmxlcwpmb3IgY29tbWFuZCBpbiBpcHRhYmxlcyBpcHRhYmxlcy1yZXN0b3JlIGlwdGFibGVzLXJlc3RvcmUtdHJhbnNsYXRlIGlwdGFibGVzLXNhdmUgaXB0YWJsZXMtdHJhbnNsYXRlCmRvCiAgICBsbiAtc2YgL3NiaW4veHRhYmxlcy1uZnQtbXVsdGkgL3NiaW4vJGNvbW1hbmQKZG9uZQoKIyBFbnN1cmUgdGhhdCBhIGJyaWRnZSBleGlzdHMgd2l0aCB0aGUgZ2l2ZW4gbmFtZQplbnN1cmVfYnJpZGdlX2V4aXN0cygpIHsKICAgIGxvY2FsIG5hbWU9IiR7MX0iCiAgICBsb2NhbCBpcF9yYW5nZT0iJHsyfSIKCiAgICAjIENoZWNrIGlmIHRoZSBicmlkZ2UgYWxyZWFkeSBleGlzdHMKICAgIGlmIGlwIGxpbmsgc2hvdyAiJHtuYW1lfSIgJj4vZGV2L251bGwKICAgIHRoZW4KICAgICAgICBlY2hvICJCcmlkZ2UgJyR7bmFtZX0nIGFscmVhZHkgZXhpc3RzLiBTa2lwcGluZyBjcmVhdGlvbi4iCiAgICAgICAgaXAgYWRkciBzaG93ICIke25hbWV9IgogICAgICAgIHJldHVybgogICAgZmkKCiAgICBlY2hvICJCcmlkZ2UgJyR7bmFtZX0nIGRvZXMgbm90IGV4aXN0LiBDcmVhdGluZy4uLiIKICAgIGlwIGxpbmsgYWRkICIke25hbWV9IiB0eXBlIGJyaWRnZQogICAgaXAgYWRkciBhZGQgIiR7aXBfcmFuZ2V9IiBkZXYgIiR7bmFtZX0iCiAgICBpcCBsaW5rIHNldCAiJHtuYW1lfSIgdXAKCiAgICBlY2hvICJCcmlkZ2UgJyR7bmFtZX0nIGlzIG5vdyB1cCB3aXRoIElQIHJhbmdlICcke2lwX3JhbmdlfScuIgogICAgaXAgYWRkciBzaG93ICIke25hbWV9Igp9CgppZiBbWyAiJHtET0NLRVJfRU5TVVJFX0JSSURHRX0iICE9ICIiIF1dCnRoZW4KICAgIGJyaWRnZT0iJHtET0NLRVJfRU5TVVJFX0JSSURHRSUlOip9IgogICAgaXBfcmFuZ2U9IiR7RE9DS0VSX0VOU1VSRV9CUklER0UjKjp9IgogICAgZW5zdXJlX2JyaWRnZV9leGlzdHMgIiR7YnJpZGdlfSIgIiR7aXBfcmFuZ2V9IgoKICAgICMgZG9ja2VyZCBydW5zIHdpdGggLS1pcHRhYmxlcz1mYWxzZSBzbyB0aGUgbmVzdGVkIERvY2tlciBkYWVtb24gZG9lcyBub3QKICAgICMgcmV3cml0ZSB0aGUgaG9zdCBEb2NrZXIgY2hhaW5zIHRoYXQgVW1icmVsIGFwcF9wcm94eSByZWxpZXMgb24uIEFkZCBvbmx5CiAgICAjIHRoZSBzY29wZWQgZm9yd2FyZGluZy9OQVQgcnVsZXMgbmVlZGVkIGJ5IHRoZSBuZXN0ZWQgT3BlbkhhbmRzIHNhbmRib3hlcy4KICAgIHN1Ym5ldD0iJHtpcF9yYW5nZX0iCiAgICBpcHRhYmxlcyAtQyBGT1JXQVJEIC1pICIke2JyaWRnZX0iIC1qIEFDQ0VQVCAyPi9kZXYvbnVsbCB8fCBpcHRhYmxlcyAtQSBGT1JXQVJEIC1pICIke2JyaWRnZX0iIC1qIEFDQ0VQVAogICAgaXB0YWJsZXMgLUMgRk9SV0FSRCAtbyAiJHticmlkZ2V9IiAtbSBjb25udHJhY2sgLS1jdHN0YXRlIFJFTEFURUQsRVNUQUJMSVNIRUQgLWogQUNDRVBUIDI+L2Rldi9udWxsIHx8IGlwdGFibGVzIC1BIEZPUldBUkQgLW8gIiR7YnJpZGdlfSIgLW0gY29ubnRyYWNrIC0tY3RzdGF0ZSBSRUxBVEVELEVTVEFCTElTSEVEIC1qIEFDQ0VQVAogICAgaXB0YWJsZXMgLXQgbmF0IC1DIFBPU1RST1VUSU5HIC1zICIke3N1Ym5ldH0iICEgLW8gIiR7YnJpZGdlfSIgLWogTUFTUVVFUkFERSAyPi9kZXYvbnVsbCB8fCBpcHRhYmxlcyAtdCBuYXQgLUEgUE9TVFJPVVRJTkcgLXMgIiR7c3VibmV0fSIgISAtbyAiJHticmlkZ2V9IiAtaiBNQVNRVUVSQURFCmZpCgpleGVjIGRvY2tlcmQtZW50cnlwb2ludC5zaCAkQAo=
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      {{- if .Values.config.node }}
+      nodeSelector:
+        kubernetes.io/hostname: {{ .Values.config.node | quote }}
+        kubernetes.io/arch: amd64
+      {{- else }}
+      nodeSelector:
+        kubernetes.io/arch: amd64
+      {{- end }}
+      initContainers:
+      {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessInit" . | nindent 6 }}
+      - name: seed
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - 'set -e
+
+          D=/data/{{ .Release.Name }}
+
+          [ -e "$D/entrypoint.sh" ] || cp /seed/f0 "$D/entrypoint.sh"
+
+          '
+        volumeMounts:
+        - name: seed
+          mountPath: /seed
+          readOnly: true
+        - name: data
+          mountPath: /data
+      containers:
+      {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
+      - name: web
+        image: ghcr.io/openhands/openhands:1.10.0@sha256:1e5c81b0ccfc4fd33a3524ba2a561f594879e238117c024a1b60edfee0412dc8
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: ('AGENT_SERVER_IMAGE_REPOSITORY', 'ghcr.io/openhands/agent-server')
+          value: ''
+        - name: ('AGENT_SERVER_IMAGE_TAG', '1.33.0-python')
+          value: ''
+        - name: ('SANDBOX_HOST_PORT', '3994')
+          value: ''
+        - name: ('SANDBOX_CONTAINER_URL_PATTERN', 'http://localhost:{port}')
+          value: ''
+        - name: ('WORKSPACE_MOUNT_PATH', '/opt/workspace_base')
+          value: ''
+        - name: ('LOG_ALL_EVENTS', 'true')
+          value: ''
+        ports:
+        - containerPort: 3000
+        readinessProbe:
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - timeout 10s bash -c ':> /dev/tcp/127.0.0.1/3000' || exit 1
+          initialDelaySeconds: 90
+          periodSeconds: 10
+        volumeMounts:
+        - name: data
+          mountPath: /var/run
+          subPath: '{{ .Release.Name }}/data/docker'
+        - name: data
+          mountPath: /.openhands
+          subPath: '{{ .Release.Name }}/data/openhands'
+        - name: data
+          mountPath: /opt/workspace_base
+          subPath: '{{ .Release.Name }}/data/workspace'
+      volumes:
+      {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}
+      - name: seed
+        configMap:
+          name: '{{ .Release.Name }}-seed'
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: docker
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: docker
+  template:
+    metadata:
+      labels:
+        app: docker
+    spec:
+      containers:
+      - name: docker
+        image: docker:28.0.4-dind@sha256:ddb0033088b4fab74881ade341a582e3c6c8021b82377703ba1a6106bd3ded44
+        imagePullPolicy: IfNotPresent
+        command:
+        - /entrypoint.sh
+        args:
+        - dockerd
+        - --bridge
+        - dind0
+        - --data-root
+        - /data/data
+        - --exec-root
+        - /data/exec
+        - --host
+        - unix:///data/docker.sock
+        - --iptables=false
+        - --pidfile
+        - /data/docker.pid
+        env:
+        - name: ('DOCKER_ENSURE_BRIDGE', 'dind0:10.32.0.1/16')
+          value: ''
+        volumeMounts:
+        - name: data
+          mountPath: /entrypoint.sh
+          subPath: '{{ .Release.Name }}/entrypoint.sh'
+        - name: data
+          mountPath: /data
+          subPath: '{{ .Release.Name }}/data/docker'
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: '{{ .Release.Name }}-data'
+      - name: seed
+        configMap:
+          name: '{{ .Release.Name }}-seed'
+      initContainers:
+      - name: seed
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - 'set -e
+
+          D=/data/{{ .Release.Name }}
+
+          [ -e "$D/entrypoint.sh" ] || cp /seed/f0 "$D/entrypoint.sh"
+
+          '
+        volumeMounts:
+        - name: seed
+          mountPath: /seed
+          readOnly: true
+        - name: data
+          mountPath: /data
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      nodeSelector:
+        kubernetes.io/arch: amd64

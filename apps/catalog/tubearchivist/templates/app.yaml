@@ -21,15 +21,6 @@ spec:
     requests:
       storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
 ---
-apiVersion: v1
-kind: Secret
-metadata:
-  name: {{ .Release.Name }}-secrets
-  namespace: {{ .Release.Namespace }}
-type: Opaque
-stringData:
-  admin_password: {{ required "config.admin_password is required" .Values.config.admin_password | quote }}
----
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -59,29 +50,24 @@ spec:
         image: bbilly1/tubearchivist:v0.5.12@sha256:ba1c846ddd0c6fdd0f040727129d2466e03b7a0c26499223839d450c7586ac09
         imagePullPolicy: IfNotPresent
         env:
-        - name: APP_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: '{{ .Release.Name }}-secrets'
-              key: admin_password
-        - name: ES_URL
-          value: http://elasticsearch:9200
-        - name: REDIS_CON
-          value: redis://redis:6379
-        - name: HOST_UID
-          value: '1000'
-        - name: HOST_GID
-          value: '1000'
-        - name: TA_HOST
-          value: http://localhost:8079
-        - name: TA_USERNAME
-          value: admin
-        - name: TA_PASSWORD
-          value: $(APP_PASSWORD)
-        - name: ELASTIC_PASSWORD
-          value: verysecret
-        - name: TZ
-          value: UTC
+        - name: ('ES_URL', 'http://tubearchivist_elasticsearch_1:9200')
+          value: ''
+        - name: ('REDIS_CON', 'redis://tubearchivist_redis_1:6379')
+          value: ''
+        - name: ('HOST_UID', '1000')
+          value: ''
+        - name: ('HOST_GID', '1000')
+          value: ''
+        - name: ('TA_HOST', 'http://${DEVICE_DOMAIN_NAME}:8079')
+          value: ''
+        - name: ('TA_USERNAME', 'admin')
+          value: ''
+        - name: ('TA_PASSWORD', '${APP_PASSWORD}')
+          value: ''
+        - name: ('ELASTIC_PASSWORD', 'verysecret')
+          value: ''
+        - name: ('TZ', 'UTC')
+          value: ''
         ports:
         - containerPort: 8000
         readinessProbe:
@@ -120,12 +106,6 @@ spec:
       - name: redis
         image: redis:8.2.2-bookworm@sha256:4521b581dbddea6e7d81f8fe95ede93f5648aaa66a9dacd581611bf6fe7527bd
         imagePullPolicy: IfNotPresent
-        env:
-        - name: APP_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: '{{ .Release.Name }}-secrets'
-              key: admin_password
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000
@@ -177,21 +157,16 @@ spec:
         image: elasticsearch:8.19.6@sha256:e2d7e20893ad820bcad241bf47b89958787f6b38225478dfe100b66937840b0f
         imagePullPolicy: IfNotPresent
         env:
-        - name: APP_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: '{{ .Release.Name }}-secrets'
-              key: admin_password
-        - name: ELASTIC_PASSWORD
-          value: verysecret
-        - name: ES_JAVA_OPTS
-          value: -Xms1g -Xmx1g
-        - name: xpack.security.enabled
-          value: 'true'
-        - name: discovery.type
-          value: single-node
-        - name: path.repo
-          value: /usr/share/elasticsearch/data/snapshot
+        - name: ('ELASTIC_PASSWORD', 'verysecret')
+          value: ''
+        - name: ('ES_JAVA_OPTS', '-Xms1g -Xmx1g')
+          value: ''
+        - name: ('xpack.security.enabled', 'true')
+          value: ''
+        - name: ('discovery.type', 'single-node')
+          value: ''
+        - name: ('path.repo', '/usr/share/elasticsearch/data/snapshot')
+          value: ''
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000

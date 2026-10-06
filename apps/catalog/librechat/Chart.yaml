@@ -1,0 +1,17 @@
+apiVersion: v2
+name: librechat
+description: Enhanced ChatGPT Clone
+type: application
+version: 0.1.0
+appVersion: 0.8.7
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: LibreChat
+  yolab.io/icon: 🧠
+  yolab.io/category: ai
+  yolab.io/tagline: Enhanced ChatGPT Clone
+  yolab.io/github: danny-avila/LibreChat
+home: https://librechat.ai/

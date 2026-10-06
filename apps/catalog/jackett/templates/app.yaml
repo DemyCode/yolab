@@ -50,10 +50,10 @@ spec:
         image: linuxserver/jackett:0.24.2793@sha256:701368d37067d25ac8b75ac5c0e879d586cc0a48b967686d2f461f28dbe5fc0e
         imagePullPolicy: IfNotPresent
         env:
-        - name: PUID
-          value: '1000'
-        - name: PGID
-          value: '1000'
+        - name: ('PUID', '1000')
+          value: ''
+        - name: ('PGID', '1000')
+          value: ''
         ports:
         - containerPort: 9117
         readinessProbe:

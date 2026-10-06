@@ -50,18 +50,18 @@ spec:
         image: orenz0/holesail-server-manager:v1.0.7@sha256:23782c148dd09ff20ab70d06fc116afd7d8adc6e5679c682c5f944ef1d305b9b
         imagePullPolicy: IfNotPresent
         env:
-        - name: HSM_DATA_FILE
-          value: /data/hsm.json
-        - name: HSM_HOST
-          value: 0.0.0.0
-        - name: HSM_PORT
-          value: '3107'
-        - name: HSM_TITLE
-          value: LNbits Holesail Proxy
-        - name: HSM_TARGET_ADDRESS
-          value: lnbits_web_1
-        - name: HSM_TARGET_PORT
-          value: '3007'
+        - name: ('HSM_DATA_FILE', '/data/hsm.json')
+          value: ''
+        - name: ('HSM_HOST', '0.0.0.0')
+          value: ''
+        - name: ('HSM_PORT', 3107)
+          value: ''
+        - name: ('HSM_TITLE', 'LNbits Holesail Proxy')
+          value: ''
+        - name: ('HSM_TARGET_ADDRESS', 'lnbits_web_1')
+          value: ''
+        - name: ('HSM_TARGET_PORT', 3007)
+          value: ''
         ports:
         - containerPort: 3107
         readinessProbe:

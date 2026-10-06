@@ -62,27 +62,27 @@ spec:
         - -c
         - 'set -e
 
-          D=/data/{{ .Release.Name }}/data
+          D=/data/{{ .Release.Name }}
 
-          mkdir -p "$D/config"
+          mkdir -p "$D/data/config"
 
-          [ -e "$D/config/mosquitto.conf" ] || cp /seed/f0 "$D/config/mosquitto.conf"
+          [ -e "$D/data/config/mosquitto.conf" ] || cp /seed/f0 "$D/data/config/mosquitto.conf"
 
-          mkdir -p "$D/nginx"
+          mkdir -p "$D/data/nginx"
 
-          [ -e "$D/nginx/default.conf" ] || cp /seed/f1 "$D/nginx/default.conf"
+          [ -e "$D/data/nginx/default.conf" ] || cp /seed/f1 "$D/data/nginx/default.conf"
 
-          mkdir -p "$D/www"
+          mkdir -p "$D/data/www"
 
-          [ -e "$D/www/favicon.png" ] || cp /seed/f2 "$D/www/favicon.png"
+          [ -e "$D/data/www/favicon.png" ] || cp /seed/f2 "$D/data/www/favicon.png"
 
-          mkdir -p "$D/www"
+          mkdir -p "$D/data/www"
 
-          [ -e "$D/www/index.html" ] || cp /seed/f3 "$D/www/index.html"
+          [ -e "$D/data/www/index.html" ] || cp /seed/f3 "$D/data/www/index.html"
 
-          mkdir -p "$D/www"
+          mkdir -p "$D/data/www"
 
-          [ -e "$D/www/logo.png" ] || cp /seed/f4 "$D/www/logo.png"
+          [ -e "$D/data/www/logo.png" ] || cp /seed/f4 "$D/data/www/logo.png"
 
           '
         volumeMounts:
@@ -158,27 +158,27 @@ spec:
         - -c
         - 'set -e
 
-          D=/data/{{ .Release.Name }}/data
+          D=/data/{{ .Release.Name }}
 
-          mkdir -p "$D/config"
+          mkdir -p "$D/data/config"
 
-          [ -e "$D/config/mosquitto.conf" ] || cp /seed/f0 "$D/config/mosquitto.conf"
+          [ -e "$D/data/config/mosquitto.conf" ] || cp /seed/f0 "$D/data/config/mosquitto.conf"
 
-          mkdir -p "$D/nginx"
+          mkdir -p "$D/data/nginx"
 
-          [ -e "$D/nginx/default.conf" ] || cp /seed/f1 "$D/nginx/default.conf"
+          [ -e "$D/data/nginx/default.conf" ] || cp /seed/f1 "$D/data/nginx/default.conf"
 
-          mkdir -p "$D/www"
+          mkdir -p "$D/data/www"
 
-          [ -e "$D/www/favicon.png" ] || cp /seed/f2 "$D/www/favicon.png"
+          [ -e "$D/data/www/favicon.png" ] || cp /seed/f2 "$D/data/www/favicon.png"
 
-          mkdir -p "$D/www"
+          mkdir -p "$D/data/www"
 
-          [ -e "$D/www/index.html" ] || cp /seed/f3 "$D/www/index.html"
+          [ -e "$D/data/www/index.html" ] || cp /seed/f3 "$D/data/www/index.html"
 
-          mkdir -p "$D/www"
+          mkdir -p "$D/data/www"
 
-          [ -e "$D/www/logo.png" ] || cp /seed/f4 "$D/www/logo.png"
+          [ -e "$D/data/www/logo.png" ] || cp /seed/f4 "$D/data/www/logo.png"
 
           '
         volumeMounts:
@@ -251,27 +251,27 @@ spec:
         - -c
         - 'set -e
 
-          D=/data/{{ .Release.Name }}/data
+          D=/data/{{ .Release.Name }}
 
-          mkdir -p "$D/config"
+          mkdir -p "$D/data/config"
 
-          [ -e "$D/config/mosquitto.conf" ] || cp /seed/f0 "$D/config/mosquitto.conf"
+          [ -e "$D/data/config/mosquitto.conf" ] || cp /seed/f0 "$D/data/config/mosquitto.conf"
 
-          mkdir -p "$D/nginx"
+          mkdir -p "$D/data/nginx"
 
-          [ -e "$D/nginx/default.conf" ] || cp /seed/f1 "$D/nginx/default.conf"
+          [ -e "$D/data/nginx/default.conf" ] || cp /seed/f1 "$D/data/nginx/default.conf"
 
-          mkdir -p "$D/www"
+          mkdir -p "$D/data/www"
 
-          [ -e "$D/www/favicon.png" ] || cp /seed/f2 "$D/www/favicon.png"
+          [ -e "$D/data/www/favicon.png" ] || cp /seed/f2 "$D/data/www/favicon.png"
 
-          mkdir -p "$D/www"
+          mkdir -p "$D/data/www"
 
-          [ -e "$D/www/index.html" ] || cp /seed/f3 "$D/www/index.html"
+          [ -e "$D/data/www/index.html" ] || cp /seed/f3 "$D/data/www/index.html"
 
-          mkdir -p "$D/www"
+          mkdir -p "$D/data/www"
 
-          [ -e "$D/www/logo.png" ] || cp /seed/f4 "$D/www/logo.png"
+          [ -e "$D/data/www/logo.png" ] || cp /seed/f4 "$D/data/www/logo.png"
 
           '
         volumeMounts:

@@ -50,16 +50,16 @@ spec:
         image: ghcr.io/lukegus/termix:release-2.9.1@sha256:79206f0774bc146121c7c4664da2592fa3b482d7bba12da69ed1108ce1d6c68d
         imagePullPolicy: IfNotPresent
         env:
-        - name: GUACD_HOST
-          value: guacd
-        - name: GUACD_TUNNEL_HOST
-          value: web
-        - name: GUACD_RECORDING_PATH
-          value: /termix-data/session_recordings/guacamole
-        - name: POSTHOG_API_KEY
+        - name: ('GUACD_HOST', 'guacd')
           value: ''
-        - name: ENABLE_TELEMETRY
-          value: 'false'
+        - name: ('GUACD_TUNNEL_HOST', 'web')
+          value: ''
+        - name: ('GUACD_RECORDING_PATH', '/termix-data/session_recordings/guacamole')
+          value: ''
+        - name: ('POSTHOG_API_KEY', '')
+          value: ''
+        - name: ('ENABLE_TELEMETRY', 'false')
+          value: ''
         ports:
         - containerPort: 8080
         readinessProbe:

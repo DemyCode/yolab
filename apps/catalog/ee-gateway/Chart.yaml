@@ -1,0 +1,17 @@
+apiVersion: v2
+name: ee-gateway
+description: Self-hosted Bluetooth gateway for open BLE networks
+type: application
+version: 0.1.0
+appVersion: 0.10.8-patch.1
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: EE Gateway
+  yolab.io/icon: 🌐
+  yolab.io/category: networking
+  yolab.io/tagline: Self-hosted Bluetooth gateway for open BLE networks
+  yolab.io/github: Encrypted-Energy/gateway
+home: https://encryptedenergy.com

@@ -50,8 +50,8 @@ spec:
         image: docuseal/docuseal:3.3.1@sha256:e171808ce8dabb08491a49a6d8c477670a65ddce5e3de4764904b63a4487940f
         imagePullPolicy: IfNotPresent
         env:
-        - name: DATABASE_URL
-          value: postgresql://docusealuser:docusealpass@db:5432/docuseal?sslmode=disable
+        - name: ('DATABASE_URL', 'postgresql://docusealuser:docusealpass@docuseal_db_1:5432/docuseal?sslmode
+          value: disable')
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000
@@ -91,12 +91,12 @@ spec:
         image: postgres:17.3@sha256:0321e2252ebfeecb8bc1a899755084d29bce872953e1a5a3e25ec0860b739098
         imagePullPolicy: IfNotPresent
         env:
-        - name: POSTGRES_DB
-          value: docuseal
-        - name: POSTGRES_USER
-          value: docusealuser
-        - name: POSTGRES_PASSWORD
-          value: docusealpass
+        - name: ('POSTGRES_DB', 'docuseal')
+          value: ''
+        - name: ('POSTGRES_USER', 'docusealuser')
+          value: ''
+        - name: ('POSTGRES_PASSWORD', 'docusealpass')
+          value: ''
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000

@@ -1,0 +1,10 @@
+config:
+  subdomain: adguard-home
+  storage_size: 10Gi
+  node: ''
+yolab:
+  platformApiUrl: ''
+  accountToken: ''
+  serviceName: ''
+  gateway:
+    upstream: localhost:8095

@@ -58,9 +58,11 @@ spec:
         - -c
         - 'set -e
 
-          D=/data/{{ .Release.Name }}/data
+          D=/data/{{ .Release.Name }}
 
-          [ -e "$D/index.html" ] || cp /seed/f0 "$D/index.html"
+          mkdir -p "$D/data"
+
+          [ -e "$D/data/index.html" ] || cp /seed/f0 "$D/data/index.html"
 
           '
         volumeMounts:
@@ -142,9 +144,11 @@ spec:
         - -c
         - 'set -e
 
-          D=/data/{{ .Release.Name }}/data
+          D=/data/{{ .Release.Name }}
 
-          [ -e "$D/index.html" ] || cp /seed/f0 "$D/index.html"
+          mkdir -p "$D/data"
+
+          [ -e "$D/data/index.html" ] || cp /seed/f0 "$D/data/index.html"
 
           '
         volumeMounts:

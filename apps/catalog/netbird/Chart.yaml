@@ -1,0 +1,17 @@
+apiVersion: v2
+name: netbird
+description: An adaptive client for Zero Trust Networking
+type: application
+version: 0.1.0
+appVersion: 0.80.0
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: NetBird
+  yolab.io/icon: 🌐
+  yolab.io/category: networking
+  yolab.io/tagline: An adaptive client for Zero Trust Networking
+  yolab.io/github: netbirdio/netbird
+home: https://netbird.io/

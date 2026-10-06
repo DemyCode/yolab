@@ -50,12 +50,12 @@ spec:
         image: dennysubke/cobalt:11.5@sha256:e3b1626d6026f1f714643ad9b0b14257b0ce9ab4cedb3a5e041eb540f2e12798
         imagePullPolicy: IfNotPresent
         env:
-        - name: API_URL
-          value: http://localhost:9013/
-        - name: API_AUTH_REQUIRED
-          value: '0'
-        - name: DURATION_LIMIT
-          value: '86400'
+        - name: ('API_URL', 'http://${DEVICE_DOMAIN_NAME}:9013/')
+          value: ''
+        - name: ('API_AUTH_REQUIRED', 0)
+          value: ''
+        - name: ('DURATION_LIMIT', 86400)
+          value: ''
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000

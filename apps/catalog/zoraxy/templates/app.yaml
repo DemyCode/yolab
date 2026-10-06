@@ -38,6 +38,8 @@ spec:
       labels:
         app: gateway
     spec:
+      nodeSelector:
+        kubernetes.io/arch: amd64
       initContainers:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
@@ -50,14 +52,14 @@ spec:
         image: zoraxydocker/zoraxy:v3.3.4@sha256:c64ed57e10631d8f7482ce1ed6b337e653052a05646bd5dd77b009dcf0ae786d
         imagePullPolicy: IfNotPresent
         env:
-        - name: FASTGEOIP
-          value: 'false'
-        - name: ZEROTIER
-          value: 'false'
-        - name: DOCKER
-          value: 'false'
-        - name: NOAUTH
-          value: 'true'
+        - name: ('FASTGEOIP', 'false')
+          value: ''
+        - name: ('ZEROTIER', 'false')
+          value: ''
+        - name: ('DOCKER', 'false')
+          value: ''
+        - name: ('NOAUTH', 'true')
+          value: ''
         ports:
         - containerPort: 8000
         readinessProbe:
@@ -67,7 +69,13 @@ spec:
         - name: data
           mountPath: /opt/zoraxy/config
           subPath: '{{ .Release.Name }}/data/config/'
+        - name: host-etc-localtime
+          mountPath: /etc/localtime
+          readOnly: true
       volumes:
       {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
       {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}
+      - name: host-etc-localtime
+        hostPath:
+          path: /etc/localtime

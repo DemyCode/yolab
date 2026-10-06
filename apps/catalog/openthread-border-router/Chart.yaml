@@ -1,0 +1,17 @@
+apiVersion: v2
+name: openthread-border-router
+description: Thread border router for Home Assistant and Matter
+type: application
+version: 0.1.0
+appVersion: 0.3.0
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: OpenThread Border Router
+  yolab.io/icon: 🤖
+  yolab.io/category: automation
+  yolab.io/tagline: Thread border router for Home Assistant and Matter
+  yolab.io/github: ownbee/hass-otbr-docker
+home: https://github.com/ownbee/hass-otbr-docker

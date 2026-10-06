@@ -1,0 +1,516 @@
+{{ include "yolab-common.caddyConfigMap" . }}
+---
+{{ include "yolab-common.fileExplorerSecret" . }}
+---
+{{ include "yolab-common.fileExplorerConfigMap" . }}
+---
+{{ include "yolab-common.privateAccessResources" . }}
+---
+{{ include "yolab-common.uninstallHook" . }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-data
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: yolab-cephfs
+  resources:
+    requests:
+      storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: '{{ .Release.Name }}-seed'
+  namespace: '{{ .Release.Namespace }}'
+binaryData:
+  f0: dXNlX2RlZmF1bHRfc2V0dGluZ3M6IHRydWUKCnNlYXJjaDoKICBmb3JtYXRzOgogICAgLSBodG1sCiAgICAtIGpzb24K
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      nodeSelector:
+        kubernetes.io/arch: amd64
+      initContainers:
+      {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessInit" . | nindent 6 }}
+      - name: seed
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - 'set -e
+
+          D=/data/{{ .Release.Name }}
+
+          mkdir -p "$D/data/searxng"
+
+          [ -e "$D/data/searxng/settings.yml" ] || cp /seed/f0 "$D/data/searxng/settings.yml"
+
+          '
+        volumeMounts:
+        - name: seed
+          mountPath: /seed
+          readOnly: true
+        - name: data
+          mountPath: /data
+      containers:
+      {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
+      - name: app
+        image: lobehub/lobehub:2.2.17@sha256:775dbfb06820e2d0f6ac24cbaaa6ee46c1e40ebce7b73fb2ce16c4d06e61a51e
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: ('APP_URL', 'http://${DEVICE_DOMAIN_NAME}:7455')
+          value: ''
+        - name: ('INTERNAL_APP_URL', 'http://lobe-chat_app_1:3210')
+          value: ''
+        - name: ('AUTH_TRUSTED_ORIGINS', 'http://${DEVICE_DOMAIN_NAME}:7455')
+          value: ''
+        - name: ('DATABASE_URL', 'postgresql://postgres:lobehubsecret@lobe-chat_postgres_1:5432/lobehub')
+          value: ''
+        - name: ('ES_REINDEX_STATE_DIR', '/app/.elasticsearch-reindex')
+          value: ''
+        - name: ('REDIS_URL', 'redis://lobe-chat_redis_1:6379')
+          value: ''
+        - name: ('REDIS_PREFIX', 'lobechat')
+          value: ''
+        - name: ('REDIS_TLS', '0')
+          value: ''
+        - name: ('S3_ENDPOINT', 'http://${DEVICE_DOMAIN_NAME}:7458')
+          value: ''
+        - name: ('S3_BUCKET', 'lobe')
+          value: ''
+        - name: ('S3_ACCESS_KEY', 'lobehub')
+          value: ''
+        - name: ('S3_ENABLE_PATH_STYLE', '1')
+          value: ''
+        - name: ('S3_ACCESS_KEY_ID', 'lobehub')
+          value: ''
+        - name: ('S3_SECRET_ACCESS_KEY', '${APP_PASSWORD}')
+          value: ''
+        - name: ('S3_SET_ACL', '0')
+          value: ''
+        - name: ('LLM_VISION_IMAGE_USE_BASE64', '1')
+          value: ''
+        - name: ('SEARXNG_URL', 'http://lobe-chat_searxng_1:8080')
+          value: ''
+        ports:
+        - containerPort: 3210
+        readinessProbe:
+          tcpSocket:
+            port: 3210
+        volumeMounts:
+        - name: data
+          mountPath: /app/.elasticsearch-reindex
+          subPath: '{{ .Release.Name }}/data/elasticsearch-reindex'
+      volumes:
+      {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}
+      - name: seed
+        configMap:
+          name: '{{ .Release.Name }}-seed'
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+      - name: postgres
+        image: paradedb/paradedb:0.22.3-pg17@sha256:746c263e546b9d8bfdd278d7da9584c47ce838670e6cdfdb32713147548b43ce
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: ('POSTGRES_DB', 'lobehub')
+          value: ''
+        - name: ('POSTGRES_PASSWORD', 'lobehubsecret')
+          value: ''
+        securityContext:
+          runAsUser: 1000
+          runAsGroup: 1000
+        readinessProbe:
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - pg_isready -U postgres -d lobehub
+          periodSeconds: 10
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/postgresql/data
+          subPath: '{{ .Release.Name }}/data/db'
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: '{{ .Release.Name }}-data'
+      - name: seed
+        configMap:
+          name: '{{ .Release.Name }}-seed'
+      initContainers:
+      - name: seed
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - 'set -e
+
+          D=/data/{{ .Release.Name }}
+
+          mkdir -p "$D/data/searxng"
+
+          [ -e "$D/data/searxng/settings.yml" ] || cp /seed/f0 "$D/data/searxng/settings.yml"
+
+          '
+        volumeMounts:
+        - name: seed
+          mountPath: /seed
+          readOnly: true
+        - name: data
+          mountPath: /data
+      nodeSelector:
+        kubernetes.io/arch: amd64
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      containers:
+      - name: redis
+        image: redis:7.4.8@sha256:a5995dfdf108997f8a7c9587f54fad5e94ed5848de5236a6b28119e99efd67e0
+        imagePullPolicy: IfNotPresent
+        args:
+        - redis-server
+        - --save
+        - '60'
+        - '1000'
+        - --appendonly
+        - 'yes'
+        securityContext:
+          runAsUser: 1000
+          runAsGroup: 1000
+        ports:
+        - containerPort: 6379
+        readinessProbe:
+          exec:
+            command:
+            - redis-cli
+            - ping
+          periodSeconds: 10
+        volumeMounts:
+        - name: data
+          mountPath: /data
+          subPath: '{{ .Release.Name }}/data/redis'
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: '{{ .Release.Name }}-data'
+      - name: seed
+        configMap:
+          name: '{{ .Release.Name }}-seed'
+      initContainers:
+      - name: seed
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - 'set -e
+
+          D=/data/{{ .Release.Name }}
+
+          mkdir -p "$D/data/searxng"
+
+          [ -e "$D/data/searxng/settings.yml" ] || cp /seed/f0 "$D/data/searxng/settings.yml"
+
+          '
+        volumeMounts:
+        - name: seed
+          mountPath: /seed
+          readOnly: true
+        - name: data
+          mountPath: /data
+      nodeSelector:
+        kubernetes.io/arch: amd64
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  selector:
+    app: redis
+  ports:
+  - port: 6379
+    targetPort: 6379
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rustfs
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: rustfs
+  template:
+    metadata:
+      labels:
+        app: rustfs
+    spec:
+      containers:
+      - name: rustfs
+        image: rustfs/rustfs:1.0.0-alpha.90@sha256:0725587f6fcca83c1898f321424327d6e6da5e01ea20382905dd258ed5af3be4
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: ('RUSTFS_ADDRESS', '0.0.0.0:9000')
+          value: ''
+        - name: ('RUSTFS_CONSOLE_ADDRESS', '0.0.0.0:9001')
+          value: ''
+        - name: ('RUSTFS_CONSOLE_ENABLE', 'true')
+          value: ''
+        - name: ('RUSTFS_VOLUMES', '/data')
+          value: ''
+        - name: ('RUSTFS_ACCESS_KEY', 'lobehub')
+          value: ''
+        - name: ('RUSTFS_SECRET_KEY', '${APP_PASSWORD}')
+          value: ''
+        - name: ('RUSTFS_OBS_LOG_DIRECTORY', '/logs')
+          value: ''
+        ports:
+        - containerPort: 9000
+        readinessProbe:
+          exec:
+            command:
+            - sh
+            - -c
+            - curl -f http://127.0.0.1:9000/health && curl -f http://127.0.0.1:9001/rustfs/console/health
+          initialDelaySeconds: 40
+          periodSeconds: 30
+        volumeMounts:
+        - name: data
+          mountPath: /data
+          subPath: '{{ .Release.Name }}/data/rustfs'
+        - name: data
+          mountPath: /logs
+          subPath: '{{ .Release.Name }}/data/rustfs-logs'
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: '{{ .Release.Name }}-data'
+      - name: seed
+        configMap:
+          name: '{{ .Release.Name }}-seed'
+      initContainers:
+      - name: seed
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - 'set -e
+
+          D=/data/{{ .Release.Name }}
+
+          mkdir -p "$D/data/searxng"
+
+          [ -e "$D/data/searxng/settings.yml" ] || cp /seed/f0 "$D/data/searxng/settings.yml"
+
+          '
+        volumeMounts:
+        - name: seed
+          mountPath: /seed
+          readOnly: true
+        - name: data
+          mountPath: /data
+      nodeSelector:
+        kubernetes.io/arch: amd64
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rustfs
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  selector:
+    app: rustfs
+  ports:
+  - port: 9000
+    targetPort: 9000
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rustfs-init
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: rustfs-init
+  template:
+    metadata:
+      labels:
+        app: rustfs-init
+    spec:
+      containers:
+      - name: rustfs-init
+        image: quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        args:
+        - -c
+        - 'set -eu; mc --version; mc alias set rustfs "http://lobe-chat_rustfs_1:9000"
+          "lobehub" "${APP_PASSWORD}"; mc ls rustfs || true; mc mb "rustfs/lobe" --ignore-existing;
+          mc anonymous set download rustfs/lobe
+
+          '
+        volumeMounts:
+        - name: data
+          mountPath: /bucket.config.json
+          subPath: '{{ .Release.Name }}/volumes/.-bucket.config.json'
+          readOnly: true
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: '{{ .Release.Name }}-data'
+      - name: seed
+        configMap:
+          name: '{{ .Release.Name }}-seed'
+      initContainers:
+      - name: seed
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - 'set -e
+
+          D=/data/{{ .Release.Name }}
+
+          mkdir -p "$D/data/searxng"
+
+          [ -e "$D/data/searxng/settings.yml" ] || cp /seed/f0 "$D/data/searxng/settings.yml"
+
+          '
+        volumeMounts:
+        - name: seed
+          mountPath: /seed
+          readOnly: true
+        - name: data
+          mountPath: /data
+      nodeSelector:
+        kubernetes.io/arch: amd64
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: searxng
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: searxng
+  template:
+    metadata:
+      labels:
+        app: searxng
+    spec:
+      containers:
+      - name: searxng
+        image: ghcr.io/searxng/searxng:2026.4.22-74f1ca203@sha256:37c616a774b90fb5df9239eb143f1b11866ddf7b830cd1ebcca6ba11b38cc2bf
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: ('SEARXNG_SECRET', '${APP_SEED}')
+          value: ''
+        volumeMounts:
+        - name: data
+          mountPath: /etc/searxng/settings.yml
+          subPath: '{{ .Release.Name }}/data/searxng/settings.yml'
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: '{{ .Release.Name }}-data'
+      - name: seed
+        configMap:
+          name: '{{ .Release.Name }}-seed'
+      initContainers:
+      - name: seed
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - 'set -e
+
+          D=/data/{{ .Release.Name }}
+
+          mkdir -p "$D/data/searxng"
+
+          [ -e "$D/data/searxng/settings.yml" ] || cp /seed/f0 "$D/data/searxng/settings.yml"
+
+          '
+        volumeMounts:
+        - name: seed
+          mountPath: /seed
+          readOnly: true
+        - name: data
+          mountPath: /data
+      nodeSelector:
+        kubernetes.io/arch: amd64

@@ -1,0 +1,16 @@
+apiVersion: v2
+name: homey
+description: Run Homey Self-Hosted Server on your Umbrel
+type: application
+version: 0.1.0
+appVersion: 13.5.1
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: Homey
+  yolab.io/icon: 🤖
+  yolab.io/category: automation
+  yolab.io/tagline: Run Homey Self-Hosted Server on your Umbrel
+home: https://homey.app

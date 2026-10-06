@@ -1,0 +1,17 @@
+apiVersion: v2
+name: tailscale
+description: Zero config VPN to access your Umbrel from anywhere
+type: application
+version: 0.1.0
+appVersion: v1.102.5
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: Tailscale
+  yolab.io/icon: 🌐
+  yolab.io/category: networking
+  yolab.io/tagline: Zero config VPN to access your Umbrel from anywhere
+  yolab.io/github: tailscale/tailscale
+home: https://tailscale.com

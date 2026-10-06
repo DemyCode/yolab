@@ -50,26 +50,26 @@ spec:
         image: anirdev/slink:v1.14.0@sha256:fff70ce3cee309377424466565810d500ae4df0d1b918ee47b5126807621841d
         imagePullPolicy: IfNotPresent
         env:
-        - name: TZ
-          value: UTC
-        - name: ORIGIN
-          value: http://localhost:8811
-        - name: REQUIRE_SSL
-          value: 'false'
-        - name: USER_APPROVAL_REQUIRED
-          value: 'false'
-        - name: USER_PASSWORD_MIN_LENGTH
-          value: '8'
-        - name: USER_PASSWORD_REQUIREMENTS
-          value: '15'
-        - name: IMAGE_MAX_SIZE
-          value: 15M
-        - name: IMAGE_STRIP_EXIF_METADATA
-          value: 'true'
-        - name: IMAGE_COMPRESSION_QUALITY
-          value: '80'
-        - name: STORAGE_PROVIDER
-          value: local
+        - name: ('TZ', 'UTC')
+          value: ''
+        - name: ('ORIGIN', 'http://${DEVICE_DOMAIN_NAME}:8811')
+          value: ''
+        - name: ('REQUIRE_SSL', 'false')
+          value: ''
+        - name: ('USER_APPROVAL_REQUIRED', 'false')
+          value: ''
+        - name: ('USER_PASSWORD_MIN_LENGTH', 8)
+          value: ''
+        - name: ('USER_PASSWORD_REQUIREMENTS', 15)
+          value: ''
+        - name: ('IMAGE_MAX_SIZE', '15M')
+          value: ''
+        - name: ('IMAGE_STRIP_EXIF_METADATA', 'true')
+          value: ''
+        - name: ('IMAGE_COMPRESSION_QUALITY', 80)
+          value: ''
+        - name: ('STORAGE_PROVIDER', 'local')
+          value: ''
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000

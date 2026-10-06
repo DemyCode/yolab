@@ -50,12 +50,12 @@ spec:
         image: ghcr.io/radiokot/umbrel-cloudflared:1.0.3@sha256:8acd17fcf7b9b9902fb12855f4667daf32c47a225ead6603b59bab9ae962b072
         imagePullPolicy: IfNotPresent
         env:
-        - name: CLOUDFLARED_HOSTNAME
-          value: connector
-        - name: CLOUDFLARED_METRICS_PORT
-          value: APP_CLOUDFLARED_METRICS_PORT
-        - name: CLOUDFLARED_TOKEN_FILE
-          value: /app/data/token
+        - name: ('CLOUDFLARED_HOSTNAME', 'cloudflared_connector_1')
+          value: ''
+        - name: ('CLOUDFLARED_METRICS_PORT', '${APP_CLOUDFLARED_METRICS_PORT}')
+          value: ''
+        - name: ('CLOUDFLARED_TOKEN_FILE', '/app/data/token')
+          value: ''
         ports:
         - containerPort: 3000
         readinessProbe:
@@ -92,10 +92,10 @@ spec:
         image: ghcr.io/radiokot/umbrel-cloudflared-connector:1.0.1-cf.2026.8.3@sha256:aba90ff688759d90f6495074ab39ed41987e843b3d6ca0a1a8af5a3eb24210bb
         imagePullPolicy: IfNotPresent
         env:
-        - name: CLOUDFLARED_METRICS_PORT
-          value: APP_CLOUDFLARED_METRICS_PORT
-        - name: CLOUDFLARED_TOKEN_FILE
-          value: ./data/token
+        - name: ('CLOUDFLARED_METRICS_PORT', '${APP_CLOUDFLARED_METRICS_PORT}')
+          value: ''
+        - name: ('CLOUDFLARED_TOKEN_FILE', './data/token')
+          value: ''
         volumeMounts:
         - name: data
           mountPath: /data

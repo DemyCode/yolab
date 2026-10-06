@@ -7,3 +7,6 @@ yolab:
   serviceName: ''
   gateway:
     upstream: db:80
+  fileExplorer:
+    protect:
+    - data/db

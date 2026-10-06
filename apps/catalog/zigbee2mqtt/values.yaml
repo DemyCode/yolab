@@ -1,0 +1,9 @@
+config:
+  subdomain: zigbee2mqtt
+  storage_size: 10Gi
+yolab:
+  platformApiUrl: ''
+  accountToken: ''
+  serviceName: ''
+  gateway:
+    upstream: localhost:8080

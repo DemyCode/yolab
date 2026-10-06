@@ -73,12 +73,12 @@ spec:
         image: ghcr.io/vert-sh/vert:sha-e1c83ba@sha256:6492f2a88e977e7ce82fd26f49028a17575fee8cac38604f585bc5773298cbc8
         imagePullPolicy: IfNotPresent
         env:
-        - name: PUB_HOSTNAME
-          value: http://localhost:3884
-        - name: PUB_VERTD_URL
-          value: http://localhost:3884
-        - name: PUB_ENV
-          value: production
+        - name: ('PUB_HOSTNAME', 'http://${DEVICE_DOMAIN_NAME}:3884')
+          value: ''
+        - name: ('PUB_VERTD_URL', 'http://${DEVICE_DOMAIN_NAME}:3884')
+          value: ''
+        - name: ('PUB_ENV', 'production')
+          value: ''
         ports:
         - containerPort: 80
         readinessProbe:

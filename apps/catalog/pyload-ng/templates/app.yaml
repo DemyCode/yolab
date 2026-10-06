@@ -50,12 +50,12 @@ spec:
         image: linuxserver/pyload-ng:0.5.0@sha256:0ef3e1d15183eb7f517742afe2f75b42c1d58e14640f8d5741f6e88d2d7b9ab5
         imagePullPolicy: IfNotPresent
         env:
-        - name: PUID
-          value: '1000'
-        - name: PGID
-          value: '1000'
-        - name: TZ
-          value: Etc/UTC
+        - name: ('PUID', '1000')
+          value: ''
+        - name: ('PGID', '1000')
+          value: ''
+        - name: ('TZ', 'Etc/UTC')
+          value: ''
         ports:
         - containerPort: 8000
         readinessProbe:

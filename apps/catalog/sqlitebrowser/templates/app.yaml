@@ -50,12 +50,12 @@ spec:
         image: linuxserver/sqlitebrowser:3.13.1@sha256:1b1e81f0af222af3353a4c8d3c4737264a1816a43e4410819430335fa099b1da
         imagePullPolicy: IfNotPresent
         env:
-        - name: PUID
-          value: '1000'
-        - name: PGID
-          value: '1000'
-        - name: TZ
-          value: Etc/CET
+        - name: ('PUID', '1000')
+          value: ''
+        - name: ('PGID', '1000')
+          value: ''
+        - name: ('TZ', 'Etc/CET')
+          value: ''
         ports:
         - containerPort: 3000
         readinessProbe:

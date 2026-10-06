@@ -21,15 +21,6 @@ spec:
     requests:
       storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
 ---
-apiVersion: v1
-kind: Secret
-metadata:
-  name: {{ .Release.Name }}-secrets
-  namespace: {{ .Release.Namespace }}
-type: Opaque
-stringData:
-  app_secret: {{ required "config.app_secret is required" .Values.config.app_secret | quote }}
----
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -59,8 +50,8 @@ spec:
         image: penpotapp/frontend:2.18.2@sha256:3619f48cbdd0c9197ad23bd3db1c9b4391d7c9c3137e22e806cd7f9c945c1c8e
         imagePullPolicy: IfNotPresent
         env:
-        - name: PENPOT_FLAGS
-          value: enable-registration enable-login-with-password
+        - name: ('PENPOT_FLAGS', 'enable-registration enable-login-with-password')
+          value: ''
         ports:
         - containerPort: 8080
         readinessProbe:
@@ -97,32 +88,27 @@ spec:
         image: penpotapp/backend:2.18.2@sha256:5f362bda5b8df6684a5710c4c273f7c8aadb759ba6ebcd0cde18a348ad9b9828
         imagePullPolicy: IfNotPresent
         env:
-        - name: APP_SEED
-          valueFrom:
-            secretKeyRef:
-              name: '{{ .Release.Name }}-secrets'
-              key: app_secret
-        - name: PENPOT_FLAGS
-          value: enable-registration enable-login-with-password disable-email-verification
-            disable-smtp enable-prepl-server disable-secure-session-cookies
-        - name: PENPOT_SECRET_KEY
-          value: $(APP_SEED)
-        - name: PENPOT_DATABASE_URI
-          value: postgresql://penpot-postgres/penpot
-        - name: PENPOT_DATABASE_USERNAME
-          value: penpot
-        - name: PENPOT_DATABASE_PASSWORD
-          value: penpot
-        - name: PENPOT_REDIS_URI
-          value: redis://penpot-valkey/0
-        - name: PENPOT_OBJECTS_STORAGE_BACKEND
-          value: fs
-        - name: PENPOT_OBJECTS_STORAGE_FS_DIRECTORY
-          value: /opt/data/assets
-        - name: PENPOT_TELEMETRY_ENABLED
-          value: 'false'
-        - name: PENPOT_PUBLIC_URI
-          value: http://localhost:APP_PENPOT_UI_PORT
+        - name: ('PENPOT_FLAGS', 'enable-registration enable-login-with-password disable-email-verification
+            disable-smtp enable-prepl-server disable-secure-session-cookies')
+          value: ''
+        - name: ('PENPOT_SECRET_KEY', '${APP_SEED}')
+          value: ''
+        - name: ('PENPOT_DATABASE_URI', 'postgresql://penpot-postgres/penpot')
+          value: ''
+        - name: ('PENPOT_DATABASE_USERNAME', 'penpot')
+          value: ''
+        - name: ('PENPOT_DATABASE_PASSWORD', 'penpot')
+          value: ''
+        - name: ('PENPOT_REDIS_URI', 'redis://penpot_penpot-valkey_1/0')
+          value: ''
+        - name: ('PENPOT_OBJECTS_STORAGE_BACKEND', 'fs')
+          value: ''
+        - name: ('PENPOT_OBJECTS_STORAGE_FS_DIRECTORY', '/opt/data/assets')
+          value: ''
+        - name: ('PENPOT_TELEMETRY_ENABLED', 'false')
+          value: ''
+        - name: ('PENPOT_PUBLIC_URI', 'http://${DEVICE_DOMAIN_NAME}:${APP_PENPOT_UI_PORT}')
+          value: ''
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000
@@ -157,19 +143,14 @@ spec:
         image: penpotapp/exporter:2.18.2@sha256:4329b95d4b334b6ff95e80642fa634872a3111d6264f20e6262e43db4129ee58
         imagePullPolicy: IfNotPresent
         env:
-        - name: APP_SEED
-          valueFrom:
-            secretKeyRef:
-              name: '{{ .Release.Name }}-secrets'
-              key: app_secret
-        - name: PENPOT_SECRET_KEY
-          value: $(APP_SEED)
-        - name: PENPOT_PUBLIC_URI
-          value: http://localhost:APP_PENPOT_UI_PORT
-        - name: PENPOT_INTERNAL_URI
-          value: http://penpot-frontend:8080
-        - name: PENPOT_REDIS_URI
-          value: redis://penpot-valkey/0
+        - name: ('PENPOT_SECRET_KEY', '${APP_SEED}')
+          value: ''
+        - name: ('PENPOT_PUBLIC_URI', 'http://${DEVICE_DOMAIN_NAME}:${APP_PENPOT_UI_PORT}')
+          value: ''
+        - name: ('PENPOT_INTERNAL_URI', 'http://penpot-frontend:8080')
+          value: ''
+        - name: ('PENPOT_REDIS_URI', 'redis://penpot_penpot-valkey_1/0')
+          value: ''
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000
@@ -199,12 +180,6 @@ spec:
       - name: penpot-mcp
         image: penpotapp/mcp:2.18.2@sha256:f9f3faf5bad722b96178d705822c59b46bcf252da31f56dad6edff9409936517
         imagePullPolicy: IfNotPresent
-        env:
-        - name: APP_SEED
-          valueFrom:
-            secretKeyRef:
-              name: '{{ .Release.Name }}-secrets'
-              key: app_secret
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000
@@ -235,19 +210,14 @@ spec:
         image: postgres:15@sha256:546445ad21cb5893c0997080b831ee45945e798c4359270e16413c8bd93575db
         imagePullPolicy: IfNotPresent
         env:
-        - name: APP_SEED
-          valueFrom:
-            secretKeyRef:
-              name: '{{ .Release.Name }}-secrets'
-              key: app_secret
-        - name: POSTGRES_INITDB_ARGS
-          value: --data-checksums
-        - name: POSTGRES_DB
-          value: penpot
-        - name: POSTGRES_USER
-          value: penpot
-        - name: POSTGRES_PASSWORD
-          value: penpot
+        - name: ('POSTGRES_INITDB_ARGS', '--data-checksums')
+          value: ''
+        - name: ('POSTGRES_DB', 'penpot')
+          value: ''
+        - name: ('POSTGRES_USER', 'penpot')
+          value: ''
+        - name: ('POSTGRES_PASSWORD', 'penpot')
+          value: ''
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000
@@ -298,12 +268,6 @@ spec:
       - name: penpot-valkey
         image: valkey/valkey:8.1.3@sha256:facc1d2c3462975c34e10fccb167bfa92b0e0dbd992fc282c29a61c3243afb11
         imagePullPolicy: IfNotPresent
-        env:
-        - name: APP_SEED
-          valueFrom:
-            secretKeyRef:
-              name: '{{ .Release.Name }}-secrets'
-              key: app_secret
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000

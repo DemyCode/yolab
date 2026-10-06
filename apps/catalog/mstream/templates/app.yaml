@@ -50,10 +50,10 @@ spec:
         image: linuxserver/mstream:6.31.1@sha256:087024466308b1cb67b805c32b26613054c4c3705fc663bea7c790045c90ecb5
         imagePullPolicy: IfNotPresent
         env:
-        - name: PUID
-          value: '1000'
-        - name: PGID
-          value: '1000'
+        - name: ('PUID', '1000')
+          value: ''
+        - name: ('PGID', '1000')
+          value: ''
         ports:
         - containerPort: 3000
         readinessProbe:

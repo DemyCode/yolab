@@ -21,15 +21,6 @@ spec:
     requests:
       storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
 ---
-apiVersion: v1
-kind: Secret
-metadata:
-  name: {{ .Release.Name }}-secrets
-  namespace: {{ .Release.Namespace }}
-type: Opaque
-stringData:
-  admin_password: {{ required "config.admin_password is required" .Values.config.admin_password | quote }}
----
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -59,19 +50,14 @@ spec:
         image: duplicati/duplicati:2.4.0.0@sha256:eb0c1298a1974048332745b393897ae3cc1c20258e4fc26a796f2b5d75eb6218
         imagePullPolicy: IfNotPresent
         env:
-        - name: APP_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: '{{ .Release.Name }}-secrets'
-              key: admin_password
-        - name: DUPLICATI__WEBSERVICE_PORT
-          value: '8200'
-        - name: DUPLICATI__WEBSERVICE_INTERFACE
-          value: any
-        - name: DUPLICATI__WEBSERVICE_PASSWORD
-          value: $(APP_PASSWORD)
-        - name: DUPLICATI__WEBSERVICE_ALLOWED_HOSTNAMES
-          value: '*'
+        - name: ('DUPLICATI__WEBSERVICE_PORT', '8200')
+          value: ''
+        - name: ('DUPLICATI__WEBSERVICE_INTERFACE', 'any')
+          value: ''
+        - name: ('DUPLICATI__WEBSERVICE_PASSWORD', '${APP_PASSWORD}')
+          value: ''
+        - name: ('DUPLICATI__WEBSERVICE_ALLOWED_HOSTNAMES', '*')
+          value: ''
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000

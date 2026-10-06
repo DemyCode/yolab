@@ -58,11 +58,11 @@ spec:
         - -c
         - 'set -e
 
-          D=/data/{{ .Release.Name }}/data
+          D=/data/{{ .Release.Name }}
 
-          mkdir -p "$D/settings"
+          mkdir -p "$D/data/settings"
 
-          [ -e "$D/settings/datum_gateway_config.json" ] || cp /seed/f0 "$D/settings/datum_gateway_config.json"
+          [ -e "$D/data/settings/datum_gateway_config.json" ] || cp /seed/f0 "$D/data/settings/datum_gateway_config.json"
 
           '
         volumeMounts:

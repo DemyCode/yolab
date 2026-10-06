@@ -22,13 +22,13 @@ spec:
       storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
 ---
 apiVersion: v1
-kind: Secret
+kind: ConfigMap
 metadata:
-  name: {{ .Release.Name }}-secrets
-  namespace: {{ .Release.Namespace }}
-type: Opaque
-stringData:
-  app_secret: {{ required "config.app_secret is required" .Values.config.app_secret | quote }}
+  name: '{{ .Release.Name }}-seed'
+  namespace: '{{ .Release.Namespace }}'
+binaryData:
+  f0: PGNsaWNraG91c2U+CiAgICA8bG9nZ2VyPgogICAgICAgIDxsZXZlbD53YXJuaW5nPC9sZXZlbD4KICAgICAgICA8Y29uc29sZT50cnVlPC9jb25zb2xlPgogICAgPC9sb2dnZXI+CiAgICAKICAgIDwhLS0gCiAgICBBdm9pZCB0aGUgd2FybmluZzogIkxpc3RlbiBbOjpdOjkwMDkgZmFpbGVkOiBBZGRyZXNzIGZhbWlseSBmb3IgaG9zdG5hbWUgbm90IHN1cHBvcnRlZCIuIAogICAgSWYgRG9ja2VyIGhhcyBJUHY2IGRpc2FibGVkLCBiaW5kIENsaWNrSG91c2UgdG8gSVB2NCB0byBwcmV2ZW50IHRoaXMgaXNzdWUuIAogICAgQWRkIHRoaXMgdG8gdGhlIGNvbmZpZ3VyYXRpb24gdG8gZW5zdXJlIGl0IGxpc3RlbnMgb24gYWxsIElQdjQgaW50ZXJmYWNlczoKICAgIDxsaXN0ZW5faG9zdD4wLjAuMC4wPC9saXN0ZW5faG9zdD4KICAgIC0tPgoKICAgIDwhLS0gU3RvcCBhbGwgdGhlIHVubmVjZXNzYXJ5IGxvZ2dpbmcgLS0+CiAgICA8cXVlcnlfdGhyZWFkX2xvZyByZW1vdmU9InJlbW92ZSIvPgogICAgPHF1ZXJ5X2xvZyByZW1vdmU9InJlbW92ZSIvPgogICAgPHRleHRfbG9nIHJlbW92ZT0icmVtb3ZlIi8+CiAgICA8dHJhY2VfbG9nIHJlbW92ZT0icmVtb3ZlIi8+CiAgICA8bWV0cmljX2xvZyByZW1vdmU9InJlbW92ZSIvPgogICAgPGFzeW5jaHJvbm91c19tZXRyaWNfbG9nIHJlbW92ZT0icmVtb3ZlIi8+CiAgICA8c2Vzc2lvbl9sb2cgcmVtb3ZlPSJyZW1vdmUiLz4KICAgIDxwYXJ0X2xvZyByZW1vdmU9InJlbW92ZSIvPgo8L2NsaWNraG91c2U+Cg==
+  f1: PGNsaWNraG91c2U+CiAgICA8cHJvZmlsZXM+CiAgICAgICAgPGRlZmF1bHQ+CiAgICAgICAgICAgIDxsb2dfcXVlcmllcz4wPC9sb2dfcXVlcmllcz4KICAgICAgICAgICAgPGxvZ19xdWVyeV90aHJlYWRzPjA8L2xvZ19xdWVyeV90aHJlYWRzPgogICAgICAgIDwvZGVmYXVsdD4KICAgIDwvcHJvZmlsZXM+CjwvY2xpY2tob3VzZT4K
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -51,6 +51,31 @@ spec:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
       {{- include "yolab-common.privateAccessInit" . | nindent 6 }}
+      - name: seed
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - 'set -e
+
+          D=/data/{{ .Release.Name }}
+
+          mkdir -p "$D/clickhouse"
+
+          [ -e "$D/clickhouse/clickhouse-config.xml" ] || cp /seed/f0 "$D/clickhouse/clickhouse-config.xml"
+
+          mkdir -p "$D/clickhouse"
+
+          [ -e "$D/clickhouse/clickhouse-user-config.xml" ] || cp /seed/f1 "$D/clickhouse/clickhouse-user-config.xml"
+
+          '
+        volumeMounts:
+        - name: seed
+          mountPath: /seed
+          readOnly: true
+        - name: data
+          mountPath: /data
       containers:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
@@ -63,17 +88,12 @@ spec:
         - -c
         - sh -c "sleep 10 && /entrypoint.sh db createdb && /entrypoint.sh db migrate && /entrypoint.sh run"
         env:
-        - name: APP_SEED
-          valueFrom:
-            secretKeyRef:
-              name: '{{ .Release.Name }}-secrets'
-              key: app_secret
-        - name: BASE_URL
-          value: http://localhost:9093
-        - name: SECRET_KEY_BASE
-          value: $(APP_SEED)
-        - name: TOTP_VAULT_KEY
-          value: $(APP_SEED)
+        - name: ('BASE_URL', 'http://${DEVICE_DOMAIN_NAME}:9093')
+          value: ''
+        - name: ('SECRET_KEY_BASE', '${APP_SEED}')
+          value: ''
+        - name: ('TOTP_VAULT_KEY', '${APP_PLAUSIBLE_VAULT_KEY}')
+          value: ''
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000
@@ -86,6 +106,9 @@ spec:
       {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
       {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}
+      - name: seed
+        configMap:
+          name: '{{ .Release.Name }}-seed'
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -109,8 +132,8 @@ spec:
         image: postgres:16-alpine@sha256:492898505cb45f9835acc327e98711eaa9298ed804e0bb36f29e08394229550d
         imagePullPolicy: IfNotPresent
         env:
-        - name: POSTGRES_PASSWORD
-          value: postgres
+        - name: ('POSTGRES_PASSWORD', 'postgres')
+          value: ''
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000
@@ -127,6 +150,35 @@ spec:
       - name: data
         persistentVolumeClaim:
           claimName: '{{ .Release.Name }}-data'
+      - name: seed
+        configMap:
+          name: '{{ .Release.Name }}-seed'
+      initContainers:
+      - name: seed
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - 'set -e
+
+          D=/data/{{ .Release.Name }}
+
+          mkdir -p "$D/clickhouse"
+
+          [ -e "$D/clickhouse/clickhouse-config.xml" ] || cp /seed/f0 "$D/clickhouse/clickhouse-config.xml"
+
+          mkdir -p "$D/clickhouse"
+
+          [ -e "$D/clickhouse/clickhouse-user-config.xml" ] || cp /seed/f1 "$D/clickhouse/clickhouse-user-config.xml"
+
+          '
+        volumeMounts:
+        - name: seed
+          mountPath: /seed
+          readOnly: true
+        - name: data
+          mountPath: /data
 ---
 apiVersion: v1
 kind: Service
@@ -162,8 +214,8 @@ spec:
         image: clickhouse/clickhouse-server:24.12-alpine@sha256:cd450891db46cc6ffe313ca2b0fb7dbfb897a6873ca74a724cbe050a2cf62621
         imagePullPolicy: IfNotPresent
         env:
-        - name: CLICKHOUSE_SKIP_USER_SETUP
-          value: '1'
+        - name: ('CLICKHOUSE_SKIP_USER_SETUP', '1')
+          value: ''
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000
@@ -186,3 +238,32 @@ spec:
       - name: data
         persistentVolumeClaim:
           claimName: '{{ .Release.Name }}-data'
+      - name: seed
+        configMap:
+          name: '{{ .Release.Name }}-seed'
+      initContainers:
+      - name: seed
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - 'set -e
+
+          D=/data/{{ .Release.Name }}
+
+          mkdir -p "$D/clickhouse"
+
+          [ -e "$D/clickhouse/clickhouse-config.xml" ] || cp /seed/f0 "$D/clickhouse/clickhouse-config.xml"
+
+          mkdir -p "$D/clickhouse"
+
+          [ -e "$D/clickhouse/clickhouse-user-config.xml" ] || cp /seed/f1 "$D/clickhouse/clickhouse-user-config.xml"
+
+          '
+        volumeMounts:
+        - name: seed
+          mountPath: /seed
+          readOnly: true
+        - name: data
+          mountPath: /data

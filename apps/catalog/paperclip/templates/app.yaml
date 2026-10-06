@@ -21,15 +21,6 @@ spec:
     requests:
       storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
 ---
-apiVersion: v1
-kind: Secret
-metadata:
-  name: {{ .Release.Name }}-secrets
-  namespace: {{ .Release.Namespace }}
-type: Opaque
-stringData:
-  app_secret: {{ required "config.app_secret is required" .Values.config.app_secret | quote }}
----
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -59,31 +50,26 @@ spec:
         image: ghcr.io/paperclipai/paperclip:2026.1001.0@sha256:08dbadebd4d40550eb336c25c3691f582322a88bae3f1cca101c5dd096bdc9d3
         imagePullPolicy: IfNotPresent
         env:
-        - name: APP_SEED
-          valueFrom:
-            secretKeyRef:
-              name: '{{ .Release.Name }}-secrets'
-              key: app_secret
-        - name: HOST
-          value: 0.0.0.0
-        - name: PAPERCLIP_HOME
-          value: /paperclip
-        - name: PAPERCLIP_PUBLIC_URL
-          value: http://localhost:8860
-        - name: PAPERCLIP_API_URL
-          value: http://127.0.0.1:3100
-        - name: PAPERCLIP_ALLOWED_HOSTNAMES
-          value: localhost,localhost:8860,localhost,localhost:8860,localhost,localhost:8860,localhost,$(APP_PAPERCLIP_LOCAL_IPS),server
-        - name: BETTER_AUTH_SECRET
-          value: $(APP_SEED)
-        - name: PAPERCLIP_DEPLOYMENT_MODE
-          value: authenticated
-        - name: PAPERCLIP_DEPLOYMENT_EXPOSURE
-          value: private
-        - name: PAPERCLIP_TELEMETRY_DISABLED
-          value: '1'
-        - name: DO_NOT_TRACK
-          value: '1'
+        - name: ('HOST', '0.0.0.0')
+          value: ''
+        - name: ('PAPERCLIP_HOME', '/paperclip')
+          value: ''
+        - name: ('PAPERCLIP_PUBLIC_URL', 'http://${DEVICE_DOMAIN_NAME}:8860')
+          value: ''
+        - name: ('PAPERCLIP_API_URL', 'http://127.0.0.1:3100')
+          value: ''
+        - name: ('PAPERCLIP_ALLOWED_HOSTNAMES', '${DEVICE_DOMAIN_NAME},${DEVICE_DOMAIN_NAME}:8860,${DEVICE_HOSTNAME},${DEVICE_HOSTNAME}:8860,${APP_DOMAIN},${APP_DOMAIN}:8860,${APP_HIDDEN_SERVICE},${APP_PAPERCLIP_LOCAL_IPS},paperclip_server_1')
+          value: ''
+        - name: ('BETTER_AUTH_SECRET', '${APP_SEED}')
+          value: ''
+        - name: ('PAPERCLIP_DEPLOYMENT_MODE', 'authenticated')
+          value: ''
+        - name: ('PAPERCLIP_DEPLOYMENT_EXPOSURE', 'private')
+          value: ''
+        - name: ('PAPERCLIP_TELEMETRY_DISABLED', '1')
+          value: ''
+        - name: ('DO_NOT_TRACK', '1')
+          value: ''
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000

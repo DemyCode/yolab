@@ -1,0 +1,794 @@
+{{- $df := "$" -}}
+{{- $impl := .Values.config.implementation | default "bitcoin" -}}
+{{- $isKnots := eq $impl "bitcoin-knots" -}}
+{{- $rpcPort := ternary 9332 8332 $isKnots -}}
+{{- $p2pPort := ternary 9333 8333 $isKnots -}}
+{{- $whitebindPort := ternary 9335 8335 $isKnots -}}
+{{- $zmqPort := ternary 48332 28332 $isKnots -}}
+{{- $yolabOn := eq (include "yolab-common.yolab.enabled" .) "true" -}}
+{{- $electrs := .Values.config.electrs_enabled -}}
+{{- $mempool := and $electrs .Values.config.mempool_enabled -}}
+{{- $nodeImage := ternary "ghcr.io/retropex/umbrel-bitcoin-knots:1.2.13@sha256:65978ca7980fd2cb171fd142602b841dadd169b3862c27991cddff3bc3a7fcf2" "ghcr.io/getumbrel/umbrel-bitcoin:v1.4.0@sha256:13a24256cdd7b1cead36c2e4dcedc699b31fc235a0e4179c8c4527f0c361e6bf" $isKnots -}}
+{{ include "yolab-common.uninstallHook" . }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ printf "%s-caddy" .Release.Name }}
+  namespace: {{ .Release.Namespace }}
+data:
+  Caddyfile: |
+    {{- if $yolabOn }}
+    {{ $df }}{YOLAB_FQDN} {
+      reverse_proxy bitcoin-node:3000
+    }
+    {{- end }}
+    {{- if and $yolabOn $mempool }}
+    {{ $df }}{MEMPOOL_FQDN} {
+      reverse_proxy mempool:3006
+    }
+    {{- end }}
+    {{- if and $yolabOn .Values.config.explorer_enabled }}
+    {{ $df }}{EXPLORER_FQDN} {
+      reverse_proxy explorer:8080
+    }
+    {{- end }}
+    {{- if and $yolabOn .Values.config.specter_enabled }}
+    {{ $df }}{SPECTER_FQDN} {
+      reverse_proxy specter:25441
+    }
+    {{- end }}
+    {{- if and $yolabOn .Values.config.ordinals_enabled }}
+    {{ $df }}{ORDINALS_FQDN} {
+      reverse_proxy ordinals:80
+    }
+    {{- end }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ printf "%s-torrc" .Release.Name }}
+  namespace: {{ .Release.Namespace }}
+data:
+  torrc: |
+    SocksPort 0.0.0.0:9050
+    ControlPort 0.0.0.0:9051
+    CookieAuthentication 1
+    CookieAuthFileGroupReadable 1
+    HashedControlPassword 16:39AF5EEFA4FC1D986022FDFB13663669FE50FB6DE9A3B4FE4FC7D82010
+    HiddenServiceDir /data/p2p
+    HiddenServicePort {{ $p2pPort }} 127.0.0.1:8334
+    HiddenServiceDir /data/rpc
+    HiddenServicePort {{ $rpcPort }} 127.0.0.1:{{ $rpcPort }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-data
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: yolab-cephfs
+  resources:
+    requests:
+      storage: {{ .Values.config.storage_size | default "2Ti" | quote }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Release.Name }}-secrets
+  namespace: {{ .Release.Namespace }}
+type: Opaque
+stringData:
+  rpc-user: {{ .Values.config.rpc_user | default "umbrel" | quote }}
+  rpc-password: {{ required "config.rpc_password is required" .Values.config.rpc_password | quote }}
+  explorer-password: {{ required "config.explorer_password is required" .Values.config.explorer_password | quote }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bitcoin-node
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: bitcoin-node
+  template:
+    metadata:
+      labels:
+        app: bitcoin-node
+    spec:
+      securityContext:
+        fsGroup: 1000
+      containers:
+      - name: bitcoin
+        image: {{ $nodeImage }}
+        imagePullPolicy: IfNotPresent
+        securityContext:
+          runAsUser: 1000
+          runAsGroup: 1000
+        env:
+          - name: BITCOIND_EXTRA_ARGS
+            value: "-deprecatedrpc=create_bdb"
+          - name: APPS_SUBNET
+            value: "0.0.0.0/0"
+          - name: P2P_PORT
+            value: {{ $p2pPort | quote }}
+          - name: P2P_WHITEBIND_PORT
+            value: {{ $whitebindPort | quote }}
+          - name: RPC_PORT
+            value: {{ $rpcPort | quote }}
+          - name: TOR_PORT
+            value: "8334"
+          - name: ZMQ_RAWBLOCK_PORT
+            value: {{ $zmqPort | quote }}
+          - name: ZMQ_RAWTX_PORT
+            value: {{ add $zmqPort 1 | quote }}
+          - name: ZMQ_HASHBLOCK_PORT
+            value: {{ add $zmqPort 2 | quote }}
+          - name: ZMQ_SEQUENCE_PORT
+            value: {{ add $zmqPort 3 | quote }}
+          - name: ZMQ_HASHTX_PORT
+            value: {{ add $zmqPort 4 | quote }}
+          - name: TOR_HOST
+            value: "127.0.0.1"
+          - name: TOR_SOCKS_PORT
+            value: "9050"
+          - name: TOR_CONTROL_PORT
+            value: "9051"
+          - name: TOR_CONTROL_PASSWORD
+            value: "moneyprintergobrrr"
+          - name: I2P_HOST
+            value: "127.0.0.1"
+          - name: I2P_SAM_PORT
+            value: "7656"
+          - name: BITCOIND_IP
+            valueFrom:
+              fieldRef:
+                fieldPath: status.podIP
+          - name: RPC_USER
+            valueFrom:
+              secretKeyRef:
+                name: {{ .Release.Name }}-secrets
+                key: rpc-user
+          - name: RPC_PASS
+            valueFrom:
+              secretKeyRef:
+                name: {{ .Release.Name }}-secrets
+                key: rpc-password
+          - name: DEVICE_DOMAIN_NAME
+            value: "localhost"
+          - name: P2P_HIDDEN_SERVICE
+            value: ""
+          - name: RPC_HIDDEN_SERVICE
+            value: ""
+        ports:
+          - containerPort: 3000
+          - containerPort: {{ $rpcPort }}
+          - containerPort: {{ $p2pPort }}
+          - containerPort: {{ $whitebindPort }}
+          - containerPort: 8334
+          - containerPort: {{ $zmqPort }}
+          - containerPort: {{ add $zmqPort 1 }}
+          - containerPort: {{ add $zmqPort 2 }}
+          - containerPort: {{ add $zmqPort 3 }}
+          - containerPort: {{ add $zmqPort 4 }}
+        readinessProbe:
+          tcpSocket:
+            port: 3000
+          initialDelaySeconds: 20
+          periodSeconds: 10
+        volumeMounts:
+          - name: data
+            mountPath: /data
+            subPath: {{ printf "%s/bitcoin-node" .Release.Name | quote }}
+      - name: tor
+        image: ghcr.io/getumbrel/tor:0.4.9.11@sha256:e382b8629c0dfef6ceb396b062622d4e4e955b19d6f16b883fd2c0723ad5671a
+        imagePullPolicy: IfNotPresent
+        securityContext:
+          runAsUser: 1000
+          runAsGroup: 1000
+        env:
+          - name: HOME
+            value: "/tmp"
+        ports:
+          - containerPort: 9050
+          - containerPort: 9051
+        volumeMounts:
+          - name: torrc
+            mountPath: /etc/tor/torrc
+            subPath: torrc
+          - name: data
+            mountPath: /data
+            subPath: {{ printf "%s/tor" .Release.Name | quote }}
+      - name: i2pd
+        image: purplei2p/i2pd:release-2.59.0@sha256:257653c18ce0b127ef480e3d8373b3ddbf1495e842674c8cfc59909be0015979
+        imagePullPolicy: IfNotPresent
+        command:
+          - i2pd
+          - --sam.enabled=true
+          - --sam.address=0.0.0.0
+          - --sam.port=7656
+          - --loglevel=error
+        securityContext:
+          runAsUser: 0
+        ports:
+          - containerPort: 7656
+        volumeMounts:
+          - name: data
+            mountPath: /home/i2pd/data
+            subPath: {{ printf "%s/i2pd" .Release.Name | quote }}
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: {{ .Release.Name }}-data
+      - name: torrc
+        configMap:
+          name: {{ printf "%s-torrc" .Release.Name }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: bitcoin-node
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    app: bitcoin-node
+  ports:
+    - name: dashboard
+      port: 3000
+      targetPort: 3000
+    - name: rpc
+      port: {{ $rpcPort }}
+      targetPort: {{ $rpcPort }}
+    - name: p2p
+      port: {{ $p2pPort }}
+      targetPort: {{ $p2pPort }}
+    - name: whitebind
+      port: {{ $whitebindPort }}
+      targetPort: {{ $whitebindPort }}
+{{- if $electrs }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: electrs
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: electrs
+  template:
+    metadata:
+      labels:
+        app: electrs
+    spec:
+      securityContext:
+        fsGroup: 1000
+      containers:
+      - name: electrs
+        image: getumbrel/electrs:v0.11.1@sha256:f1d5d4e431d39e0aaa0697014d2852880183e350ffcad612edb87183f0c11b25
+        imagePullPolicy: IfNotPresent
+        securityContext:
+          runAsUser: 1000
+          runAsGroup: 1000
+        env:
+          - name: HOME
+            value: "/data"
+          - name: ELECTRS_LOG_FILTERS
+            value: "INFO"
+          - name: ELECTRS_NETWORK
+            value: "bitcoin"
+          - name: ELECTRS_DAEMON_DIR
+            value: "/data/.bitcoin"
+          - name: ELECTRS_DAEMON_RPC_ADDR
+            value: "bitcoin-node:{{ $rpcPort }}"
+          - name: ELECTRS_DAEMON_P2P_ADDR
+            value: "bitcoin-node:{{ $whitebindPort }}"
+          - name: ELECTRS_ELECTRUM_RPC_ADDR
+            value: "0.0.0.0:50001"
+          - name: ELECTRS_SERVER_BANNER
+            value: "YoLab Bitcoin stack"
+          - name: ELECTRS_DB_DIR
+            value: "/data/db"
+        ports:
+          - containerPort: 50001
+        readinessProbe:
+          tcpSocket:
+            port: 50001
+          initialDelaySeconds: 20
+          periodSeconds: 10
+        volumeMounts:
+          - name: data
+            mountPath: /data
+            subPath: {{ printf "%s/electrs" .Release.Name | quote }}
+          - name: data
+            mountPath: /data/.bitcoin
+            subPath: {{ printf "%s/bitcoin-node/bitcoin" .Release.Name | quote }}
+            readOnly: true
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: {{ .Release.Name }}-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: electrs
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    app: electrs
+  ports:
+    - name: electrum
+      port: 50001
+      targetPort: 50001
+{{- end }}
+{{- if $mempool }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mempool
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: mempool
+  template:
+    metadata:
+      labels:
+        app: mempool
+    spec:
+      securityContext:
+        fsGroup: 1000
+      containers:
+      - name: web
+        image: mempool/frontend:v3.3.1@sha256:0a162e7e0d26a01e9686ddf69c96c4beae5fe10b0daa1020f3d392e033c058f1
+        imagePullPolicy: IfNotPresent
+        securityContext:
+          runAsUser: 1000
+          runAsGroup: 1000
+        command:
+          - /bin/sh
+          - -c
+          - exec ./wait-for 127.0.0.1:3306 --timeout=720 -- nginx -g 'daemon off;'
+        env:
+          - name: FRONTEND_HTTP_PORT
+            value: "3006"
+          - name: BACKEND_MAINNET_HTTP_HOST
+            value: "127.0.0.1"
+          - name: NGINX_PORT
+            value: "3006"
+          - name: NGINX_HOSTNAME
+            value: "127.0.0.1"
+        ports:
+          - containerPort: 3006
+        readinessProbe:
+          tcpSocket:
+            port: 3006
+          initialDelaySeconds: 20
+          periodSeconds: 10
+      - name: api
+        image: mempool/backend:v3.3.1@sha256:358c0a517c8dcf26e7f5c02447de5bab33ec7e3fa6318685cf8012ce36098e3a
+        imagePullPolicy: IfNotPresent
+        securityContext:
+          runAsUser: 1000
+          runAsGroup: 1000
+        command:
+          - /bin/sh
+          - -c
+          - exec ./wait-for-it.sh 127.0.0.1:3306 --timeout=720 --strict -- ./start.sh
+        env:
+          - name: CORE_RPC_HOST
+            value: "bitcoin-node"
+          - name: CORE_RPC_PORT
+            value: {{ $rpcPort | quote }}
+          - name: CORE_RPC_USERNAME
+            valueFrom:
+              secretKeyRef:
+                name: {{ .Release.Name }}-secrets
+                key: rpc-user
+          - name: CORE_RPC_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: {{ .Release.Name }}-secrets
+                key: rpc-password
+          - name: ELECTRUM_HOST
+            value: "electrs"
+          - name: ELECTRUM_PORT
+            value: "50001"
+          - name: ELECTRUM_TLS
+            value: "false"
+          - name: DATABASE_HOST
+            value: "127.0.0.1"
+          - name: DATABASE_PORT
+            value: "3306"
+          - name: DATABASE_DATABASE
+            value: "mempool"
+          - name: DATABASE_USERNAME
+            value: "mempool"
+          - name: DATABASE_PASSWORD
+            value: "mempool"
+          - name: MEMPOOL_HTTP_PORT
+            value: "8999"
+          - name: MEMPOOL_CACHE_DIR
+            value: "/backend/cache"
+          - name: MEMPOOL_CLEAR_PROTECTION_MINUTES
+            value: "20"
+          - name: MEMPOOL_INDEXING_BLOCKS_AMOUNT
+            value: "52560"
+          - name: MEMPOOL_STDOUT_LOG_MIN_PRIORITY
+            value: "info"
+          - name: LIGHTNING_ENABLED
+            value: "false"
+          - name: NODE_OPTIONS
+            value: "--max-old-space-size=1024"
+        ports:
+          - containerPort: 8999
+        readinessProbe:
+          tcpSocket:
+            port: 8999
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        volumeMounts:
+          - name: data
+            mountPath: /backend/cache
+            subPath: {{ printf "%s/mempool" .Release.Name | quote }}
+      - name: db
+        image: mariadb:10.5.12@sha256:dfcba5641bdbfd7cbf5b07eeed707e6a3672f46823695a0d3aba2e49bbd9b1dd
+        imagePullPolicy: IfNotPresent
+        securityContext:
+          runAsUser: 1000
+          runAsGroup: 1000
+        env:
+          - name: MYSQL_DATABASE
+            value: "mempool"
+          - name: MYSQL_USER
+            value: "mempool"
+          - name: MYSQL_PASSWORD
+            value: "mempool"
+          - name: MYSQL_ROOT_PASSWORD
+            value: "moneyprintergobrrr"
+        ports:
+          - containerPort: 3306
+        readinessProbe:
+          exec:
+            command: ["healthcheck.sh", "--connect", "--innodb_initialized"]
+          initialDelaySeconds: 20
+          periodSeconds: 10
+        volumeMounts:
+          - name: data
+            mountPath: /var/lib/mysql
+            subPath: {{ printf "%s/mempool-db" .Release.Name | quote }}
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: {{ .Release.Name }}-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mempool
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    app: mempool
+  ports:
+    - name: web
+      port: 3006
+      targetPort: 3006
+{{- end }}
+{{- if .Values.config.explorer_enabled }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: explorer
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: explorer
+  template:
+    metadata:
+      labels:
+        app: explorer
+    spec:
+      containers:
+      - name: web
+        image: getumbrel/btc-rpc-explorer:v3.5.1@sha256:ebf4cdafc189761b909bb3e211b01a6b50d2f08097f3493543ed9c3174d83d89
+        imagePullPolicy: IfNotPresent
+        env:
+          - name: BTCEXP_HOST
+            value: "0.0.0.0"
+          - name: BTCEXP_PORT
+            value: "8080"
+          - name: BTCEXP_BITCOIND_HOST
+            value: "bitcoin-node"
+          - name: BTCEXP_BITCOIND_PORT
+            value: {{ $rpcPort | quote }}
+          - name: BTCEXP_BITCOIND_USER
+            valueFrom:
+              secretKeyRef:
+                name: {{ .Release.Name }}-secrets
+                key: rpc-user
+          - name: BTCEXP_BITCOIND_PASS
+            valueFrom:
+              secretKeyRef:
+                name: {{ .Release.Name }}-secrets
+                key: rpc-password
+          - name: BTCEXP_ADDRESS_API
+            value: "electrumx"
+          - name: BTCEXP_ELECTRUMX_SERVERS
+            value: "tcp://electrs:50001"
+          - name: BTCEXP_SLOW_DEVICE_MODE
+            value: "true"
+          - name: BTCEXP_NO_INMEMORY_RPC_CACHE
+            value: "true"
+          - name: BTCEXP_PRIVACY_MODE
+            value: "true"
+          - name: BTCEXP_NO_RATES
+            value: "true"
+          - name: BTCEXP_RPC_ALLOWALL
+            value: "false"
+          - name: BTCEXP_BASIC_AUTH_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: {{ .Release.Name }}-secrets
+                key: explorer-password
+        ports:
+          - containerPort: 8080
+        readinessProbe:
+          tcpSocket:
+            port: 8080
+          initialDelaySeconds: 15
+          periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: explorer
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    app: explorer
+  ports:
+    - name: web
+      port: 8080
+      targetPort: 8080
+{{- end }}
+{{- if .Values.config.specter_enabled }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: specter
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: specter
+  template:
+    metadata:
+      labels:
+        app: specter
+    spec:
+      securityContext:
+        fsGroup: 1000
+      containers:
+      - name: web
+        image: ghcr.io/cryptoadvance/specter-desktop:v2.1.11@sha256:ff9acfeac0919e91bd440bb414170da28395afa75c891fc81696139a3d1f0e2a
+        imagePullPolicy: IfNotPresent
+        securityContext:
+          runAsUser: 1000
+          runAsGroup: 1000
+        args:
+          - --host=0.0.0.0
+          - --specter-data-folder=/data
+        env:
+          - name: BTC_RPC_HOST
+            value: "bitcoin-node"
+          - name: BTC_RPC_PORT
+            value: {{ $rpcPort | quote }}
+          - name: BTC_RPC_USER
+            valueFrom:
+              secretKeyRef:
+                name: {{ .Release.Name }}-secrets
+                key: rpc-user
+          - name: BTC_RPC_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: {{ .Release.Name }}-secrets
+                key: rpc-password
+          - name: BTC_RPC_PROTOCOL
+            value: "http"
+        ports:
+          - containerPort: 25441
+        readinessProbe:
+          tcpSocket:
+            port: 25441
+          initialDelaySeconds: 20
+          periodSeconds: 10
+        volumeMounts:
+          - name: data
+            mountPath: /data
+            subPath: {{ printf "%s/specter" .Release.Name | quote }}
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: {{ .Release.Name }}-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: specter
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    app: specter
+  ports:
+    - name: web
+      port: 25441
+      targetPort: 25441
+{{- end }}
+{{- if .Values.config.ordinals_enabled }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ordinals
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: ordinals
+  template:
+    metadata:
+      labels:
+        app: ordinals
+    spec:
+      securityContext:
+        fsGroup: 1000
+      containers:
+      - name: ord
+        image: nmfretz/ord:0.27.1@sha256:241db02d32ab66012724a680b471460ec4d87076aba102013371223d143ec159
+        imagePullPolicy: IfNotPresent
+        securityContext:
+          runAsUser: 0
+        command:
+          - ord
+          - server
+          - --http
+        env:
+          - name: ORD_DATA_DIR
+            value: "/var/lib/ord"
+          - name: ORD_BITCOIN_DATA_DIR
+            value: "/var/lib/bitcoind"
+          - name: ORD_COOKIE_FILE
+            value: "/var/lib/bitcoind/.cookie"
+          - name: ORD_BITCOIN_RPC_URL
+            value: "bitcoin-node:{{ $rpcPort }}"
+          - name: ORD_BITCOIN_RPC_USERNAME
+            valueFrom:
+              secretKeyRef:
+                name: {{ .Release.Name }}-secrets
+                key: rpc-user
+          - name: ORD_BITCOIN_RPC_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: {{ .Release.Name }}-secrets
+                key: rpc-password
+          - name: ORD_CHAIN
+            value: "mainnet"
+          - name: ORD_INDEX_RUNES
+            value: "true"
+        ports:
+          - containerPort: 80
+        readinessProbe:
+          tcpSocket:
+            port: 80
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        volumeMounts:
+          - name: data
+            mountPath: /var/lib/ord
+            subPath: {{ printf "%s/ordinals" .Release.Name | quote }}
+          - name: data
+            mountPath: /var/lib/bitcoind
+            subPath: {{ printf "%s/bitcoin-node/bitcoin" .Release.Name | quote }}
+            readOnly: true
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: {{ .Release.Name }}-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ordinals
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    app: ordinals
+  ports:
+    - name: web
+      port: 80
+      targetPort: 80
+{{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      initContainers:
+      {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      - name: links
+        image: {{ include "yolab-common.image.wgRegister" . }}
+        imagePullPolicy: IfNotPresent
+        env:
+          - name: MEMPOOL_ENABLED
+            value: {{ .Values.config.mempool_enabled | quote }}
+          - name: EXPLORER_ENABLED
+            value: {{ .Values.config.explorer_enabled | quote }}
+          - name: SPECTER_ENABLED
+            value: {{ .Values.config.specter_enabled | quote }}
+          - name: ORDINALS_ENABLED
+            value: {{ .Values.config.ordinals_enabled | quote }}
+        command:
+          - /bin/sh
+          - -c
+          - |
+            set -eu
+            . /yolab/env
+            if [ "{{ $df }}MEMPOOL_ENABLED" = "true" ] && [ -n "{{ $df }}{MEMPOOL_FQDN:-}" ]; then
+              echo "YOLAB_OUTPUT mempool_url https://{{ $df }}MEMPOOL_FQDN"
+            fi
+            if [ "{{ $df }}EXPLORER_ENABLED" = "true" ] && [ -n "{{ $df }}{EXPLORER_FQDN:-}" ]; then
+              echo "YOLAB_OUTPUT explorer_url https://{{ $df }}EXPLORER_FQDN"
+            fi
+            if [ "{{ $df }}SPECTER_ENABLED" = "true" ] && [ -n "{{ $df }}{SPECTER_FQDN:-}" ]; then
+              echo "YOLAB_OUTPUT specter_url https://{{ $df }}SPECTER_FQDN"
+            fi
+            if [ "{{ $df }}ORDINALS_ENABLED" = "true" ] && [ -n "{{ $df }}{ORDINALS_FQDN:-}" ]; then
+              echo "YOLAB_OUTPUT ordinals_url https://{{ $df }}ORDINALS_FQDN"
+            fi
+        volumeMounts:
+          - name: yolab
+            mountPath: /yolab
+      containers:
+      {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      volumes:
+      {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}

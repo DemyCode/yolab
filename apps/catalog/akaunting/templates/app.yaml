@@ -21,15 +21,6 @@ spec:
     requests:
       storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
 ---
-apiVersion: v1
-kind: Secret
-metadata:
-  name: {{ .Release.Name }}-secrets
-  namespace: {{ .Release.Namespace }}
-type: Opaque
-stringData:
-  admin_password: {{ required "config.admin_password is required" .Values.config.admin_password | quote }}
----
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -82,35 +73,30 @@ spec:
         image: akaunting/akaunting:3.1.21@sha256:918bbc77981e5b96ab6aa6838491cfa7c98cb4ee7bbf9532ee083e7e66d04255
         imagePullPolicy: IfNotPresent
         env:
-        - name: APP_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: '{{ .Release.Name }}-secrets'
-              key: admin_password
-        - name: AKAUNTING_SETUP
-          value: 'true'
-        - name: LOCALE
-          value: en-US
-        - name: DB_HOST
-          value: db
-        - name: DB_PORT
-          value: '3306'
-        - name: DB_NAME
-          value: akaunting
-        - name: DB_USERNAME
-          value: admin
-        - name: DB_PASSWORD
-          value: akaunting_password
-        - name: DB_PREFIX
-          value: asd_
-        - name: COMPANY_NAME
-          value: My Company
-        - name: COMPANY_EMAIL
-          value: my@company.com
-        - name: ADMIN_EMAIL
-          value: umbrel@umbrel.local
-        - name: ADMIN_PASSWORD
-          value: $(APP_PASSWORD)
+        - name: ('AKAUNTING_SETUP', 'true')
+          value: ''
+        - name: ('LOCALE', 'en-US')
+          value: ''
+        - name: ('DB_HOST', 'akaunting_db_1')
+          value: ''
+        - name: ('DB_PORT', 3306)
+          value: ''
+        - name: ('DB_NAME', 'akaunting')
+          value: ''
+        - name: ('DB_USERNAME', 'admin')
+          value: ''
+        - name: ('DB_PASSWORD', 'akaunting_password')
+          value: ''
+        - name: ('DB_PREFIX', 'asd_')
+          value: ''
+        - name: ('COMPANY_NAME', 'My Company')
+          value: ''
+        - name: ('COMPANY_EMAIL', 'my@company.com')
+          value: ''
+        - name: ('ADMIN_EMAIL', 'umbrel@umbrel.local')
+          value: ''
+        - name: ('ADMIN_PASSWORD', '${APP_PASSWORD}')
+          value: ''
         ports:
         - containerPort: 80
         readinessProbe:
@@ -155,19 +141,14 @@ spec:
         image: mariadb:11.8.2@sha256:2bcbaec92bd9d4f6591bc8103d3a8e6d0512ee2235506e47a2e129d190444405
         imagePullPolicy: IfNotPresent
         env:
-        - name: APP_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: '{{ .Release.Name }}-secrets'
-              key: admin_password
-        - name: MYSQL_DATABASE
-          value: akaunting
-        - name: MYSQL_USER
-          value: admin
-        - name: MYSQL_PASSWORD
-          value: akaunting_password
-        - name: MYSQL_RANDOM_ROOT_PASSWORD
-          value: 'yes'
+        - name: ('MYSQL_DATABASE', 'akaunting')
+          value: ''
+        - name: ('MYSQL_USER', 'admin')
+          value: ''
+        - name: ('MYSQL_PASSWORD', 'akaunting_password')
+          value: ''
+        - name: ('MYSQL_RANDOM_ROOT_PASSWORD', 'yes')
+          value: ''
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000

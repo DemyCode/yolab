@@ -1,0 +1,244 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": [
+    "config"
+  ],
+  "properties": {
+    "config": {
+      "title": "Bitcoin stack",
+      "type": "object",
+      "properties": {
+        "yolab_enabled": {
+          "type": "boolean",
+          "title": "YoLab address",
+          "default": true,
+          "description": "Reachable from anywhere at https://<subdomain>.<your-number>.yolab.io, through your YoLab tunnel. Visitors need IPv6."
+        },
+        "storage_size": {
+          "type": "string",
+          "title": "Storage size",
+          "default": "2Ti",
+          "description": "Room for the whole blockchain and its indexes. A full mainnet node needs about 700Gi for the chain, more once it is pruned and indexed (e.g. 1Ti, 2Ti, 4Ti)."
+        },
+        "implementation": {
+          "type": "string",
+          "title": "Node software",
+          "enum": [
+            "bitcoin",
+            "bitcoin-knots"
+          ],
+          "default": "bitcoin",
+          "description": "Bitcoin Core is the reference implementation. Bitcoin Knots follows it with a stricter relay policy. Both speak the same RPC, so the indexer and explorer work with either."
+        },
+        "rpc_user": {
+          "type": "string",
+          "title": "RPC username",
+          "default": "umbrel",
+          "description": "The username wallets and apps use to talk to your node. Pair it with the RPC password below."
+        },
+        "rpc_password": {
+          "type": "string",
+          "title": "RPC password",
+          "writeOnly": true,
+          "generate": true,
+          "description": "Generated for you and shared by every app in this stack. Anyone who knows it can read and spend from the node's wallets, so keep it private."
+        },
+        "explorer_password": {
+          "type": "string",
+          "title": "Explorer login password",
+          "writeOnly": true,
+          "generate": true,
+          "description": "Generated for the block explorer's own login. The node dashboard and Specter keep their own accounts."
+        },
+        "electrs_enabled": {
+          "type": "boolean",
+          "title": "Indexer (Electrs)",
+          "default": true,
+          "description": "Builds the address and transaction index that wallets and the block explorer need. It reads the node's data without changing it. Turning it off leaves the node running on its own."
+        },
+        "mempool_enabled": {
+          "type": "boolean",
+          "title": "Block explorer (mempool)",
+          "default": true,
+          "description": "An explorer for your own node: the mempool, blocks, fees, addresses and transactions, on its own address. Needs the indexer, so turning the indexer off turns this off too."
+        },
+        "explorer_enabled": {
+          "type": "boolean",
+          "title": "Explorer (BTC RPC Explorer)",
+          "default": true,
+          "description": "A second, lighter block explorer with its own login, pointed at the same node and indexer."
+        },
+        "specter_enabled": {
+          "type": "boolean",
+          "title": "Wallet (Specter Desktop)",
+          "default": true,
+          "description": "A desktop-grade wallet for your node: single-key and multisig, hardware-wallet support, and no third party ever sees your addresses."
+        },
+        "ordinals_enabled": {
+          "type": "boolean",
+          "title": "Ordinals and runes",
+          "default": true,
+          "description": "Indexes inscriptions, ordinals and runes on your node. It reads the node's data without changing it, and adds its own index on top."
+        }
+      },
+      "dependencies": {
+        "yolab_enabled": {
+          "oneOf": [
+            {
+              "properties": {
+                "yolab_enabled": {
+                  "const": false
+                }
+              },
+              "required": [
+                "yolab_enabled"
+              ]
+            },
+            {
+              "properties": {
+                "yolab_enabled": {
+                  "const": true
+                },
+                "subdomain": {
+                  "type": "string",
+                  "title": "Subdomain",
+                  "format": "tunnel",
+                  "default": "bitcoin",
+                  "description": "The node's dashboard lives here. The block explorer gets this name followed by -mempool."
+                },
+                "yolab_token": {
+                  "type": "string",
+                  "title": "YoLab token",
+                  "format": "yolab-token",
+                  "writeOnly": true,
+                  "description": "Leave it as it is to use this box's YoLab account."
+                }
+              },
+              "required": [
+                "subdomain"
+              ]
+            }
+          ]
+        },
+        "mempool_enabled": {
+          "oneOf": [
+            {
+              "properties": {
+                "mempool_enabled": {
+                  "const": false
+                }
+              }
+            },
+            {
+              "properties": {
+                "mempool_enabled": {
+                  "const": true
+                },
+                "electrs_enabled": {
+                  "const": true
+                }
+              },
+              "required": [
+                "electrs_enabled"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    "outputs": {
+      "type": "object",
+      "readOnly": true,
+      "properties": {
+        "url": {
+          "type": "string",
+          "title": "Node dashboard",
+          "format": "uri",
+          "source": {
+            "logs": "YOLAB_OUTPUT url (\\S+)"
+          },
+          "when": {
+            "properties": {
+              "yolab_enabled": {
+                "const": true
+              }
+            }
+          }
+        },
+        "mempool_url": {
+          "type": "string",
+          "title": "Block explorer",
+          "format": "uri",
+          "source": {
+            "logs": "YOLAB_OUTPUT mempool_url (\\S+)"
+          },
+          "when": {
+            "properties": {
+              "yolab_enabled": {
+                "const": true
+              },
+              "mempool_enabled": {
+                "const": true
+              }
+            }
+          }
+        },
+        "explorer_url": {
+          "type": "string",
+          "title": "BTC RPC Explorer",
+          "format": "uri",
+          "source": {
+            "logs": "YOLAB_OUTPUT explorer_url (\\S+)"
+          },
+          "when": {
+            "properties": {
+              "yolab_enabled": {
+                "const": true
+              },
+              "explorer_enabled": {
+                "const": true
+              }
+            }
+          }
+        },
+        "specter_url": {
+          "type": "string",
+          "title": "Specter wallet",
+          "format": "uri",
+          "source": {
+            "logs": "YOLAB_OUTPUT specter_url (\\S+)"
+          },
+          "when": {
+            "properties": {
+              "yolab_enabled": {
+                "const": true
+              },
+              "specter_enabled": {
+                "const": true
+              }
+            }
+          }
+        },
+        "ordinals_url": {
+          "type": "string",
+          "title": "Ordinals and runes",
+          "format": "uri",
+          "source": {
+            "logs": "YOLAB_OUTPUT ordinals_url (\\S+)"
+          },
+          "when": {
+            "properties": {
+              "yolab_enabled": {
+                "const": true
+              },
+              "ordinals_enabled": {
+                "const": true
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

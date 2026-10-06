@@ -1,0 +1,1794 @@
+{{ include "yolab-common.caddyConfigMap" . }}
+---
+{{ include "yolab-common.fileExplorerSecret" . }}
+---
+{{ include "yolab-common.fileExplorerConfigMap" . }}
+---
+{{ include "yolab-common.privateAccessResources" . }}
+---
+{{ include "yolab-common.uninstallHook" . }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-data
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: yolab-cephfs
+  resources:
+    requests:
+      storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: '{{ .Release.Name }}-seed'
+  namespace: '{{ .Release.Namespace }}'
+binaryData:
+  f0: IyBVbWJyZWwgUGxhbmUgY2Fub25pY2FsIG5naW54LmNvbmYgMjktQXByaWwtMjAyNgoKIyBVc2UgaW5jb21pbmcgWC1Gb3J3YXJkZWQtUG9ydCBpZiBzZXQsIGVsc2UgZGVmYXVsdCB0byA4NzYyCm1hcCAkaHR0cF94X2ZvcndhcmRlZF9wb3J0ICRmaW5hbF9wb3J0IHsKICAgIGRlZmF1bHQgJGh0dHBfeF9mb3J3YXJkZWRfcG9ydDsKICAgICIiICAgICAgODc2MjsKfQoKbWFwICRodHRwX3hfZm9yd2FyZGVkX3Byb3RvICRmaW5hbF9wcm90byB7CiAgICBkZWZhdWx0ICRodHRwX3hfZm9yd2FyZGVkX3Byb3RvOwogICAgIiIgICAgICAkc2NoZW1lOwp9CgpzZXJ2ZXIgewogIGxpc3RlbiA4NzYyOwoKICAjIEZJTEVfU0laRV9MSU1JVCBpcyBieXRlcyBpbiBQbGFuZSBlbnY7IG5naW54IHdhbnRzIG0vZyBzaXplcy4KICAjIDUyNDI4ODAwIGJ5dGVzIOKJiCA1MG0KICBjbGllbnRfbWF4X2JvZHlfc2l6ZSA1MG07CgogIHBvcnRfaW5fcmVkaXJlY3Qgb2ZmOwogIGFic29sdXRlX3JlZGlyZWN0IG9mZjsKCiAgcHJveHlfc2V0X2hlYWRlciBIb3N0ICAgICAgICAgICAgICAgICRodHRwX2hvc3Q7CiAgcHJveHlfc2V0X2hlYWRlciBYLVJlYWwtSVAgICAgICAgICAgICRyZW1vdGVfYWRkcjsKICBwcm94eV9zZXRfaGVhZGVyIFgtRm9yd2FyZGVkLUZvciAgICAgJHByb3h5X2FkZF94X2ZvcndhcmRlZF9mb3I7CiAgcHJveHlfc2V0X2hlYWRlciBYLUZvcndhcmRlZC1Qcm90byAgICRmaW5hbF9wcm90bzsKICBwcm94eV9zZXRfaGVhZGVyIFgtRm9yd2FyZGVkLUhvc3QgICAgJGh0dHBfaG9zdDsKICBwcm94eV9zZXRfaGVhZGVyIFgtRm9yd2FyZGVkLVBvcnQgICAgJGZpbmFsX3BvcnQ7CgogIGxvY2F0aW9uIC9zcGFjZXMvIHsKICAgIHByb3h5X3Bhc3MgaHR0cDovL3BsYW5lX3NwYWNlXzE6MzAwMDsKICAgIHByb3h5X2h0dHBfdmVyc2lvbiAxLjE7CiAgICBwcm94eV9zZXRfaGVhZGVyIENvbm5lY3Rpb24gIiI7CiAgfQoKICBsb2NhdGlvbiAvZ29kLW1vZGUvIHsKICAgIHByb3h5X3Bhc3MgaHR0cDovL3BsYW5lX2FkbWluXzE6MzAwMDsKICAgIHByb3h5X2h0dHBfdmVyc2lvbiAxLjE7CiAgICBwcm94eV9zZXRfaGVhZGVyIENvbm5lY3Rpb24gIiI7CiAgfQoKICBsb2NhdGlvbiAvbGl2ZS8gewogICAgcHJveHlfcGFzcyBodHRwOi8vcGxhbmVfbGl2ZV8xOjMwMDA7CiAgICBwcm94eV9odHRwX3ZlcnNpb24gMS4xOwogICAgcHJveHlfc2V0X2hlYWRlciBDb25uZWN0aW9uICIiOwogIH0KCiAgbG9jYXRpb24gL2FwaS8gewogICAgcHJveHlfcGFzcyBodHRwOi8vcGxhbmVfYXBpXzE6ODAwMDsKICB9CgogIGxvY2F0aW9uIC9hdXRoLyB7CiAgICBwcm94eV9wYXNzIGh0dHA6Ly9wbGFuZV9hcGlfMTo4MDAwOwogIH0KCiAgbG9jYXRpb24gL3VwbG9hZHMgewogICAgcHJveHlfcGFzcyBodHRwOi8vcGxhbmUtbWluaW8tMTo5MDAwOwogIH0KCiAgbG9jYXRpb24gLyB7CiAgICBwcm94eV9wYXNzIGh0dHA6Ly9wbGFuZV93ZWJfMTozMDAwOwogICAgcHJveHlfaHR0cF92ZXJzaW9uIDEuMTsKICAgIHByb3h5X3NldF9oZWFkZXIgQ29ubmVjdGlvbiAiIjsKICB9Cn0K
+  f1: V0VCX1VSTD1jaGFuZ2VtZQpBUElfQkFTRV9VUkw9Y2hhbmdlbWUKQVBQX0RPTUFJTj1jaGFuZ2VtZQpBTExPV0VEX0hPU1RTPWNoYW5nZW1lCkNPUlNfQUxMT1dFRF9PUklHSU5TPWNoYW5nZW1lCkNTUkZfVFJVU1RFRF9PUklHSU5TPWNoYW5nZW1lCk5HSU5YX0hPU1Q9Y2hhbmdlbWUKQVBQX1BST1RPQ09MPWh0dHAKRU5BQkxFX1NJR05VUD0wCkRFQlVHPTAK
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      nodeSelector:
+        kubernetes.io/arch: amd64
+      initContainers:
+      {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessInit" . | nindent 6 }}
+      - name: seed
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - 'set -e
+
+          D=/data/{{ .Release.Name }}
+
+          mkdir -p "$D/config"
+
+          [ -e "$D/config/nginx.conf" ] || cp /seed/f0 "$D/config/nginx.conf"
+
+          [ -e "$D/settings.env" ] || cp /seed/f1 "$D/settings.env"
+
+          '
+        volumeMounts:
+        - name: seed
+          mountPath: /seed
+          readOnly: true
+        - name: data
+          mountPath: /data
+      containers:
+      {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
+      - name: nginx
+        image: nginx:alpine3.23@sha256:5616878291a2eed594aee8db4dade5878cf7edcb475e59193904b198d9b830de
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8762
+        readinessProbe:
+          tcpSocket:
+            port: 8762
+        volumeMounts:
+        - name: data
+          mountPath: /etc/nginx/conf.d/default.conf
+          subPath: '{{ .Release.Name }}/config/nginx.conf'
+          readOnly: true
+      volumes:
+      {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}
+      - name: seed
+        configMap:
+          name: '{{ .Release.Name }}-seed'
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: db
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: db
+  template:
+    metadata:
+      labels:
+        app: db
+    spec:
+      containers:
+      - name: db
+        image: postgres:17.9-alpine@sha256:778d0b486d6daa02b77434d0358ec57a1b21fd8b6d22ac2eef56a33e816928f6
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: ('WEB_URL', 'changeme')
+          value: ''
+        - name: ('API_BASE_URL', 'changeme')
+          value: ''
+        - name: ('APP_DOMAIN', 'changeme')
+          value: ''
+        - name: ('ALLOWED_HOSTS', 'changeme')
+          value: ''
+        - name: ('CORS_ALLOWED_ORIGINS', 'changeme')
+          value: ''
+        - name: ('CSRF_TRUSTED_ORIGINS', 'changeme')
+          value: ''
+        - name: ('NGINX_HOST', 'changeme')
+          value: ''
+        - name: ('APP_PROTOCOL', 'http')
+          value: ''
+        - name: ('ENABLE_SIGNUP', '0')
+          value: ''
+        - name: ('DEBUG', '0')
+          value: ''
+        - name: ('NGINX_PORT', 8762)
+          value: ''
+        - name: ('LISTEN_HTTP_PORT', 8762)
+          value: ''
+        - name: ('BUCKET_NAME', 'uploads')
+          value: ''
+        - name: ('GUNICORN_WORKERS', 2)
+          value: ''
+        - name: ('POSTGRES_DB', 'plane')
+          value: ''
+        - name: ('POSTGRES_USER', 'plane')
+          value: ''
+        - name: ('POSTGRES_PASSWORD', 'umbrelplane')
+          value: ''
+        - name: ('DATABASE_URL', 'postgresql://plane:umbrelplane@plane_db_1:5432/plane')
+          value: ''
+        - name: ('REDIS_URL', 'redis://plane_redis_1:6379/0')
+          value: ''
+        - name: ('RABBITMQ_DEFAULT_USER', 'plane')
+          value: ''
+        - name: ('RABBITMQ_DEFAULT_PASS', 'umbrelplane')
+          value: ''
+        - name: ('RABBITMQ_DEFAULT_VHOST', 'plane')
+          value: ''
+        - name: ('CELERY_BROKER_URL', 'amqp://plane:umbrelplane@plane_rabbitmq_1:5672/plane')
+          value: ''
+        - name: ('USE_MINIO', 1)
+          value: ''
+        - name: ('AWS_ACCESS_KEY_ID', 'umbrel')
+          value: ''
+        - name: ('AWS_SECRET_ACCESS_KEY', '$APP_PASSWORD')
+          value: ''
+        - name: ('AWS_S3_ENDPOINT_URL', 'http://plane-minio-1:9000')
+          value: ''
+        - name: ('AWS_S3_BUCKET_NAME', 'uploads')
+          value: ''
+        - name: ('FILE_SIZE_LIMIT', 52428800)
+          value: ''
+        - name: ('MINIO_ENDPOINT_SSL', 0)
+          value: ''
+        - name: ('MINIO_ROOT_USER', 'umbrel')
+          value: ''
+        - name: ('MINIO_ROOT_PASSWORD', '$APP_PASSWORD')
+          value: ''
+        - name: ('SECRET_KEY', '$APP_SEED')
+          value: ''
+        - name: ('LIVE_SERVER_SECRET_KEY', '$APP_SEED')
+          value: ''
+        - name: ('USE_X_FORWARDED_HOST', 1)
+          value: ''
+        - name: ('SECURE_SSL_REDIRECT', 0)
+          value: ''
+        - name: ('SESSION_COOKIE_SECURE', 0)
+          value: ''
+        - name: ('CSRF_COOKIE_SECURE', 0)
+          value: ''
+        - name: ('WEBHOOK_ALLOWED_IPS', '')
+          value: ''
+        - name: ('WEBHOOK_ALLOWED_HOSTS', '')
+          value: ''
+        securityContext:
+          runAsUser: 1000
+          runAsGroup: 1000
+        ports:
+        - containerPort: 5432
+        readinessProbe:
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB
+          periodSeconds: 10
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/postgresql/data
+          subPath: '{{ .Release.Name }}/data/db'
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: '{{ .Release.Name }}-data'
+      - name: seed
+        configMap:
+          name: '{{ .Release.Name }}-seed'
+      initContainers:
+      - name: seed
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - 'set -e
+
+          D=/data/{{ .Release.Name }}
+
+          mkdir -p "$D/config"
+
+          [ -e "$D/config/nginx.conf" ] || cp /seed/f0 "$D/config/nginx.conf"
+
+          [ -e "$D/settings.env" ] || cp /seed/f1 "$D/settings.env"
+
+          '
+        volumeMounts:
+        - name: seed
+          mountPath: /seed
+          readOnly: true
+        - name: data
+          mountPath: /data
+      nodeSelector:
+        kubernetes.io/arch: amd64
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: db
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  selector:
+    app: db
+  ports:
+  - port: 5432
+    targetPort: 5432
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      containers:
+      - name: redis
+        image: valkey/valkey:7.2.12-alpine@sha256:d0809f1d763f9fc3d77cd27e7c0393b1b0d69b6ad9269f932328b4793a620c78
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 6379
+        readinessProbe:
+          tcpSocket:
+            port: 6379
+        volumeMounts:
+        - name: data
+          mountPath: /data
+          subPath: '{{ .Release.Name }}/data/redis'
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: '{{ .Release.Name }}-data'
+      - name: seed
+        configMap:
+          name: '{{ .Release.Name }}-seed'
+      initContainers:
+      - name: seed
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - 'set -e
+
+          D=/data/{{ .Release.Name }}
+
+          mkdir -p "$D/config"
+
+          [ -e "$D/config/nginx.conf" ] || cp /seed/f0 "$D/config/nginx.conf"
+
+          [ -e "$D/settings.env" ] || cp /seed/f1 "$D/settings.env"
+
+          '
+        volumeMounts:
+        - name: seed
+          mountPath: /seed
+          readOnly: true
+        - name: data
+          mountPath: /data
+      nodeSelector:
+        kubernetes.io/arch: amd64
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  selector:
+    app: redis
+  ports:
+  - port: 6379
+    targetPort: 6379
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rabbitmq
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: rabbitmq
+  template:
+    metadata:
+      labels:
+        app: rabbitmq
+    spec:
+      containers:
+      - name: rabbitmq
+        image: rabbitmq:3.13.7-management-alpine@sha256:0c64ec4fc5596406d755dcca75e8a3b618192cc5fb69f8f0340f06290b1cc08c
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: ('WEB_URL', 'changeme')
+          value: ''
+        - name: ('API_BASE_URL', 'changeme')
+          value: ''
+        - name: ('APP_DOMAIN', 'changeme')
+          value: ''
+        - name: ('ALLOWED_HOSTS', 'changeme')
+          value: ''
+        - name: ('CORS_ALLOWED_ORIGINS', 'changeme')
+          value: ''
+        - name: ('CSRF_TRUSTED_ORIGINS', 'changeme')
+          value: ''
+        - name: ('NGINX_HOST', 'changeme')
+          value: ''
+        - name: ('APP_PROTOCOL', 'http')
+          value: ''
+        - name: ('ENABLE_SIGNUP', '0')
+          value: ''
+        - name: ('DEBUG', '0')
+          value: ''
+        - name: ('NGINX_PORT', 8762)
+          value: ''
+        - name: ('LISTEN_HTTP_PORT', 8762)
+          value: ''
+        - name: ('BUCKET_NAME', 'uploads')
+          value: ''
+        - name: ('GUNICORN_WORKERS', 2)
+          value: ''
+        - name: ('POSTGRES_DB', 'plane')
+          value: ''
+        - name: ('POSTGRES_USER', 'plane')
+          value: ''
+        - name: ('POSTGRES_PASSWORD', 'umbrelplane')
+          value: ''
+        - name: ('DATABASE_URL', 'postgresql://plane:umbrelplane@plane_db_1:5432/plane')
+          value: ''
+        - name: ('REDIS_URL', 'redis://plane_redis_1:6379/0')
+          value: ''
+        - name: ('RABBITMQ_DEFAULT_USER', 'plane')
+          value: ''
+        - name: ('RABBITMQ_DEFAULT_PASS', 'umbrelplane')
+          value: ''
+        - name: ('RABBITMQ_DEFAULT_VHOST', 'plane')
+          value: ''
+        - name: ('CELERY_BROKER_URL', 'amqp://plane:umbrelplane@plane_rabbitmq_1:5672/plane')
+          value: ''
+        - name: ('USE_MINIO', 1)
+          value: ''
+        - name: ('AWS_ACCESS_KEY_ID', 'umbrel')
+          value: ''
+        - name: ('AWS_SECRET_ACCESS_KEY', '$APP_PASSWORD')
+          value: ''
+        - name: ('AWS_S3_ENDPOINT_URL', 'http://plane-minio-1:9000')
+          value: ''
+        - name: ('AWS_S3_BUCKET_NAME', 'uploads')
+          value: ''
+        - name: ('FILE_SIZE_LIMIT', 52428800)
+          value: ''
+        - name: ('MINIO_ENDPOINT_SSL', 0)
+          value: ''
+        - name: ('MINIO_ROOT_USER', 'umbrel')
+          value: ''
+        - name: ('MINIO_ROOT_PASSWORD', '$APP_PASSWORD')
+          value: ''
+        - name: ('SECRET_KEY', '$APP_SEED')
+          value: ''
+        - name: ('LIVE_SERVER_SECRET_KEY', '$APP_SEED')
+          value: ''
+        - name: ('USE_X_FORWARDED_HOST', 1)
+          value: ''
+        - name: ('SECURE_SSL_REDIRECT', 0)
+          value: ''
+        - name: ('SESSION_COOKIE_SECURE', 0)
+          value: ''
+        - name: ('CSRF_COOKIE_SECURE', 0)
+          value: ''
+        - name: ('WEBHOOK_ALLOWED_IPS', '')
+          value: ''
+        - name: ('WEBHOOK_ALLOWED_HOSTS', '')
+          value: ''
+        securityContext:
+          runAsUser: 1000
+          runAsGroup: 1000
+        ports:
+        - containerPort: 5672
+        readinessProbe:
+          tcpSocket:
+            port: 5672
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/rabbitmq
+          subPath: '{{ .Release.Name }}/data/rabbitmq'
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: '{{ .Release.Name }}-data'
+      - name: seed
+        configMap:
+          name: '{{ .Release.Name }}-seed'
+      initContainers:
+      - name: seed
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - 'set -e
+
+          D=/data/{{ .Release.Name }}
+
+          mkdir -p "$D/config"
+
+          [ -e "$D/config/nginx.conf" ] || cp /seed/f0 "$D/config/nginx.conf"
+
+          [ -e "$D/settings.env" ] || cp /seed/f1 "$D/settings.env"
+
+          '
+        volumeMounts:
+        - name: seed
+          mountPath: /seed
+          readOnly: true
+        - name: data
+          mountPath: /data
+      nodeSelector:
+        kubernetes.io/arch: amd64
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rabbitmq
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  selector:
+    app: rabbitmq
+  ports:
+  - port: 5672
+    targetPort: 5672
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: minio
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: minio
+  template:
+    metadata:
+      labels:
+        app: minio
+    spec:
+      containers:
+      - name: minio
+        image: alpine/minio:RELEASE.2025-10-15T17-29-55Z@sha256:cf23643a6cf9ce159c57643ceb88279e431262282428c9e0bf3a7ef1a97e84b4
+        imagePullPolicy: IfNotPresent
+        args:
+        - server
+        - /export
+        - --console-address
+        - :8763
+        env:
+        - name: ('WEB_URL', 'changeme')
+          value: ''
+        - name: ('API_BASE_URL', 'changeme')
+          value: ''
+        - name: ('APP_DOMAIN', 'changeme')
+          value: ''
+        - name: ('ALLOWED_HOSTS', 'changeme')
+          value: ''
+        - name: ('CORS_ALLOWED_ORIGINS', 'changeme')
+          value: ''
+        - name: ('CSRF_TRUSTED_ORIGINS', 'changeme')
+          value: ''
+        - name: ('NGINX_HOST', 'changeme')
+          value: ''
+        - name: ('APP_PROTOCOL', 'http')
+          value: ''
+        - name: ('ENABLE_SIGNUP', '0')
+          value: ''
+        - name: ('DEBUG', '0')
+          value: ''
+        - name: ('NGINX_PORT', 8762)
+          value: ''
+        - name: ('LISTEN_HTTP_PORT', 8762)
+          value: ''
+        - name: ('BUCKET_NAME', 'uploads')
+          value: ''
+        - name: ('GUNICORN_WORKERS', 2)
+          value: ''
+        - name: ('POSTGRES_DB', 'plane')
+          value: ''
+        - name: ('POSTGRES_USER', 'plane')
+          value: ''
+        - name: ('POSTGRES_PASSWORD', 'umbrelplane')
+          value: ''
+        - name: ('DATABASE_URL', 'postgresql://plane:umbrelplane@plane_db_1:5432/plane')
+          value: ''
+        - name: ('REDIS_URL', 'redis://plane_redis_1:6379/0')
+          value: ''
+        - name: ('RABBITMQ_DEFAULT_USER', 'plane')
+          value: ''
+        - name: ('RABBITMQ_DEFAULT_PASS', 'umbrelplane')
+          value: ''
+        - name: ('RABBITMQ_DEFAULT_VHOST', 'plane')
+          value: ''
+        - name: ('CELERY_BROKER_URL', 'amqp://plane:umbrelplane@plane_rabbitmq_1:5672/plane')
+          value: ''
+        - name: ('USE_MINIO', 1)
+          value: ''
+        - name: ('AWS_ACCESS_KEY_ID', 'umbrel')
+          value: ''
+        - name: ('AWS_SECRET_ACCESS_KEY', '$APP_PASSWORD')
+          value: ''
+        - name: ('AWS_S3_ENDPOINT_URL', 'http://plane-minio-1:9000')
+          value: ''
+        - name: ('AWS_S3_BUCKET_NAME', 'uploads')
+          value: ''
+        - name: ('FILE_SIZE_LIMIT', 52428800)
+          value: ''
+        - name: ('MINIO_ENDPOINT_SSL', 0)
+          value: ''
+        - name: ('MINIO_ROOT_USER', 'umbrel')
+          value: ''
+        - name: ('MINIO_ROOT_PASSWORD', '$APP_PASSWORD')
+          value: ''
+        - name: ('SECRET_KEY', '$APP_SEED')
+          value: ''
+        - name: ('LIVE_SERVER_SECRET_KEY', '$APP_SEED')
+          value: ''
+        - name: ('USE_X_FORWARDED_HOST', 1)
+          value: ''
+        - name: ('SECURE_SSL_REDIRECT', 0)
+          value: ''
+        - name: ('SESSION_COOKIE_SECURE', 0)
+          value: ''
+        - name: ('CSRF_COOKIE_SECURE', 0)
+          value: ''
+        - name: ('WEBHOOK_ALLOWED_IPS', '')
+          value: ''
+        - name: ('WEBHOOK_ALLOWED_HOSTS', '')
+          value: ''
+        securityContext:
+          runAsUser: 1000
+          runAsGroup: 1000
+        ports:
+        - containerPort: 8763
+        readinessProbe:
+          tcpSocket:
+            port: 8763
+        volumeMounts:
+        - name: data
+          mountPath: /export
+          subPath: '{{ .Release.Name }}/data/uploads'
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: '{{ .Release.Name }}-data'
+      - name: seed
+        configMap:
+          name: '{{ .Release.Name }}-seed'
+      initContainers:
+      - name: seed
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - 'set -e
+
+          D=/data/{{ .Release.Name }}
+
+          mkdir -p "$D/config"
+
+          [ -e "$D/config/nginx.conf" ] || cp /seed/f0 "$D/config/nginx.conf"
+
+          [ -e "$D/settings.env" ] || cp /seed/f1 "$D/settings.env"
+
+          '
+        volumeMounts:
+        - name: seed
+          mountPath: /seed
+          readOnly: true
+        - name: data
+          mountPath: /data
+      nodeSelector:
+        kubernetes.io/arch: amd64
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  selector:
+    app: minio
+  ports:
+  - port: 8763
+    targetPort: 8763
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: api
+  template:
+    metadata:
+      labels:
+        app: api
+    spec:
+      containers:
+      - name: api
+        image: makeplane/plane-backend:v1.4.2@sha256:90032ce088708889b60c00d491897916f4deb882facda27db59fd10fb68729ef
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: ('WEB_URL', 'changeme')
+          value: ''
+        - name: ('API_BASE_URL', 'changeme')
+          value: ''
+        - name: ('APP_DOMAIN', 'changeme')
+          value: ''
+        - name: ('ALLOWED_HOSTS', 'changeme')
+          value: ''
+        - name: ('CORS_ALLOWED_ORIGINS', 'changeme')
+          value: ''
+        - name: ('CSRF_TRUSTED_ORIGINS', 'changeme')
+          value: ''
+        - name: ('NGINX_HOST', 'changeme')
+          value: ''
+        - name: ('APP_PROTOCOL', 'http')
+          value: ''
+        - name: ('ENABLE_SIGNUP', '0')
+          value: ''
+        - name: ('DEBUG', '0')
+          value: ''
+        - name: ('NGINX_PORT', 8762)
+          value: ''
+        - name: ('LISTEN_HTTP_PORT', 8762)
+          value: ''
+        - name: ('BUCKET_NAME', 'uploads')
+          value: ''
+        - name: ('GUNICORN_WORKERS', 2)
+          value: ''
+        - name: ('POSTGRES_DB', 'plane')
+          value: ''
+        - name: ('POSTGRES_USER', 'plane')
+          value: ''
+        - name: ('POSTGRES_PASSWORD', 'umbrelplane')
+          value: ''
+        - name: ('DATABASE_URL', 'postgresql://plane:umbrelplane@plane_db_1:5432/plane')
+          value: ''
+        - name: ('REDIS_URL', 'redis://plane_redis_1:6379/0')
+          value: ''
+        - name: ('RABBITMQ_DEFAULT_USER', 'plane')
+          value: ''
+        - name: ('RABBITMQ_DEFAULT_PASS', 'umbrelplane')
+          value: ''
+        - name: ('RABBITMQ_DEFAULT_VHOST', 'plane')
+          value: ''
+        - name: ('CELERY_BROKER_URL', 'amqp://plane:umbrelplane@plane_rabbitmq_1:5672/plane')
+          value: ''
+        - name: ('USE_MINIO', 1)
+          value: ''
+        - name: ('AWS_ACCESS_KEY_ID', 'umbrel')
+          value: ''
+        - name: ('AWS_SECRET_ACCESS_KEY', '$APP_PASSWORD')
+          value: ''
+        - name: ('AWS_S3_ENDPOINT_URL', 'http://plane-minio-1:9000')
+          value: ''
+        - name: ('AWS_S3_BUCKET_NAME', 'uploads')
+          value: ''
+        - name: ('FILE_SIZE_LIMIT', 52428800)
+          value: ''
+        - name: ('MINIO_ENDPOINT_SSL', 0)
+          value: ''
+        - name: ('MINIO_ROOT_USER', 'umbrel')
+          value: ''
+        - name: ('MINIO_ROOT_PASSWORD', '$APP_PASSWORD')
+          value: ''
+        - name: ('SECRET_KEY', '$APP_SEED')
+          value: ''
+        - name: ('LIVE_SERVER_SECRET_KEY', '$APP_SEED')
+          value: ''
+        - name: ('USE_X_FORWARDED_HOST', 1)
+          value: ''
+        - name: ('SECURE_SSL_REDIRECT', 0)
+          value: ''
+        - name: ('SESSION_COOKIE_SECURE', 0)
+          value: ''
+        - name: ('CSRF_COOKIE_SECURE', 0)
+          value: ''
+        - name: ('WEBHOOK_ALLOWED_IPS', '')
+          value: ''
+        - name: ('WEBHOOK_ALLOWED_HOSTS', '')
+          value: ''
+        securityContext:
+          runAsUser: 1000
+          runAsGroup: 1000
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: '{{ .Release.Name }}-data'
+      - name: seed
+        configMap:
+          name: '{{ .Release.Name }}-seed'
+      initContainers:
+      - name: seed
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - 'set -e
+
+          D=/data/{{ .Release.Name }}
+
+          mkdir -p "$D/config"
+
+          [ -e "$D/config/nginx.conf" ] || cp /seed/f0 "$D/config/nginx.conf"
+
+          [ -e "$D/settings.env" ] || cp /seed/f1 "$D/settings.env"
+
+          '
+        volumeMounts:
+        - name: seed
+          mountPath: /seed
+          readOnly: true
+        - name: data
+          mountPath: /data
+      nodeSelector:
+        kubernetes.io/arch: amd64
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: worker
+  template:
+    metadata:
+      labels:
+        app: worker
+    spec:
+      containers:
+      - name: worker
+        image: makeplane/plane-backend:v1.4.2@sha256:90032ce088708889b60c00d491897916f4deb882facda27db59fd10fb68729ef
+        imagePullPolicy: IfNotPresent
+        args:
+        - sh
+        - -c
+        - celery -A plane worker --loglevel=info
+        env:
+        - name: ('WEB_URL', 'changeme')
+          value: ''
+        - name: ('API_BASE_URL', 'changeme')
+          value: ''
+        - name: ('APP_DOMAIN', 'changeme')
+          value: ''
+        - name: ('ALLOWED_HOSTS', 'changeme')
+          value: ''
+        - name: ('CORS_ALLOWED_ORIGINS', 'changeme')
+          value: ''
+        - name: ('CSRF_TRUSTED_ORIGINS', 'changeme')
+          value: ''
+        - name: ('NGINX_HOST', 'changeme')
+          value: ''
+        - name: ('APP_PROTOCOL', 'http')
+          value: ''
+        - name: ('ENABLE_SIGNUP', '0')
+          value: ''
+        - name: ('DEBUG', '0')
+          value: ''
+        - name: ('NGINX_PORT', 8762)
+          value: ''
+        - name: ('LISTEN_HTTP_PORT', 8762)
+          value: ''
+        - name: ('BUCKET_NAME', 'uploads')
+          value: ''
+        - name: ('GUNICORN_WORKERS', 2)
+          value: ''
+        - name: ('POSTGRES_DB', 'plane')
+          value: ''
+        - name: ('POSTGRES_USER', 'plane')
+          value: ''
+        - name: ('POSTGRES_PASSWORD', 'umbrelplane')
+          value: ''
+        - name: ('DATABASE_URL', 'postgresql://plane:umbrelplane@plane_db_1:5432/plane')
+          value: ''
+        - name: ('REDIS_URL', 'redis://plane_redis_1:6379/0')
+          value: ''
+        - name: ('RABBITMQ_DEFAULT_USER', 'plane')
+          value: ''
+        - name: ('RABBITMQ_DEFAULT_PASS', 'umbrelplane')
+          value: ''
+        - name: ('RABBITMQ_DEFAULT_VHOST', 'plane')
+          value: ''
+        - name: ('CELERY_BROKER_URL', 'amqp://plane:umbrelplane@plane_rabbitmq_1:5672/plane')
+          value: ''
+        - name: ('USE_MINIO', 1)
+          value: ''
+        - name: ('AWS_ACCESS_KEY_ID', 'umbrel')
+          value: ''
+        - name: ('AWS_SECRET_ACCESS_KEY', '$APP_PASSWORD')
+          value: ''
+        - name: ('AWS_S3_ENDPOINT_URL', 'http://plane-minio-1:9000')
+          value: ''
+        - name: ('AWS_S3_BUCKET_NAME', 'uploads')
+          value: ''
+        - name: ('FILE_SIZE_LIMIT', 52428800)
+          value: ''
+        - name: ('MINIO_ENDPOINT_SSL', 0)
+          value: ''
+        - name: ('MINIO_ROOT_USER', 'umbrel')
+          value: ''
+        - name: ('MINIO_ROOT_PASSWORD', '$APP_PASSWORD')
+          value: ''
+        - name: ('SECRET_KEY', '$APP_SEED')
+          value: ''
+        - name: ('LIVE_SERVER_SECRET_KEY', '$APP_SEED')
+          value: ''
+        - name: ('USE_X_FORWARDED_HOST', 1)
+          value: ''
+        - name: ('SECURE_SSL_REDIRECT', 0)
+          value: ''
+        - name: ('SESSION_COOKIE_SECURE', 0)
+          value: ''
+        - name: ('CSRF_COOKIE_SECURE', 0)
+          value: ''
+        - name: ('WEBHOOK_ALLOWED_IPS', '')
+          value: ''
+        - name: ('WEBHOOK_ALLOWED_HOSTS', '')
+          value: ''
+        securityContext:
+          runAsUser: 1000
+          runAsGroup: 1000
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: '{{ .Release.Name }}-data'
+      - name: seed
+        configMap:
+          name: '{{ .Release.Name }}-seed'
+      initContainers:
+      - name: seed
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - 'set -e
+
+          D=/data/{{ .Release.Name }}
+
+          mkdir -p "$D/config"
+
+          [ -e "$D/config/nginx.conf" ] || cp /seed/f0 "$D/config/nginx.conf"
+
+          [ -e "$D/settings.env" ] || cp /seed/f1 "$D/settings.env"
+
+          '
+        volumeMounts:
+        - name: seed
+          mountPath: /seed
+          readOnly: true
+        - name: data
+          mountPath: /data
+      nodeSelector:
+        kubernetes.io/arch: amd64
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: beat-worker
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: beat-worker
+  template:
+    metadata:
+      labels:
+        app: beat-worker
+    spec:
+      containers:
+      - name: beat-worker
+        image: makeplane/plane-backend:v1.4.2@sha256:90032ce088708889b60c00d491897916f4deb882facda27db59fd10fb68729ef
+        imagePullPolicy: IfNotPresent
+        args:
+        - sh
+        - -c
+        - celery -A plane beat --loglevel=info
+        env:
+        - name: ('WEB_URL', 'changeme')
+          value: ''
+        - name: ('API_BASE_URL', 'changeme')
+          value: ''
+        - name: ('APP_DOMAIN', 'changeme')
+          value: ''
+        - name: ('ALLOWED_HOSTS', 'changeme')
+          value: ''
+        - name: ('CORS_ALLOWED_ORIGINS', 'changeme')
+          value: ''
+        - name: ('CSRF_TRUSTED_ORIGINS', 'changeme')
+          value: ''
+        - name: ('NGINX_HOST', 'changeme')
+          value: ''
+        - name: ('APP_PROTOCOL', 'http')
+          value: ''
+        - name: ('ENABLE_SIGNUP', '0')
+          value: ''
+        - name: ('DEBUG', '0')
+          value: ''
+        - name: ('NGINX_PORT', 8762)
+          value: ''
+        - name: ('LISTEN_HTTP_PORT', 8762)
+          value: ''
+        - name: ('BUCKET_NAME', 'uploads')
+          value: ''
+        - name: ('GUNICORN_WORKERS', 2)
+          value: ''
+        - name: ('POSTGRES_DB', 'plane')
+          value: ''
+        - name: ('POSTGRES_USER', 'plane')
+          value: ''
+        - name: ('POSTGRES_PASSWORD', 'umbrelplane')
+          value: ''
+        - name: ('DATABASE_URL', 'postgresql://plane:umbrelplane@plane_db_1:5432/plane')
+          value: ''
+        - name: ('REDIS_URL', 'redis://plane_redis_1:6379/0')
+          value: ''
+        - name: ('RABBITMQ_DEFAULT_USER', 'plane')
+          value: ''
+        - name: ('RABBITMQ_DEFAULT_PASS', 'umbrelplane')
+          value: ''
+        - name: ('RABBITMQ_DEFAULT_VHOST', 'plane')
+          value: ''
+        - name: ('CELERY_BROKER_URL', 'amqp://plane:umbrelplane@plane_rabbitmq_1:5672/plane')
+          value: ''
+        - name: ('USE_MINIO', 1)
+          value: ''
+        - name: ('AWS_ACCESS_KEY_ID', 'umbrel')
+          value: ''
+        - name: ('AWS_SECRET_ACCESS_KEY', '$APP_PASSWORD')
+          value: ''
+        - name: ('AWS_S3_ENDPOINT_URL', 'http://plane-minio-1:9000')
+          value: ''
+        - name: ('AWS_S3_BUCKET_NAME', 'uploads')
+          value: ''
+        - name: ('FILE_SIZE_LIMIT', 52428800)
+          value: ''
+        - name: ('MINIO_ENDPOINT_SSL', 0)
+          value: ''
+        - name: ('MINIO_ROOT_USER', 'umbrel')
+          value: ''
+        - name: ('MINIO_ROOT_PASSWORD', '$APP_PASSWORD')
+          value: ''
+        - name: ('SECRET_KEY', '$APP_SEED')
+          value: ''
+        - name: ('LIVE_SERVER_SECRET_KEY', '$APP_SEED')
+          value: ''
+        - name: ('USE_X_FORWARDED_HOST', 1)
+          value: ''
+        - name: ('SECURE_SSL_REDIRECT', 0)
+          value: ''
+        - name: ('SESSION_COOKIE_SECURE', 0)
+          value: ''
+        - name: ('CSRF_COOKIE_SECURE', 0)
+          value: ''
+        - name: ('WEBHOOK_ALLOWED_IPS', '')
+          value: ''
+        - name: ('WEBHOOK_ALLOWED_HOSTS', '')
+          value: ''
+        securityContext:
+          runAsUser: 1000
+          runAsGroup: 1000
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: '{{ .Release.Name }}-data'
+      - name: seed
+        configMap:
+          name: '{{ .Release.Name }}-seed'
+      initContainers:
+      - name: seed
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - 'set -e
+
+          D=/data/{{ .Release.Name }}
+
+          mkdir -p "$D/config"
+
+          [ -e "$D/config/nginx.conf" ] || cp /seed/f0 "$D/config/nginx.conf"
+
+          [ -e "$D/settings.env" ] || cp /seed/f1 "$D/settings.env"
+
+          '
+        volumeMounts:
+        - name: seed
+          mountPath: /seed
+          readOnly: true
+        - name: data
+          mountPath: /data
+      nodeSelector:
+        kubernetes.io/arch: amd64
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: migrator
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: migrator
+  template:
+    metadata:
+      labels:
+        app: migrator
+    spec:
+      containers:
+      - name: migrator
+        image: makeplane/plane-backend:v1.4.2@sha256:90032ce088708889b60c00d491897916f4deb882facda27db59fd10fb68729ef
+        imagePullPolicy: IfNotPresent
+        args:
+        - sh
+        - -c
+        - python manage.py wait_for_db && python manage.py migrate
+        env:
+        - name: ('WEB_URL', 'changeme')
+          value: ''
+        - name: ('API_BASE_URL', 'changeme')
+          value: ''
+        - name: ('APP_DOMAIN', 'changeme')
+          value: ''
+        - name: ('ALLOWED_HOSTS', 'changeme')
+          value: ''
+        - name: ('CORS_ALLOWED_ORIGINS', 'changeme')
+          value: ''
+        - name: ('CSRF_TRUSTED_ORIGINS', 'changeme')
+          value: ''
+        - name: ('NGINX_HOST', 'changeme')
+          value: ''
+        - name: ('APP_PROTOCOL', 'http')
+          value: ''
+        - name: ('ENABLE_SIGNUP', '0')
+          value: ''
+        - name: ('DEBUG', '0')
+          value: ''
+        - name: ('NGINX_PORT', 8762)
+          value: ''
+        - name: ('LISTEN_HTTP_PORT', 8762)
+          value: ''
+        - name: ('BUCKET_NAME', 'uploads')
+          value: ''
+        - name: ('GUNICORN_WORKERS', 2)
+          value: ''
+        - name: ('POSTGRES_DB', 'plane')
+          value: ''
+        - name: ('POSTGRES_USER', 'plane')
+          value: ''
+        - name: ('POSTGRES_PASSWORD', 'umbrelplane')
+          value: ''
+        - name: ('DATABASE_URL', 'postgresql://plane:umbrelplane@plane_db_1:5432/plane')
+          value: ''
+        - name: ('REDIS_URL', 'redis://plane_redis_1:6379/0')
+          value: ''
+        - name: ('RABBITMQ_DEFAULT_USER', 'plane')
+          value: ''
+        - name: ('RABBITMQ_DEFAULT_PASS', 'umbrelplane')
+          value: ''
+        - name: ('RABBITMQ_DEFAULT_VHOST', 'plane')
+          value: ''
+        - name: ('CELERY_BROKER_URL', 'amqp://plane:umbrelplane@plane_rabbitmq_1:5672/plane')
+          value: ''
+        - name: ('USE_MINIO', 1)
+          value: ''
+        - name: ('AWS_ACCESS_KEY_ID', 'umbrel')
+          value: ''
+        - name: ('AWS_SECRET_ACCESS_KEY', '$APP_PASSWORD')
+          value: ''
+        - name: ('AWS_S3_ENDPOINT_URL', 'http://plane-minio-1:9000')
+          value: ''
+        - name: ('AWS_S3_BUCKET_NAME', 'uploads')
+          value: ''
+        - name: ('FILE_SIZE_LIMIT', 52428800)
+          value: ''
+        - name: ('MINIO_ENDPOINT_SSL', 0)
+          value: ''
+        - name: ('MINIO_ROOT_USER', 'umbrel')
+          value: ''
+        - name: ('MINIO_ROOT_PASSWORD', '$APP_PASSWORD')
+          value: ''
+        - name: ('SECRET_KEY', '$APP_SEED')
+          value: ''
+        - name: ('LIVE_SERVER_SECRET_KEY', '$APP_SEED')
+          value: ''
+        - name: ('USE_X_FORWARDED_HOST', 1)
+          value: ''
+        - name: ('SECURE_SSL_REDIRECT', 0)
+          value: ''
+        - name: ('SESSION_COOKIE_SECURE', 0)
+          value: ''
+        - name: ('CSRF_COOKIE_SECURE', 0)
+          value: ''
+        - name: ('WEBHOOK_ALLOWED_IPS', '')
+          value: ''
+        - name: ('WEBHOOK_ALLOWED_HOSTS', '')
+          value: ''
+        securityContext:
+          runAsUser: 1000
+          runAsGroup: 1000
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: '{{ .Release.Name }}-data'
+      - name: seed
+        configMap:
+          name: '{{ .Release.Name }}-seed'
+      initContainers:
+      - name: seed
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - 'set -e
+
+          D=/data/{{ .Release.Name }}
+
+          mkdir -p "$D/config"
+
+          [ -e "$D/config/nginx.conf" ] || cp /seed/f0 "$D/config/nginx.conf"
+
+          [ -e "$D/settings.env" ] || cp /seed/f1 "$D/settings.env"
+
+          '
+        volumeMounts:
+        - name: seed
+          mountPath: /seed
+          readOnly: true
+        - name: data
+          mountPath: /data
+      nodeSelector:
+        kubernetes.io/arch: amd64
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: web
+  template:
+    metadata:
+      labels:
+        app: web
+    spec:
+      containers:
+      - name: web
+        image: makeplane/plane-frontend:v1.4.2@sha256:22fd2434fb8d6658439f669ab72f999ce0773abe587663da21a77d70bd63ff61
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: ('WEB_URL', 'changeme')
+          value: ''
+        - name: ('API_BASE_URL', 'changeme')
+          value: ''
+        - name: ('APP_DOMAIN', 'changeme')
+          value: ''
+        - name: ('ALLOWED_HOSTS', 'changeme')
+          value: ''
+        - name: ('CORS_ALLOWED_ORIGINS', 'changeme')
+          value: ''
+        - name: ('CSRF_TRUSTED_ORIGINS', 'changeme')
+          value: ''
+        - name: ('NGINX_HOST', 'changeme')
+          value: ''
+        - name: ('APP_PROTOCOL', 'http')
+          value: ''
+        - name: ('ENABLE_SIGNUP', '0')
+          value: ''
+        - name: ('DEBUG', '0')
+          value: ''
+        - name: ('NGINX_PORT', 8762)
+          value: ''
+        - name: ('LISTEN_HTTP_PORT', 8762)
+          value: ''
+        - name: ('BUCKET_NAME', 'uploads')
+          value: ''
+        - name: ('GUNICORN_WORKERS', 2)
+          value: ''
+        - name: ('POSTGRES_DB', 'plane')
+          value: ''
+        - name: ('POSTGRES_USER', 'plane')
+          value: ''
+        - name: ('POSTGRES_PASSWORD', 'umbrelplane')
+          value: ''
+        - name: ('DATABASE_URL', 'postgresql://plane:umbrelplane@plane_db_1:5432/plane')
+          value: ''
+        - name: ('REDIS_URL', 'redis://plane_redis_1:6379/0')
+          value: ''
+        - name: ('RABBITMQ_DEFAULT_USER', 'plane')
+          value: ''
+        - name: ('RABBITMQ_DEFAULT_PASS', 'umbrelplane')
+          value: ''
+        - name: ('RABBITMQ_DEFAULT_VHOST', 'plane')
+          value: ''
+        - name: ('CELERY_BROKER_URL', 'amqp://plane:umbrelplane@plane_rabbitmq_1:5672/plane')
+          value: ''
+        - name: ('USE_MINIO', 1)
+          value: ''
+        - name: ('AWS_ACCESS_KEY_ID', 'umbrel')
+          value: ''
+        - name: ('AWS_SECRET_ACCESS_KEY', '$APP_PASSWORD')
+          value: ''
+        - name: ('AWS_S3_ENDPOINT_URL', 'http://plane-minio-1:9000')
+          value: ''
+        - name: ('AWS_S3_BUCKET_NAME', 'uploads')
+          value: ''
+        - name: ('FILE_SIZE_LIMIT', 52428800)
+          value: ''
+        - name: ('MINIO_ENDPOINT_SSL', 0)
+          value: ''
+        - name: ('MINIO_ROOT_USER', 'umbrel')
+          value: ''
+        - name: ('MINIO_ROOT_PASSWORD', '$APP_PASSWORD')
+          value: ''
+        - name: ('SECRET_KEY', '$APP_SEED')
+          value: ''
+        - name: ('LIVE_SERVER_SECRET_KEY', '$APP_SEED')
+          value: ''
+        - name: ('USE_X_FORWARDED_HOST', 1)
+          value: ''
+        - name: ('SECURE_SSL_REDIRECT', 0)
+          value: ''
+        - name: ('SESSION_COOKIE_SECURE', 0)
+          value: ''
+        - name: ('CSRF_COOKIE_SECURE', 0)
+          value: ''
+        - name: ('WEBHOOK_ALLOWED_IPS', '')
+          value: ''
+        - name: ('WEBHOOK_ALLOWED_HOSTS', '')
+          value: ''
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: '{{ .Release.Name }}-data'
+      - name: seed
+        configMap:
+          name: '{{ .Release.Name }}-seed'
+      initContainers:
+      - name: seed
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - 'set -e
+
+          D=/data/{{ .Release.Name }}
+
+          mkdir -p "$D/config"
+
+          [ -e "$D/config/nginx.conf" ] || cp /seed/f0 "$D/config/nginx.conf"
+
+          [ -e "$D/settings.env" ] || cp /seed/f1 "$D/settings.env"
+
+          '
+        volumeMounts:
+        - name: seed
+          mountPath: /seed
+          readOnly: true
+        - name: data
+          mountPath: /data
+      nodeSelector:
+        kubernetes.io/arch: amd64
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: live
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: live
+  template:
+    metadata:
+      labels:
+        app: live
+    spec:
+      containers:
+      - name: live
+        image: makeplane/plane-live:v1.4.2@sha256:cbb630ccaea24bb9998040cb45c11619a7501e8b6c75d449df2f8fd9b9cddbd0
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: ('WEB_URL', 'changeme')
+          value: ''
+        - name: ('API_BASE_URL', 'changeme')
+          value: ''
+        - name: ('APP_DOMAIN', 'changeme')
+          value: ''
+        - name: ('ALLOWED_HOSTS', 'changeme')
+          value: ''
+        - name: ('CORS_ALLOWED_ORIGINS', 'changeme')
+          value: ''
+        - name: ('CSRF_TRUSTED_ORIGINS', 'changeme')
+          value: ''
+        - name: ('NGINX_HOST', 'changeme')
+          value: ''
+        - name: ('APP_PROTOCOL', 'http')
+          value: ''
+        - name: ('ENABLE_SIGNUP', '0')
+          value: ''
+        - name: ('DEBUG', '0')
+          value: ''
+        - name: ('NGINX_PORT', 8762)
+          value: ''
+        - name: ('LISTEN_HTTP_PORT', 8762)
+          value: ''
+        - name: ('BUCKET_NAME', 'uploads')
+          value: ''
+        - name: ('GUNICORN_WORKERS', 2)
+          value: ''
+        - name: ('POSTGRES_DB', 'plane')
+          value: ''
+        - name: ('POSTGRES_USER', 'plane')
+          value: ''
+        - name: ('POSTGRES_PASSWORD', 'umbrelplane')
+          value: ''
+        - name: ('DATABASE_URL', 'postgresql://plane:umbrelplane@plane_db_1:5432/plane')
+          value: ''
+        - name: ('REDIS_URL', 'redis://plane_redis_1:6379/0')
+          value: ''
+        - name: ('RABBITMQ_DEFAULT_USER', 'plane')
+          value: ''
+        - name: ('RABBITMQ_DEFAULT_PASS', 'umbrelplane')
+          value: ''
+        - name: ('RABBITMQ_DEFAULT_VHOST', 'plane')
+          value: ''
+        - name: ('CELERY_BROKER_URL', 'amqp://plane:umbrelplane@plane_rabbitmq_1:5672/plane')
+          value: ''
+        - name: ('USE_MINIO', 1)
+          value: ''
+        - name: ('AWS_ACCESS_KEY_ID', 'umbrel')
+          value: ''
+        - name: ('AWS_SECRET_ACCESS_KEY', '$APP_PASSWORD')
+          value: ''
+        - name: ('AWS_S3_ENDPOINT_URL', 'http://plane-minio-1:9000')
+          value: ''
+        - name: ('AWS_S3_BUCKET_NAME', 'uploads')
+          value: ''
+        - name: ('FILE_SIZE_LIMIT', 52428800)
+          value: ''
+        - name: ('MINIO_ENDPOINT_SSL', 0)
+          value: ''
+        - name: ('MINIO_ROOT_USER', 'umbrel')
+          value: ''
+        - name: ('MINIO_ROOT_PASSWORD', '$APP_PASSWORD')
+          value: ''
+        - name: ('SECRET_KEY', '$APP_SEED')
+          value: ''
+        - name: ('LIVE_SERVER_SECRET_KEY', '$APP_SEED')
+          value: ''
+        - name: ('USE_X_FORWARDED_HOST', 1)
+          value: ''
+        - name: ('SECURE_SSL_REDIRECT', 0)
+          value: ''
+        - name: ('SESSION_COOKIE_SECURE', 0)
+          value: ''
+        - name: ('CSRF_COOKIE_SECURE', 0)
+          value: ''
+        - name: ('WEBHOOK_ALLOWED_IPS', '')
+          value: ''
+        - name: ('WEBHOOK_ALLOWED_HOSTS', '')
+          value: ''
+        securityContext:
+          runAsUser: 1000
+          runAsGroup: 1000
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: '{{ .Release.Name }}-data'
+      - name: seed
+        configMap:
+          name: '{{ .Release.Name }}-seed'
+      initContainers:
+      - name: seed
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - 'set -e
+
+          D=/data/{{ .Release.Name }}
+
+          mkdir -p "$D/config"
+
+          [ -e "$D/config/nginx.conf" ] || cp /seed/f0 "$D/config/nginx.conf"
+
+          [ -e "$D/settings.env" ] || cp /seed/f1 "$D/settings.env"
+
+          '
+        volumeMounts:
+        - name: seed
+          mountPath: /seed
+          readOnly: true
+        - name: data
+          mountPath: /data
+      nodeSelector:
+        kubernetes.io/arch: amd64
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: space
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: space
+  template:
+    metadata:
+      labels:
+        app: space
+    spec:
+      containers:
+      - name: space
+        image: makeplane/plane-space:v1.4.2@sha256:f8f842f05f41a16e9fe8c4f5e17a3bb175338ccdc094620e58ae49764ffbd671
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: ('WEB_URL', 'changeme')
+          value: ''
+        - name: ('API_BASE_URL', 'changeme')
+          value: ''
+        - name: ('APP_DOMAIN', 'changeme')
+          value: ''
+        - name: ('ALLOWED_HOSTS', 'changeme')
+          value: ''
+        - name: ('CORS_ALLOWED_ORIGINS', 'changeme')
+          value: ''
+        - name: ('CSRF_TRUSTED_ORIGINS', 'changeme')
+          value: ''
+        - name: ('NGINX_HOST', 'changeme')
+          value: ''
+        - name: ('APP_PROTOCOL', 'http')
+          value: ''
+        - name: ('ENABLE_SIGNUP', '0')
+          value: ''
+        - name: ('DEBUG', '0')
+          value: ''
+        - name: ('NGINX_PORT', 8762)
+          value: ''
+        - name: ('LISTEN_HTTP_PORT', 8762)
+          value: ''
+        - name: ('BUCKET_NAME', 'uploads')
+          value: ''
+        - name: ('GUNICORN_WORKERS', 2)
+          value: ''
+        - name: ('POSTGRES_DB', 'plane')
+          value: ''
+        - name: ('POSTGRES_USER', 'plane')
+          value: ''
+        - name: ('POSTGRES_PASSWORD', 'umbrelplane')
+          value: ''
+        - name: ('DATABASE_URL', 'postgresql://plane:umbrelplane@plane_db_1:5432/plane')
+          value: ''
+        - name: ('REDIS_URL', 'redis://plane_redis_1:6379/0')
+          value: ''
+        - name: ('RABBITMQ_DEFAULT_USER', 'plane')
+          value: ''
+        - name: ('RABBITMQ_DEFAULT_PASS', 'umbrelplane')
+          value: ''
+        - name: ('RABBITMQ_DEFAULT_VHOST', 'plane')
+          value: ''
+        - name: ('CELERY_BROKER_URL', 'amqp://plane:umbrelplane@plane_rabbitmq_1:5672/plane')
+          value: ''
+        - name: ('USE_MINIO', 1)
+          value: ''
+        - name: ('AWS_ACCESS_KEY_ID', 'umbrel')
+          value: ''
+        - name: ('AWS_SECRET_ACCESS_KEY', '$APP_PASSWORD')
+          value: ''
+        - name: ('AWS_S3_ENDPOINT_URL', 'http://plane-minio-1:9000')
+          value: ''
+        - name: ('AWS_S3_BUCKET_NAME', 'uploads')
+          value: ''
+        - name: ('FILE_SIZE_LIMIT', 52428800)
+          value: ''
+        - name: ('MINIO_ENDPOINT_SSL', 0)
+          value: ''
+        - name: ('MINIO_ROOT_USER', 'umbrel')
+          value: ''
+        - name: ('MINIO_ROOT_PASSWORD', '$APP_PASSWORD')
+          value: ''
+        - name: ('SECRET_KEY', '$APP_SEED')
+          value: ''
+        - name: ('LIVE_SERVER_SECRET_KEY', '$APP_SEED')
+          value: ''
+        - name: ('USE_X_FORWARDED_HOST', 1)
+          value: ''
+        - name: ('SECURE_SSL_REDIRECT', 0)
+          value: ''
+        - name: ('SESSION_COOKIE_SECURE', 0)
+          value: ''
+        - name: ('CSRF_COOKIE_SECURE', 0)
+          value: ''
+        - name: ('WEBHOOK_ALLOWED_IPS', '')
+          value: ''
+        - name: ('WEBHOOK_ALLOWED_HOSTS', '')
+          value: ''
+        securityContext:
+          runAsUser: 1000
+          runAsGroup: 1000
+        readinessProbe:
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - 'node -e "require(''http'').get(''http://127.0.0.1:3000/'', (r) => process.exit(r.statusCode
+              < 500 ? 0 : 1)).on(''error'', () => process.exit(1))"'
+          initialDelaySeconds: 10
+          periodSeconds: 30
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: '{{ .Release.Name }}-data'
+      - name: seed
+        configMap:
+          name: '{{ .Release.Name }}-seed'
+      initContainers:
+      - name: seed
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - 'set -e
+
+          D=/data/{{ .Release.Name }}
+
+          mkdir -p "$D/config"
+
+          [ -e "$D/config/nginx.conf" ] || cp /seed/f0 "$D/config/nginx.conf"
+
+          [ -e "$D/settings.env" ] || cp /seed/f1 "$D/settings.env"
+
+          '
+        volumeMounts:
+        - name: seed
+          mountPath: /seed
+          readOnly: true
+        - name: data
+          mountPath: /data
+      nodeSelector:
+        kubernetes.io/arch: amd64
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: admin
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: admin
+  template:
+    metadata:
+      labels:
+        app: admin
+    spec:
+      containers:
+      - name: admin
+        image: makeplane/plane-admin:v1.4.2@sha256:6e1bb1d800d3c7ce84a09f810d5588db8613b35d4464e722a1bec12556ca0ebb
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: ('WEB_URL', 'changeme')
+          value: ''
+        - name: ('API_BASE_URL', 'changeme')
+          value: ''
+        - name: ('APP_DOMAIN', 'changeme')
+          value: ''
+        - name: ('ALLOWED_HOSTS', 'changeme')
+          value: ''
+        - name: ('CORS_ALLOWED_ORIGINS', 'changeme')
+          value: ''
+        - name: ('CSRF_TRUSTED_ORIGINS', 'changeme')
+          value: ''
+        - name: ('NGINX_HOST', 'changeme')
+          value: ''
+        - name: ('APP_PROTOCOL', 'http')
+          value: ''
+        - name: ('ENABLE_SIGNUP', '0')
+          value: ''
+        - name: ('DEBUG', '0')
+          value: ''
+        - name: ('NGINX_PORT', 8762)
+          value: ''
+        - name: ('LISTEN_HTTP_PORT', 8762)
+          value: ''
+        - name: ('BUCKET_NAME', 'uploads')
+          value: ''
+        - name: ('GUNICORN_WORKERS', 2)
+          value: ''
+        - name: ('POSTGRES_DB', 'plane')
+          value: ''
+        - name: ('POSTGRES_USER', 'plane')
+          value: ''
+        - name: ('POSTGRES_PASSWORD', 'umbrelplane')
+          value: ''
+        - name: ('DATABASE_URL', 'postgresql://plane:umbrelplane@plane_db_1:5432/plane')
+          value: ''
+        - name: ('REDIS_URL', 'redis://plane_redis_1:6379/0')
+          value: ''
+        - name: ('RABBITMQ_DEFAULT_USER', 'plane')
+          value: ''
+        - name: ('RABBITMQ_DEFAULT_PASS', 'umbrelplane')
+          value: ''
+        - name: ('RABBITMQ_DEFAULT_VHOST', 'plane')
+          value: ''
+        - name: ('CELERY_BROKER_URL', 'amqp://plane:umbrelplane@plane_rabbitmq_1:5672/plane')
+          value: ''
+        - name: ('USE_MINIO', 1)
+          value: ''
+        - name: ('AWS_ACCESS_KEY_ID', 'umbrel')
+          value: ''
+        - name: ('AWS_SECRET_ACCESS_KEY', '$APP_PASSWORD')
+          value: ''
+        - name: ('AWS_S3_ENDPOINT_URL', 'http://plane-minio-1:9000')
+          value: ''
+        - name: ('AWS_S3_BUCKET_NAME', 'uploads')
+          value: ''
+        - name: ('FILE_SIZE_LIMIT', 52428800)
+          value: ''
+        - name: ('MINIO_ENDPOINT_SSL', 0)
+          value: ''
+        - name: ('MINIO_ROOT_USER', 'umbrel')
+          value: ''
+        - name: ('MINIO_ROOT_PASSWORD', '$APP_PASSWORD')
+          value: ''
+        - name: ('SECRET_KEY', '$APP_SEED')
+          value: ''
+        - name: ('LIVE_SERVER_SECRET_KEY', '$APP_SEED')
+          value: ''
+        - name: ('USE_X_FORWARDED_HOST', 1)
+          value: ''
+        - name: ('SECURE_SSL_REDIRECT', 0)
+          value: ''
+        - name: ('SESSION_COOKIE_SECURE', 0)
+          value: ''
+        - name: ('CSRF_COOKIE_SECURE', 0)
+          value: ''
+        - name: ('WEBHOOK_ALLOWED_IPS', '')
+          value: ''
+        - name: ('WEBHOOK_ALLOWED_HOSTS', '')
+          value: ''
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: '{{ .Release.Name }}-data'
+      - name: seed
+        configMap:
+          name: '{{ .Release.Name }}-seed'
+      initContainers:
+      - name: seed
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - 'set -e
+
+          D=/data/{{ .Release.Name }}
+
+          mkdir -p "$D/config"
+
+          [ -e "$D/config/nginx.conf" ] || cp /seed/f0 "$D/config/nginx.conf"
+
+          [ -e "$D/settings.env" ] || cp /seed/f1 "$D/settings.env"
+
+          '
+        volumeMounts:
+        - name: seed
+          mountPath: /seed
+          readOnly: true
+        - name: data
+          mountPath: /data
+      nodeSelector:
+        kubernetes.io/arch: amd64

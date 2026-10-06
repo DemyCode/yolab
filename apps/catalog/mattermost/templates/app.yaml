@@ -50,14 +50,14 @@ spec:
         image: alexlack/mattermost-app:v11.11.1@sha256:935f4ed994120c06736ad4972beb522d6cb5a862f0c4f87636e5ad600419c7ab
         imagePullPolicy: IfNotPresent
         env:
-        - name: MM_USERNAME
-          value: admin
-        - name: MM_PASSWORD
-          value: admin
-        - name: MM_DBNAME
-          value: mattermost
-        - name: MM_SQLSETTINGS_DATASOURCE
-          value: postgres://admin:admin@db:5432/mattermost?sslmode=disable&connect_timeout=10
+        - name: ('MM_USERNAME', 'admin')
+          value: ''
+        - name: ('MM_PASSWORD', 'admin')
+          value: ''
+        - name: ('MM_DBNAME', 'mattermost')
+          value: ''
+        - name: ('MM_SQLSETTINGS_DATASOURCE', 'postgres://admin:admin@mattermost_db_1:5432/mattermost?sslmode
+          value: disable&connect_timeout=10')
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000
@@ -82,10 +82,16 @@ spec:
         - name: data
           mountPath: /mattermost/client/plugins
           subPath: '{{ .Release.Name }}/data/app/mattermost/client-plugins'
+        - name: host-etc-localtime
+          mountPath: /etc/localtime
+          readOnly: true
       volumes:
       {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
       {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}
+      - name: host-etc-localtime
+        hostPath:
+          path: /etc/localtime
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -109,12 +115,12 @@ spec:
         image: alexlack/mattermost-db:v11.11.1@sha256:ed7ade51d12815e65eff05ded2b4264b5bca06cbf523f4c9573759a9688b2259
         imagePullPolicy: IfNotPresent
         env:
-        - name: MM_USERNAME
-          value: admin
-        - name: MM_PASSWORD
-          value: admin
-        - name: MM_DBNAME
-          value: mattermost
+        - name: ('MM_USERNAME', 'admin')
+          value: ''
+        - name: ('MM_PASSWORD', 'admin')
+          value: ''
+        - name: ('MM_DBNAME', 'mattermost')
+          value: ''
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000
@@ -129,7 +135,13 @@ spec:
         - name: data
           mountPath: /var/lib/postgresql/data
           subPath: '{{ .Release.Name }}/data/db'
+        - name: host-etc-localtime
+          mountPath: /etc/localtime
+          readOnly: true
       volumes:
       - name: data
         persistentVolumeClaim:
           claimName: '{{ .Release.Name }}-data'
+      - name: host-etc-localtime
+        hostPath:
+          path: /etc/localtime

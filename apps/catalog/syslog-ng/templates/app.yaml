@@ -21,15 +21,6 @@ spec:
     requests:
       storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
 ---
-apiVersion: v1
-kind: Secret
-metadata:
-  name: {{ .Release.Name }}-secrets
-  namespace: {{ .Release.Namespace }}
-type: Opaque
-stringData:
-  admin_password: {{ required "config.admin_password is required" .Values.config.admin_password | quote }}
----
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -59,17 +50,12 @@ spec:
         image: rickraven/logdy:0.17.1@sha256:a1438c758ed3735e9b06205168a3c63e39bd0895bc5f0cd1adf4ed2270ae66cb
         imagePullPolicy: IfNotPresent
         env:
-        - name: APP_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: '{{ .Release.Name }}-secrets'
-              key: admin_password
-        - name: LOGDY_MODE
-          value: follow
-        - name: LOGDY_FOLLOW_FILES
-          value: /data/*.log
-        - name: LOGDY_PASS
-          value: $(APP_PASSWORD)
+        - name: ('LOGDY_MODE', 'follow')
+          value: ''
+        - name: ('LOGDY_FOLLOW_FILES', '/data/*.log')
+          value: ''
+        - name: ('LOGDY_PASS', '${APP_PASSWORD}')
+          value: ''
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000
@@ -110,12 +96,12 @@ spec:
         image: linuxserver/syslog-ng:4.10.2@sha256:b77c32d93b9e9b84f4fdd9261d7dd1db3b8a6f90391459b1ca51c82af9828bf8
         imagePullPolicy: IfNotPresent
         env:
-        - name: PUID
-          value: '1000'
-        - name: PGID
-          value: '1000'
-        - name: TZ
-          value: $(TZ)
+        - name: ('PUID', '1000')
+          value: ''
+        - name: ('PGID', '1000')
+          value: ''
+        - name: ('TZ', '${TZ}')
+          value: ''
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000

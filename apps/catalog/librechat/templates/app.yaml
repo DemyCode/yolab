@@ -1,0 +1,433 @@
+{{ include "yolab-common.caddyConfigMap" . }}
+---
+{{ include "yolab-common.fileExplorerSecret" . }}
+---
+{{ include "yolab-common.fileExplorerConfigMap" . }}
+---
+{{ include "yolab-common.privateAccessResources" . }}
+---
+{{ include "yolab-common.uninstallHook" . }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-data
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: yolab-cephfs
+  resources:
+    requests:
+      storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: '{{ .Release.Name }}-seed'
+  namespace: '{{ .Release.Namespace }}'
+binaryData:
+  f0: IyBGb3IgbW9yZSBpbmZvcm1hdGlvbiwgc2VlIHRoZSBDb25maWd1cmF0aW9uIEd1aWRlOgojIGh0dHBzOi8vd3d3LmxpYnJlY2hhdC5haS9kb2NzL2NvbmZpZ3VyYXRpb24vbGlicmVjaGF0X3lhbWwKCiMgQ29uZmlndXJhdGlvbiB2ZXJzaW9uIChyZXF1aXJlZCkKdmVyc2lvbjogMS4yLjEKCiMgQ2FjaGUgc2V0dGluZ3M6IFNldCB0byB0cnVlIHRvIGVuYWJsZSBjYWNoaW5nCmNhY2hlOiB0cnVlCgojIEZpbGUgc3RyYXRlZ3kgczMvZmlyZWJhc2UKIyBmaWxlU3RyYXRlZ3k6ICJzMyIKCiMgQ3VzdG9tIGludGVyZmFjZSBjb25maWd1cmF0aW9uCmludGVyZmFjZToKICBjdXN0b21XZWxjb21lOiAiV2VsY29tZSB0byBMaWJyZUNoYXQhIEVuam95IHlvdXIgZXhwZXJpZW5jZS4iCiAgIyBQcml2YWN5IHBvbGljeSBzZXR0aW5ncwogIHByaXZhY3lQb2xpY3k6CiAgICBleHRlcm5hbFVybDogJ2h0dHBzOi8vbGlicmVjaGF0LmFpL3ByaXZhY3ktcG9saWN5JwogICAgb3Blbk5ld1RhYjogdHJ1ZQoKICBlbmRwb2ludHNNZW51OiB0cnVlCiAgbW9kZWxTZWxlY3Q6IHRydWUKICBwYXJhbWV0ZXJzOiB0cnVlCiAgc2lkZVBhbmVsOiB0cnVlCiAgcHJlc2V0czogdHJ1ZQogIHByb21wdHM6IHRydWUKICBib29rbWFya3M6IHRydWUKICBtdWx0aUNvbnZvOiB0cnVlCiAgYWdlbnRzOiB0cnVlCgojIEV4YW1wbGUgQ2xvdWRmbGFyZSB0dXJuc3RpbGUgKG9wdGlvbmFsKQojdHVybnN0aWxlOgojICBzaXRlS2V5OiAieW91ci1zaXRlLWtleS1oZXJlIgojICBvcHRpb25zOgojICAgIGxhbmd1YWdlOiAiYXV0byIgICAgIyAiYXV0byIgb3IgYW4gSVNPIDYzOS0xIGxhbmd1YWdlIGNvZGUgKGUuZy4gZW4pCiMgICAgc2l6ZTogIm5vcm1hbCIgICAgICAjIE9wdGlvbnM6ICJub3JtYWwiLCAiY29tcGFjdCIsICJmbGV4aWJsZSIsIG9yICJpbnZpc2libGUiCgojIEV4YW1wbGUgUmVnaXN0cmF0aW9uIE9iamVjdCBTdHJ1Y3R1cmUgKG9wdGlvbmFsKQpyZWdpc3RyYXRpb246CiAgc29jaWFsTG9naW5zOiBbJ2dpdGh1YicsICdnb29nbGUnLCAnZGlzY29yZCcsICdvcGVuaWQnLCAnZmFjZWJvb2snLCAnYXBwbGUnLCAnc2FtbCddCiAgIyBhbGxvd2VkRG9tYWluczoKICAjIC0gImdtYWlsLmNvbSIKCgojIEV4YW1wbGUgQmFsYW5jZSBzZXR0aW5ncwojIGJhbGFuY2U6CiMgICBlbmFibGVkOiBmYWxzZQojICAgc3RhcnRCYWxhbmNlOiAyMDAwMAojICAgYXV0b1JlZmlsbEVuYWJsZWQ6IGZhbHNlCiMgICByZWZpbGxJbnRlcnZhbFZhbHVlOiAzMAojICAgcmVmaWxsSW50ZXJ2YWxVbml0OiAnZGF5cycKIyAgIHJlZmlsbEFtb3VudDogMTAwMDAKCiMgc3BlZWNoOgojICAgdHRzOgojICAgICBvcGVuYWk6CiMgICAgICAgdXJsOiAnJwojICAgICAgIGFwaUtleTogJyR7VFRTX0FQSV9LRVl9JwojICAgICAgIG1vZGVsOiAnJwojICAgICAgIHZvaWNlczogWycnXQoKIwojICAgc3R0OgojICAgICBvcGVuYWk6CiMgICAgICAgdXJsOiAnJwojICAgICAgIGFwaUtleTogJyR7U1RUX0FQSV9LRVl9JwojICAgICAgIG1vZGVsOiAnJwoKIyByYXRlTGltaXRzOgojICAgZmlsZVVwbG9hZHM6CiMgICAgIGlwTWF4OiAxMDAKIyAgICAgaXBXaW5kb3dJbk1pbnV0ZXM6IDYwICAjIFJhdGUgbGltaXQgd2luZG93IGZvciBmaWxlIHVwbG9hZHMgcGVyIElQCiMgICAgIHVzZXJNYXg6IDUwCiMgICAgIHVzZXJXaW5kb3dJbk1pbnV0ZXM6IDYwICAjIFJhdGUgbGltaXQgd2luZG93IGZvciBmaWxlIHVwbG9hZHMgcGVyIHVzZXIKIyAgIGNvbnZlcnNhdGlvbnNJbXBvcnQ6CiMgICAgIGlwTWF4OiAxMDAKIyAgICAgaXBXaW5kb3dJbk1pbnV0ZXM6IDYwICAjIFJhdGUgbGltaXQgd2luZG93IGZvciBjb252ZXJzYXRpb24gaW1wb3J0cyBwZXIgSVAKIyAgICAgdXNlck1heDogNTAKIyAgICAgdXNlcldpbmRvd0luTWludXRlczogNjAgICMgUmF0ZSBsaW1pdCB3aW5kb3cgZm9yIGNvbnZlcnNhdGlvbiBpbXBvcnRzIHBlciB1c2VyCgojIEV4YW1wbGUgQWN0aW9ucyBPYmplY3QgU3RydWN0dXJlCmFjdGlvbnM6CiAgYWxsb3dlZERvbWFpbnM6CiAgICAtICJzd2FwaS5kZXYiCiAgICAtICJsaWJyZWNoYXQuYWkiCiAgICAtICJnb29nbGUuY29tIgoKIyBFeGFtcGxlIE1DUCBTZXJ2ZXJzIE9iamVjdCBTdHJ1Y3R1cmUKIyBtY3BTZXJ2ZXJzOgojICAgZXZlcnl0aGluZzoKIyAgICAgIyB0eXBlOiBzc2UgIyB0eXBlIGNhbiBvcHRpb25hbGx5IGJlIG9taXR0ZWQKIyAgICAgdXJsOiBodHRwOi8vbG9jYWxob3N0OjMwMDEvc3NlCiMgICAgIHRpbWVvdXQ6IDYwMDAwICAjIDEgbWludXRlIHRpbWVvdXQgZm9yIHRoaXMgc2VydmVyLCB0aGlzIGlzIHRoZSBkZWZhdWx0IHRpbWVvdXQgZm9yIE1DUCBzZXJ2ZXJzLgojICAgcHVwcGV0ZWVyOgojICAgICB0eXBlOiBzdGRpbwojICAgICBjb21tYW5kOiBucHgKIyAgICAgYXJnczoKIyAgICAgICAtIC15CiMgICAgICAgLSAiQG1vZGVsY29udGV4dHByb3RvY29sL3NlcnZlci1wdXBwZXRlZXIiCiMgICAgIHRpbWVvdXQ6IDMwMDAwMCAgIyA1IG1pbnV0ZXMgdGltZW91dCBmb3IgdGhpcyBzZXJ2ZXIKIyAgIGZpbGVzeXN0ZW06CiMgICAgICMgdHlwZTogc3RkaW8KIyAgICAgY29tbWFuZDogbnB4CiMgICAgIGFyZ3M6CiMgICAgICAgLSAteQojICAgICAgIC0gIkBtb2RlbGNvbnRleHRwcm90b2NvbC9zZXJ2ZXItZmlsZXN5c3RlbSIKIyAgICAgICAtIC9ob21lL3VzZXIvTGlicmVDaGF0LwojICAgICBpY29uUGF0aDogL2hvbWUvdXNlci9MaWJyZUNoYXQvY2xpZW50L3B1YmxpYy9hc3NldHMvbG9nby5zdmcKIyAgIG1jcC1vYnNpZGlhbjoKIyAgICAgY29tbWFuZDogbnB4CiMgICAgIGFyZ3M6CiMgICAgICAgLSAteQojICAgICAgIC0gIm1jcC1vYnNpZGlhbiIKIyAgICAgICAtIC9wYXRoL3RvL29ic2lkaWFuL3ZhdWx0CgojIERlZmluaXRpb24gb2YgY3VzdG9tIGVuZHBvaW50cwplbmRwb2ludHM6CiAgIyBhc3Npc3RhbnRzOgogICMgICBkaXNhYmxlQnVpbGRlcjogZmFsc2UgIyBEaXNhYmxlIEFzc2lzdGFudHMgQnVpbGRlciBJbnRlcmZhY2UgYnkgc2V0dGluZyB0byBgdHJ1ZWAKICAjICAgcG9sbEludGVydmFsTXM6IDMwMDAgICMgUG9sbGluZyBpbnRlcnZhbCBmb3IgY2hlY2tpbmcgYXNzaXN0YW50IHVwZGF0ZXMKICAjICAgdGltZW91dE1zOiAxODAwMDAgICMgVGltZW91dCBmb3IgYXNzaXN0YW50IG9wZXJhdGlvbnMKICAjICAgIyBTaG91bGQgb25seSBiZSBvbmUgb3IgdGhlIG90aGVyLCBlaXRoZXIgYHN1cHBvcnRlZElkc2Agb3IgYGV4Y2x1ZGVkSWRzYAogICMgICBzdXBwb3J0ZWRJZHM6IFsiYXNzdF9zdXBwb3J0ZWRBc3Npc3RhbnRJZDEiLCAiYXNzdF9zdXBwb3J0ZWRBc3Npc3RhbnRJZDIiXQogICMgICAjIGV4Y2x1ZGVkSWRzOiBbImFzc3RfZXhjbHVkZWRBc3Npc3RhbnRJZCJdCiAgIyAgICMgT25seSBzaG93IGFzc2lzdGFudHMgdGhhdCB0aGUgdXNlciBjcmVhdGVkIG9yIHRoYXQgd2VyZSBjcmVhdGVkIGV4dGVybmFsbHkgKGUuZy4gaW4gQXNzaXN0YW50cyBwbGF5Z3JvdW5kKS4KICAjICAgIyBwcml2YXRlQXNzaXN0YW50czogZmFsc2UgIyBEb2VzIG5vdCB3b3JrIHdpdGggYHN1cHBvcnRlZElkc2Agb3IgYGV4Y2x1ZGVkSWRzYAogICMgICAjIChvcHRpb25hbCkgTW9kZWxzIHRoYXQgc3VwcG9ydCByZXRyaWV2YWwsIHdpbGwgZGVmYXVsdCB0byBsYXRlc3Qga25vd24gT3BlbkFJIG1vZGVscyB0aGF0IHN1cHBvcnQgdGhlIGZlYXR1cmUKICAjICAgcmV0cmlldmFsTW9kZWxzOiBbImdwdC00LXR1cmJvLXByZXZpZXciXQogICMgICAjIChvcHRpb25hbCkgQXNzaXN0YW50IENhcGFiaWxpdGllcyBhdmFpbGFibGUgdG8gYWxsIHVzZXJzLiBPbWl0IHRoZSBvbmVzIHlvdSB3aXNoIHRvIGV4Y2x1ZGUuIERlZmF1bHRzIHRvIGxpc3QgYmVsb3cuCiAgIyAgIGNhcGFiaWxpdGllczogWyJjb2RlX2ludGVycHJldGVyIiwgInJldHJpZXZhbCIsICJhY3Rpb25zIiwgInRvb2xzIiwgImltYWdlX3Zpc2lvbiJdCiAgIyBhZ2VudHM6CiAgIyAgICMgKG9wdGlvbmFsKSBEZWZhdWx0IHJlY3Vyc2lvbiBkZXB0aCBmb3IgYWdlbnRzLCBkZWZhdWx0cyB0byAyNQogICMgICByZWN1cnNpb25MaW1pdDogNTAKICAjICAgIyAob3B0aW9uYWwpIE1heCByZWN1cnNpb24gZGVwdGggZm9yIGFnZW50cywgZGVmYXVsdHMgdG8gMjUKICAjICAgbWF4UmVjdXJzaW9uTGltaXQ6IDEwMAogICMgICAjIChvcHRpb25hbCkgRGlzYWJsZSB0aGUgYnVpbGRlciBpbnRlcmZhY2UgZm9yIGFnZW50cwogICMgICBkaXNhYmxlQnVpbGRlcjogZmFsc2UKICAjICAgIyAob3B0aW9uYWwpIEFnZW50IENhcGFiaWxpdGllcyBhdmFpbGFibGUgdG8gYWxsIHVzZXJzLiBPbWl0IHRoZSBvbmVzIHlvdSB3aXNoIHRvIGV4Y2x1ZGUuIERlZmF1bHRzIHRvIGxpc3QgYmVsb3cuCiAgIyAgIGNhcGFiaWxpdGllczogWyJleGVjdXRlX2NvZGUiLCAiZmlsZV9zZWFyY2giLCAiYWN0aW9ucyIsICJ0b29scyJdCiAgY3VzdG9tOgogICAgIyBPbGxhbWEgZXhhbXBsZQogICAgLSBuYW1lOiAiT2xsYW1hIgogICAgICBhcGlLZXk6ICJvbGxhbWEiCiAgICAgICMgdXNlICdob3N0LmRvY2tlci5pbnRlcm5hbCcgaW5zdGVhZCBvZiBsb2NhbGhvc3QgaWYgcnVubmluZyBMaWJyZUNoYXQgaW4gYSBkb2NrZXIgY29udGFpbmVyCiAgICAgIGJhc2VVUkw6ICJodHRwOi8vb2xsYW1hX29sbGFtYV8xOjExNDM0L3YxLyIKICAgICAgbW9kZWxzOgogICAgICAgIGRlZmF1bHQ6CiAgICAgICAgICBbCiAgICAgICAgICAgICdsbGFtYTMuMicKICAgICAgICAgIF0KICAgICAgICAjIGZldGNoaW5nIGxpc3Qgb2YgbW9kZWxzIGlzIHN1cHBvcnRlZCBidXQgdGhlIGBuYW1lYCBmaWVsZCBtdXN0IHN0YXJ0CiAgICAgICAgIyB3aXRoIGBvbGxhbWFgIChjYXNlLWluc2Vuc2l0aXZlKSwgYXMgaXQgZG9lcyBpbiB0aGlzIGV4YW1wbGUuCiAgICAgICAgZmV0Y2g6IGZhbHNlCiAgICAgIHRpdGxlQ29udm86IHRydWUKICAgICAgdGl0bGVNb2RlbDogImN1cnJlbnRfbW9kZWwiCiAgICAgIHN1bW1hcml6ZTogZmFsc2UKICAgICAgc3VtbWFyeU1vZGVsOiAiY3VycmVudF9tb2RlbCIKICAgICAgZm9yY2VQcm9tcHQ6IGZhbHNlCiAgICAgIG1vZGVsRGlzcGxheUxhYmVsOiAiT2xsYW1hIgogICAgIyBHcm9xIEV4YW1wbGUKICAgICMgLSBuYW1lOiAnZ3JvcScKICAgICMgICBhcGlLZXk6ICcke0dST1FfQVBJX0tFWX0nCiAgICAjICAgYmFzZVVSTDogJ2h0dHBzOi8vYXBpLmdyb3EuY29tL29wZW5haS92MS8nCiAgICAjICAgbW9kZWxzOgogICAgIyAgICAgZGVmYXVsdDoKICAgICMgICAgICAgWwogICAgIyAgICAgICAgICdsbGFtYTMtNzBiLTgxOTInLAogICAgIyAgICAgICAgICdsbGFtYTMtOGItODE5MicsCiAgICAjICAgICAgICAgJ2xsYW1hMi03MGItNDA5NicsCiAgICAjICAgICAgICAgJ21peHRyYWwtOHg3Yi0zMjc2OCcsCiAgICAjICAgICAgICAgJ2dlbW1hLTdiLWl0JywKICAgICMgICAgICAgXQogICAgIyAgICAgZmV0Y2g6IGZhbHNlCiAgICAjICAgdGl0bGVDb252bzogdHJ1ZQogICAgIyAgIHRpdGxlTW9kZWw6ICdtaXh0cmFsLTh4N2ItMzI3NjgnCiAgICAjICAgbW9kZWxEaXNwbGF5TGFiZWw6ICdncm9xJwoKICAgICMgIyBNaXN0cmFsIEFJIEV4YW1wbGUKICAgICMgLSBuYW1lOiAnTWlzdHJhbCcgIyBVbmlxdWUgbmFtZSBmb3IgdGhlIGVuZHBvaW50CiAgICAjICAgIyBGb3IgYGFwaUtleWAgYW5kIGBiYXNlVVJMYCwgeW91IGNhbiB1c2UgZW52aXJvbm1lbnQgdmFyaWFibGVzIHRoYXQgeW91IGRlZmluZS4KICAgICMgICAjIHJlY29tbWVuZGVkIGVudmlyb25tZW50IHZhcmlhYmxlczoKICAgICMgICBhcGlLZXk6ICcke01JU1RSQUxfQVBJX0tFWX0nCiAgICAjICAgYmFzZVVSTDogJ2h0dHBzOi8vYXBpLm1pc3RyYWwuYWkvdjEnCgogICAgIyAgICMgTW9kZWxzIGNvbmZpZ3VyYXRpb24KICAgICMgICBtb2RlbHM6CiAgICAjICAgICAjIExpc3Qgb2YgZGVmYXVsdCBtb2RlbHMgdG8gdXNlLiBBdCBsZWFzdCBvbmUgdmFsdWUgaXMgcmVxdWlyZWQuCiAgICAjICAgICBkZWZhdWx0OiBbJ21pc3RyYWwtdGlueScsICdtaXN0cmFsLXNtYWxsJywgJ21pc3RyYWwtbWVkaXVtJ10KICAgICMgICAgICMgRmV0Y2ggb3B0aW9uOiBTZXQgdG8gdHJ1ZSB0byBmZXRjaCBtb2RlbHMgZnJvbSBBUEkuCiAgICAjICAgICBmZXRjaDogdHJ1ZSAjIERlZmF1bHRzIHRvIGZhbHNlLgoKICAgICMgICAjIE9wdGlvbmFsIGNvbmZpZ3VyYXRpb25zCgogICAgIyAgICMgVGl0bGUgQ29udmVyc2F0aW9uIHNldHRpbmcKICAgICMgICB0aXRsZUNvbnZvOiB0cnVlICMgU2V0IHRvIHRydWUgdG8gZW5hYmxlIHRpdGxlIGNvbnZlcnNhdGlvbgoKICAgICMgICAjIFRpdGxlIE1ldGhvZDogQ2hvb3NlIGJldHdlZW4gImNvbXBsZXRpb24iIG9yICJmdW5jdGlvbnMiLgogICAgIyAgICMgdGl0bGVNZXRob2Q6ICJjb21wbGV0aW9uIiAgIyBEZWZhdWx0cyB0byAiY29tcGxldGlvbiIgaWYgb21pdHRlZC4KCiAgICAjICAgIyBUaXRsZSBNb2RlbDogU3BlY2lmeSB0aGUgbW9kZWwgdG8gdXNlIGZvciB0aXRsZXMuCiAgICAjICAgdGl0bGVNb2RlbDogJ21pc3RyYWwtdGlueScgIyBEZWZhdWx0cyB0byAiZ3B0LTMuNS10dXJibyIgaWYgb21pdHRlZC4KCiAgICAjICAgIyBTdW1tYXJpemUgc2V0dGluZzogU2V0IHRvIHRydWUgdG8gZW5hYmxlIHN1bW1hcml6YXRpb24uCiAgICAjICAgIyBzdW1tYXJpemU6IGZhbHNlCgogICAgIyAgICMgU3VtbWFyeSBNb2RlbDogU3BlY2lmeSB0aGUgbW9kZWwgdG8gdXNlIGlmIHN1bW1hcml6YXRpb24gaXMgZW5hYmxlZC4KICAgICMgICAjIHN1bW1hcnlNb2RlbDogIm1pc3RyYWwtdGlueSIgICMgRGVmYXVsdHMgdG8gImdwdC0zLjUtdHVyYm8iIGlmIG9taXR0ZWQuCgogICAgIyAgICMgRm9yY2UgUHJvbXB0IHNldHRpbmc6IElmIHRydWUsIHNlbmRzIGEgYHByb21wdGAgcGFyYW1ldGVyIGluc3RlYWQgb2YgYG1lc3NhZ2VzYC4KICAgICMgICAjIGZvcmNlUHJvbXB0OiBmYWxzZQoKICAgICMgICAjIFRoZSBsYWJlbCBkaXNwbGF5ZWQgZm9yIHRoZSBBSSBtb2RlbCBpbiBtZXNzYWdlcy4KICAgICMgICBtb2RlbERpc3BsYXlMYWJlbDogJ01pc3RyYWwnICMgRGVmYXVsdCBpcyAiQUkiIHdoZW4gbm90IHNldC4KCiAgICAjICAgIyBBZGQgYWRkaXRpb25hbCBwYXJhbWV0ZXJzIHRvIHRoZSByZXF1ZXN0LiBEZWZhdWx0IHBhcmFtcyB3aWxsIGJlIG92ZXJ3cml0dGVuLgogICAgIyAgICMgYWRkUGFyYW1zOgogICAgIyAgICMgc2FmZV9wcm9tcHQ6IHRydWUgIyBUaGlzIGZpZWxkIGlzIHNwZWNpZmljIHRvIE1pc3RyYWwgQUk6IGh0dHBzOi8vZG9jcy5taXN0cmFsLmFpL2FwaS8KCiAgICAjICAgIyBEcm9wIERlZmF1bHQgcGFyYW1zIHBhcmFtZXRlcnMgZnJvbSB0aGUgcmVxdWVzdC4gU2VlIGRlZmF1bHQgcGFyYW1zIGluIGd1aWRlIGxpbmtlZCBiZWxvdy4KICAgICMgICAjIE5PVEU6IEZvciBNaXN0cmFsLCBpdCBpcyBuZWNlc3NhcnkgdG8gZHJvcCB0aGUgZm9sbG93aW5nIHBhcmFtZXRlcnMgb3IgeW91IHdpbGwgZW5jb3VudGVyIGEgNDIyIEVycm9yOgogICAgIyAgIGRyb3BQYXJhbXM6IFsnc3RvcCcsICd1c2VyJywgJ2ZyZXF1ZW5jeV9wZW5hbHR5JywgJ3ByZXNlbmNlX3BlbmFsdHknXQoKICAgICMgIyBPcGVuUm91dGVyIEV4YW1wbGUKICAgICMgLSBuYW1lOiAnT3BlblJvdXRlcicKICAgICMgICAjIEZvciBgYXBpS2V5YCBhbmQgYGJhc2VVUkxgLCB5b3UgY2FuIHVzZSBlbnZpcm9ubWVudCB2YXJpYWJsZXMgdGhhdCB5b3UgZGVmaW5lLgogICAgIyAgICMgcmVjb21tZW5kZWQgZW52aXJvbm1lbnQgdmFyaWFibGVzOgogICAgIyAgIGFwaUtleTogJyR7T1BFTlJPVVRFUl9LRVl9JwogICAgIyAgIGJhc2VVUkw6ICdodHRwczovL29wZW5yb3V0ZXIuYWkvYXBpL3YxJwogICAgIyAgIG1vZGVsczoKICAgICMgICAgIGRlZmF1bHQ6IFsnbWV0YS1sbGFtYS9sbGFtYS0zLTcwYi1pbnN0cnVjdCddCiAgICAjICAgICBmZXRjaDogdHJ1ZQogICAgIyAgIHRpdGxlQ29udm86IHRydWUKICAgICMgICB0aXRsZU1vZGVsOiAnbWV0YS1sbGFtYS9sbGFtYS0zLTcwYi1pbnN0cnVjdCcKICAgICMgICAjIFJlY29tbWVuZGVkOiBEcm9wIHRoZSBzdG9wIHBhcmFtZXRlciBmcm9tIHRoZSByZXF1ZXN0IGFzIE9wZW5yb3V0ZXIgbW9kZWxzIHVzZSBhIHZhcmlldHkgb2Ygc3RvcCB0b2tlbnMuCiAgICAjICAgZHJvcFBhcmFtczogWydzdG9wJ10KICAgICMgICBtb2RlbERpc3BsYXlMYWJlbDogJ09wZW5Sb3V0ZXInCgogICAgIyAjIFBvcnRrZXkgQUkgRXhhbXBsZQogICAgIyAtIG5hbWU6ICJQb3J0a2V5IgogICAgIyAgIGFwaUtleTogImR1bW15IgogICAgIyAgIGJhc2VVUkw6ICdodHRwczovL2FwaS5wb3J0a2V5LmFpL3YxJwogICAgIyAgIGhlYWRlcnM6CiAgICAjICAgICAgIHgtcG9ydGtleS1hcGkta2V5OiAnJHtQT1JUS0VZX0FQSV9LRVl9JwogICAgIyAgICAgICB4LXBvcnRrZXktdmlydHVhbC1rZXk6ICcke1BPUlRLRVlfT1BFTkFJX1ZJUlRVQUxfS0VZfScKICAgICMgICBtb2RlbHM6CiAgICAjICAgICAgIGRlZmF1bHQ6IFsnZ3B0LTRvLW1pbmknLCAnZ3B0LTRvJywgJ2NoYXRncHQtNG8tbGF0ZXN0J10KICAgICMgICAgICAgZmV0Y2g6IHRydWUKICAgICMgICB0aXRsZUNvbnZvOiB0cnVlCiAgICAjICAgdGl0bGVNb2RlbDogJ2N1cnJlbnRfbW9kZWwnCiAgICAjICAgc3VtbWFyaXplOiBmYWxzZQogICAgIyAgIHN1bW1hcnlNb2RlbDogJ2N1cnJlbnRfbW9kZWwnCiAgICAjICAgZm9yY2VQcm9tcHQ6IGZhbHNlCiAgICAjICAgbW9kZWxEaXNwbGF5TGFiZWw6ICdQb3J0a2V5JwogICAgIyAgIGljb25VUkw6IGh0dHBzOi8vaW1hZ2VzLmNydW5jaGJhc2UuY29tL2ltYWdlL3VwbG9hZC9jX3BhZCxmX2F1dG8scV9hdXRvOmVjbyxkcHJfMS9yanF5N2dodmpvaXU0Y2QxeGpiZgojIGZpbGVDb25maWc6CiMgICBlbmRwb2ludHM6CiMgICAgIGFzc2lzdGFudHM6CiMgICAgICAgZmlsZUxpbWl0OiA1CiMgICAgICAgZmlsZVNpemVMaW1pdDogMTAgICMgTWF4aW11bSBzaXplIGZvciBhbiBpbmRpdmlkdWFsIGZpbGUgaW4gTUIKIyAgICAgICB0b3RhbFNpemVMaW1pdDogNTAgICMgTWF4aW11bSB0b3RhbCBzaXplIGZvciBhbGwgZmlsZXMgaW4gYSBzaW5nbGUgcmVxdWVzdCBpbiBNQgojICAgICAgIHN1cHBvcnRlZE1pbWVUeXBlczoKIyAgICAgICAgIC0gImltYWdlLy4qIgojICAgICAgICAgLSAiYXBwbGljYXRpb24vcGRmIgojICAgICBvcGVuQUk6CiMgICAgICAgZGlzYWJsZWQ6IHRydWUgICMgRGlzYWJsZXMgZmlsZSB1cGxvYWRpbmcgdG8gdGhlIE9wZW5BSSBlbmRwb2ludAojICAgICBkZWZhdWx0OgojICAgICAgIHRvdGFsU2l6ZUxpbWl0OiAyMAojICAgICBZb3VyQ3VzdG9tRW5kcG9pbnROYW1lOgojICAgICAgIGZpbGVMaW1pdDogMgojICAgICAgIGZpbGVTaXplTGltaXQ6IDUKIyAgIHNlcnZlckZpbGVTaXplTGltaXQ6IDEwMCAgIyBHbG9iYWwgc2VydmVyIGZpbGUgc2l6ZSBsaW1pdCBpbiBNQgojICAgYXZhdGFyU2l6ZUxpbWl0OiAyICAjIExpbWl0IGZvciB1c2VyIGF2YXRhciBpbWFnZSBzaXplIGluIE1CCiMgICBpbWFnZUdlbmVyYXRpb246ICMgSW1hZ2UgR2VuIHNldHRpbmdzLCBlaXRoZXIgcGVyY2VudGFnZSBvciBweAojICAgICBwZXJjZW50YWdlOiAxMDAKIyAgICAgcHg6IDEwMjQKIyAjIFNlZSB0aGUgQ3VzdG9tIENvbmZpZ3VyYXRpb24gR3VpZGUgZm9yIG1vcmUgaW5mb3JtYXRpb24gb24gQXNzaXN0YW50cyBDb25maWc6CiMgIyBodHRwczovL3d3dy5saWJyZWNoYXQuYWkvZG9jcy9jb25maWd1cmF0aW9uL2xpYnJlY2hhdF95YW1sL29iamVjdF9zdHJ1Y3R1cmUvYXNzaXN0YW50c19lbmRwb2ludAo=
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      nodeSelector:
+        kubernetes.io/arch: amd64
+      initContainers:
+      {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessInit" . | nindent 6 }}
+      - name: seed
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - 'set -e
+
+          D=/data/{{ .Release.Name }}
+
+          mkdir -p "$D/data/api"
+
+          [ -e "$D/data/api/librechat.yaml" ] || cp /seed/f0 "$D/data/api/librechat.yaml"
+
+          '
+        volumeMounts:
+        - name: seed
+          mountPath: /seed
+          readOnly: true
+        - name: data
+          mountPath: /data
+      containers:
+      {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
+      - name: api
+        image: ghcr.io/danny-avila/librechat:v0.8.7@sha256:c5db3331b845e1f289f8d04c0c77936c4bbe372f76730a804abc1c37e44d23a9
+        imagePullPolicy: IfNotPresent
+        args:
+        - npm
+        - run
+        - backend
+        env:
+        - name: ('HOST', '0.0.0.0')
+          value: ''
+        - name: ('MONGO_URI', 'mongodb://librechat_mongodb_1:27017/LibreChat')
+          value: ''
+        - name: ('MEILI_HOST', 'http://librechat_meilisearch_1:7700')
+          value: ''
+        - name: ('RAG_PORT', '8000')
+          value: ''
+        - name: ('RAG_API_URL', 'http://librechat_rag_api_1:8000')
+          value: ''
+        - name: ('OPENAI_API_KEY', 'user_provided')
+          value: ''
+        - name: ('GOOGLE_KEY', 'user_provided')
+          value: ''
+        - name: ('ANTHROPIC_API_KEY', 'user_provided')
+          value: ''
+        - name: ('ASSISTANTS_API_KEY', 'user_provided')
+          value: ''
+        - name: ('CREDS_KEY', 'f34be427ebb29de8d88c107a71546019685ed8b241d8f2ed00c3df97ad2566f0')
+          value: ''
+        - name: ('CREDS_IV', 'e2341419ec3dd3d19b13a1a87fafcbfb')
+          value: ''
+        - name: ('JWT_SECRET', '16f8c0ef4a5d391b26034086c628469d3f9f497f08163ab9b40137092f2909ef')
+          value: ''
+        - name: ('JWT_REFRESH_SECRET', 'eaa5191f2914e30b9387fd84e254e4ba6fc51b4654968a9b0803b456a54b8418')
+          value: ''
+        securityContext:
+          runAsUser: 1000
+          runAsGroup: 1000
+        ports:
+        - containerPort: 3080
+        readinessProbe:
+          tcpSocket:
+            port: 3080
+        volumeMounts:
+        - name: data
+          mountPath: /app/librechat.yaml
+          subPath: '{{ .Release.Name }}/data/api/librechat.yaml'
+        - name: data
+          mountPath: /app/client/public/images
+          subPath: '{{ .Release.Name }}/data/api/images'
+        - name: data
+          mountPath: /app/uploads
+          subPath: '{{ .Release.Name }}/data/api/uploads'
+        - name: data
+          mountPath: /app/api/logs
+          subPath: '{{ .Release.Name }}/data/api/logs'
+      volumes:
+      {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}
+      - name: seed
+        configMap:
+          name: '{{ .Release.Name }}-seed'
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mongodb
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: mongodb
+  template:
+    metadata:
+      labels:
+        app: mongodb
+    spec:
+      containers:
+      - name: mongodb
+        image: mongo:8.0.10@sha256:15fb53a5160ebabff5ecade8f8b5d48721b68ea190957a7f35b5b38e8340e62b
+        imagePullPolicy: IfNotPresent
+        args:
+        - mongod
+        - --noauth
+        securityContext:
+          runAsUser: 1000
+          runAsGroup: 1000
+        ports:
+        - containerPort: 27017
+        readinessProbe:
+          tcpSocket:
+            port: 27017
+        volumeMounts:
+        - name: data
+          mountPath: /data/db
+          subPath: '{{ .Release.Name }}/data/db'
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: '{{ .Release.Name }}-data'
+      - name: seed
+        configMap:
+          name: '{{ .Release.Name }}-seed'
+      initContainers:
+      - name: seed
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - 'set -e
+
+          D=/data/{{ .Release.Name }}
+
+          mkdir -p "$D/data/api"
+
+          [ -e "$D/data/api/librechat.yaml" ] || cp /seed/f0 "$D/data/api/librechat.yaml"
+
+          '
+        volumeMounts:
+        - name: seed
+          mountPath: /seed
+          readOnly: true
+        - name: data
+          mountPath: /data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mongodb
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  selector:
+    app: mongodb
+  ports:
+  - port: 27017
+    targetPort: 27017
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: meilisearch
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: meilisearch
+  template:
+    metadata:
+      labels:
+        app: meilisearch
+    spec:
+      containers:
+      - name: meilisearch
+        image: getmeili/meilisearch:v1.12.3@sha256:4acfcbbb9e089aa1aac838cfda3fba7f07aaaef044c23da8acbe0ab741400dac
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: ('MEILI_HOST', 'http://librechat_meilisearch_1:7700')
+          value: ''
+        - name: ('MEILI_NO_ANALYTICS', 'true')
+          value: ''
+        - name: ('MEILI_MASTER_KEY', 'DrhYf7zENyR6AlUCKmnz0eYASOQdl6zxH7s7MKFSfFCt')
+          value: ''
+        securityContext:
+          runAsUser: 1000
+          runAsGroup: 1000
+        volumeMounts:
+        - name: data
+          mountPath: /meili_data
+          subPath: '{{ .Release.Name }}/data/meilisearch'
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: '{{ .Release.Name }}-data'
+      - name: seed
+        configMap:
+          name: '{{ .Release.Name }}-seed'
+      initContainers:
+      - name: seed
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - 'set -e
+
+          D=/data/{{ .Release.Name }}
+
+          mkdir -p "$D/data/api"
+
+          [ -e "$D/data/api/librechat.yaml" ] || cp /seed/f0 "$D/data/api/librechat.yaml"
+
+          '
+        volumeMounts:
+        - name: seed
+          mountPath: /seed
+          readOnly: true
+        - name: data
+          mountPath: /data
+      nodeSelector:
+        kubernetes.io/arch: amd64
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vectordb
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: vectordb
+  template:
+    metadata:
+      labels:
+        app: vectordb
+    spec:
+      containers:
+      - name: vectordb
+        image: ankane/pgvector:v0.5.1@sha256:d3a9d8ac27bb7e05e333ef25b634d2625adaa85336ab729954b9e94859bf6fa7
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: ('POSTGRES_DB', 'mydatabase')
+          value: ''
+        - name: ('POSTGRES_USER', 'myuser')
+          value: ''
+        - name: ('POSTGRES_PASSWORD', 'mypassword')
+          value: ''
+        ports:
+        - containerPort: 5432
+        readinessProbe:
+          tcpSocket:
+            port: 5432
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/postgresql/data
+          subPath: '{{ .Release.Name }}/data/vectordb'
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: '{{ .Release.Name }}-data'
+      - name: seed
+        configMap:
+          name: '{{ .Release.Name }}-seed'
+      initContainers:
+      - name: seed
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - 'set -e
+
+          D=/data/{{ .Release.Name }}
+
+          mkdir -p "$D/data/api"
+
+          [ -e "$D/data/api/librechat.yaml" ] || cp /seed/f0 "$D/data/api/librechat.yaml"
+
+          '
+        volumeMounts:
+        - name: seed
+          mountPath: /seed
+          readOnly: true
+        - name: data
+          mountPath: /data
+      nodeSelector:
+        kubernetes.io/arch: amd64
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vectordb
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  selector:
+    app: vectordb
+  ports:
+  - port: 5432
+    targetPort: 5432
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rag_api
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: rag_api
+  template:
+    metadata:
+      labels:
+        app: rag_api
+    spec:
+      containers:
+      - name: rag_api
+        image: ghcr.io/danny-avila/librechat-rag-api-dev-lite:v0.7.3@sha256:67dba8e1e5707a795f2188d1e345f23b8ebf3bf75365026395edec76474cefa6
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: ('DB_HOST', 'librechat_vectordb_1')
+          value: ''
+        - name: ('RAG_PORT', '8000')
+          value: ''
+        - name: ('OPENAI_API_KEY', 'user_provided')
+          value: ''
+        - name: ('GOOGLE_KEY', 'user_provided')
+          value: ''
+        - name: ('ANTHROPIC_API_KEY', 'user_provided')
+          value: ''
+        - name: ('ASSISTANTS_API_KEY', 'user_provided')
+          value: ''
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: '{{ .Release.Name }}-data'
+      - name: seed
+        configMap:
+          name: '{{ .Release.Name }}-seed'
+      initContainers:
+      - name: seed
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - 'set -e
+
+          D=/data/{{ .Release.Name }}
+
+          mkdir -p "$D/data/api"
+
+          [ -e "$D/data/api/librechat.yaml" ] || cp /seed/f0 "$D/data/api/librechat.yaml"
+
+          '
+        volumeMounts:
+        - name: seed
+          mountPath: /seed
+          readOnly: true
+        - name: data
+          mountPath: /data
+      nodeSelector:
+        kubernetes.io/arch: amd64

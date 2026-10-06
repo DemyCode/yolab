@@ -46,6 +46,8 @@ spec:
       labels:
         app: gateway
     spec:
+      nodeSelector:
+        kubernetes.io/arch: amd64
       initContainers:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
@@ -58,9 +60,11 @@ spec:
         - -c
         - 'set -e
 
-          D=/data/{{ .Release.Name }}/data
+          D=/data/{{ .Release.Name }}
 
-          [ -e "$D/config.yaml" ] || cp /seed/f0 "$D/config.yaml"
+          mkdir -p "$D/data"
+
+          [ -e "$D/data/config.yaml" ] || cp /seed/f0 "$D/data/config.yaml"
 
           '
         volumeMounts:
@@ -77,10 +81,10 @@ spec:
         image: voidic/route96:v0.7.0@sha256:5ab6064f18ca191dd5836487505607122ef3bfeba6e6ccc5b28eef5c604cf4cc
         imagePullPolicy: IfNotPresent
         env:
-        - name: RUST_LOG
-          value: info
-        - name: APP_PUBLIC_URL
-          value: http://localhost:8002
+        - name: ('RUST_LOG', 'info')
+          value: ''
+        - name: ('APP_PUBLIC_URL', 'http://${APP_DOMAIN}:8002')
+          value: ''
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000
@@ -126,14 +130,14 @@ spec:
         image: mariadb:11.2.4@sha256:e9ea1dbab6783ff0281e41e3357d950a5f598b2033559b8443e03b181807910b
         imagePullPolicy: IfNotPresent
         env:
-        - name: MYSQL_ROOT_PASSWORD
-          value: moneyprintergobrrr
-        - name: MYSQL_USER
-          value: route96
-        - name: MYSQL_PASSWORD
-          value: moneyprintergobrrr
-        - name: MYSQL_DATABASE
-          value: route96
+        - name: ('MYSQL_ROOT_PASSWORD', 'moneyprintergobrrr')
+          value: ''
+        - name: ('MYSQL_USER', 'route96')
+          value: ''
+        - name: ('MYSQL_PASSWORD', 'moneyprintergobrrr')
+          value: ''
+        - name: ('MYSQL_DATABASE', 'route96')
+          value: ''
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000
@@ -162,9 +166,11 @@ spec:
         - -c
         - 'set -e
 
-          D=/data/{{ .Release.Name }}/data
+          D=/data/{{ .Release.Name }}
 
-          [ -e "$D/config.yaml" ] || cp /seed/f0 "$D/config.yaml"
+          mkdir -p "$D/data"
+
+          [ -e "$D/data/config.yaml" ] || cp /seed/f0 "$D/data/config.yaml"
 
           '
         volumeMounts:

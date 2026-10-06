@@ -21,6 +21,14 @@ spec:
     requests:
       storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
 ---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: '{{ .Release.Name }}-seed'
+  namespace: '{{ .Release.Namespace }}'
+binaryData:
+  f0: OjgwODAgewoJaGFuZGxlX3BhdGggL2FwaS8qIHsKCQlyZXZlcnNlX3Byb3h5IHRkZXhfdGRleGRfMTo5MDkyCgl9CglyZXZlcnNlX3Byb3h5IHRkZXhfZGFzaGJvYXJkXzE6ODA4MAp9Cg==
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -42,6 +50,27 @@ spec:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
       {{- include "yolab-common.privateAccessInit" . | nindent 6 }}
+      - name: seed
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - 'set -e
+
+          D=/data/{{ .Release.Name }}
+
+          mkdir -p "$D/caddy-data"
+
+          [ -e "$D/caddy-data/Caddyfile" ] || cp /seed/f0 "$D/caddy-data/Caddyfile"
+
+          '
+        volumeMounts:
+        - name: seed
+          mountPath: /seed
+          readOnly: true
+        - name: data
+          mountPath: /data
       containers:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
@@ -62,6 +91,9 @@ spec:
       {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
       {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}
+      - name: seed
+        configMap:
+          name: '{{ .Release.Name }}-seed'
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -85,16 +117,16 @@ spec:
         image: ghcr.io/vulpemventures/oceand:v0.1.17@sha256:37b813b43b068e32d918b9f42539c33287308cc81d00909c742b7164dfefc0c4
         imagePullPolicy: IfNotPresent
         env:
-        - name: OCEAN_LOG_LEVEL
-          value: '5'
-        - name: OCEAN_DB_TYPE
-          value: badger
-        - name: OCEAN_NO_TLS
-          value: 'true'
-        - name: OCEAN_NO_PROFILER
-          value: 'true'
-        - name: OCEAN_UTXO_EXPIRY_DURATION_IN_SECONDS
-          value: '240'
+        - name: ('OCEAN_LOG_LEVEL', 5)
+          value: ''
+        - name: ('OCEAN_DB_TYPE', 'badger')
+          value: ''
+        - name: ('OCEAN_NO_TLS', 'true')
+          value: ''
+        - name: ('OCEAN_NO_PROFILER', 'true')
+          value: ''
+        - name: ('OCEAN_UTXO_EXPIRY_DURATION_IN_SECONDS', 240)
+          value: ''
         volumeMounts:
         - name: data
           mountPath: /home/ocean/.oceand
@@ -103,6 +135,31 @@ spec:
       - name: data
         persistentVolumeClaim:
           claimName: '{{ .Release.Name }}-data'
+      - name: seed
+        configMap:
+          name: '{{ .Release.Name }}-seed'
+      initContainers:
+      - name: seed
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - 'set -e
+
+          D=/data/{{ .Release.Name }}
+
+          mkdir -p "$D/caddy-data"
+
+          [ -e "$D/caddy-data/Caddyfile" ] || cp /seed/f0 "$D/caddy-data/Caddyfile"
+
+          '
+        volumeMounts:
+        - name: seed
+          mountPath: /seed
+          readOnly: true
+        - name: data
+          mountPath: /data
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -126,20 +183,20 @@ spec:
         image: ghcr.io/tdex-network/tdexd:v1.0.1@sha256:eef1f31e98208e9a35ddf308317bc1df71065e189fa0915c769c7a01394ef79a
         imagePullPolicy: IfNotPresent
         env:
-        - name: TDEX_LOG_LEVEL
-          value: '5'
-        - name: TDEX_OPERATOR_LISTENING_PORT
-          value: APP_TDEX_PORT
-        - name: TDEX_TRADE_LISTENING_PORT
-          value: APP_TDEX_PORT
-        - name: TDEX_NO_OPERATOR_TLS
-          value: 'true'
-        - name: TDEX_WALLET_ADDR
-          value: oceand:18000
-        - name: TDEX_CONNECT_ADDR
-          value: $(APP_TDEX_DAEMON_HIDDEN_SERVICE)
-        - name: TDEX_CONNECT_PROTO
-          value: http
+        - name: ('TDEX_LOG_LEVEL', 5)
+          value: ''
+        - name: ('TDEX_OPERATOR_LISTENING_PORT', '${APP_TDEX_PORT}')
+          value: ''
+        - name: ('TDEX_TRADE_LISTENING_PORT', '${APP_TDEX_PORT}')
+          value: ''
+        - name: ('TDEX_NO_OPERATOR_TLS', 'true')
+          value: ''
+        - name: ('TDEX_WALLET_ADDR', 'oceand:18000')
+          value: ''
+        - name: ('TDEX_CONNECT_ADDR', '${APP_TDEX_DAEMON_HIDDEN_SERVICE}')
+          value: ''
+        - name: ('TDEX_CONNECT_PROTO', 'http')
+          value: ''
         volumeMounts:
         - name: data
           mountPath: /home/tdex/.tdex-daemon
@@ -148,6 +205,31 @@ spec:
       - name: data
         persistentVolumeClaim:
           claimName: '{{ .Release.Name }}-data'
+      - name: seed
+        configMap:
+          name: '{{ .Release.Name }}-seed'
+      initContainers:
+      - name: seed
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - 'set -e
+
+          D=/data/{{ .Release.Name }}
+
+          mkdir -p "$D/caddy-data"
+
+          [ -e "$D/caddy-data/Caddyfile" ] || cp /seed/f0 "$D/caddy-data/Caddyfile"
+
+          '
+        volumeMounts:
+        - name: seed
+          mountPath: /seed
+          readOnly: true
+        - name: data
+          mountPath: /data
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -171,16 +253,41 @@ spec:
         image: ghcr.io/tdex-network/dashboard:v1.0.2@sha256:71d598afb0d5ec9966306f4ef0d5f6839a9d7dc50726a935f3d0bb38f1925d78
         imagePullPolicy: IfNotPresent
         env:
-        - name: USE_PROXY
-          value: 'false'
-        - name: IS_PACKAGED
-          value: 'true'
-        - name: TRADER_HIDDEN_SERVICE
-          value: $(APP_TDEX_DAEMON_HIDDEN_SERVICE)
+        - name: ('USE_PROXY', 'false')
+          value: ''
+        - name: ('IS_PACKAGED', 'true')
+          value: ''
+        - name: ('TRADER_HIDDEN_SERVICE', '${APP_TDEX_DAEMON_HIDDEN_SERVICE}')
+          value: ''
       volumes:
       - name: data
         persistentVolumeClaim:
           claimName: '{{ .Release.Name }}-data'
+      - name: seed
+        configMap:
+          name: '{{ .Release.Name }}-seed'
+      initContainers:
+      - name: seed
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - 'set -e
+
+          D=/data/{{ .Release.Name }}
+
+          mkdir -p "$D/caddy-data"
+
+          [ -e "$D/caddy-data/Caddyfile" ] || cp /seed/f0 "$D/caddy-data/Caddyfile"
+
+          '
+        volumeMounts:
+        - name: seed
+          mountPath: /seed
+          readOnly: true
+        - name: data
+          mountPath: /data
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -204,8 +311,8 @@ spec:
         image: ghcr.io/getumbrel/tor:0.4.9.11@sha256:e382b8629c0dfef6ceb396b062622d4e4e955b19d6f16b883fd2c0723ad5671a
         imagePullPolicy: IfNotPresent
         env:
-        - name: HOME
-          value: /tmp
+        - name: ('HOME', '/tmp')
+          value: ''
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000
@@ -221,3 +328,28 @@ spec:
       - name: data
         persistentVolumeClaim:
           claimName: '{{ .Release.Name }}-data'
+      - name: seed
+        configMap:
+          name: '{{ .Release.Name }}-seed'
+      initContainers:
+      - name: seed
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - 'set -e
+
+          D=/data/{{ .Release.Name }}
+
+          mkdir -p "$D/caddy-data"
+
+          [ -e "$D/caddy-data/Caddyfile" ] || cp /seed/f0 "$D/caddy-data/Caddyfile"
+
+          '
+        volumeMounts:
+        - name: seed
+          mountPath: /seed
+          readOnly: true
+        - name: data
+          mountPath: /data

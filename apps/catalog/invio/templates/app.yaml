@@ -21,16 +21,6 @@ spec:
     requests:
       storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
 ---
-apiVersion: v1
-kind: Secret
-metadata:
-  name: {{ .Release.Name }}-secrets
-  namespace: {{ .Release.Namespace }}
-type: Opaque
-stringData:
-  app_secret: {{ required "config.app_secret is required" .Values.config.app_secret | quote }}
-  admin_password: {{ required "config.admin_password is required" .Values.config.admin_password | quote }}
----
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -60,28 +50,18 @@ spec:
         image: ghcr.io/kittendevv/invio-frontend:v2.2.0@sha256:b2a48dc3bfa04771a2b658905268dfc766958c72be6f783f141e313c189c61b8
         imagePullPolicy: IfNotPresent
         env:
-        - name: APP_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: '{{ .Release.Name }}-secrets'
-              key: admin_password
-        - name: APP_SEED
-          valueFrom:
-            secretKeyRef:
-              name: '{{ .Release.Name }}-secrets'
-              key: app_secret
-        - name: PORT
-          value: '8000'
-        - name: BACKEND_URL
-          value: http://backend:3000
-        - name: COOKIE_SECURE
-          value: 'false'
-        - name: FRONTEND_SECURE_HEADERS_DISABLED
-          value: 'false'
-        - name: ENABLE_HSTS
-          value: 'false'
-        - name: ORIGIN
-          value: http://localhost:8003
+        - name: ('PORT', 8000)
+          value: ''
+        - name: ('BACKEND_URL', 'http://invio_backend_1:3000')
+          value: ''
+        - name: ('COOKIE_SECURE', 'false')
+          value: ''
+        - name: ('FRONTEND_SECURE_HEADERS_DISABLED', 'false')
+          value: ''
+        - name: ('ENABLE_HSTS', 'false')
+          value: ''
+        - name: ('ORIGIN', 'http://${DEVICE_DOMAIN_NAME}:8003')
+          value: ''
         ports:
         - containerPort: 8000
         readinessProbe:
@@ -114,30 +94,20 @@ spec:
         image: ghcr.io/kittendevv/invio-backend:v2.2.0@sha256:402c3b2255021834fefeeaaae32cd0f68563a2205dbd6b99914a42cf89e699b5
         imagePullPolicy: IfNotPresent
         env:
-        - name: APP_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: '{{ .Release.Name }}-secrets'
-              key: admin_password
-        - name: APP_SEED
-          valueFrom:
-            secretKeyRef:
-              name: '{{ .Release.Name }}-secrets'
-              key: app_secret
-        - name: ADMIN_USER
-          value: admin
-        - name: ADMIN_PASS
-          value: $(APP_PASSWORD)
-        - name: JWT_SECRET
-          value: $(APP_SEED)
-        - name: SESSION_TTL_SECONDS
-          value: '43200'
-        - name: SECURE_HEADERS_DISABLED
-          value: 'false'
-        - name: ENABLE_HSTS
-          value: 'true'
-        - name: DATABASE_PATH
-          value: /app/data/invio.db
+        - name: ('ADMIN_USER', 'admin')
+          value: ''
+        - name: ('ADMIN_PASS', '${APP_PASSWORD}')
+          value: ''
+        - name: ('JWT_SECRET', '${APP_SEED}')
+          value: ''
+        - name: ('SESSION_TTL_SECONDS', 43200)
+          value: ''
+        - name: ('SECURE_HEADERS_DISABLED', 'false')
+          value: ''
+        - name: ('ENABLE_HSTS', 'true')
+          value: ''
+        - name: ('DATABASE_PATH', '/app/data/invio.db')
+          value: ''
         volumeMounts:
         - name: data
           mountPath: /app/data

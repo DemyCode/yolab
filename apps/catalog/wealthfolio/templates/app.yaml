@@ -21,15 +21,6 @@ spec:
     requests:
       storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
 ---
-apiVersion: v1
-kind: Secret
-metadata:
-  name: {{ .Release.Name }}-secrets
-  namespace: {{ .Release.Namespace }}
-type: Opaque
-stringData:
-  app_secret: {{ required "config.app_secret is required" .Values.config.app_secret | quote }}
----
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -47,6 +38,8 @@ spec:
       labels:
         app: gateway
     spec:
+      nodeSelector:
+        kubernetes.io/arch: amd64
       initContainers:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
@@ -59,27 +52,22 @@ spec:
         image: wealthfolio/wealthfolio:3.9.1@sha256:0ebd0147463f3637afce8cf33e0601a7c5c060e70f15c19d5762435f5819234a
         imagePullPolicy: IfNotPresent
         env:
-        - name: APP_SEED
-          valueFrom:
-            secretKeyRef:
-              name: '{{ .Release.Name }}-secrets'
-              key: app_secret
-        - name: WF_LISTEN_ADDR
-          value: 0.0.0.0:8088
-        - name: WF_DB_PATH
-          value: /data/wealthfolio.db
-        - name: WF_AUTH_REQUIRED
-          value: 'false'
-        - name: WF_AUTH_PASSWORD_HASH
+        - name: ('WF_LISTEN_ADDR', '0.0.0.0:8088')
           value: ''
-        - name: WF_AUTH_TOKEN_TTL_MINUTES
-          value: '60'
-        - name: WF_CORS_ALLOW_ORIGINS
+        - name: ('WF_DB_PATH', '/data/wealthfolio.db')
           value: ''
-        - name: WF_REQUEST_TIMEOUT_MS
-          value: '30000'
-        - name: WF_SECRET_KEY
-          value: $(APP_SEED)
+        - name: ('WF_AUTH_REQUIRED', 'false')
+          value: ''
+        - name: ('WF_AUTH_PASSWORD_HASH', '')
+          value: ''
+        - name: ('WF_AUTH_TOKEN_TTL_MINUTES', '60')
+          value: ''
+        - name: ('WF_CORS_ALLOW_ORIGINS', '')
+          value: ''
+        - name: ('WF_REQUEST_TIMEOUT_MS', '30000')
+          value: ''
+        - name: ('WF_SECRET_KEY', '${APP_WEALTHFOLIO_SECRET_KEY}')
+          value: ''
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000

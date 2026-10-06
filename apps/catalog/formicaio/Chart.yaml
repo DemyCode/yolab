@@ -1,0 +1,17 @@
+apiVersion: v2
+name: formicaio
+description: Run nodes on the Autonomi peer-to-peer (P2P) network
+type: application
+version: 0.1.0
+appVersion: 0.8.4-patch.1
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: Formicaio
+  yolab.io/icon: 🧩
+  yolab.io/category: crypto
+  yolab.io/tagline: Run nodes on the Autonomi peer-to-peer (P2P) network
+  yolab.io/github: bochaco/formicaio
+home: https://github.com/bochaco/formicaio

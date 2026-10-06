@@ -73,14 +73,14 @@ spec:
         image: mariadb:11.4.5@sha256:5dfb3093333fa0ea53194ddef0a2bfa21d3b1e1353bd228b22610cd6fc0c04da
         imagePullPolicy: IfNotPresent
         env:
-        - name: MYSQL_ROOT_PASSWORD
-          value: tyooe
-        - name: MYSQL_DATABASE
-          value: pastefy
-        - name: MYSQL_USER
-          value: pastefy
-        - name: MYSQL_PASSWORD
-          value: tyooe
+        - name: ('MYSQL_ROOT_PASSWORD', 'tyooe')
+          value: ''
+        - name: ('MYSQL_DATABASE', 'pastefy')
+          value: ''
+        - name: ('MYSQL_USER', 'pastefy')
+          value: ''
+        - name: ('MYSQL_PASSWORD', 'tyooe')
+          value: ''
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000
@@ -132,22 +132,22 @@ spec:
         image: interaapps/pastefy:7.1.6@sha256:353ce246ccf24ab1dec42e3c387744b47925065c207699f0bf1ce8e560619ca9
         imagePullPolicy: IfNotPresent
         env:
-        - name: HTTP_SERVER_CORS
-          value: '*'
-        - name: DATABASE_DRIVER
-          value: mysql
-        - name: DATABASE_NAME
-          value: pastefy
-        - name: DATABASE_USER
-          value: pastefy
-        - name: DATABASE_PASSWORD
-          value: tyooe
-        - name: DATABASE_HOST
-          value: db
-        - name: DATABASE_PORT
-          value: '3306'
-        - name: SERVER_NAME
-          value: http://localhost:9900
+        - name: ('HTTP_SERVER_CORS', '*')
+          value: ''
+        - name: ('DATABASE_DRIVER', 'mysql')
+          value: ''
+        - name: ('DATABASE_NAME', 'pastefy')
+          value: ''
+        - name: ('DATABASE_USER', 'pastefy')
+          value: ''
+        - name: ('DATABASE_PASSWORD', 'tyooe')
+          value: ''
+        - name: ('DATABASE_HOST', 'pastefy_db_1')
+          value: ''
+        - name: ('DATABASE_PORT', '3306')
+          value: ''
+        - name: ('SERVER_NAME', 'http://${DEVICE_DOMAIN_NAME}:9900')
+          value: ''
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000

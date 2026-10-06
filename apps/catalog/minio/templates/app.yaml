@@ -21,15 +21,6 @@ spec:
     requests:
       storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
 ---
-apiVersion: v1
-kind: Secret
-metadata:
-  name: {{ .Release.Name }}-secrets
-  namespace: {{ .Release.Namespace }}
-type: Opaque
-stringData:
-  admin_password: {{ required "config.admin_password is required" .Values.config.admin_password | quote }}
----
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -47,6 +38,8 @@ spec:
       labels:
         app: gateway
     spec:
+      nodeSelector:
+        kubernetes.io/arch: amd64
       initContainers:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
@@ -62,17 +55,12 @@ spec:
         - server
         - /data
         env:
-        - name: APP_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: '{{ .Release.Name }}-secrets'
-              key: admin_password
-        - name: MINIO_ROOT_USER
-          value: umbrel
-        - name: MINIO_ROOT_PASSWORD
-          value: $(APP_PASSWORD)
-        - name: MINIO_CONSOLE_ADDRESS
-          value: :9011
+        - name: ('MINIO_ROOT_USER', 'umbrel')
+          value: ''
+        - name: ('MINIO_ROOT_PASSWORD', '$APP_PASSWORD')
+          value: ''
+        - name: ('MINIO_CONSOLE_ADDRESS', ':9011')
+          value: ''
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000

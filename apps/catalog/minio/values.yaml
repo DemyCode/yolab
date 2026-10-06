@@ -7,3 +7,6 @@ yolab:
   serviceName: ''
   gateway:
     upstream: localhost:9011
+  fileExplorer:
+    protect:
+    - data/minio

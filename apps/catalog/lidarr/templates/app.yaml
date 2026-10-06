@@ -50,10 +50,10 @@ spec:
         image: linuxserver/lidarr:3.1.0@sha256:f2a186ce04ec5adb133f92a08dd3efbc918fc71b33077426ef099d94350dfa1b
         imagePullPolicy: IfNotPresent
         env:
-        - name: PUID
-          value: '1000'
-        - name: PGID
-          value: '1000'
+        - name: ('PUID', '1000')
+          value: ''
+        - name: ('PGID', '1000')
+          value: ''
         ports:
         - containerPort: 8686
         readinessProbe:
@@ -93,30 +93,30 @@ spec:
         image: getumbrel/media-app-configurator:v1.3.2@sha256:9ff34bda1e36ffe5a028d2463f4aaa9f20b93e8bec4392da077137c56bea3c34
         imagePullPolicy: IfNotPresent
         env:
-        - name: APP_ID
-          value: lidarr
-        - name: APP_URL
-          value: http://server:8686
-        - name: TRANSMISSION_HOST
-          value: transmission_server_1
-        - name: TRANSMISSION_PORT
-          value: '9091'
-        - name: ROOT_FOLDER
-          value: /downloads/music
-        - name: QBITTORRENT_INSTALLED
-          value: ${APP_LIDARR_QBITTORRENT_INSTALLED:-"false"}
-        - name: QBITTORRENT_HOST
-          value: qbittorrent_server_1
-        - name: QBITTORRENT_PORT
-          value: '8080'
-        - name: SABNZBD_INSTALLED
-          value: ${APP_LIDARR_SABNZBD_INSTALLED:-"false"}
-        - name: SABNZBD_HOST
-          value: sabnzbd_web_1
-        - name: SABNZBD_PORT
-          value: '8080'
-        - name: SABNZBD_API_KEY
-          value: ${APP_LIDARR_SABNZBD_API_KEY:-""}
+        - name: ('APP_ID', 'lidarr')
+          value: ''
+        - name: ('APP_URL', 'http://lidarr_server_1:8686')
+          value: ''
+        - name: ('TRANSMISSION_HOST', 'transmission_server_1')
+          value: ''
+        - name: ('TRANSMISSION_PORT', 9091)
+          value: ''
+        - name: ('ROOT_FOLDER', '/downloads/music')
+          value: ''
+        - name: ('QBITTORRENT_INSTALLED', '${APP_LIDARR_QBITTORRENT_INSTALLED:-"false"}')
+          value: ''
+        - name: ('QBITTORRENT_HOST', 'qbittorrent_server_1')
+          value: ''
+        - name: ('QBITTORRENT_PORT', 8080)
+          value: ''
+        - name: ('SABNZBD_INSTALLED', '${APP_LIDARR_SABNZBD_INSTALLED:-"false"}')
+          value: ''
+        - name: ('SABNZBD_HOST', 'sabnzbd_web_1')
+          value: ''
+        - name: ('SABNZBD_PORT', 8080)
+          value: ''
+        - name: ('SABNZBD_API_KEY', '${APP_LIDARR_SABNZBD_API_KEY:-""}')
+          value: ''
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000

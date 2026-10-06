@@ -50,8 +50,8 @@ spec:
         image: ghcr.io/matiasdesuu/thinkdashboard:v0.7.6@sha256:3bd3ac29fcd0329673a1b4946e4e63ecc55239e6221a00bd4b407a5343c55079
         imagePullPolicy: IfNotPresent
         env:
-        - name: PORT
-          value: '8080'
+        - name: ('PORT', '8080')
+          value: ''
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000

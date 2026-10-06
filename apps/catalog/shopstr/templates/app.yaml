@@ -50,8 +50,8 @@ spec:
         image: calvadev/shopstr:v0.7.5@sha256:b123e9d16f4267ea766813cbc12ac0989afcea03a72b42edfa37b64951ececdb
         imagePullPolicy: IfNotPresent
         env:
-        - name: PORT
-          value: '3000'
+        - name: ('PORT', 3000)
+          value: ''
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000

@@ -50,8 +50,8 @@ spec:
         image: ghcr.io/fccview/jotty:1.28.0@sha256:df965e56fe2e3ce056351425b8ff5d7df991a6596dfa807c73c91cf5eaa30c86
         imagePullPolicy: IfNotPresent
         env:
-        - name: NODE_ENV
-          value: production
+        - name: ('NODE_ENV', 'production')
+          value: ''
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000

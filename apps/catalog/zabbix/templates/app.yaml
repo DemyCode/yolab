@@ -38,6 +38,8 @@ spec:
       labels:
         app: gateway
     spec:
+      nodeSelector:
+        kubernetes.io/arch: amd64
       initContainers:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
@@ -50,16 +52,16 @@ spec:
         image: zabbix/zabbix-web-nginx-pgsql:7.4.15-alpine@sha256:8c139abe303577c1dc49983f81d272ec832835c370912a681f2695803f342be0
         imagePullPolicy: IfNotPresent
         env:
-        - name: DB_SERVER_HOST
-          value: zabbix-database
-        - name: POSTGRES_USER
-          value: zabbix
-        - name: POSTGRES_PASSWORD
-          value: zabbix
-        - name: ZBX_SERVER_HOST
-          value: zabbix-server
-        - name: PHP_TZ
-          value: UTC
+        - name: ('DB_SERVER_HOST', 'zabbix-database')
+          value: ''
+        - name: ('POSTGRES_USER', 'zabbix')
+          value: ''
+        - name: ('POSTGRES_PASSWORD', 'zabbix')
+          value: ''
+        - name: ('ZBX_SERVER_HOST', 'zabbix-server')
+          value: ''
+        - name: ('PHP_TZ', 'UTC')
+          value: ''
         ports:
         - containerPort: 8080
         readinessProbe:
@@ -92,12 +94,12 @@ spec:
         image: zabbix/zabbix-server-pgsql:7.4.15-alpine@sha256:777870429c94636f2396fd414a259080d167926552543c31b20ae9d0c9f2847f
         imagePullPolicy: IfNotPresent
         env:
-        - name: DB_SERVER_HOST
-          value: zabbix-database
-        - name: POSTGRES_USER
-          value: zabbix
-        - name: POSTGRES_PASSWORD
-          value: zabbix
+        - name: ('DB_SERVER_HOST', 'zabbix-database')
+          value: ''
+        - name: ('POSTGRES_USER', 'zabbix')
+          value: ''
+        - name: ('POSTGRES_PASSWORD', 'zabbix')
+          value: ''
         ports:
         - containerPort: 10050
         readinessProbe:
@@ -107,6 +109,8 @@ spec:
       - name: data
         persistentVolumeClaim:
           claimName: '{{ .Release.Name }}-data'
+      nodeSelector:
+        kubernetes.io/arch: amd64
 ---
 apiVersion: v1
 kind: Service
@@ -142,14 +146,16 @@ spec:
         image: zabbix/zabbix-agent2:7.4.15-alpine@sha256:a4641f733827aa13af61bf3ccd3b11f61129b2635726b38ad231ac3c42229a0e
         imagePullPolicy: IfNotPresent
         env:
-        - name: ZBX_HOSTNAME
-          value: zabbix-agent
-        - name: ZBX_SERVER_HOST
-          value: zabbix-server
+        - name: ('ZBX_HOSTNAME', 'zabbix-agent')
+          value: ''
+        - name: ('ZBX_SERVER_HOST', 'zabbix-server')
+          value: ''
       volumes:
       - name: data
         persistentVolumeClaim:
           claimName: '{{ .Release.Name }}-data'
+      nodeSelector:
+        kubernetes.io/arch: amd64
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -173,12 +179,12 @@ spec:
         image: postgres:13.18-alpine3.20@sha256:77815c1f18ae761b0e503503a494475a03149d7ce544934ccecdbafdb3956c94
         imagePullPolicy: IfNotPresent
         env:
-        - name: POSTGRES_PASSWORD
-          value: zabbix
-        - name: POSTGRES_USER
-          value: zabbix
-        - name: POSTGRES_DB
-          value: zabbix
+        - name: ('POSTGRES_PASSWORD', 'zabbix')
+          value: ''
+        - name: ('POSTGRES_USER', 'zabbix')
+          value: ''
+        - name: ('POSTGRES_DB', 'zabbix')
+          value: ''
         ports:
         - containerPort: 5432
         readinessProbe:

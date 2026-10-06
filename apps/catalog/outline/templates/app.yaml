@@ -1,0 +1,411 @@
+{{ include "yolab-common.caddyConfigMap" . }}
+---
+{{ include "yolab-common.fileExplorerSecret" . }}
+---
+{{ include "yolab-common.fileExplorerConfigMap" . }}
+---
+{{ include "yolab-common.privateAccessResources" . }}
+---
+{{ include "yolab-common.uninstallHook" . }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-data
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: yolab-cephfs
+  resources:
+    requests:
+      storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: '{{ .Release.Name }}-seed'
+  namespace: '{{ .Release.Namespace }}'
+binaryData:
+  f0: aXNzdWVyOiBodHRwOi8vJHtERVZJQ0VfRE9NQUlOX05BTUV9Ojg5NDMvZGV4CgpzdG9yYWdlOgogIHR5cGU6IHNxbGl0ZTMKICBjb25maWc6CiAgICBmaWxlOiAvdmFyL2RleC9kZXguZGIKCndlYjoKICBodHRwOiAwLjAuMC4wOjU1NTYKCnN0YXRpY0NsaWVudHM6CiAgLSBpZDogb3V0bGluZQogICAgcmVkaXJlY3RVUklzOgogICAgICAtICdodHRwOi8vJHtERVZJQ0VfRE9NQUlOX05BTUV9OiR7QVBQX09VVExJTkVfUE9SVH0vYXV0aC9vaWRjLmNhbGxiYWNrJwogICAgbmFtZTogJ091dGxpbmUnCiAgICBzZWNyZXQ6ICR7QVBQX1NFRUR9CgpvYXV0aDI6CiAgc2tpcEFwcHJvdmFsU2NyZWVuOiB0cnVlCgplbmFibGVQYXNzd29yZERCOiB0cnVlCgpzdGF0aWNQYXNzd29yZHM6CiAgLSBlbWFpbDogInVtYnJlbEB1bWJyZWwubG9jYWwiCiAgICBoYXNoOiAiJHtQQVNTV09SRF9IQVNIfSIKICAgIHVzZXJuYW1lOiAidW1icmVsIgogICAgdXNlcklEOiAiMDhhODY4NGItZGI4OC00YjczLTkwYTktM2NkMTY2MWY1NDY2Igo=
+  f1: Rk9SQ0VfSFRUUFM9ImZhbHNlIgpFTkFCTEVfVVBEQVRFUz0idHJ1ZSIKV0VCX0NPTkNVUlJFTkNZPTEKTE9HX0xFVkVMPWluZm8KCiMgbW9yZSBlbnYgdmFyaWFibGVzIGNhbiBiZSBmb3VuZCBoZXJlOiBodHRwczovL2dpdGh1Yi5jb20vb3V0bGluZS9vdXRsaW5lL2Jsb2IvbWFpbi8uZW52LnNhbXBsZQo=
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      nodeSelector:
+        kubernetes.io/arch: amd64
+      initContainers:
+      {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessInit" . | nindent 6 }}
+      - name: seed
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - 'set -e
+
+          D=/data/{{ .Release.Name }}
+
+          mkdir -p "$D/data/config"
+
+          [ -e "$D/data/config/config.yaml.template" ] || cp /seed/f0 "$D/data/config/config.yaml.template"
+
+          [ -e "$D/settings.env" ] || cp /seed/f1 "$D/settings.env"
+
+          '
+        volumeMounts:
+        - name: seed
+          mountPath: /seed
+          readOnly: true
+        - name: data
+          mountPath: /data
+      containers:
+      {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
+      - name: web
+        image: outlinewiki/outline:1.7.1@sha256:361df7040e6f0d7abac768b99f40122197921626a7e69501aabb5fcb496fc1b4
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: ('FORCE_HTTPS', 'false')
+          value: ''
+        - name: ('ENABLE_UPDATES', 'true')
+          value: ''
+        - name: ('WEB_CONCURRENCY', '1')
+          value: ''
+        - name: ('LOG_LEVEL', 'info')
+          value: ''
+        - name: ('NODE_ENV', 'production')
+          value: ''
+        - name: ('SECRET_KEY', '${APP_SEED}')
+          value: ''
+        - name: ('UTILS_SECRET', '${APP_SEED}')
+          value: ''
+        - name: ('DATABASE_URL', 'postgres://outline:outlinepass@outline_db_1:5432/outline')
+          value: ''
+        - name: ('PGSSLMODE', 'disable')
+          value: ''
+        - name: ('REDIS_URL', 'redis://outline_redis_1:6379')
+          value: ''
+        - name: ('URL', 'http://${DEVICE_DOMAIN_NAME}:${APP_OUTLINE_PORT}')
+          value: ''
+        - name: ('PORT', 3000)
+          value: ''
+        - name: ('FILE_STORAGE', 'local')
+          value: ''
+        - name: ('FILE_STORAGE_LOCAL_ROOT_DIR', '/var/lib/outline/data')
+          value: ''
+        - name: ('FILE_STORAGE_UPLOAD_MAX_SIZE', 262144000)
+          value: ''
+        - name: ('OIDC_CLIENT_ID', 'outline')
+          value: ''
+        - name: ('OIDC_CLIENT_SECRET', '${APP_SEED}')
+          value: ''
+        - name: ('OIDC_AUTH_URI', 'http://${DEVICE_DOMAIN_NAME}:8943/dex/auth')
+          value: ''
+        - name: ('OIDC_TOKEN_URI', 'http://outline_dex_1:5556/dex/token')
+          value: ''
+        - name: ('OIDC_USERINFO_URI', 'http://outline_dex_1:5556/dex/userinfo')
+          value: ''
+        - name: ('OIDC_USERNAME_CLAIM', 'preferred_username')
+          value: ''
+        - name: ('OIDC_DISPLAY_NAME', 'Dex')
+          value: ''
+        - name: ('OIDC_SCOPES', 'openid profile email')
+          value: ''
+        securityContext:
+          runAsUser: 1000
+          runAsGroup: 1000
+        ports:
+        - containerPort: 3000
+        readinessProbe:
+          tcpSocket:
+            port: 3000
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/outline/data
+          subPath: '{{ .Release.Name }}/data/app'
+      volumes:
+      {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}
+      - name: seed
+        configMap:
+          name: '{{ .Release.Name }}-seed'
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: db
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: db
+  template:
+    metadata:
+      labels:
+        app: db
+    spec:
+      containers:
+      - name: db
+        image: postgres:17.9-alpine@sha256:778d0b486d6daa02b77434d0358ec57a1b21fd8b6d22ac2eef56a33e816928f6
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: ('POSTGRES_USER', 'outline')
+          value: ''
+        - name: ('POSTGRES_PASSWORD', 'outlinepass')
+          value: ''
+        - name: ('POSTGRES_DB', 'outline')
+          value: ''
+        securityContext:
+          runAsUser: 1000
+          runAsGroup: 1000
+        ports:
+        - containerPort: 5432
+        readinessProbe:
+          exec:
+            command:
+            - pg_isready
+            - -d
+            - outline
+            - -U
+            - outline
+          periodSeconds: 30
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/postgresql/data
+          subPath: '{{ .Release.Name }}/data/db'
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: '{{ .Release.Name }}-data'
+      - name: seed
+        configMap:
+          name: '{{ .Release.Name }}-seed'
+      initContainers:
+      - name: seed
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - 'set -e
+
+          D=/data/{{ .Release.Name }}
+
+          mkdir -p "$D/data/config"
+
+          [ -e "$D/data/config/config.yaml.template" ] || cp /seed/f0 "$D/data/config/config.yaml.template"
+
+          [ -e "$D/settings.env" ] || cp /seed/f1 "$D/settings.env"
+
+          '
+        volumeMounts:
+        - name: seed
+          mountPath: /seed
+          readOnly: true
+        - name: data
+          mountPath: /data
+      nodeSelector:
+        kubernetes.io/arch: amd64
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: db
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  selector:
+    app: db
+  ports:
+  - port: 5432
+    targetPort: 5432
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      containers:
+      - name: redis
+        image: redis:8.4.2-alpine@sha256:812a2556fa70318d980d248a65f62a3bdb72c0882e90d96e50d5c8cf2bed438d
+        imagePullPolicy: IfNotPresent
+        securityContext:
+          runAsUser: 1000
+          runAsGroup: 1000
+        ports:
+        - containerPort: 6379
+        readinessProbe:
+          exec:
+            command:
+            - redis-cli
+            - ping
+          periodSeconds: 10
+        volumeMounts:
+        - name: data
+          mountPath: /data
+          subPath: '{{ .Release.Name }}/data/redis'
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: '{{ .Release.Name }}-data'
+      - name: seed
+        configMap:
+          name: '{{ .Release.Name }}-seed'
+      initContainers:
+      - name: seed
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - 'set -e
+
+          D=/data/{{ .Release.Name }}
+
+          mkdir -p "$D/data/config"
+
+          [ -e "$D/data/config/config.yaml.template" ] || cp /seed/f0 "$D/data/config/config.yaml.template"
+
+          [ -e "$D/settings.env" ] || cp /seed/f1 "$D/settings.env"
+
+          '
+        volumeMounts:
+        - name: seed
+          mountPath: /seed
+          readOnly: true
+        - name: data
+          mountPath: /data
+      nodeSelector:
+        kubernetes.io/arch: amd64
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  selector:
+    app: redis
+  ports:
+  - port: 6379
+    targetPort: 6379
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dex
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: dex
+  template:
+    metadata:
+      labels:
+        app: dex
+    spec:
+      containers:
+      - name: dex
+        image: dexidp/dex:v2.45.1@sha256:8499afd690c437f52301efd2b05b2455da5bd2dfc20332cd697dc9937f808462
+        imagePullPolicy: IfNotPresent
+        args:
+        - dex
+        - serve
+        - /etc/dex/config.yaml
+        securityContext:
+          runAsUser: 1000
+          runAsGroup: 1000
+        ports:
+        - containerPort: 5556
+        readinessProbe:
+          tcpSocket:
+            port: 5556
+        volumeMounts:
+        - name: data
+          mountPath: /etc/dex
+          subPath: '{{ .Release.Name }}/data/config'
+        - name: data
+          mountPath: /var/dex
+          subPath: '{{ .Release.Name }}/data/dex'
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: '{{ .Release.Name }}-data'
+      - name: seed
+        configMap:
+          name: '{{ .Release.Name }}-seed'
+      initContainers:
+      - name: seed
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - 'set -e
+
+          D=/data/{{ .Release.Name }}
+
+          mkdir -p "$D/data/config"
+
+          [ -e "$D/data/config/config.yaml.template" ] || cp /seed/f0 "$D/data/config/config.yaml.template"
+
+          [ -e "$D/settings.env" ] || cp /seed/f1 "$D/settings.env"
+
+          '
+        volumeMounts:
+        - name: seed
+          mountPath: /seed
+          readOnly: true
+        - name: data
+          mountPath: /data
+      nodeSelector:
+        kubernetes.io/arch: amd64
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dex
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  selector:
+    app: dex
+  ports:
+  - port: 5556
+    targetPort: 5556

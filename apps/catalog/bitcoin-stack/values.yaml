@@ -1,0 +1,23 @@
+config:
+  subdomain: bitcoin
+  storage_size: 2Ti
+  implementation: bitcoin
+  rpc_user: umbrel
+  rpc_password: ""
+  explorer_password: ""
+  electrs_enabled: true
+  mempool_enabled: true
+  explorer_enabled: true
+  specter_enabled: true
+  ordinals_enabled: true
+
+yolab:
+  platformApiUrl: ""
+  accountToken: ""
+  serviceName: ""
+  gateway:
+    aliases:
+      MEMPOOL_FQDN: mempool
+      EXPLORER_FQDN: explorer
+      SPECTER_FQDN: specter
+      ORDINALS_FQDN: ordinals

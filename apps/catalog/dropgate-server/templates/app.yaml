@@ -38,6 +38,8 @@ spec:
       labels:
         app: gateway
     spec:
+      nodeSelector:
+        kubernetes.io/arch: amd64
       initContainers:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
@@ -50,28 +52,28 @@ spec:
         image: willtda/dropgate-server:3.0.13@sha256:43698790fe341ea3fb0094bbdca701ecdf875a9c4b9c92b67f86c34c887c132b
         imagePullPolicy: IfNotPresent
         env:
-        - name: SERVER_PORT
-          value: '52443'
-        - name: SERVER_NAME
-          value: Dropgate Server
-        - name: ENABLE_WEB_UI
-          value: 'true'
-        - name: ENABLE_UPLOAD
-          value: 'true'
-        - name: UPLOAD_ENABLE_E2EE
-          value: 'true'
-        - name: UPLOAD_PRESERVE_UPLOADS
-          value: 'false'
-        - name: UPLOAD_MAX_FILE_SIZE_MB
-          value: '100'
-        - name: UPLOAD_MAX_STORAGE_GB
-          value: '10'
-        - name: UPLOAD_MAX_FILE_LIFETIME_HOURS
-          value: '24'
-        - name: UPLOAD_MAX_FILE_DOWNLOADS
-          value: '1'
-        - name: ENABLE_P2P
-          value: 'true'
+        - name: ('SERVER_PORT', 52443)
+          value: ''
+        - name: ('SERVER_NAME', 'Dropgate Server')
+          value: ''
+        - name: ('ENABLE_WEB_UI', 'true')
+          value: ''
+        - name: ('ENABLE_UPLOAD', 'true')
+          value: ''
+        - name: ('UPLOAD_ENABLE_E2EE', 'true')
+          value: ''
+        - name: ('UPLOAD_PRESERVE_UPLOADS', 'false')
+          value: ''
+        - name: ('UPLOAD_MAX_FILE_SIZE_MB', 100)
+          value: ''
+        - name: ('UPLOAD_MAX_STORAGE_GB', 10)
+          value: ''
+        - name: ('UPLOAD_MAX_FILE_LIFETIME_HOURS', 24)
+          value: ''
+        - name: ('UPLOAD_MAX_FILE_DOWNLOADS', 1)
+          value: ''
+        - name: ('ENABLE_P2P', 'true')
+          value: ''
         ports:
         - containerPort: 52443
         readinessProbe:

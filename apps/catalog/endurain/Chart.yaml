@@ -1,0 +1,17 @@
+apiVersion: v2
+name: endurain
+description: Fitness tracking, Open Source, Self-Hosted
+type: application
+version: 0.1.0
+appVersion: 0.17.7
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: Endurain
+  yolab.io/icon: 💬
+  yolab.io/category: social
+  yolab.io/tagline: Fitness tracking, Open Source, Self-Hosted
+  yolab.io/github: joaovitoriasilva/endurain
+home: https://docs.endurain.com/

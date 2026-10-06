@@ -1,0 +1,18 @@
+apiVersion: v2
+name: onedev
+description: A streamlined server for code, builds, and packages
+type: application
+version: 0.1.0
+appVersion: 16.8.4
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: OneDev
+  yolab.io/icon: 🛠
+  yolab.io/category: developer
+  yolab.io/tagline: A streamlined server for code, builds, and packages
+  yolab.io/github: theonedev/onedev
+  yolab.io/collections: for-developers
+home: https://onedev.io/

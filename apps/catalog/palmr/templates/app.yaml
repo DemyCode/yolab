@@ -50,10 +50,10 @@ spec:
         image: kyantech/palmr:v3.3.2-beta@sha256:043dd6cdbb4d9985b376915020fb26c2037b19876674273eac310ab04cdf16f4
         imagePullPolicy: IfNotPresent
         env:
-        - name: PALMR_UID
-          value: '1000'
-        - name: PALMR_GID
-          value: '1000'
+        - name: ('PALMR_UID', 1000)
+          value: ''
+        - name: ('PALMR_GID', 1000)
+          value: ''
         ports:
         - containerPort: 5487
         readinessProbe:

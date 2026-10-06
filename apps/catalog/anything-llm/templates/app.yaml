@@ -1,0 +1,130 @@
+{{ include "yolab-common.caddyConfigMap" . }}
+---
+{{ include "yolab-common.fileExplorerSecret" . }}
+---
+{{ include "yolab-common.fileExplorerConfigMap" . }}
+---
+{{ include "yolab-common.privateAccessResources" . }}
+---
+{{ include "yolab-common.uninstallHook" . }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-data
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: yolab-cephfs
+  resources:
+    requests:
+      storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: '{{ .Release.Name }}-seed'
+  namespace: '{{ .Release.Namespace }}'
+binaryData:
+  f0: ''
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      nodeSelector:
+        kubernetes.io/arch: amd64
+      initContainers:
+      {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessInit" . | nindent 6 }}
+      - name: seed
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - 'set -e
+
+          D=/data/{{ .Release.Name }}
+
+          mkdir -p "$D/data"
+
+          [ -e "$D/data/.env" ] || cp /seed/f0 "$D/data/.env"
+
+          '
+        volumeMounts:
+        - name: seed
+          mountPath: /seed
+          readOnly: true
+        - name: data
+          mountPath: /data
+      containers:
+      {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
+      - name: app
+        image: mintplexlabs/anythingllm:1.17.0@sha256:f26f30df46916b6e953e3a47ca98f48817726e3df635e62d4bfdd133292ecfff
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: ('SERVER_PORT', 3001)
+          value: ''
+        - name: ('STORAGE_DIR', '/app/server/storage')
+          value: ''
+        - name: ('UID', 1000)
+          value: ''
+        - name: ('GID', 1000)
+          value: ''
+        - name: ('DISABLE_TELEMETRY', 'true')
+          value: ''
+        - name: ('JWT_SECRET', '${APP_ANYTHING_LLM_JWT_SECRET}')
+          value: ''
+        - name: ('SIG_KEY', '${APP_ANYTHING_LLM_SIG_KEY}')
+          value: ''
+        - name: ('SIG_SALT', '${APP_ANYTHING_LLM_SIG_SALT}')
+          value: ''
+        securityContext:
+          runAsUser: 1000
+          runAsGroup: 1000
+          capabilities:
+            add:
+            - SYS_ADMIN
+        ports:
+        - containerPort: 3001
+        readinessProbe:
+          tcpSocket:
+            port: 3001
+        volumeMounts:
+        - name: data
+          mountPath: /app/server/.env
+          subPath: '{{ .Release.Name }}/data/.env'
+        - name: data
+          mountPath: /app/server/storage
+          subPath: '{{ .Release.Name }}/data/server-storage'
+        - name: data
+          mountPath: /app/collector/hotdir
+          subPath: '{{ .Release.Name }}/data/collector-hotdir'
+        - name: data
+          mountPath: /app/collector/outputs
+          subPath: '{{ .Release.Name }}/data/collector-outputs'
+      volumes:
+      {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}
+      - name: seed
+        configMap:
+          name: '{{ .Release.Name }}-seed'

@@ -1,0 +1,13 @@
+config:
+  subdomain: wger
+  storage_size: 10Gi
+yolab:
+  platformApiUrl: ''
+  accountToken: ''
+  serviceName: ''
+  gateway:
+    upstream: nginx:80
+  fileExplorer:
+    protect:
+    - data/postgres-data
+    - data/redis-data

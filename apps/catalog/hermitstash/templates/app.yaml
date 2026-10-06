@@ -50,18 +50,18 @@ spec:
         image: ghcr.io/dotcoocoo/hermitstash:1.15.9@sha256:adbe9f7326b9a34de7f351896fb2c61d1897fc05f8fd9cf7b3e48adcde8aaa88
         imagePullPolicy: IfNotPresent
         env:
-        - name: UMASK
-          value: '022'
-        - name: TZ
-          value: Etc/UTC
-        - name: NODE_ENV
-          value: production
-        - name: TRUST_PROXY
-          value: 10.21.0.0/16
-        - name: RP_ORIGIN
-          value: http://localhost:3081
-        - name: EMAIL_VERIFICATION
-          value: 'false'
+        - name: ('UMASK', '022')
+          value: ''
+        - name: ('TZ', 'Etc/UTC')
+          value: ''
+        - name: ('NODE_ENV', 'production')
+          value: ''
+        - name: ('TRUST_PROXY', '10.21.0.0/16')
+          value: ''
+        - name: ('RP_ORIGIN', 'http://${DEVICE_DOMAIN_NAME}:3081')
+          value: ''
+        - name: ('EMAIL_VERIFICATION', 'false')
+          value: ''
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000
