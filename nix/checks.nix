@@ -58,25 +58,25 @@ in let
         touch $out
       '';
 
-    # chart-checks =
-    #   pkgs.runCommand "chart-checks"
-    #   {
-    #     nativeBuildInputs = [
-    #       pkgs.kubernetes-helm
-    #       (pkgs.python3.withPackages (ps: [ps.pyyaml]))
-    #     ];
-    #     src = ../apps/catalog;
-    #   }
-    #   ''
-    #     cp -r "$src" ./catalog
-    #     chmod -R +w ./catalog
-    #     # helm needs a writable home, and the sandbox has none.
-    #     export HOME=$PWD/home
-    #     mkdir -p "$HOME"
-    #     (cd ./catalog && python3 -m unittest check_charts_test)
-    #     python3 ./catalog/check_charts.py
-    #     touch $out
-    #   '';
+    chart-checks =
+      pkgs.runCommand "chart-checks"
+      {
+        nativeBuildInputs = [
+          pkgs.kubernetes-helm
+          (pkgs.python3.withPackages (ps: [ps.pyyaml]))
+        ];
+        src = ../apps/catalog;
+      }
+      ''
+        cp -r "$src" ./catalog
+        chmod -R +w ./catalog
+        # helm needs a writable home, and the sandbox has none.
+        export HOME=$PWD/home
+        mkdir -p "$HOME"
+        (cd ./catalog && python3 -m unittest check_charts_test)
+        python3 ./catalog/check_charts.py
+        touch $out
+      '';
 
     nixos-create = toplevel "yolab-ci";
     nixos-join = toplevel "yolab-ci-join";
@@ -125,8 +125,9 @@ in let
         ordering;
       problems =
         (map (u: "k3s is ordered behind ${u}, so storage can hold the control plane down") storageUnits)
-        ++ pkgs.lib.optional (builtins.elem "k3s.service" (svcs.yolab-local-api.after or []))
-        "yolab-local-api is After=k3s.service, so nothing can report why k3s is waiting";
+        ++ pkgs.lib.optional (builtins.elem "k3s.service" (
+          svcs.yolab-local-api.after or []
+        )) "yolab-local-api is After=k3s.service, so nothing can report why k3s is waiting";
     in
       pkgs.runCommand "k3s-does-not-wait-for-storage" {} ''
         ${pkgs.lib.concatMapStrings (p: "echo ${pkgs.lib.escapeShellArg p} >&2\n") problems}
@@ -142,7 +143,10 @@ in let
     wireguard-carries-only-exposure-and-mesh = let
       inherit (pkgs) lib;
       interfaces = nixosSystems.yolab-ci.config.networking.wireguard.interfaces;
-      defaultRoutes = ["::/0" "0.0.0.0/0"];
+      defaultRoutes = [
+        "::/0"
+        "0.0.0.0/0"
+      ];
       isMainTableDefault = line:
         builtins.match ".*route (add|replace) (::/0|0\\.0\\.0\\.0/0|default) dev .*" line
         != null
@@ -161,23 +165,27 @@ in let
       wg0Setup = interfaces.wg0.postSetup or "";
       problems =
         lib.optional (!(interfaces ? wg0)) "wg0 is gone, so this check proves nothing"
-        ++ lib.concatLists (lib.mapAttrsToList (
+        ++ lib.concatLists (
+          lib.mapAttrsToList (
             addr: want: let
               got = ipv6.prefix64 addr;
             in
               lib.optional (got != want) "prefix64 ${addr} gave ${got}, expected ${want}"
           )
-          prefixCases)
+          prefixCases
+        )
         ++ lib.optional (!(lib.hasInfix "route replace fd00:1:0:0::/64 dev wg0" wg0Setup))
         "wg0 no longer routes YoLab's own address range through the tunnel, so packages cannot reach each other's public addresses from an IPv4-only home"
-        ++ lib.concatLists (lib.mapAttrsToList (
+        ++ lib.concatLists (
+          lib.mapAttrsToList (
             name: i:
-              map (l: "${name} postSetup routes everything through the tunnel: ${l}")
-              (builtins.filter isMainTableDefault (lib.splitString "\n" (i.postSetup or "")))
-              ++ lib.optional (routesPeerDefault i)
-              "${name} turns a peer's catch-all allowedIPs into a main-table default route"
+              map (l: "${name} postSetup routes everything through the tunnel: ${l}") (
+                builtins.filter isMainTableDefault (lib.splitString "\n" (i.postSetup or ""))
+              )
+              ++ lib.optional (routesPeerDefault i) "${name} turns a peer's catch-all allowedIPs into a main-table default route"
           )
-          interfaces);
+          interfaces
+        );
     in
       pkgs.runCommand "wireguard-carries-only-exposure-and-mesh" {} ''
         ${lib.concatMapStrings (p: "echo ${lib.escapeShellArg p} >&2\n") problems}
@@ -197,10 +205,7 @@ in let
       timers = nixosSystems.yolab-ci.config.systemd.timers;
       remainsAfterExit = name: (services.${name}.serviceConfig.RemainAfterExit or false) == true;
       offenders = builtins.filter (
-        name:
-          services ? ${name}
-          && remainsAfterExit name
-          && !(builtins.elem name allowlist)
+        name: services ? ${name} && remainsAfterExit name && !(builtins.elem name allowlist)
       ) (builtins.attrNames timers);
     in
       pkgs.runCommand "self-healing-timers-can-re-arm" {} ''
@@ -227,9 +232,7 @@ in let
         (tc ? OnCalendar) || (tc ? OnUnitActiveSec);
       offenders = builtins.filter (
         name:
-          (builtins.match "yolab-.*" name != null)
-          && fromStartBase name
-          && !(builtins.elem name allowlist)
+          (builtins.match "yolab-.*" name != null) && fromStartBase name && !(builtins.elem name allowlist)
       ) (builtins.attrNames timers);
     in
       pkgs.runCommand "retry-timers-measure-from-run-end" {} ''
@@ -323,7 +326,13 @@ in let
       '';
 
     route-table-is-complete =
-      pkgs.runCommand "route-table-is-complete" {nativeBuildInputs = [pkgs.gnugrep pkgs.diffutils];}
+      pkgs.runCommand "route-table-is-complete"
+      {
+        nativeBuildInputs = [
+          pkgs.gnugrep
+          pkgs.diffutils
+        ];
+      }
       ''
         src=${treeSrc}/homelab/local-api/src
 
@@ -389,13 +398,18 @@ in let
         "store/sync.rs" = 1;
         "topology.rs" = 1;
       };
-      expected =
-        pkgs.writeText "seam-budget"
-        (pkgs.lib.concatStrings (
-          map (n: "${n} ${toString budget.${n}}\n") (builtins.attrNames budget)
-        ));
+      expected = pkgs.writeText "seam-budget" (
+        pkgs.lib.concatStrings (map (n: "${n} ${toString budget.${n}}\n") (builtins.attrNames budget))
+      );
     in
-      pkgs.runCommand "host-seam-ratchet" {nativeBuildInputs = [pkgs.gnugrep pkgs.diffutils];} ''
+      pkgs.runCommand "host-seam-ratchet"
+      {
+        nativeBuildInputs = [
+          pkgs.gnugrep
+          pkgs.diffutils
+        ];
+      }
+      ''
         # The subshell matters: `cd` lands in the read-only store path, so the
         # redirection below has to happen back in the build directory.
         (
@@ -437,17 +451,17 @@ in let
         "yolab-ceph-bootstrap"
       ];
       missing = builtins.filter (n: !(svcs ? ${n})) mustNotRestart;
-      restarted =
-        builtins.filter
-        (n: (svcs.${n}.restartIfChanged or true) != false)
-        (builtins.filter (n: svcs ? ${n}) mustNotRestart);
+      restarted = builtins.filter (n: (svcs.${n}.restartIfChanged or true) != false) (
+        builtins.filter (n: svcs ? ${n}) mustNotRestart
+      );
 
       isCephDaemon = unit: builtins.match "ceph-(mon|mgr|mds|osd)[-@].*" unit != null;
       ours = builtins.filter (n: pkgs.lib.hasPrefix "yolab-" n) (builtins.attrNames svcs);
-      hardDeps = builtins.concatMap (n:
-        map (d: "${n} has Requires=${d}")
-        (builtins.filter isCephDaemon (svcs.${n}.requires or [])))
-      ours;
+      hardDeps =
+        builtins.concatMap (
+          n: map (d: "${n} has Requires=${d}") (builtins.filter isCephDaemon (svcs.${n}.requires or []))
+        )
+        ours;
 
       problems =
         (map (n: "${n} is on the must-not-restart list but is not a unit — rename or drop it") missing)
@@ -543,36 +557,38 @@ in let
         touch $out
       '';
 
-    vm-tests-give-swap-room = pkgs.runCommand "vm-tests-give-swap-room" {nativeBuildInputs = [pkgs.gnugrep];} ''
-      problems=""
-      for f in ${treeSrc}/nix/tests/*.nix; do
-        grep -q 'boot.loader.grub.enable = lib.mkForce true' "$f" || continue
+    vm-tests-give-swap-room =
+      pkgs.runCommand "vm-tests-give-swap-room" {nativeBuildInputs = [pkgs.gnugrep];}
+      ''
+        problems=""
+        for f in ${treeSrc}/nix/tests/*.nix; do
+          grep -q 'boot.loader.grub.enable = lib.mkForce true' "$f" || continue
 
-        size=$(grep -oE 'virtualisation\.diskSize = [0-9]+' "$f" | grep -oE '[0-9]+' | head -1)
-        if [ -z "$size" ]; then
-          problems="$problems\n$(basename "$f"): boots via grub but sets no virtualisation.diskSize"
-        elif [ "$size" -lt 4096 ]; then
-          problems="$problems\n$(basename "$f"): virtualisation.diskSize=$size is below the 4096 floor"
+          size=$(grep -oE 'virtualisation\.diskSize = [0-9]+' "$f" | grep -oE '[0-9]+' | head -1)
+          if [ -z "$size" ]; then
+            problems="$problems\n$(basename "$f"): boots via grub but sets no virtualisation.diskSize"
+          elif [ "$size" -lt 4096 ]; then
+            problems="$problems\n$(basename "$f"): virtualisation.diskSize=$size is below the 4096 floor"
+          fi
+        done
+        if [ -n "$problems" ]; then
+          echo "The VM's root disk defaults to 'auto'-sized to the system" >&2
+          echo "closure with zero slack (qemu-vm.nix's additionalSpace =" >&2
+          echo "\"0M\", hardcoded, not exposed as an option). services.swapspace" >&2
+          echo "(homelab/nixos/common.nix) creates its swapfiles at" >&2
+          echo "/var/lib/swapspace, on that same root disk — with no slack" >&2
+          echo "there, it can never allocate any swap, so real memory" >&2
+          echo "pressure goes straight to the OOM killer instead of being" >&2
+          echo "absorbed. This is exactly what OOM-killed coredns mid-test" >&2
+          echo "once VM tests got real internet access and their k3s addons" >&2
+          echo "started actually pulling and running real images (2026-09-22)." >&2
+          echo "Set virtualisation.diskSize to at least 4096 (MiB) on any" >&2
+          echo "grub-booted test node:" >&2
+          printf "%b\n" "$problems" >&2
+          exit 1
         fi
-      done
-      if [ -n "$problems" ]; then
-        echo "The VM's root disk defaults to 'auto'-sized to the system" >&2
-        echo "closure with zero slack (qemu-vm.nix's additionalSpace =" >&2
-        echo "\"0M\", hardcoded, not exposed as an option). services.swapspace" >&2
-        echo "(homelab/nixos/common.nix) creates its swapfiles at" >&2
-        echo "/var/lib/swapspace, on that same root disk — with no slack" >&2
-        echo "there, it can never allocate any swap, so real memory" >&2
-        echo "pressure goes straight to the OOM killer instead of being" >&2
-        echo "absorbed. This is exactly what OOM-killed coredns mid-test" >&2
-        echo "once VM tests got real internet access and their k3s addons" >&2
-        echo "started actually pulling and running real images (2026-09-22)." >&2
-        echo "Set virtualisation.diskSize to at least 4096 (MiB) on any" >&2
-        echo "grub-booted test node:" >&2
-        printf "%b\n" "$problems" >&2
-        exit 1
-      fi
-      touch $out
-    '';
+        touch $out
+      '';
 
     yolabd-migration-ratchet = let
       budget = [
@@ -587,10 +603,7 @@ in let
       execOf = n: toString (svcs.${n}.serviceConfig.ExecStart or "");
       isOneshot = n: (svcs.${n}.serviceConfig.Type or "") == "oneshot";
       remaining = builtins.filter (
-        n:
-          pkgs.lib.hasPrefix "yolab-" n
-          && isOneshot n
-          && pkgs.lib.hasInfix "local-api" (execOf n)
+        n: pkgs.lib.hasPrefix "yolab-" n && isOneshot n && pkgs.lib.hasInfix "local-api" (execOf n)
       ) (builtins.attrNames svcs);
       expected = pkgs.writeText "expected" (
         pkgs.lib.concatStrings (map (n: "${n}\n") (builtins.sort builtins.lessThan budget))
@@ -622,14 +635,17 @@ in let
       svcs = builtins.attrNames nixosSystems.yolab-ci.config.systemd.services;
       timers = builtins.attrNames nixosSystems.yolab-ci.config.systemd.timers;
       known = pkgs.writeText "known-units" (
-        pkgs.lib.concatStrings (
-          (map (n: "${n}.service\n") svcs) ++ (map (n: "${n}.timer\n") timers)
-        )
+        pkgs.lib.concatStrings ((map (n: "${n}.service\n") svcs) ++ (map (n: "${n}.timer\n") timers))
       );
     in
-      pkgs.runCommand "tests-name-units-that-exist" {
-        nativeBuildInputs = [pkgs.gnugrep pkgs.coreutils];
-      } ''
+      pkgs.runCommand "tests-name-units-that-exist"
+      {
+        nativeBuildInputs = [
+          pkgs.gnugrep
+          pkgs.coreutils
+        ];
+      }
+      ''
         LC_ALL=C sort -u ${known} > known
 
         grep -rhoE '[A-Za-z0-9@_.-]+\.(service|timer)' \
@@ -659,9 +675,14 @@ in let
       '';
 
     peer-fanout-goes-through-the-fleet =
-      pkgs.runCommand "peer-fanout-goes-through-the-fleet" {
-        nativeBuildInputs = [pkgs.gnugrep pkgs.diffutils];
-      } ''
+      pkgs.runCommand "peer-fanout-goes-through-the-fleet"
+      {
+        nativeBuildInputs = [
+          pkgs.gnugrep
+          pkgs.diffutils
+        ];
+      }
+      ''
         src=${treeSrc}/homelab/local-api/src
 
         grep -rl 'peer_ipv6' "$src" \
@@ -749,7 +770,10 @@ in let
           };
         };
         "one old card beside a new one pulls the whole machine to the branch both run on" = {
-          got = on [gtx1080 rtx3060];
+          got = on [
+            gtx1080
+            rtx3060
+          ];
           want.nvidia = {
             branch = "legacy_580";
             open = false;
@@ -789,7 +813,10 @@ in let
           };
         };
         "a laptop with an Intel iGPU and an NVIDIA dGPU drives both" = {
-          got = on [iris rtx3060];
+          got = on [
+            iris
+            rtx3060
+          ];
           want = {
             intel = true;
             nvidia.present = true;
@@ -803,20 +830,20 @@ in let
             then matches want.${k} got.${k}
             else want.${k} == got.${k}
         ) (builtins.attrNames want);
-      failures = lib.filter (name: !(matches cases.${name}.want cases.${name}.got)) (builtins.attrNames cases);
+      failures = lib.filter (name: !(matches cases.${name}.want cases.${name}.got)) (
+        builtins.attrNames cases
+      );
 
-      nvidiaReport = builtins.toFile "facter-nvidia.json" (builtins.toJSON {hardware.graphics_card = [rtx3060];});
+      nvidiaReport = builtins.toFile "facter-nvidia.json" (
+        builtins.toJSON {hardware.graphics_card = [rtx3060];}
+      );
       withNvidia = nixosSystems.yolab-ci.extendModules {specialArgs.yolabFacterPath = nvidiaReport;};
       plain = nixosSystems.yolab-ci.config;
       systemProblems =
-        lib.optional plain.hardware.nvidia-container-toolkit.enable
-        "a machine without a report turned the NVIDIA container toolkit on"
-        ++ lib.optional (!plain.hardware.uinput.enable)
-        "game streaming needs /dev/uinput on every machine"
-        ++ lib.optional (!withNvidia.config.hardware.nvidia-container-toolkit.enable)
-        "an NVIDIA report did not turn on the CDI spec the device plugin reads"
-        ++ lib.optional (!(builtins.elem "nvidia" withNvidia.config.services.xserver.videoDrivers))
-        "an NVIDIA report did not load the nvidia driver";
+        lib.optional plain.hardware.nvidia-container-toolkit.enable "a machine without a report turned the NVIDIA container toolkit on"
+        ++ lib.optional (!plain.hardware.uinput.enable) "game streaming needs /dev/uinput on every machine"
+        ++ lib.optional (!withNvidia.config.hardware.nvidia-container-toolkit.enable) "an NVIDIA report did not turn on the CDI spec the device plugin reads"
+        ++ lib.optional (!(builtins.elem "nvidia" withNvidia.config.services.xserver.videoDrivers)) "an NVIDIA report did not load the nvidia driver";
       nvidiaToplevel = withNvidia.config.system.build.toplevel.drvPath;
     in
       pkgs.runCommand "gpu-detection-picks-the-driver-each-card-can-run" {} ''
@@ -829,7 +856,10 @@ in let
 
     a-machine-builds-for-the-processor-it-has = let
       inherit (pkgs) lib;
-      systems = ["x86_64-linux" "aarch64-linux"];
+      systems = [
+        "x86_64-linux"
+        "aarch64-linux"
+      ];
       pick = config: facter: import ./machine-system.nix {inherit config facter systems;};
       cases = {
         "a machine that says nothing is a PC, as every machine before ARM was" = {
@@ -850,10 +880,12 @@ in let
       problems =
         map (n: "machine-system: ${n}") failures
         ++ lib.optional unknown.success "an unsupported processor was accepted instead of stopping the rebuild"
-        ++ lib.optional (nixosSystems.yolab-ci-aarch64.pkgs.stdenv.hostPlatform.system != "aarch64-linux")
-        "the aarch64 CI system is not built for aarch64"
-        ++ lib.optional (nixosSystems.yolab-ci-aarch64._module.specialArgs.localApiEnv.system != "aarch64-linux")
-        "the aarch64 system would run a local-api built for another processor";
+        ++ lib.optional (
+          nixosSystems.yolab-ci-aarch64.pkgs.stdenv.hostPlatform.system != "aarch64-linux"
+        ) "the aarch64 CI system is not built for aarch64"
+        ++ lib.optional (
+          nixosSystems.yolab-ci-aarch64._module.specialArgs.localApiEnv.system != "aarch64-linux"
+        ) "the aarch64 system would run a local-api built for another processor";
     in
       pkgs.runCommand "a-machine-builds-for-the-processor-it-has" {} ''
         ${lib.concatMapStrings (p: "echo ${lib.escapeShellArg p} >&2\n") problems}
@@ -861,20 +893,22 @@ in let
         touch $out
       '';
 
-    device-plugins-run-on-every-processor = pkgs.runCommand "device-plugins-run-on-every-processor" {nativeBuildInputs = [pkgs.gnugrep];} ''
-      manifest=${../homelab/nixos/gpu/device-plugins.yaml}
-      grep -oE 'image: \S+' "$manifest" | sed 's/image: //' > images
-      if grep -v '@sha256:' images; then
-        echo "a device plugin image above is not pinned by digest" >&2
-        exit 1
-      fi
-      if grep 'olfillasodikno/' images; then
-        echo "upstream generic-cdi-plugin is built for x86 only; run the one CI builds for both" >&2
-        exit 1
-      fi
-      grep -q '^ghcr.io/demycode/generic-cdi-plugin:' images
-      touch $out
-    '';
+    device-plugins-run-on-every-processor =
+      pkgs.runCommand "device-plugins-run-on-every-processor" {nativeBuildInputs = [pkgs.gnugrep];}
+      ''
+        manifest=${../homelab/nixos/gpu/device-plugins.yaml}
+        grep -oE 'image: \S+' "$manifest" | sed 's/image: //' > images
+        if grep -v '@sha256:' images; then
+          echo "a device plugin image above is not pinned by digest" >&2
+          exit 1
+        fi
+        if grep 'olfillasodikno/' images; then
+          echo "upstream generic-cdi-plugin is built for x86 only; run the one CI builds for both" >&2
+          exit 1
+        fi
+        grep -q '^ghcr.io/demycode/generic-cdi-plugin:' images
+        touch $out
+      '';
 
     deadnix =
       pkgs.runCommand "deadnix"
