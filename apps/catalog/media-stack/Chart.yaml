@@ -3,12 +3,12 @@ name: media-stack
 description: "Jellyfin with the full *arr stack: requests, automatic downloads behind a Mullvad VPN, subtitles and clean-up, sharing one media library"
 home: https://wiki.servarr.com
 type: application
-version: 0.1.7
+version: 0.1.8
 appVersion: "1"
 
 dependencies:
   - name: yolab-common
-    version: "0.1.11"
+    version: "0.1.12"
     repository: "oci://ghcr.io/demycode/charts"
 
 annotations:

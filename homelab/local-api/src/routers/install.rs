@@ -349,7 +349,9 @@ async fn pinned_chart<H: Host>(
                     _pulled: None,
                 }));
             }
-            log.say(format!("Fetching version {version} of {app_id}, the one the original runs…"));
+            log.say(format!(
+                "Fetching version {version} of {app_id}, the one the original runs…"
+            ));
             let pulled = tempfile::tempdir()?;
             let repos = crate::charts::list_repos(&b.kube).await;
             let dir = crate::charts::fetch_exact(
@@ -454,8 +456,7 @@ async fn apply_chart<H: Host + 'static>(
         payload.reapply(&b.kube).await?;
     }
 
-    if let Err(e) =
-        crate::saved_chart::save(&b.host, &b.kube, &staged.ns, &staged.chart_dir).await
+    if let Err(e) = crate::saved_chart::save(&b.host, &b.kube, &staged.ns, &staged.chart_dir).await
     {
         log.say(format!(
             "[WARN] could not keep a copy of this app's chart ({e:#}) — copying this app later will fetch version {} again",

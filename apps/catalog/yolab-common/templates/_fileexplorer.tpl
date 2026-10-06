@@ -157,11 +157,15 @@ stringData:
   securityContext:
     runAsUser: 0
     runAsGroup: 0
+  env:
+    {{- include "yolab-common.podNamespaceEnv" . | nindent 4 }}
   command:
     - /bin/sh
     - -c
     - |
       set -eu
+      {{- include "yolab-common.claimState" . | nindent 6 }}
+      claim_state /var/lib/tor
       mkdir -p /var/lib/tor/service
       chown -R 100:101 /var/lib/tor
       chmod 700 /var/lib/tor /var/lib/tor/service
@@ -330,11 +334,14 @@ data:
       value: ""
     - name: TS_TAILSCALED_EXTRA_ARGS
       value: "--port=0"
+    {{- include "yolab-common.podNamespaceEnv" . | nindent 4 }}
   command:
     - /bin/sh
     - -c
     - |
       set -u
+      {{- include "yolab-common.claimState" . | nindent 6 }}
+      claim_state /var/lib/tailscale
       /usr/local/bin/containerboot &
       pid=$!
       while kill -0 "$pid" 2>/dev/null; do

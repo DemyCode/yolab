@@ -608,16 +608,9 @@ mod tests {
             .await;
             let host = FakeHost::new().ok("helm pull", "");
             let dest = tempfile::tempdir().unwrap();
-            let dir = fetch_exact(
-                &host,
-                dest.path(),
-                &[repo],
-                "notes",
-                "1.2.3",
-                "community",
-            )
-            .await
-            .unwrap();
+            let dir = fetch_exact(&host, dest.path(), &[repo], "notes", "1.2.3", "community")
+                .await
+                .unwrap();
             assert_eq!(dir, dest.path().join("notes"));
             assert!(host.ran("helm pull oci://ghcr.io/x/charts/notes --version 1.2.3 --untar"));
             assert!(!host.ran("--version 9.0.0"));

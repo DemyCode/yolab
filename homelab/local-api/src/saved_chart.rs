@@ -173,7 +173,9 @@ mod tests {
     #[tokio::test]
     async fn a_package_helm_did_not_produce_is_an_error_not_an_empty_chart() {
         let host = FakeHost::new().ok("helm package", "");
-        let e = package(&host, Path::new("/nowhere/notes")).await.unwrap_err();
+        let e = package(&host, Path::new("/nowhere/notes"))
+            .await
+            .unwrap_err();
         assert!(e.to_string().contains("no chart"), "{e}");
     }
 
@@ -183,7 +185,9 @@ mod tests {
             "helm package",
             "found in Chart.yaml, but missing in charts/ directory: yolab-common",
         );
-        let e = package(&host, Path::new("/nowhere/notes")).await.unwrap_err();
+        let e = package(&host, Path::new("/nowhere/notes"))
+            .await
+            .unwrap_err();
         assert!(e.to_string().contains("missing in charts/"), "{e}");
     }
 
@@ -226,7 +230,8 @@ mod tests {
         let root = unpacked.chart_dir();
         assert!(root.join("values.schema.json").is_file());
         assert!(
-            root.join("charts/yolab-common/templates/_gateway.tpl").is_file(),
+            root.join("charts/yolab-common/templates/_gateway.tpl")
+                .is_file(),
             "the library the app renders with must travel with it"
         );
     }

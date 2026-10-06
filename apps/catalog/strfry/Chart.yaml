@@ -3,11 +3,11 @@ name: strfry
 description: "Nostr relay"
 home: https://github.com/hoytech/strfry
 type: application
-version: 0.1.12
+version: 0.1.13
 
 dependencies:
   - name: yolab-common
-    version: "0.1.11"
+    version: "0.1.12"
     repository: "oci://ghcr.io/demycode/charts"
 
 annotations:

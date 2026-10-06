@@ -516,6 +516,25 @@ def claim_mounts(spec, container):
             yield claims[m["name"]], m.get("subPath", ""), m.get("readOnly") is True
 
 
+def state_claimed(spec, sidecar, state):
+    for c in list(spec.get("initContainers") or []) + [sidecar]:
+        script = "\n".join((c.get("command") or []) + (c.get("args") or []))
+        namespace = {
+            e["name"]: ((e.get("valueFrom") or {}).get("fieldRef") or {}).get(
+                "fieldPath"
+            )
+            for e in c.get("env") or []
+        }.get("POD_NAMESPACE")
+        if namespace != "metadata.namespace":
+            continue
+        for m in c.get("volumeMounts") or []:
+            if not m.get("subPath", "").strip('"').endswith(f"/{state}"):
+                continue
+            if f"claim_state {m['mountPath']}\n" in script + "\n":
+                return True
+    return False
+
+
 def explorer_pod(docs):
     for name, spec in pod_specs(docs):
         if any(
@@ -764,6 +783,12 @@ def check_private_access(app, docs, offered, fail):
                 f"the {want['container']} container keeps no state on the app's "
                 f"volume, so its address changes on every restart and is lost on restore",
             )
+        if not state_claimed(spec, c, want["state"]):
+            fail(
+                app,
+                f"nothing claims the {want['container']} state for this namespace "
+                f"before it starts, so a copy would run with the original's identity",
+            )
         site = f"http://:{want['port']} {{\n  bind 127.0.0.1\n"
         if site not in caddyfile:
             fail(
@@ -847,6 +872,12 @@ def check_file_explorer_ways(app, docs, fail):
                 app,
                 f"the {want['container']} container keeps no state of its own on "
                 f"the app's volume, so its address changes on every restart",
+            )
+        if not state_claimed(spec, c, want["state"]):
+            fail(
+                app,
+                f"nothing claims the {want['container']} state for this namespace "
+                f"before it starts, so a copy would run with the original's identity",
             )
         site = f"http://:{want['port']} {{\n  bind 127.0.0.1\n  basic_auth {{"
         if site not in caddyfile:

@@ -15,6 +15,25 @@
 {{- if (((.Values.config).tailscale_enabled)) -}}true{{- end -}}
 {{- end -}}
 
+{{- define "yolab-common.claimState" -}}
+claim_state() {
+  dir=$1
+  owner=$(cat "$dir/.yolab-owner" 2>/dev/null || true)
+  if [ -n "$owner" ] && [ "$owner" != "$POD_NAMESPACE" ]; then
+    echo "$dir was copied from $owner, which may still be running with it; starting with a fresh identity"
+    rm -rf "$dir"/* "$dir"/.[!.]*
+  fi
+  printf "%s\n" "$POD_NAMESPACE" > "$dir/.yolab-owner"
+}
+{{- end -}}
+
+{{- define "yolab-common.podNamespaceEnv" -}}
+- name: POD_NAMESPACE
+  valueFrom:
+    fieldRef:
+      fieldPath: metadata.namespace
+{{- end -}}
+
 {{- define "yolab-common.tor.port" -}}18792{{- end -}}
 
 {{- define "yolab-common.tailscale.port" -}}18791{{- end -}}
@@ -79,11 +98,15 @@ data:
   securityContext:
     runAsUser: 0
     runAsGroup: 0
+  env:
+    {{- include "yolab-common.podNamespaceEnv" . | nindent 4 }}
   command:
     - /bin/sh
     - -c
     - |
       set -eu
+      {{- include "yolab-common.claimState" . | nindent 6 }}
+      claim_state /var/lib/tor
       mkdir -p /var/lib/tor/service
       chown -R 100:101 /var/lib/tor
       chmod 700 /var/lib/tor /var/lib/tor/service
@@ -151,11 +174,14 @@ data:
       value: /etc/yolab-tailscale/serve.json
     - name: TS_KUBE_SECRET
       value: ""
+    {{- include "yolab-common.podNamespaceEnv" . | nindent 4 }}
   command:
     - /bin/sh
     - -c
     - |
       set -u
+      {{- include "yolab-common.claimState" . | nindent 6 }}
+      claim_state /var/lib/tailscale
       /usr/local/bin/containerboot &
       pid=$!
       while kill -0 "$pid" 2>/dev/null; do

@@ -3,12 +3,12 @@ name: metube
 description: "Web front-end for yt-dlp video downloads"
 home: https://github.com/alexta69/metube
 type: application
-version: 0.1.12
+version: 0.1.13
 appVersion: "2024"
 
 dependencies:
   - name: yolab-common
-    version: "0.1.11"
+    version: "0.1.12"
     repository: "oci://ghcr.io/demycode/charts"
 
 annotations:

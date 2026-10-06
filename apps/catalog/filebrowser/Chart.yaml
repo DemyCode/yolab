@@ -3,12 +3,12 @@ name: filebrowser
 description: Web-based file manager for your storage (FileBrowser Quantum)
 home: https://github.com/gtsteffaniak/filebrowser
 type: application
-version: 0.1.15
+version: 0.1.16
 appVersion: "2.1.0-beta"
 
 dependencies:
   - name: yolab-common
-    version: "0.1.11"
+    version: "0.1.12"
     repository: "oci://ghcr.io/demycode/charts"
 
 annotations:

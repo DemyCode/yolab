@@ -1,3 +1,6 @@
+import os
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -1154,6 +1157,60 @@ class PrivateAccessRendered(RenderedChart):
         self.assertIn("release/tor", read_only)
         self.assertIn("release/tailscale", read_only)
 
+    def init(self, docs, name):
+        spec = self.deployments(docs)["gateway"]
+        return next(c for c in spec["initContainers"] if c["name"] == name)
+
+    def test_an_onion_key_nobody_claims_for_this_namespace_is_reported(self):
+        docs = self.docs(PRIVATE_ON)
+        init = self.init(docs, "tor-state")
+        init["command"][-1] = init["command"][-1].replace(
+            "claim_state /var/lib/tor\n", ""
+        )
+        found = []
+        check_charts.check_private_access(
+            "vaultwarden", docs, ["tor_enabled"], lambda app, msg: found.append(msg)
+        )
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("a copy would run with the original's identity", found[0])
+
+    def test_a_copied_identity_is_wiped_and_this_namespace_s_own_is_kept(self):
+        script = self.init(self.docs(PRIVATE_ON), "tor-state")["command"][-1]
+        start = script.index("claim_state() {")
+        claim = script[start : script.index("\n}\n", start) + 3]
+        with tempfile.TemporaryDirectory() as root:
+
+            def state(name, owner):
+                d = os.path.join(root, name)
+                os.makedirs(os.path.join(d, "service"))
+                Path(d, "service", "hs_ed25519_secret_key").write_text("key")
+                if owner:
+                    Path(d, ".yolab-owner").write_text(owner + "\n")
+                return d
+
+            copied = state("copied", "yolab-vaultwarden-ab12")
+            own = state("own", "yolab-vaultwarden-cd34")
+            legacy = state("legacy", None)
+            calls = "".join(f'claim_state "{d}"\n' for d in (copied, own, legacy))
+            subprocess.run(
+                ["sh", "-c", f"set -eu\n{claim}{calls}"],
+                env={**os.environ, "POD_NAMESPACE": "yolab-vaultwarden-cd34"},
+                check=True,
+                capture_output=True,
+            )
+            for d in (copied, own, legacy):
+                self.assertEqual(
+                    Path(d, ".yolab-owner").read_text(), "yolab-vaultwarden-cd34\n", d
+                )
+            self.assertFalse(
+                Path(copied, "service").exists(), "the copy gets a new onion"
+            )
+            self.assertTrue(Path(own, "service", "hs_ed25519_secret_key").exists())
+            self.assertTrue(
+                Path(legacy, "service", "hs_ed25519_secret_key").exists(),
+                "state from before ownership is this app's own",
+            )
+
     def test_a_sidecar_pointed_elsewhere_is_reported(self):
         docs = self.docs(PRIVATE_ON)
         for d in docs:
@@ -1319,6 +1376,21 @@ class FileExplorerWaysRendered(RenderedChart):
             self.names(self.gateway(docs), "initContainers"),
         )
         self.assertEqual(self.ways_failures(docs), [])
+
+    def test_an_explorer_tailscale_identity_nobody_claims_is_reported(self):
+        docs = self.docs(EXPLORER_WAYS_ON)
+        sidecar = next(
+            c
+            for c in self.gateway(docs)["containers"]
+            if c["name"] == "file-explorer-tailscale"
+        )
+        sidecar["command"][-1] = sidecar["command"][-1].replace(
+            "claim_state /var/lib/tailscale\n", ""
+        )
+        found = self.ways_failures(docs)
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("file-explorer-tailscale", found[0])
+        self.assertIn("a copy would run with the original's identity", found[0])
 
     def test_the_explorer_s_tailscale_cannot_be_switched_on_without_its_own_key(self):
         text, err = check_charts.render(

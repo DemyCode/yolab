@@ -3,11 +3,11 @@ name: immich
 description: "Self-hosted photo and video backup"
 home: https://immich.app
 type: application
-version: 0.2.7
+version: 0.2.8
 
 dependencies:
   - name: yolab-common
-    version: "0.1.11"
+    version: "0.1.12"
     repository: "oci://ghcr.io/demycode/charts"
 
 annotations:

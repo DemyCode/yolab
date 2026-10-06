@@ -590,9 +590,8 @@ pub(crate) fn way_in_refused(
         Some(v) => v == &Value::Bool(true),
         None => yolab,
     };
-    let explorer_reachable = explorer_yolab
-        || on("file_explorer_tor_enabled")
-        || on("file_explorer_tailscale_enabled");
+    let explorer_reachable =
+        explorer_yolab || on("file_explorer_tor_enabled") || on("file_explorer_tailscale_enabled");
     (on("file_explorer_enabled") && !explorer_reachable).then_some(
         "Turn on at least one way to reach the file explorer: its YoLab address, Tor or Tailscale. Or switch the file explorer off.",
     )
@@ -1631,8 +1630,7 @@ pub(crate) async fn stage_install(
 ) -> anyhow::Result<StagedInstall> {
     let tunnel_cfg =
         tunnel_config(cfg).map_err(|_| anyhow::anyhow!("could not read tunnel config"))?;
-    let (ns, repo, chart_dir, meta) =
-        open_app_namespace(client, id, instance_name, chart).await?;
+    let (ns, repo, chart_dir, meta) = open_app_namespace(client, id, instance_name, chart).await?;
     ensure_tunnel_credentials(client, &ns, &tunnel_cfg)
         .await
         .map_err(|e| anyhow::anyhow!("stage tunnel credentials: {e}"))?;
