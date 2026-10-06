@@ -1,0 +1,210 @@
+{{ include "yolab-common.caddyConfigMap" . }}
+---
+{{ include "yolab-common.fileExplorerSecret" . }}
+---
+{{ include "yolab-common.fileExplorerConfigMap" . }}
+---
+{{ include "yolab-common.privateAccessResources" . }}
+---
+{{ include "yolab-common.uninstallHook" . }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-data
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: yolab-cephfs
+  resources:
+    requests:
+      storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      initContainers:
+      {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessInit" . | nindent 6 }}
+      containers:
+      {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
+      - name: monetr
+        image: ghcr.io/monetr/monetr:1.17.1@sha256:372d05fa06423e59f1cb7c09df7d612a0d38ef2bcefab2bc928ec48644cefa77
+        imagePullPolicy: IfNotPresent
+        args:
+        - serve
+        - --migrate
+        - --generate-certificates
+        env:
+        - name: MONETR_ALLOW_SIGN_UP
+          value: ${MONETR_ALLOW_SIGN_UP:-true}
+        - name: MONETR_PROOF_OF_WORK_ENABLED
+          value: ${MONETR_PROOF_OF_WORK_ENABLED:-false}
+        - name: MONETR_PG_USERNAME
+          value: postgres
+        - name: MONETR_PG_PASSWORD
+          value: m0netrPass123
+        - name: MONETR_PG_DATABASE
+          value: monetr
+        - name: MONETR_PG_ADDRESS
+          value: db
+        - name: MONETR_PG_PORT
+          value: '5432'
+        - name: MONETR_REDIS_ENABLED
+          value: 'true'
+        - name: MONETR_REDIS_ADDRESS
+          value: valkey
+        - name: MONETR_REDIS_PORT
+          value: '6379'
+        - name: MONETR_STORAGE_ENABLED
+          value: ${MONETR_STORAGE_ENABLED:-true}
+        - name: MONETR_STORAGE_PROVIDER
+          value: ${MONETR_STORAGE_PROVIDER:-filesystem}
+        securityContext:
+          runAsUser: 1000
+          runAsGroup: 1000
+        ports:
+        - containerPort: 4000
+        readinessProbe:
+          tcpSocket:
+            port: 4000
+        volumeMounts:
+        - name: data
+          mountPath: /etc/monetr
+          subPath: '{{ .Release.Name }}/data/app'
+      volumes:
+      {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: db
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: db
+  template:
+    metadata:
+      labels:
+        app: db
+    spec:
+      containers:
+      - name: db
+        image: postgres:17.9@sha256:7ad98329d513dd497293b951c195ca354274a77f12ddbbbbf85e68a811823d72
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: POSTGRES_PASSWORD
+          value: m0netrPass123
+        - name: POSTGRES_USER
+          value: postgres
+        - name: POSTGRES_DB
+          value: monetr
+        securityContext:
+          runAsUser: 1000
+          runAsGroup: 1000
+        ports:
+        - containerPort: 5432
+        readinessProbe:
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - pg_isready -U postgres || exit 1
+          periodSeconds: 10
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/postgresql/data
+          subPath: '{{ .Release.Name }}/data/db'
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: '{{ .Release.Name }}-data'
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: db
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  selector:
+    app: db
+  ports:
+  - port: 5432
+    targetPort: 5432
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: valkey
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: valkey
+  template:
+    metadata:
+      labels:
+        app: valkey
+    spec:
+      containers:
+      - name: valkey
+        image: valkey/valkey:9@sha256:3b55fbaa0cd93cf0d9d961f405e4dfcc70efe325e2d84da207a0a8e6d8fde4f9
+        imagePullPolicy: IfNotPresent
+        securityContext:
+          runAsUser: 1000
+          runAsGroup: 1000
+        ports:
+        - containerPort: 6379
+        readinessProbe:
+          exec:
+            command:
+            - valkey-cli
+            - ping
+          periodSeconds: 10
+        volumeMounts:
+        - name: data
+          mountPath: /data
+          subPath: '{{ .Release.Name }}/data/valkey'
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: '{{ .Release.Name }}-data'
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: valkey
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  selector:
+    app: valkey
+  ports:
+  - port: 6379
+    targetPort: 6379

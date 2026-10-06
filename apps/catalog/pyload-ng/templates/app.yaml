@@ -1,0 +1,74 @@
+{{ include "yolab-common.caddyConfigMap" . }}
+---
+{{ include "yolab-common.fileExplorerSecret" . }}
+---
+{{ include "yolab-common.fileExplorerConfigMap" . }}
+---
+{{ include "yolab-common.privateAccessResources" . }}
+---
+{{ include "yolab-common.uninstallHook" . }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-data
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: yolab-cephfs
+  resources:
+    requests:
+      storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      initContainers:
+      {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessInit" . | nindent 6 }}
+      containers:
+      {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
+      - name: web
+        image: linuxserver/pyload-ng:0.5.0@sha256:0ef3e1d15183eb7f517742afe2f75b42c1d58e14640f8d5741f6e88d2d7b9ab5
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: PUID
+          value: '1000'
+        - name: PGID
+          value: '1000'
+        - name: TZ
+          value: Etc/UTC
+        ports:
+        - containerPort: 8000
+        readinessProbe:
+          tcpSocket:
+            port: 8000
+        volumeMounts:
+        - name: data
+          mountPath: /config
+          subPath: '{{ .Release.Name }}/data/config'
+        - name: data
+          mountPath: /downloads
+          subPath: '{{ .Release.Name }}/storage/downloads'
+      volumes:
+      {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}

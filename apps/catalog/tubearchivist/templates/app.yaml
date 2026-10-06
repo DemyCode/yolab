@@ -1,0 +1,222 @@
+{{ include "yolab-common.caddyConfigMap" . }}
+---
+{{ include "yolab-common.fileExplorerSecret" . }}
+---
+{{ include "yolab-common.fileExplorerConfigMap" . }}
+---
+{{ include "yolab-common.privateAccessResources" . }}
+---
+{{ include "yolab-common.uninstallHook" . }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-data
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: yolab-cephfs
+  resources:
+    requests:
+      storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Release.Name }}-secrets
+  namespace: {{ .Release.Namespace }}
+type: Opaque
+stringData:
+  admin_password: {{ required "config.admin_password is required" .Values.config.admin_password | quote }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      initContainers:
+      {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessInit" . | nindent 6 }}
+      containers:
+      {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
+      - name: server
+        image: bbilly1/tubearchivist:v0.5.12@sha256:ba1c846ddd0c6fdd0f040727129d2466e03b7a0c26499223839d450c7586ac09
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: APP_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: admin_password
+        - name: ES_URL
+          value: http://elasticsearch:9200
+        - name: REDIS_CON
+          value: redis://redis:6379
+        - name: HOST_UID
+          value: '1000'
+        - name: HOST_GID
+          value: '1000'
+        - name: TA_HOST
+          value: http://localhost:8079
+        - name: TA_USERNAME
+          value: admin
+        - name: TA_PASSWORD
+          value: $(APP_PASSWORD)
+        - name: ELASTIC_PASSWORD
+          value: verysecret
+        - name: TZ
+          value: UTC
+        ports:
+        - containerPort: 8000
+        readinessProbe:
+          tcpSocket:
+            port: 8000
+        volumeMounts:
+        - name: data
+          mountPath: /youtube
+          subPath: '{{ .Release.Name }}/data/media'
+        - name: data
+          mountPath: /cache
+          subPath: '{{ .Release.Name }}/data/cache'
+      volumes:
+      {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      containers:
+      - name: redis
+        image: redis:8.2.2-bookworm@sha256:4521b581dbddea6e7d81f8fe95ede93f5648aaa66a9dacd581611bf6fe7527bd
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: APP_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: admin_password
+        securityContext:
+          runAsUser: 1000
+          runAsGroup: 1000
+        ports:
+        - containerPort: 6379
+        readinessProbe:
+          tcpSocket:
+            port: 6379
+        volumeMounts:
+        - name: data
+          mountPath: /data
+          subPath: '{{ .Release.Name }}/data/redis'
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: '{{ .Release.Name }}-data'
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  selector:
+    app: redis
+  ports:
+  - port: 6379
+    targetPort: 6379
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: elasticsearch
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: elasticsearch
+  template:
+    metadata:
+      labels:
+        app: elasticsearch
+    spec:
+      containers:
+      - name: elasticsearch
+        image: elasticsearch:8.19.6@sha256:e2d7e20893ad820bcad241bf47b89958787f6b38225478dfe100b66937840b0f
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: APP_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: admin_password
+        - name: ELASTIC_PASSWORD
+          value: verysecret
+        - name: ES_JAVA_OPTS
+          value: -Xms1g -Xmx1g
+        - name: xpack.security.enabled
+          value: 'true'
+        - name: discovery.type
+          value: single-node
+        - name: path.repo
+          value: /usr/share/elasticsearch/data/snapshot
+        securityContext:
+          runAsUser: 1000
+          runAsGroup: 1000
+        ports:
+        - containerPort: 9200
+        readinessProbe:
+          tcpSocket:
+            port: 9200
+        volumeMounts:
+        - name: data
+          mountPath: /usr/share/elasticsearch/data
+          subPath: '{{ .Release.Name }}/data/elasticsearch'
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: '{{ .Release.Name }}-data'
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: elasticsearch
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  selector:
+    app: elasticsearch
+  ports:
+  - port: 9200
+    targetPort: 9200

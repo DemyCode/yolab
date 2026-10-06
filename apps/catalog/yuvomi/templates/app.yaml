@@ -1,0 +1,96 @@
+{{ include "yolab-common.caddyConfigMap" . }}
+---
+{{ include "yolab-common.fileExplorerSecret" . }}
+---
+{{ include "yolab-common.fileExplorerConfigMap" . }}
+---
+{{ include "yolab-common.privateAccessResources" . }}
+---
+{{ include "yolab-common.uninstallHook" . }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-data
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: yolab-cephfs
+  resources:
+    requests:
+      storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Release.Name }}-secrets
+  namespace: {{ .Release.Namespace }}
+type: Opaque
+stringData:
+  app_secret: {{ required "config.app_secret is required" .Values.config.app_secret | quote }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      initContainers:
+      {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessInit" . | nindent 6 }}
+      containers:
+      {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
+      - name: web
+        image: ghcr.io/ulsklyc/yuvomi:2.71.0@sha256:77a38913e83d7f68d2211b7455718f9aa0d97130362b5bf4baf5512bb97a9177
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: APP_SEED
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: app_secret
+        - name: NODE_ENV
+          value: production
+        - name: PORT
+          value: '3000'
+        - name: DB_PATH
+          value: /data/yuvomi.db
+        - name: BACKUP_DIR
+          value: /backups
+        - name: SESSION_SECRET
+          value: $(APP_SEED)
+        - name: DB_ENCRYPTION_KEY
+          value: $(APP_SEED)
+        - name: SESSION_SECURE
+          value: 'false'
+        ports:
+        - containerPort: 3000
+        readinessProbe:
+          tcpSocket:
+            port: 3000
+        volumeMounts:
+        - name: data
+          mountPath: /data
+          subPath: '{{ .Release.Name }}/data/app'
+        - name: data
+          mountPath: /backups
+          subPath: '{{ .Release.Name }}/data/backups'
+      volumes:
+      {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}

@@ -1,0 +1,18 @@
+apiVersion: v2
+name: jupyterlab
+description: Next-generation web interface for interactive computing and data science
+type: application
+version: 0.1.0
+appVersion: v4.6.4
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: JupyterLab
+  yolab.io/icon: 🛠
+  yolab.io/category: developer
+  yolab.io/tagline: Next-generation web interface for interactive computing and
+  yolab.io/github: jupyterlab/jupyterlab
+  yolab.io/collections: for-developers
+home: https://jupyterlab.readthedocs.io/en/latest/

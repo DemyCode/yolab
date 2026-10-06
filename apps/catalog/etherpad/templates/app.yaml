@@ -1,0 +1,191 @@
+{{ include "yolab-common.caddyConfigMap" . }}
+---
+{{ include "yolab-common.fileExplorerSecret" . }}
+---
+{{ include "yolab-common.fileExplorerConfigMap" . }}
+---
+{{ include "yolab-common.privateAccessResources" . }}
+---
+{{ include "yolab-common.uninstallHook" . }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-data
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: yolab-cephfs
+  resources:
+    requests:
+      storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Release.Name }}-secrets
+  namespace: {{ .Release.Namespace }}
+type: Opaque
+stringData:
+  admin_password: {{ required "config.admin_password is required" .Values.config.admin_password | quote }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      initContainers:
+      {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessInit" . | nindent 6 }}
+      containers:
+      {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
+      - name: app
+        image: etherpad/etherpad:3.3.7@sha256:6f87beef31d91e4a44c7e3fe64043dd294f70443a80267a77267bdac704819a1
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: APP_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: admin_password
+        - name: NODE_ENV
+          value: production
+        - name: CI
+          value: 'true'
+        - name: ADMIN_PASSWORD
+          value: $(APP_PASSWORD)
+        - name: DB_CHARSET
+          value: utf8mb4
+        - name: DB_HOST
+          value: postgres
+        - name: DB_NAME
+          value: etherpad
+        - name: DB_PASS
+          value: admin
+        - name: DB_PORT
+          value: '5432'
+        - name: DB_TYPE
+          value: postgres
+        - name: DB_USER
+          value: admin
+        - name: DEFAULT_PAD_TEXT
+          value: ''
+        - name: DISABLE_IP_LOGGING
+          value: 'false'
+        - name: LOGLEVEL
+          value: INFO
+        - name: SOFFICE
+          value: ''
+        - name: ALLOW_UNKNOWN_FILE_ENDS
+          value: 'true'
+        - name: TRUST_PROXY
+          value: 'true'
+        - name: SKIN_NAME
+          value: colibris
+        - name: SKIN_VARIANTS
+          value: super-light-toolbar super-light-editor light-background
+        - name: SHOW_SETTINGS_IN_ADMIN_PAGE
+          value: 'true'
+        - name: SUPPRESS_ERRORS_IN_PAD_TEXT
+          value: 'false'
+        securityContext:
+          runAsUser: 5001
+          runAsGroup: 0
+        ports:
+        - containerPort: 9001
+        readinessProbe:
+          tcpSocket:
+            port: 9001
+        volumeMounts:
+        - name: data
+          mountPath: /opt/etherpad-lite/src/plugin_packages
+          subPath: '{{ .Release.Name }}/data/plugins'
+        - name: data
+          mountPath: /opt/etherpad-lite/var
+          subPath: '{{ .Release.Name }}/data/etherpad-var'
+      volumes:
+      {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:15-alpine@sha256:93a6166360be8f1d116b7ea97ebb8dea9e2c9c746349e952738bbba72a961d7c
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: APP_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: admin_password
+        - name: POSTGRES_DB
+          value: etherpad
+        - name: POSTGRES_PASSWORD
+          value: admin
+        - name: POSTGRES_PORT
+          value: '5432'
+        - name: POSTGRES_USER
+          value: admin
+        - name: PGDATA
+          value: /var/lib/postgresql/data/pgdata
+        securityContext:
+          runAsUser: 1000
+          runAsGroup: 1000
+        ports:
+        - containerPort: 5432
+        readinessProbe:
+          tcpSocket:
+            port: 5432
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/postgresql/data/pgdata
+          subPath: '{{ .Release.Name }}/data/postgres_data'
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: '{{ .Release.Name }}-data'
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  selector:
+    app: postgres
+  ports:
+  - port: 5432
+    targetPort: 5432

@@ -1,0 +1,18 @@
+apiVersion: v2
+name: archivebox
+description: Open-source self-hosted web archiving
+type: application
+version: 0.1.0
+appVersion: 0.9.71
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: ArchiveBox
+  yolab.io/icon: 📁
+  yolab.io/category: files
+  yolab.io/tagline: Open-source self-hosted web archiving
+  yolab.io/github: ArchiveBox/ArchiveBox
+  yolab.io/collections: replace-google
+home: https://archivebox.io

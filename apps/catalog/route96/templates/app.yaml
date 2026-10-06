@@ -1,0 +1,187 @@
+{{ include "yolab-common.caddyConfigMap" . }}
+---
+{{ include "yolab-common.fileExplorerSecret" . }}
+---
+{{ include "yolab-common.fileExplorerConfigMap" . }}
+---
+{{ include "yolab-common.privateAccessResources" . }}
+---
+{{ include "yolab-common.uninstallHook" . }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-data
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: yolab-cephfs
+  resources:
+    requests:
+      storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: '{{ .Release.Name }}-seed'
+  namespace: '{{ .Release.Namespace }}'
+binaryData:
+  f0: IyBMaXN0ZW4gYWRkcmVzcyBmb3Igd2Vic2VydmVyCmxpc3RlbjogIjAuMC4wLjA6ODAwMiIKCiMgRGF0YWJhc2UgY29ubmVjdGlvbiBzdHJpbmcgKE15U1FML01hcmlhREIpCmRhdGFiYXNlOiAibXlzcWw6Ly9yb3V0ZTk2Om1vbmV5cHJpbnRlcmdvYnJyckByb3V0ZTk2X2RiXzE6MzMwNi9yb3V0ZTk2IgoKIyBEaXJlY3RvcnkgdG8gc3RvcmUgdXBsb2FkcwpzdG9yYWdlX2RpcjogIi9hcHAvZGF0YSIKCiMgTWF4aW11bSBzdXBwb3J0ZWQgZmlsZSBzaXplIGZvciB1cGxvYWRpbmcgKDEwMCBNQikKbWF4X3VwbG9hZF9ieXRlczogMTA0ODU3NjAwCg==
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      initContainers:
+      {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessInit" . | nindent 6 }}
+      - name: seed
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - 'set -e
+
+          D=/data/{{ .Release.Name }}/data
+
+          [ -e "$D/config.yaml" ] || cp /seed/f0 "$D/config.yaml"
+
+          '
+        volumeMounts:
+        - name: seed
+          mountPath: /seed
+          readOnly: true
+        - name: data
+          mountPath: /data
+      containers:
+      {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
+      - name: server
+        image: voidic/route96:v0.7.0@sha256:5ab6064f18ca191dd5836487505607122ef3bfeba6e6ccc5b28eef5c604cf4cc
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: RUST_LOG
+          value: info
+        - name: APP_PUBLIC_URL
+          value: http://localhost:8002
+        securityContext:
+          runAsUser: 1000
+          runAsGroup: 1000
+        ports:
+        - containerPort: 8002
+        readinessProbe:
+          tcpSocket:
+            port: 8002
+        volumeMounts:
+        - name: data
+          mountPath: /app/data
+          subPath: '{{ .Release.Name }}/data/uploads'
+        - name: data
+          mountPath: /app/config.yaml
+          subPath: '{{ .Release.Name }}/data/config.yaml'
+      volumes:
+      {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}
+      - name: seed
+        configMap:
+          name: '{{ .Release.Name }}-seed'
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: db
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: db
+  template:
+    metadata:
+      labels:
+        app: db
+    spec:
+      containers:
+      - name: db
+        image: mariadb:11.2.4@sha256:e9ea1dbab6783ff0281e41e3357d950a5f598b2033559b8443e03b181807910b
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: MYSQL_ROOT_PASSWORD
+          value: moneyprintergobrrr
+        - name: MYSQL_USER
+          value: route96
+        - name: MYSQL_PASSWORD
+          value: moneyprintergobrrr
+        - name: MYSQL_DATABASE
+          value: route96
+        securityContext:
+          runAsUser: 1000
+          runAsGroup: 1000
+        ports:
+        - containerPort: 3306
+        readinessProbe:
+          tcpSocket:
+            port: 3306
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/mysql
+          subPath: '{{ .Release.Name }}/data/db'
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: '{{ .Release.Name }}-data'
+      - name: seed
+        configMap:
+          name: '{{ .Release.Name }}-seed'
+      initContainers:
+      - name: seed
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - 'set -e
+
+          D=/data/{{ .Release.Name }}/data
+
+          [ -e "$D/config.yaml" ] || cp /seed/f0 "$D/config.yaml"
+
+          '
+        volumeMounts:
+        - name: seed
+          mountPath: /seed
+          readOnly: true
+        - name: data
+          mountPath: /data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: db
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  selector:
+    app: db
+  ports:
+  - port: 3306
+    targetPort: 3306

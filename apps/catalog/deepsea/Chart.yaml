@@ -1,0 +1,17 @@
+apiVersion: v2
+name: deepsea
+description: Retro style Ocean dashboard
+type: application
+version: 0.1.0
+appVersion: 2.0.4-patch.1
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: DeepSea Dashboard
+  yolab.io/icon: ₿
+  yolab.io/category: bitcoin
+  yolab.io/tagline: Retro style Ocean dashboard
+  yolab.io/github: Djobleezy/DeepSea-Dashboard
+home: https://github.com/Djobleezy/DeepSea-Dashboard

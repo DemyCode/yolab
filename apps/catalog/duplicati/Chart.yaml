@@ -1,0 +1,18 @@
+apiVersion: v2
+name: duplicati
+description: Store securely encrypted backups in the cloud
+type: application
+version: 0.1.0
+appVersion: v2.4.0.0_stable_2026-09-03-patch.1
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: Duplicati
+  yolab.io/icon: 📁
+  yolab.io/category: files
+  yolab.io/tagline: Store securely encrypted backups in the cloud
+  yolab.io/github: duplicati/duplicati
+  yolab.io/collections: replace-google
+home: https://duplicati.com/

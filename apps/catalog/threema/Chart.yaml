@@ -1,0 +1,18 @@
+apiVersion: v2
+name: threema
+description: An intuitive and secure web client for Threema users
+type: application
+version: 0.1.0
+appVersion: 2.6.5
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: Threema Web
+  yolab.io/icon: 📁
+  yolab.io/category: files
+  yolab.io/tagline: An intuitive and secure web client for Threema users
+  yolab.io/github: threema-ch/threema-web
+  yolab.io/collections: replace-google
+home: https://threema.ch/

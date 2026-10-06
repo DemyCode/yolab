@@ -1,0 +1,18 @@
+apiVersion: v2
+name: omnitools
+description: An all-in-one collection of powerful web-based tools for everyday tasks
+type: application
+version: 0.1.0
+appVersion: 0.6.0
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: OmniTools
+  yolab.io/icon: 📁
+  yolab.io/category: files
+  yolab.io/tagline: An all-in-one collection of powerful web-based tools for
+  yolab.io/github: iib0011/omni-tools
+  yolab.io/collections: replace-google
+home: https://omnitools.app/

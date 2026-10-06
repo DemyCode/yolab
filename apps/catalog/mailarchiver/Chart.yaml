@@ -1,0 +1,18 @@
+apiVersion: v2
+name: mailarchiver
+description: A comprehensive solution for archiving, searching, and exporting emails
+type: application
+version: 0.1.0
+appVersion: '2609.1'
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: Mail Archiver
+  yolab.io/icon: 📁
+  yolab.io/category: files
+  yolab.io/tagline: A comprehensive solution for archiving, searching, and
+  yolab.io/github: s1t5/mail-archiver
+  yolab.io/collections: replace-google
+home: https://mail-archiver.org

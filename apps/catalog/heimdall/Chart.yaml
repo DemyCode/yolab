@@ -1,0 +1,18 @@
+apiVersion: v2
+name: heimdall
+description: Organize your most used web sites in a simple way
+type: application
+version: 0.1.0
+appVersion: 2.8.3
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: Heimdall
+  yolab.io/icon: 📁
+  yolab.io/category: files
+  yolab.io/tagline: Organize your most used web sites in a simple way
+  yolab.io/github: linuxserver/Heimdall
+  yolab.io/collections: replace-google
+home: https://heimdall.site

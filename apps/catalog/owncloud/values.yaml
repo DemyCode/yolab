@@ -1,0 +1,13 @@
+config:
+  subdomain: owncloud
+  storage_size: 10Gi
+yolab:
+  platformApiUrl: ''
+  accountToken: ''
+  serviceName: ''
+  gateway:
+    upstream: localhost:8080
+  fileExplorer:
+    protect:
+    - data/db
+    - data/redis

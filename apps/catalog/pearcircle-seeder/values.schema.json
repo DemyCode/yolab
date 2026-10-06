@@ -1,0 +1,314 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": [
+    "config"
+  ],
+  "properties": {
+    "config": {
+      "title": "PearCircle Seeder",
+      "type": "object",
+      "properties": {
+        "yolab_enabled": {
+          "type": "boolean",
+          "title": "YoLab address",
+          "default": true,
+          "description": "Reachable from anywhere at https://<subdomain>.<your-number>.yolab.io, through your YoLab tunnel. Visitors need IPv6."
+        },
+        "storage_size": {
+          "type": "string",
+          "title": "Storage size",
+          "default": "10Gi",
+          "description": "How much CephFS storage to allocate (e.g. 20Gi, 100Gi, 500Gi)"
+        },
+        "file_explorer_enabled": {
+          "type": "boolean",
+          "title": "File explorer",
+          "default": true,
+          "description": "A password-protected file manager for this app's own data on its own address: browse, download, upload, rename and delete files without needing a terminal. Folders holding a database server (Postgres, MariaDB, Redis, MongoDB, MinIO) always stay read-only."
+        }
+      },
+      "dependencies": {
+        "yolab_enabled": {
+          "oneOf": [
+            {
+              "properties": {
+                "yolab_enabled": {
+                  "const": false
+                }
+              },
+              "required": [
+                "yolab_enabled"
+              ]
+            },
+            {
+              "properties": {
+                "yolab_enabled": {
+                  "const": true
+                },
+                "subdomain": {
+                  "type": "string",
+                  "title": "Subdomain",
+                  "format": "tunnel",
+                  "default": "pearcircle-seeder"
+                },
+                "yolab_token": {
+                  "type": "string",
+                  "title": "YoLab token",
+                  "format": "yolab-token",
+                  "writeOnly": true,
+                  "description": "Leave it as it is to use this box's YoLab account."
+                }
+              },
+              "required": [
+                "subdomain"
+              ]
+            }
+          ]
+        },
+        "file_explorer_enabled": {
+          "oneOf": [
+            {
+              "properties": {
+                "file_explorer_enabled": {
+                  "const": false
+                }
+              }
+            },
+            {
+              "properties": {
+                "file_explorer_enabled": {
+                  "const": true
+                },
+                "file_explorer_yolab_enabled": {
+                  "type": "boolean",
+                  "title": "File explorer YoLab address",
+                  "default": true,
+                  "description": "The file explorer reachable from anywhere at https://<subdomain>.<your-number>.yolab.io, through your YoLab tunnel. Visitors need IPv6."
+                },
+                "file_explorer_tor_enabled": {
+                  "type": "boolean",
+                  "title": "File explorer on Tor",
+                  "default": false,
+                  "description": "The file explorer also reachable as its own .onion address in Tor Browser, from any network and without IPv6. Slower, and visitors never learn your home's IP address."
+                },
+                "file_explorer_tailscale_enabled": {
+                  "type": "boolean",
+                  "title": "File explorer on Tailscale",
+                  "default": false,
+                  "description": "The file explorer also reachable from your own devices in your Tailscale network, as its own device at https://<name>.<your-tailnet>.ts.net. Turn on HTTPS certificates in the Tailscale admin console (DNS page) first."
+                },
+                "file_explorer_username": {
+                  "type": "string",
+                  "title": "File explorer username",
+                  "default": "admin",
+                  "pattern": "^[A-Za-z0-9._-]+$"
+                },
+                "file_explorer_password": {
+                  "type": "string",
+                  "title": "File explorer password",
+                  "minLength": 12,
+                  "writeOnly": true,
+                  "generate": true
+                },
+                "file_explorer_read_only": {
+                  "type": "boolean",
+                  "title": "Read only",
+                  "default": false,
+                  "description": "Only browse and download. Nothing can be uploaded, renamed, edited or deleted through the file explorer."
+                }
+              },
+              "dependencies": {
+                "file_explorer_yolab_enabled": {
+                  "oneOf": [
+                    {
+                      "properties": {
+                        "file_explorer_yolab_enabled": {
+                          "const": false
+                        }
+                      }
+                    },
+                    {
+                      "properties": {
+                        "file_explorer_yolab_enabled": {
+                          "const": true
+                        },
+                        "file_explorer_subdomain": {
+                          "type": "string",
+                          "title": "File explorer subdomain",
+                          "format": "tunnel",
+                          "description": "Leave empty to use this app's subdomain followed by -files."
+                        }
+                      }
+                    }
+                  ]
+                },
+                "file_explorer_tailscale_enabled": {
+                  "oneOf": [
+                    {
+                      "properties": {
+                        "file_explorer_tailscale_enabled": {
+                          "const": false
+                        }
+                      }
+                    },
+                    {
+                      "properties": {
+                        "file_explorer_tailscale_enabled": {
+                          "const": true
+                        },
+                        "file_explorer_tailscale_auth_key": {
+                          "type": "string",
+                          "title": "File explorer Tailscale auth key",
+                          "writeOnly": true,
+                          "pattern": "^tskey-",
+                          "description": "Create one in the Tailscale admin console under Settings, Keys. A reusable key can be the same one the app uses. It is used only the first time."
+                        },
+                        "file_explorer_tailscale_hostname": {
+                          "type": "string",
+                          "title": "File explorer Tailscale name",
+                          "pattern": "^[a-z0-9]([a-z0-9-]*[a-z0-9])?$",
+                          "description": "The file explorer's device name in your tailnet. Leave empty to use its subdomain."
+                        }
+                      },
+                      "required": [
+                        "file_explorer_tailscale_auth_key"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "outputs": {
+      "type": "object",
+      "readOnly": true,
+      "properties": {
+        "url": {
+          "type": "string",
+          "title": "Web URL",
+          "format": "uri",
+          "source": {
+            "logs": "YOLAB_OUTPUT url (\\S+)"
+          },
+          "when": {
+            "properties": {
+              "yolab_enabled": {
+                "const": true
+              }
+            }
+          }
+        },
+        "file_explorer_url": {
+          "type": "string",
+          "title": "File explorer",
+          "format": "uri",
+          "source": {
+            "logs": "YOLAB_OUTPUT file_explorer_url (\\S+)"
+          },
+          "when": {
+            "properties": {
+              "file_explorer_enabled": {
+                "const": true
+              }
+            },
+            "anyOf": [
+              {
+                "properties": {
+                  "file_explorer_yolab_enabled": {
+                    "const": true
+                  }
+                },
+                "required": [
+                  "file_explorer_yolab_enabled"
+                ]
+              },
+              {
+                "not": {
+                  "required": [
+                    "file_explorer_yolab_enabled"
+                  ]
+                },
+                "properties": {
+                  "yolab_enabled": {
+                    "not": {
+                      "const": false
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        },
+        "file_explorer_username": {
+          "type": "string",
+          "title": "File explorer username",
+          "source": {
+            "logs": "YOLAB_OUTPUT file_explorer_username (\\S+)"
+          },
+          "when": {
+            "properties": {
+              "file_explorer_enabled": {
+                "const": true
+              }
+            }
+          }
+        },
+        "file_explorer_password": {
+          "type": "string",
+          "title": "File explorer password",
+          "format": "secret",
+          "source": {
+            "logs": "YOLAB_OUTPUT file_explorer_password (\\S+)"
+          },
+          "when": {
+            "properties": {
+              "file_explorer_enabled": {
+                "const": true
+              }
+            }
+          }
+        },
+        "file_explorer_tor_url": {
+          "type": "string",
+          "title": "File explorer Tor address",
+          "format": "uri",
+          "source": {
+            "logs": "YOLAB_OUTPUT file_explorer_tor_url (\\S+)"
+          },
+          "when": {
+            "properties": {
+              "file_explorer_enabled": {
+                "const": true
+              },
+              "file_explorer_tor_enabled": {
+                "const": true
+              }
+            }
+          }
+        },
+        "file_explorer_tailscale_url": {
+          "type": "string",
+          "title": "File explorer Tailscale address",
+          "format": "uri",
+          "source": {
+            "logs": "YOLAB_OUTPUT file_explorer_tailscale_url (\\S+)"
+          },
+          "when": {
+            "properties": {
+              "file_explorer_enabled": {
+                "const": true
+              },
+              "file_explorer_tailscale_enabled": {
+                "const": true
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

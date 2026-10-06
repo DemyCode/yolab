@@ -1,0 +1,9 @@
+config:
+  subdomain: emby
+  storage_size: 10Gi
+yolab:
+  platformApiUrl: ''
+  accountToken: ''
+  serviceName: ''
+  gateway:
+    upstream: localhost:8096

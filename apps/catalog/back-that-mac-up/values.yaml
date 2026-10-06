@@ -1,0 +1,9 @@
+config:
+  subdomain: back-that-mac-up
+  storage_size: 10Gi
+yolab:
+  platformApiUrl: ''
+  accountToken: ''
+  serviceName: ''
+  gateway:
+    upstream: server:80

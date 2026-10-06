@@ -1,0 +1,17 @@
+apiVersion: v2
+name: libreddit
+description: An alternative private front-end to Reddit
+type: application
+version: 0.1.0
+appVersion: 0.22.9
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: LibReddit
+  yolab.io/icon: 💬
+  yolab.io/category: social
+  yolab.io/tagline: An alternative private front-end to Reddit
+  yolab.io/github: spikecodes/libreddit
+home: https://spike.codes/

@@ -1,0 +1,12 @@
+config:
+  subdomain: etherpad
+  storage_size: 10Gi
+yolab:
+  platformApiUrl: ''
+  accountToken: ''
+  serviceName: ''
+  gateway:
+    upstream: localhost:9001
+  fileExplorer:
+    protect:
+    - data/postgres_data

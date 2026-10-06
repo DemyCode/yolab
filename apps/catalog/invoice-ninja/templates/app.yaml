@@ -1,0 +1,324 @@
+{{ include "yolab-common.caddyConfigMap" . }}
+---
+{{ include "yolab-common.fileExplorerSecret" . }}
+---
+{{ include "yolab-common.fileExplorerConfigMap" . }}
+---
+{{ include "yolab-common.privateAccessResources" . }}
+---
+{{ include "yolab-common.uninstallHook" . }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-data
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: yolab-cephfs
+  resources:
+    requests:
+      storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Release.Name }}-secrets
+  namespace: {{ .Release.Namespace }}
+type: Opaque
+stringData:
+  admin_password: {{ required "config.admin_password is required" .Values.config.admin_password | quote }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      initContainers:
+      {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessInit" . | nindent 6 }}
+      containers:
+      {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
+      volumes:
+      {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: nginx
+  template:
+    metadata:
+      labels:
+        app: nginx
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:1.21-alpine@sha256:686aac2769fd6e7bab67663fd38750c135b72d993d0bb0a942ab02ef647fc9c3
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 80
+        readinessProbe:
+          tcpSocket:
+            port: 80
+        volumeMounts:
+        - name: data
+          mountPath: /etc/nginx/conf.d/nginx.conf
+          subPath: '{{ .Release.Name }}/config/nginx.conf'
+          readOnly: true
+        - name: data
+          mountPath: /var/www/html/public
+          subPath: '{{ .Release.Name }}/data/public'
+          readOnly: true
+        - name: data
+          mountPath: /var/www/html/storage
+          subPath: '{{ .Release.Name }}/data/fake/../storage'
+          readOnly: true
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: '{{ .Release.Name }}-data'
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  selector:
+    app: nginx
+  ports:
+  - port: 80
+    targetPort: 80
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: app
+  template:
+    metadata:
+      labels:
+        app: app
+    spec:
+      containers:
+      - name: app
+        image: invoiceninja/invoiceninja-debian:5.13.43@sha256:c052414958dce9bb186f3da83c8066c84d419092e7a55025b5a7c201eff75387
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: APP_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: admin_password
+        - name: APP_URL
+          value: http://localhost:8676
+        - name: APP_KEY
+          value: ${APP_KEY:-unset}
+        - name: APP_ENV
+          value: production
+        - name: APP_DEBUG
+          value: 'false'
+        - name: REQUIRE_HTTPS
+          value: 'false'
+        - name: DB_HOST
+          value: db
+        - name: DB_DATABASE
+          value: invoiceninja
+        - name: DB_USERNAME
+          value: invoiceninja
+        - name: DB_PASSWORD
+          value: moneyprintergobrrr
+        - name: IN_USER_EMAIL
+          value: admin@example.com
+        - name: IN_PASSWORD
+          value: $(APP_PASSWORD)
+        - name: IS_DOCKER
+          value: 'true'
+        - name: CACHE_DRIVER
+          value: redis
+        - name: QUEUE_CONNECTION
+          value: redis
+        - name: SESSION_DRIVER
+          value: redis
+        - name: REDIS_HOST
+          value: redis
+        - name: REDIS_PASSWORD
+          value: ''
+        - name: REDIS_PORT
+          value: '6379'
+        - name: FILESYSTEM_DISK
+          value: debian_docker
+        volumeMounts:
+        - name: data
+          mountPath: /var/www/html/public
+          subPath: '{{ .Release.Name }}/data/public'
+        - name: data
+          mountPath: /var/www/html/storage
+          subPath: '{{ .Release.Name }}/data/fake/../storage'
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: '{{ .Release.Name }}-data'
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: db
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: db
+  template:
+    metadata:
+      labels:
+        app: db
+    spec:
+      containers:
+      - name: db
+        image: mariadb:11.4.5@sha256:5dfb3093333fa0ea53194ddef0a2bfa21d3b1e1353bd228b22610cd6fc0c04da
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: APP_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: admin_password
+        - name: MYSQL_ROOT_PASSWORD
+          value: invoiceninja
+        - name: MYSQL_USER
+          value: invoiceninja
+        - name: MYSQL_PASSWORD
+          value: moneyprintergobrrr
+        - name: MYSQL_DATABASE
+          value: invoiceninja
+        - name: MARIADB_AUTO_UPGRADE
+          value: 'true'
+        securityContext:
+          runAsUser: 1000
+          runAsGroup: 1000
+        ports:
+        - containerPort: 3306
+        readinessProbe:
+          exec:
+            command:
+            - healthcheck.sh
+            - --connect
+            - --innodb_initialized
+          initialDelaySeconds: 10
+          periodSeconds: 20
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/mysql
+          subPath: '{{ .Release.Name }}/data/db'
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: '{{ .Release.Name }}-data'
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: db
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  selector:
+    app: db
+  ports:
+  - port: 3306
+    targetPort: 3306
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      containers:
+      - name: redis
+        image: redis:7.4.3@sha256:ee8ec723c831b815c3e2f2c6fbd1c145c68d1c04ba284f044ec1434fbca0fee8
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: APP_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: admin_password
+        securityContext:
+          runAsUser: 1000
+          runAsGroup: 1000
+        ports:
+        - containerPort: 6379
+        readinessProbe:
+          exec:
+            command:
+            - redis-cli
+            - ping
+          periodSeconds: 10
+        volumeMounts:
+        - name: data
+          mountPath: /data
+          subPath: '{{ .Release.Name }}/data/redis'
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: '{{ .Release.Name }}-data'
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  selector:
+    app: redis
+  ports:
+  - port: 6379
+    targetPort: 6379

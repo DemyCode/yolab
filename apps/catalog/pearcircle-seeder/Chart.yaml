@@ -1,0 +1,17 @@
+apiVersion: v2
+name: pearcircle-seeder
+description: Keep your PearCircle circles online 24/7
+type: application
+version: 0.1.0
+appVersion: 1.1.4
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: PearCircle Seeder
+  yolab.io/icon: 🌐
+  yolab.io/category: networking
+  yolab.io/tagline: Keep your PearCircle circles online 24/7
+  yolab.io/github: peerloomllc/pearcircle
+home: https://peerloomllc.com

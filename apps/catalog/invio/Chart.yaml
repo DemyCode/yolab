@@ -1,0 +1,17 @@
+apiVersion: v2
+name: invio
+description: Invio is a self-hosted invoicing app without the bloat
+type: application
+version: 0.1.0
+appVersion: 2.2.0-patch.1
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: Invio
+  yolab.io/icon: 💰
+  yolab.io/category: finance
+  yolab.io/tagline: Invio is a self-hosted invoicing app without the bloat
+  yolab.io/github: kittendevv/invio
+home: https://github.com/kittendevv/invio

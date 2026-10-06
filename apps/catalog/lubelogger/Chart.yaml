@@ -1,0 +1,18 @@
+apiVersion: v2
+name: lubelogger
+description: A vehicle maintenance and fuel mileage tracker
+type: application
+version: 0.1.0
+appVersion: 1.7.3-patch.1
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: LubeLogger
+  yolab.io/icon: 📁
+  yolab.io/category: files
+  yolab.io/tagline: A vehicle maintenance and fuel mileage tracker
+  yolab.io/github: hargata/lubelog
+  yolab.io/collections: replace-google
+home: https://lubelogger.com/

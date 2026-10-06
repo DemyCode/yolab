@@ -1,0 +1,201 @@
+{{ include "yolab-common.caddyConfigMap" . }}
+---
+{{ include "yolab-common.fileExplorerSecret" . }}
+---
+{{ include "yolab-common.fileExplorerConfigMap" . }}
+---
+{{ include "yolab-common.privateAccessResources" . }}
+---
+{{ include "yolab-common.uninstallHook" . }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-data
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: yolab-cephfs
+  resources:
+    requests:
+      storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      initContainers:
+      {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessInit" . | nindent 6 }}
+      containers:
+      {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
+      volumes:
+      {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: server
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: server
+  template:
+    metadata:
+      labels:
+        app: server
+    spec:
+      containers:
+      - name: server
+        image: getumbrel/umbrel-back-that-mac-up:1.0.1@sha256:d9561eebd791fcaaddb9885b9ace25dec42374c4ab0fe17035493a264081688c
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: TIME_MACHINE_DIR
+          value: /timemachine
+        ports:
+        - containerPort: 80
+        readinessProbe:
+          tcpSocket:
+            port: 80
+        volumeMounts:
+        - name: data
+          mountPath: /timemachine
+          subPath: '{{ .Release.Name }}/data'
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: '{{ .Release.Name }}-data'
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: server
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  selector:
+    app: server
+  ports:
+  - port: 80
+    targetPort: 80
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: timemachine
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: timemachine
+  template:
+    metadata:
+      labels:
+        app: timemachine
+    spec:
+      containers:
+      - name: timemachine
+        image: mbentley/timemachine:smb-20231122@sha256:861560184a5c9f3b4f2a8bef4549ef4168d80c57a9de81b16bc5e6eead24ff3f
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: ADVERTISED_HOSTNAME
+          value: umbrel
+        - name: CUSTOM_SMB_CONF
+          value: 'false'
+        - name: CUSTOM_USER
+          value: 'false'
+        - name: DEBUG_LEVEL
+          value: '1'
+        - name: HIDE_SHARES
+          value: 'no'
+        - name: EXTERNAL_CONF
+          value: ''
+        - name: MIMIC_MODEL
+          value: TimeCapsule8,119
+        - name: TM_USERNAME
+          value: timemachine
+        - name: TM_GROUPNAME
+          value: timemachine
+        - name: TM_UID
+          value: '1000'
+        - name: TM_GID
+          value: '1000'
+        - name: PASSWORD
+          value: timemachine
+        - name: SET_PERMISSIONS
+          value: 'false'
+        - name: SHARE_NAME
+          value: Umbrel - Time Machine
+        - name: SMB_INHERIT_PERMISSIONS
+          value: 'no'
+        - name: SMB_NFS_ACES
+          value: 'no'
+        - name: SMB_METADATA
+          value: stream
+        - name: SMB_PORT
+          value: '445'
+        - name: SMB_VFS_OBJECTS
+          value: acl_xattr fruit streams_xattr
+        - name: VOLUME_SIZE_LIMIT
+          value: '0'
+        - name: WORKGROUP
+          value: WORKGROUP
+        ports:
+        - containerPort: 137
+        readinessProbe:
+          tcpSocket:
+            port: 137
+        volumeMounts:
+        - name: data
+          mountPath: /opt/timemachine
+          subPath: '{{ .Release.Name }}/data/opt-timemachine'
+        - name: data
+          mountPath: /var/lib/samba
+          subPath: '{{ .Release.Name }}/data/var-lib-samba'
+        - name: data
+          mountPath: /var/cache/samba
+          subPath: '{{ .Release.Name }}/data/var-cache-samba'
+        - name: data
+          mountPath: /run/samba
+          subPath: '{{ .Release.Name }}/data/run-samba'
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: '{{ .Release.Name }}-data'
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: timemachine
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  selector:
+    app: timemachine
+  ports:
+  - port: 137
+    targetPort: 137

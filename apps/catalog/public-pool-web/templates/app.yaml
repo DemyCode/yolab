@@ -1,0 +1,248 @@
+{{ include "yolab-common.caddyConfigMap" . }}
+---
+{{ include "yolab-common.fileExplorerSecret" . }}
+---
+{{ include "yolab-common.fileExplorerConfigMap" . }}
+---
+{{ include "yolab-common.privateAccessResources" . }}
+---
+{{ include "yolab-common.uninstallHook" . }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-data
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: yolab-cephfs
+  resources:
+    requests:
+      storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Release.Name }}-secrets
+  namespace: {{ .Release.Namespace }}
+type: Opaque
+stringData:
+  app_secret: {{ required "config.app_secret is required" .Values.config.app_secret | quote }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      initContainers:
+      {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessInit" . | nindent 6 }}
+      containers:
+      {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
+      - name: rails-app
+        image: martinbarilik/public-pool-web:0.2.0@sha256:f708bdea807986de548df4b2011cee47a827034786293bb7305d53a0a99f86a7
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: APP_SEED
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: app_secret
+        - name: RAILS_MASTER_KEY
+          value: $(APP_SEED)
+        - name: DATABASE_URL
+          value: $(APP_PUBLIC_POOL_WEB_DATABASE_URL)
+        - name: REDIS_URL
+          value: $(APP_PUBLIC_POOL_WEB_REDIS_URL)
+        - name: PUBLIC_POOL_HOST
+          value: public-pool_server_1
+        - name: PUBLIC_POOL_PORT
+          value: '2019'
+        - name: DONATE_BTC_ADDRESS
+          value: bc1qsn9x9vr9alx33687dqq9rt4cgfcldsrxz90pn4
+        - name: DONATE_LN_ADDRESS
+          value: martinbarilik@getalby.com
+        securityContext:
+          runAsUser: 1000
+          runAsGroup: 1000
+        ports:
+        - containerPort: 3000
+        readinessProbe:
+          tcpSocket:
+            port: 3000
+      volumes:
+      {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: db
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: db
+  template:
+    metadata:
+      labels:
+        app: db
+    spec:
+      containers:
+      - name: db
+        image: pgautoupgrade/pgautoupgrade:18.4-trixie@sha256:37dfb44476ae3b753d0f305a55912e7442649d7cf020d8c3017acfce210cc062
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: APP_SEED
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: app_secret
+        - name: POSTGRES_USER
+          value: $(APP_PUBLIC_POOL_WEB_POSTGRES_USERNAME)
+        - name: POSTGRES_PASSWORD
+          value: $(APP_SEED)
+        - name: POSTGRES_DB
+          value: $(APP_PUBLIC_POOL_WEB_POSTGRES_DBNAME)
+        readinessProbe:
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - test ! -f /var/lib/postgresql/PG_VERSION && test ! -f $${PGDATA}/upgrade_in_progress.lock
+              && pg_isready -U ${APP_PUBLIC_POOL_WEB_POSTGRES_USERNAME} -d ${APP_PUBLIC_POOL_WEB_POSTGRES_DBNAME}
+          initialDelaySeconds: 1800
+          periodSeconds: 10
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/postgresql
+          subPath: '{{ .Release.Name }}/data/postgres'
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: '{{ .Release.Name }}-data'
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      containers:
+      - name: redis
+        image: valkey/valkey:8@sha256:c6d4637d757379a2ff040148b95c85936d85a06c129eafa5fbe582f9e720e12f
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: APP_SEED
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: app_secret
+        securityContext:
+          runAsUser: 1000
+          runAsGroup: 1000
+        ports:
+        - containerPort: 6379
+        readinessProbe:
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - redis-cli ping
+          periodSeconds: 10
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: '{{ .Release.Name }}-data'
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  selector:
+    app: redis
+  ports:
+  - port: 6379
+    targetPort: 6379
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sidekiq
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: sidekiq
+  template:
+    metadata:
+      labels:
+        app: sidekiq
+    spec:
+      containers:
+      - name: sidekiq
+        image: martinbarilik/public-pool-web:0.2.0@sha256:f708bdea807986de548df4b2011cee47a827034786293bb7305d53a0a99f86a7
+        imagePullPolicy: IfNotPresent
+        args:
+        - bundle
+        - exec
+        - sidekiq
+        env:
+        - name: APP_SEED
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: app_secret
+        - name: RAILS_MASTER_KEY
+          value: $(APP_SEED)
+        - name: REDIS_URL
+          value: $(APP_PUBLIC_POOL_WEB_REDIS_URL)
+        - name: DATABASE_URL
+          value: $(APP_PUBLIC_POOL_WEB_DATABASE_URL)
+        - name: PUBLIC_POOL_HOST
+          value: public-pool_server_1
+        - name: PUBLIC_POOL_PORT
+          value: '2019'
+        securityContext:
+          runAsUser: 1000
+          runAsGroup: 1000
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: '{{ .Release.Name }}-data'

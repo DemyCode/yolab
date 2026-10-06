@@ -1,0 +1,12 @@
+config:
+  subdomain: wavelog
+  storage_size: 10Gi
+yolab:
+  platformApiUrl: ''
+  accountToken: ''
+  serviceName: ''
+  gateway:
+    upstream: app:80
+  fileExplorer:
+    protect:
+    - data/db

@@ -1,0 +1,18 @@
+apiVersion: v2
+name: plausible
+description: Easy to use and privacy-friendly Google Analytics alternative
+type: application
+version: 0.1.0
+appVersion: 3.2.1-1
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: Plausible Analytics
+  yolab.io/icon: 🛠
+  yolab.io/category: developer
+  yolab.io/tagline: Easy to use and privacy-friendly Google Analytics
+  yolab.io/github: plausible/analytics
+  yolab.io/collections: for-developers
+home: https://plausible.io/

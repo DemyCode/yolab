@@ -1,0 +1,18 @@
+apiVersion: v2
+name: wanderer
+description: A self-hosted trail database
+type: application
+version: 0.1.0
+appVersion: 0.21.0
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: Wanderer
+  yolab.io/icon: 📁
+  yolab.io/category: files
+  yolab.io/tagline: A self-hosted trail database
+  yolab.io/github: Flomp/wanderer
+  yolab.io/collections: replace-google
+home: https://wanderer.to/

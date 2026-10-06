@@ -1,0 +1,240 @@
+{{ include "yolab-common.caddyConfigMap" . }}
+---
+{{ include "yolab-common.fileExplorerSecret" . }}
+---
+{{ include "yolab-common.fileExplorerConfigMap" . }}
+---
+{{ include "yolab-common.privateAccessResources" . }}
+---
+{{ include "yolab-common.uninstallHook" . }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-data
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: yolab-cephfs
+  resources:
+    requests:
+      storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: '{{ .Release.Name }}-seed'
+  namespace: '{{ .Release.Namespace }}'
+binaryData:
+  f0: cHJveHlfY2FjaGVfcGF0aCAvdmFyL2NhY2hlL25naW54IGxldmVscz0xOjIga2V5c196b25lPW15X2NhY2hlOjEwbSBtYXhfc2l6ZT0xMGcgCiAgICAgICAgICAgICAgICBpbmFjdGl2ZT02MG0gdXNlX3RlbXBfcGF0aD1vZmY7Cgpsb2dfZm9ybWF0IGNhY2hlICckcmVtb3RlX2FkZHIgLSAkcmVtb3RlX3VzZXIgWyR0aW1lX2xvY2FsXSAnCiAgICAgICAgICAgICAgICAgICAgICciJHJlcXVlc3QiICRzdGF0dXMgJGJvZHlfYnl0ZXNfc2VudCAnCiAgICAgICAgICAgICAgICAgICAgICciJGh0dHBfcmVmZXJlciIgIiRodHRwX3VzZXJfYWdlbnQiICcKICAgICAgICAgICAgICAgICAgICAgJ0NhY2hlOiAkdXBzdHJlYW1fY2FjaGVfc3RhdHVzJzsKc2VydmVyIHsKICAgIGxpc3RlbiA4MDIxOwoKCiAgICBsb2NhdGlvbiAvc3cuanMgewogICAgICAgIHJvb3QgL3Vzci9zaGFyZS9uZ2lueC9odG1sOwogICAgICAgIGFkZF9oZWFkZXIgQ2FjaGUtQ29udHJvbCAibm8tc3RvcmUsIG5vLWNhY2hlLCBtdXN0LXJldmFsaWRhdGUsIHByb3h5LXJldmFsaWRhdGUsIG1heC1hZ2U9MCI7CiAgICAgICAgYWRkX2hlYWRlciBQcmFnbWEgIm5vLWNhY2hlIjsKICAgICAgICBhZGRfaGVhZGVyIEV4cGlyZXMgIjAiOwoKICAgICAgICAjIFNlcnZlIHRoZSBmaWxlIHdpdGggY29ycmVjdCBNSU1FIHR5cGUgZm9yIHNlcnZpY2Ugd29ya2VycwogICAgICAgIGRlZmF1bHRfdHlwZSBhcHBsaWNhdGlvbi9qYXZhc2NyaXB0OwogICAgICAgIHRyeV9maWxlcyAkdXJpID00MDQ7CiAgICB9CgogICAgbG9jYXRpb24gL2FwaS8gewogICAgICAgIHByb3h5X3Bhc3MgaHR0cDovL3Rvc2hpLW1vdG9fYXBpX3dlYl8xOjgxMjEvYXBpLzsKICAgICAgICBwcm94eV9zZXRfaGVhZGVyIEhvc3QgJGhvc3Q7CiAgICAgICAgcHJveHlfc2V0X2hlYWRlciBYLVJlYWwtSVAgJHJlbW90ZV9hZGRyOwogICAgICAgIHByb3h5X3NldF9oZWFkZXIgWC1Gb3J3YXJkZWQtRm9yICRwcm94eV9hZGRfeF9mb3J3YXJkZWRfZm9yOwogICAgfQoKICAgIGxvY2F0aW9uIC8gewogICAgICAgIHJvb3QgL3Vzci9zaGFyZS9uZ2lueC9odG1sOwogICAgICAgIGluZGV4IGluZGV4Lmh0bWwgaW5kZXguaHRtOwogICAgICAgIHRyeV9maWxlcyAkdXJpICR1cmkvIC9pbmRleC5odG1sID00MDQ7CiAgICAgICAgCiAgICB9Cn0K
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      initContainers:
+      {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessInit" . | nindent 6 }}
+      - name: seed
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - 'set -e
+
+          D=/data/{{ .Release.Name }}/data
+
+          mkdir -p "$D/proxy"
+
+          [ -e "$D/proxy/nginx.conf" ] || cp /seed/f0 "$D/proxy/nginx.conf"
+
+          '
+        volumeMounts:
+        - name: seed
+          mountPath: /seed
+          readOnly: true
+        - name: data
+          mountPath: /data
+      containers:
+      {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
+      - name: web
+        image: toshimoto821/toshi-moto:1.37.3@sha256:e2d7270473dda60c34afac9ed28b267540fd4ca0d6aabf12fa37a7d0c597634e
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: PORT
+          value: '8021'
+        securityContext:
+          runAsUser: 1000
+          runAsGroup: 1000
+        ports:
+        - containerPort: 8021
+        readinessProbe:
+          tcpSocket:
+            port: 8021
+        volumeMounts:
+        - name: data
+          mountPath: /etc/nginx/conf.d/default.conf
+          subPath: '{{ .Release.Name }}/data/proxy/nginx.conf'
+          readOnly: true
+      volumes:
+      {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}
+      - name: seed
+        configMap:
+          name: '{{ .Release.Name }}-seed'
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api_web
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: api_web
+  template:
+    metadata:
+      labels:
+        app: api_web
+    spec:
+      containers:
+      - name: api_web
+        image: toshimoto821/toshi-moto-api:1.8.4@sha256:750927ef2d0b0bbcffcbb57632d861e567a8b7243381c0285b2b2660dc31244a
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: PORT
+          value: '8121'
+        - name: MONGODB_URI
+          value: mongodb://mongodb:27017/toshi-moto
+        securityContext:
+          runAsUser: 1000
+          runAsGroup: 1000
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: '{{ .Release.Name }}-data'
+      - name: seed
+        configMap:
+          name: '{{ .Release.Name }}-seed'
+      initContainers:
+      - name: seed
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - 'set -e
+
+          D=/data/{{ .Release.Name }}/data
+
+          mkdir -p "$D/proxy"
+
+          [ -e "$D/proxy/nginx.conf" ] || cp /seed/f0 "$D/proxy/nginx.conf"
+
+          '
+        volumeMounts:
+        - name: seed
+          mountPath: /seed
+          readOnly: true
+        - name: data
+          mountPath: /data
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mongodb
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: mongodb
+  template:
+    metadata:
+      labels:
+        app: mongodb
+    spec:
+      containers:
+      - name: mongodb
+        image: mongo:8.0.10@sha256:15fb53a5160ebabff5ecade8f8b5d48721b68ea190957a7f35b5b38e8340e62b
+        imagePullPolicy: IfNotPresent
+        args:
+        - mongod
+        - --noauth
+        securityContext:
+          runAsUser: 1000
+          runAsGroup: 1000
+        ports:
+        - containerPort: 27017
+        readinessProbe:
+          tcpSocket:
+            port: 27017
+        volumeMounts:
+        - name: data
+          mountPath: /data/db
+          subPath: '{{ .Release.Name }}/data/db'
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: '{{ .Release.Name }}-data'
+      - name: seed
+        configMap:
+          name: '{{ .Release.Name }}-seed'
+      initContainers:
+      - name: seed
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - 'set -e
+
+          D=/data/{{ .Release.Name }}/data
+
+          mkdir -p "$D/proxy"
+
+          [ -e "$D/proxy/nginx.conf" ] || cp /seed/f0 "$D/proxy/nginx.conf"
+
+          '
+        volumeMounts:
+        - name: seed
+          mountPath: /seed
+          readOnly: true
+        - name: data
+          mountPath: /data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mongodb
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  selector:
+    app: mongodb
+  ports:
+  - port: 27017
+    targetPort: 27017

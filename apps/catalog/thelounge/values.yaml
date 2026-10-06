@@ -1,0 +1,9 @@
+config:
+  subdomain: thelounge
+  storage_size: 10Gi
+yolab:
+  platformApiUrl: ''
+  accountToken: ''
+  serviceName: ''
+  gateway:
+    upstream: localhost:9000

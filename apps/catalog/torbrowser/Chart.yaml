@@ -1,0 +1,17 @@
+apiVersion: v2
+name: torbrowser
+description: An invisible shield for your browsing experience
+type: application
+version: 0.1.0
+appVersion: 15.0.17
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: Tor Browser
+  yolab.io/icon: 🌐
+  yolab.io/category: networking
+  yolab.io/tagline: An invisible shield for your browsing experience
+  yolab.io/github: torproject/tor
+home: https://www.torproject.org/

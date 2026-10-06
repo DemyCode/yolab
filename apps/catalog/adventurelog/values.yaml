@@ -1,0 +1,12 @@
+config:
+  subdomain: adventurelog
+  storage_size: 10Gi
+yolab:
+  platformApiUrl: ''
+  accountToken: ''
+  serviceName: ''
+  gateway:
+    upstream: localhost:3000
+  fileExplorer:
+    protect:
+    - data/db

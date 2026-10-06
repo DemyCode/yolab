@@ -1,0 +1,17 @@
+apiVersion: v2
+name: nutstash-wallet
+description: Nutstash is a Cashu wallet for your browser
+type: application
+version: 0.1.0
+appVersion: 0.1.10
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: Nutstash Wallet
+  yolab.io/icon: ₿
+  yolab.io/category: bitcoin
+  yolab.io/tagline: Nutstash is a Cashu wallet for your browser
+  yolab.io/github: gandlafbtc/nutstash-wallet
+home: https://nutstash.app/

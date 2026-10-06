@@ -1,0 +1,18 @@
+apiVersion: v2
+name: yuvomi
+description: Self-hosted family planner — calendar, tasks, shopping, meals & budget
+type: application
+version: 0.1.0
+appVersion: 2.71.0
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: Yuvomi
+  yolab.io/icon: 📁
+  yolab.io/category: files
+  yolab.io/tagline: Self-hosted family planner — calendar, tasks, shopping
+  yolab.io/github: ulsklyc/yuvomi
+  yolab.io/collections: replace-google
+home: https://github.com/ulsklyc/yuvomi

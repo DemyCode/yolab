@@ -1,0 +1,17 @@
+apiVersion: v2
+name: holesail-switchboard
+description: Manage multiple holesail P2P tunnels from a single dashboard
+type: application
+version: 0.1.0
+appVersion: 2.0.8-patch.1
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: Holesail Switchboard
+  yolab.io/icon: 🌐
+  yolab.io/category: networking
+  yolab.io/tagline: Manage multiple holesail P2P tunnels from a single dashboard
+  yolab.io/github: oren-z0/holesail-switchboard
+home: https://github.com/oren-z0/holesail-switchboard

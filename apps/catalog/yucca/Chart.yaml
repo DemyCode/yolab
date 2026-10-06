@@ -1,0 +1,16 @@
+apiVersion: v2
+name: yucca
+description: Simple NVR video surveillance solution
+type: application
+version: 0.1.0
+appVersion: 0.13.4-patch.1
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: Yucca
+  yolab.io/icon: 🤖
+  yolab.io/category: automation
+  yolab.io/tagline: Simple NVR video surveillance solution
+home: https://yucca.app/

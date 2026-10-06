@@ -1,0 +1,18 @@
+apiVersion: v2
+name: swingmusic
+description: Self-hosted music streaming
+type: application
+version: 0.1.0
+appVersion: 3.0.0-patch.1
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: Swing Music
+  yolab.io/icon: 🎬
+  yolab.io/category: media
+  yolab.io/tagline: Self-hosted music streaming
+  yolab.io/github: swingmx/swingmusic
+  yolab.io/collections: watch-and-listen
+home: https://github.com/swingmx/swingmusic

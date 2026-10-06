@@ -1,0 +1,17 @@
+apiVersion: v2
+name: l-town
+description: Open source multiplayer FPS browser game
+type: application
+version: 0.1.0
+appVersion: '20260621'
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: L-Town
+  yolab.io/icon: 💬
+  yolab.io/category: social
+  yolab.io/tagline: Open source multiplayer FPS browser game
+  yolab.io/github: besoeasy/l-town
+home: https://yantr.org/apps/l-town/

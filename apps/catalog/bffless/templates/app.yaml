@@ -1,0 +1,475 @@
+{{ include "yolab-common.caddyConfigMap" . }}
+---
+{{ include "yolab-common.fileExplorerSecret" . }}
+---
+{{ include "yolab-common.fileExplorerConfigMap" . }}
+---
+{{ include "yolab-common.privateAccessResources" . }}
+---
+{{ include "yolab-common.uninstallHook" . }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-data
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: yolab-cephfs
+  resources:
+    requests:
+      storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: '{{ .Release.Name }}-seed'
+  namespace: '{{ .Release.Namespace }}'
+binaryData:
+  f0: IyBCZmZsZXNzIERvbWFpbiBDb25maWd1cmF0aW9uCiMKIyBUbyBjb25maWd1cmUgeW91ciBkb21haW4sIGNvcHkgdGhpcyBmaWxlIHRvIGRvbWFpbi50eHQgYW5kIHJlcGxhY2UKIyB0aGUgZXhhbXBsZSBiZWxvdyB3aXRoIHlvdXIgYWN0dWFsIGRvbWFpbi4KIwojIFN0ZXBzOgojIDEuIFNldCB1cCBDbG91ZGZsYXJlIFR1bm5lbCBwb2ludGluZyB0byBodHRwOi8vbG9jYWxob3N0OjU1MzcKIyAyLiBDb3B5IHRoaXMgZmlsZTogY3AgZG9tYWluLnR4dC5leGFtcGxlIGRvbWFpbi50eHQKIyAzLiBFZGl0IGRvbWFpbi50eHQgd2l0aCB5b3VyIGRvbWFpbiAoanVzdCB0aGUgZG9tYWluLCBubyBodHRwczovLykKIyA0LiBSZXN0YXJ0IHRoZSBCZmZsZXNzIGFwcCBmcm9tIFVtYnJlbAojCiMgRXhhbXBsZToKYmZmbGVzcy55b3VyZG9tYWluLmNvbQo=
+  f1: LS0gQ3JlYXRlIHNlcGFyYXRlIGRhdGFiYXNlIGZvciBTdXBlclRva2VucwotLSBUaGlzIHJ1bnMgb24gZmlyc3QgcG9zdGdyZXMgY29udGFpbmVyIHN0YXJ0dXAKLS0gKGFzc2V0aG9zdCBkYXRhYmFzZSBpcyBjcmVhdGVkIGJ5IFBPU1RHUkVTX0RCIGVudiB2YXIpCgotLSBDcmVhdGUgc3VwZXJ0b2tlbnMgZGF0YWJhc2UKQ1JFQVRFIERBVEFCQVNFIHN1cGVydG9rZW5zOwoKLS0gR3JhbnQgcGVybWlzc2lvbnMgdG8gZGVmYXVsdCBwb3N0Z3JlcyB1c2VyCkdSQU5UIEFMTCBQUklWSUxFR0VTIE9OIERBVEFCQVNFIHN1cGVydG9rZW5zIFRPIHBvc3RncmVzOwo=
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      initContainers:
+      {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessInit" . | nindent 6 }}
+      - name: seed
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - 'set -e
+
+          D=/data/{{ .Release.Name }}/data
+
+          mkdir -p "$D/config"
+
+          [ -e "$D/config/domain.txt.example" ] || cp /seed/f0 "$D/config/domain.txt.example"
+
+          mkdir -p "$D/db"
+
+          [ -e "$D/db/init-databases.sql" ] || cp /seed/f1 "$D/db/init-databases.sql"
+
+          '
+        volumeMounts:
+        - name: seed
+          mountPath: /seed
+          readOnly: true
+        - name: data
+          mountPath: /data
+      containers:
+      {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
+      - name: nginx
+        image: ghcr.io/bffless/ce-nginx:umbrel@sha256:e76ceda29c799638ac88eb40ebec0ed2763a0f8750a263d03a27b5c00522b0db
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: DEVICE_DOMAIN_NAME
+          value: ${DEVICE_DOMAIN_NAME:-umbrel.local}
+        ports:
+        - containerPort: 5537
+        readinessProbe:
+          tcpSocket:
+            port: 5537
+        volumeMounts:
+        - name: data
+          mountPath: /app/config
+          subPath: '{{ .Release.Name }}/data/config'
+          readOnly: true
+        - name: data
+          mountPath: /usr/share/nginx/html/app
+          subPath: '{{ .Release.Name }}/data/frontend'
+          readOnly: true
+        - name: data
+          mountPath: /etc/nginx/sites-enabled
+          subPath: '{{ .Release.Name }}/data/nginx'
+      volumes:
+      {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}
+      - name: seed
+        configMap:
+          name: '{{ .Release.Name }}-seed'
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+      - name: postgres
+        image: pgvector/pgvector:0.8.2-pg17@sha256:feb68f4f15446397d8cac7f4fe48fe4586de83160d1fc48b46283312d1a33966
+        imagePullPolicy: IfNotPresent
+        args:
+        - postgres
+        - -c
+        - shared_buffers=64MB
+        - -c
+        - effective_cache_size=128MB
+        - -c
+        - work_mem=4MB
+        - -c
+        - maintenance_work_mem=32MB
+        - -c
+        - max_connections=20
+        - -c
+        - wal_buffers=4MB
+        env:
+        - name: POSTGRES_USER
+          value: postgres
+        - name: POSTGRES_PASSWORD
+          value: staticfilesgobrrrr
+        - name: POSTGRES_DB
+          value: assethost
+        ports:
+        - containerPort: 5432
+        readinessProbe:
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - pg_isready -U postgres
+          periodSeconds: 10
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/postgresql/data
+          subPath: '{{ .Release.Name }}/data/postgres'
+        - name: data
+          mountPath: /docker-entrypoint-initdb.d/init.sql
+          subPath: '{{ .Release.Name }}/data/db/init-databases.sql'
+          readOnly: true
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: '{{ .Release.Name }}-data'
+      - name: seed
+        configMap:
+          name: '{{ .Release.Name }}-seed'
+      initContainers:
+      - name: seed
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - 'set -e
+
+          D=/data/{{ .Release.Name }}/data
+
+          mkdir -p "$D/config"
+
+          [ -e "$D/config/domain.txt.example" ] || cp /seed/f0 "$D/config/domain.txt.example"
+
+          mkdir -p "$D/db"
+
+          [ -e "$D/db/init-databases.sql" ] || cp /seed/f1 "$D/db/init-databases.sql"
+
+          '
+        volumeMounts:
+        - name: seed
+          mountPath: /seed
+          readOnly: true
+        - name: data
+          mountPath: /data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  selector:
+    app: postgres
+  ports:
+  - port: 5432
+    targetPort: 5432
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: supertokens
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: supertokens
+  template:
+    metadata:
+      labels:
+        app: supertokens
+    spec:
+      containers:
+      - name: supertokens
+        image: supertokens/supertokens-postgresql:9.3@sha256:39c36693b19c4e231684c9e614422c1c95751c346c6fc3ffd74980161d0b041c
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: POSTGRESQL_HOST
+          value: postgres
+        - name: POSTGRESQL_PORT
+          value: '5432'
+        - name: POSTGRESQL_USER
+          value: postgres
+        - name: POSTGRESQL_PASSWORD
+          value: staticfilesgobrrrr
+        - name: POSTGRESQL_DATABASE_NAME
+          value: supertokens
+        - name: JAVA_OPTS
+          value: -Xmx192m -Xms96m -XX:+UseSerialGC -XX:MaxMetaspaceSize=64m
+        - name: POSTGRESQL_CONNECTION_POOL_SIZE
+          value: '3'
+        readinessProbe:
+          exec:
+            command:
+            - curl
+            - -f
+            - http://localhost:3567/hello
+          initialDelaySeconds: 45
+          periodSeconds: 15
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: '{{ .Release.Name }}-data'
+      - name: seed
+        configMap:
+          name: '{{ .Release.Name }}-seed'
+      initContainers:
+      - name: seed
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - 'set -e
+
+          D=/data/{{ .Release.Name }}/data
+
+          mkdir -p "$D/config"
+
+          [ -e "$D/config/domain.txt.example" ] || cp /seed/f0 "$D/config/domain.txt.example"
+
+          mkdir -p "$D/db"
+
+          [ -e "$D/db/init-databases.sql" ] || cp /seed/f1 "$D/db/init-databases.sql"
+
+          '
+        volumeMounts:
+        - name: seed
+          mountPath: /seed
+          readOnly: true
+        - name: data
+          mountPath: /data
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: backend
+  template:
+    metadata:
+      labels:
+        app: backend
+    spec:
+      containers:
+      - name: backend
+        image: ghcr.io/bffless/ce-backend:umbrel@sha256:329c19087c022d4b0085d790ed3b5eca83a86d21ffa96f01ce9547d674f5a1d7
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: NODE_OPTIONS
+          value: --max-old-space-size=128
+        - name: NODE_ENV
+          value: production
+        - name: PORT
+          value: '3000'
+        - name: LOG_LEVEL
+          value: error,warn,log
+        - name: APP_DATA_DIR
+          value: ${APP_DATA_DIR:-/data}
+        - name: DATABASE_URL
+          value: postgresql://postgres:staticfilesgobrrrr@postgres:5432/assethost
+        - name: STORAGE_TYPE
+          value: local
+        - name: ENABLE_MINIO
+          value: 'false'
+        - name: CACHE_TYPE
+          value: memory
+        - name: ENABLE_REDIS
+          value: 'false'
+        - name: SUPERTOKENS_MODE
+          value: local
+        - name: SUPERTOKENS_CONNECTION_URI
+          value: http://bffless-supertokens:3567
+        - name: SUPERTOKENS_API_KEY
+          value: ''
+        - name: PRIMARY_DOMAIN
+          value: localhost
+        - name: FRONTEND_URL
+          value: http://localhost:5537
+        - name: API_DOMAIN
+          value: http://localhost:5537
+        - name: ADMIN_DOMAIN
+          value: localhost
+        - name: COOKIE_SECURE
+          value: 'false'
+        - name: COOKIE_DOMAIN
+          value: umbrel.local
+        - name: NGINX_SITES_PATH
+          value: /etc/nginx/sites-enabled
+        - name: NGINX_RELOAD_WAIT_MS
+          value: '3000'
+        - name: NGINX_LISTEN_PORT
+          value: '5537'
+        - name: BACKEND_HOST
+          value: backend
+        - name: PROXY_MODE
+          value: cloudflare-tunnel
+        - name: FEATURE_WILDCARD_SSL
+          value: 'false'
+        - name: FEATURE_WILDCARD_SSL_BANNER
+          value: 'false'
+        - name: FEATURE_DOMAIN_SSL_TOGGLE
+          value: 'false'
+        volumeMounts:
+        - name: data
+          mountPath: /app/apps/backend/uploads
+          subPath: '{{ .Release.Name }}/data/uploads'
+        - name: data
+          mountPath: /app/config
+          subPath: '{{ .Release.Name }}/data/config'
+          readOnly: true
+        - name: data
+          mountPath: /etc/nginx/sites-enabled
+          subPath: '{{ .Release.Name }}/data/nginx'
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: '{{ .Release.Name }}-data'
+      - name: seed
+        configMap:
+          name: '{{ .Release.Name }}-seed'
+      initContainers:
+      - name: seed
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - 'set -e
+
+          D=/data/{{ .Release.Name }}/data
+
+          mkdir -p "$D/config"
+
+          [ -e "$D/config/domain.txt.example" ] || cp /seed/f0 "$D/config/domain.txt.example"
+
+          mkdir -p "$D/db"
+
+          [ -e "$D/db/init-databases.sql" ] || cp /seed/f1 "$D/db/init-databases.sql"
+
+          '
+        volumeMounts:
+        - name: seed
+          mountPath: /seed
+          readOnly: true
+        - name: data
+          mountPath: /data
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: frontend
+  template:
+    metadata:
+      labels:
+        app: frontend
+    spec:
+      containers:
+      - name: frontend
+        image: ghcr.io/bffless/ce-frontend:umbrel@sha256:d961857db9765406311cd6e2934c3a146a10501f45faa8e8c83b9658c8376077
+        imagePullPolicy: IfNotPresent
+        volumeMounts:
+        - name: data
+          mountPath: /app/dist
+          subPath: '{{ .Release.Name }}/data/frontend'
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: '{{ .Release.Name }}-data'
+      - name: seed
+        configMap:
+          name: '{{ .Release.Name }}-seed'
+      initContainers:
+      - name: seed
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - 'set -e
+
+          D=/data/{{ .Release.Name }}/data
+
+          mkdir -p "$D/config"
+
+          [ -e "$D/config/domain.txt.example" ] || cp /seed/f0 "$D/config/domain.txt.example"
+
+          mkdir -p "$D/db"
+
+          [ -e "$D/db/init-databases.sql" ] || cp /seed/f1 "$D/db/init-databases.sql"
+
+          '
+        volumeMounts:
+        - name: seed
+          mountPath: /seed
+          readOnly: true
+        - name: data
+          mountPath: /data

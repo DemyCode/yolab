@@ -1,0 +1,17 @@
+apiVersion: v2
+name: activepieces
+description: Your friendliest open source AI automation tool
+type: application
+version: 0.1.0
+appVersion: 0.92.1
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: Activepieces
+  yolab.io/icon: 🤖
+  yolab.io/category: automation
+  yolab.io/tagline: Your friendliest open source AI automation tool
+  yolab.io/github: activepieces/activepieces
+home: https://www.activepieces.com/

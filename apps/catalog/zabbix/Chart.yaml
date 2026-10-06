@@ -1,0 +1,17 @@
+apiVersion: v2
+name: zabbix
+description: The all-in-one, open-source solution that lets you monitor anything
+type: application
+version: 0.1.0
+appVersion: 7.4.15
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: Zabbix
+  yolab.io/icon: 🌐
+  yolab.io/category: networking
+  yolab.io/tagline: The all-in-one, open-source solution that lets you monitor
+  yolab.io/github: zabbix/zabbix
+home: https://www.zabbix.com/

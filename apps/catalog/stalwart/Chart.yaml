@@ -1,0 +1,18 @@
+apiVersion: v2
+name: stalwart
+description: All-in-one Mail & Collaboration server
+type: application
+version: 0.1.0
+appVersion: v0.16.24
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: Stalwart
+  yolab.io/icon: 📁
+  yolab.io/category: files
+  yolab.io/tagline: All-in-one Mail & Collaboration server
+  yolab.io/github: stalwartlabs/stalwart
+  yolab.io/collections: replace-google
+home: https://stalw.art/

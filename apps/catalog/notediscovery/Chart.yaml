@@ -1,0 +1,18 @@
+apiVersion: v2
+name: notediscovery
+description: A lightweight, privacy-focused note-taking application
+type: application
+version: 0.1.0
+appVersion: 0.31.7
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: NoteDiscovery
+  yolab.io/icon: 📁
+  yolab.io/category: files
+  yolab.io/tagline: A lightweight, privacy-focused note-taking application
+  yolab.io/github: gamosoft/NoteDiscovery
+  yolab.io/collections: replace-google
+home: https://www.notediscovery.com/

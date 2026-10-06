@@ -1,0 +1,12 @@
+config:
+  subdomain: bitmagnet
+  storage_size: 10Gi
+yolab:
+  platformApiUrl: ''
+  accountToken: ''
+  serviceName: ''
+  gateway:
+    upstream: localhost:3333
+  fileExplorer:
+    protect:
+    - data/postgres

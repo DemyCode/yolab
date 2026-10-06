@@ -1,0 +1,18 @@
+apiVersion: v2
+name: leafwiki
+description: A real wiki app without the heavy stack
+type: application
+version: 0.1.0
+appVersion: 0.13.0-patch.1
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: LeafWiki
+  yolab.io/icon: 📁
+  yolab.io/category: files
+  yolab.io/tagline: A real wiki app without the heavy stack
+  yolab.io/github: perber/leafwiki
+  yolab.io/collections: replace-google
+home: https://leafwiki.com/

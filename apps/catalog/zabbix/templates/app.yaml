@@ -1,0 +1,206 @@
+{{ include "yolab-common.caddyConfigMap" . }}
+---
+{{ include "yolab-common.fileExplorerSecret" . }}
+---
+{{ include "yolab-common.fileExplorerConfigMap" . }}
+---
+{{ include "yolab-common.privateAccessResources" . }}
+---
+{{ include "yolab-common.uninstallHook" . }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-data
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: yolab-cephfs
+  resources:
+    requests:
+      storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      initContainers:
+      {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessInit" . | nindent 6 }}
+      containers:
+      {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
+      - name: zabbix-frontend
+        image: zabbix/zabbix-web-nginx-pgsql:7.4.15-alpine@sha256:8c139abe303577c1dc49983f81d272ec832835c370912a681f2695803f342be0
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: DB_SERVER_HOST
+          value: zabbix-database
+        - name: POSTGRES_USER
+          value: zabbix
+        - name: POSTGRES_PASSWORD
+          value: zabbix
+        - name: ZBX_SERVER_HOST
+          value: zabbix-server
+        - name: PHP_TZ
+          value: UTC
+        ports:
+        - containerPort: 8080
+        readinessProbe:
+          tcpSocket:
+            port: 8080
+      volumes:
+      {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: zabbix-server
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: zabbix-server
+  template:
+    metadata:
+      labels:
+        app: zabbix-server
+    spec:
+      containers:
+      - name: zabbix-server
+        image: zabbix/zabbix-server-pgsql:7.4.15-alpine@sha256:777870429c94636f2396fd414a259080d167926552543c31b20ae9d0c9f2847f
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: DB_SERVER_HOST
+          value: zabbix-database
+        - name: POSTGRES_USER
+          value: zabbix
+        - name: POSTGRES_PASSWORD
+          value: zabbix
+        ports:
+        - containerPort: 10050
+        readinessProbe:
+          tcpSocket:
+            port: 10050
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: '{{ .Release.Name }}-data'
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: zabbix-server
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  selector:
+    app: zabbix-server
+  ports:
+  - port: 10050
+    targetPort: 10050
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: zabbix-agent
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: zabbix-agent
+  template:
+    metadata:
+      labels:
+        app: zabbix-agent
+    spec:
+      containers:
+      - name: zabbix-agent
+        image: zabbix/zabbix-agent2:7.4.15-alpine@sha256:a4641f733827aa13af61bf3ccd3b11f61129b2635726b38ad231ac3c42229a0e
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: ZBX_HOSTNAME
+          value: zabbix-agent
+        - name: ZBX_SERVER_HOST
+          value: zabbix-server
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: '{{ .Release.Name }}-data'
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: zabbix-database
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: zabbix-database
+  template:
+    metadata:
+      labels:
+        app: zabbix-database
+    spec:
+      containers:
+      - name: zabbix-database
+        image: postgres:13.18-alpine3.20@sha256:77815c1f18ae761b0e503503a494475a03149d7ce544934ccecdbafdb3956c94
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: POSTGRES_PASSWORD
+          value: zabbix
+        - name: POSTGRES_USER
+          value: zabbix
+        - name: POSTGRES_DB
+          value: zabbix
+        ports:
+        - containerPort: 5432
+        readinessProbe:
+          tcpSocket:
+            port: 5432
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/postgresql/data
+          subPath: '{{ .Release.Name }}/data/postgres'
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: '{{ .Release.Name }}-data'
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: zabbix-database
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  selector:
+    app: zabbix-database
+  ports:
+  - port: 5432
+    targetPort: 5432

@@ -1,0 +1,17 @@
+apiVersion: v2
+name: home-assistant-fusion-ui
+description: A modern, easy-to-use and performant custom Home Assistant dashboard
+type: application
+version: 0.1.0
+appVersion: 2024.10.1-patch.1
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: HA-Fusion
+  yolab.io/icon: 🤖
+  yolab.io/category: automation
+  yolab.io/tagline: A modern, easy-to-use and performant custom Home Assistant
+  yolab.io/github: matt8707/ha-fusion
+home: https://github.com/matt8707/ha-fusion

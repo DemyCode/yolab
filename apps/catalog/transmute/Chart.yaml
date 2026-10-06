@@ -1,0 +1,18 @@
+apiVersion: v2
+name: transmute
+description: An efficient tool for transforming files on your Umbrel
+type: application
+version: 0.1.0
+appVersion: 2.1.1
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: Transmute
+  yolab.io/icon: 📁
+  yolab.io/category: files
+  yolab.io/tagline: An efficient tool for transforming files on your Umbrel
+  yolab.io/github: transmute-app/transmute
+  yolab.io/collections: replace-google
+home: https://transmute.sh/

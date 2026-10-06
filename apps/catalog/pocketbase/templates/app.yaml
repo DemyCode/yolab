@@ -1,0 +1,105 @@
+{{ include "yolab-common.caddyConfigMap" . }}
+---
+{{ include "yolab-common.fileExplorerSecret" . }}
+---
+{{ include "yolab-common.fileExplorerConfigMap" . }}
+---
+{{ include "yolab-common.privateAccessResources" . }}
+---
+{{ include "yolab-common.uninstallHook" . }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-data
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: yolab-cephfs
+  resources:
+    requests:
+      storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: '{{ .Release.Name }}-seed'
+  namespace: '{{ .Release.Namespace }}'
+binaryData:
+  f0: Ly8gaHR0cHM6Ly9wb2NrZXRiYXNlLmlvL2RvY3MvanMtbWlncmF0aW9ucy8jY3JlYXRpbmctaW5pdGlhbC1zdXBlcnVzZXIKLy8gcGJfbWlncmF0aW9ucy8xNjg3ODAxMDkwX2luaXRpYWxfc3VwZXJ1c2VyLmpzCgptaWdyYXRlKChhcHApID0+IHsKICBsZXQgc3VwZXJ1c2VycyA9IGFwcC5maW5kQ29sbGVjdGlvbkJ5TmFtZU9ySWQoIl9zdXBlcnVzZXJzIikKCiAgbGV0IHJlY29yZCA9IG5ldyBSZWNvcmQoc3VwZXJ1c2VycykKCiAgLy8gbm90ZTogdGhlIHZhbHVlcyBjYW4gYmUgZXZlbnR1YWxseSBsb2FkZWQgdmlhICRvcy5nZXRlbnYoa2V5KQogIC8vIG9yIGZyb20gYSBzcGVjaWFsIGxvY2FsIGNvbmZpZyBmaWxlCiAgcmVjb3JkLnNldCgiZW1haWwiLCAidW1icmVsQHVtYnJlbC5sb2NhbCIpCiAgcmVjb3JkLnNldCgicGFzc3dvcmQiLCAidW1icmVsLXBvY2tldGJhc2UiKQoKICBhcHAuc2F2ZShyZWNvcmQpCn0sIChhcHApID0+IHsgLy8gb3B0aW9uYWwgcmV2ZXJ0IG9wZXJhdGlvbgogIHRyeSB7CiAgICAgIGxldCByZWNvcmQgPSBhcHAuZmluZEF1dGhSZWNvcmRCeUVtYWlsKCJfc3VwZXJ1c2VycyIsICJ1bWJyZWxAdW1icmVsLmxvY2FsIikKICAgICAgYXBwLmRlbGV0ZShyZWNvcmQpCiAgfSBjYXRjaCB7CiAgICAgIC8vIHNpbGVudCBlcnJvcnMgKHByb2JhYmx5IGFscmVhZHkgZGVsZXRlZCkKICB9Cn0pCg==
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      initContainers:
+      {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessInit" . | nindent 6 }}
+      - name: seed
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - 'set -e
+
+          D=/data/{{ .Release.Name }}/data
+
+          mkdir -p "$D/migrations"
+
+          [ -e "$D/migrations/initial_superuser.js" ] || cp /seed/f0 "$D/migrations/initial_superuser.js"
+
+          '
+        volumeMounts:
+        - name: seed
+          mountPath: /seed
+          readOnly: true
+        - name: data
+          mountPath: /data
+      containers:
+      {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
+      - name: app
+        image: ghcr.io/muchobien/pocketbase:0.40.4@sha256:9390b7b63ce114dbab577be72e6ef75f718a19083866607fcbdd1b915632b943
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8090
+        readinessProbe:
+          tcpSocket:
+            port: 8090
+        volumeMounts:
+        - name: data
+          mountPath: /pb_data
+          subPath: '{{ .Release.Name }}/data/data'
+        - name: data
+          mountPath: /pb_public
+          subPath: '{{ .Release.Name }}/data/public'
+        - name: data
+          mountPath: /pb_hooks
+          subPath: '{{ .Release.Name }}/data/hooks'
+        - name: data
+          mountPath: /pb_migrations
+          subPath: '{{ .Release.Name }}/data/migrations'
+      volumes:
+      {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}
+      - name: seed
+        configMap:
+          name: '{{ .Release.Name }}-seed'

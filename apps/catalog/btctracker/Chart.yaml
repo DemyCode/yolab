@@ -1,0 +1,17 @@
+apiVersion: v2
+name: btctracker
+description: A simple, privacy-focused Bitcoin investment tracker
+type: application
+version: 0.1.0
+appVersion: 0.7.0-patch.1
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: BTC Tracker
+  yolab.io/icon: ₿
+  yolab.io/category: bitcoin
+  yolab.io/tagline: A simple, privacy-focused Bitcoin investment tracker
+  yolab.io/github: wilqq-the/BTC-Tracker
+home: https://github.com/wilqq-the

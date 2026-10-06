@@ -1,0 +1,17 @@
+apiVersion: v2
+name: chantools
+description: lnd and cln channel rescue utility
+type: application
+version: 0.1.0
+appVersion: v1.14.1-patch.1
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: chantools CLI
+  yolab.io/icon: ₿
+  yolab.io/category: bitcoin
+  yolab.io/tagline: lnd and cln channel rescue utility
+  yolab.io/github: lightninglabs/chantools
+home: https://github.com/lightninglabs/chantools

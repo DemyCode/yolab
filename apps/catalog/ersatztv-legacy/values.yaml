@@ -1,0 +1,9 @@
+config:
+  subdomain: ersatztv-legacy
+  storage_size: 10Gi
+yolab:
+  platformApiUrl: ''
+  accountToken: ''
+  serviceName: ''
+  gateway:
+    upstream: localhost:8409

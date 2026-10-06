@@ -1,0 +1,138 @@
+{{ include "yolab-common.caddyConfigMap" . }}
+---
+{{ include "yolab-common.fileExplorerSecret" . }}
+---
+{{ include "yolab-common.fileExplorerConfigMap" . }}
+---
+{{ include "yolab-common.privateAccessResources" . }}
+---
+{{ include "yolab-common.uninstallHook" . }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-data
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: yolab-cephfs
+  resources:
+    requests:
+      storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Release.Name }}-secrets
+  namespace: {{ .Release.Namespace }}
+type: Opaque
+stringData:
+  app_secret: {{ required "config.app_secret is required" .Values.config.app_secret | quote }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      initContainers:
+      {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessInit" . | nindent 6 }}
+      containers:
+      {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
+      - name: gateway
+        image: nginx:1.30.5-alpine@sha256:615b06367e419b29d378b4abc498563db191380469007e5b0153f4387470bff4
+        imagePullPolicy: IfNotPresent
+        command:
+        - nginx
+        - -g
+        - daemon off;
+        securityContext:
+          runAsUser: 1000
+          runAsGroup: 1000
+        ports:
+        - containerPort: 8080
+        readinessProbe:
+          tcpSocket:
+            port: 8080
+        volumeMounts:
+        - name: data
+          mountPath: /etc/nginx/nginx.conf
+          subPath: '{{ .Release.Name }}/nginx.conf'
+          readOnly: true
+      volumes:
+      {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: web
+  template:
+    metadata:
+      labels:
+        app: web
+    spec:
+      containers:
+      - name: web
+        image: ghcr.io/richardr1126/openreader:5.1.0@sha256:f9c6b62d310c70465f739ad4849e3764cf6c7667902cf385f727551ffac5c8f5
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: APP_SEED
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: app_secret
+        - name: API_BASE
+          value: http://kokoro_web_1:8880/v1
+        - name: API_MODEL_NAME
+          value: kokoro
+        - name: BASE_URL
+          value: http://localhost:3391
+        - name: AUTH_SECRET
+          value: $(APP_SEED)
+        - name: AUTH_TRUSTED_ORIGINS
+          value: http://localhost:3391,http://localhost:3391,http://*.ts.net:3391,https://*.ts.net:3391,$(APP_OPENREADER_LOCAL_URLS)
+        - name: USE_ANONYMOUS_AUTH_SESSIONS
+          value: 'true'
+        - name: TTS_PLAYBACK_TOKEN_SECRET
+          value: $(APP_SEED)
+        - name: COMPUTE_WORKER_HOST
+          value: 0.0.0.0
+        - name: COMPUTE_WORKER_PUBLIC_URL
+          value: http://openreader-playback.invalid
+        securityContext:
+          runAsUser: 1000
+          runAsGroup: 1000
+        volumeMounts:
+        - name: data
+          mountPath: /app/docstore
+          subPath: '{{ .Release.Name }}/data/docstore'
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: '{{ .Release.Name }}-data'

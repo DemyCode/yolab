@@ -1,0 +1,191 @@
+{{ include "yolab-common.caddyConfigMap" . }}
+---
+{{ include "yolab-common.fileExplorerSecret" . }}
+---
+{{ include "yolab-common.fileExplorerConfigMap" . }}
+---
+{{ include "yolab-common.privateAccessResources" . }}
+---
+{{ include "yolab-common.uninstallHook" . }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-data
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: yolab-cephfs
+  resources:
+    requests:
+      storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: '{{ .Release.Name }}-seed'
+  namespace: '{{ .Release.Namespace }}'
+binaryData:
+  f0: ewogICJDb25uZWN0aW9uU3RyaW5ncyI6IHsKICAgICJEZWZhdWx0Q29ubmVjdGlvbiI6ICJIb3N0PW1haWxhcmNoaXZlcl9wb3N0Z3Jlc18xO0RhdGFiYXNlPW1haWxhcmNoaXZlcjtVc2VybmFtZT1tYWlsYXJjaGl2ZXI7UGFzc3dvcmQ9bWFpbGFyY2hpdmVyIgogIH0sCiAgIkF1dGhlbnRpY2F0aW9uIjogewogICAgIlVzZXJuYW1lIjogImFkbWluIiwKICAgICJQYXNzd29yZCI6ICJzZWN1cmUxMjMhIiwKICAgICJTZXNzaW9uVGltZW91dE1pbnV0ZXMiOiA2MCwKICAgICJDb29raWVOYW1lIjogIk1haWxBcmNoaXZlckF1dGgiLAogICAgIkNvb2tpZVNhbWVTaXRlIjogIlN0cmljdCIKICB9LAogICJPQXV0aCI6IHsKICAgICJFbmFibGVkIjogZmFsc2UsCiAgICAiQXV0aG9yaXR5IjogIiIsCiAgICAiQ2xpZW50SWQiOiAiIiwKICAgICJDbGllbnRTZWNyZXQiOiBudWxsLAogICAgIkNsaWVudFNjb3BlcyI6IFsKICAgICAgIm9wZW5pZCIsCiAgICAgICJwcm9maWxlIiwKICAgICAgImVtYWlsIgogICAgXSwKICAgICJEaXNhYmxlUGFzc3dvcmRMb2dpbiI6IGZhbHNlLAogICAgIkF1dG9SZWRpcmVjdCI6IGZhbHNlLAogICAgIkF1dG9BcHByb3ZlVXNlcnMiOiBmYWxzZSwKICAgICJBZG1pbkVtYWlscyI6IFtdCiAgfSwKICAiTWFpbFN5bmMiOiB7CiAgICAiSW50ZXJ2YWxNaW51dGVzIjogMTUsCiAgICAiVGltZW91dE1pbnV0ZXMiOiAxMjAsCiAgICAiQ29ubmVjdGlvblRpbWVvdXRTZWNvbmRzIjogMzAwLAogICAgIkNvbW1hbmRUaW1lb3V0U2Vjb25kcyI6IDYwMCwKICAgICJBbHdheXNGb3JjZUZ1bGxTeW5jIjogZmFsc2UsCiAgICAiSWdub3JlU2VsZlNpZ25lZENlcnQiOiBmYWxzZQogIH0sCiAgIkJhdGNoUmVzdG9yZSI6IHsKICAgICJBc3luY1RocmVzaG9sZCI6IDUwLAogICAgIk1heFN5bmNFbWFpbHMiOiAxNTAsCiAgICAiTWF4QXN5bmNFbWFpbHMiOiA1MDAwMCwKICAgICJTZXNzaW9uVGltZW91dE1pbnV0ZXMiOiAzMCwKICAgICJEZWZhdWx0QmF0Y2hTaXplIjogNTAKICB9LAogICJTZWxlY3Rpb24iOiB7CiAgICAiTWF4U2VsZWN0YWJsZUVtYWlscyI6IDI1MAogIH0sCiAgIlZpZXciOiB7CiAgICAiRGVmYXVsdFRvUGxhaW5UZXh0IjogdHJ1ZSwKICAgICJCbG9ja0V4dGVybmFsUmVzb3VyY2VzIjogdHJ1ZQogIH0sCiAgIkJhdGNoT3BlcmF0aW9uIjogewogICAgIkJhdGNoU2l6ZSI6IDUwLAogICAgIlBhdXNlQmV0d2VlbkVtYWlsc01zIjogNTAsCiAgICAiUGF1c2VCZXR3ZWVuQmF0Y2hlc01zIjogMjAwCiAgfSwKICAiVGltZVpvbmUiOiB7CiAgICAiRGlzcGxheVRpbWVab25lSWQiOiAiRXRjL1VDVCIKICB9LAogICJEYXRhYmFzZU1haW50ZW5hbmNlIjogewogICAgIkVuYWJsZWQiOiB0cnVlLAogICAgIkRhaWx5RXhlY3V0aW9uVGltZSI6ICIwMjowMCIsCiAgICAiVGltZW91dE1pbnV0ZXMiOiAzMAogIH0sCiAgIlVwbG9hZCI6IHsKICAgICJNYXhGaWxlU2l6ZUdCIjogMTAsCiAgICAiS2VlcEFsaXZlVGltZW91dEhvdXJzIjogNCwKICAgICJSZXF1ZXN0SGVhZGVyc1RpbWVvdXRIb3VycyI6IDIsCiAgICAiTm90ZXMiOiAiT3B0aW1pemVkIGZvciBsYXJnZSBmaWxlIHVwbG9hZHMgdXAgdG8gMTBHQiIKICB9LAogICJOcGdzcWwiOiB7CiAgICAiQ29tbWFuZFRpbWVvdXQiOiA5MDAKICB9LAogICJMb2dnaW5nIjogewogICAgIkxvZ0xldmVsIjogewogICAgICAiRGVmYXVsdCI6ICJJbmZvcm1hdGlvbiIsCiAgICAgICJNaWNyb3NvZnQuQXNwTmV0Q29yZSI6ICJXYXJuaW5nIiwKICAgICAgIk1pY3Jvc29mdC5FbnRpdHlGcmFtZXdvcmtDb3JlLkRhdGFiYXNlLkNvbW1hbmQiOiAiV2FybmluZyIKICAgIH0KICB9LAogICJBbGxvd2VkSG9zdHMiOiAiKiIKfQo=
+  f1: ''
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      initContainers:
+      {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessInit" . | nindent 6 }}
+      - name: seed
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - 'set -e
+
+          D=/data/{{ .Release.Name }}/data
+
+          [ -e "$D/appsettings.json" ] || cp /seed/f0 "$D/appsettings.json"
+
+          mkdir -p "$D/database"
+
+          [ -e "$D/database/.gitignore" ] || cp /seed/f1 "$D/database/.gitignore"
+
+          '
+        volumeMounts:
+        - name: seed
+          mountPath: /seed
+          readOnly: true
+        - name: data
+          mountPath: /data
+      containers:
+      {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
+      - name: app
+        image: ghcr.io/s1t5/mailarchiver:2609.1@sha256:8a05e3c99f63c03ab2599c04078c7de4ee5ecf1988e8adec8d233a457913ab44
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 5000
+        readinessProbe:
+          tcpSocket:
+            port: 5000
+        volumeMounts:
+        - name: data
+          mountPath: /app/DataProtection-Keys
+          subPath: '{{ .Release.Name }}/data/data-protection-keys'
+        - name: data
+          mountPath: /app/appsettings.json
+          subPath: '{{ .Release.Name }}/data/appsettings.json'
+      volumes:
+      {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}
+      - name: seed
+        configMap:
+          name: '{{ .Release.Name }}-seed'
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:18.3-alpine3.23@sha256:4da1a4828be12604092fa55311276f08f9224a74a62dcb4708bd7439e2a03911
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: POSTGRES_DB
+          value: mailarchiver
+        - name: POSTGRES_USER
+          value: mailarchiver
+        - name: POSTGRES_PASSWORD
+          value: mailarchiver
+        securityContext:
+          runAsUser: 1000
+          runAsGroup: 1000
+        ports:
+        - containerPort: 5432
+        readinessProbe:
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - pg_isready -U mailarchiver -d mailarchiver
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/postgresql
+          subPath: '{{ .Release.Name }}/data/database'
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: '{{ .Release.Name }}-data'
+      - name: seed
+        configMap:
+          name: '{{ .Release.Name }}-seed'
+      initContainers:
+      - name: seed
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - 'set -e
+
+          D=/data/{{ .Release.Name }}/data
+
+          [ -e "$D/appsettings.json" ] || cp /seed/f0 "$D/appsettings.json"
+
+          mkdir -p "$D/database"
+
+          [ -e "$D/database/.gitignore" ] || cp /seed/f1 "$D/database/.gitignore"
+
+          '
+        volumeMounts:
+        - name: seed
+          mountPath: /seed
+          readOnly: true
+        - name: data
+          mountPath: /data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  selector:
+    app: postgres
+  ports:
+  - port: 5432
+    targetPort: 5432

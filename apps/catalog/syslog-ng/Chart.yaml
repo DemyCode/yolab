@@ -1,0 +1,17 @@
+apiVersion: v2
+name: syslog-ng
+description: Centralized syslog server with real-time web UI
+type: application
+version: 0.1.0
+appVersion: 4.10.2-1-patch.1
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: Syslog-ng
+  yolab.io/icon: 🌐
+  yolab.io/category: networking
+  yolab.io/tagline: Centralized syslog server with real-time web UI
+  yolab.io/github: syslog-ng/syslog-ng
+home: https://www.syslog-ng.com/

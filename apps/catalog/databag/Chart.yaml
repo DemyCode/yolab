@@ -1,0 +1,17 @@
+apiVersion: v2
+name: databag
+description: A tiny self-hosted federated messenger for the decentralized web
+type: application
+version: 0.1.0
+appVersion: 0.1.18-patch.1
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: Databag
+  yolab.io/icon: 💬
+  yolab.io/category: social
+  yolab.io/tagline: A tiny self-hosted federated messenger for the
+  yolab.io/github: balzack/databag
+home: https://github.com/balzack/databag

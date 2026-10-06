@@ -1,0 +1,12 @@
+config:
+  subdomain: blinko
+  storage_size: 10Gi
+yolab:
+  platformApiUrl: ''
+  accountToken: ''
+  serviceName: ''
+  gateway:
+    upstream: localhost:1111
+  fileExplorer:
+    protect:
+    - data/db

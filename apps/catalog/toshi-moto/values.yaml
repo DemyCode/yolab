@@ -1,0 +1,12 @@
+config:
+  subdomain: toshi-moto
+  storage_size: 10Gi
+yolab:
+  platformApiUrl: ''
+  accountToken: ''
+  serviceName: ''
+  gateway:
+    upstream: localhost:8021
+  fileExplorer:
+    protect:
+    - data/db

@@ -1,0 +1,18 @@
+apiVersion: v2
+name: donetick
+description: An intelligent way to organize tasks and chores
+type: application
+version: 0.1.0
+appVersion: 0.1.80
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: Donetick
+  yolab.io/icon: 📁
+  yolab.io/category: files
+  yolab.io/tagline: An intelligent way to organize tasks and chores
+  yolab.io/github: donetick/donetick
+  yolab.io/collections: replace-google
+home: https://donetick.com/

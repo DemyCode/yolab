@@ -1,0 +1,13 @@
+config:
+  subdomain: invoice-ninja
+  storage_size: 10Gi
+yolab:
+  platformApiUrl: ''
+  accountToken: ''
+  serviceName: ''
+  gateway:
+    upstream: nginx:80
+  fileExplorer:
+    protect:
+    - data/db
+    - data/redis

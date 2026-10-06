@@ -1,0 +1,156 @@
+{{ include "yolab-common.caddyConfigMap" . }}
+---
+{{ include "yolab-common.fileExplorerSecret" . }}
+---
+{{ include "yolab-common.fileExplorerConfigMap" . }}
+---
+{{ include "yolab-common.privateAccessResources" . }}
+---
+{{ include "yolab-common.uninstallHook" . }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-data
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: yolab-cephfs
+  resources:
+    requests:
+      storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      initContainers:
+      {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessInit" . | nindent 6 }}
+      containers:
+      {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
+      - name: server
+        image: codeberg.org/forgejo/forgejo:16.0.5-rootless@sha256:5effb7305584aca479b29fde6f9631a6dbe86ae798ae02eeea33a3666f0c0bf8
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: FORGEJO__security__INSTALL_LOCK
+          value: 'true'
+        - name: FORGEJO__server__DOMAIN
+          value: localhost
+        - name: FORGEJO__server__HTTP_PORT
+          value: '8101'
+        - name: FORGEJO__server__SSH_DOMAIN
+          value: localhost
+        - name: FORGEJO__server__SSH_PORT
+          value: APP_FORGEJO_SSH_PORT
+        - name: FORGEJO__server__SSH_LISTEN_PORT
+          value: APP_FORGEJO_SSH_PORT
+        - name: FORGEJO__server__START_SSH_SERVER
+          value: 'true'
+        - name: FORGEJO__database__DB_TYPE
+          value: postgres
+        - name: FORGEJO__database__HOST
+          value: db:5432
+        - name: FORGEJO__database__NAME
+          value: forgejo
+        - name: FORGEJO__database__USER
+          value: forgejo
+        - name: FORGEJO__database__PASSWD
+          value: forgejo
+        securityContext:
+          runAsUser: 1000
+          runAsGroup: 1000
+        ports:
+        - containerPort: 8101
+        readinessProbe:
+          tcpSocket:
+            port: 8101
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/gitea
+          subPath: '{{ .Release.Name }}/data/forgejo/data'
+        - name: data
+          mountPath: /etc/gitea
+          subPath: '{{ .Release.Name }}/data/forgejo/config'
+      volumes:
+      {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: db
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: db
+  template:
+    metadata:
+      labels:
+        app: db
+    spec:
+      containers:
+      - name: db
+        image: postgres:17.3@sha256:0321e2252ebfeecb8bc1a899755084d29bce872953e1a5a3e25ec0860b739098
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: POSTGRES_USER
+          value: forgejo
+        - name: POSTGRES_PASSWORD
+          value: forgejo
+        - name: POSTGRES_DB
+          value: forgejo
+        securityContext:
+          runAsUser: 1000
+          runAsGroup: 1000
+        ports:
+        - containerPort: 5432
+        readinessProbe:
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - pg_isready -U forgejo
+          periodSeconds: 5
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/postgresql/data
+          subPath: '{{ .Release.Name }}/data/db'
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: '{{ .Release.Name }}-data'
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: db
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  selector:
+    app: db
+  ports:
+  - port: 5432
+    targetPort: 5432

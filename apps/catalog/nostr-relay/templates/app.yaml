@@ -1,0 +1,228 @@
+{{ include "yolab-common.caddyConfigMap" . }}
+---
+{{ include "yolab-common.fileExplorerSecret" . }}
+---
+{{ include "yolab-common.fileExplorerConfigMap" . }}
+---
+{{ include "yolab-common.privateAccessResources" . }}
+---
+{{ include "yolab-common.uninstallHook" . }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-data
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: yolab-cephfs
+  resources:
+    requests:
+      storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: '{{ .Release.Name }}-seed'
+  namespace: '{{ .Release.Namespace }}'
+binaryData:
+  f0: IyBOb3N0ci1ycy1yZWxheSBjb25maWd1cmF0aW9uCgpbaW5mb10KIyBUaGUgYWR2ZXJ0aXNlZCBVUkwgZm9yIHRoZSBOb3N0ciB3ZWJzb2NrZXQuCiMgcmVsYXlfdXJsID0gIndzczovL25vc3RyLmV4YW1wbGUuY29tLyIKCiMgUmVsYXkgaW5mb3JtYXRpb24gZm9yIGNsaWVudHMuICBQdXQgeW91ciB1bmlxdWUgc2VydmVyIG5hbWUgaGVyZS4KbmFtZSA9ICJVbWJyZWwgTm9zdHIgUmVsYXkiCgojIERlc2NyaXB0aW9uCmRlc2NyaXB0aW9uID0gIkEgTm9zdHIgUmVsYXkgcnVubmluZyBvbiBVbWJyZWwiCgojIEFkbWluaXN0cmF0aXZlIGNvbnRhY3QgcHVia2V5CiNwdWJrZXkgPSAiMGMyZDE2OGE0YWU4Y2E1OGM5ZjFhYjIzN2I1ZGY2ODI1OTljNmM3YWI3NDMwN2VhOGIwNTY4NGI2MDQwNWQ0MSIKCiMgQWRtaW5pc3RyYXRpdmUgY29udGFjdCBVUkkKI2NvbnRhY3QgPSAibWFpbHRvOmNvbnRhY3RAZXhhbXBsZS5jb20iCgpbZGlhZ25vc3RpY3NdCiMgRW5hYmxlIHRva2lvIHRyYWNpbmcgKGZvciB1c2Ugd2l0aCB0b2tpby1jb25zb2xlKQojdHJhY2luZyA9IGZhbHNlCgpbZGF0YWJhc2VdCiMgRGF0YWJhc2UgZW5naW5lIChzcWxpdGUvcG9zdGdyZXMpLiAgRGVmYXVsdHMgdG8gc3FsaXRlLgojIFN1cHBvcnQgZm9yIHBvc3RncmVzIGlzIGN1cnJlbnRseSBleHBlcmltZW50YWwuCiNlbmdpbmUgPSAic3FsaXRlIgoKIyBEaXJlY3RvcnkgZm9yIFNRTGl0ZSBmaWxlcy4gIERlZmF1bHRzIHRvIHRoZSBjdXJyZW50IGRpcmVjdG9yeS4gIENhbgojIGFsc28gYmUgc3BlY2lmaWVkIChhbmQgb3ZlcnJpZGVuKSB3aXRoIHRoZSAiLS1kYiBkaXJuYW1lIiBjb21tYW5kCiMgbGluZSBvcHRpb24uCiNkYXRhX2RpcmVjdG9yeSA9ICIuIgoKIyBVc2UgYW4gaW4tbWVtb3J5IGRhdGFiYXNlIGluc3RlYWQgb2YgJ25vc3RyLmRiJy4KIyBSZXF1aXJlcyBzcWxpdGUgZW5naW5lLgojIENhdXRpb247IHRoaXMgd2lsbCBub3Qgc3Vydml2ZSBhIHByb2Nlc3MgcmVzdGFydCEKI2luX21lbW9yeSA9IGZhbHNlCgojIERhdGFiYXNlIGNvbm5lY3Rpb24gcG9vbCBzZXR0aW5ncyBmb3Igc3Vic2NyaWJlcnM6CgojIE1pbmltdW0gbnVtYmVyIG9mIFNRTGl0ZSByZWFkZXIgY29ubmVjdGlvbnMKI21pbl9jb25uID0gNAoKIyBNYXhpbXVtIG51bWJlciBvZiBTUUxpdGUgcmVhZGVyIGNvbm5lY3Rpb25zLiAgUmVjb21tZW5kIHNldHRpbmcgdGhpcwojIHRvIGFwcHJveCB0aGUgbnVtYmVyIG9mIGNvcmVzLgojbWF4X2Nvbm4gPSA4CgojIERhdGFiYXNlIGNvbm5lY3Rpb24gc3RyaW5nLiAgUmVxdWlyZWQgZm9yIHBvc3RncmVzOyBub3QgdXNlZCBmb3IKIyBzcWxpdGUuCiNjb25uZWN0aW9uID0gInBvc3RncmVzcWw6Ly9wb3N0Z3Jlczpub3N0ckBsb2NhbGhvc3Q6NzUwMC9ub3N0ciIKCltuZXR3b3JrXQojIEJpbmQgdG8gdGhpcyBuZXR3b3JrIGFkZHJlc3MKYWRkcmVzcyA9ICIwLjAuMC4wIgoKIyBMaXN0ZW4gb24gdGhpcyBwb3J0CnBvcnQgPSA4MDgwCgojIElmIHByZXNlbnQsIHJlYWQgdGhpcyBIVFRQIGhlYWRlciBmb3IgbG9nZ2luZyBjbGllbnQgSVAgYWRkcmVzc2VzLgojIEV4YW1wbGVzIGZvciBjb21tb24gcHJveGllcywgY2xvdWRmbGFyZToKI3JlbW90ZV9pcF9oZWFkZXIgPSAieC1mb3J3YXJkZWQtZm9yIgojcmVtb3RlX2lwX2hlYWRlciA9ICJjZi1jb25uZWN0aW5nLWlwIgoKIyBXZWJzb2NrZXQgcGluZyBpbnRlcnZhbCBpbiBzZWNvbmRzLCBkZWZhdWx0cyB0byA1IG1pbnV0ZXMKI3BpbmdfaW50ZXJ2YWwgPSAzMDAKCltvcHRpb25zXQojIFJlamVjdCBldmVudHMgdGhhdCBoYXZlIHRpbWVzdGFtcHMgZ3JlYXRlciB0aGFuIHRoaXMgbWFueSBzZWNvbmRzIGluCiMgdGhlIGZ1dHVyZS4gIFJlY29tbWVuZGVkIHRvIHJlamVjdCBhbnl0aGluZyBncmVhdGVyIHRoYW4gMzAgbWludXRlcwojIGZyb20gdGhlIGN1cnJlbnQgdGltZSwgYnV0IHRoZSBkZWZhdWx0IGlzIHRvIGFsbG93IGFueSBkYXRlLgpyZWplY3RfZnV0dXJlX3NlY29uZHMgPSAxODAwCgpbbGltaXRzXQojIExpbWl0IGV2ZW50cyBjcmVhdGVkIHBlciBzZWNvbmQsIGF2ZXJhZ2VkIG92ZXIgb25lIG1pbnV0ZS4gIE11c3QgYmUKIyBhbiBpbnRlZ2VyLiAgSWYgbm90IHNldCAob3Igc2V0IHRvIDApLCB0aGVyZSBpcyBubyBsaW1pdC4gIE5vdGU6CiMgdGhpcyBpcyBmb3IgdGhlIHNlcnZlciBhcyBhIHdob2xlLCBub3QgcGVyLWNvbm5lY3Rpb24uCiMKIyBMaW1pdGluZyBldmVudCBjcmVhdGlvbiBpcyBoaWdobHkgcmVjb21tZW5kZWQgaWYgeW91ciByZWxheSBpcwojIHB1YmxpYyEKIwojbWVzc2FnZXNfcGVyX3NlYyA9IDUKCiMgTGltaXQgY2xpZW50IHN1YnNjcmlwdGlvbnMgY3JlYXRlZCBwZXIgc2Vjb25kLCBhdmVyYWdlZCBvdmVyIG9uZQojIG1pbnV0ZS4gIE11c3QgYmUgYW4gaW50ZWdlci4gIElmIG5vdCBzZXQgKG9yIHNldCB0byAwKSwgZGVmYXVsdHMgdG8KIyB1bmxpbWl0ZWQuICBTdHJvbmdseSByZWNvbW1lbmRlZCB0byBzZXQgdGhpcyB0byBhIGxvdyB2YWx1ZSBzdWNoIGFzCiMgMTAgdG8gZW5zdXJlIGZhaXIgc2VydmljZS4KI3N1YnNjcmlwdGlvbnNfcGVyX21pbiA9IDAKCiMgVU5JTVBMRU1FTlRFRC4uLgojIExpbWl0IGhvdyBtYW55IGNvbmN1cnJlbnQgZGF0YWJhc2UgY29ubmVjdGlvbnMgYSBjbGllbnQgY2FuIGhhdmUuCiMgVGhpcyBwcmV2ZW50cyBhIHNpbmdsZSBjbGllbnQgZnJvbSBzdGFydGluZyB0b28gbWFueSBleHBlbnNpdmUKIyBkYXRhYmFzZSBxdWVyaWVzLiAgTXVzdCBiZSBhbiBpbnRlZ2VyLiAgSWYgbm90IHNldCAob3Igc2V0IHRvIDApLAojIGRlZmF1bHRzIHRvIHVubGltaXRlZCAoc3ViamVjdCB0byBzdWJzY3JpcHRpb24gbGltaXRzKS4KI2RiX2Nvbm5zX3Blcl9jbGllbnQgPSAwCgojIExpbWl0IGJsb2NraW5nIHRocmVhZHMgdXNlZCBmb3IgZGF0YWJhc2UgY29ubmVjdGlvbnMuICBEZWZhdWx0cyB0byAxNi4KI21heF9ibG9ja2luZ190aHJlYWRzID0gMTYKCiMgTGltaXQgdGhlIG1heGltdW0gc2l6ZSBvZiBhbiBFVkVOVCBtZXNzYWdlLiAgRGVmYXVsdHMgdG8gMTI4IEtCLgojIFNldCB0byAwIGZvciB1bmxpbWl0ZWQuCiNtYXhfZXZlbnRfYnl0ZXMgPSAxMzEwNzIKCiMgTWF4aW11bSBXZWJTb2NrZXQgbWVzc2FnZSBpbiBieXRlcy4gIERlZmF1bHRzIHRvIDEyOCBLQi4KI21heF93c19tZXNzYWdlX2J5dGVzID0gMTMxMDcyCgojIE1heGltdW0gV2ViU29ja2V0IGZyYW1lIHNpemUgaW4gYnl0ZXMuICBEZWZhdWx0cyB0byAxMjggS0IuCiNtYXhfd3NfZnJhbWVfYnl0ZXMgPSAxMzEwNzIKCiMgQnJvYWRjYXN0IGJ1ZmZlciBzaXplLCBpbiBudW1iZXIgb2YgZXZlbnRzLiAgVGhpcyBwcmV2ZW50cyBzbG93CiMgcmVhZGVycyBmcm9tIGNvbnN1bWluZyBtZW1vcnkuCiNicm9hZGNhc3RfYnVmZmVyID0gMTYzODQKCiMgRXZlbnQgcGVyc2lzdGVuY2UgYnVmZmVyIHNpemUsIGluIG51bWJlciBvZiBldmVudHMuICBUaGlzIHByb3ZpZGVzCiMgYmFja3ByZXNzdXJlIHRvIHNlbmRlcnMgaWYgd3JpdGVzIGFyZSBzbG93LgojZXZlbnRfcGVyc2lzdF9idWZmZXIgPSA0MDk2CgojIEV2ZW50IGtpbmQgYmxhY2tsaXN0LiBFdmVudHMgd2l0aCB0aGVzZSBraW5kcyB3aWxsIGJlIGRpc2NhcmRlZC4KI2V2ZW50X2tpbmRfYmxhY2tsaXN0ID0gWwojICAgIDcwMjAyLAojXQoKW2F1dGhvcml6YXRpb25dCiMgUHVia2V5IGFkZHJlc3NlcyBpbiB0aGlzIGFycmF5IGFyZSB3aGl0ZWxpc3RlZCBmb3IgZXZlbnQgcHVibGlzaGluZy4KIyBPbmx5IHZhbGlkIGV2ZW50cyBieSB0aGVzZSBhdXRob3JzIHdpbGwgYmUgYWNjZXB0ZWQsIGlmIHRoZSB2YXJpYWJsZQojIGlzIHNldC4KI3B1YmtleV93aGl0ZWxpc3QgPSBbCiMgICIzNWQyNmU0NjkwY2JlMWE4OThhZjYxY2MzNTE1NjYxZWI1ZmE3NjNiNTdiZDBiNDJlNDUwOTljOGIzMmZkNTBmIiwKIyAgIjg4NzY0NWZlZjBjZTBjM2MxMjE4ZDJmNWQ4ZTYxMzJhMTkzMDRjZGM1N2NkMjAyODFkMDgyZjM4Y2ZlYTAwNzIiLAojXQoKW3ZlcmlmaWVkX3VzZXJzXQojIE5JUC0wNSB2ZXJpZmljYXRpb24gb2YgdXNlcnMuICBDYW4gYmUgImVuYWJsZWQiIHRvIHJlcXVpcmUgTklQLTA1CiMgbWV0YWRhdGEgZm9yIGV2ZW50IGF1dGhvcnMsICJwYXNzaXZlIiB0byBwZXJmb3JtIHZhbGlkYXRpb24gYnV0CiMgbmV2ZXIgYmxvY2sgcHVibGlzaGluZywgb3IgImRpc2FibGVkIiB0byBkbyBub3RoaW5nLgojbW9kZSA9ICJkaXNhYmxlZCIKCiMgRG9tYWluIG5hbWVzIHRoYXQgd2lsbCBiZSBwcmV2ZW50ZWQgZnJvbSBwdWJsaXNoaW5nIGV2ZW50cy4KI2RvbWFpbl9ibGFja2xpc3QgPSBbIndlbGxvcmRlci5uZXQiXQoKIyBEb21haW4gbmFtZXMgdGhhdCBhcmUgYWxsb3dlZCB0byBwdWJsaXNoIGV2ZW50cy4gIElmIGRlZmluZWQsIG9ubHkKIyBldmVudHMgTklQLTA1IHZlcmlmaWVkIGF1dGhvcnMgYXQgdGhlc2UgZG9tYWlucyBhcmUgcGVyc2lzdGVkLgojZG9tYWluX3doaXRlbGlzdCA9IFsiZXhhbXBsZS5jb20iXQoKIyBDb25zaWRlciBhbiBwdWJrZXkgInZlcmlmaWVkIiBpZiB3ZSBoYXZlIGEgc3VjY2Vzc2Z1bCB2YWxpZGF0aW9uCiMgZnJvbSB0aGUgTklQLTA1IGRvbWFpbiB3aXRoaW4gdGhpcyBhbW91bnQgb2YgdGltZS4gIE5vdGUsIGlmIHRoZQojIGRvbWFpbiBwcm92aWRlcyBhIHN1Y2Nlc3NmdWwgcmVzcG9uc2UgdGhhdCBvbWl0cyB0aGUgYWNjb3VudCwKIyB2ZXJpZmljYXRpb24gaXMgaW1tZWRpYXRlbHkgcmV2b2tlZC4KI3ZlcmlmeV9leHBpcmF0aW9uID0gIjEgd2VlayIKCiMgSG93IGxvbmcgdG8gd2FpdCBiZXR3ZWVuIHZlcmlmaWNhdGlvbiBhdHRlbXB0cyBmb3IgYSBzcGVjaWZpYyBhdXRob3IuCiN2ZXJpZnlfdXBkYXRlX2ZyZXF1ZW5jeSA9ICIyNCBob3VycyIKCiMgSG93IG1hbnkgY29uc2VjdXRpdmUgZmFpbGVkIGNoZWNrcyBiZWZvcmUgd2UgZ2l2ZSB1cCBvbiB2ZXJpZnlpbmcKIyB0aGlzIGF1dGhvci4KI21heF9jb25zZWN1dGl2ZV9mYWlsdXJlcyA9IDIwCg==
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      initContainers:
+      {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessInit" . | nindent 6 }}
+      - name: seed
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - 'set -e
+
+          D=/data/{{ .Release.Name }}/data
+
+          mkdir -p "$D/relay"
+
+          [ -e "$D/relay/config.toml" ] || cp /seed/f0 "$D/relay/config.toml"
+
+          '
+        volumeMounts:
+        - name: seed
+          mountPath: /seed
+          readOnly: true
+        - name: data
+          mountPath: /data
+      containers:
+      {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
+      - name: web
+        image: getumbrel/umbrel-nostr-relay:v1.1.0@sha256:21b67ab2e9d30b20e785497f19534e8e21b6da1bfe69e3ae5afe91b759f20488
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: RELAY_HOST
+          value: relay
+        - name: RELAY_PORT
+          value: '8080'
+        - name: RELAY_PROXY_HOST
+          value: relay-proxy
+        - name: RELAY_PROXY_PORT
+          value: '80'
+        securityContext:
+          runAsUser: 1000
+          runAsGroup: 1000
+        ports:
+        - containerPort: 3000
+        readinessProbe:
+          tcpSocket:
+            port: 3000
+      volumes:
+      {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}
+      - name: seed
+        configMap:
+          name: '{{ .Release.Name }}-seed'
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: relay
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: relay
+  template:
+    metadata:
+      labels:
+        app: relay
+    spec:
+      containers:
+      - name: relay
+        image: getumbrel/nostr-rs-relay:0.8.1@sha256:a6c857aecd4964bf058ec5c3c0fea95e0d87ed0cc789f2140f96de108e5515ec
+        imagePullPolicy: IfNotPresent
+        securityContext:
+          runAsUser: 1000
+          runAsGroup: 1000
+        volumeMounts:
+        - name: data
+          mountPath: /app/config.toml
+          subPath: '{{ .Release.Name }}/data/relay/config.toml'
+        - name: data
+          mountPath: /app/db
+          subPath: '{{ .Release.Name }}/data/relay/db'
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: '{{ .Release.Name }}-data'
+      - name: seed
+        configMap:
+          name: '{{ .Release.Name }}-seed'
+      initContainers:
+      - name: seed
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - 'set -e
+
+          D=/data/{{ .Release.Name }}/data
+
+          mkdir -p "$D/relay"
+
+          [ -e "$D/relay/config.toml" ] || cp /seed/f0 "$D/relay/config.toml"
+
+          '
+        volumeMounts:
+        - name: seed
+          mountPath: /seed
+          readOnly: true
+        - name: data
+          mountPath: /data
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: relay-proxy
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: relay-proxy
+  template:
+    metadata:
+      labels:
+        app: relay-proxy
+    spec:
+      containers:
+      - name: relay-proxy
+        image: getumbrel/umbrel-nostr-relay-proxy:v1.1.0@sha256:6b335f4488f813475bb7c9d3bb6282fda081808e2d5447404fc8a1ffcc1279dc
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: RELAY_HOST
+          value: relay
+        - name: RELAY_PORT
+          value: '8080'
+        securityContext:
+          runAsUser: 1000
+          runAsGroup: 1000
+        volumeMounts:
+        - name: data
+          mountPath: /app/data
+          subPath: '{{ .Release.Name }}/data/relay-proxy'
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: '{{ .Release.Name }}-data'
+      - name: seed
+        configMap:
+          name: '{{ .Release.Name }}-seed'
+      initContainers:
+      - name: seed
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - 'set -e
+
+          D=/data/{{ .Release.Name }}/data
+
+          mkdir -p "$D/relay"
+
+          [ -e "$D/relay/config.toml" ] || cp /seed/f0 "$D/relay/config.toml"
+
+          '
+        volumeMounts:
+        - name: seed
+          mountPath: /seed
+          readOnly: true
+        - name: data
+          mountPath: /data

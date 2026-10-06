@@ -1,0 +1,18 @@
+apiVersion: v2
+name: downtify
+description: Download Spotify music with album art and metadata
+type: application
+version: 0.1.0
+appVersion: 3.4.0
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: Downtify
+  yolab.io/icon: 🎬
+  yolab.io/category: media
+  yolab.io/tagline: Download Spotify music with album art and metadata
+  yolab.io/github: henriquesebastiao/downtify
+  yolab.io/collections: watch-and-listen
+home: https://github.com/henriquesebastiao/downtify

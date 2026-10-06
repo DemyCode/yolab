@@ -1,0 +1,18 @@
+apiVersion: v2
+name: flatnotes
+description: A self-hosted, database-less markdown note-taking app
+type: application
+version: 0.1.0
+appVersion: 5.5.5-patch.1
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: flatnotes
+  yolab.io/icon: 📁
+  yolab.io/category: files
+  yolab.io/tagline: A self-hosted, database-less markdown note-taking app
+  yolab.io/github: dullage/flatnotes
+  yolab.io/collections: replace-google
+home: https://github.com/dullage/flatnotes

@@ -1,0 +1,17 @@
+apiVersion: v2
+name: picoclaw
+description: Ultra-lightweight personal AI assistant
+type: application
+version: 0.1.0
+appVersion: 0.3.1-patch.1
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: PicoClaw
+  yolab.io/icon: 🧠
+  yolab.io/category: ai
+  yolab.io/tagline: Ultra-lightweight personal AI assistant
+  yolab.io/github: sipeed/picoclaw
+home: https://picoclaw.io

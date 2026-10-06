@@ -1,0 +1,17 @@
+apiVersion: v2
+name: libreoffice
+description: Do more - easier, quicker, smarter
+type: application
+version: 0.1.0
+appVersion: 7.6.7-patch.1
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: LibreOffice
+  yolab.io/icon: 📁
+  yolab.io/category: files
+  yolab.io/tagline: Do more - easier, quicker, smarter
+  yolab.io/collections: replace-google
+home: https://www.libreoffice.org/

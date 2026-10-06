@@ -1,0 +1,13 @@
+config:
+  subdomain: bffless
+  storage_size: 10Gi
+yolab:
+  platformApiUrl: ''
+  accountToken: ''
+  serviceName: ''
+  gateway:
+    upstream: localhost:5537
+  fileExplorer:
+    protect:
+    - data/db/init-databases.sql
+    - data/postgres

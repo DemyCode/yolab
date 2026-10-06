@@ -1,0 +1,17 @@
+apiVersion: v2
+name: seedtool
+description: A toolkit for generating, verifying, and recovering Bitcoin seeds
+type: application
+version: 0.1.0
+appVersion: 2.3.0
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: Bitcoin Seed Tool
+  yolab.io/icon: ₿
+  yolab.io/category: bitcoin
+  yolab.io/tagline: A toolkit for generating, verifying, and recovering Bitcoin
+  yolab.io/github: BitcoinQnA/seedtool
+home: https://bitcoiner.guide/seed/

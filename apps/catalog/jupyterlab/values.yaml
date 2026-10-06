@@ -1,0 +1,9 @@
+config:
+  subdomain: jupyterlab
+  storage_size: 10Gi
+yolab:
+  platformApiUrl: ''
+  accountToken: ''
+  serviceName: ''
+  gateway:
+    upstream: localhost:8888

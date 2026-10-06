@@ -1,0 +1,17 @@
+apiVersion: v2
+name: chromium
+description: The open-source browser project
+type: application
+version: 0.1.0
+appVersion: 8d3cb5f1
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: Chromium
+  yolab.io/icon: 🌐
+  yolab.io/category: networking
+  yolab.io/tagline: The open-source browser project
+  yolab.io/github: linuxserver/docker-chromium
+home: https://www.chromium.org/Home/

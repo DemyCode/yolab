@@ -1,0 +1,208 @@
+{{ include "yolab-common.caddyConfigMap" . }}
+---
+{{ include "yolab-common.fileExplorerSecret" . }}
+---
+{{ include "yolab-common.fileExplorerConfigMap" . }}
+---
+{{ include "yolab-common.privateAccessResources" . }}
+---
+{{ include "yolab-common.uninstallHook" . }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-data
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: yolab-cephfs
+  resources:
+    requests:
+      storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Release.Name }}-secrets
+  namespace: {{ .Release.Namespace }}
+type: Opaque
+stringData:
+  admin_password: {{ required "config.admin_password is required" .Values.config.admin_password | quote }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      initContainers:
+      {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessInit" . | nindent 6 }}
+      containers:
+      {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
+      volumes:
+      {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: server
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: server
+  template:
+    metadata:
+      labels:
+        app: server
+    spec:
+      containers:
+      - name: server
+        image: rabbitcompany/passky-server:8.1.8@sha256:e9bf7b9ecdf4904f1e3893b5968e98cbb61d4984bca1482081df2f59df05fca6
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: APP_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: admin_password
+        - name: SERVER_LOCATION
+          value: US
+        - name: SERVER_CORES
+          value: '1'
+        - name: ADMIN_USERNAME
+          value: admin
+        - name: ADMIN_PASSWORD
+          value: $(APP_PASSWORD)
+        - name: CF_TURNSTILE_SITE_KEY
+          value: 1x00000000000000000000AA
+        - name: CF_TURNSTILE_SECRET_KEY
+          value: 1x0000000000000000000000000000000AA
+        - name: DATABASE_ENGINE
+          value: sqlite
+        - name: DATABASE_FILE
+          value: passky
+        - name: MYSQL_HOST
+          value: ''
+        - name: MYSQL_PORT
+          value: '3306'
+        - name: MYSQL_DATABASE
+          value: passky
+        - name: MYSQL_USER
+          value: passky
+        - name: MYSQL_PASSWORD
+          value: ''
+        - name: MYSQL_SSL
+          value: 'false'
+        - name: MYSQL_SSL_CA
+          value: /etc/ssl/certs/ca-certificates.crt
+        - name: MYSQL_CACHE_MODE
+          value: '0'
+        - name: REDIS_HOST
+          value: 127.0.0.1
+        - name: REDIS_PORT
+          value: '6379'
+        - name: REDIS_PASSWORD
+          value: ''
+        - name: REDIS_LOCAL_HOST
+          value: 127.0.0.1
+        - name: REDIS_LOCAL_PORT
+          value: '6379'
+        - name: REDIS_LOCAL_PASSWORD
+          value: ''
+        - name: MAIL_ENABLED
+          value: 'false'
+        - name: ACCOUNT_MAX
+          value: '100'
+        - name: ACCOUNT_MAX_PASSWORDS
+          value: '1000'
+        - name: ACCOUNT_PREMIUM
+          value: '-1'
+        - name: YUBI_CLOUD
+          value: https://api.yubico.com/wsapi/2.0/verify
+        - name: YUBI_ID
+          value: '67857'
+        - name: LIMITER_ENABLED
+          value: 'true'
+        - name: LIMITER_GET_INFO
+          value: '-1'
+        - name: LIMITER_GET_STATS
+          value: '-1'
+        - name: LIMITER_GET_TOKEN
+          value: '3'
+        - name: LIMITER_GET_PASSWORDS
+          value: '2'
+        - name: LIMITER_SAVE_PASSWORD
+          value: '2'
+        - name: LIMITER_EDIT_PASSWORD
+          value: '2'
+        - name: LIMITER_DELETE_PASSWORD
+          value: '2'
+        - name: LIMITER_DELETE_PASSWORDS
+          value: '10'
+        - name: LIMITER_CREATE_ACCOUNT
+          value: '10'
+        - name: LIMITER_DELETE_ACCOUNT
+          value: '10'
+        - name: LIMITER_IMPORT_PASSWORDS
+          value: '10'
+        - name: LIMITER_FORGOT_USERNAME
+          value: '60'
+        - name: LIMITER_ENABLE_2FA
+          value: '10'
+        - name: LIMITER_DISABLE_2FA
+          value: '10'
+        - name: LIMITER_ADD_YUBIKEY
+          value: '10'
+        - name: LIMITER_REMOVE_YUBIKEY
+          value: '10'
+        - name: LIMITER_UPGRADE_ACCOUNT
+          value: '10'
+        - name: LIMITER_GET_REPORT
+          value: '-1'
+        ports:
+        - containerPort: 80
+        readinessProbe:
+          tcpSocket:
+            port: 80
+        volumeMounts:
+        - name: data
+          mountPath: /var/www/html/databases
+          subPath: '{{ .Release.Name }}/data/passky'
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: '{{ .Release.Name }}-data'
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: server
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  selector:
+    app: server
+  ports:
+  - port: 80
+    targetPort: 80

@@ -1,0 +1,258 @@
+{{ include "yolab-common.caddyConfigMap" . }}
+---
+{{ include "yolab-common.fileExplorerSecret" . }}
+---
+{{ include "yolab-common.fileExplorerConfigMap" . }}
+---
+{{ include "yolab-common.privateAccessResources" . }}
+---
+{{ include "yolab-common.uninstallHook" . }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-data
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: yolab-cephfs
+  resources:
+    requests:
+      storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Release.Name }}-secrets
+  namespace: {{ .Release.Namespace }}
+type: Opaque
+stringData:
+  admin_password: {{ required "config.admin_password is required" .Values.config.admin_password | quote }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: '{{ .Release.Name }}-seed'
+  namespace: '{{ .Release.Namespace }}'
+binaryData:
+  f0: W2dsb2JhbF0KICAgICAgICBzZWN1cml0eSA9IHVzZXIKICAgICAgICBzZXJ2ZXIgbWluIHByb3RvY29sID0gU01CMgoKICAgICAgICAjIGRpc2FibGUgcHJpbnRpbmcgc2VydmljZXMKICAgICAgICBsb2FkIHByaW50ZXJzID0gbm8KICAgICAgICBwcmludGluZyA9IGJzZAogICAgICAgIHByaW50Y2FwIG5hbWUgPSAvZGV2L251bGwKICAgICAgICBkaXNhYmxlIHNwb29sc3MgPSB5ZXMKCltzdG9yYWdlXQogICAgICAgIHBhdGggPSAvc3RvcmFnZQogICAgICAgIGNvbW1lbnQgPSBTaGFyZWQKICAgICAgICB2YWxpZCB1c2VycyA9IEBzbWIKICAgICAgICBicm93c2VhYmxlID0geWVzCiAgICAgICAgd3JpdGFibGUgPSB5ZXMKICAgICAgICByZWFkIG9ubHkgPSBubwogICAgICAgIGZvcmNlIHVzZXIgPSB1bWJyZWwKICAgICAgICBmb3JjZSBncm91cCA9IHNtYg==
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      initContainers:
+      {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessInit" . | nindent 6 }}
+      - name: seed
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - 'set -e
+
+          D=/data/{{ .Release.Name }}/data
+
+          mkdir -p "$D/samba"
+
+          [ -e "$D/samba/smb.conf" ] || cp /seed/f0 "$D/samba/smb.conf"
+
+          '
+        volumeMounts:
+        - name: seed
+          mountPath: /seed
+          readOnly: true
+        - name: data
+          mountPath: /data
+      containers:
+      {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
+      volumes:
+      {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}
+      - name: seed
+        configMap:
+          name: '{{ .Release.Name }}-seed'
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: homepage
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: homepage
+  template:
+    metadata:
+      labels:
+        app: homepage
+    spec:
+      containers:
+      - name: homepage
+        image: loficafe/static-web-server-samba:1.0.1@sha256:783667f052d9535bb75946ff9bc807989b041e25437ef10c30b291589d041e6e
+        imagePullPolicy: IfNotPresent
+        securityContext:
+          runAsUser: 1000
+          runAsGroup: 1000
+        ports:
+        - containerPort: 80
+        readinessProbe:
+          tcpSocket:
+            port: 80
+        volumeMounts:
+        - name: data
+          mountPath: /public/smb.conf
+          subPath: '{{ .Release.Name }}/data/samba/smb.conf'
+          readOnly: true
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: '{{ .Release.Name }}-data'
+      - name: seed
+        configMap:
+          name: '{{ .Release.Name }}-seed'
+      initContainers:
+      - name: seed
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - 'set -e
+
+          D=/data/{{ .Release.Name }}/data
+
+          mkdir -p "$D/samba"
+
+          [ -e "$D/samba/smb.conf" ] || cp /seed/f0 "$D/samba/smb.conf"
+
+          '
+        volumeMounts:
+        - name: seed
+          mountPath: /seed
+          readOnly: true
+        - name: data
+          mountPath: /data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: homepage
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  selector:
+    app: homepage
+  ports:
+  - port: 80
+    targetPort: 80
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: server
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: server
+  template:
+    metadata:
+      labels:
+        app: server
+    spec:
+      containers:
+      - name: server
+        image: dockurr/samba:4.23.5@sha256:63428d1cb6c1ace60cfa782c1d6c9e4b3686044fc47600c97055e6b62e9bb5fa
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: APP_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: admin_password
+        - name: USER
+          value: umbrel
+        - name: PASS
+          value: $(APP_PASSWORD)
+        - name: UID
+          value: '1000'
+        - name: GID
+          value: '1000'
+        ports:
+        - containerPort: 445
+        readinessProbe:
+          tcpSocket:
+            port: 445
+        volumeMounts:
+        - name: data
+          mountPath: /etc/samba/smb.conf
+          subPath: '{{ .Release.Name }}/data/samba/smb.conf'
+        - name: data
+          mountPath: /storage
+          subPath: '{{ .Release.Name }}/storage'
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: '{{ .Release.Name }}-data'
+      - name: seed
+        configMap:
+          name: '{{ .Release.Name }}-seed'
+      initContainers:
+      - name: seed
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - 'set -e
+
+          D=/data/{{ .Release.Name }}/data
+
+          mkdir -p "$D/samba"
+
+          [ -e "$D/samba/smb.conf" ] || cp /seed/f0 "$D/samba/smb.conf"
+
+          '
+        volumeMounts:
+        - name: seed
+          mountPath: /seed
+          readOnly: true
+        - name: data
+          mountPath: /data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: server
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  selector:
+    app: server
+  ports:
+  - port: 445
+    targetPort: 445

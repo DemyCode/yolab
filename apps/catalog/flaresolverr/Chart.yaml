@@ -1,0 +1,17 @@
+apiVersion: v2
+name: flaresolverr
+description: Proxy server to bypass Cloudflare and DDoS-GUARD protection
+type: application
+version: 0.1.0
+appVersion: 3.5.2
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: flaresolverr
+  yolab.io/icon: 🌐
+  yolab.io/category: networking
+  yolab.io/tagline: Proxy server to bypass Cloudflare and DDoS-GUARD protection
+  yolab.io/github: FlareSolverr/FlareSolverr
+home: https://github.com/FlareSolverr/FlareSolverr

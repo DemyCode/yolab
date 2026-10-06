@@ -1,0 +1,18 @@
+apiVersion: v2
+name: homarr
+description: A customizable browser home page
+type: application
+version: 0.1.0
+appVersion: 2.2.0
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: Homarr
+  yolab.io/icon: 📁
+  yolab.io/category: files
+  yolab.io/tagline: A customizable browser home page
+  yolab.io/github: homarr-labs/homarr
+  yolab.io/collections: replace-google
+home: https://homarr.dev/

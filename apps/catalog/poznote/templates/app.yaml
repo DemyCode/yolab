@@ -1,0 +1,172 @@
+{{ include "yolab-common.caddyConfigMap" . }}
+---
+{{ include "yolab-common.fileExplorerSecret" . }}
+---
+{{ include "yolab-common.fileExplorerConfigMap" . }}
+---
+{{ include "yolab-common.privateAccessResources" . }}
+---
+{{ include "yolab-common.uninstallHook" . }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-data
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: yolab-cephfs
+  resources:
+    requests:
+      storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      initContainers:
+      {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessInit" . | nindent 6 }}
+      containers:
+      {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
+      volumes:
+      {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: app
+  template:
+    metadata:
+      labels:
+        app: app
+    spec:
+      containers:
+      - name: app
+        image: ghcr.io/timothepoznanski/poznote:6.109.0@sha256:9b4f1dfb22e4066a1deeb01b143a68c9b29b152ce94fc6855a64973a53e34103
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: SQLITE_DATABASE
+          value: /var/www/html/data/database/poznote.db
+        - name: HTTP_WEB_PORT
+          value: '80'
+        ports:
+        - containerPort: 80
+        readinessProbe:
+          exec:
+            command:
+            - wget
+            - --quiet
+            - --tries=1
+            - --timeout=5
+            - -O
+            - /dev/null
+            - http://127.0.0.1/api/health
+          initialDelaySeconds: 10
+          periodSeconds: 30
+        volumeMounts:
+        - name: data
+          mountPath: /var/www/html/data
+          subPath: '{{ .Release.Name }}/data'
+        - name: data
+          mountPath: /var/www/html/public/umbrel-mcp.php
+          subPath: '{{ .Release.Name }}/umbrel-mcp.php'
+          readOnly: true
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: '{{ .Release.Name }}-data'
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: app
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  selector:
+    app: app
+  ports:
+  - port: 80
+    targetPort: 80
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mcp
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: mcp
+  template:
+    metadata:
+      labels:
+        app: mcp
+    spec:
+      containers:
+      - name: mcp
+        image: ghcr.io/timothepoznanski/poznote-mcp:6.109.0@sha256:0602917229c1090bb21df529d39debf56a189fdf755536b2be69f24f73392e24
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: POZNOTE_API_URL
+          value: http://app:80/api/v1
+        - name: POZNOTE_DEBUG
+          value: ${POZNOTE_DEBUG:-false}
+        - name: POZNOTE_MCP_AUTH_TOKEN
+          value: ${APP_POZNOTE_MCP_AUTH_TOKEN:?MCP authentication token is required}
+        ports:
+        - containerPort: 8045
+        readinessProbe:
+          tcpSocket:
+            port: 8045
+        volumeMounts:
+        - name: data
+          mountPath: /var/www/html/data
+          subPath: '{{ .Release.Name }}/data'
+          readOnly: true
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: '{{ .Release.Name }}-data'
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mcp
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  selector:
+    app: mcp
+  ports:
+  - port: 8045
+    targetPort: 8045

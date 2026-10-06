@@ -1,0 +1,87 @@
+{{ include "yolab-common.caddyConfigMap" . }}
+---
+{{ include "yolab-common.fileExplorerSecret" . }}
+---
+{{ include "yolab-common.fileExplorerConfigMap" . }}
+---
+{{ include "yolab-common.privateAccessResources" . }}
+---
+{{ include "yolab-common.uninstallHook" . }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-data
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: yolab-cephfs
+  resources:
+    requests:
+      storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      initContainers:
+      {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessInit" . | nindent 6 }}
+      containers:
+      {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
+      - name: web
+        image: willtda/dropgate-server:3.0.13@sha256:43698790fe341ea3fb0094bbdca701ecdf875a9c4b9c92b67f86c34c887c132b
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: SERVER_PORT
+          value: '52443'
+        - name: SERVER_NAME
+          value: Dropgate Server
+        - name: ENABLE_WEB_UI
+          value: 'true'
+        - name: ENABLE_UPLOAD
+          value: 'true'
+        - name: UPLOAD_ENABLE_E2EE
+          value: 'true'
+        - name: UPLOAD_PRESERVE_UPLOADS
+          value: 'false'
+        - name: UPLOAD_MAX_FILE_SIZE_MB
+          value: '100'
+        - name: UPLOAD_MAX_STORAGE_GB
+          value: '10'
+        - name: UPLOAD_MAX_FILE_LIFETIME_HOURS
+          value: '24'
+        - name: UPLOAD_MAX_FILE_DOWNLOADS
+          value: '1'
+        - name: ENABLE_P2P
+          value: 'true'
+        ports:
+        - containerPort: 52443
+        readinessProbe:
+          tcpSocket:
+            port: 52443
+        volumeMounts:
+        - name: data
+          mountPath: /usr/src/app/uploads
+          subPath: '{{ .Release.Name }}/data/uploads'
+      volumes:
+      {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}

@@ -1,0 +1,128 @@
+{{ include "yolab-common.caddyConfigMap" . }}
+---
+{{ include "yolab-common.fileExplorerSecret" . }}
+---
+{{ include "yolab-common.fileExplorerConfigMap" . }}
+---
+{{ include "yolab-common.privateAccessResources" . }}
+---
+{{ include "yolab-common.uninstallHook" . }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-data
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: yolab-cephfs
+  resources:
+    requests:
+      storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Release.Name }}-secrets
+  namespace: {{ .Release.Namespace }}
+type: Opaque
+stringData:
+  app_secret: {{ required "config.app_secret is required" .Values.config.app_secret | quote }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: '{{ .Release.Name }}-seed'
+  namespace: '{{ .Release.Namespace }}'
+binaryData:
+  f0: aW5zdGFuY2VfbmFtZTogIk15IEhvbWUgSHViIgpwYXNzd29yZDogIiIgI2xlYXZlIGJsYW5rIGZvciBwYXNzd29yZCBsZXNzIGFjY2VzcwphZG1pbl9uYW1lOiAiQWRtaW5pc3RyYXRvciIKZmVhdHVyZV90b2dnbGVzOgogIHNob3BwaW5nX2xpc3Q6IHRydWUKICBtZWRpYV9kb3dubG9hZGVyOiB0cnVlCiAgcGRmX2NvbXByZXNzb3I6IHRydWUKICBxcl9nZW5lcmF0b3I6IHRydWUKICBub3RlczogdHJ1ZQogIHNoYXJlZF9jbG91ZDogdHJ1ZQogIHdob19pc19ob21lOiB0cnVlCiAgcGVyc29uYWxfc3RhdHVzOiB0cnVlCiAgY2hvcmVzOiB0cnVlCiAgcmVjaXBlczogdHJ1ZQogIGV4cGlyeV90cmFja2VyOiB0cnVlCiAgdXJsX3Nob3J0ZW5lcjogdHJ1ZQogIGV4cGVuc2VfdHJhY2tlcjogdHJ1ZQogIGNhbGVuZGFyOiB0cnVlCgpmYW1pbHlfbWVtYmVyczoKICAtIE1vbQogIC0gRGFkCiAgLSBEaXBhbnNodQogIC0gVml2ZWsKICAtIEluZGlhCgpyZW1pbmRlcnM6CiAgIyB0aW1lX2Zvcm1hdCBjb250cm9scyBob3cgcmVtaW5kZXIgdGltZXMgYXJlIGRpc3BsYXllZCBpbiB0aGUgVUkuCiAgIyBBbGxvd2VkIHZhbHVlczogIjEyaCIgKGRlZmF1bHQpIG9yICIyNGgiLiBSZW1vdmUgb3IgbGVhdmUgYmxhbmsgdG8gZmFsbCBiYWNrIHRvIDEyaC4KICB0aW1lX2Zvcm1hdDogMTJoCgogICMgY2FsZW5kYXJfc3RhcnRfZGF5IGNvbnRyb2xzIHdoaWNoIGRheSB0aGUgcmVtaW5kZXJzIGNhbGVuZGFyIHN0YXJ0cyBvbi4KICAjIEFjY2VwdHMgZnVsbCB3ZWVrZGF5IG5hbWVzIChzdW5kYXkuLnNhdHVyZGF5KSBvciBudW1lcmljIDAtNiB3aGVyZSAwPVN1bmRheS4gIAogIGNhbGVuZGFyX3N0YXJ0X2RheTogc3VuZGF5ICNkZWZhdWx0IGlzIFN1bmRheQoKICAjIEV4YW1wbGUgcmVtaW5kZXIgY2F0ZWdvcmllcyAoa2V5cyBsb3dlcmNhc2Ugbm8gc3BhY2VzIHJlY29tbWVuZGVkKQogIGNhdGVnb3JpZXM6CiAgICAtIGtleTogaGVhbHRoCiAgICAgIGxhYmVsOiBIZWFsdGgKICAgICAgY29sb3I6ICIjZGMyNjI2IgogICAgLSBrZXk6IGJpbGxzCiAgICAgIGxhYmVsOiBCaWxscwogICAgICBjb2xvcjogIiMwZDk0ODgiCiAgICAtIGtleTogc2Nob29sCiAgICAgIGxhYmVsOiBTY2hvb2wKICAgICAgY29sb3I6ICIjN2MzYWVkIgogICAgLSBrZXk6IGZhbWlseQogICAgICBsYWJlbDogRmFtaWx5CiAgICAgIGNvbG9yOiAiIzI1NjNlYiIKdGhlbWU6CiAgcHJpbWFyeV9jb2xvcjogIiMxZDRlZDgiCiAgc2Vjb25kYXJ5X2NvbG9yOiAiI2EwYWVjMCIKICBiYWNrZ3JvdW5kX2NvbG9yOiAiI2Y3ZmFmYyIKICBjYXJkX2JhY2tncm91bmRfY29sb3I6ICIjZmZmIgogIHRleHRfY29sb3I6ICIjMzMzIgogIHNpZGViYXJfYmFja2dyb3VuZF9jb2xvcjogIiMyNTYzZWIiCiAgc2lkZWJhcl90ZXh0X2NvbG9yOiAiI2ZmZmZmZiIKICBzaWRlYmFyX2xpbmtfY29sb3I6ICJyZ2JhKDI1NSwyNTUsMjU1LDAuOTUpIgogIHNpZGViYXJfbGlua19ib3JkZXJfY29sb3I6ICJyZ2JhKDI1NSwyNTUsMjU1LDAuMTgpIgogIHNpZGViYXJfYWN0aXZlX2NvbG9yOiAiIzNiODJmNiIK
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      initContainers:
+      {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessInit" . | nindent 6 }}
+      - name: seed
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - 'set -e
+
+          D=/data/{{ .Release.Name }}/data
+
+          mkdir -p "$D/config"
+
+          [ -e "$D/config/config.yml" ] || cp /seed/f0 "$D/config/config.yml"
+
+          '
+        volumeMounts:
+        - name: seed
+          mountPath: /seed
+          readOnly: true
+        - name: data
+          mountPath: /data
+      containers:
+      {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
+      - name: web
+        image: ghcr.io/surajverma/homehub:0.2.4@sha256:fd1a7172b56f01dff3fb9fb5c9c2268baa7ab63ed5d7e348907107a34dee83e8
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: APP_SEED
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: app_secret
+        - name: FLASK_ENV
+          value: production
+        - name: SECRET_KEY
+          value: $(APP_SEED)
+        ports:
+        - containerPort: 5000
+        readinessProbe:
+          tcpSocket:
+            port: 5000
+        volumeMounts:
+        - name: data
+          mountPath: /app/uploads
+          subPath: '{{ .Release.Name }}/data/uploads'
+        - name: data
+          mountPath: /app/media
+          subPath: '{{ .Release.Name }}/data/media'
+        - name: data
+          mountPath: /app/pdfs
+          subPath: '{{ .Release.Name }}/data/pdfs'
+        - name: data
+          mountPath: /app/data
+          subPath: '{{ .Release.Name }}/data/app_data'
+        - name: data
+          mountPath: /app/config.yml
+          subPath: '{{ .Release.Name }}/data/config/config.yml'
+          readOnly: true
+      volumes:
+      {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}
+      - name: seed
+        configMap:
+          name: '{{ .Release.Name }}-seed'

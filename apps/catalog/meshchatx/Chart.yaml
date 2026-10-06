@@ -1,0 +1,17 @@
+apiVersion: v2
+name: meshchatx
+description: The future of off-grid communication. Secure, decentralized, and unstoppable
+type: application
+version: 0.1.0
+appVersion: 4.10.1
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: MeshChatX
+  yolab.io/icon: 💬
+  yolab.io/category: social
+  yolab.io/tagline: The future of off-grid communication. Secure
+  yolab.io/github: Quad4-Software/MeshChatX
+home: https://quad4.io

@@ -1,0 +1,18 @@
+apiVersion: v2
+name: poznote
+description: A powerful app for taking notes
+type: application
+version: 0.1.0
+appVersion: 6.109.0
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: Poznote
+  yolab.io/icon: 📁
+  yolab.io/category: files
+  yolab.io/tagline: A powerful app for taking notes
+  yolab.io/github: timothepoznanski/poznote
+  yolab.io/collections: replace-google
+home: https://poznote.com/

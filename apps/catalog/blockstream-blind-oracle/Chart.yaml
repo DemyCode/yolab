@@ -1,0 +1,17 @@
+apiVersion: v2
+name: blockstream-blind-oracle
+description: Encrypt your wallet on Blockstream Jade
+type: application
+version: 0.1.0
+appVersion: 0.1.2-patch.1
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: Blockstream Blind Oracle
+  yolab.io/icon: ₿
+  yolab.io/category: bitcoin
+  yolab.io/tagline: Encrypt your wallet on Blockstream Jade
+  yolab.io/github: Blockstream/blind_pin_server
+home: https://blockstream.com

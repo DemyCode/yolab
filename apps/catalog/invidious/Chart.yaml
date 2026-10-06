@@ -1,0 +1,17 @@
+apiVersion: v2
+name: invidious
+description: Browse YouTube without tracking or ads
+type: application
+version: 0.1.0
+appVersion: 2.20260207.0
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: Invidious
+  yolab.io/icon: 💬
+  yolab.io/category: social
+  yolab.io/tagline: Browse YouTube without tracking or ads
+  yolab.io/github: iv-org/invidious
+home: https://invidious.io/

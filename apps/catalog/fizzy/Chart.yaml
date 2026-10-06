@@ -1,0 +1,17 @@
+apiVersion: v2
+name: fizzy
+description: Kanban as it should be. Not as it has been.
+type: application
+version: 0.1.0
+appVersion: 5f45e54-patch.1
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: Fizzy
+  yolab.io/icon: 💬
+  yolab.io/category: social
+  yolab.io/tagline: Kanban as it should be. Not as it has been.
+  yolab.io/github: basecamp/fizzy
+home: https://www.fizzy.do

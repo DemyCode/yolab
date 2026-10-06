@@ -1,0 +1,103 @@
+{{ include "yolab-common.caddyConfigMap" . }}
+---
+{{ include "yolab-common.fileExplorerSecret" . }}
+---
+{{ include "yolab-common.fileExplorerConfigMap" . }}
+---
+{{ include "yolab-common.privateAccessResources" . }}
+---
+{{ include "yolab-common.uninstallHook" . }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-data
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: yolab-cephfs
+  resources:
+    requests:
+      storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: '{{ .Release.Name }}-seed'
+  namespace: '{{ .Release.Namespace }}'
+binaryData:
+  f0: ewogICJiaXRjb2luZCI6IHsKICAgICJycGN1c2VyIjogImF1dG8tY29uZmlndXJlLW9uLWluc3RhbGwiLAogICAgInJwY3Bhc3N3b3JkIjogImF1dG8tY29uZmlndXJlLW9uLWluc3RhbGwiLAogICAgInJwY3VybCI6ICJhdXRvLWNvbmZpZ3VyZS1vbi1pbnN0YWxsIgogIH0sCiAgImFwaSI6IHsKICAgICJsaXN0ZW5fcG9ydCI6IDIxMDAwLAogICAgIm1vZGlmeV9jb25mIjogdHJ1ZSwKICAgICJhZG1pbl9wYXNzd29yZCI6ICJ1bWJyZWwiCgogIH0sCiAgIm1pbmluZyI6IHsKICAgICJwb29sX2FkZHJlc3MiOiAiIiwKICAgICJjb2luYmFzZV90YWdfcHJpbWFyeSI6ICJEQVRVTSBvbiBVbWJyZWwiLAogICAgImNvaW5iYXNlX3RhZ19zZWNvbmRhcnkiOiAiREFUVU0gb24gVW1icmVsIgogIH0sCiAgInN0cmF0dW0iOiB7CiAgICAibGlzdGVuX3BvcnQiOiAyMzMzNAogIH0sCiAgImxvZ2dlciI6IHsKICAgICJsb2dfbGV2ZWxfY29uc29sZSI6IDIKICB9LAogICJkYXR1bSI6IHsKICAgICJwb29sX3Bhc3Nfd29ya2VycyI6IHRydWUsCiAgICAicG9vbF9wYXNzX2Z1bGxfdXNlcnMiOiB0cnVlLAogICAgInBvb2xlZF9taW5pbmdfb25seSI6IHRydWUKICB9Cn0=
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      initContainers:
+      {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessInit" . | nindent 6 }}
+      - name: seed
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - 'set -e
+
+          D=/data/{{ .Release.Name }}/data
+
+          mkdir -p "$D/settings"
+
+          [ -e "$D/settings/datum_gateway_config.json" ] || cp /seed/f0 "$D/settings/datum_gateway_config.json"
+
+          '
+        volumeMounts:
+        - name: seed
+          mountPath: /seed
+          readOnly: true
+        - name: data
+          mountPath: /data
+      containers:
+      {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
+      - name: datum
+        image: ghcr.io/retropex/datum:v1.14@sha256:c67ac8afb4f90f6f8090b8130ab834b20177efb2246895084525a15078cedc47
+        imagePullPolicy: IfNotPresent
+        command:
+        - /app/datum_gateway
+        args:
+        - --config=/app/conf/datum_gateway_config.json
+        securityContext:
+          runAsUser: 1000
+          runAsGroup: 1000
+        ports:
+        - containerPort: 21000
+        readinessProbe:
+          tcpSocket:
+            port: 21000
+        volumeMounts:
+        - name: data
+          mountPath: /app/conf/
+          subPath: '{{ .Release.Name }}/data/settings/'
+      volumes:
+      {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}
+      - name: seed
+        configMap:
+          name: '{{ .Release.Name }}-seed'

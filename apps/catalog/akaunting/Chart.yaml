@@ -1,0 +1,17 @@
+apiVersion: v2
+name: akaunting
+description: An intuitive accounting solution for small businesses and freelancers
+type: application
+version: 0.1.0
+appVersion: 3.1.21
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: Akaunting
+  yolab.io/icon: 💰
+  yolab.io/category: finance
+  yolab.io/tagline: An intuitive accounting solution for small businesses and
+  yolab.io/github: akaunting/akaunting
+home: https://akaunting.com/

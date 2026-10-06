@@ -1,0 +1,18 @@
+apiVersion: v2
+name: snapdrop
+description: Opensource Airdrop Alternative
+type: application
+version: 0.1.0
+appVersion: b8b78cc2-patch.1
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: Snapdrop
+  yolab.io/icon: 📁
+  yolab.io/category: files
+  yolab.io/tagline: Opensource Airdrop Alternative
+  yolab.io/github: RobinLinus/snapdrop
+  yolab.io/collections: replace-google
+home: https://snapdrop.net/

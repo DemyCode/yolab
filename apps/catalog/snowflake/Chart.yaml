@@ -1,0 +1,16 @@
+apiVersion: v2
+name: snowflake
+description: Help defeat internet censorship
+type: application
+version: 0.1.0
+appVersion: v2.14.1
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: Tor Snowflake Proxy
+  yolab.io/icon: 🌐
+  yolab.io/category: networking
+  yolab.io/tagline: Help defeat internet censorship
+home: https://snowflake.torproject.org/

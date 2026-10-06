@@ -1,0 +1,257 @@
+{{ include "yolab-common.caddyConfigMap" . }}
+---
+{{ include "yolab-common.fileExplorerSecret" . }}
+---
+{{ include "yolab-common.fileExplorerConfigMap" . }}
+---
+{{ include "yolab-common.privateAccessResources" . }}
+---
+{{ include "yolab-common.uninstallHook" . }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-data
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: yolab-cephfs
+  resources:
+    requests:
+      storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: '{{ .Release.Name }}-seed'
+  namespace: '{{ .Release.Namespace }}'
+binaryData:
+  f0: CbXSfmhNufjyhAtWPpg8FwT6wCs8jhzp7VCbnEfcTf8=
+  f1: AzKzYKUZI9tlBss1YKchb+ALoVE4+XKDIZyxLMlW8Rnf
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      initContainers:
+      {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessInit" . | nindent 6 }}
+      - name: seed
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - 'set -e
+
+          D=/data/{{ .Release.Name }}/data
+
+          [ -e "$D/server_private_key.key" ] || cp /seed/f0 "$D/server_private_key.key"
+
+          [ -e "$D/server_public_key.pub" ] || cp /seed/f1 "$D/server_public_key.pub"
+
+          '
+        volumeMounts:
+        - name: seed
+          mountPath: /seed
+          readOnly: true
+        - name: data
+          mountPath: /data
+      containers:
+      {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
+      - name: web
+        image: tulipan81/pinserver_web:v0.0.36@sha256:a5214dbc14538478744a6a0c6bd40f03ab8ac2990abc9038139c18901064205b
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: PINSERVER_URL_A
+          value: $(APP_PINSERVER_HIDDEN_SERVICE)
+        - name: PINSERVER_PORT_A
+          value: APP_PINSERVER_PORT
+        - name: PINSERVER_URL_B
+          value: $(APP_TAILSCALE_URL)
+        - name: PINSERVER_PORT_B
+          value: APP_PINSERVER_PORT
+        - name: PINSERVER_CERT
+          value: ''
+        ports:
+        - containerPort: 8080
+        readinessProbe:
+          tcpSocket:
+            port: 8080
+        volumeMounts:
+        - name: data
+          mountPath: /app/server_public_key.pub
+          subPath: '{{ .Release.Name }}/data/server_public_key.pub'
+        - name: data
+          mountPath: /app/server_private_key.key
+          subPath: '{{ .Release.Name }}/data/server_private_key.key'
+        - name: data
+          mountPath: /app/pins
+          subPath: '{{ .Release.Name }}/data/pins'
+      volumes:
+      {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}
+      - name: seed
+        configMap:
+          name: '{{ .Release.Name }}-seed'
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: node
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: node
+  template:
+    metadata:
+      labels:
+        app: node
+    spec:
+      containers:
+      - name: node
+        image: tulipan81/blind_pin_server:v0.0.7@sha256:db8ce3f8de8da6cb083d60051a8ec720d5aa311e06148b259c42c4dfb7263c63
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8096
+        readinessProbe:
+          tcpSocket:
+            port: 8096
+        volumeMounts:
+        - name: data
+          mountPath: /server_public_key.pub
+          subPath: '{{ .Release.Name }}/data/server_public_key.pub'
+        - name: data
+          mountPath: /server_private_key.key
+          subPath: '{{ .Release.Name }}/data/server_private_key.key'
+        - name: data
+          mountPath: /pins
+          subPath: '{{ .Release.Name }}/data/pins'
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: '{{ .Release.Name }}-data'
+      - name: seed
+        configMap:
+          name: '{{ .Release.Name }}-seed'
+      initContainers:
+      - name: seed
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - 'set -e
+
+          D=/data/{{ .Release.Name }}/data
+
+          [ -e "$D/server_private_key.key" ] || cp /seed/f0 "$D/server_private_key.key"
+
+          [ -e "$D/server_public_key.pub" ] || cp /seed/f1 "$D/server_public_key.pub"
+
+          '
+        volumeMounts:
+        - name: seed
+          mountPath: /seed
+          readOnly: true
+        - name: data
+          mountPath: /data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: node
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  selector:
+    app: node
+  ports:
+  - port: 8096
+    targetPort: 8096
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tor
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: tor
+  template:
+    metadata:
+      labels:
+        app: tor
+    spec:
+      containers:
+      - name: tor
+        image: ghcr.io/getumbrel/tor:0.4.9.11@sha256:e382b8629c0dfef6ceb396b062622d4e4e955b19d6f16b883fd2c0723ad5671a
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: HOME
+          value: /tmp
+        securityContext:
+          runAsUser: 1000
+          runAsGroup: 1000
+        volumeMounts:
+        - name: data
+          mountPath: /etc/tor/torrc
+          subPath: '{{ .Release.Name }}/torrc'
+          readOnly: true
+        - name: data
+          mountPath: /data
+          subPath: '{{ .Release.Name }}/volumes/${TOR_DATA_DIR}'
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: '{{ .Release.Name }}-data'
+      - name: seed
+        configMap:
+          name: '{{ .Release.Name }}-seed'
+      initContainers:
+      - name: seed
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - 'set -e
+
+          D=/data/{{ .Release.Name }}/data
+
+          [ -e "$D/server_private_key.key" ] || cp /seed/f0 "$D/server_private_key.key"
+
+          [ -e "$D/server_public_key.pub" ] || cp /seed/f1 "$D/server_public_key.pub"
+
+          '
+        volumeMounts:
+        - name: seed
+          mountPath: /seed
+          readOnly: true
+        - name: data
+          mountPath: /data

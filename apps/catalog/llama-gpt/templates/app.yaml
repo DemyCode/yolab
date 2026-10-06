@@ -1,0 +1,100 @@
+{{ include "yolab-common.caddyConfigMap" . }}
+---
+{{ include "yolab-common.fileExplorerSecret" . }}
+---
+{{ include "yolab-common.fileExplorerConfigMap" . }}
+---
+{{ include "yolab-common.privateAccessResources" . }}
+---
+{{ include "yolab-common.uninstallHook" . }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-data
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: yolab-cephfs
+  resources:
+    requests:
+      storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      initContainers:
+      {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessInit" . | nindent 6 }}
+      containers:
+      {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
+      - name: llama-gpt-api
+        image: ghcr.io/getumbrel/llama-gpt-api:1.0.1@sha256:57a4323a0254732a45841f447ae4ef733df6510413b692a0589c0e2b68d9ef51
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: MODEL
+          value: /models/llama-2-7b-chat.bin
+        ports:
+        - containerPort: 3000
+        readinessProbe:
+          tcpSocket:
+            port: 3000
+      volumes:
+      {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: llama-gpt-ui
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: llama-gpt-ui
+  template:
+    metadata:
+      labels:
+        app: llama-gpt-ui
+    spec:
+      containers:
+      - name: llama-gpt-ui
+        image: ghcr.io/getumbrel/llama-gpt-ui:1.0.1@sha256:1ad8a3463e7971b77e6deda8b6a230a42fbe283899d88e12448603e474fedaef
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: OPENAI_API_KEY
+          value: sk-XXXXXXXXXXXXXXXXXXXX
+        - name: OPENAI_API_HOST
+          value: http://llama-gpt-api:8000
+        - name: DEFAULT_MODEL
+          value: /models/llama-2-7b-chat.bin
+        - name: WAIT_HOSTS
+          value: llama-gpt-api:8000
+        - name: WAIT_TIMEOUT
+          value: '600'
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: '{{ .Release.Name }}-data'

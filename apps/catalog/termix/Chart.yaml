@@ -1,0 +1,18 @@
+apiVersion: v2
+name: termix
+description: Manage your servers with built-in SSH, tunnels, and file access
+type: application
+version: 0.1.0
+appVersion: 2.9.1
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: Termix
+  yolab.io/icon: 🛠
+  yolab.io/category: developer
+  yolab.io/tagline: Manage your servers with built-in SSH, tunnels, and file
+  yolab.io/github: Termix-SSH/Termix
+  yolab.io/collections: for-developers
+home: https://docs.termix.site/

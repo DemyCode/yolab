@@ -1,0 +1,91 @@
+{{ include "yolab-common.caddyConfigMap" . }}
+---
+{{ include "yolab-common.fileExplorerSecret" . }}
+---
+{{ include "yolab-common.fileExplorerConfigMap" . }}
+---
+{{ include "yolab-common.privateAccessResources" . }}
+---
+{{ include "yolab-common.uninstallHook" . }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-data
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: yolab-cephfs
+  resources:
+    requests:
+      storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      initContainers:
+      {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessInit" . | nindent 6 }}
+      containers:
+      {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
+      - name: api
+        image: localai/localai:v4.11.0@sha256:f1bc435659b9da49180e868fdd0361915171a740cd947bf081b62a896a7ea8d0
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: MODELS_PATH
+          value: /models
+        - name: LOCALAI_BACKENDS_PATH
+          value: /backends
+        - name: LOCALAI_EXTERNAL_BACKENDS
+          value: cpu-llama-cpp
+        - name: LOCALAI_FORCE_META_BACKEND_CAPABILITY_RUN_FILE
+          value: /nonexistent
+        - name: NVIDIA_DISABLE_REQUIRE
+          value: 'true'
+        ports:
+        - containerPort: 8080
+        readinessProbe:
+          exec:
+            command:
+            - curl
+            - -f
+            - http://localhost:8080/readyz
+          periodSeconds: 60
+        volumeMounts:
+        - name: data
+          mountPath: /models
+          subPath: '{{ .Release.Name }}/data/models'
+        - name: data
+          mountPath: /backends
+          subPath: '{{ .Release.Name }}/data/backends'
+        - name: data
+          mountPath: /data
+          subPath: '{{ .Release.Name }}/data/data'
+        - name: data
+          mountPath: /configuration
+          subPath: '{{ .Release.Name }}/data/configuration'
+        - name: data
+          mountPath: /tmp/generated/images/
+          subPath: '{{ .Release.Name }}/data/images/'
+      volumes:
+      {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}

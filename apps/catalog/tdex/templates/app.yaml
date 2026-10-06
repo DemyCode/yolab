@@ -1,0 +1,223 @@
+{{ include "yolab-common.caddyConfigMap" . }}
+---
+{{ include "yolab-common.fileExplorerSecret" . }}
+---
+{{ include "yolab-common.fileExplorerConfigMap" . }}
+---
+{{ include "yolab-common.privateAccessResources" . }}
+---
+{{ include "yolab-common.uninstallHook" . }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-data
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: yolab-cephfs
+  resources:
+    requests:
+      storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      initContainers:
+      {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessInit" . | nindent 6 }}
+      containers:
+      {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
+      - name: caddy
+        image: caddy:2.6.4-alpine@sha256:4dfec6c3b22c36b63ea4a3633c7cdbdaa9926d1324c27db2b0e2b70ef9cd105a
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8080
+        readinessProbe:
+          tcpSocket:
+            port: 8080
+        volumeMounts:
+        - name: data
+          mountPath: /etc/caddy/Caddyfile
+          subPath: '{{ .Release.Name }}/caddy-data/Caddyfile'
+      volumes:
+      {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: oceand
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: oceand
+  template:
+    metadata:
+      labels:
+        app: oceand
+    spec:
+      containers:
+      - name: oceand
+        image: ghcr.io/vulpemventures/oceand:v0.1.17@sha256:37b813b43b068e32d918b9f42539c33287308cc81d00909c742b7164dfefc0c4
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: OCEAN_LOG_LEVEL
+          value: '5'
+        - name: OCEAN_DB_TYPE
+          value: badger
+        - name: OCEAN_NO_TLS
+          value: 'true'
+        - name: OCEAN_NO_PROFILER
+          value: 'true'
+        - name: OCEAN_UTXO_EXPIRY_DURATION_IN_SECONDS
+          value: '240'
+        volumeMounts:
+        - name: data
+          mountPath: /home/ocean/.oceand
+          subPath: '{{ .Release.Name }}/ocean-data'
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: '{{ .Release.Name }}-data'
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tdexd
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: tdexd
+  template:
+    metadata:
+      labels:
+        app: tdexd
+    spec:
+      containers:
+      - name: tdexd
+        image: ghcr.io/tdex-network/tdexd:v1.0.1@sha256:eef1f31e98208e9a35ddf308317bc1df71065e189fa0915c769c7a01394ef79a
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: TDEX_LOG_LEVEL
+          value: '5'
+        - name: TDEX_OPERATOR_LISTENING_PORT
+          value: APP_TDEX_PORT
+        - name: TDEX_TRADE_LISTENING_PORT
+          value: APP_TDEX_PORT
+        - name: TDEX_NO_OPERATOR_TLS
+          value: 'true'
+        - name: TDEX_WALLET_ADDR
+          value: oceand:18000
+        - name: TDEX_CONNECT_ADDR
+          value: $(APP_TDEX_DAEMON_HIDDEN_SERVICE)
+        - name: TDEX_CONNECT_PROTO
+          value: http
+        volumeMounts:
+        - name: data
+          mountPath: /home/tdex/.tdex-daemon
+          subPath: '{{ .Release.Name }}/tdexd'
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: '{{ .Release.Name }}-data'
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dashboard
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: dashboard
+  template:
+    metadata:
+      labels:
+        app: dashboard
+    spec:
+      containers:
+      - name: dashboard
+        image: ghcr.io/tdex-network/dashboard:v1.0.2@sha256:71d598afb0d5ec9966306f4ef0d5f6839a9d7dc50726a935f3d0bb38f1925d78
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: USE_PROXY
+          value: 'false'
+        - name: IS_PACKAGED
+          value: 'true'
+        - name: TRADER_HIDDEN_SERVICE
+          value: $(APP_TDEX_DAEMON_HIDDEN_SERVICE)
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: '{{ .Release.Name }}-data'
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tor
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: tor
+  template:
+    metadata:
+      labels:
+        app: tor
+    spec:
+      containers:
+      - name: tor
+        image: ghcr.io/getumbrel/tor:0.4.9.11@sha256:e382b8629c0dfef6ceb396b062622d4e4e955b19d6f16b883fd2c0723ad5671a
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: HOME
+          value: /tmp
+        securityContext:
+          runAsUser: 1000
+          runAsGroup: 1000
+        volumeMounts:
+        - name: data
+          mountPath: /etc/tor/torrc
+          subPath: '{{ .Release.Name }}/torrc'
+          readOnly: true
+        - name: data
+          mountPath: /data
+          subPath: '{{ .Release.Name }}/volumes/${TOR_DATA_DIR}'
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: '{{ .Release.Name }}-data'

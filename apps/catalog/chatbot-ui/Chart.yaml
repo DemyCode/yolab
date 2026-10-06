@@ -1,0 +1,17 @@
+apiVersion: v2
+name: chatbot-ui
+description: ChatGPT but better
+type: application
+version: 0.1.0
+appVersion: 2023.04.20
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: ChatBot UI
+  yolab.io/icon: 🧠
+  yolab.io/category: ai
+  yolab.io/tagline: ChatGPT but better
+  yolab.io/github: mckaywrigley/chatbot-ui
+home: https://github.com/mckaywrigley/chatbot-ui

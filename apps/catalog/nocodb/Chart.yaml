@@ -1,0 +1,18 @@
+apiVersion: v2
+name: nocodb
+description: No-code platform for database management, self-hosted Airtable alternative
+type: application
+version: 0.1.0
+appVersion: 2026.09.1
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: NocoDB
+  yolab.io/icon: 📁
+  yolab.io/category: files
+  yolab.io/tagline: No-code platform for database management, self-hosted
+  yolab.io/github: nocodb/nocodb
+  yolab.io/collections: replace-google
+home: https://nocodb.com

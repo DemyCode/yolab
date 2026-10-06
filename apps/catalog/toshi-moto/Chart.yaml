@@ -1,0 +1,17 @@
+apiVersion: v2
+name: toshi-moto
+description: Secure Bitcoin portfolio monitoring with privacy-first design
+type: application
+version: 0.1.0
+appVersion: 1.37.3
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: Toshi Moto
+  yolab.io/icon: 💰
+  yolab.io/category: finance
+  yolab.io/tagline: Secure Bitcoin portfolio monitoring with privacy-first
+  yolab.io/github: toshimoto821/toshi-moto
+home: https://toshimoto.app

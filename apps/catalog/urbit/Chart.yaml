@@ -1,0 +1,17 @@
+apiVersion: v2
+name: urbit
+description: Run Urbit on your Umbrel
+type: application
+version: 0.1.0
+appVersion: v4.6
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: Urbit
+  yolab.io/icon: 🌐
+  yolab.io/category: networking
+  yolab.io/tagline: Run Urbit on your Umbrel
+  yolab.io/github: mopfel-winrux/urbit-umbrel
+home: https://github.com/mopfel-winrux/urbit-umbrel

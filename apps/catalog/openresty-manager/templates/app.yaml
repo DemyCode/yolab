@@ -1,0 +1,82 @@
+{{ include "yolab-common.caddyConfigMap" . }}
+---
+{{ include "yolab-common.fileExplorerSecret" . }}
+---
+{{ include "yolab-common.fileExplorerConfigMap" . }}
+---
+{{ include "yolab-common.privateAccessResources" . }}
+---
+{{ include "yolab-common.uninstallHook" . }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-data
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: yolab-cephfs
+  resources:
+    requests:
+      storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      initContainers:
+      {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessInit" . | nindent 6 }}
+      containers:
+      {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
+      - name: web
+        image: uusec/openresty-manager:2.4.6@sha256:003a57fbbe23c6844ac68a924496df9d8edb15307220f792cedbf724ee9d67cb
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: OM_USE_HTTPS
+          value: 'no'
+        - name: NGINX_RESOLVER
+          value: resolver 127.0.0.11 valid=30s ipv6=off local=on;
+        - name: PUID
+          value: '1000'
+        - name: PGID
+          value: '1000'
+        ports:
+        - containerPort: 34567
+        readinessProbe:
+          tcpSocket:
+            port: 34567
+        volumeMounts:
+        - name: data
+          mountPath: /opt/om/acme
+          subPath: '{{ .Release.Name }}/data/acme'
+        - name: data
+          mountPath: /opt/om/data
+          subPath: '{{ .Release.Name }}/data/data'
+        - name: data
+          mountPath: /opt/om/nginx/conf
+          subPath: '{{ .Release.Name }}/data/conf'
+        - name: data
+          mountPath: /opt/om/nginx/logs
+          subPath: '{{ .Release.Name }}/data/logs'
+      volumes:
+      {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}

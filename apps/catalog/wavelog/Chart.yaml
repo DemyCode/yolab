@@ -1,0 +1,17 @@
+apiVersion: v2
+name: wavelog
+description: Amateur radio logging software
+type: application
+version: 0.1.0
+appVersion: 3.2.3
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: Wavelog
+  yolab.io/icon: 💬
+  yolab.io/category: social
+  yolab.io/tagline: Amateur radio logging software
+  yolab.io/github: wavelog/wavelog
+home: https://www.wavelog.org

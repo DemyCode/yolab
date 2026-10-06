@@ -1,0 +1,17 @@
+apiVersion: v2
+name: openresty-manager
+description: Expose your services easily and securely
+type: application
+version: 0.1.0
+appVersion: 2.4.6
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: OpenResty Manager
+  yolab.io/icon: 🌐
+  yolab.io/category: networking
+  yolab.io/tagline: Expose your services easily and securely
+  yolab.io/github: Safe3/openresty-manager
+home: https://om.uusec.com/

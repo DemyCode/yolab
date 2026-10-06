@@ -1,0 +1,18 @@
+apiVersion: v2
+name: picsur
+description: An easy to use image sharing service
+type: application
+version: 0.1.0
+appVersion: 0.5.6-patch.1
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: Picsur
+  yolab.io/icon: 📁
+  yolab.io/category: files
+  yolab.io/tagline: An easy to use image sharing service
+  yolab.io/github: CaramelFur/Picsur
+  yolab.io/collections: replace-google
+home: https://picsur.org/upload

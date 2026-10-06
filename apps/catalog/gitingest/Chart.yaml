@@ -1,0 +1,18 @@
+apiVersion: v2
+name: gitingest
+description: An effortless way to make Git repositories LLM-friendly
+type: application
+version: 0.1.0
+appVersion: 0.3.1
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: Gitingest
+  yolab.io/icon: 🛠
+  yolab.io/category: developer
+  yolab.io/tagline: An effortless way to make Git repositories LLM-friendly
+  yolab.io/github: cyclotruc/gitingest
+  yolab.io/collections: for-developers
+home: https://gitingest.com/

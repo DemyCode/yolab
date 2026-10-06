@@ -1,0 +1,17 @@
+apiVersion: v2
+name: baikal
+description: A lightweight calendar and contacts server
+type: application
+version: 0.1.0
+appVersion: 0.11.1
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: Baikal
+  yolab.io/icon: 🌐
+  yolab.io/category: networking
+  yolab.io/tagline: A lightweight calendar and contacts server
+  yolab.io/github: sabre-io/Baikal
+home: https://sabre.io/baikal/

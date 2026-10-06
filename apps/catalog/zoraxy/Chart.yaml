@@ -1,0 +1,17 @@
+apiVersion: v2
+name: zoraxy
+description: An efficient reverse proxy server with automated SSL management
+type: application
+version: 0.1.0
+appVersion: 3.3.4-patch.1
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: Zoraxy
+  yolab.io/icon: 🌐
+  yolab.io/category: networking
+  yolab.io/tagline: An efficient reverse proxy server with automated SSL
+  yolab.io/github: tobychui/zoraxy
+home: https://zoraxy.aroz.org/

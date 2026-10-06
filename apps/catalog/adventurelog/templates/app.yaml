@@ -1,0 +1,193 @@
+{{ include "yolab-common.caddyConfigMap" . }}
+---
+{{ include "yolab-common.fileExplorerSecret" . }}
+---
+{{ include "yolab-common.fileExplorerConfigMap" . }}
+---
+{{ include "yolab-common.privateAccessResources" . }}
+---
+{{ include "yolab-common.uninstallHook" . }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-data
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: yolab-cephfs
+  resources:
+    requests:
+      storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      initContainers:
+      {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessInit" . | nindent 6 }}
+      containers:
+      {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
+      - name: web
+        image: ghcr.io/seanmorley15/adventurelog-frontend:v0.13.0@sha256:51ee22428b4192f4372b54f84c8b90cd710311ad99993c5045f53b51717dd3f7
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: PUBLIC_SERVER_URL
+          value: http://adventurelogserver1:8000
+        - name: ORIGIN
+          value: http://localhost:8015
+        - name: BODY_SIZE_LIMIT
+          value: Infinity
+        ports:
+        - containerPort: 3000
+        readinessProbe:
+          tcpSocket:
+            port: 3000
+      volumes:
+      {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: db
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: db
+  template:
+    metadata:
+      labels:
+        app: db
+    spec:
+      containers:
+      - name: db
+        image: ghcr.io/baosystems/postgis:15-3.5@sha256:ac619116c8ee81a386eb878956950d798b57c502985c12eb6e7be1598aa8d02f
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: POSTGRES_DB
+          value: database
+        - name: POSTGRES_USER
+          value: adventure
+        - name: POSTGRES_PASSWORD
+          value: adventure
+        ports:
+        - containerPort: 5432
+        readinessProbe:
+          tcpSocket:
+            port: 5432
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/postgresql/data/
+          subPath: '{{ .Release.Name }}/data/db'
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: '{{ .Release.Name }}-data'
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: db
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  selector:
+    app: db
+  ports:
+  - port: 5432
+    targetPort: 5432
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: server
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: server
+  template:
+    metadata:
+      labels:
+        app: server
+    spec:
+      containers:
+      - name: server
+        image: ghcr.io/seanmorley15/adventurelog-backend:v0.13.0@sha256:0250d9cb0d745a8d768f31d3cdc68ac14bfa8b43dedfe0f550158e3861c12db7
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: PGHOST
+          value: db
+        - name: PGDATABASE
+          value: database
+        - name: PGUSER
+          value: adventure
+        - name: PGPASSWORD
+          value: adventure
+        - name: SECRET_KEY
+          value: adventure
+        - name: DJANGO_ADMIN_USERNAME
+          value: admin
+        - name: DJANGO_ADMIN_PASSWORD
+          value: admin
+        - name: DJANGO_ADMIN_EMAIL
+          value: admin@example.com
+        - name: PUBLIC_URL
+          value: http://localhost:8016
+        - name: CSRF_TRUSTED_ORIGINS
+          value: http://localhost:8015
+        - name: DEBUG
+          value: 'False'
+        - name: FRONTEND_URL
+          value: http://localhost:8015
+        ports:
+        - containerPort: 80
+        readinessProbe:
+          tcpSocket:
+            port: 80
+        volumeMounts:
+        - name: data
+          mountPath: /code/media/
+          subPath: '{{ .Release.Name }}/data/app'
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: '{{ .Release.Name }}-data'
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: server
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  selector:
+    app: server
+  ports:
+  - port: 80
+    targetPort: 80

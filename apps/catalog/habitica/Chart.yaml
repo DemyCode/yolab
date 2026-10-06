@@ -1,0 +1,18 @@
+apiVersion: v2
+name: habitica
+description: An RPG for your life
+type: application
+version: 0.1.0
+appVersion: 5.50.6
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: Habitica
+  yolab.io/icon: 📁
+  yolab.io/category: files
+  yolab.io/tagline: An RPG for your life
+  yolab.io/github: HabitRPG/habitica
+  yolab.io/collections: replace-google
+home: https://habitica.com/

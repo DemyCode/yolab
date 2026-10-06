@@ -1,0 +1,17 @@
+apiVersion: v2
+name: readeck
+description: Save web pages to read and keep forever
+type: application
+version: 0.1.0
+appVersion: 0.23.4
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: Readeck
+  yolab.io/icon: 📁
+  yolab.io/category: files
+  yolab.io/tagline: Save web pages to read and keep forever
+  yolab.io/collections: replace-google
+home: https://readeck.org

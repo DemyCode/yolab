@@ -1,0 +1,102 @@
+{{ include "yolab-common.caddyConfigMap" . }}
+---
+{{ include "yolab-common.fileExplorerSecret" . }}
+---
+{{ include "yolab-common.fileExplorerConfigMap" . }}
+---
+{{ include "yolab-common.privateAccessResources" . }}
+---
+{{ include "yolab-common.uninstallHook" . }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-data
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: yolab-cephfs
+  resources:
+    requests:
+      storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: '{{ .Release.Name }}-seed'
+  namespace: '{{ .Release.Namespace }}'
+binaryData:
+  f0: ZGF0YWJhc2VfZGlyOiAiLi9kYXRhIgpsaXN0ZW46ICIwLjAuMC4wOjgwMDAiCnJlbGF5czoKICAtICJ3c3M6Ly9yZWxheS5kYW11cy5pbyIKICAtICJ3c3M6Ly9ub3MubG9sIgogIC0gIndzczovL3JlbGF5LnNub3J0LnNvY2lhbCIKICAtICJ3c3M6Ly9yZWxheS5wcmltYWwubmV0IgogIC0gIndzczovL3JlbGF5LmR0YW4ueHl6Igp3ZWJfZGlyOiAiLi93d3ciCnJlbGF5X2RvY3VtZW50OgogIG5hbWU6IERUQU4gU0VSVkVSCiAgZGVzY3JpcHRpb246IEEgc3BlY2lhbGl6ZWQgbm9zdHIgcmVsYXkgZm9yIE5JUC0zNSB0b3JyZW50cwp1c2VfZGh0OiB0cnVlCg==
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      initContainers:
+      {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessInit" . | nindent 6 }}
+      - name: seed
+        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - 'set -e
+
+          D=/data/{{ .Release.Name }}/data
+
+          mkdir -p "$D/config"
+
+          [ -e "$D/config/config.yml" ] || cp /seed/f0 "$D/config/config.yml"
+
+          '
+        volumeMounts:
+        - name: seed
+          mountPath: /seed
+          readOnly: true
+        - name: data
+          mountPath: /data
+      containers:
+      {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
+      - name: web
+        image: voidic/dtan-server:v0.2.0@sha256:8ffce76cc82d00fbe8571bedfd6699fbd91e97d89ff5e6cbc32dbf03b9d58ad1
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: RUST_LOG
+          value: info
+        ports:
+        - containerPort: 8000
+        readinessProbe:
+          tcpSocket:
+            port: 8000
+        volumeMounts:
+        - name: data
+          mountPath: /app/data
+          subPath: '{{ .Release.Name }}/data/app'
+        - name: data
+          mountPath: /app/config.yml
+          subPath: '{{ .Release.Name }}/data/config/config.yml'
+      volumes:
+      {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}
+      - name: seed
+        configMap:
+          name: '{{ .Release.Name }}-seed'

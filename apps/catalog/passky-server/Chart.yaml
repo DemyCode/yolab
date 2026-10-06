@@ -1,0 +1,18 @@
+apiVersion: v2
+name: passky-server
+description: Simple, modern, lightweight, open source and secure password manager
+type: application
+version: 0.1.0
+appVersion: 8.1.8-patch.1
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: Passky Server
+  yolab.io/icon: 📁
+  yolab.io/category: files
+  yolab.io/tagline: Simple, modern, lightweight, open source and secure
+  yolab.io/github: Rabbit-Company/Passky-Server
+  yolab.io/collections: replace-google
+home: https://passky.org

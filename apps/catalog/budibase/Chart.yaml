@@ -1,0 +1,18 @@
+apiVersion: v2
+name: budibase
+description: The low code platform you'll enjoy using
+type: application
+version: 0.1.0
+appVersion: 3.41.3-patch.1
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: Budibase
+  yolab.io/icon: 🛠
+  yolab.io/category: developer
+  yolab.io/tagline: The low code platform you'll enjoy using
+  yolab.io/github: Budibase/budibase
+  yolab.io/collections: for-developers
+home: https://budibase.com

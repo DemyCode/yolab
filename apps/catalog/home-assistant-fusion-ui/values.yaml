@@ -1,0 +1,9 @@
+config:
+  subdomain: home-assistant-fusion-ui
+  storage_size: 10Gi
+yolab:
+  platformApiUrl: ''
+  accountToken: ''
+  serviceName: ''
+  gateway:
+    upstream: localhost:5050

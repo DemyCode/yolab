@@ -1,0 +1,17 @@
+apiVersion: v2
+name: gitlab
+description: Software. Faster.
+type: application
+version: 0.1.0
+appVersion: 19.4.1
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: GitLab
+  yolab.io/icon: 🛠
+  yolab.io/category: developer
+  yolab.io/tagline: Software. Faster.
+  yolab.io/collections: for-developers
+home: https://about.gitlab.com

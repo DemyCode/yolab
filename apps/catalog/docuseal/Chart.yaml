@@ -1,0 +1,18 @@
+apiVersion: v2
+name: docuseal
+description: Open source document filling and signing
+type: application
+version: 0.1.0
+appVersion: 3.3.1
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: DocuSeal
+  yolab.io/icon: 📁
+  yolab.io/category: files
+  yolab.io/tagline: Open source document filling and signing
+  yolab.io/github: docusealco/docuseal
+  yolab.io/collections: replace-google
+home: https://www.docuseal.com/

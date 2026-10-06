@@ -1,0 +1,18 @@
+apiVersion: v2
+name: wikijs
+description: Make documentation a joy to write
+type: application
+version: 0.1.0
+appVersion: 2.5.315
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: WikiJS
+  yolab.io/icon: 🛠
+  yolab.io/category: developer
+  yolab.io/tagline: Make documentation a joy to write
+  yolab.io/github: requarks/wiki
+  yolab.io/collections: for-developers
+home: https://js.wiki/

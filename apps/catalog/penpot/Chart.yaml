@@ -1,0 +1,18 @@
+apiVersion: v2
+name: penpot
+description: Design and prototyping platform
+type: application
+version: 0.1.0
+appVersion: 2.18.2
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: Penpot
+  yolab.io/icon: 🛠
+  yolab.io/category: developer
+  yolab.io/tagline: Design and prototyping platform
+  yolab.io/github: penpot/penpot
+  yolab.io/collections: for-developers
+home: https://penpot.app/

@@ -1,0 +1,17 @@
+apiVersion: v2
+name: fossflow
+description: Make beautiful isometric infrastructure diagrams
+type: application
+version: 0.1.0
+appVersion: b69fc2e-patch.1
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: FossFLOW
+  yolab.io/icon: 🌐
+  yolab.io/category: networking
+  yolab.io/tagline: Make beautiful isometric infrastructure diagrams
+  yolab.io/github: stan-smith/FossFLOW
+home: https://github.com/stan-smith/FossFLOW

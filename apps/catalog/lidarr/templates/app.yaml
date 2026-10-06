@@ -1,0 +1,133 @@
+{{ include "yolab-common.caddyConfigMap" . }}
+---
+{{ include "yolab-common.fileExplorerSecret" . }}
+---
+{{ include "yolab-common.fileExplorerConfigMap" . }}
+---
+{{ include "yolab-common.privateAccessResources" . }}
+---
+{{ include "yolab-common.uninstallHook" . }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-data
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: yolab-cephfs
+  resources:
+    requests:
+      storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      initContainers:
+      {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessInit" . | nindent 6 }}
+      containers:
+      {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
+      - name: server
+        image: linuxserver/lidarr:3.1.0@sha256:f2a186ce04ec5adb133f92a08dd3efbc918fc71b33077426ef099d94350dfa1b
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: PUID
+          value: '1000'
+        - name: PGID
+          value: '1000'
+        ports:
+        - containerPort: 8686
+        readinessProbe:
+          tcpSocket:
+            port: 8686
+        volumeMounts:
+        - name: data
+          mountPath: /config
+          subPath: '{{ .Release.Name }}/data/config'
+        - name: data
+          mountPath: /downloads
+          subPath: '{{ .Release.Name }}/storage/downloads'
+      volumes:
+      {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mac
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: mac
+  template:
+    metadata:
+      labels:
+        app: mac
+    spec:
+      containers:
+      - name: mac
+        image: getumbrel/media-app-configurator:v1.3.2@sha256:9ff34bda1e36ffe5a028d2463f4aaa9f20b93e8bec4392da077137c56bea3c34
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: APP_ID
+          value: lidarr
+        - name: APP_URL
+          value: http://server:8686
+        - name: TRANSMISSION_HOST
+          value: transmission_server_1
+        - name: TRANSMISSION_PORT
+          value: '9091'
+        - name: ROOT_FOLDER
+          value: /downloads/music
+        - name: QBITTORRENT_INSTALLED
+          value: ${APP_LIDARR_QBITTORRENT_INSTALLED:-"false"}
+        - name: QBITTORRENT_HOST
+          value: qbittorrent_server_1
+        - name: QBITTORRENT_PORT
+          value: '8080'
+        - name: SABNZBD_INSTALLED
+          value: ${APP_LIDARR_SABNZBD_INSTALLED:-"false"}
+        - name: SABNZBD_HOST
+          value: sabnzbd_web_1
+        - name: SABNZBD_PORT
+          value: '8080'
+        - name: SABNZBD_API_KEY
+          value: ${APP_LIDARR_SABNZBD_API_KEY:-""}
+        securityContext:
+          runAsUser: 1000
+          runAsGroup: 1000
+        volumeMounts:
+        - name: data
+          mountPath: /config
+          subPath: '{{ .Release.Name }}/data/config'
+        - name: data
+          mountPath: /downloads
+          subPath: '{{ .Release.Name }}/storage/downloads'
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: '{{ .Release.Name }}-data'

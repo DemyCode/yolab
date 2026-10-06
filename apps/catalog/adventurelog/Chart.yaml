@@ -1,0 +1,18 @@
+apiVersion: v2
+name: adventurelog
+description: Self-hostable travel tracker and trip planner
+type: application
+version: 0.1.0
+appVersion: v0.13.0
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: AdventureLog
+  yolab.io/icon: 📁
+  yolab.io/category: files
+  yolab.io/tagline: Self-hostable travel tracker and trip planner
+  yolab.io/github: seanmorley15/AdventureLog
+  yolab.io/collections: replace-google
+home: https://adventurelog.app/

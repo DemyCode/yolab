@@ -1,0 +1,18 @@
+apiVersion: v2
+name: wingfit
+description: An open-source minimalist fitness app
+type: application
+version: 0.1.0
+appVersion: 5.3.1-patch.1
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: Wingfit
+  yolab.io/icon: 📁
+  yolab.io/category: files
+  yolab.io/tagline: An open-source minimalist fitness app
+  yolab.io/github: itskovacs/wingfit
+  yolab.io/collections: replace-google
+home: https://wingfit.fr/

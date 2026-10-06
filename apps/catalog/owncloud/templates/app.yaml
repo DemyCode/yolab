@@ -1,0 +1,247 @@
+{{ include "yolab-common.caddyConfigMap" . }}
+---
+{{ include "yolab-common.fileExplorerSecret" . }}
+---
+{{ include "yolab-common.fileExplorerConfigMap" . }}
+---
+{{ include "yolab-common.privateAccessResources" . }}
+---
+{{ include "yolab-common.uninstallHook" . }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-data
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: yolab-cephfs
+  resources:
+    requests:
+      storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Release.Name }}-secrets
+  namespace: {{ .Release.Namespace }}
+type: Opaque
+stringData:
+  admin_password: {{ required "config.admin_password is required" .Values.config.admin_password | quote }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      initContainers:
+      {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessInit" . | nindent 6 }}
+      containers:
+      {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
+      - name: server
+        image: owncloud/server:11.0.1@sha256:ba0446b240da1d0aa48ce2f673b97993adacfc02c81affdfcb632abbbe39cf9e
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: APP_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: admin_password
+        - name: OWNCLOUD_DOMAIN
+          value: localhost:8080
+        - name: OWNCLOUD_TRUSTED_DOMAINS
+          value: localhost,localhost,$(APP_OWNCLOUD_LOCAL_IPS)
+        - name: OWNCLOUD_DB_TYPE
+          value: mysql
+        - name: OWNCLOUD_DB_NAME
+          value: owncloud
+        - name: OWNCLOUD_DB_USERNAME
+          value: owncloud
+        - name: OWNCLOUD_DB_PASSWORD
+          value: owncloud
+        - name: OWNCLOUD_DB_HOST
+          value: mariadb
+        - name: OWNCLOUD_ADMIN_USERNAME
+          value: admin
+        - name: OWNCLOUD_ADMIN_PASSWORD
+          value: $(APP_PASSWORD)
+        - name: OWNCLOUD_MYSQL_UTF8MB4
+          value: 'true'
+        - name: OWNCLOUD_REDIS_ENABLED
+          value: 'true'
+        - name: OWNCLOUD_REDIS_HOST
+          value: redis
+        - name: OWNCLOUD_LOG_LEVEL
+          value: '2'
+        ports:
+        - containerPort: 8080
+        readinessProbe:
+          exec:
+            command:
+            - /usr/bin/healthcheck
+          periodSeconds: 30
+        volumeMounts:
+        - name: data
+          mountPath: /mnt/data
+          subPath: '{{ .Release.Name }}/data/app'
+        - name: data
+          mountPath: /var/www/html/config
+          subPath: '{{ .Release.Name }}/data/config'
+      volumes:
+      {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mariadb
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: mariadb
+  template:
+    metadata:
+      labels:
+        app: mariadb
+    spec:
+      containers:
+      - name: mariadb
+        image: mariadb:10.11@sha256:24bb6e3d8e46f4581ddcc2b2c22fd78c99c77ac4e3fb7c9aba3a5c4c4d934ca2
+        imagePullPolicy: IfNotPresent
+        args:
+        - --max-allowed-packet=128M
+        - --innodb-log-file-size=64M
+        env:
+        - name: APP_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: admin_password
+        - name: MYSQL_ROOT_PASSWORD
+          value: owncloud
+        - name: MYSQL_USER
+          value: owncloud
+        - name: MYSQL_PASSWORD
+          value: owncloud
+        - name: MYSQL_DATABASE
+          value: owncloud
+        - name: MARIADB_AUTO_UPGRADE
+          value: '1'
+        securityContext:
+          runAsUser: 1000
+          runAsGroup: 1000
+        ports:
+        - containerPort: 3306
+        readinessProbe:
+          exec:
+            command:
+            - mysqladmin
+            - ping
+            - -u
+            - root
+            - --password=owncloud
+          periodSeconds: 10
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/mysql
+          subPath: '{{ .Release.Name }}/data/db'
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: '{{ .Release.Name }}-data'
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mariadb
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  selector:
+    app: mariadb
+  ports:
+  - port: 3306
+    targetPort: 3306
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      containers:
+      - name: redis
+        image: redis:6-alpine@sha256:7fe72c486b910f6b1a9769c937dad5d63648ddee82e056f47417542dd40825bb
+        imagePullPolicy: IfNotPresent
+        args:
+        - --databases
+        - '1'
+        env:
+        - name: APP_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: admin_password
+        securityContext:
+          runAsUser: 1000
+          runAsGroup: 1000
+        ports:
+        - containerPort: 6379
+        readinessProbe:
+          exec:
+            command:
+            - redis-cli
+            - ping
+          periodSeconds: 10
+        volumeMounts:
+        - name: data
+          mountPath: /data
+          subPath: '{{ .Release.Name }}/data/redis'
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: '{{ .Release.Name }}-data'
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  selector:
+    app: redis
+  ports:
+  - port: 6379
+    targetPort: 6379

@@ -1,0 +1,17 @@
+apiVersion: v2
+name: chatpad-ai
+description: Premium quality UI for ChatGPT
+type: application
+version: 0.1.0
+appVersion: bb5f4a
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: Chatpad AI
+  yolab.io/icon: 🧠
+  yolab.io/category: ai
+  yolab.io/tagline: Premium quality UI for ChatGPT
+  yolab.io/github: deiucanta/chatpad
+home: https://github.com/deiucanta/chatpad

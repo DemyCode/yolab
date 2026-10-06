@@ -1,0 +1,274 @@
+{{ include "yolab-common.caddyConfigMap" . }}
+---
+{{ include "yolab-common.fileExplorerSecret" . }}
+---
+{{ include "yolab-common.fileExplorerConfigMap" . }}
+---
+{{ include "yolab-common.privateAccessResources" . }}
+---
+{{ include "yolab-common.uninstallHook" . }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-data
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: yolab-cephfs
+  resources:
+    requests:
+      storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Release.Name }}-secrets
+  namespace: {{ .Release.Namespace }}
+type: Opaque
+stringData:
+  app_secret: {{ required "config.app_secret is required" .Values.config.app_secret | quote }}
+  admin_password: {{ required "config.admin_password is required" .Values.config.admin_password | quote }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      initContainers:
+      {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessInit" . | nindent 6 }}
+      containers:
+      {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
+      volumes:
+      {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: proxy
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: proxy
+  template:
+    metadata:
+      labels:
+        app: proxy
+    spec:
+      containers:
+      - name: proxy
+        image: reallibrephotos/librephotos-proxy:2026w14@sha256:c88c0a65b50ba7e4f65ccc9aa7d5002df9827cb79edb1f88a3a4c130d0b03be4
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 80
+        readinessProbe:
+          tcpSocket:
+            port: 80
+        volumeMounts:
+        - name: data
+          mountPath: /data
+          subPath: '{{ .Release.Name }}/data/photos'
+        - name: data
+          mountPath: /protected_media
+          subPath: '{{ .Release.Name }}/data/protected_media'
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: '{{ .Release.Name }}-data'
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: proxy
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  selector:
+    app: proxy
+  ports:
+  - port: 80
+    targetPort: 80
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: db
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: db
+  template:
+    metadata:
+      labels:
+        app: db
+    spec:
+      containers:
+      - name: db
+        image: pgautoupgrade/pgautoupgrade:17-alpine3.22@sha256:2ec008ae5f0a2e5dd8f4d2475df41cf3ccc9562acf49bd668fcc0c061944b9bf
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: POSTGRES_USER
+          value: librephotos
+        - name: POSTGRES_PASSWORD
+          value: librephotos
+        - name: POSTGRES_DB
+          value: librephotos
+        readinessProbe:
+          exec:
+            command:
+            - psql
+            - -U
+            - librephotos
+            - -d
+            - librephotos
+            - -c
+            - SELECT 1;
+          periodSeconds: 5
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/postgresql/data
+          subPath: '{{ .Release.Name }}/data/db'
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: '{{ .Release.Name }}-data'
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: frontend
+  template:
+    metadata:
+      labels:
+        app: frontend
+    spec:
+      containers:
+      - name: frontend
+        image: reallibrephotos/librephotos-frontend:2026w14@sha256:e2fb909607b1d9552c033a9432446eadb6b693289af2b4b016da55d50724afcb
+        imagePullPolicy: IfNotPresent
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: '{{ .Release.Name }}-data'
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: backend
+  template:
+    metadata:
+      labels:
+        app: backend
+    spec:
+      containers:
+      - name: backend
+        image: reallibrephotos/librephotos:2026w14@sha256:3f4d6fa163bf41f2cd496aca342307fec8b827fe4a7ced1e7773a050ef7a5dca
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: APP_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: admin_password
+        - name: APP_SEED
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: app_secret
+        - name: SECRET_KEY
+          value: $(APP_SEED)
+        - name: BACKEND_HOST
+          value: backend
+        - name: ADMIN_EMAIL
+          value: admin@admin.com
+        - name: ADMIN_USERNAME
+          value: admin
+        - name: ADMIN_PASSWORD
+          value: $(APP_PASSWORD)
+        - name: DB_BACKEND
+          value: postgresql
+        - name: DB_NAME
+          value: librephotos
+        - name: DB_USER
+          value: librephotos
+        - name: DB_PASS
+          value: librephotos
+        - name: DB_HOST
+          value: db
+        - name: DB_PORT
+          value: '5432'
+        - name: MAPBOX_API_KEY
+          value: ''
+        - name: WEB_CONCURRENCY
+          value: '2'
+        - name: HEAVYWEIGHT_PROCESS
+          value: '1'
+        - name: FIXPERMISSIONS
+          value: 'true'
+        - name: SKIP_PATTERNS
+          value: ''
+        - name: ALLOW_UPLOAD
+          value: 'true'
+        - name: CSRF_TRUSTED_ORIGINS
+          value: ''
+        - name: DEBUG
+          value: '0'
+        volumeMounts:
+        - name: data
+          mountPath: /data
+          subPath: '{{ .Release.Name }}/data/photos'
+        - name: data
+          mountPath: /protected_media
+          subPath: '{{ .Release.Name }}/data/protected_media'
+        - name: data
+          mountPath: /logs
+          subPath: '{{ .Release.Name }}/data/logs'
+        - name: data
+          mountPath: /root/.cache
+          subPath: '{{ .Release.Name }}/data/cache'
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: '{{ .Release.Name }}-data'

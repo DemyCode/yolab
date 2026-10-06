@@ -1,0 +1,18 @@
+apiVersion: v2
+name: librephotos
+description: A photo management service
+type: application
+version: 0.1.0
+appVersion: 2026w14-patch.1
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: LibrePhotos
+  yolab.io/icon: 📁
+  yolab.io/category: files
+  yolab.io/tagline: A photo management service
+  yolab.io/github: LibrePhotos/librephotos-docker
+  yolab.io/collections: replace-google
+home: https://docs.librephotos.com/

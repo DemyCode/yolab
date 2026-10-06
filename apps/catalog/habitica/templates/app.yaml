@@ -1,0 +1,136 @@
+{{ include "yolab-common.caddyConfigMap" . }}
+---
+{{ include "yolab-common.fileExplorerSecret" . }}
+---
+{{ include "yolab-common.fileExplorerConfigMap" . }}
+---
+{{ include "yolab-common.privateAccessResources" . }}
+---
+{{ include "yolab-common.uninstallHook" . }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-data
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: yolab-cephfs
+  resources:
+    requests:
+      storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      initContainers:
+      {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessInit" . | nindent 6 }}
+      containers:
+      {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
+      - name: server
+        image: awinterstein/habitica-server:5.50.6@sha256:964caa1adddda20b7e11116f0892339bd0c740e4c7d9e2253b7991a0a610d5f1
+        imagePullPolicy: IfNotPresent
+        args:
+        - /bin/sh
+        - -c
+        - 'sh -c "perl -0pi -e ''s/upgradeInsecureRequests: IS_PROD \\? \\[\\] : null,?/upgradeInsecureRequests: null/g'' /var/lib/habitica/website/server/middlewares/index.js /var/lib/habitica/website/transpiled-babel/middlewares/index.js && printenv | grep -v ''no_proxy'' >> /etc/environment && /etc/init.d/cron start && node /var/lib/habitica/website/transpiled-babel/index.js"'
+        env:
+        - name: NODE_DB_URI
+          value: mongodb://mongo/habitica
+        - name: BASE_URL
+          value: http://localhost:3944
+        - name: INVITE_ONLY
+          value: 'false'
+        ports:
+        - containerPort: 3000
+        readinessProbe:
+          tcpSocket:
+            port: 3000
+      volumes:
+      {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mongo
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: mongo
+  template:
+    metadata:
+      labels:
+        app: mongo
+    spec:
+      containers:
+      - name: mongo
+        image: mongo:8.0.11@sha256:5941949d3887e40be5175787aade07dc052f2cddb8ce21b740c3948eba6a3ed0
+        imagePullPolicy: IfNotPresent
+        args:
+        - --replSet
+        - rs
+        - --bind_ip_all
+        - --port
+        - '27017'
+        ports:
+        - containerPort: 27017
+        readinessProbe:
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - 'echo "try { rs.status() } catch (err) { rs.initiate({ _id: ''rs'',
+              members: [{ _id: 0, host: ''habitica_mongo_1:27017'' }] }) }" | mongosh
+              --port 27017 --quiet
+
+              '
+          initialDelaySeconds: 0
+          periodSeconds: 10
+        volumeMounts:
+        - name: data
+          mountPath: /data/db
+          subPath: '{{ .Release.Name }}/data/db'
+        - name: data
+          mountPath: /data/configdb
+          subPath: '{{ .Release.Name }}/data/dbconf'
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: '{{ .Release.Name }}-data'
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mongo
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  selector:
+    app: mongo
+  ports:
+  - port: 27017
+    targetPort: 27017

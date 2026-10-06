@@ -1,0 +1,17 @@
+apiVersion: v2
+name: nitter
+description: Browse Twitter without tracking or ads
+type: application
+version: 0.1.0
+appVersion: 38985af
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: Nitter
+  yolab.io/icon: 💬
+  yolab.io/category: social
+  yolab.io/tagline: Browse Twitter without tracking or ads
+  yolab.io/github: zedeus/nitter
+home: https://github.com/zedeus

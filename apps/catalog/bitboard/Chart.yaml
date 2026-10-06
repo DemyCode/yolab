@@ -1,0 +1,17 @@
+apiVersion: v2
+name: bitboard
+description: A customizable crypto price dashboard for Umbrel
+type: application
+version: 0.1.0
+appVersion: 1.0.2
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: bitBoard
+  yolab.io/icon: 💰
+  yolab.io/category: finance
+  yolab.io/tagline: A customizable crypto price dashboard for Umbrel
+  yolab.io/github: egzola/bitboard
+home: https://github.com/egzola/bitboard

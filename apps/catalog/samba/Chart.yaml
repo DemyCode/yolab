@@ -1,0 +1,17 @@
+apiVersion: v2
+name: samba
+description: Make your storage accessible using Samba
+type: application
+version: 0.1.0
+appVersion: 4.23.5-r1
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: Samba
+  yolab.io/icon: 🌐
+  yolab.io/category: networking
+  yolab.io/tagline: Make your storage accessible using Samba
+  yolab.io/github: dockur/samba
+home: https://www.samba.org/

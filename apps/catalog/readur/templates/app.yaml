@@ -1,0 +1,188 @@
+{{ include "yolab-common.caddyConfigMap" . }}
+---
+{{ include "yolab-common.fileExplorerSecret" . }}
+---
+{{ include "yolab-common.fileExplorerConfigMap" . }}
+---
+{{ include "yolab-common.privateAccessResources" . }}
+---
+{{ include "yolab-common.uninstallHook" . }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-data
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: yolab-cephfs
+  resources:
+    requests:
+      storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Release.Name }}-secrets
+  namespace: {{ .Release.Namespace }}
+type: Opaque
+stringData:
+  app_secret: {{ required "config.app_secret is required" .Values.config.app_secret | quote }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      initContainers:
+      {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessInit" . | nindent 6 }}
+      containers:
+      {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
+      - name: app
+        image: ghcr.io/readur/readur:3.0.0@sha256:9880a6ca74d84abb8549a1dbac48a779069c117bf8af19340ab5898193dff11b
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: APP_SEED
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: app_secret
+        - name: DATABASE_URL
+          value: postgresql://readur:readur_password@postgres:5432/readur
+        - name: JWT_SECRET
+          value: $(APP_SEED)
+        - name: SERVER_ADDRESS
+          value: 0.0.0.0:8000
+        - name: UPLOAD_PATH
+          value: /app/uploads
+        - name: WATCH_FOLDER
+          value: /app/watch
+        - name: ALLOWED_FILE_TYPES
+          value: pdf,png,jpg,jpeg,tiff,bmp,gif,txt,rtf,doc,docx
+        - name: WATCH_INTERVAL_SECONDS
+          value: '30'
+        - name: FILE_STABILITY_CHECK_MS
+          value: '500'
+        - name: MAX_FILE_AGE_HOURS
+          value: '168'
+        - name: OCR_LANGUAGE
+          value: eng
+        - name: CONCURRENT_OCR_JOBS
+          value: '4'
+        - name: OCR_TIMEOUT_SECONDS
+          value: '300'
+        - name: MAX_FILE_SIZE_MB
+          value: '50'
+        - name: MEMORY_LIMIT_MB
+          value: '512'
+        - name: CPU_PRIORITY
+          value: normal
+        - name: ADMIN_PASSWORD
+          value: readur2024
+        securityContext:
+          runAsUser: 1000
+          runAsGroup: 1000
+        ports:
+        - containerPort: 8000
+        readinessProbe:
+          exec:
+            command:
+            - curl
+            - -f
+            - http://localhost:8000/api/health
+          initialDelaySeconds: 40
+          periodSeconds: 30
+        volumeMounts:
+        - name: data
+          mountPath: /app/uploads
+          subPath: '{{ .Release.Name }}/data/uploads'
+        - name: data
+          mountPath: /app/watch
+          subPath: '{{ .Release.Name }}/data/watch'
+      volumes:
+      {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:17.5@sha256:3962158596daaef3682838cc8eb0e719ad1ce520f88e34596ce8d5de1b6330a1
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: APP_SEED
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: app_secret
+        - name: POSTGRES_USER
+          value: readur
+        - name: POSTGRES_PASSWORD
+          value: readur_password
+        - name: POSTGRES_DB
+          value: readur
+        securityContext:
+          runAsUser: 1000
+          runAsGroup: 1000
+        ports:
+        - containerPort: 5432
+        readinessProbe:
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - pg_isready -U readur
+          periodSeconds: 10
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/postgresql/data
+          subPath: '{{ .Release.Name }}/data/postgres_data'
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: '{{ .Release.Name }}-data'
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  selector:
+    app: postgres
+  ports:
+  - port: 5432
+    targetPort: 5432

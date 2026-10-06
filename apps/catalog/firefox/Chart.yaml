@@ -1,0 +1,16 @@
+apiVersion: v2
+name: firefox
+description: Firefox is a free and open-source web browser
+type: application
+version: 0.1.0
+appVersion: 139.0.4
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: Firefox
+  yolab.io/icon: 🌐
+  yolab.io/category: networking
+  yolab.io/tagline: Firefox is a free and open-source web browser
+home: https://www.mozilla.org/en-US/firefox/

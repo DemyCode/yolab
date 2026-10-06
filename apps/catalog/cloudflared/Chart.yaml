@@ -1,0 +1,17 @@
+apiVersion: v2
+name: cloudflared
+description: Access your Umbrel apps from the Internet using Cloudflare network
+type: application
+version: 0.1.0
+appVersion: 2026.8.3-patch.1
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: Cloudflare Tunnel
+  yolab.io/icon: 🌐
+  yolab.io/category: networking
+  yolab.io/tagline: Access your Umbrel apps from the Internet using Cloudflare
+  yolab.io/github: Radiokot/umbrel-cloudflared
+home: https://www.cloudflare.com/products/tunnel/

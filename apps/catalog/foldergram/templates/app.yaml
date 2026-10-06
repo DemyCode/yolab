@@ -1,0 +1,78 @@
+{{ include "yolab-common.caddyConfigMap" . }}
+---
+{{ include "yolab-common.fileExplorerSecret" . }}
+---
+{{ include "yolab-common.fileExplorerConfigMap" . }}
+---
+{{ include "yolab-common.privateAccessResources" . }}
+---
+{{ include "yolab-common.uninstallHook" . }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-data
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: yolab-cephfs
+  resources:
+    requests:
+      storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      initContainers:
+      {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessInit" . | nindent 6 }}
+      containers:
+      {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
+      - name: web
+        image: ghcr.io/foldergram/foldergram:1.2.2@sha256:f72dfe39d9042555fd1b509a06f6c93c8b9a8be02541c80135a9a8f25fe362d4
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: IMAGE_DETAIL_SOURCE
+          value: preview
+        - name: DERIVATIVE_MODE
+          value: eager
+        ports:
+        - containerPort: 4141
+        readinessProbe:
+          tcpSocket:
+            port: 4141
+        volumeMounts:
+        - name: data
+          mountPath: /app/data/gallery
+          subPath: '{{ .Release.Name }}/data/gallery'
+        - name: data
+          mountPath: /app/data/db
+          subPath: '{{ .Release.Name }}/data/db'
+        - name: data
+          mountPath: /app/data/thumbnails
+          subPath: '{{ .Release.Name }}/data/thumbnails'
+        - name: data
+          mountPath: /app/data/previews
+          subPath: '{{ .Release.Name }}/data/previews'
+      volumes:
+      {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}

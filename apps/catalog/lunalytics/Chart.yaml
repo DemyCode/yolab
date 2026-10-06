@@ -1,0 +1,17 @@
+apiVersion: v2
+name: lunalytics
+description: A monitoring tool for teams
+type: application
+version: 0.1.0
+appVersion: 0.10.23-patch.1
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: Lunalytics
+  yolab.io/icon: 🌐
+  yolab.io/category: networking
+  yolab.io/tagline: A monitoring tool for teams
+  yolab.io/github: KSJaay/Lunalytics
+home: https://lunalytics.xyz/

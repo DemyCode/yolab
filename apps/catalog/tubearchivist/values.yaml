@@ -1,0 +1,13 @@
+config:
+  subdomain: tubearchivist
+  storage_size: 10Gi
+yolab:
+  platformApiUrl: ''
+  accountToken: ''
+  serviceName: ''
+  gateway:
+    upstream: localhost:8000
+  fileExplorer:
+    protect:
+    - data/elasticsearch
+    - data/redis

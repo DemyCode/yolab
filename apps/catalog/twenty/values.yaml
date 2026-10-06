@@ -1,0 +1,13 @@
+config:
+  subdomain: twenty
+  storage_size: 10Gi
+yolab:
+  platformApiUrl: ''
+  accountToken: ''
+  serviceName: ''
+  gateway:
+    upstream: localhost:3000
+  fileExplorer:
+    protect:
+    - data/db-data
+    - data/redis

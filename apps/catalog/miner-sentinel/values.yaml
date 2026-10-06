@@ -1,0 +1,12 @@
+config:
+  subdomain: miner-sentinel
+  storage_size: 10Gi
+yolab:
+  platformApiUrl: ''
+  accountToken: ''
+  serviceName: ''
+  gateway:
+    upstream: frontend:80
+  fileExplorer:
+    protect:
+    - data/db

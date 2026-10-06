@@ -1,0 +1,17 @@
+apiVersion: v2
+name: strix
+description: IP camera stream discovery tool for Frigate
+type: application
+version: 0.1.0
+appVersion: 2.2.0
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: Strix
+  yolab.io/icon: 🤖
+  yolab.io/category: automation
+  yolab.io/tagline: IP camera stream discovery tool for Frigate
+  yolab.io/github: eduard256/Strix
+home: https://github.com/eduard256/Strix

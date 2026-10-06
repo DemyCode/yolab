@@ -1,0 +1,9 @@
+config:
+  subdomain: super-productivity
+  storage_size: 10Gi
+yolab:
+  platformApiUrl: ''
+  accountToken: ''
+  serviceName: ''
+  gateway:
+    upstream: web:80

@@ -1,0 +1,18 @@
+apiVersion: v2
+name: wizarr
+description: An advanced invitation and management system for media servers
+type: application
+version: 0.1.0
+appVersion: 2026.9.1-patch.1
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: Wizarr
+  yolab.io/icon: 🎬
+  yolab.io/category: media
+  yolab.io/tagline: An advanced invitation and management system for media
+  yolab.io/github: wizarrrr/wizarr
+  yolab.io/collections: watch-and-listen
+home: https://github.com/wizarrrr/wizarr

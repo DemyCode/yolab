@@ -1,0 +1,236 @@
+{{ include "yolab-common.caddyConfigMap" . }}
+---
+{{ include "yolab-common.fileExplorerSecret" . }}
+---
+{{ include "yolab-common.fileExplorerConfigMap" . }}
+---
+{{ include "yolab-common.privateAccessResources" . }}
+---
+{{ include "yolab-common.uninstallHook" . }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-data
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: yolab-cephfs
+  resources:
+    requests:
+      storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Release.Name }}-secrets
+  namespace: {{ .Release.Namespace }}
+type: Opaque
+stringData:
+  app_secret: {{ required "config.app_secret is required" .Values.config.app_secret | quote }}
+  admin_password: {{ required "config.admin_password is required" .Values.config.admin_password | quote }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      initContainers:
+      {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessInit" . | nindent 6 }}
+      containers:
+      {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
+      - name: web
+        image: flomp/wanderer-web:v0.21.0@sha256:af721ffac56fd33243043211fc49e4d5c5651f784551ae7b5b05d845c7c41147
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: APP_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: admin_password
+        - name: APP_SEED
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: app_secret
+        - name: ORIGIN
+          value: http://localhost:3111
+        - name: BODY_SIZE_LIMIT
+          value: Infinity
+        - name: POCKETBASE_PROXY_SECRET
+          value: $(APP_SEED)
+        - name: PUBLIC_POCKETBASE_URL
+          value: http://db:8090
+        - name: PUBLIC_DISABLE_SIGNUP
+          value: 'false'
+        - name: UPLOAD_FOLDER
+          value: /app/uploads
+        - name: UPLOAD_USER
+          value: admin
+        - name: UPLOAD_PASSWORD
+          value: $(APP_PASSWORD)
+        - name: VALHALLA_URL
+          value: https://valhalla1.openstreetmap.de
+        - name: NOMINATIM_URL
+          value: https://nominatim.openstreetmap.org
+        - name: OVERPASS_API_URL
+          value: https://overpass-api.de
+        - name: PUBLIC_MAP_MAX_POLYLINES
+          value: '100'
+        - name: MEILI_URL
+          value: http://search:7700
+        - name: MEILI_MASTER_KEY
+          value: $(APP_SEED)
+        securityContext:
+          runAsUser: 1000
+          runAsGroup: 1000
+        ports:
+        - containerPort: 3000
+        readinessProbe:
+          tcpSocket:
+            port: 3000
+        volumeMounts:
+        - name: data
+          mountPath: /app/uploads
+          subPath: '{{ .Release.Name }}/data/uploads'
+      volumes:
+      {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: search
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: search
+  template:
+    metadata:
+      labels:
+        app: search
+    spec:
+      containers:
+      - name: search
+        image: getmeili/meilisearch:v1.14.0@sha256:8cd411ba5d9ec2dfce02e241305208eebacce0fd74a72bece21cadd03dc566ce
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: APP_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: admin_password
+        - name: APP_SEED
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: app_secret
+        - name: MEILI_NO_ANALYTICS
+          value: 'true'
+        - name: MEILI_URL
+          value: http://search:7700
+        - name: MEILI_MASTER_KEY
+          value: $(APP_SEED)
+        readinessProbe:
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - curl --fail http://localhost:7700/health || exit 1
+          initialDelaySeconds: 20
+          periodSeconds: 15
+        volumeMounts:
+        - name: data
+          mountPath: /meili_data/data.ms
+          subPath: '{{ .Release.Name }}/data/data.ms'
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: '{{ .Release.Name }}-data'
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: db
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: db
+  template:
+    metadata:
+      labels:
+        app: db
+    spec:
+      containers:
+      - name: db
+        image: flomp/wanderer-db:v0.21.0@sha256:ba7bd45b8177fec7a31d297ecaf3c98e94aabb4fc043f167df35aeba8b93468c
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: APP_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: admin_password
+        - name: APP_SEED
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: app_secret
+        - name: POCKETBASE_ENCRYPTION_KEY
+          value: $(APP_SEED)
+        - name: POCKETBASE_PROXY_SECRET
+          value: $(APP_SEED)
+        - name: MEILI_URL
+          value: http://search:7700
+        - name: MEILI_MASTER_KEY
+          value: $(APP_SEED)
+        - name: ORIGIN
+          value: http://localhost:3111
+        securityContext:
+          runAsUser: 1000
+          runAsGroup: 1000
+        readinessProbe:
+          exec:
+            command:
+            - /curl
+            - --fail
+            - http://localhost:8090/health
+          initialDelaySeconds: 20
+          periodSeconds: 15
+        volumeMounts:
+        - name: data
+          mountPath: /pb_data
+          subPath: '{{ .Release.Name }}/data/pb_data'
+        - name: data
+          mountPath: /data/plugins
+          subPath: '{{ .Release.Name }}/data/plugins'
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: '{{ .Release.Name }}-data'

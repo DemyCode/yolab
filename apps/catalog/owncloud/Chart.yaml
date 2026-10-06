@@ -1,0 +1,18 @@
+apiVersion: v2
+name: owncloud
+description: A smart cloud for your files
+type: application
+version: 0.1.0
+appVersion: 11.0.1
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: ownCloud
+  yolab.io/icon: 📁
+  yolab.io/category: files
+  yolab.io/tagline: A smart cloud for your files
+  yolab.io/github: owncloud-docker/server
+  yolab.io/collections: replace-google
+home: https://owncloud.com

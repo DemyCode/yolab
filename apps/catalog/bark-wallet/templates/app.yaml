@@ -1,0 +1,147 @@
+{{ include "yolab-common.caddyConfigMap" . }}
+---
+{{ include "yolab-common.fileExplorerSecret" . }}
+---
+{{ include "yolab-common.fileExplorerConfigMap" . }}
+---
+{{ include "yolab-common.privateAccessResources" . }}
+---
+{{ include "yolab-common.uninstallHook" . }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-data
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: yolab-cephfs
+  resources:
+    requests:
+      storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      initContainers:
+      {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessInit" . | nindent 6 }}
+      containers:
+      {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
+      - name: web
+        image: secondark/bark-web:0.8.0@sha256:c7ee6f6f92bc0e67d98dc0336ec85d4a3ac96e323cd8fb758175747532e1bcae
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8080
+        readinessProbe:
+          tcpSocket:
+            port: 8080
+      volumes:
+      {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: api
+  template:
+    metadata:
+      labels:
+        app: api
+    spec:
+      containers:
+      - name: api
+        image: secondark/bark-web-api:0.8.0@sha256:2ccf75c99873e99182d61f64cd2d9ff03fb376812bbc9a9e43abd10d9afc38ab
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: PORT
+          value: '4001'
+        - name: WALLET_DIR
+          value: /wallet-data/.bark
+        - name: WALLET_DATA_PATH
+          value: /Apps/bark-wallet/data/wallet/.bark/
+        - name: BARKD_URL
+          value: http://barkd:4000
+        - name: ARK_SERVER
+          value: https://ark.second.tech
+        - name: CHAIN_SOURCE
+          value: https://mempool.second.tech/api
+        - name: BARK_NETWORK
+          value: mainnet
+        volumeMounts:
+        - name: data
+          mountPath: /wallet-data
+          subPath: '{{ .Release.Name }}/data/wallet'
+          readOnly: true
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: '{{ .Release.Name }}-data'
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: barkd
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: barkd
+  template:
+    metadata:
+      labels:
+        app: barkd
+    spec:
+      containers:
+      - name: barkd
+        image: secondark/bark:0.6.2@sha256:30a91f2c31a16ec7d1a4d7744989ff2113fd003febb75aedfe2449db9133e671
+        imagePullPolicy: IfNotPresent
+        args:
+        - /bin/sh
+        - -c
+        - 'sh -c "mkdir -p /data/.bark && chown -R 1000:1000 /data && exec setpriv
+          --reuid 1000 --regid 1000 --clear-groups /usr/local/bin/barkd --port 4000
+          --host 0.0.0.0 --datadir /data/.bark --expose-mnemonic"
+
+          '
+        securityContext:
+          runAsUser: 0
+          runAsGroup: 0
+        volumeMounts:
+        - name: data
+          mountPath: /data
+          subPath: '{{ .Release.Name }}/data/wallet'
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: '{{ .Release.Name }}-data'

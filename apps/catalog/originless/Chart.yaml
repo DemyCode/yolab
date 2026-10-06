@@ -1,0 +1,18 @@
+apiVersion: v2
+name: originless
+description: Private, decentralized file sharing for Nostr and the web
+type: application
+version: 0.1.0
+appVersion: 0.1.0-patch.1
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: Originless
+  yolab.io/icon: 📁
+  yolab.io/category: files
+  yolab.io/tagline: Private, decentralized file sharing for Nostr and the web
+  yolab.io/github: besoeasy/Originless
+  yolab.io/collections: replace-google
+home: https://github.com/besoeasy/Originless

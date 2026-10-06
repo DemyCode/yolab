@@ -1,0 +1,135 @@
+{{ include "yolab-common.caddyConfigMap" . }}
+---
+{{ include "yolab-common.fileExplorerSecret" . }}
+---
+{{ include "yolab-common.fileExplorerConfigMap" . }}
+---
+{{ include "yolab-common.privateAccessResources" . }}
+---
+{{ include "yolab-common.uninstallHook" . }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-data
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: yolab-cephfs
+  resources:
+    requests:
+      storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      initContainers:
+      {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessInit" . | nindent 6 }}
+      containers:
+      {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
+      - name: app
+        image: alexlack/mattermost-app:v11.11.1@sha256:935f4ed994120c06736ad4972beb522d6cb5a862f0c4f87636e5ad600419c7ab
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: MM_USERNAME
+          value: admin
+        - name: MM_PASSWORD
+          value: admin
+        - name: MM_DBNAME
+          value: mattermost
+        - name: MM_SQLSETTINGS_DATASOURCE
+          value: postgres://admin:admin@db:5432/mattermost?sslmode=disable&connect_timeout=10
+        securityContext:
+          runAsUser: 1000
+          runAsGroup: 1000
+        ports:
+        - containerPort: 8000
+        readinessProbe:
+          tcpSocket:
+            port: 8000
+        volumeMounts:
+        - name: data
+          mountPath: /mattermost/config
+          subPath: '{{ .Release.Name }}/data/app/mattermost/config'
+        - name: data
+          mountPath: /mattermost/data
+          subPath: '{{ .Release.Name }}/data/app/mattermost/data'
+        - name: data
+          mountPath: /mattermost/logs
+          subPath: '{{ .Release.Name }}/data/app/mattermost/logs'
+        - name: data
+          mountPath: /mattermost/plugins
+          subPath: '{{ .Release.Name }}/data/app/mattermost/plugins'
+        - name: data
+          mountPath: /mattermost/client/plugins
+          subPath: '{{ .Release.Name }}/data/app/mattermost/client-plugins'
+      volumes:
+      {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: db
+  namespace: '{{ .Release.Namespace }}'
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: db
+  template:
+    metadata:
+      labels:
+        app: db
+    spec:
+      containers:
+      - name: db
+        image: alexlack/mattermost-db:v11.11.1@sha256:ed7ade51d12815e65eff05ded2b4264b5bca06cbf523f4c9573759a9688b2259
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: MM_USERNAME
+          value: admin
+        - name: MM_PASSWORD
+          value: admin
+        - name: MM_DBNAME
+          value: mattermost
+        securityContext:
+          runAsUser: 1000
+          runAsGroup: 1000
+        readinessProbe:
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - pg_isready -U admin -d mattermost
+          periodSeconds: 10
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/postgresql/data
+          subPath: '{{ .Release.Name }}/data/db'
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: '{{ .Release.Name }}-data'

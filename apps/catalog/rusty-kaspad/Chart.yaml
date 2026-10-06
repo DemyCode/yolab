@@ -1,0 +1,17 @@
+apiVersion: v2
+name: rusty-kaspad
+description: A Rust implementation of a Kaspa full node
+type: application
+version: 0.1.0
+appVersion: v2.1.0
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: Rusty Kaspad
+  yolab.io/icon: 🧩
+  yolab.io/category: crypto
+  yolab.io/tagline: A Rust implementation of a Kaspa full node
+  yolab.io/github: kaspanet/rusty-kaspa
+home: https://github.com/kaspanet/rusty-kaspa

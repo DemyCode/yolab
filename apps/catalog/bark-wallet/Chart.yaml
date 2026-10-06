@@ -1,0 +1,16 @@
+apiVersion: v2
+name: bark-wallet
+description: One wallet for Lightning, Ark, and on-chain
+type: application
+version: 0.1.0
+appVersion: 0.8.0-patch.1
+dependencies:
+- name: yolab-common
+  version: 0.1.13
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: Bark Wallet
+  yolab.io/icon: ₿
+  yolab.io/category: bitcoin
+  yolab.io/tagline: One wallet for Lightning, Ark, and on-chain
+home: https://second.tech
