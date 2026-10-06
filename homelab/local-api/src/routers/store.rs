@@ -139,7 +139,10 @@ pub async fn set_heart(
     if !valid_app_id(&id) {
         return bad_app();
     }
-    let hearted = body.get("hearted").and_then(Value::as_bool).unwrap_or(false);
+    let hearted = body
+        .get("hearted")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     let path = format!("/catalog/apps/{id}/heart");
     forward(&state, Verb::Put, path, Some(json!({ "hearted": hearted }))).await
 }

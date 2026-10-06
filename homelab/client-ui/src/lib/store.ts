@@ -79,8 +79,6 @@ export function statsById(
   return new Map((stats ?? []).map((s) => [s.app_id, s]));
 }
 
-
-
 function popularity(app: CatalogApp, stats: Map<string, AppStats>): number {
   const s = stats.get(app.id);
   return ((s?.installs ?? 0) + (s?.hearts ?? 0)) * 1000 + (app.stars ?? 0);
