@@ -631,7 +631,19 @@ pub async fn catalog(State(state): State<AppState>) -> Result<Json<Vec<CatalogAp
     let mut apps: Vec<CatalogApp> = vec![];
     let mut seen: std::collections::HashSet<String> = Default::default();
 
-    let client = state.kube.client().await?;
+    let b = state.backend().await?;
+    let client = b.kube;
+    for repo in crate::charts::list_repos(&client).await {
+        if let Err(e) = crate::charts::sync_repo(
+            &b.host,
+            std::path::Path::new(crate::charts::CACHE_DIR),
+            &repo,
+        )
+        .await
+        {
+            tracing::warn!("catalog: {} not refreshed: {e:#}", repo.name);
+        }
+    }
     let stars = crate::github::read_all(&client).await.unwrap_or_default();
     for (repo, dir) in crate::charts::chart_sources(&client).await {
         let Ok(rd) = std::fs::read_dir(&dir) else {

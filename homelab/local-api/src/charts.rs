@@ -27,7 +27,7 @@ fn yes() -> bool {
 
 fn official_url() -> String {
     std::env::var("YOLAB_OFFICIAL_CHART_REPO").unwrap_or_else(|_| {
-        "https://raw.githubusercontent.com/DemyCode/yolab/main/catalog.yaml".into()
+        "https://raw.githubusercontent.com/DemyCode/yolab/refs/heads/main/catalog.yaml".into()
     })
 }
 
@@ -305,10 +305,16 @@ pub async fn sync_repo<H: Host>(
 ) -> anyhow::Result<usize> {
     let manifest = fetch_manifest(repo).await?;
 
+    static SYNCING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    let _one_at_a_time = SYNCING.lock().await;
+
     let dir = cache_root.join(&repo.name);
     tokio::fs::create_dir_all(&dir).await?;
+    let stale = |entry: &CatalogEntry| {
+        cached_at_version(cache_root, &repo.name, &entry.name, &entry.version).is_none()
+    };
 
-    if let Some(library) = &manifest.library {
+    if let Some(library) = manifest.library.as_ref().filter(|l| stale(l)) {
         if valid_chart_name(&library.name) {
             if let Err(e) = pull_into(host, &dir, &manifest.registry, library).await {
                 tracing::warn!("{}: library pull: {e}", repo.name);
@@ -323,7 +329,7 @@ pub async fn sync_repo<H: Host>(
     }
 
     let mut pulled = 0usize;
-    for entry in &manifest.charts {
+    for entry in manifest.charts.iter().filter(|e| stale(e)) {
         if !valid_chart_name(&entry.name) {
             tracing::warn!(
                 "{}: skipping chart with unusable name {:?}",
@@ -601,6 +607,36 @@ mod tests {
                 .await
                 .unwrap();
             assert!(host.ran("helm pull oci://ghcr.io/x/charts/notes --version 1.2.3 --untar"));
+        }
+
+        #[tokio::test]
+        async fn a_sync_pulls_only_the_charts_whose_version_moved() {
+            let (_server, repo) = catalog(
+                "registry: oci://ghcr.io/x/charts\n\
+                 library:\n  name: yolab-common\n  version: \"0.1.0\"\n\
+                 charts:\n  - name: notes\n    version: \"1.0.0\"\n  - name: wiki\n    version: \"2.0.0\"\n",
+            )
+            .await;
+            let cache = tempfile::tempdir().unwrap();
+            for (name, version) in [("yolab-common", "0.1.0"), ("notes", "1.0.0"), ("wiki", "1.0.0")] {
+                let dir = cache.path().join(&repo.name).join(name);
+                std::fs::create_dir_all(&dir).unwrap();
+                std::fs::write(dir.join("Chart.yaml"), format!("name: {name}\nversion: {version}\n"))
+                    .unwrap();
+            }
+            let host = FakeHost::new().ok("helm pull", "");
+            assert_eq!(sync_repo(&host, cache.path(), &repo).await.unwrap(), 1);
+            assert!(host.ran("helm pull oci://ghcr.io/x/charts/wiki --version 2.0.0"));
+            assert!(!host.ran("charts/notes"));
+            assert!(!host.ran("charts/yolab-common"));
+        }
+
+        #[test]
+        fn the_official_catalog_is_read_from_the_main_branch_ref() {
+            assert_eq!(
+                official_url(),
+                "https://raw.githubusercontent.com/DemyCode/yolab/refs/heads/main/catalog.yaml"
+            );
         }
 
         #[tokio::test]
