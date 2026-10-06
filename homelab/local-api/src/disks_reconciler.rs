@@ -1981,13 +1981,9 @@ fn merge_desired(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::future::Future;
     use std::io::Write;
-    use std::sync::{Arc, Mutex};
 
-    use crate::exec::CmdError;
     use crate::host::fake::FakeHost;
-    use crate::host::{CommandOutput, HostResult};
 
     const OURS: &str = "11111111-2222-3333-4444-555555555555";
     const THEIRS: &str = "99999999-8888-7777-6666-555555555555";
@@ -2056,61 +2052,6 @@ mod tests {
     fn an_on_setting_is_a_choice_and_an_off_setting_is_only_a_default() {
         assert_eq!(origin_of("ON"), Origin::User);
         assert_eq!(origin_of("OFF"), Origin::Discovered);
-    }
-
-    #[derive(Clone, Default)]
-    struct RecordingHost {
-        ceph_volume_calls: Arc<Mutex<usize>>,
-    }
-
-    fn unreachable_err(what: &str) -> CmdError {
-        CmdError::Timeout {
-            cmd: what.to_string(),
-            after: std::time::Duration::from_secs(30),
-        }
-    }
-
-    #[allow(clippy::manual_async_fn)]
-    impl Host for RecordingHost {
-        fn ceph<'a>(
-            &self,
-            _args: &'a [&str],
-        ) -> impl Future<Output = HostResult<String>> + Send + 'a {
-            async move { Err(unreachable_err("ceph")) }
-        }
-
-        fn ceph_json<'a>(
-            &self,
-            _args: &'a [&str],
-        ) -> impl Future<Output = HostResult<Value>> + Send + 'a {
-            async move { Err(unreachable_err("ceph")) }
-        }
-
-        fn ceph_volume<'a>(
-            &self,
-            _args: &'a [&str],
-        ) -> impl Future<Output = HostResult<String>> + Send + 'a {
-            let calls = self.ceph_volume_calls.clone();
-            async move {
-                *calls.lock().unwrap() += 1;
-                Err(unreachable_err("ceph-volume"))
-            }
-        }
-
-        fn systemctl<'a>(
-            &self,
-            _args: &'a [&str],
-        ) -> impl Future<Output = HostResult<CommandOutput>> + Send + 'a {
-            async move { Err(unreachable_err("systemctl")) }
-        }
-
-        fn run_cmd<'a>(
-            &self,
-            _bin: &'a str,
-            _args: &'a [&'a str],
-        ) -> impl Future<Output = HostResult<CommandOutput>> + Send + 'a {
-            async move { Err(unreachable_err("command")) }
-        }
     }
 
     #[tokio::test]
@@ -2439,7 +2380,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_unreachable_cluster_reports_unknown_and_never_touches_a_disk() {
-        let host = RecordingHost::default();
+        let host = FakeHost::new();
         let meta = HashMap::from([("disk-a".to_string(), disk(Ownership::Blank))]);
         let desired = HashMap::from([("disk-a".to_string(), "ON".to_string())]);
         let disk_to_osd = HashMap::new();
@@ -2447,7 +2388,11 @@ mod tests {
         reconcile_local_osds(&host, "node1", &meta, &desired, Some(&disk_to_osd), true).await;
 
         assert_eq!(progress_of("disk-a").phase, Phase::Unknown);
-        assert_eq!(*host.ceph_volume_calls.lock().unwrap(), 0);
+        assert!(
+            !host.calls().iter().any(|c| c.contains("ceph-volume")),
+            "{:?}",
+            host.calls()
+        );
     }
 
     fn bluestore_label(fsid: &str) -> Vec<u8> {

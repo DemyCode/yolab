@@ -280,21 +280,9 @@ pub async fn run<H: Host>(host: &H, root: &Path, node: &str, args: &BootstrapArg
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::host::{fake::FakeHost, CommandOutput};
-    use std::future::Future;
+    use crate::host::fake::FakeHost;
 
     const FSID: &str = "11111111-2222-3333-4444-555555555555";
-
-    #[derive(Clone)]
-    struct FileWritingHost {
-        inner: FakeHost,
-    }
-
-    impl FileWritingHost {
-        fn new(inner: FakeHost) -> Self {
-            Self { inner }
-        }
-    }
 
     fn simulate_file_write(bin: &str, args: &[&str]) {
         let path = if bin == "ceph-authtool" {
@@ -315,48 +303,6 @@ mod tests {
                 std::fs::create_dir_all(parent).unwrap();
             }
             std::fs::write(path, "fake-bytes-from-a-real-binary").unwrap();
-        }
-    }
-
-    #[allow(clippy::manual_async_fn)]
-    impl Host for FileWritingHost {
-        fn ceph<'a>(
-            &self,
-            args: &'a [&str],
-        ) -> impl Future<Output = crate::host::HostResult<String>> + Send + 'a {
-            self.inner.ceph(args)
-        }
-        fn ceph_json<'a>(
-            &self,
-            args: &'a [&str],
-        ) -> impl Future<Output = crate::host::HostResult<serde_json::Value>> + Send + 'a {
-            self.inner.ceph_json(args)
-        }
-        fn ceph_volume<'a>(
-            &self,
-            args: &'a [&str],
-        ) -> impl Future<Output = crate::host::HostResult<String>> + Send + 'a {
-            self.inner.ceph_volume(args)
-        }
-        fn systemctl<'a>(
-            &self,
-            args: &'a [&str],
-        ) -> impl Future<Output = crate::host::HostResult<CommandOutput>> + Send + 'a {
-            self.inner.systemctl(args)
-        }
-        fn run_cmd<'a>(
-            &self,
-            bin: &'a str,
-            args: &'a [&'a str],
-        ) -> impl Future<Output = crate::host::HostResult<CommandOutput>> + Send + 'a {
-            let me = self.clone();
-            async move {
-                let out = me.inner.run_cmd(bin, args).await?;
-                if out.success {
-                    simulate_file_write(bin, args);
-                }
-                Ok(out)
-            }
         }
     }
 
@@ -391,13 +337,12 @@ mod tests {
 
     #[tokio::test]
     async fn create_path_produces_a_keyring_and_never_touches_the_network() {
-        let host = FileWritingHost::new(
-            FakeHost::new()
-                .ok("ceph-authtool", "")
-                .ok("monmaptool", "")
-                .ok("ceph-mon --mkfs", "")
-                .ok("chown", ""),
-        );
+        let host = FakeHost::new()
+            .ok("ceph-authtool", "")
+            .ok("monmaptool", "")
+            .ok("ceph-mon --mkfs", "")
+            .ok("chown", "")
+            .effect("", simulate_file_write);
         let dir = tempfile::tempdir().unwrap();
         let args = BootstrapArgs {
             fsid: FSID.to_string(),
@@ -439,12 +384,7 @@ mod tests {
 
     #[tokio::test]
     async fn join_writes_the_bundles_keyrings_and_fetches_a_live_monmap() {
-        let host = FileWritingHost::new(
-            FakeHost::new()
-                .ok("chown", "")
-                .ok("ceph --connect-timeout 10 mon getmap", "")
-                .ok("ceph-mon --mkfs", ""),
-        );
+        let host = joining_host();
         let dir = tempfile::tempdir().unwrap();
         let b = bundle(FSID);
 
@@ -517,13 +457,12 @@ mod tests {
         (server, port)
     }
 
-    fn joining_host() -> FileWritingHost {
-        FileWritingHost::new(
-            FakeHost::new()
-                .ok("chown", "")
-                .ok("ceph --connect-timeout 10 mon getmap", "")
-                .ok("ceph-mon --mkfs", ""),
-        )
+    fn joining_host() -> FakeHost {
+        FakeHost::new()
+            .ok("chown", "")
+            .ok("ceph --connect-timeout 10 mon getmap", "")
+            .ok("ceph-mon --mkfs", "")
+            .effect("", simulate_file_write)
     }
 
     #[tokio::test]

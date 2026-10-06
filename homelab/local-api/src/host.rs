@@ -297,11 +297,14 @@ pub(crate) mod fake {
 
     type Env = Vec<(String, String)>;
 
+    type Effect = Arc<dyn Fn(&str, &[&str]) + Send + Sync>;
+
     #[derive(Clone, Default)]
     pub(crate) struct FakeHost {
         calls: Arc<Mutex<Vec<String>>>,
         script: Arc<Mutex<Script>>,
         envs: Arc<Mutex<Vec<(String, Env)>>>,
+        effects: Arc<Mutex<Vec<(String, Effect)>>>,
     }
 
     impl FakeHost {
@@ -329,6 +332,28 @@ pub(crate) mod fake {
         pub fn fail(self, prefix: &str, err: &str) -> Self {
             self.push(prefix, Err(err.to_string()));
             self
+        }
+
+        pub fn effect(
+            self,
+            prefix: &str,
+            act: impl Fn(&str, &[&str]) + Send + Sync + 'static,
+        ) -> Self {
+            self.effects
+                .lock()
+                .unwrap()
+                .push((prefix.to_string(), Arc::new(act)));
+            self
+        }
+
+        fn apply_effects(&self, bin: &str, args: &[&str]) {
+            let cmd = format!("{bin} {}", args.join(" "));
+            let effects = self.effects.lock().unwrap().clone();
+            for (prefix, act) in effects {
+                if cmd.starts_with(prefix.as_str()) {
+                    act(bin, args);
+                }
+            }
         }
 
         pub fn env_of(&self, needle: &str) -> Option<Env> {
@@ -480,7 +505,13 @@ pub(crate) mod fake {
             args: &'a [&'a str],
         ) -> impl Future<Output = HostResult<CommandOutput>> + Send + 'a {
             let me = self.clone();
-            async move { Ok(output_of(me.answer(&format!("{bin} {}", args.join(" "))))) }
+            async move {
+                let out = output_of(me.answer(&format!("{bin} {}", args.join(" "))));
+                if out.success {
+                    me.apply_effects(bin, args);
+                }
+                Ok(out)
+            }
         }
 
         fn run_cmd_env<'a>(
@@ -550,6 +581,21 @@ pub(crate) mod fake {
 mod tests {
     use super::fake::FakeHost;
     use super::*;
+
+    #[tokio::test]
+    async fn a_fake_commands_side_effect_happens_only_when_it_succeeds() {
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let log = seen.clone();
+        let host = FakeHost::new()
+            .ok("ceph-authtool", "")
+            .fail("monmaptool", "no")
+            .effect("", move |bin, args| {
+                log.lock().unwrap().push(format!("{bin} {}", args.join(" ")));
+            });
+        let _ = host.run_cmd("ceph-authtool", &["--create-keyring", "/k"]).await;
+        let _ = host.run_cmd("monmaptool", &["/m"]).await;
+        assert_eq!(*seen.lock().unwrap(), vec!["ceph-authtool --create-keyring /k"]);
+    }
 
     #[tokio::test]
     async fn osd_ids_that_are_not_a_list_are_an_error_not_an_empty_cluster() {
