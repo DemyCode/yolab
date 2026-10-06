@@ -196,7 +196,7 @@ impl Default for BackupPolicy {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct AppDefinition {
     pub schema: u32,
     pub app_id: String,
@@ -206,6 +206,8 @@ pub struct AppDefinition {
     pub chart_version: String,
     pub instance_name: String,
     #[serde(default)]
+    pub release: String,
+    #[serde(default)]
     pub service_name: String,
     pub config: serde_json::Map<String, Value>,
     #[serde(default)]
@@ -214,6 +216,16 @@ pub struct AppDefinition {
     pub resources: ResourceSpec,
     #[serde(default)]
     pub backup: BackupPolicy,
+}
+
+impl AppDefinition {
+    pub(crate) fn release(&self) -> &str {
+        if self.release.is_empty() {
+            &self.instance_name
+        } else {
+            &self.release
+        }
+    }
 }
 
 pub(crate) async fn write_definition(
@@ -315,6 +327,7 @@ pub(crate) fn definition_from_annotations(
         chart_repo: get(ANN_CHART_REPO),
         chart_version: get(ANN_CHART_VERSION),
         instance_name: name.trim_start_matches("yolab-").to_string(),
+        release: String::new(),
         service_name: String::new(),
         config,
         volumes: Vec::new(),
@@ -1724,15 +1737,17 @@ pub async fn update_app(
         }
     }
 
+    let stored = read_definition_opt(&client, &ns).await;
     let plan = install::UpgradePlan {
         app_id: id,
+        release: stored
+            .as_ref()
+            .map(|d| d.release().to_string())
+            .unwrap_or_else(|| instance_name.clone()),
         instance_name,
         config,
         chart_repo: annotation(ANN_CHART_REPO),
-        backup: read_definition_opt(&client, &ns)
-            .await
-            .map(|d| d.backup)
-            .unwrap_or_default(),
+        backup: stored.map(|d| d.backup).unwrap_or_default(),
     };
     let b = match state.backend().await {
         Ok(b) => b,
@@ -2045,13 +2060,17 @@ async fn run_teardown<H: crate::host::Host>(
         return wait_for_volumes_deleted(&b.kube, ns, VOLUME_DELETE_WAIT, VOLUME_DELETE_POLL).await;
     }
 
+    let release = read_definition_opt(&b.kube, ns)
+        .await
+        .map(|d| d.release().to_string())
+        .unwrap_or_else(|| instance_name.to_string());
     let out = b
         .host
         .run_cmd_bounded(
             "helm",
             &[
                 "uninstall",
-                instance_name,
+                &release,
                 "-n",
                 ns,
                 "--ignore-not-found",

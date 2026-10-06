@@ -131,6 +131,7 @@ pub(crate) fn pin_chart(source: Option<&Source>) -> Result<ChartPin, String> {
 pub(crate) struct InstallPlan {
     pub(crate) app_id: String,
     pub(crate) instance_name: String,
+    pub(crate) release: String,
     pub(crate) config: Map<String, Value>,
     pub(crate) backup: BackupPolicy,
     pub(crate) data: Option<DataOrigin>,
@@ -267,6 +268,10 @@ pub(crate) fn plan(
     let mut plan = InstallPlan {
         app_id: app_id.to_string(),
         instance_name: instance_name.to_string(),
+        release: source
+            .map(|s| s.definition.release())
+            .unwrap_or(instance_name)
+            .to_string(),
         config,
         backup: BackupPolicy::default(),
         data,
@@ -399,6 +404,7 @@ impl Log {
 struct ChartJob<'a> {
     app_id: &'a str,
     instance_name: &'a str,
+    release: &'a str,
     config: &'a Map<String, Value>,
     chart: ChartAt<'a>,
     backup: &'a BackupPolicy,
@@ -432,7 +438,7 @@ async fn apply_chart<H: Host + 'static>(
         DataFill::Backup(payload) => {
             log.say("Copying this app's files…");
             payload
-                .fill_volumes(b, &staged.ns, job.instance_name)
+                .fill_volumes(b, &staged.ns, job.release)
                 .await?;
         }
         DataFill::Live { source_namespace } => {
@@ -441,7 +447,7 @@ async fn apply_chart<H: Host + 'static>(
                 &b.kube,
                 source_namespace,
                 &staged.ns,
-                job.instance_name,
+                job.release,
             )
             .await?;
         }
@@ -449,7 +455,7 @@ async fn apply_chart<H: Host + 'static>(
     }
 
     log.say(job.verb);
-    helm_install(&b.host, &staged, job.instance_name, log).await?;
+    helm_install(&b.host, &staged, job.release, log).await?;
 
     if let DataFill::Backup(payload) = fill {
         log.say("Putting this app's saved settings back…");
@@ -471,6 +477,7 @@ async fn apply_chart<H: Host + 'static>(
         chart_repo: staged.chart_repo.clone(),
         chart_version: staged.chart_version.clone(),
         instance_name: job.instance_name.to_string(),
+        release: job.release.to_string(),
         service_name: staged.service_name.clone(),
         config: job.config.clone(),
         volumes,
@@ -541,6 +548,7 @@ async fn install_inner<H: Host + 'static>(
     let job = ChartJob {
         app_id: &plan.app_id,
         instance_name: &plan.instance_name,
+        release: &plan.release,
         config: &plan.config,
         chart: match &pinned {
             Some(p) => p.at(),
@@ -564,6 +572,7 @@ async fn install_inner<H: Host + 'static>(
 pub(crate) struct UpgradePlan {
     pub(crate) app_id: String,
     pub(crate) instance_name: String,
+    pub(crate) release: String,
     pub(crate) config: Map<String, Value>,
     pub(crate) chart_repo: Option<String>,
     pub(crate) backup: BackupPolicy,
@@ -594,6 +603,7 @@ pub(crate) async fn upgrade<H: Host + 'static>(
     let job = ChartJob {
         app_id: &plan.app_id,
         instance_name: &plan.instance_name,
+        release: &plan.release,
         config: &plan.config,
         chart: ChartAt::Catalog { repo: from },
         backup: &plan.backup,
@@ -608,7 +618,7 @@ pub(crate) async fn upgrade<H: Host + 'static>(
 async fn helm_install<H: Host>(
     host: &H,
     staged: &StagedInstall,
-    instance_name: &str,
+    release: &str,
     log: &Log,
 ) -> anyhow::Result<()> {
     let chart_dir = staged.chart_dir.to_string_lossy();
@@ -621,7 +631,7 @@ async fn helm_install<H: Host>(
                 "upgrade",
                 "--install",
                 "--dependency-update",
-                instance_name,
+                release,
                 &chart_dir,
                 "-n",
                 &staged.ns,
@@ -635,10 +645,10 @@ async fn helm_install<H: Host>(
     match finished {
         Ok(true) => Ok(()),
         Ok(false) => {
-            anyhow::bail!("{instance_name} could not be installed — the log above is helm's own")
+            anyhow::bail!("{release} could not be installed — the log above is helm's own")
         }
         Err(crate::exec::CmdError::Timeout { .. }) => {
-            anyhow::bail!("installing {instance_name} took too long and was stopped")
+            anyhow::bail!("installing {release} took too long and was stopped")
         }
         Err(e) => anyhow::bail!("could not run helm: {e}"),
     }
@@ -761,6 +771,7 @@ mod tests {
             chart_repo: "official".into(),
             chart_version: "1.0.0".into(),
             instance_name: format!("{app_id}-ab12"),
+            release: String::new(),
             service_name: String::new(),
             config: Map::new(),
             volumes: Vec::new(),
@@ -774,6 +785,55 @@ mod tests {
             definition: def.clone(),
             chart: None,
         }
+    }
+
+    #[test]
+    fn a_fresh_install_releases_under_its_own_instance_name() {
+        let plan = plan("gitea", "gitea-ab12", Map::new(), None, None, &no_schema()).unwrap();
+        assert_eq!(plan.release, "gitea-ab12");
+    }
+
+    #[test]
+    fn a_copy_keeps_the_originals_release_so_its_cloned_bytes_line_up() {
+        let mut def = definition("gitea");
+        def.instance_name = "gitea-cd34".into();
+        def.release = "gitea-ab12".into();
+        let plan = plan(
+            "gitea",
+            "gitea-ef56",
+            Map::new(),
+            Some(&copied(&def)),
+            None,
+            &no_schema(),
+        )
+        .unwrap();
+        assert_eq!(plan.instance_name, "gitea-ef56");
+        assert_eq!(plan.release, "gitea-ab12");
+    }
+
+    #[test]
+    fn an_app_saved_before_releases_were_recorded_released_under_its_instance_name() {
+        let saved: AppDefinition = serde_json::from_value(json!({
+            "schema": DEFINITION_SCHEMA,
+            "app_id": "gitea",
+            "instance_name": "gitea-ab12",
+            "config": {}
+        }))
+        .unwrap();
+        assert_eq!(saved.release(), "gitea-ab12");
+        let plan = plan(
+            "gitea",
+            "gitea-cd34",
+            Map::new(),
+            Some(&copied(&AppDefinition {
+                chart_version: "1.0.0".into(),
+                ..saved
+            })),
+            None,
+            &no_schema(),
+        )
+        .unwrap();
+        assert_eq!(plan.release, "gitea-ab12");
     }
 
     #[test]

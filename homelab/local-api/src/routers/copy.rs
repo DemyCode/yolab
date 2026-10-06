@@ -10,9 +10,6 @@ const CEPHFS_STORAGE_CLASS: &str = "yolab-cephfs";
 const SNAPSHOT_WAIT_SECS: u64 = 300;
 const CLONE_WAIT_SECS: u64 = 6 * 60 * 60;
 const POLL_SECS: u64 = 5;
-const REBASE_WAIT_SECS: u64 = 300;
-const REBASE_IMAGE: &str =
-    "ghcr.io/demycode/wg-register:main-latest@sha256:d32d0f30515ef94d3c89eb38a738d565a60f828953e920ba640d1eca73373bd9";
 const COPY_LABEL: &str = "yolab.io/copy";
 const COPY_SELECTOR: &str = "yolab.io/copy=true";
 const ANN_DEST_NAMESPACE: &str = "yolab.io/copy-dest-namespace";
@@ -37,7 +34,7 @@ pub(crate) async fn copy_live_volumes(
     client: &Client,
     source_namespace: &str,
     dest_namespace: &str,
-    instance_name: &str,
+    release: &str,
 ) -> anyhow::Result<()> {
     let sources = crate::routers::backup_common::user_pvcs(client)
         .await?
@@ -50,7 +47,7 @@ pub(crate) async fn copy_live_volumes(
             client,
             source_namespace,
             dest_namespace,
-            instance_name,
+            release,
             &pvc.name,
         )
         .await?;
@@ -62,7 +59,7 @@ async fn copy_one(
     client: &Client,
     source_namespace: &str,
     dest_namespace: &str,
-    instance_name: &str,
+    release: &str,
     pvc_name: &str,
 ) -> anyhow::Result<()> {
     let source = crate::k8s::get(
@@ -87,9 +84,7 @@ async fn copy_one(
         crate::routers::backup_common::random_hex(4)
     );
 
-    let source_instance = source_namespace.trim_start_matches("yolab-");
-    let dest_name =
-        crate::routers::backup_common::rebase_pvc_name(pvc_name, source_instance, instance_name);
+    let dest_name = pvc_name.to_string();
 
     crate::k8s::apply(
         client,
@@ -129,7 +124,7 @@ async fn copy_one(
         &destination_pvc_manifest(
             &dest_name,
             dest_namespace,
-            instance_name,
+            release,
             &volume.capacity,
             &volume.access_modes,
             &copy_name,
@@ -145,14 +140,6 @@ async fn copy_one(
         copy_name,
     );
     wait_for_pvc_bound(client, dest_namespace, &dest_name, CLONE_WAIT_SECS).await?;
-    rebase_release_dir(
-        client,
-        dest_namespace,
-        &dest_name,
-        source_instance,
-        instance_name,
-    )
-    .await?;
     Ok(())
 }
 
@@ -258,98 +245,6 @@ fn destination_pvc_manifest(
             }
         }
     })
-}
-
-// Every chart mounts its data under a release-named directory inside its PVC
-// (`subPath: {{ .Release.Name }}/...`). A clone is a byte copy, so it still
-// carries the source release's directory; rename it onto the destination
-// release or the new app starts on an empty volume and makes a fresh world.
-fn rebase_job_manifest(
-    name: &str,
-    namespace: &str,
-    pvc: &str,
-    source_dir: &str,
-    dest_dir: &str,
-) -> Value {
-    let command = format!(
-        "if [ -d /data/{source_dir} ] && [ ! -e /data/{dest_dir} ]; then \
-         mv /data/{source_dir} /data/{dest_dir}; fi"
-    );
-    json!({
-        "apiVersion": "batch/v1",
-        "kind": "Job",
-        "metadata": { "name": name, "namespace": namespace },
-        "spec": {
-            "backoffLimit": 0,
-            "activeDeadlineSeconds": REBASE_WAIT_SECS,
-            "ttlSecondsAfterFinished": 600,
-            "template": {
-                "spec": {
-                    "restartPolicy": "Never",
-                    "containers": [{
-                        "name": "rebase",
-                        "image": REBASE_IMAGE,
-                        "command": ["/bin/sh", "-c"],
-                        "args": [command],
-                        "volumeMounts": [{"name": "data", "mountPath": "/data"}]
-                    }],
-                    "volumes": [{
-                        "name": "data",
-                        "persistentVolumeClaim": {"claimName": pvc}
-                    }]
-                }
-            }
-        }
-    })
-}
-
-async fn rebase_release_dir(
-    client: &Client,
-    namespace: &str,
-    pvc: &str,
-    source_dir: &str,
-    dest_dir: &str,
-) -> anyhow::Result<()> {
-    if source_dir == dest_dir {
-        return Ok(());
-    }
-    let name = format!(
-        "yolab-rebase-{}",
-        crate::routers::backup_common::random_hex(4)
-    );
-    crate::k8s::apply(
-        client,
-        &rebase_job_manifest(&name, namespace, pvc, source_dir, dest_dir),
-    )
-    .await?;
-    let reference = crate::k8s::reference("batch/v1", "Job", namespace, &name);
-    let deadline = std::time::Instant::now() + Duration::from_secs(REBASE_WAIT_SECS);
-    let outcome = loop {
-        match crate::k8s::get(client, &reference).await {
-            Ok(Some(job)) => {
-                if job["status"]["succeeded"].as_i64().unwrap_or(0) >= 1 {
-                    break Ok(());
-                }
-                if job["status"]["failed"].as_i64().unwrap_or(0) >= 1 {
-                    break Err(anyhow::anyhow!(
-                        "{namespace}/{pvc}: could not move {source_dir} to {dest_dir}"
-                    ));
-                }
-            }
-            Ok(None) => {}
-            Err(e) => break Err(e),
-        }
-        if std::time::Instant::now() > deadline {
-            break Err(anyhow::anyhow!(
-                "{namespace}/{pvc}: moving {source_dir} to {dest_dir} did not finish"
-            ));
-        }
-        tokio::time::sleep(Duration::from_secs(POLL_SECS)).await;
-    };
-    crate::k8s::delete_with_dependents(client, &reference)
-        .await
-        .debug_on_err(format!("copy rebase: delete Job {name}"));
-    outcome
 }
 
 fn parse_source_volume(pvc: &Value) -> Option<SourceVolume> {
@@ -757,42 +652,6 @@ mod tests {
             "snapshot.storage.k8s.io"
         );
         assert_eq!(m["spec"]["resources"]["requests"]["storage"], "20Gi");
-    }
-
-    #[test]
-    fn the_rebase_job_moves_the_source_release_dir_onto_the_new_one() {
-        let m = rebase_job_manifest(
-            "yolab-rebase-abcd",
-            "yolab-gitea-cd34",
-            "gitea-cd34-data",
-            "gitea-ab12",
-            "gitea-cd34",
-        );
-        assert_eq!(m["kind"], "Job");
-        let container = &m["spec"]["template"]["spec"]["containers"][0];
-        let command = container["args"][0].as_str().unwrap();
-        assert!(command.contains("/data/gitea-ab12"), "{command}");
-        assert!(command.contains("/data/gitea-cd34"), "{command}");
-        assert_eq!(container["volumeMounts"][0]["mountPath"], "/data");
-        assert_eq!(
-            m["spec"]["template"]["spec"]["volumes"][0]["persistentVolumeClaim"]["claimName"],
-            "gitea-cd34-data"
-        );
-    }
-
-    #[test]
-    fn the_rebase_job_only_moves_data_and_leaves_identities_to_the_chart() {
-        let m = rebase_job_manifest(
-            "yolab-rebase-abcd",
-            "yolab-gitea-cd34",
-            "gitea-cd34-data",
-            "gitea-ab12",
-            "gitea-cd34",
-        );
-        let command = m["spec"]["template"]["spec"]["containers"][0]["args"][0]
-            .as_str()
-            .unwrap();
-        assert!(!command.contains("rm "), "{command}");
     }
 
     #[test]

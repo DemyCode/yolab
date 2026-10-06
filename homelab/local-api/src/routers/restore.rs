@@ -593,7 +593,7 @@ impl BackupPayload {
         &self,
         b: &Backend<H>,
         dest_namespace: &str,
-        instance_name: &str,
+        release: &str,
     ) -> anyhow::Result<()> {
         let (id, _, _guard) = begin(b, dest_namespace, &self.snapshot_id).await?;
         let mut outcome = Ok(());
@@ -602,7 +602,7 @@ impl BackupPayload {
                 b,
                 dest_namespace,
                 &self.source_namespace,
-                instance_name,
+                release,
                 pvc,
                 &self.cfg,
                 as_of.as_deref(),
@@ -714,6 +714,7 @@ pub(crate) async fn definition_from_backup<H: Host>(
         chart_repo: service["chart_repo"].as_str().unwrap_or("").to_string(),
         chart_version: service["chart_version"].as_str().unwrap_or("").to_string(),
         instance_name: namespace.trim_start_matches("yolab-").to_string(),
+        release: String::new(),
         service_name: service["service_name"].as_str().unwrap_or("").to_string(),
         config,
         volumes: Vec::new(),
@@ -791,8 +792,7 @@ async fn fill_volume<H: Host>(
     cfg: &BackupConfig,
     restore_as_of: Option<&str>,
 ) -> anyhow::Result<()> {
-    let source_instance = source_namespace.trim_start_matches("yolab-");
-    let dest_name = rebase_pvc_name(&pvc.name, source_instance, release);
+    let dest_name = pvc.name.clone();
     let manifest = json!({
         "apiVersion": "v1",
         "kind": "PersistentVolumeClaim",
