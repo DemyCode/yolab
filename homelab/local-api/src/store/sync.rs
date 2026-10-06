@@ -14,31 +14,17 @@ const INTERVAL: Duration = Duration::from_secs(30);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 pub const SYNC_PATH: &str = "/api/store/v2/sync";
 
-pub async fn legacy_handler() -> (StatusCode, &'static str) {
-    (
-        StatusCode::GONE,
-        "this machine no longer exchanges the old desired-state document; update this caller",
-    )
-}
-
 fn readable(body: &[u8]) -> Result<Store, (StatusCode, String)> {
     readable_as(&crate::system::hostname(), body)
 }
 
 fn readable_as(node: &str, body: &[u8]) -> Result<Store, (StatusCode, String)> {
-    let incoming = Store::load(node, body).map_err(|e| {
+    Store::load(node, body).map_err(|e| {
         (
             StatusCode::BAD_REQUEST,
             format!("this is not a readable desired-state document: {e}"),
         )
-    })?;
-    if incoming.carries_retired() {
-        return Err((
-            StatusCode::CONFLICT,
-            "this document still carries app records, which are no longer replicated".to_string(),
-        ));
-    }
-    Ok(incoming)
+    })
 }
 
 pub async fn handler(body: Bytes) -> Result<Vec<u8>, (StatusCode, String)> {
@@ -168,7 +154,6 @@ async fn exchange_into(
 mod tests {
     use super::*;
     use crate::store::DiskIntent;
-    use automerge::transaction::Transactable;
 
     #[test]
     fn an_exchange_is_a_whole_document_in_each_direction() {
@@ -198,28 +183,6 @@ mod tests {
         assert!(Store::load("node1", b"not a document").is_err());
     }
 
-    fn carrying_an_app() -> Vec<u8> {
-        let mut old = Store::new("node9");
-        old.set_disk_intent("node9", "wwn-z", DiskIntent::On)
-            .unwrap();
-        old.doc
-            .put(
-                automerge::ROOT,
-                "app:yolab-gitea-ab12",
-                r#"{"v":{"config":{"password":"x"}},"o":"user","t":"0000000000001-00000-node9"}"#,
-            )
-            .unwrap();
-        old.save()
-    }
-
-    #[test]
-    fn a_document_still_carrying_apps_is_refused_before_it_can_merge_them_back() {
-        match readable(&carrying_an_app()) {
-            Err((status, _)) => assert_eq!(status, StatusCode::CONFLICT),
-            Ok(_) => panic!("a document with app records must not be merged"),
-        }
-    }
-
     #[test]
     fn a_clean_document_is_accepted() {
         let mut clean = Store::new("node9");
@@ -234,12 +197,6 @@ mod tests {
         assert!(crate::surface::ROUTE_TABLE
             .iter()
             .any(|&(path, methods)| path == SYNC_PATH && methods.contains(&"POST")));
-    }
-
-    #[tokio::test]
-    async fn the_old_sync_route_answers_gone_so_an_old_machine_cannot_push_its_history() {
-        let (status, _) = legacy_handler().await;
-        assert_eq!(status, StatusCode::GONE);
     }
 
     use wiremock::{matchers, Mock, MockServer, ResponseTemplate};
@@ -321,20 +278,6 @@ mod tests {
 
         assert!(err.to_string().contains("401"));
         assert_eq!(lock(&store).disk_claims().unwrap().len(), 1);
-        assert!(!path.exists());
-    }
-
-    #[tokio::test]
-    async fn a_peer_still_carrying_apps_is_not_merged_back_in() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("store.automerge");
-        let (_server, port) = peer_replying(200, carrying_an_app()).await;
-        let store = Mutex::new(with_disk("node1", "wwn-a"));
-
-        let err = exchange_with(port, &store, &path).await.unwrap_err();
-
-        assert!(err.to_string().contains("app records"));
-        assert!(!lock(&store).carries_retired());
         assert!(!path.exists());
     }
 

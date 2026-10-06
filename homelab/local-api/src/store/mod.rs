@@ -22,15 +22,9 @@ const DISK_CLAIM_PREFIX: &str = "disk_claim:";
 const MACHINE_PREFIX: &str = "machine:";
 const STORAGE_POLICY_KEY: &str = "policy:storage";
 
-const META_PREFIX: &str = "meta:";
 const DISKS_SEEDED_KEY: &str = "meta:disks_seeded";
 const MACHINES_SEEDED_KEY: &str = "meta:machines_seeded";
 const POLICY_SEEDED_KEY: &str = "meta:policy_seeded";
-
-const RETIRED_APP_PREFIX: &str = "app:";
-const RETIRED_APPS_SEEDED_KEY: &str = "meta:apps_seeded";
-
-const LEGACY_FILE_NAME: &str = "store.automerge";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(from = "String", into = "String")]
@@ -367,61 +361,6 @@ impl Store {
         }))
     }
 
-    pub fn carries_retired(&self) -> bool {
-        self.doc.keys(ROOT).any(|key| is_retired(&key))
-    }
-
-    pub fn rebuilt(&self, node: &str) -> Result<Store, StoreError> {
-        let mut fresh = Store::new(node);
-        let keys: Vec<String> = self.doc.keys(ROOT).collect();
-        for key in keys {
-            if is_retired(&key) {
-                continue;
-            }
-            if key.starts_with(META_PREFIX) {
-                if self.flagged(&key) {
-                    fresh.doc.put(ROOT, key.as_str(), "1")?;
-                }
-                continue;
-            }
-            let entry = match self.read_at::<Value>(&key) {
-                Ok(Some(entry)) => entry,
-                Ok(None) => continue,
-                Err(e) => {
-                    tracing::warn!("store rebuild: {key} is left behind ({e})");
-                    continue;
-                }
-            };
-            let raw = serde_json::to_string(&entry).map_err(|e| StoreError::Corrupt {
-                key: key.clone(),
-                detail: e.to_string(),
-            })?;
-            fresh.clock.observe(&entry.hlc);
-            fresh.doc.put(ROOT, key.as_str(), raw)?;
-        }
-        Ok(fresh)
-    }
-
-    pub fn open_or_migrate(node: &str, path: &Path) -> Result<Self, StoreError> {
-        let legacy = path.with_file_name(LEGACY_FILE_NAME);
-        if path.exists() || legacy == path || !legacy.exists() {
-            return Store::open(node, path);
-        }
-        let mut fresh = Store::open(node, &legacy)?.rebuilt(node)?;
-        fresh.persist(path)?;
-        for stale in [debug_path(&legacy), legacy] {
-            if let Err(e) = std::fs::remove_file(&stale) {
-                if e.kind() != std::io::ErrorKind::NotFound {
-                    tracing::warn!("{}: could not be removed ({e})", stale.display());
-                }
-            }
-        }
-        Ok(fresh)
-    }
-}
-
-fn is_retired(key: &str) -> bool {
-    key.starts_with(RETIRED_APP_PREFIX) || key == RETIRED_APPS_SEEDED_KEY
 }
 
 fn disk_key(node: &str, disk_id: &str) -> String {
@@ -458,7 +397,7 @@ pub fn shared() -> &'static Mutex<Store> {
     SHARED.get_or_init(|| {
         let node = crate::system::hostname();
         let path = default_path();
-        let store = Store::open_or_migrate(&node, &path).unwrap_or_else(|e| {
+        let store = Store::open(&node, &path).unwrap_or_else(|e| {
             tracing::error!(
                 "the desired-state store at {} cannot be read ({e}) — starting empty, and it will \
                  not be acted on until it has been seeded from the cluster again",
@@ -839,134 +778,10 @@ mod tests {
         assert_eq!(after.storage_policy().unwrap(), Some(policy(3)));
     }
 
-    const LEAKED: &str = "hunter2-plaintext";
-
-    fn legacy_store() -> Store {
-        let mut store = Store::new("node1");
-        store
-            .set_disk_intent("node1", "wwn-a", DiskIntent::On)
-            .unwrap();
-        store
-            .set_disk_intent("node2", "wwn-b", DiskIntent::Off)
-            .unwrap();
-        put_machine(&mut store, "node2", "member");
-        store.set_storage_policy(&policy(3)).unwrap();
-        store.mark_disks_seeded().unwrap();
-        store.mark_policy_seeded().unwrap();
-        store
-            .doc
-            .put(
-                ROOT,
-                format!("{RETIRED_APP_PREFIX}yolab-gitea-ab12"),
-                format!(
-                    r#"{{"v":{{"app_id":"gitea","config":{{"password":"{LEAKED}"}}}},"o":"user","t":"0000000000001-00000-node1"}}"#
-                ),
-            )
-            .unwrap();
-        store.doc.put(ROOT, RETIRED_APPS_SEEDED_KEY, "1").unwrap();
-        store
-    }
-
-    fn history_mentions(store: &mut Store, needle: &str) -> bool {
-        store.doc.get_changes(&[]).iter().any(|change| {
-            change.decode().operations.iter().any(|op| {
-                format!("{:?}", op.key).contains(needle)
-                    || op
-                        .primitive_value()
-                        .is_some_and(|v| v.as_str().is_some_and(|s| s.contains(needle)))
-            })
-        })
-    }
-
-    #[test]
-    fn a_rebuilt_store_keeps_every_choice_that_is_not_an_app() {
-        let old = legacy_store();
-        let fresh = old.rebuilt("node1").unwrap();
-        assert_eq!(fresh.disk_claims().unwrap(), old.disk_claims().unwrap());
-        assert_eq!(fresh.machines().unwrap(), old.machines().unwrap());
-        assert_eq!(fresh.storage_policy().unwrap(), Some(policy(3)));
-        assert!(fresh.disks_seeded());
-        assert!(fresh.policy_seeded());
-        assert!(!fresh.machines_seeded());
-    }
-
-    #[test]
-    fn a_rebuilt_store_carries_no_app_and_no_history_of_one() {
-        let mut old = legacy_store();
-        assert!(old.carries_retired());
-        assert!(
-            history_mentions(&mut old, LEAKED),
-            "the check must be able to see the leak it is looking for"
-        );
-
-        let mut fresh = old.rebuilt("node1").unwrap();
-        assert!(!fresh.carries_retired());
-        assert!(!history_mentions(&mut fresh, LEAKED));
-        assert!(!history_mentions(&mut fresh, RETIRED_APP_PREFIX));
-        assert!(!history_mentions(&mut fresh, RETIRED_APPS_SEEDED_KEY));
-    }
-
-    #[test]
-    fn a_rebuilt_store_keeps_who_chose_and_when_so_merges_resolve_as_before() {
-        let old = legacy_store();
-        let fresh = old.rebuilt("node1").unwrap();
-        let key = "node1--wwn-a";
-        assert_eq!(
-            fresh.disk_claims().unwrap()[key],
-            old.disk_claims().unwrap()[key]
-        );
-    }
-
-    #[test]
-    fn two_machines_rebuilt_independently_still_merge() {
-        let mut a = legacy_store().rebuilt("node1").unwrap();
-        let mut b = legacy_store().rebuilt("node2").unwrap();
-        b.set_disk_intent("node3", "wwn-c", DiskIntent::On).unwrap();
-        a.merge(&mut b).unwrap();
-        assert_eq!(a.disk_claims().unwrap().len(), 3);
-        assert_eq!(a.storage_policy().unwrap(), Some(policy(3)));
-    }
-
-    #[test]
-    fn opening_migrates_the_legacy_file_and_deletes_it_and_its_projection() {
-        let dir = tempfile::tempdir().unwrap();
-        let legacy = dir.path().join(LEGACY_FILE_NAME);
-        let path = dir.path().join("store-v2.automerge");
-        legacy_store().persist(&legacy).unwrap();
-        assert!(debug_path(&legacy).exists());
-
-        let mut opened = Store::open_or_migrate("node1", &path).unwrap();
-
-        assert!(!legacy.exists());
-        assert!(!debug_path(&legacy).exists());
-        assert!(path.exists());
-        assert!(!opened.carries_retired());
-        assert!(!history_mentions(&mut opened, LEAKED));
-        let projection = std::fs::read_to_string(debug_path(&path)).unwrap();
-        assert!(!projection.contains(LEAKED));
-        assert_eq!(opened.disk_claims().unwrap().len(), 2);
-    }
-
-    #[test]
-    fn an_existing_v2_file_wins_over_a_leftover_legacy_one() {
-        let dir = tempfile::tempdir().unwrap();
-        let legacy = dir.path().join(LEGACY_FILE_NAME);
-        let path = dir.path().join("store-v2.automerge");
-        legacy_store().persist(&legacy).unwrap();
-        let mut current = Store::new("node1");
-        current.set_storage_policy(&policy(5)).unwrap();
-        current.persist(&path).unwrap();
-
-        let opened = Store::open_or_migrate("node1", &path).unwrap();
-        assert_eq!(opened.storage_policy().unwrap(), Some(policy(5)));
-        assert!(opened.disk_claims().unwrap().is_empty());
-    }
-
     #[test]
     fn a_node_with_no_file_at_all_starts_empty() {
         let dir = tempfile::tempdir().unwrap();
-        let opened =
-            Store::open_or_migrate("node1", &dir.path().join("store-v2.automerge")).unwrap();
+        let opened = Store::open("node1", &dir.path().join("store-v2.automerge")).unwrap();
         assert!(opened.disk_claims().unwrap().is_empty());
     }
 
