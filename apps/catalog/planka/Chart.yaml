@@ -3,12 +3,12 @@ name: planka
 description: "Kanban boards for projects and teams"
 home: https://planka.app
 type: application
-version: 0.1.13
+version: 0.1.14
 appVersion: "1"
 
 dependencies:
   - name: yolab-common
-    version: "0.1.12"
+    version: "0.1.13"
     repository: "oci://ghcr.io/demycode/charts"
 
 annotations:
