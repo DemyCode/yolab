@@ -618,11 +618,18 @@ mod tests {
             )
             .await;
             let cache = tempfile::tempdir().unwrap();
-            for (name, version) in [("yolab-common", "0.1.0"), ("notes", "1.0.0"), ("wiki", "1.0.0")] {
+            for (name, version) in [
+                ("yolab-common", "0.1.0"),
+                ("notes", "1.0.0"),
+                ("wiki", "1.0.0"),
+            ] {
                 let dir = cache.path().join(&repo.name).join(name);
                 std::fs::create_dir_all(&dir).unwrap();
-                std::fs::write(dir.join("Chart.yaml"), format!("name: {name}\nversion: {version}\n"))
-                    .unwrap();
+                std::fs::write(
+                    dir.join("Chart.yaml"),
+                    format!("name: {name}\nversion: {version}\n"),
+                )
+                .unwrap();
             }
             let host = FakeHost::new().ok("helm pull", "");
             assert_eq!(sync_repo(&host, cache.path(), &repo).await.unwrap(), 1);
