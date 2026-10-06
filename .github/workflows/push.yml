@@ -11,6 +11,9 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       jobs: ${{ steps.list.outputs.jobs }}
+    concurrency:
+      group: configure-${{ github.ref }}
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v5
 
@@ -46,6 +49,9 @@ jobs:
       fail-fast: false
       matrix:
         job: ${{ fromJSON(needs.configure.outputs.jobs) }}
+    concurrency:
+      group: build-${{ github.ref }}-${{ matrix.job.target }}
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v5
 
@@ -100,6 +106,9 @@ jobs:
     permissions:
       contents: read
       packages: write
+    concurrency:
+      group: build-images-${{ github.ref }}
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v5
 
