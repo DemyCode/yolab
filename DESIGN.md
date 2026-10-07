@@ -268,6 +268,36 @@ container width, `pop` shadow, a pointer tilt of up to 4°, and a staggered arri
 app tiles after the frame lands. Real screenshots replace the preview through the `tour`
 media slot without any layout change.
 
+## Marketing site (yolab.io, reworked 2026-10-07)
+
+The site no longer follows the white-page, aurora and tilting-preview rules above. Those
+still describe the box UI. The site's North Star is **"The light is on at home"**. It mixes
+two references: Cooldock (a calm landscape, one big tight headline, one button, a dark
+widget dock rising over the scene) and Base Power (the product shown as an appliance that
+lives at a real house, with warm evening light).
+
+- **Scene.** `site/Scene.tsx` draws a landscape at dusk: hills, a house whose window is
+  lit, and the brand cloud parked in front of it with the logo's gap. Each section paints
+  its sky as a CSS background (`.sky-dusk`, `.night`), and the SVG only draws the land,
+  anchored at the bottom with `--scene-h`. Copy is padded clear of it, so headlines and
+  the house never collide at any width. The night version carries the privacy section.
+- **Dock.** A dark glass bar over the hero that shows the box at a glance (name and
+  uptime, apps, pool, an address, last backup). Tiles drop off from right to left as the
+  screen narrows.
+- **Palette.** Limestone `#EEECE6` page, chalk `#F8F7F3` raised bands, ink `#121522`,
+  signal blue `#2B56F5` for actions only, lamp amber `#F4A93B` meaning only "on" (lit
+  window, live dots, the strike through a replaced subscription), night `#0F1530`.
+- **Type.** Geist only. Display 700 at −0.05em and 0.94 line height. Section heads 650 at
+  −0.042em. Geist Mono only for real addresses (`photos.yolab.io`).
+- **Structure.** Ruled lists, not card grids: hairline rows for apps, steps, prices and
+  FAQ. There is one primary button per screen, and buttons carry no arrows.
+- **Motion.** One load sequence: the copy rises, the window flickers on, the dock rises.
+  Otherwise motion happens only in answer to a click. `prefers-reduced-motion` turns
+  everything off.
+- **Scoping.** Marketing styles live under `.site`. Element resets use `:where()` so that
+  a single class can set its own margins. The console keeps the `:root` tokens and
+  Tailwind.
+
 ## App UI (the box's own screens)
 
 The marketing site persuades; the box UI (`homelab/client-ui`) is where people operate
