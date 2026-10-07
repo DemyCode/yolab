@@ -30,6 +30,14 @@ hard parts, setup and remote access.
 
 ## Positioning
 
+**The lead selling point is many machines working as one** (user decision 2026-10-07).
+Every spare computer in the house joins the same private cloud with the same account
+token: their disks become one pool, apps run on any of them, and from three machines on
+the house keeps running when one stops. Umbrel, ZimaOS and TrueNAS Community each run
+on a single computer, and that is the difference the site leads with. On the site it is
+said as "machines", never "cluster". Never promise surviving a lost machine below three,
+because two machines share a control plane that stalls when either one is gone.
+
 The hard parts of self-hosting are done for you: a one-USB-stick NixOS-based installer
 that shows no terminal, a curated catalogue of ~75 apps that each get their own address
 a minute after you tap them, and a WireGuard tunnel that makes the house reachable from
@@ -77,7 +85,7 @@ and *my stuff should live in my house* — with privacy carrying the second.
 - **The product gets one new identity, from scratch.** The marketing site and the box's
   own UI (`homelab/client-ui`) share it and must keep looking like one product. The old
   warm-paper / pine-green world is not binding — but the two surfaces change together.
-- Headline pitch: **"Your own cloud, made simple."** Product and ease first; privacy and
+- Headline pitch: **"One cloud, as many machines as you like."** (was "Your own cloud, made simple.") Product and ease first; privacy and
   ownership are proof, not the opening line.
 
 ## Analytics and Identity

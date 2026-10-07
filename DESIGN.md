@@ -281,9 +281,13 @@ lives at a real house, with warm evening light).
   its sky as a CSS background (`.sky-dusk`, `.night`), and the SVG only draws the land,
   anchored at the bottom with `--scene-h`. Copy is padded clear of it, so headlines and
   the house never collide at any width. The night version carries the privacy section.
-- **Dock.** A dark glass bar over the hero that shows the box at a glance (name and
-  uptime, apps, pool, an address, last backup). Tiles drop off from right to left as the
-  screen narrows.
+- **Dock.** A dark glass bar over the hero that shows the home cloud at a glance
+  (machines, apps, pool, an address, last backup). Tiles drop off from right to left as
+  the screen narrows, and the machines tile is the last one standing.
+- **Many machines lead.** The second section is the interactive machine shelf
+  (`site/Grow.tsx`): add or remove machines and watch the pool, the spread of apps and
+  the survive-a-failure answer change. A dated comparison table against Umbrel, ZimaOS
+  and TrueNAS follows it.
 - **Palette.** Limestone `#EEECE6` page, chalk `#F8F7F3` raised bands, ink `#121522`,
   signal blue `#2B56F5` for actions only, lamp amber `#F4A93B` meaning only "on" (lit
   window, live dots, the strike through a replaced subscription), night `#0F1530`.
