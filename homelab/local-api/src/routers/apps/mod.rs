@@ -100,6 +100,40 @@ pub struct PodInfo {
     pub node: String,
     pub restarts: u64,
     pub containers: Vec<ContainerInfo>,
+    pub events: Vec<PodEvent>,
+}
+
+#[derive(Serialize, Debug, PartialEq)]
+pub struct PodEvent {
+    pub warning: bool,
+    pub reason: String,
+    pub message: String,
+    pub at: String,
+    pub count: u64,
+}
+
+const POD_EVENTS_SHOWN: usize = 8;
+
+fn pod_events(events: &[Value], pod: &str) -> Vec<PodEvent> {
+    let mut found: Vec<PodEvent> = events
+        .iter()
+        .filter(|e| e["involvedObject"]["kind"] == "Pod" && e["involvedObject"]["name"] == pod)
+        .map(|e| PodEvent {
+            warning: e["type"] == "Warning",
+            reason: e["reason"].as_str().unwrap_or("").to_string(),
+            message: e["message"].as_str().unwrap_or("").trim().to_string(),
+            at: ["lastTimestamp", "eventTime", "firstTimestamp"]
+                .iter()
+                .find_map(|k| e[*k].as_str())
+                .or_else(|| e["metadata"]["creationTimestamp"].as_str())
+                .unwrap_or("")
+                .to_string(),
+            count: e["count"].as_u64().unwrap_or(1),
+        })
+        .collect();
+    found.sort_by(|a, b| a.at.cmp(&b.at));
+    let skip = found.len().saturating_sub(POD_EVENTS_SHOWN);
+    found.split_off(skip)
 }
 
 #[derive(Serialize, Debug, PartialEq)]
@@ -170,6 +204,7 @@ fn pod_info(p: &Value) -> PodInfo {
         node: p["spec"]["nodeName"].as_str().unwrap_or("").to_string(),
         restarts: containers.iter().map(|c| c.restarts).sum(),
         containers,
+        events: Vec::new(),
     }
 }
 
@@ -1948,18 +1983,23 @@ pub async fn list_pods(
     State(state): State<AppState>,
     Path(instance_name): Path<String>,
 ) -> Result<Json<Vec<PodInfo>>> {
-    let pods = crate::k8s::list(
-        &state.kube.client().await?,
-        "v1",
-        "Pod",
-        Some(&format!("yolab-{instance_name}")),
-        &Default::default(),
-    )
-    .await?;
+    let client = state.kube.client().await?;
+    let ns = format!("yolab-{instance_name}");
+    let pods = crate::k8s::list(&client, "v1", "Pod", Some(&ns), &Default::default()).await?;
+    let events = crate::k8s::list(&client, "v1", "Event", Some(&ns), &Default::default())
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!("{ns}: events unreadable, pods shown without them ({e})");
+            Vec::new()
+        });
     Ok(Json(
         pods.iter()
             .filter(|p| !is_backup_mover_pod(p))
-            .map(pod_info)
+            .map(|p| {
+                let mut info = pod_info(p);
+                info.events = pod_events(&events, &info.name);
+                info
+            })
             .collect(),
     ))
 }
@@ -2076,6 +2116,47 @@ mod tests {
                 ("worker", false, "Error (exit 137)"),
             ]
         );
+    }
+
+    #[test]
+    fn a_pods_own_events_come_oldest_first_and_only_the_latest_few() {
+        use serde_json::json;
+        let ev = |pod: &str, at: &str, kind: &str, reason: &str| {
+            json!({ "involvedObject": { "kind": "Pod", "name": pod },
+                    "type": kind, "reason": reason, "message": format!("{reason} happened "),
+                    "lastTimestamp": at, "count": 2 })
+        };
+        let mut events = vec![
+            ev(
+                "gateway",
+                "2026-10-08T17:46:20Z",
+                "Warning",
+                "FailedScheduling",
+            ),
+            ev("other", "2026-10-08T17:46:21Z", "Normal", "Pulled"),
+            ev("gateway", "2026-10-08T17:50:03Z", "Normal", "Pulled"),
+            ev("gateway", "2026-10-08T17:46:27Z", "Normal", "Pulling"),
+            json!({ "involvedObject": { "kind": "PersistentVolumeClaim", "name": "gateway" },
+                    "type": "Normal", "reason": "Provisioning", "lastTimestamp": "2026-10-08T17:46:19Z" }),
+        ];
+        let found = super::pod_events(&events, "gateway");
+        let reasons: Vec<&str> = found.iter().map(|e| e.reason.as_str()).collect();
+        assert_eq!(reasons, vec!["FailedScheduling", "Pulling", "Pulled"]);
+        assert!(found[0].warning);
+        assert_eq!(found[0].message, "FailedScheduling happened");
+        assert_eq!(found[0].count, 2);
+
+        for i in 0..20 {
+            events.push(ev(
+                "gateway",
+                &format!("2026-10-08T18:00:{i:02}Z"),
+                "Normal",
+                "Started",
+            ));
+        }
+        let latest = super::pod_events(&events, "gateway");
+        assert_eq!(latest.len(), super::POD_EVENTS_SHOWN);
+        assert_eq!(latest.last().unwrap().at, "2026-10-08T18:00:19Z");
     }
 
     #[test]
@@ -3725,7 +3806,7 @@ mod tests {
             assert_eq!(
                 res.json(),
                 json!([{ "name": "notes-0", "phase": "Running", "ready": true,
-                         "node": "", "restarts": 0, "containers": [] }])
+                         "node": "", "restarts": 0, "containers": [], "events": [] }])
             );
         }
 

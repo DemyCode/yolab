@@ -276,6 +276,26 @@ function TechnicalDetails({ app }: { app: AppInfo }) {
                         ))}
                       </ul>
                     )}
+                    {(pod.events ?? []).length > 0 && (
+                      <ul className="mt-1.5 space-y-0.5 border-l border-border pl-3 ml-4">
+                        {(pod.events ?? []).map((e, i) => (
+                          <li
+                            key={`${e.at}-${e.reason}-${i}`}
+                            className={cn(
+                              "text-xs",
+                              e.warning ? "text-warning" : "text-fg-subtle",
+                            )}
+                          >
+                            <span title={formatDateTime(e.at)}>
+                              {relativeTime(e.at)}
+                            </span>
+                            {" · "}
+                            {e.message || e.reason}
+                            {e.count > 1 ? ` (${e.count}×)` : ""}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
                   </>
                 );
               }}

@@ -75,6 +75,14 @@ export interface ContainerInfo {
   restarts: number;
 }
 
+export interface PodEvent {
+  warning: boolean;
+  reason: string;
+  message: string;
+  at: string;
+  count: number;
+}
+
 export interface PodInfo {
   name: string;
   phase: string;
@@ -82,6 +90,7 @@ export interface PodInfo {
   node?: string;
   restarts?: number;
   containers?: ContainerInfo[];
+  events?: PodEvent[];
 }
 
 export interface OutputsResponse {
