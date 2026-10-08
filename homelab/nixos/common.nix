@@ -581,6 +581,7 @@ in {
     ];
     nix.settings.max-jobs = 1;
     nix.settings.cores = 2;
+    nix.settings.fallback = true;
 
     nix.settings.substituters = [
       "https://cache.nixos.org"

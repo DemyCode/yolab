@@ -181,6 +181,9 @@ fn rebuild_args(cfg: &Config, ch: &Channel) -> Vec<String> {
         "1".into(),
         "--max-jobs".into(),
         "1".into(),
+        "--option".into(),
+        "fallback".into(),
+        "true".into(),
     ]
 }
 
@@ -321,6 +324,11 @@ mod tests {
         assert!(
             !args.iter().any(|a| a == "--no-update-lock-file"),
             "the override changes the lock in memory"
+        );
+        assert_eq!(
+            after("--option")[..2],
+            ["fallback", "true"],
+            "a cache download that fails mid-stream must not end the update; build it instead"
         );
     }
 
