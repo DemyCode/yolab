@@ -239,7 +239,7 @@ charts:
   - name: hortusfox
     version: "0.1.2"
   - name: immich
-    version: "0.2.11"
+    version: "0.2.12"
   - name: influxdb
     version: "0.1.3"
   - name: influxdb2
@@ -405,7 +405,7 @@ charts:
   - name: octoprint
     version: "0.1.2"
   - name: ollama
-    version: "0.1.3"
+    version: "0.2.0"
   - name: omnitools
     version: "0.1.1"
   - name: onedev
@@ -415,7 +415,7 @@ charts:
   - name: onlyoffice
     version: "0.1.17"
   - name: open-webui
-    version: "0.2.10"
+    version: "0.2.12"
   - name: openclaw
     version: "0.1.16"
   - name: opencode
@@ -569,7 +569,7 @@ charts:
   - name: stash
     version: "0.1.2"
   - name: steam-headless
-    version: "0.1.9"
+    version: "0.1.10"
   - name: stirling-pdf
     version: "0.1.16"
   - name: strfry
