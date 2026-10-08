@@ -180,8 +180,10 @@ export function InstallPage() {
     };
   }, [origin]);
 
-  const shownSchema = liveSchema ?? app?.schema;
-  const schema = useMemo(() => configSchemaOf(shownSchema), [shownSchema]);
+  const schema = useMemo(
+    () => configSchemaOf(liveSchema ?? app?.schema),
+    [liveSchema, app?.schema],
+  );
   const required = useMemo(
     () => new Set(schema.required ?? []),
     [schema.required],
