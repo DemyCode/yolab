@@ -100,6 +100,8 @@ spec:
           initialDelaySeconds: 15
           periodSeconds: 10
         env:
+        - name: HOST
+          value: "::"
         - name: OLLAMA_BASE_URL
           value: {{ if $external }}{{ $external | quote }}{{ else if $onGpu }}http://ollama:11434{{ else }}http://localhost:11434{{ end }}
         volumeMounts:

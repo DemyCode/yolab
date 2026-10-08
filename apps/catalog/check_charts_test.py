@@ -1714,6 +1714,12 @@ class OpenWebUiOllama(RenderedChart):
         spec = self.gateway(self.docs())
         self.assertIn("ollama", {c["name"] for c in spec["containers"]})
 
+    def test_it_listens_on_ipv6_where_the_readiness_probe_knocks(self):
+        spec = self.gateway(self.docs())
+        webui = next(c for c in spec["containers"] if c["name"] == "open-webui")
+        env = {e["name"]: e.get("value") for e in webui["env"]}
+        self.assertEqual(env["HOST"], "::")
+
     def test_a_linked_ollama_replaces_its_own_everywhere(self):
         url = "http://ollama.yolab-ai.svc.cluster.local:11434"
         docs = self.docs(
