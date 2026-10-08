@@ -643,40 +643,6 @@ in let
         touch $out
       '';
 
-    image-store-is-released-before-ceph-and-the-network-stop = let
-      svcs = nixosSystems.yolab-ci.config.systemd.services;
-      unit = "yolab-image-store.service";
-      release = svcs.yolab-image-store;
-      host = nixosSystems.yolab-ci.config.networking.hostName;
-      has = list: builtins.elem unit list;
-      failures =
-        pkgs.lib.optional (!(has (svcs.k3s.after or []))) "k3s must stop before ${unit}"
-        ++ pkgs.lib.optional (!(has (svcs.yolab-local-api.after or []))) "local-api must stop before ${unit}"
-        ++ pkgs.lib.optional (!(has (svcs."yolab-ceph-osd@".before or []))) "OSDs must stop after ${unit}"
-        ++ map (u: "${unit} must stop before ${u}") (
-          builtins.filter (u: !(builtins.elem u release.after)) [
-            "network.target"
-            "wireguard-wg0.service"
-            "wireguard-wg1.service"
-            "ceph-mon-${host}.service"
-          ]
-        )
-        ++ pkgs.lib.optional release.restartIfChanged "a switch must never restart ${unit}: stopping it unmounts the image store"
-        ++ pkgs.lib.optional release.stopIfChanged "a switch must never stop ${unit}";
-    in
-      pkgs.runCommand "image-store-is-released-before-ceph-and-the-network-stop"
-      {nativeBuildInputs = [pkgs.gnugrep];}
-      ''
-        ${pkgs.lib.concatMapStrings (f: "echo ${pkgs.lib.escapeShellArg f} >&2\n") failures}
-        ${pkgs.lib.optionalString (failures != []) "exit 1"}
-        grep -q 'pub const RELEASE_UNIT: &str = "${unit}";' \
-          ${treeSrc}/homelab/local-api/src/storage/containerd_store.rs || {
-          echo "local-api arms a release unit that is not ${unit}" >&2
-          exit 1
-        }
-        touch $out
-      '';
-
     tests-name-units-that-exist = let
       svcs = builtins.attrNames nixosSystems.yolab-ci.config.systemd.services;
       timers = builtins.attrNames nixosSystems.yolab-ci.config.systemd.timers;

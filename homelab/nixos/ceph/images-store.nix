@@ -1,15 +1,11 @@
 {
   config,
   lib,
-  pkgs,
-  localApiEnv,
   ...
 }:
 with lib; let
   cfg = config.yolab.ceph.imagesStore;
   cephCfg = config.yolab.ceph;
-  host = config.networking.hostName;
-  releaseUnit = "yolab-image-store.service";
 in {
   options.yolab.ceph.imagesStore = {
     enable = mkEnableOption "back containerd's image store with a Ceph RBD";
@@ -42,35 +38,5 @@ in {
     environment.etc."lvm/lvm.conf".text = lib.mkAfter ''
       devices/global_filter = [ "r|^/dev/rbd|", "r|^/dev/block/|", "r|^/dev/disk/|", "a|.*|" ]
     '';
-
-    systemd.services.yolab-image-store = {
-      description = "Release containerd's image store before Ceph and the network stop";
-      after = [
-        "network.target"
-        "network-online.target"
-        "wireguard-wg0.service"
-        "wireguard-wg1.service"
-        "ceph-mon-${host}.service"
-      ];
-      restartIfChanged = false;
-      stopIfChanged = false;
-      serviceConfig = {
-        Type = "oneshot";
-        RemainAfterExit = true;
-        TimeoutStopSec = "900";
-        ExecStart = "${pkgs.coreutils}/bin/true";
-        ExecStop = "${localApiEnv}/bin/local-api storage release-images";
-      };
-      path = with pkgs; [
-        util-linux
-        procps
-        systemd
-        coreutils
-      ];
-    };
-
-    systemd.services."yolab-ceph-osd@".before = [releaseUnit];
-    systemd.services.k3s.after = [releaseUnit];
-    systemd.services.yolab-local-api.after = [releaseUnit];
   };
 }

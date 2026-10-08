@@ -112,9 +112,6 @@ pub async fn attempt<H: Host>(
             bail!("{croot_s} was rebuilt on {dev} but cannot be written: {e}");
         }
     }
-    if let Err(e) = mark_in_use(&croot) {
-        bail!("{croot_s} was mounted from {dev} but cannot be marked in use: {e}");
-    }
     tracing::info!("containerd's data-root is {dev} ({image})");
     Ok(Attempt::Ready(()))
 }
@@ -237,7 +234,6 @@ async fn filesystem_is_usable<H: Host>(host: &H, root: &Path, dev: &str) -> bool
     let usable = mounted
         && is_readable_dir(&probe)
         && is_built_here(&probe)
-        && was_released_cleanly(&probe)
         && snapshotter_is_coherent(&probe)
         && missing_layers(&probe, &containerd_root(root)).is_empty();
     if mounted {
@@ -274,39 +270,6 @@ const BUILT_HERE: &str = "yolab-built-empty";
 
 fn is_built_here(store: &Path) -> bool {
     store.join(BUILT_HERE).is_file()
-}
-
-const IN_USE: &str = "yolab-in-use";
-const RELEASED: &str = "yolab-released-cleanly";
-
-pub const RELEASE_UNIT: &str = "yolab-image-store.service";
-
-fn sync_dir(dir: &Path) -> std::io::Result<()> {
-    std::fs::File::open(dir)?.sync_all()
-}
-
-fn mark_in_use(store: &Path) -> std::io::Result<()> {
-    std::fs::write(store.join(IN_USE), b"")?;
-    match std::fs::remove_file(store.join(RELEASED)) {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => return Err(e),
-    }
-    sync_dir(store)
-}
-
-fn mark_released(store: &Path) -> std::io::Result<()> {
-    std::fs::write(store.join(RELEASED), b"")?;
-    std::fs::remove_file(store.join(IN_USE))?;
-    sync_dir(store)
-}
-
-fn is_marked_in_use(store: &Path) -> bool {
-    store.join(IN_USE).is_file()
-}
-
-fn was_released_cleanly(store: &Path) -> bool {
-    store.join(RELEASED).is_file() && !is_marked_in_use(store)
 }
 
 const CONTAINERD_LOG: &str = "containerd.log";
@@ -363,64 +326,11 @@ pub async fn workloads_run_here<H: Host>(host: &H, k3s_unit: &str) -> bool {
         .is_ok_and(|o| o.success)
 }
 
-fn is_whole(store: &Path) -> bool {
-    is_built_here(store) && is_marked_in_use(store) && missing_layers(store, store).is_empty()
-}
-
-async fn release_is_armed<H: Host>(host: &H) -> bool {
-    host.systemctl(&["is-active", "--quiet", RELEASE_UNIT])
-        .await
-        .is_ok_and(|o| o.success)
-}
-
-async fn arm_release<H: Host>(host: &H) -> Attempt<()> {
-    match host.systemctl(&["start", "--no-block", RELEASE_UNIT]).await {
-        Ok(o) if o.success => Attempt::Ready(()),
-        Ok(o) => Attempt::NotYet(format!(
-            "could not arm {RELEASE_UNIT}, which unmounts the image store before Ceph stops: {}",
-            o.stderr.trim()
-        )),
-        Err(e) => Attempt::NotYet(format!("could not arm {RELEASE_UNIT}: {e}")),
-    }
-}
-
 pub async fn is_in_place<H: Host>(host: &H, root: &Path) -> bool {
-    is_mounted(host, root).await
-        && is_whole(&containerd_root(root))
-        && release_is_armed(host).await
-}
-
-const CONTAINERD: &str = "containerd";
-
-pub async fn release<H: Host>(host: &H, root: &Path) -> Result<()> {
-    if !is_mounted(host, root).await {
-        return Ok(());
-    }
     let croot = containerd_root(root);
-    let croot_s = croot.to_string_lossy().into_owned();
-    let _ = host.run_cmd("pkill", &["-TERM", "-x", CONTAINERD]).await;
-    if let Some(why) = quiesce(host, root).await {
-        bail!("{why}");
-    }
-    let marked = is_marked_in_use(&croot);
-    if marked {
-        mark_released(&croot)?;
-    } else {
-        tracing::warn!(
-            "the image store at {croot_s} was not mounted by a swap that marks it — unmounting it \
-             unmarked, so it is rebuilt empty at the next swap"
-        );
-    }
-    let out = host
-        .run_cmd_bounded("umount", &[croot_s.as_str()], FS_OP_TIMEOUT)
-        .await?;
-    if !out.success {
-        if marked {
-            mark_in_use(&croot)?;
-        }
-        bail!("umount {croot_s}: {}", out.stderr.trim());
-    }
-    Ok(())
+    is_mounted(host, root).await
+        && is_built_here(&croot)
+        && missing_layers(&croot, &croot).is_empty()
 }
 
 pub const PODS_SLICE: &str = "kubepods.slice";
@@ -435,8 +345,8 @@ pub async fn pivot<H: Host>(
     policy: &ContainerdStorePolicy,
     k3s_unit: &str,
 ) -> Result<Attempt<()>> {
-    if is_mounted(host, root).await && is_whole(&containerd_root(root)) {
-        return Ok(arm_release(host).await);
+    if is_in_place(host, root).await {
+        return Ok(Attempt::Ready(()));
     }
     match image_state(host, &policy.pool_name, node).await {
         ImageState::Present => {}
@@ -460,10 +370,7 @@ pub async fn pivot<H: Host>(
     }
     let outcome = swap(host, root, node, policy, k3s_unit).await;
     super::pivot_lock::release(host, node).await;
-    match outcome? {
-        Attempt::Ready(()) => Ok(arm_release(host).await),
-        not_yet => Ok(not_yet),
-    }
+    outcome
 }
 
 async fn swap<H: Host>(
@@ -510,10 +417,7 @@ async fn unmount_untrusted<H: Host>(host: &H, root: &Path) -> Result<Option<Stri
     let croot_s = croot.to_string_lossy().into_owned();
     let missing = missing_layers(&croot, &croot);
     if missing.is_empty() {
-        tracing::warn!(
-            "the image store at {croot_s} was not built and marked in use by this swap — \
-             rebuilding it"
-        );
+        tracing::warn!("the image store at {croot_s} was not built by this swap — rebuilding it");
     } else {
         tracing::warn!(
             "the image store at {croot_s} fails to create containers because layers {} are \
@@ -695,7 +599,6 @@ mod tests {
         let probe = probe_dir(root);
         std::fs::create_dir_all(&probe).unwrap();
         std::fs::write(probe.join(BUILT_HERE), b"").unwrap();
-        std::fs::write(probe.join(RELEASED), b"").unwrap();
     }
 
     #[tokio::test]
@@ -957,22 +860,13 @@ mod tests {
         let croot = containerd_root(root);
         std::fs::create_dir_all(&croot).unwrap();
         std::fs::write(croot.join(BUILT_HERE), b"").unwrap();
-        std::fs::write(croot.join(IN_USE), b"").unwrap();
-    }
-
-    fn mounted_and_armed() -> FakeHost {
-        FakeHost::new()
-            .ok("findmnt -rno TARGET --mountpoint", "")
-            .ok("systemctl is-active --quiet yolab-image-store.service", "")
     }
 
     #[tokio::test]
     async fn an_already_mounted_store_is_not_pivoted_again() {
         let dir = tempfile::tempdir().unwrap();
         built_here_in_place(dir.path());
-        let host = FakeHost::new()
-            .ok("findmnt -rno TARGET --mountpoint", "")
-            .ok("systemctl start", "");
+        let host = FakeHost::new().ok("findmnt -rno TARGET --mountpoint", "");
         let out = pivot(&host, dir.path(), "yolab-n1", &policy(), K3S)
             .await
             .unwrap();
@@ -984,195 +878,11 @@ mod tests {
     #[tokio::test]
     async fn only_a_mounted_store_this_swap_built_is_in_place() {
         let dir = tempfile::tempdir().unwrap();
-        assert!(!is_in_place(&mounted_and_armed(), dir.path()).await);
+        let mounted = || FakeHost::new().ok("findmnt -rno TARGET --mountpoint", "");
+        assert!(!is_in_place(&mounted(), dir.path()).await);
         built_here_in_place(dir.path());
-        assert!(is_in_place(&mounted_and_armed(), dir.path()).await);
+        assert!(is_in_place(&mounted(), dir.path()).await);
         assert!(!is_in_place(&booting(), dir.path()).await);
-    }
-
-    #[tokio::test]
-    async fn a_store_no_swap_marked_in_use_is_not_in_place() {
-        let dir = tempfile::tempdir().unwrap();
-        built_here_in_place(dir.path());
-        std::fs::remove_file(containerd_root(dir.path()).join(IN_USE)).unwrap();
-        assert!(!is_in_place(&mounted_and_armed(), dir.path()).await);
-    }
-
-    #[tokio::test]
-    async fn a_store_is_in_place_only_while_its_release_at_shutdown_is_armed() {
-        let dir = tempfile::tempdir().unwrap();
-        built_here_in_place(dir.path());
-        let unarmed = FakeHost::new()
-            .ok("findmnt -rno TARGET --mountpoint", "")
-            .fail("systemctl is-active", "inactive");
-        assert!(!is_in_place(&unarmed, dir.path()).await);
-    }
-
-    #[tokio::test]
-    async fn a_whole_mounted_store_only_has_its_release_armed_and_k3s_keeps_running() {
-        let dir = tempfile::tempdir().unwrap();
-        built_here_in_place(dir.path());
-        let host = FakeHost::new()
-            .ok("findmnt -rno TARGET --mountpoint", "")
-            .ok("systemctl start", "");
-        let out = pivot(&host, dir.path(), "yolab-n1", &policy(), K3S)
-            .await
-            .unwrap();
-        assert_eq!(out, Attempt::Ready(()));
-        assert!(host.ran("systemctl start --no-block yolab-image-store.service"));
-        assert!(!host.ran("systemctl stop"));
-    }
-
-    #[tokio::test]
-    async fn a_release_that_cannot_be_armed_is_waited_for_with_the_reason() {
-        let dir = tempfile::tempdir().unwrap();
-        built_here_in_place(dir.path());
-        let host = FakeHost::new()
-            .ok("findmnt -rno TARGET --mountpoint", "")
-            .fail("systemctl start", "Unit yolab-image-store.service not found.");
-        let why = not_yet(
-            pivot(&host, dir.path(), "yolab-n1", &policy(), K3S)
-                .await
-                .unwrap(),
-        );
-        assert!(why.contains("not found"), "{why}");
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn a_swap_arms_the_release_once_the_store_is_mounted() {
-        let dir = tempfile::tempdir().unwrap();
-        let host = swappable();
-        pivot(&host, dir.path(), "yolab-n1", &policy(), K3S)
-            .await
-            .unwrap();
-        assert!(
-            first_mount(&host) < at(&host, "systemctl start --no-block yolab-image-store.service"),
-            "{:?}",
-            host.calls()
-        );
-    }
-
-    #[tokio::test]
-    async fn a_store_mounted_after_a_clean_release_is_marked_in_use_again() {
-        let dir = tempfile::tempdir().unwrap();
-        built_here_on_probe(dir.path());
-        let croot = containerd_root(dir.path());
-        std::fs::create_dir_all(&croot).unwrap();
-        std::fs::write(croot.join(RELEASED), b"").unwrap();
-        let host = mapped()
-            .ok("blkid /dev/rbd0", "TYPE=xfs")
-            .ok("mount", "")
-            .ok("umount", "");
-
-        attempt(&host, dir.path(), "yolab-n1", &policy())
-            .await
-            .unwrap();
-
-        assert!(!host.ran("mkfs"));
-        assert!(is_marked_in_use(&croot));
-        assert!(!croot.join(RELEASED).exists());
-    }
-
-    #[tokio::test]
-    async fn a_store_that_was_never_released_cleanly_is_rebuilt() {
-        for leftover in [None, Some(IN_USE)] {
-            let dir = tempfile::tempdir().unwrap();
-            let probe = probe_dir(dir.path());
-            std::fs::create_dir_all(&probe).unwrap();
-            std::fs::write(probe.join(BUILT_HERE), b"").unwrap();
-            if let Some(marker) = leftover {
-                std::fs::write(probe.join(RELEASED), b"").unwrap();
-                std::fs::write(probe.join(marker), b"").unwrap();
-            }
-            let host = mapped()
-                .ok("blkid /dev/rbd0", "TYPE=xfs")
-                .ok("mount", "")
-                .ok("umount", "")
-                .ok("mkfs.xfs", "");
-
-            attempt(&host, dir.path(), "yolab-n1", &policy())
-                .await
-                .unwrap();
-
-            assert!(host.ran("mkfs.xfs"), "leftover={leftover:?}");
-        }
-    }
-
-    fn releasable() -> FakeHost {
-        FakeHost::new()
-            .ok(FINDMNT, "")
-            .ok("pkill", "")
-            .ok("systemctl stop", "")
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn a_release_stops_containerd_then_marks_the_store_clean_and_unmounts_it() {
-        let dir = tempfile::tempdir().unwrap();
-        let croot = containerd_root(dir.path());
-        built_here_in_place(dir.path());
-        let host = releasable().ok("umount", "");
-
-        release(&host, dir.path()).await.unwrap();
-
-        let containerd = at(&host, "pkill -TERM -x containerd");
-        let shims = at(&host, "pkill -KILL -f containerd-shim-runc-v2");
-        let unmounted = at(&host, &format!("umount {}", croot.display()));
-        assert!(
-            containerd < shims && shims < unmounted,
-            "{:?}",
-            host.calls()
-        );
-        assert!(was_released_cleanly(&croot));
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn a_release_that_cannot_unmount_leaves_the_store_marked_in_use() {
-        let dir = tempfile::tempdir().unwrap();
-        let croot = containerd_root(dir.path());
-        built_here_in_place(dir.path());
-        let host = releasable().fail("umount", "target is busy");
-
-        assert!(release(&host, dir.path()).await.is_err());
-
-        assert!(is_marked_in_use(&croot));
-        assert!(!was_released_cleanly(&croot));
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn a_store_no_swap_marked_is_unmounted_but_never_marked_clean() {
-        let dir = tempfile::tempdir().unwrap();
-        let croot = containerd_root(dir.path());
-        built_here_in_place(dir.path());
-        std::fs::remove_file(croot.join(IN_USE)).unwrap();
-        let host = releasable().ok("umount", "");
-
-        release(&host, dir.path()).await.unwrap();
-
-        assert!(host.ran(&format!("umount {}", croot.display())));
-        assert!(!croot.join(RELEASED).exists());
-    }
-
-    #[tokio::test]
-    async fn releasing_a_store_that_is_not_mounted_does_nothing() {
-        let dir = tempfile::tempdir().unwrap();
-        let host = FakeHost::new().fail(FINDMNT, "");
-        release(&host, dir.path()).await.unwrap();
-        assert_eq!(host.calls().len(), 1, "{:?}", host.calls());
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn a_store_something_still_holds_is_not_unmounted_at_release() {
-        let dir = tempfile::tempdir().unwrap();
-        let croot = containerd_root(dir.path());
-        built_here_in_place(dir.path());
-        a_process_holding(dir.path(), 4242, "containerd", &croot.join("meta.db"));
-        let host = releasable().ok("umount", "");
-
-        let err = release(&host, dir.path()).await.unwrap_err().to_string();
-
-        assert!(err.contains("pid 4242 (containerd)"), "{err}");
-        assert!(!host.ran(&format!("umount {}", croot.display())));
-        assert!(is_marked_in_use(&croot));
     }
 
     const CLAIM: &str = "ceph config-key get yolab/containerd-pivot";
@@ -1266,7 +976,7 @@ mod tests {
         pivot(&host, dir.path(), "yolab-n1", &policy(), K3S)
             .await
             .unwrap();
-        assert!(!host.ran("systemctl start --no-block k3s.service"));
+        assert!(!host.ran("systemctl start"));
     }
 
     #[tokio::test(start_paused = true)]
@@ -1543,9 +1253,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let croot = containerd_root(dir.path());
         built_here_in_place(dir.path());
-        assert!(is_in_place(&mounted_and_armed(), dir.path()).await);
+        let mounted = || FakeHost::new().ok("findmnt -rno TARGET --mountpoint", "");
+        assert!(is_in_place(&mounted(), dir.path()).await);
         logged(&croot, &failed_create(&croot, 48));
-        assert!(!is_in_place(&mounted_and_armed(), dir.path()).await);
+        assert!(!is_in_place(&mounted(), dir.path()).await);
     }
 
     #[tokio::test]
