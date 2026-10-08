@@ -22,6 +22,7 @@ pub struct Inventory {
     pub nvidia: bool,
     pub amd: bool,
     pub amd_rocm: bool,
+    pub amd_vulkan: bool,
     pub intel: bool,
     pub intel_compute: bool,
     pub vram_bytes: Option<u64>,
@@ -37,7 +38,7 @@ impl Inventory {
             "amd"
         } else if self.intel_compute {
             "intel"
-        } else if self.amd {
+        } else if self.amd_vulkan {
             "vulkan"
         } else {
             "cpu"
@@ -76,11 +77,12 @@ fn gfx_target_versions(root: &Path) -> Option<Vec<u64>> {
 
 pub fn probe(root: &Path) -> Inventory {
     let drm = drm_devices(root);
-    let amd = drm.iter().any(|d| d.driver == "amdgpu" && d.render_node);
+    let amd_vulkan = drm.iter().any(|d| d.driver == "amdgpu" && d.render_node);
     Inventory {
         nvidia: root.join(NVIDIA_CDI_SPEC).is_file() && nvidia_serves_apps(&drm),
-        amd,
-        amd_rocm: amd
+        amd: amd_vulkan || drm.iter().any(|d| d.driver == "radeon" && d.render_node),
+        amd_vulkan,
+        amd_rocm: amd_vulkan
             && root.join("dev/kfd").exists()
             && gfx_target_versions(root)
                 .is_none_or(|gfx| gfx.is_empty() || gfx.iter().any(|v| *v >= FIRST_ROCM_GFX)),
@@ -423,6 +425,15 @@ mod tests {
         assert_eq!(inv.accelerator(), "vulkan");
         assert_eq!(labels(&inv)[LABEL_AMD].as_deref(), Some("true"));
         assert_eq!(labels(&inv)[LABEL_AMD_ROCM], None);
+    }
+
+    #[test]
+    fn a_pre_gcn_radeon_decodes_video_but_has_no_vulkan_for_ai() {
+        let inv = probe(Machine::new().drm("renderD128", "radeon").path());
+        assert!(inv.amd);
+        assert!(!inv.amd_vulkan);
+        assert_eq!(inv.accelerator(), "cpu");
+        assert_eq!(labels(&inv)[LABEL_AMD].as_deref(), Some("true"));
     }
 
     #[test]
