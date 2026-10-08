@@ -21,6 +21,15 @@ spec:
     requests:
       storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
 ---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Release.Name }}-secrets
+  namespace: {{ .Release.Namespace }}
+type: Opaque
+stringData:
+  admin_password: {{ required "config.admin_password is required" .Values.config.admin_password | quote }}
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -50,46 +59,51 @@ spec:
         image: etherpad/etherpad:3.3.7@sha256:6f87beef31d91e4a44c7e3fe64043dd294f70443a80267a77267bdac704819a1
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('NODE_ENV', 'production')
+        - name: APP_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: admin_password
+        - name: NODE_ENV
+          value: production
+        - name: CI
+          value: 'true'
+        - name: ADMIN_PASSWORD
+          value: $(APP_PASSWORD)
+        - name: DB_CHARSET
+          value: utf8mb4
+        - name: DB_HOST
+          value: postgres
+        - name: DB_NAME
+          value: etherpad
+        - name: DB_PASS
+          value: admin
+        - name: DB_PORT
+          value: '5432'
+        - name: DB_TYPE
+          value: postgres
+        - name: DB_USER
+          value: admin
+        - name: DEFAULT_PAD_TEXT
           value: ''
-        - name: ('CI', 'true')
+        - name: DISABLE_IP_LOGGING
+          value: 'false'
+        - name: LOGLEVEL
+          value: INFO
+        - name: SOFFICE
           value: ''
-        - name: ('ADMIN_PASSWORD', '${APP_PASSWORD}')
-          value: ''
-        - name: ('DB_CHARSET', 'utf8mb4')
-          value: ''
-        - name: ('DB_HOST', 'etherpad_postgres_1')
-          value: ''
-        - name: ('DB_NAME', 'etherpad')
-          value: ''
-        - name: ('DB_PASS', 'admin')
-          value: ''
-        - name: ('DB_PORT', 5432)
-          value: ''
-        - name: ('DB_TYPE', 'postgres')
-          value: ''
-        - name: ('DB_USER', 'admin')
-          value: ''
-        - name: ('DEFAULT_PAD_TEXT', None)
-          value: ''
-        - name: ('DISABLE_IP_LOGGING', 'false')
-          value: ''
-        - name: ('LOGLEVEL', 'INFO')
-          value: ''
-        - name: ('SOFFICE', None)
-          value: ''
-        - name: ('ALLOW_UNKNOWN_FILE_ENDS', 'true')
-          value: ''
-        - name: ('TRUST_PROXY', 'true')
-          value: ''
-        - name: ('SKIN_NAME', 'colibris')
-          value: ''
-        - name: ('SKIN_VARIANTS', 'super-light-toolbar super-light-editor light-background')
-          value: ''
-        - name: ('SHOW_SETTINGS_IN_ADMIN_PAGE', 'true')
-          value: ''
-        - name: ('SUPPRESS_ERRORS_IN_PAD_TEXT', 'false')
-          value: ''
+        - name: ALLOW_UNKNOWN_FILE_ENDS
+          value: 'true'
+        - name: TRUST_PROXY
+          value: 'true'
+        - name: SKIN_NAME
+          value: colibris
+        - name: SKIN_VARIANTS
+          value: super-light-toolbar super-light-editor light-background
+        - name: SHOW_SETTINGS_IN_ADMIN_PAGE
+          value: 'true'
+        - name: SUPPRESS_ERRORS_IN_PAD_TEXT
+          value: 'false'
         securityContext:
           runAsUser: 5001
           runAsGroup: 0
@@ -132,16 +146,21 @@ spec:
         image: postgres:15-alpine@sha256:93a6166360be8f1d116b7ea97ebb8dea9e2c9c746349e952738bbba72a961d7c
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('POSTGRES_DB', 'etherpad')
-          value: ''
-        - name: ('POSTGRES_PASSWORD', 'admin')
-          value: ''
-        - name: ('POSTGRES_PORT', 5432)
-          value: ''
-        - name: ('POSTGRES_USER', 'admin')
-          value: ''
-        - name: ('PGDATA', '/var/lib/postgresql/data/pgdata')
-          value: ''
+        - name: APP_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: admin_password
+        - name: POSTGRES_DB
+          value: etherpad
+        - name: POSTGRES_PASSWORD
+          value: admin
+        - name: POSTGRES_PORT
+          value: '5432'
+        - name: POSTGRES_USER
+          value: admin
+        - name: PGDATA
+          value: /var/lib/postgresql/data/pgdata
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000

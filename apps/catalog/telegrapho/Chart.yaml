@@ -2,7 +2,7 @@ apiVersion: v2
 name: telegrapho
 description: Private copy and paste between your devices
 type: application
-version: 0.1.0
+version: 0.1.1
 appVersion: 1.0.1
 dependencies:
 - name: yolab-common

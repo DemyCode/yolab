@@ -2,7 +2,7 @@ apiVersion: v2
 name: libreoffice
 description: Do more - easier, quicker, smarter
 type: application
-version: 0.1.0
+version: 0.1.1
 appVersion: 7.6.7-patch.1
 dependencies:
 - name: yolab-common

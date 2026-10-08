@@ -21,6 +21,15 @@ spec:
     requests:
       storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
 ---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Release.Name }}-secrets
+  namespace: {{ .Release.Namespace }}
+type: Opaque
+stringData:
+  app_secret: {{ required "config.app_secret is required" .Values.config.app_secret | quote }}
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -52,16 +61,21 @@ spec:
         image: thewilqq/btc-tracker:v0.7.0@sha256:0c7beea5e0791cc39c9294f0a62faa24aa2ef42ed04571b63977c0afe085321b
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('NODE_ENV', 'production')
-          value: ''
-        - name: ('PORT', '3000')
-          value: ''
-        - name: ('DATABASE_URL', 'file:/app/data/bitcoin-tracker.db')
-          value: ''
-        - name: ('NEXTAUTH_SECRET', '${APP_SEED}')
-          value: ''
-        - name: ('NEXTAUTH_URL', 'http://${DEVICE_DOMAIN_NAME}:3947')
-          value: ''
+        - name: APP_SEED
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: app_secret
+        - name: NODE_ENV
+          value: production
+        - name: PORT
+          value: '3000'
+        - name: DATABASE_URL
+          value: file:/app/data/bitcoin-tracker.db
+        - name: NEXTAUTH_SECRET
+          value: $(APP_SEED)
+        - name: NEXTAUTH_URL
+          value: http://localhost:3947
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000

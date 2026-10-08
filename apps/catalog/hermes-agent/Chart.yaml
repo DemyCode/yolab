@@ -2,7 +2,7 @@ apiVersion: v2
 name: hermes-agent
 description: The AI agent that grows with you
 type: application
-version: 0.1.0
+version: 0.1.1
 appVersion: 2026.9.24
 dependencies:
 - name: yolab-common

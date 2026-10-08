@@ -50,10 +50,10 @@ spec:
         image: linuxserver/bazarr:1.6.2@sha256:8b30e81c4aec2991f469e78fae8afaa89ecc9b21a80e3897f50427216b55470c
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('PUID', '1000')
-          value: ''
-        - name: ('PGID', '1000')
-          value: ''
+        - name: PUID
+          value: '1000'
+        - name: PGID
+          value: '1000'
         ports:
         - containerPort: 6767
         readinessProbe:

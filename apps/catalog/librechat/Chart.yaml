@@ -2,7 +2,7 @@ apiVersion: v2
 name: librechat
 description: Enhanced ChatGPT Clone
 type: application
-version: 0.1.0
+version: 0.1.1
 appVersion: 0.8.7
 dependencies:
 - name: yolab-common

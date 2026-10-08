@@ -22,6 +22,15 @@ spec:
       storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
 ---
 apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Release.Name }}-secrets
+  namespace: {{ .Release.Namespace }}
+type: Opaque
+stringData:
+  app_secret: {{ required "config.app_secret is required" .Values.config.app_secret | quote }}
+---
+apiVersion: v1
 kind: ConfigMap
 metadata:
   name: '{{ .Release.Name }}-seed'
@@ -79,10 +88,15 @@ spec:
         image: ghcr.io/surajverma/homehub:0.2.4@sha256:fd1a7172b56f01dff3fb9fb5c9c2268baa7ab63ed5d7e348907107a34dee83e8
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('FLASK_ENV', 'production')
-          value: ''
-        - name: ('SECRET_KEY', '${APP_SEED}')
-          value: ''
+        - name: APP_SEED
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: app_secret
+        - name: FLASK_ENV
+          value: production
+        - name: SECRET_KEY
+          value: $(APP_SEED)
         ports:
         - containerPort: 5000
         readinessProbe:

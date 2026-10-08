@@ -43,10 +43,7 @@ spec:
       {{- if .Values.config.node }}
       nodeSelector:
         kubernetes.io/hostname: {{ .Values.config.node | quote }}
-        kubernetes.io/arch: amd64
       {{- else }}
-      nodeSelector:
-        kubernetes.io/arch: amd64
       {{- end }}
       initContainers:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
@@ -60,12 +57,12 @@ spec:
         image: linuxserver/plex:1.43.4@sha256:1f6f97d76e7bdb013789e94c838f2d9133b01ee4b2d4194148e492c4e4f12d90
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('PUID', '1000')
-          value: ''
-        - name: ('PGID', '1000')
-          value: ''
-        - name: ('VERSION', 'docker')
-          value: ''
+        - name: PUID
+          value: '1000'
+        - name: PGID
+          value: '1000'
+        - name: VERSION
+          value: docker
         ports:
         - containerPort: 32400
         readinessProbe:

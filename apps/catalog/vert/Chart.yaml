@@ -2,7 +2,7 @@ apiVersion: v2
 name: vert
 description: A file conversion utility
 type: application
-version: 0.1.0
+version: 0.1.1
 appVersion: e1c83ba
 dependencies:
 - name: yolab-common

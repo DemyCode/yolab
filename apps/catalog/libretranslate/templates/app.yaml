@@ -50,12 +50,12 @@ spec:
         image: libretranslate/libretranslate:v1.6.5@sha256:a3518195e4e810ba0d9dd251a851f24918059d757ef3c5cf8e0f881daf4242fc
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('LT_API_KEYS', 'true')
-          value: ''
-        - name: ('LT_API_KEYS_DB_PATH', '/app/db/api_keys.db')
-          value: ''
-        - name: ('LT_UPDATE_MODELS', 'true')
-          value: ''
+        - name: LT_API_KEYS
+          value: 'true'
+        - name: LT_API_KEYS_DB_PATH
+          value: /app/db/api_keys.db
+        - name: LT_UPDATE_MODELS
+          value: 'true'
         ports:
         - containerPort: 5000
         readinessProbe:

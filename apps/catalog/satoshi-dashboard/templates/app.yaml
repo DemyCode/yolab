@@ -50,12 +50,12 @@ spec:
         image: ghcr.io/satoshi-dashboard/main:v1.1.0@sha256:35ae82af78d972aeb621689e0a1e7dd76fa1c2835dca054c489179a09a279506
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('SERVE_STATIC', 'true')
-          value: ''
-        - name: ('API_PORT', 8410)
-          value: ''
-        - name: ('API_HOST', '0.0.0.0')
-          value: ''
+        - name: SERVE_STATIC
+          value: 'true'
+        - name: API_PORT
+          value: '8410'
+        - name: API_HOST
+          value: 0.0.0.0
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000

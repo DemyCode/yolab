@@ -21,6 +21,15 @@ spec:
     requests:
       storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
 ---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Release.Name }}-secrets
+  namespace: {{ .Release.Namespace }}
+type: Opaque
+stringData:
+  admin_password: {{ required "config.admin_password is required" .Values.config.admin_password | quote }}
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -60,8 +69,13 @@ spec:
         image: zerotier/zerotier:1.14.2@sha256:575d150a0e09fbee1a7580625b361040a7f78f46cbfbe5016effe812abe202ff
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('ZEROTIER_API_SECRET', '${APP_PASSWORD}')
-          value: ''
+        - name: APP_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: admin_password
+        - name: ZEROTIER_API_SECRET
+          value: $(APP_PASSWORD)
         securityContext:
           capabilities:
             add:
@@ -111,19 +125,22 @@ spec:
         image: ghcr.io/andrijdavid/umbrel-zerotier-web:0.1.1@sha256:0177ec5254860e3ad0c59e174034816496bd0a63cda203a2c663f08b3c205063
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('ZT_HOST', '$GATEWAY_IP')
-          value: ''
-        - name: ('ZT_PORT', '9993')
-          value: ''
-        - name: ('ZT_AUTHTOKEN', '${APP_PASSWORD}')
-          value: ''
-        - name: ('PUID', '1000')
-          value: ''
-        - name: ('PGID', '1000')
-          value: ''
+        - name: APP_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: admin_password
+        - name: ZT_HOST
+          value: $(GATEWAY_IP)
+        - name: ZT_PORT
+          value: '9993'
+        - name: ZT_AUTHTOKEN
+          value: $(APP_PASSWORD)
+        - name: PUID
+          value: '1000'
+        - name: PGID
+          value: '1000'
       volumes:
       - name: data
         persistentVolumeClaim:
           claimName: '{{ .Release.Name }}-data'
-      nodeSelector:
-        kubernetes.io/arch: amd64

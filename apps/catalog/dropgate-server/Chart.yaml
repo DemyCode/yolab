@@ -2,7 +2,7 @@ apiVersion: v2
 name: dropgate-server
 description: Self-hosted, privacy-first file sharing with hosted upload and P2P transfer
 type: application
-version: 0.1.0
+version: 0.1.1
 appVersion: 3.0.13-patch.1
 dependencies:
 - name: yolab-common

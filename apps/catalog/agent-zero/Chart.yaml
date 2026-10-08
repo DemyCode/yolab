@@ -2,7 +2,7 @@ apiVersion: v2
 name: agent-zero
 description: A personal, organic agentic framework that grows and learns with you
 type: application
-version: 0.1.0
+version: 0.1.1
 appVersion: v2.13
 dependencies:
 - name: yolab-common

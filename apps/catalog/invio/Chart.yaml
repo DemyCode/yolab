@@ -2,7 +2,7 @@ apiVersion: v2
 name: invio
 description: Invio is a self-hosted invoicing app without the bloat
 type: application
-version: 0.1.0
+version: 0.1.1
 appVersion: 2.2.0-patch.1
 dependencies:
 - name: yolab-common

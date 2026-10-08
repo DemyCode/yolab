@@ -2,7 +2,7 @@ apiVersion: v2
 name: termix
 description: Manage your servers with built-in SSH, tunnels, and file access
 type: application
-version: 0.1.0
+version: 0.1.1
 appVersion: 2.9.1
 dependencies:
 - name: yolab-common

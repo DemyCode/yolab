@@ -2,7 +2,7 @@ apiVersion: v2
 name: back-that-mac-up
 description: Backup your Mac to your Umbrel using Time Machine
 type: application
-version: 0.1.0
+version: 0.1.1
 appVersion: 1.1.0
 dependencies:
 - name: yolab-common

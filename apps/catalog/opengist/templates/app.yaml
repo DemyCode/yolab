@@ -50,8 +50,8 @@ spec:
         image: ghcr.io/thomiceli/opengist:1.15.2@sha256:7edc91273ee7d10a17406da8a08c803158baaff984c39b789c1313473d068f21
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('OG_SSH_PORT', '2224')
-          value: ''
+        - name: OG_SSH_PORT
+          value: '2224'
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000

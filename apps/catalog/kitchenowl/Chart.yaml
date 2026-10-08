@@ -2,7 +2,7 @@ apiVersion: v2
 name: kitchenowl
 description: A grocery list and recipe manager
 type: application
-version: 0.1.0
+version: 0.1.1
 appVersion: 0.7.10-patch.1
 dependencies:
 - name: yolab-common

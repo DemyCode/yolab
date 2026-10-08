@@ -22,6 +22,15 @@ spec:
       storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
 ---
 apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Release.Name }}-secrets
+  namespace: {{ .Release.Namespace }}
+type: Opaque
+stringData:
+  app_secret: {{ required "config.app_secret is required" .Values.config.app_secret | quote }}
+---
+apiVersion: v1
 kind: ConfigMap
 metadata:
   name: '{{ .Release.Name }}-seed'
@@ -49,10 +58,7 @@ spec:
       {{- if .Values.config.node }}
       nodeSelector:
         kubernetes.io/hostname: {{ .Values.config.node | quote }}
-        kubernetes.io/arch: amd64
       {{- else }}
-      nodeSelector:
-        kubernetes.io/arch: amd64
       {{- end }}
       initContainers:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
@@ -85,20 +91,25 @@ spec:
         image: 1dev/server:16.8.4@sha256:d2347bd1c66f92b66268561aa989801d98f7fe02ca659a2869a79f1266aa99a3
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('ONEDEV_SERVICE_HOST', '${DEVICE_DOMAIN_NAME}:${APP_PROXY_PORT}')
-          value: ''
-        - name: ('hibernate_connection_password', '${APP_SEED}')
-          value: ''
-        - name: ('hibernate_dialect', 'io.onedev.server.persistence.PostgreSQLDialect')
-          value: ''
-        - name: ('hibernate_connection_driver_class', 'org.postgresql.Driver')
-          value: ''
-        - name: ('hibernate_connection_url', 'jdbc:postgresql://onedev_postgres_1:5432/onedev')
-          value: ''
-        - name: ('hibernate_connection_username', 'postgres')
-          value: ''
-        - name: ('DOCKER_HOST', 'unix:///var/run/docker.sock')
-          value: ''
+        - name: APP_SEED
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: app_secret
+        - name: ONEDEV_SERVICE_HOST
+          value: localhost:APP_PROXY_PORT
+        - name: hibernate_connection_password
+          value: $(APP_SEED)
+        - name: hibernate_dialect
+          value: io.onedev.server.persistence.PostgreSQLDialect
+        - name: hibernate_connection_driver_class
+          value: org.postgresql.Driver
+        - name: hibernate_connection_url
+          value: jdbc:postgresql://postgres:5432/onedev
+        - name: hibernate_connection_username
+          value: postgres
+        - name: DOCKER_HOST
+          value: unix:///var/run/docker.sock
         ports:
         - containerPort: 6610
         readinessProbe:
@@ -155,8 +166,8 @@ spec:
         - --pidfile
         - /data/docker.pid
         env:
-        - name: ('DOCKER_ENSURE_BRIDGE', 'dind0:10.32.0.1/16')
-          value: ''
+        - name: DOCKER_ENSURE_BRIDGE
+          value: dind0:10.32.0.1/16
         volumeMounts:
         - name: data
           mountPath: /entrypoint.sh
@@ -193,8 +204,6 @@ spec:
           mountPath: /data
       hostNetwork: true
       dnsPolicy: ClusterFirstWithHostNet
-      nodeSelector:
-        kubernetes.io/arch: amd64
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -218,12 +227,17 @@ spec:
         image: postgres:17.10-alpine@sha256:742f40ea20b9ff2ff31db5458d127452988a2164df9e17441e191f3b72252193
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('POSTGRES_PASSWORD', '${APP_SEED}')
-          value: ''
-        - name: ('POSTGRES_USER', 'postgres')
-          value: ''
-        - name: ('POSTGRES_DB', 'onedev')
-          value: ''
+        - name: APP_SEED
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: app_secret
+        - name: POSTGRES_PASSWORD
+          value: $(APP_SEED)
+        - name: POSTGRES_USER
+          value: postgres
+        - name: POSTGRES_DB
+          value: onedev
         ports:
         - containerPort: 5432
         readinessProbe:
@@ -264,8 +278,6 @@ spec:
           readOnly: true
         - name: data
           mountPath: /data
-      nodeSelector:
-        kubernetes.io/arch: amd64
 ---
 apiVersion: v1
 kind: Service

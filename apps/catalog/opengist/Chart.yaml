@@ -2,7 +2,7 @@ apiVersion: v2
 name: opengist
 description: A Git-powered pastebin for code snippets and notes
 type: application
-version: 0.1.0
+version: 0.1.1
 appVersion: 1.15.2-patch.1
 dependencies:
 - name: yolab-common

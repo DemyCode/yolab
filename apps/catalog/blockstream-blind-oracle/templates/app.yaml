@@ -86,15 +86,15 @@ spec:
         image: tulipan81/pinserver_web:v0.0.36@sha256:a5214dbc14538478744a6a0c6bd40f03ab8ac2990abc9038139c18901064205b
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('PINSERVER_URL_A', '${APP_PINSERVER_HIDDEN_SERVICE}')
-          value: ''
-        - name: ('PINSERVER_PORT_A', '${APP_PINSERVER_PORT}')
-          value: ''
-        - name: ('PINSERVER_URL_B', '${APP_TAILSCALE_URL}')
-          value: ''
-        - name: ('PINSERVER_PORT_B', '${APP_PINSERVER_PORT}')
-          value: ''
-        - name: ('PINSERVER_CERT', '')
+        - name: PINSERVER_URL_A
+          value: $(APP_PINSERVER_HIDDEN_SERVICE)
+        - name: PINSERVER_PORT_A
+          value: APP_PINSERVER_PORT
+        - name: PINSERVER_URL_B
+          value: $(APP_TAILSCALE_URL)
+        - name: PINSERVER_PORT_B
+          value: APP_PINSERVER_PORT
+        - name: PINSERVER_CERT
           value: ''
         ports:
         - containerPort: 3344
@@ -225,8 +225,8 @@ spec:
         image: ghcr.io/getumbrel/tor:0.4.9.11@sha256:e382b8629c0dfef6ceb396b062622d4e4e955b19d6f16b883fd2c0723ad5671a
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('HOME', '/tmp')
-          value: ''
+        - name: HOME
+          value: /tmp
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000

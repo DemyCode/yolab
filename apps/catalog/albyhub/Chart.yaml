@@ -2,7 +2,7 @@ apiVersion: v2
 name: albyhub
 description: Self-custodial Lightning wallet with integrated node and app connections
 type: application
-version: 0.1.0
+version: 0.1.1
 appVersion: 1.24.0-patch.1
 dependencies:
 - name: yolab-common

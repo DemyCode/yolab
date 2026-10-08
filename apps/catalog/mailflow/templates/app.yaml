@@ -21,6 +21,15 @@ spec:
     requests:
       storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
 ---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Release.Name }}-secrets
+  namespace: {{ .Release.Namespace }}
+type: Opaque
+stringData:
+  app_secret: {{ required "config.app_secret is required" .Values.config.app_secret | quote }}
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -121,44 +130,49 @@ spec:
         image: ghcr.io/maathimself/mailflow-backend:3.8.2@sha256:ff53786c8d7295d9e9921884e7c9b19d23ed3230aa5ce139f8016f7221794771
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('NODE_ENV', 'production')
+        - name: APP_SEED
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: app_secret
+        - name: NODE_ENV
+          value: production
+        - name: PORT
+          value: '3000'
+        - name: APP_URL
+          value: http://localhost:3395
+        - name: FRONTEND_URL
+          value: http://localhost:3395
+        - name: SESSION_SECRET
+          value: $(APP_SEED)
+        - name: ENCRYPTION_KEY
+          value: $(APP_SEED)
+        - name: DB_HOST
+          value: postgres
+        - name: DB_PORT
+          value: '5432'
+        - name: DB_NAME
+          value: mailflow
+        - name: DB_USER
+          value: mailflow
+        - name: DB_PASSWORD
+          value: mailflow
+        - name: REDIS_URL
+          value: redis://redis:6379
+        - name: GOOGLE_CLIENT_ID
           value: ''
-        - name: ('PORT', 3000)
+        - name: GOOGLE_CLIENT_SECRET
           value: ''
-        - name: ('APP_URL', 'http://${DEVICE_DOMAIN_NAME}:3395')
+        - name: VAPID_PUBLIC_KEY
           value: ''
-        - name: ('FRONTEND_URL', 'http://${DEVICE_DOMAIN_NAME}:3395')
+        - name: VAPID_PRIVATE_KEY
           value: ''
-        - name: ('SESSION_SECRET', '${APP_SEED}')
+        - name: VAPID_SUBJECT
           value: ''
-        - name: ('ENCRYPTION_KEY', '${APP_SEED}')
+        - name: IMAP_MAX_PERSISTENT_PER_HOST
           value: ''
-        - name: ('DB_HOST', 'mailflow_postgres_1')
-          value: ''
-        - name: ('DB_PORT', 5432)
-          value: ''
-        - name: ('DB_NAME', 'mailflow')
-          value: ''
-        - name: ('DB_USER', 'mailflow')
-          value: ''
-        - name: ('DB_PASSWORD', 'mailflow')
-          value: ''
-        - name: ('REDIS_URL', 'redis://mailflow_redis_1:6379')
-          value: ''
-        - name: ('GOOGLE_CLIENT_ID', '')
-          value: ''
-        - name: ('GOOGLE_CLIENT_SECRET', '')
-          value: ''
-        - name: ('VAPID_PUBLIC_KEY', '')
-          value: ''
-        - name: ('VAPID_PRIVATE_KEY', '')
-          value: ''
-        - name: ('VAPID_SUBJECT', '')
-          value: ''
-        - name: ('IMAP_MAX_PERSISTENT_PER_HOST', '')
-          value: ''
-        - name: ('TRUST_PROXY_HOPS', 2)
-          value: ''
+        - name: TRUST_PROXY_HOPS
+          value: '2'
         readinessProbe:
           exec:
             command:
@@ -194,12 +208,17 @@ spec:
         image: postgres:16-alpine@sha256:16bc17c64a573ef34162af9298258d1aec548232985b33ed7b1eac33ba35c229
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('POSTGRES_DB', 'mailflow')
-          value: ''
-        - name: ('POSTGRES_USER', 'mailflow')
-          value: ''
-        - name: ('POSTGRES_PASSWORD', 'mailflow')
-          value: ''
+        - name: APP_SEED
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: app_secret
+        - name: POSTGRES_DB
+          value: mailflow
+        - name: POSTGRES_USER
+          value: mailflow
+        - name: POSTGRES_PASSWORD
+          value: mailflow
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000
@@ -251,8 +270,6 @@ spec:
       labels:
         app: redis
     spec:
-      nodeSelector:
-        kubernetes.io/arch: amd64
       containers:
       - name: redis
         image: redis:7-alpine@sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99
@@ -264,6 +281,12 @@ spec:
         - '1'
         - --loglevel
         - warning
+        env:
+        - name: APP_SEED
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: app_secret
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000
@@ -284,6 +307,8 @@ spec:
       - name: data
         persistentVolumeClaim:
           claimName: '{{ .Release.Name }}-data'
+      nodeSelector:
+        kubernetes.io/arch: amd64
 ---
 apiVersion: v1
 kind: Service

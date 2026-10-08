@@ -50,8 +50,8 @@ spec:
         image: ghcr.io/egzola/bitboard:1.0.2@sha256:5805a2f8ed667e9972aba0d8f98615a3a36d9ec5088868dde7a375e0148fecb7
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('PORT', 3711)
-          value: ''
+        - name: PORT
+          value: '3711'
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000

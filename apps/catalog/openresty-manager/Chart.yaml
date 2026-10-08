@@ -2,7 +2,7 @@ apiVersion: v2
 name: openresty-manager
 description: Expose your services easily and securely
 type: application
-version: 0.1.0
+version: 0.1.1
 appVersion: 2.4.6
 dependencies:
 - name: yolab-common

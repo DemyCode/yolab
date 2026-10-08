@@ -2,7 +2,7 @@ apiVersion: v2
 name: cloudflared
 description: Access your Umbrel apps from the Internet using Cloudflare network
 type: application
-version: 0.1.0
+version: 0.1.1
 appVersion: 2026.8.3-patch.1
 dependencies:
 - name: yolab-common

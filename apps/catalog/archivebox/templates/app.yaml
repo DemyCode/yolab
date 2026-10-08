@@ -21,6 +21,15 @@ spec:
     requests:
       storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
 ---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Release.Name }}-secrets
+  namespace: {{ .Release.Namespace }}
+type: Opaque
+stringData:
+  admin_password: {{ required "config.admin_password is required" .Values.config.admin_password | quote }}
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -50,18 +59,23 @@ spec:
         image: archivebox/archivebox:0.9.71@sha256:56057dbe5ab387441e96c25a531d8934768bc977f94b9a91428f6913945e9b0d
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('ALLOWED_HOSTS', '*')
-          value: ''
-        - name: ('ADMIN_USERNAME', 'admin')
-          value: ''
-        - name: ('ADMIN_PASSWORD', '${APP_PASSWORD}')
-          value: ''
-        - name: ('PUBLIC_INDEX', 'True')
-          value: ''
-        - name: ('PUBLIC_SNAPSHOTS', 'True')
-          value: ''
-        - name: ('PUBLIC_ADD_VIEW', 'False')
-          value: ''
+        - name: APP_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: admin_password
+        - name: ALLOWED_HOSTS
+          value: '*'
+        - name: ADMIN_USERNAME
+          value: admin
+        - name: ADMIN_PASSWORD
+          value: $(APP_PASSWORD)
+        - name: PUBLIC_INDEX
+          value: 'True'
+        - name: PUBLIC_SNAPSHOTS
+          value: 'True'
+        - name: PUBLIC_ADD_VIEW
+          value: 'False'
         ports:
         - containerPort: 5797
         readinessProbe:

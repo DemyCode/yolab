@@ -50,10 +50,10 @@ spec:
         image: linuxserver/libreoffice:7.6.7@sha256:a62c7f094f2a7ed8145983d04f54ca80d85b557bbdda0f9aa784ccb6267b70e8
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('PUID', '1000')
-          value: ''
-        - name: ('PGID', '1000')
-          value: ''
+        - name: PUID
+          value: '1000'
+        - name: PGID
+          value: '1000'
         ports:
         - containerPort: 3000
         readinessProbe:

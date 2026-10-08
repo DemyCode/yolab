@@ -21,6 +21,15 @@ spec:
     requests:
       storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
 ---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Release.Name }}-secrets
+  namespace: {{ .Release.Namespace }}
+type: Opaque
+stringData:
+  app_secret: {{ required "config.app_secret is required" .Values.config.app_secret | quote }}
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -50,8 +59,13 @@ spec:
         image: ceramicwhite/invidious:build-fda8d1b@sha256:39fe17102eb65ff34ac83e4d2b7f4233e735c1221e3c881fd0e0919b78760f81
         imagePullPolicy: IfNotPresent
         env:
-        - name: '(''INVIDIOUS_CONFIG'', ''db:\n  dbname: invidious\n  user: umbrel\n  password: moneyprintergobrrr\n  host: invidious_postgres_1\n  port: 5432\ncheck_tables: true\ninvidious_companion:\n- private_url: "http://invidious_companion_1:8282/companion"\ninvidious_companion_key: ${APP_INV_SECRET_KEY}\nhmac_key: ${APP_SEED}\ndefault_user_preferences:\n  feed_menu: ["Trending", "Subscriptions", "Playlists"]\n  default_home: Trending\n'')'
-          value: ''
+        - name: APP_SEED
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: app_secret
+        - name: INVIDIOUS_CONFIG
+          value: "db:\n  dbname: invidious\n  user: umbrel\n  password: moneyprintergobrrr\n  host: postgres\n  port: 5432\ncheck_tables: true\ninvidious_companion:\n- private_url: \"http://companion:8282/companion\"\ninvidious_companion_key: $(APP_SEED)\nhmac_key: $(APP_SEED)\ndefault_user_preferences:\n  feed_menu: [\"Trending\", \"Subscriptions\", \"Playlists\"]\n  default_home: Trending\n"
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000
@@ -87,12 +101,17 @@ spec:
         image: postgres:13.7@sha256:03652c675ae177af98ddd50f9f4b4b2cf8ad38d0e116aa68fe670fbc2cf250fc
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('POSTGRES_DB', 'invidious')
-          value: ''
-        - name: ('POSTGRES_USER', 'umbrel')
-          value: ''
-        - name: ('POSTGRES_PASSWORD', 'moneyprintergobrrr')
-          value: ''
+        - name: APP_SEED
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: app_secret
+        - name: POSTGRES_DB
+          value: invidious
+        - name: POSTGRES_USER
+          value: umbrel
+        - name: POSTGRES_PASSWORD
+          value: moneyprintergobrrr
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000
@@ -144,8 +163,13 @@ spec:
         image: quay.io/invidious/invidious-companion:master-6c76cab@sha256:aaec4e18b3cffb5457633f427c834299677f2c2a7e27b598404ab815643c3747
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('SERVER_SECRET_KEY', '${APP_INV_SECRET_KEY}')
-          value: ''
+        - name: APP_SEED
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: app_secret
+        - name: SERVER_SECRET_KEY
+          value: $(APP_SEED)
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000

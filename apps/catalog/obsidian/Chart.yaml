@@ -2,7 +2,7 @@ apiVersion: v2
 name: obsidian
 description: The private and flexible writing app that adapts to the way you think
 type: application
-version: 0.1.0
+version: 0.1.1
 appVersion: 1.8.10-patch.1
 dependencies:
 - name: yolab-common

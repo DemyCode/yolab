@@ -2,7 +2,7 @@ apiVersion: v2
 name: flaresolverr
 description: Proxy server to bypass Cloudflare and DDoS-GUARD protection
 type: application
-version: 0.1.0
+version: 0.1.1
 appVersion: 3.5.2
 dependencies:
 - name: yolab-common

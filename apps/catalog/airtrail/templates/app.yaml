@@ -50,10 +50,10 @@ spec:
         image: johly/airtrail:v3.13.0@sha256:b49918c441cd52ffd2ef795738e58031abbcfd1e8094a4365672282bb6b805b1
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('UPLOAD_LOCATION', '/app/uploads')
-          value: ''
-        - name: ('DB_URL', 'postgres://airtrail:itworkslocally@airtrail_postgres_1:5432/airtrail')
-          value: ''
+        - name: UPLOAD_LOCATION
+          value: /app/uploads
+        - name: DB_URL
+          value: postgres://airtrail:itworkslocally@postgres:5432/airtrail
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000
@@ -93,14 +93,14 @@ spec:
         image: postgres:18.3-alpine@sha256:52098013b4b64a746626437d38afc03cabff6cdeb4d3d92e2342aa95f0ce56ea
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('POSTGRES_DB', 'airtrail')
-          value: ''
-        - name: ('POSTGRES_USER', 'airtrail')
-          value: ''
-        - name: ('POSTGRES_PASSWORD', 'itworkslocally')
-          value: ''
-        - name: ('PGDATA', '/data/pgdata')
-          value: ''
+        - name: POSTGRES_DB
+          value: airtrail
+        - name: POSTGRES_USER
+          value: airtrail
+        - name: POSTGRES_PASSWORD
+          value: itworkslocally
+        - name: PGDATA
+          value: /data/pgdata
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000

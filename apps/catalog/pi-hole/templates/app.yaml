@@ -21,6 +21,15 @@ spec:
     requests:
       storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
 ---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Release.Name }}-secrets
+  namespace: {{ .Release.Namespace }}
+type: Opaque
+stringData:
+  admin_password: {{ required "config.admin_password is required" .Values.config.admin_password | quote }}
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -43,10 +52,7 @@ spec:
       {{- if .Values.config.node }}
       nodeSelector:
         kubernetes.io/hostname: {{ .Values.config.node | quote }}
-        kubernetes.io/arch: amd64
       {{- else }}
-      nodeSelector:
-        kubernetes.io/arch: amd64
       {{- end }}
       initContainers:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
@@ -60,12 +66,17 @@ spec:
         image: pihole/pihole:2026.09.0@sha256:5b9c8cf51de7d6d3f2240dbe72baf5f06e1fd39cb4d77a99fab4fa13e23bd1be
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('FTLCONF_webserver_api_password', '${APP_PASSWORD}')
-          value: ''
-        - name: ('FTLCONF_webserver_port', '8082,[::]:8082')
-          value: ''
-        - name: ('FTLCONF_dns_listeningMode', 'all')
-          value: ''
+        - name: APP_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: admin_password
+        - name: FTLCONF_webserver_api_password
+          value: $(APP_PASSWORD)
+        - name: FTLCONF_webserver_port
+          value: 8082,[::]:8082
+        - name: FTLCONF_dns_listeningMode
+          value: all
         securityContext:
           capabilities:
             add:

@@ -21,6 +21,16 @@ spec:
     requests:
       storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
 ---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Release.Name }}-secrets
+  namespace: {{ .Release.Namespace }}
+type: Opaque
+stringData:
+  app_secret: {{ required "config.app_secret is required" .Values.config.app_secret | quote }}
+  admin_password: {{ required "config.admin_password is required" .Values.config.admin_password | quote }}
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -50,34 +60,44 @@ spec:
         image: flomp/wanderer-web:v0.21.0@sha256:af721ffac56fd33243043211fc49e4d5c5651f784551ae7b5b05d845c7c41147
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('ORIGIN', 'http://${DEVICE_DOMAIN_NAME}:3111')
-          value: ''
-        - name: ('BODY_SIZE_LIMIT', 'Infinity')
-          value: ''
-        - name: ('POCKETBASE_PROXY_SECRET', '${APP_SEED}')
-          value: ''
-        - name: ('PUBLIC_POCKETBASE_URL', 'http://wanderer_db_1:8090')
-          value: ''
-        - name: ('PUBLIC_DISABLE_SIGNUP', 'false')
-          value: ''
-        - name: ('UPLOAD_FOLDER', '/app/uploads')
-          value: ''
-        - name: ('UPLOAD_USER', 'admin')
-          value: ''
-        - name: ('UPLOAD_PASSWORD', '${APP_PASSWORD}')
-          value: ''
-        - name: ('VALHALLA_URL', 'https://valhalla1.openstreetmap.de')
-          value: ''
-        - name: ('NOMINATIM_URL', 'https://nominatim.openstreetmap.org')
-          value: ''
-        - name: ('OVERPASS_API_URL', 'https://overpass-api.de')
-          value: ''
-        - name: ('PUBLIC_MAP_MAX_POLYLINES', 100)
-          value: ''
-        - name: ('MEILI_URL', 'http://wanderer_search_1:7700')
-          value: ''
-        - name: ('MEILI_MASTER_KEY', '${APP_SEED}')
-          value: ''
+        - name: APP_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: admin_password
+        - name: APP_SEED
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: app_secret
+        - name: ORIGIN
+          value: http://localhost:3111
+        - name: BODY_SIZE_LIMIT
+          value: Infinity
+        - name: POCKETBASE_PROXY_SECRET
+          value: $(APP_SEED)
+        - name: PUBLIC_POCKETBASE_URL
+          value: http://db:8090
+        - name: PUBLIC_DISABLE_SIGNUP
+          value: 'false'
+        - name: UPLOAD_FOLDER
+          value: /app/uploads
+        - name: UPLOAD_USER
+          value: admin
+        - name: UPLOAD_PASSWORD
+          value: $(APP_PASSWORD)
+        - name: VALHALLA_URL
+          value: https://valhalla1.openstreetmap.de
+        - name: NOMINATIM_URL
+          value: https://nominatim.openstreetmap.org
+        - name: OVERPASS_API_URL
+          value: https://overpass-api.de
+        - name: PUBLIC_MAP_MAX_POLYLINES
+          value: '100'
+        - name: MEILI_URL
+          value: http://search:7700
+        - name: MEILI_MASTER_KEY
+          value: $(APP_SEED)
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000
@@ -117,12 +137,22 @@ spec:
         image: getmeili/meilisearch:v1.14.0@sha256:8cd411ba5d9ec2dfce02e241305208eebacce0fd74a72bece21cadd03dc566ce
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('MEILI_NO_ANALYTICS', 'true')
-          value: ''
-        - name: ('MEILI_URL', 'http://wanderer_search_1:7700')
-          value: ''
-        - name: ('MEILI_MASTER_KEY', '${APP_SEED}')
-          value: ''
+        - name: APP_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: admin_password
+        - name: APP_SEED
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: app_secret
+        - name: MEILI_NO_ANALYTICS
+          value: 'true'
+        - name: MEILI_URL
+          value: http://search:7700
+        - name: MEILI_MASTER_KEY
+          value: $(APP_SEED)
         readinessProbe:
           exec:
             command:
@@ -162,16 +192,26 @@ spec:
         image: flomp/wanderer-db:v0.21.0@sha256:ba7bd45b8177fec7a31d297ecaf3c98e94aabb4fc043f167df35aeba8b93468c
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('POCKETBASE_ENCRYPTION_KEY', '${APP_WANDERER_ENCRYPTION_KEY}')
-          value: ''
-        - name: ('POCKETBASE_PROXY_SECRET', '${APP_SEED}')
-          value: ''
-        - name: ('MEILI_URL', 'http://wanderer_search_1:7700')
-          value: ''
-        - name: ('MEILI_MASTER_KEY', '${APP_SEED}')
-          value: ''
-        - name: ('ORIGIN', 'http://${DEVICE_DOMAIN_NAME}:3111')
-          value: ''
+        - name: APP_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: admin_password
+        - name: APP_SEED
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: app_secret
+        - name: POCKETBASE_ENCRYPTION_KEY
+          value: $(APP_SEED)
+        - name: POCKETBASE_PROXY_SECRET
+          value: $(APP_SEED)
+        - name: MEILI_URL
+          value: http://search:7700
+        - name: MEILI_MASTER_KEY
+          value: $(APP_SEED)
+        - name: ORIGIN
+          value: http://localhost:3111
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000

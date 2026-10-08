@@ -64,12 +64,22 @@ spec:
             secretKeyRef:
               name: '{{ .Release.Name }}-secrets'
               key: admin_password
-        - name: ('PUID', 1000)
-          value: ''
-        - name: ('PGID', 1000)
-          value: ''
-        - name: '(''GITLAB_OMNIBUS_CONFIG'', "# Add any other gitlab.rb configuration here, each on its own line\ngitlab_rails[''initial_root_password''] '
-          value: ' ''$(APP_PASSWORD)''\ngitlab_rails[''gitlab_shell_ssh_port''] = 2424\nnginx[''listen_port''] = 8929\nnginx[''listen_https''] = false\n")'
+        - name: PUID
+          value: '1000'
+        - name: PGID
+          value: '1000'
+        - name: GITLAB_OMNIBUS_CONFIG
+          value: '# Add any other gitlab.rb configuration here, each on its own line
+
+            gitlab_rails[''initial_root_password''] = ''$(APP_PASSWORD)''
+
+            gitlab_rails[''gitlab_shell_ssh_port''] = 2424
+
+            nginx[''listen_port''] = 8929
+
+            nginx[''listen_https''] = false
+
+            '
         ports:
         - containerPort: 8929
         readinessProbe:

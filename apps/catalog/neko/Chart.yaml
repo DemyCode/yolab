@@ -2,7 +2,7 @@ apiVersion: v2
 name: neko
 description: A self-hosted virtual browser powered by WebRTC
 type: application
-version: 0.1.0
+version: 0.1.1
 appVersion: 3.1.6
 dependencies:
 - name: yolab-common

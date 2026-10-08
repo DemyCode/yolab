@@ -81,8 +81,8 @@ spec:
         image: toshimoto821/toshi-moto:1.37.3@sha256:e2d7270473dda60c34afac9ed28b267540fd4ca0d6aabf12fa37a7d0c597634e
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('PORT', 8021)
-          value: ''
+        - name: PORT
+          value: '8021'
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000
@@ -126,10 +126,10 @@ spec:
         image: toshimoto821/toshi-moto-api:1.8.4@sha256:750927ef2d0b0bbcffcbb57632d861e567a8b7243381c0285b2b2660dc31244a
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('PORT', 8121)
-          value: ''
-        - name: ('MONGODB_URI', 'mongodb://toshi-moto_mongodb_1:27017/toshi-moto')
-          value: ''
+        - name: PORT
+          value: '8121'
+        - name: MONGODB_URI
+          value: mongodb://mongodb:27017/toshi-moto
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000

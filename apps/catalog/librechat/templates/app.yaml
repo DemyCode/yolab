@@ -46,8 +46,6 @@ spec:
       labels:
         app: gateway
     spec:
-      nodeSelector:
-        kubernetes.io/arch: amd64
       initContainers:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
@@ -85,32 +83,32 @@ spec:
         - run
         - backend
         env:
-        - name: ('HOST', '0.0.0.0')
-          value: ''
-        - name: ('MONGO_URI', 'mongodb://librechat_mongodb_1:27017/LibreChat')
-          value: ''
-        - name: ('MEILI_HOST', 'http://librechat_meilisearch_1:7700')
-          value: ''
-        - name: ('RAG_PORT', '8000')
-          value: ''
-        - name: ('RAG_API_URL', 'http://librechat_rag_api_1:8000')
-          value: ''
-        - name: ('OPENAI_API_KEY', 'user_provided')
-          value: ''
-        - name: ('GOOGLE_KEY', 'user_provided')
-          value: ''
-        - name: ('ANTHROPIC_API_KEY', 'user_provided')
-          value: ''
-        - name: ('ASSISTANTS_API_KEY', 'user_provided')
-          value: ''
-        - name: ('CREDS_KEY', 'f34be427ebb29de8d88c107a71546019685ed8b241d8f2ed00c3df97ad2566f0')
-          value: ''
-        - name: ('CREDS_IV', 'e2341419ec3dd3d19b13a1a87fafcbfb')
-          value: ''
-        - name: ('JWT_SECRET', '16f8c0ef4a5d391b26034086c628469d3f9f497f08163ab9b40137092f2909ef')
-          value: ''
-        - name: ('JWT_REFRESH_SECRET', 'eaa5191f2914e30b9387fd84e254e4ba6fc51b4654968a9b0803b456a54b8418')
-          value: ''
+        - name: HOST
+          value: 0.0.0.0
+        - name: MONGO_URI
+          value: mongodb://mongodb:27017/LibreChat
+        - name: MEILI_HOST
+          value: http://meilisearch:7700
+        - name: RAG_PORT
+          value: '8000'
+        - name: RAG_API_URL
+          value: http://rag_api:8000
+        - name: OPENAI_API_KEY
+          value: user_provided
+        - name: GOOGLE_KEY
+          value: user_provided
+        - name: ANTHROPIC_API_KEY
+          value: user_provided
+        - name: ASSISTANTS_API_KEY
+          value: user_provided
+        - name: CREDS_KEY
+          value: f34be427ebb29de8d88c107a71546019685ed8b241d8f2ed00c3df97ad2566f0
+        - name: CREDS_IV
+          value: e2341419ec3dd3d19b13a1a87fafcbfb
+        - name: JWT_SECRET
+          value: 16f8c0ef4a5d391b26034086c628469d3f9f497f08163ab9b40137092f2909ef
+        - name: JWT_REFRESH_SECRET
+          value: eaa5191f2914e30b9387fd84e254e4ba6fc51b4654968a9b0803b456a54b8418
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000
@@ -240,12 +238,12 @@ spec:
         image: getmeili/meilisearch:v1.12.3@sha256:4acfcbbb9e089aa1aac838cfda3fba7f07aaaef044c23da8acbe0ab741400dac
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('MEILI_HOST', 'http://librechat_meilisearch_1:7700')
-          value: ''
-        - name: ('MEILI_NO_ANALYTICS', 'true')
-          value: ''
-        - name: ('MEILI_MASTER_KEY', 'DrhYf7zENyR6AlUCKmnz0eYASOQdl6zxH7s7MKFSfFCt')
-          value: ''
+        - name: MEILI_HOST
+          value: http://meilisearch:7700
+        - name: MEILI_NO_ANALYTICS
+          value: 'true'
+        - name: MEILI_MASTER_KEY
+          value: DrhYf7zENyR6AlUCKmnz0eYASOQdl6zxH7s7MKFSfFCt
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000
@@ -282,8 +280,6 @@ spec:
           readOnly: true
         - name: data
           mountPath: /data
-      nodeSelector:
-        kubernetes.io/arch: amd64
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -307,12 +303,12 @@ spec:
         image: ankane/pgvector:v0.5.1@sha256:d3a9d8ac27bb7e05e333ef25b634d2625adaa85336ab729954b9e94859bf6fa7
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('POSTGRES_DB', 'mydatabase')
-          value: ''
-        - name: ('POSTGRES_USER', 'myuser')
-          value: ''
-        - name: ('POSTGRES_PASSWORD', 'mypassword')
-          value: ''
+        - name: POSTGRES_DB
+          value: mydatabase
+        - name: POSTGRES_USER
+          value: myuser
+        - name: POSTGRES_PASSWORD
+          value: mypassword
         ports:
         - containerPort: 5432
         readinessProbe:
@@ -351,8 +347,6 @@ spec:
           readOnly: true
         - name: data
           mountPath: /data
-      nodeSelector:
-        kubernetes.io/arch: amd64
 ---
 apiVersion: v1
 kind: Service
@@ -388,18 +382,18 @@ spec:
         image: ghcr.io/danny-avila/librechat-rag-api-dev-lite:v0.7.3@sha256:67dba8e1e5707a795f2188d1e345f23b8ebf3bf75365026395edec76474cefa6
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('DB_HOST', 'librechat_vectordb_1')
-          value: ''
-        - name: ('RAG_PORT', '8000')
-          value: ''
-        - name: ('OPENAI_API_KEY', 'user_provided')
-          value: ''
-        - name: ('GOOGLE_KEY', 'user_provided')
-          value: ''
-        - name: ('ANTHROPIC_API_KEY', 'user_provided')
-          value: ''
-        - name: ('ASSISTANTS_API_KEY', 'user_provided')
-          value: ''
+        - name: DB_HOST
+          value: vectordb
+        - name: RAG_PORT
+          value: '8000'
+        - name: OPENAI_API_KEY
+          value: user_provided
+        - name: GOOGLE_KEY
+          value: user_provided
+        - name: ANTHROPIC_API_KEY
+          value: user_provided
+        - name: ASSISTANTS_API_KEY
+          value: user_provided
       volumes:
       - name: data
         persistentVolumeClaim:
@@ -429,5 +423,3 @@ spec:
           readOnly: true
         - name: data
           mountPath: /data
-      nodeSelector:
-        kubernetes.io/arch: amd64

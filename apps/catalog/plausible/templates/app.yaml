@@ -22,6 +22,15 @@ spec:
       storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
 ---
 apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Release.Name }}-secrets
+  namespace: {{ .Release.Namespace }}
+type: Opaque
+stringData:
+  app_secret: {{ required "config.app_secret is required" .Values.config.app_secret | quote }}
+---
+apiVersion: v1
 kind: ConfigMap
 metadata:
   name: '{{ .Release.Name }}-seed'
@@ -88,12 +97,17 @@ spec:
         - -c
         - sh -c "sleep 10 && /entrypoint.sh db createdb && /entrypoint.sh db migrate && /entrypoint.sh run"
         env:
-        - name: ('BASE_URL', 'http://${DEVICE_DOMAIN_NAME}:9093')
-          value: ''
-        - name: ('SECRET_KEY_BASE', '${APP_SEED}')
-          value: ''
-        - name: ('TOTP_VAULT_KEY', '${APP_PLAUSIBLE_VAULT_KEY}')
-          value: ''
+        - name: APP_SEED
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: app_secret
+        - name: BASE_URL
+          value: http://localhost:9093
+        - name: SECRET_KEY_BASE
+          value: $(APP_SEED)
+        - name: TOTP_VAULT_KEY
+          value: $(APP_SEED)
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000
@@ -132,8 +146,8 @@ spec:
         image: postgres:16-alpine@sha256:492898505cb45f9835acc327e98711eaa9298ed804e0bb36f29e08394229550d
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('POSTGRES_PASSWORD', 'postgres')
-          value: ''
+        - name: POSTGRES_PASSWORD
+          value: postgres
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000
@@ -214,8 +228,8 @@ spec:
         image: clickhouse/clickhouse-server:24.12-alpine@sha256:cd450891db46cc6ffe313ca2b0fb7dbfb897a6873ca74a724cbe050a2cf62621
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('CLICKHOUSE_SKIP_USER_SETUP', '1')
-          value: ''
+        - name: CLICKHOUSE_SKIP_USER_SETUP
+          value: '1'
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000

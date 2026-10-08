@@ -2,7 +2,7 @@ apiVersion: v2
 name: mailflow
 description: Unified self-hosted webmail client
 type: application
-version: 0.1.0
+version: 0.1.1
 appVersion: 3.8.2
 dependencies:
 - name: yolab-common

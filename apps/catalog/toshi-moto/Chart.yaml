@@ -2,7 +2,7 @@ apiVersion: v2
 name: toshi-moto
 description: Secure Bitcoin portfolio monitoring with privacy-first design
 type: application
-version: 0.1.0
+version: 0.1.1
 appVersion: 1.37.3
 dependencies:
 - name: yolab-common

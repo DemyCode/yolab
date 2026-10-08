@@ -2,7 +2,7 @@ apiVersion: v2
 name: picsur
 description: An easy to use image sharing service
 type: application
-version: 0.1.0
+version: 0.1.1
 appVersion: 0.5.6-patch.1
 dependencies:
 - name: yolab-common

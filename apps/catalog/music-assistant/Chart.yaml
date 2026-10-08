@@ -2,7 +2,7 @@ apiVersion: v2
 name: music-assistant
 description: A music library manager for your offline and online music sources
 type: application
-version: 0.1.0
+version: 0.1.1
 appVersion: 2.10.5
 dependencies:
 - name: yolab-common

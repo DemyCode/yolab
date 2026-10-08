@@ -2,7 +2,7 @@ apiVersion: v2
 name: komodo
 description: A tool to build and deploy software
 type: application
-version: 0.1.0
+version: 0.1.1
 appVersion: 2.3.3
 dependencies:
 - name: yolab-common

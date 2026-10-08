@@ -21,6 +21,15 @@ spec:
     requests:
       storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
 ---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Release.Name }}-secrets
+  namespace: {{ .Release.Namespace }}
+type: Opaque
+stringData:
+  admin_password: {{ required "config.admin_password is required" .Values.config.admin_password | quote }}
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -56,18 +65,23 @@ spec:
         - --keys=queue_server
         - --keys=dht_crawler
         env:
-        - name: ('HOME', '/tmp')
-          value: ''
-        - name: ('XDG_CONFIG_HOME', '/config')
-          value: ''
-        - name: ('POSTGRES_HOST', 'bitmagnet_postgres_1')
-          value: ''
-        - name: ('POSTGRES_USER', 'postgres')
-          value: ''
-        - name: ('POSTGRES_PASSWORD', '${APP_PASSWORD}')
-          value: ''
-        - name: ('POSTGRES_NAME', 'bitmagnet')
-          value: ''
+        - name: APP_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: admin_password
+        - name: HOME
+          value: /tmp
+        - name: XDG_CONFIG_HOME
+          value: /config
+        - name: POSTGRES_HOST
+          value: postgres
+        - name: POSTGRES_USER
+          value: postgres
+        - name: POSTGRES_PASSWORD
+          value: $(APP_PASSWORD)
+        - name: POSTGRES_NAME
+          value: bitmagnet
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000
@@ -107,14 +121,19 @@ spec:
         image: postgres:16-alpine@sha256:23e88eb049fd5d54894d70100df61d38a49ed97909263f79d4ff4c30a5d5fca2
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('POSTGRES_PASSWORD', '${APP_PASSWORD}')
-          value: ''
-        - name: ('POSTGRES_DB', 'bitmagnet')
-          value: ''
-        - name: ('POSTGRES_USER', 'postgres')
-          value: ''
-        - name: ('PGUSER', 'postgres')
-          value: ''
+        - name: APP_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: admin_password
+        - name: POSTGRES_PASSWORD
+          value: $(APP_PASSWORD)
+        - name: POSTGRES_DB
+          value: bitmagnet
+        - name: POSTGRES_USER
+          value: postgres
+        - name: PGUSER
+          value: postgres
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000

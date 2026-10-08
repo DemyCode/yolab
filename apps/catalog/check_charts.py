@@ -239,6 +239,7 @@ def check(app, docs, fail, chart_yaml="", schema=None, arches=None):
     kinds = {}
     for d in docs:
         kinds.setdefault(d["kind"], []).append(d)
+    check_containers(app, docs, fail)
 
     has_caddy = any(
         "Caddyfile" in (c.get("data") or {}) for c in kinds.get("ConfigMap", [])
@@ -505,6 +506,25 @@ def pod_specs(docs):
         if d.get("kind") != "Deployment":
             continue
         yield d["metadata"]["name"], d["spec"]["template"]["spec"]
+
+
+ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]*$")
+
+
+def check_containers(app, docs, fail):
+    for pod, spec in pod_specs(docs):
+        containers = (spec.get("initContainers") or []) + (spec.get("containers") or [])
+        names = [c["name"] for c in containers]
+        for dup in sorted({n for n in names if names.count(n) > 1}):
+            fail(app, f"pod {pod} has two containers named {dup}")
+        for c in containers:
+            for e in c.get("env") or []:
+                if not ENV_NAME.match(str(e.get("name"))):
+                    fail(
+                        app,
+                        f"container {c['name']} in pod {pod} sets env {e.get('name')!r}, "
+                        f"which is not a variable name",
+                    )
 
 
 def claim_mounts(spec, container):

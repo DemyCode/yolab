@@ -22,6 +22,15 @@ spec:
       storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
 ---
 apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Release.Name }}-secrets
+  namespace: {{ .Release.Namespace }}
+type: Opaque
+stringData:
+  app_secret: {{ required "config.app_secret is required" .Values.config.app_secret | quote }}
+---
+apiVersion: v1
 kind: ConfigMap
 metadata:
   name: '{{ .Release.Name }}-seed'
@@ -110,127 +119,131 @@ spec:
         image: wger/server:2.7@sha256:eb6e30666ae3058f3094b6030ab661fa3062c9e2ab33c72b554031acf37a3104
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('TIME_ZONE', 'Europe/Berlin')
+        - name: APP_SEED
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: app_secret
+        - name: TIME_ZONE
+          value: Europe/Berlin
+        - name: TZ
+          value: Europe/Berlin
+        - name: WGER_INSTANCE
+          value: https://wger.de
+        - name: ALLOW_REGISTRATION
+          value: 'True'
+        - name: ALLOW_GUEST_USERS
+          value: 'True'
+        - name: ALLOW_UPLOAD_VIDEOS
+          value: 'True'
+        - name: MIN_ACCOUNT_AGE_TO_TRUST
+          value: '21'
+        - name: SYNC_EXERCISES_CELERY
+          value: 'True'
+        - name: SYNC_EXERCISE_IMAGES_CELERY
+          value: 'True'
+        - name: SYNC_EXERCISE_VIDEOS_CELERY
+          value: 'True'
+        - name: SYNC_INGREDIENTS_CELERY
+          value: 'True'
+        - name: SYNC_INGREDIENTS_DUMP_URL
+          value: https://wger.de/media/ingredients/ingredients.jsonl.gz
+        - name: DOWNLOAD_INGREDIENTS_FROM
+          value: WGER
+        - name: CACHE_API_EXERCISES_CELERY
+          value: 'True'
+        - name: CACHE_API_EXERCISES_CELERY_FORCE_UPDATE
+          value: 'True'
+        - name: USE_CELERY
+          value: 'True'
+        - name: CELERY_BROKER
+          value: redis://cache:6379/2
+        - name: CELERY_BACKEND
+          value: redis://cache:6379/2
+        - name: CELERY_FLOWER_PASSWORD
+          value: adminadmin
+        - name: DJANGO_DB_ENGINE
+          value: django.db.backends.postgresql
+        - name: DJANGO_DB_DATABASE
+          value: wger
+        - name: DJANGO_DB_USER
+          value: wger
+        - name: DJANGO_DB_PASSWORD
+          value: wger
+        - name: DJANGO_DB_HOST
+          value: db
+        - name: DJANGO_DB_PORT
+          value: '5432'
+        - name: DJANGO_PERFORM_MIGRATIONS
+          value: 'True'
+        - name: DJANGO_CACHE_BACKEND
+          value: django_redis.cache.RedisCache
+        - name: DJANGO_CACHE_LOCATION
+          value: redis://cache:6379/1
+        - name: DJANGO_CACHE_TIMEOUT
+          value: '1296000'
+        - name: DJANGO_CACHE_CLIENT_CLASS
+          value: django_redis.client.DefaultClient
+        - name: AXES_ENABLED
+          value: 'True'
+        - name: AXES_FAILURE_LIMIT
+          value: '10'
+        - name: AXES_COOLOFF_TIME
+          value: '30'
+        - name: AXES_HANDLER
+          value: axes.handlers.cache.AxesCacheHandler
+        - name: AXES_LOCKOUT_PARAMETERS
+          value: ip_address
+        - name: AXES_IPWARE_PROXY_COUNT
+          value: '1'
+        - name: AXES_IPWARE_META_PRECEDENCE_ORDER
+          value: HTTP_X_FORWARDED_FOR,REMOTE_ADDR
+        - name: DJANGO_DEBUG
+          value: 'False'
+        - name: WGER_USE_GUNICORN
+          value: 'True'
+        - name: EXERCISE_CACHE_TTL
+          value: '18000'
+        - name: ACCESS_TOKEN_LIFETIME
+          value: '10'
+        - name: REFRESH_TOKEN_LIFETIME
+          value: '24'
+        - name: AUTH_PROXY_HEADER
           value: ''
-        - name: ('TZ', 'Europe/Berlin')
+        - name: AUTH_PROXY_TRUSTED_IPS
           value: ''
-        - name: ('WGER_INSTANCE', 'https://wger.de')
+        - name: AUTH_PROXY_CREATE_UNKNOWN_USER
+          value: 'False'
+        - name: AUTH_PROXY_USER_EMAIL_HEADER
           value: ''
-        - name: ('ALLOW_REGISTRATION', 'True')
+        - name: AUTH_PROXY_USER_NAME_HEADER
           value: ''
-        - name: ('ALLOW_GUEST_USERS', 'True')
-          value: ''
-        - name: ('ALLOW_UPLOAD_VIDEOS', 'True')
-          value: ''
-        - name: ('MIN_ACCOUNT_AGE_TO_TRUST', '21')
-          value: ''
-        - name: ('SYNC_EXERCISES_CELERY', 'True')
-          value: ''
-        - name: ('SYNC_EXERCISE_IMAGES_CELERY', 'True')
-          value: ''
-        - name: ('SYNC_EXERCISE_VIDEOS_CELERY', 'True')
-          value: ''
-        - name: ('SYNC_INGREDIENTS_CELERY', 'True')
-          value: ''
-        - name: ('SYNC_INGREDIENTS_DUMP_URL', 'https://wger.de/media/ingredients/ingredients.jsonl.gz')
-          value: ''
-        - name: ('DOWNLOAD_INGREDIENTS_FROM', 'WGER')
-          value: ''
-        - name: ('CACHE_API_EXERCISES_CELERY', 'True')
-          value: ''
-        - name: ('CACHE_API_EXERCISES_CELERY_FORCE_UPDATE', 'True')
-          value: ''
-        - name: ('USE_CELERY', 'True')
-          value: ''
-        - name: ('CELERY_BROKER', 'redis://wger_cache_1:6379/2')
-          value: ''
-        - name: ('CELERY_BACKEND', 'redis://wger_cache_1:6379/2')
-          value: ''
-        - name: ('CELERY_FLOWER_PASSWORD', 'adminadmin')
-          value: ''
-        - name: ('DJANGO_DB_ENGINE', 'django.db.backends.postgresql')
-          value: ''
-        - name: ('DJANGO_DB_DATABASE', 'wger')
-          value: ''
-        - name: ('DJANGO_DB_USER', 'wger')
-          value: ''
-        - name: ('DJANGO_DB_PASSWORD', 'wger')
-          value: ''
-        - name: ('DJANGO_DB_HOST', 'wger_db_1')
-          value: ''
-        - name: ('DJANGO_DB_PORT', '5432')
-          value: ''
-        - name: ('DJANGO_PERFORM_MIGRATIONS', 'True')
-          value: ''
-        - name: ('DJANGO_CACHE_BACKEND', 'django_redis.cache.RedisCache')
-          value: ''
-        - name: ('DJANGO_CACHE_LOCATION', 'redis://wger_cache_1:6379/1')
-          value: ''
-        - name: ('DJANGO_CACHE_TIMEOUT', '1296000')
-          value: ''
-        - name: ('DJANGO_CACHE_CLIENT_CLASS', 'django_redis.client.DefaultClient')
-          value: ''
-        - name: ('AXES_ENABLED', 'True')
-          value: ''
-        - name: ('AXES_FAILURE_LIMIT', '10')
-          value: ''
-        - name: ('AXES_COOLOFF_TIME', '30')
-          value: ''
-        - name: ('AXES_HANDLER', 'axes.handlers.cache.AxesCacheHandler')
-          value: ''
-        - name: ('AXES_LOCKOUT_PARAMETERS', 'ip_address')
-          value: ''
-        - name: ('AXES_IPWARE_PROXY_COUNT', '1')
-          value: ''
-        - name: ('AXES_IPWARE_META_PRECEDENCE_ORDER', 'HTTP_X_FORWARDED_FOR,REMOTE_ADDR')
-          value: ''
-        - name: ('DJANGO_DEBUG', 'False')
-          value: ''
-        - name: ('WGER_USE_GUNICORN', 'True')
-          value: ''
-        - name: ('EXERCISE_CACHE_TTL', '18000')
-          value: ''
-        - name: ('ACCESS_TOKEN_LIFETIME', '10')
-          value: ''
-        - name: ('REFRESH_TOKEN_LIFETIME', '24')
-          value: ''
-        - name: ('AUTH_PROXY_HEADER', '')
-          value: ''
-        - name: ('AUTH_PROXY_TRUSTED_IPS', '')
-          value: ''
-        - name: ('AUTH_PROXY_CREATE_UNKNOWN_USER', 'False')
-          value: ''
-        - name: ('AUTH_PROXY_USER_EMAIL_HEADER', '')
-          value: ''
-        - name: ('AUTH_PROXY_USER_NAME_HEADER', '')
-          value: ''
-        - name: ('LOG_LEVEL_PYTHON', 'INFO')
-          value: ''
-        - name: ('USE_RECAPTCHA', 'False')
-          value: ''
-        - name: ('DJANGO_CLEAR_STATIC_FIRST', 'False')
-          value: ''
-        - name: ('FROM_EMAIL', 'wger Workout Manager <wger@example.com>')
-          value: ''
-        - name: ('NUMBER_OF_PROXIES', '1')
-          value: ''
-        - name: ('GUNICORN_CMD_ARGS', '--workers 3 --threads 2 --worker-class gthread
-            --timeout 240')
-          value: ''
-        - name: ('SECRET_KEY', '${APP_SEED}')
-          value: ''
-        - name: ('CSRF_TRUSTED_ORIGINS', 'http://${DEVICE_DOMAIN_NAME}:${APP_WGER_PORT},http://${DEVICE_HOSTNAME}:${APP_WGER_PORT},${APP_WGER_LOCAL_URLS}')
-          value: ''
-        - name: ('SITE_URL', 'http://${DEVICE_DOMAIN_NAME}:${APP_WGER_PORT}')
-          value: ''
-        - name: ('MEDIA_URL', 'http://${DEVICE_DOMAIN_NAME}:${APP_WGER_PORT}/media/')
-          value: ''
-        - name: ('PS_DATABASE_URI', 'postgres://wger:wger@db:5432/wger')
-          value: ''
-        - name: ('PS_STORAGE_PG_URI', 'postgres://powersync_storage:${APP_SEED}@db:5432/wger')
-          value: ''
-        - name: ('POWERSYNC_URL_PATH', 'ps')
-          value: ''
+        - name: LOG_LEVEL_PYTHON
+          value: INFO
+        - name: USE_RECAPTCHA
+          value: 'False'
+        - name: DJANGO_CLEAR_STATIC_FIRST
+          value: 'False'
+        - name: FROM_EMAIL
+          value: wger Workout Manager <wger@example.com>
+        - name: NUMBER_OF_PROXIES
+          value: '1'
+        - name: GUNICORN_CMD_ARGS
+          value: --workers 3 --threads 2 --worker-class gthread --timeout 240
+        - name: SECRET_KEY
+          value: $(APP_SEED)
+        - name: CSRF_TRUSTED_ORIGINS
+          value: http://localhost:APP_WGER_PORT,http://localhost:APP_WGER_PORT,$(APP_WGER_LOCAL_URLS)
+        - name: SITE_URL
+          value: http://localhost:APP_WGER_PORT
+        - name: MEDIA_URL
+          value: http://localhost:APP_WGER_PORT/media/
+        - name: PS_DATABASE_URI
+          value: postgres://wger:wger@db:5432/wger
+        - name: PS_STORAGE_PG_URI
+          value: postgres://powersync_storage:$(APP_SEED)@db:5432/wger
+        - name: POWERSYNC_URL_PATH
+          value: ps
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000
@@ -313,119 +326,123 @@ spec:
         - ./manage.py
         - setup-powersync-storage
         env:
-        - name: ('TIME_ZONE', 'Europe/Berlin')
+        - name: APP_SEED
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: app_secret
+        - name: TIME_ZONE
+          value: Europe/Berlin
+        - name: TZ
+          value: Europe/Berlin
+        - name: WGER_INSTANCE
+          value: https://wger.de
+        - name: ALLOW_REGISTRATION
+          value: 'True'
+        - name: ALLOW_GUEST_USERS
+          value: 'True'
+        - name: ALLOW_UPLOAD_VIDEOS
+          value: 'True'
+        - name: MIN_ACCOUNT_AGE_TO_TRUST
+          value: '21'
+        - name: SYNC_EXERCISES_CELERY
+          value: 'True'
+        - name: SYNC_EXERCISE_IMAGES_CELERY
+          value: 'True'
+        - name: SYNC_EXERCISE_VIDEOS_CELERY
+          value: 'True'
+        - name: SYNC_INGREDIENTS_CELERY
+          value: 'True'
+        - name: SYNC_INGREDIENTS_DUMP_URL
+          value: https://wger.de/media/ingredients/ingredients.jsonl.gz
+        - name: DOWNLOAD_INGREDIENTS_FROM
+          value: WGER
+        - name: CACHE_API_EXERCISES_CELERY
+          value: 'True'
+        - name: CACHE_API_EXERCISES_CELERY_FORCE_UPDATE
+          value: 'True'
+        - name: USE_CELERY
+          value: 'True'
+        - name: CELERY_BROKER
+          value: redis://cache:6379/2
+        - name: CELERY_BACKEND
+          value: redis://cache:6379/2
+        - name: CELERY_FLOWER_PASSWORD
+          value: adminadmin
+        - name: DJANGO_DB_ENGINE
+          value: django.db.backends.postgresql
+        - name: DJANGO_DB_DATABASE
+          value: wger
+        - name: DJANGO_DB_USER
+          value: wger
+        - name: DJANGO_DB_PASSWORD
+          value: wger
+        - name: DJANGO_DB_HOST
+          value: db
+        - name: DJANGO_DB_PORT
+          value: '5432'
+        - name: DJANGO_PERFORM_MIGRATIONS
+          value: 'True'
+        - name: DJANGO_CACHE_BACKEND
+          value: django_redis.cache.RedisCache
+        - name: DJANGO_CACHE_LOCATION
+          value: redis://cache:6379/1
+        - name: DJANGO_CACHE_TIMEOUT
+          value: '1296000'
+        - name: DJANGO_CACHE_CLIENT_CLASS
+          value: django_redis.client.DefaultClient
+        - name: AXES_ENABLED
+          value: 'True'
+        - name: AXES_FAILURE_LIMIT
+          value: '10'
+        - name: AXES_COOLOFF_TIME
+          value: '30'
+        - name: AXES_HANDLER
+          value: axes.handlers.cache.AxesCacheHandler
+        - name: AXES_LOCKOUT_PARAMETERS
+          value: ip_address
+        - name: AXES_IPWARE_PROXY_COUNT
+          value: '1'
+        - name: AXES_IPWARE_META_PRECEDENCE_ORDER
+          value: HTTP_X_FORWARDED_FOR,REMOTE_ADDR
+        - name: DJANGO_DEBUG
+          value: 'False'
+        - name: WGER_USE_GUNICORN
+          value: 'True'
+        - name: EXERCISE_CACHE_TTL
+          value: '18000'
+        - name: ACCESS_TOKEN_LIFETIME
+          value: '10'
+        - name: REFRESH_TOKEN_LIFETIME
+          value: '24'
+        - name: AUTH_PROXY_HEADER
           value: ''
-        - name: ('TZ', 'Europe/Berlin')
+        - name: AUTH_PROXY_TRUSTED_IPS
           value: ''
-        - name: ('WGER_INSTANCE', 'https://wger.de')
+        - name: AUTH_PROXY_CREATE_UNKNOWN_USER
+          value: 'False'
+        - name: AUTH_PROXY_USER_EMAIL_HEADER
           value: ''
-        - name: ('ALLOW_REGISTRATION', 'True')
+        - name: AUTH_PROXY_USER_NAME_HEADER
           value: ''
-        - name: ('ALLOW_GUEST_USERS', 'True')
-          value: ''
-        - name: ('ALLOW_UPLOAD_VIDEOS', 'True')
-          value: ''
-        - name: ('MIN_ACCOUNT_AGE_TO_TRUST', '21')
-          value: ''
-        - name: ('SYNC_EXERCISES_CELERY', 'True')
-          value: ''
-        - name: ('SYNC_EXERCISE_IMAGES_CELERY', 'True')
-          value: ''
-        - name: ('SYNC_EXERCISE_VIDEOS_CELERY', 'True')
-          value: ''
-        - name: ('SYNC_INGREDIENTS_CELERY', 'True')
-          value: ''
-        - name: ('SYNC_INGREDIENTS_DUMP_URL', 'https://wger.de/media/ingredients/ingredients.jsonl.gz')
-          value: ''
-        - name: ('DOWNLOAD_INGREDIENTS_FROM', 'WGER')
-          value: ''
-        - name: ('CACHE_API_EXERCISES_CELERY', 'True')
-          value: ''
-        - name: ('CACHE_API_EXERCISES_CELERY_FORCE_UPDATE', 'True')
-          value: ''
-        - name: ('USE_CELERY', 'True')
-          value: ''
-        - name: ('CELERY_BROKER', 'redis://wger_cache_1:6379/2')
-          value: ''
-        - name: ('CELERY_BACKEND', 'redis://wger_cache_1:6379/2')
-          value: ''
-        - name: ('CELERY_FLOWER_PASSWORD', 'adminadmin')
-          value: ''
-        - name: ('DJANGO_DB_ENGINE', 'django.db.backends.postgresql')
-          value: ''
-        - name: ('DJANGO_DB_DATABASE', 'wger')
-          value: ''
-        - name: ('DJANGO_DB_USER', 'wger')
-          value: ''
-        - name: ('DJANGO_DB_PASSWORD', 'wger')
-          value: ''
-        - name: ('DJANGO_DB_HOST', 'wger_db_1')
-          value: ''
-        - name: ('DJANGO_DB_PORT', '5432')
-          value: ''
-        - name: ('DJANGO_PERFORM_MIGRATIONS', 'True')
-          value: ''
-        - name: ('DJANGO_CACHE_BACKEND', 'django_redis.cache.RedisCache')
-          value: ''
-        - name: ('DJANGO_CACHE_LOCATION', 'redis://wger_cache_1:6379/1')
-          value: ''
-        - name: ('DJANGO_CACHE_TIMEOUT', '1296000')
-          value: ''
-        - name: ('DJANGO_CACHE_CLIENT_CLASS', 'django_redis.client.DefaultClient')
-          value: ''
-        - name: ('AXES_ENABLED', 'True')
-          value: ''
-        - name: ('AXES_FAILURE_LIMIT', '10')
-          value: ''
-        - name: ('AXES_COOLOFF_TIME', '30')
-          value: ''
-        - name: ('AXES_HANDLER', 'axes.handlers.cache.AxesCacheHandler')
-          value: ''
-        - name: ('AXES_LOCKOUT_PARAMETERS', 'ip_address')
-          value: ''
-        - name: ('AXES_IPWARE_PROXY_COUNT', '1')
-          value: ''
-        - name: ('AXES_IPWARE_META_PRECEDENCE_ORDER', 'HTTP_X_FORWARDED_FOR,REMOTE_ADDR')
-          value: ''
-        - name: ('DJANGO_DEBUG', 'False')
-          value: ''
-        - name: ('WGER_USE_GUNICORN', 'True')
-          value: ''
-        - name: ('EXERCISE_CACHE_TTL', '18000')
-          value: ''
-        - name: ('ACCESS_TOKEN_LIFETIME', '10')
-          value: ''
-        - name: ('REFRESH_TOKEN_LIFETIME', '24')
-          value: ''
-        - name: ('AUTH_PROXY_HEADER', '')
-          value: ''
-        - name: ('AUTH_PROXY_TRUSTED_IPS', '')
-          value: ''
-        - name: ('AUTH_PROXY_CREATE_UNKNOWN_USER', 'False')
-          value: ''
-        - name: ('AUTH_PROXY_USER_EMAIL_HEADER', '')
-          value: ''
-        - name: ('AUTH_PROXY_USER_NAME_HEADER', '')
-          value: ''
-        - name: ('LOG_LEVEL_PYTHON', 'INFO')
-          value: ''
-        - name: ('USE_RECAPTCHA', 'False')
-          value: ''
-        - name: ('DJANGO_CLEAR_STATIC_FIRST', 'False')
-          value: ''
-        - name: ('FROM_EMAIL', 'wger Workout Manager <wger@example.com>')
-          value: ''
-        - name: ('NUMBER_OF_PROXIES', '1')
-          value: ''
-        - name: ('GUNICORN_CMD_ARGS', '--workers 3 --threads 2 --worker-class gthread
-            --timeout 240')
-          value: ''
-        - name: ('SECRET_KEY', '${APP_SEED}')
-          value: ''
-        - name: ('PS_DATABASE_URI', 'postgres://wger:wger@db:5432/wger')
-          value: ''
-        - name: ('PS_STORAGE_PG_URI', 'postgres://powersync_storage:${APP_SEED}@db:5432/wger')
-          value: ''
+        - name: LOG_LEVEL_PYTHON
+          value: INFO
+        - name: USE_RECAPTCHA
+          value: 'False'
+        - name: DJANGO_CLEAR_STATIC_FIRST
+          value: 'False'
+        - name: FROM_EMAIL
+          value: wger Workout Manager <wger@example.com>
+        - name: NUMBER_OF_PROXIES
+          value: '1'
+        - name: GUNICORN_CMD_ARGS
+          value: --workers 3 --threads 2 --worker-class gthread --timeout 240
+        - name: SECRET_KEY
+          value: $(APP_SEED)
+        - name: PS_DATABASE_URI
+          value: postgres://wger:wger@db:5432/wger
+        - name: PS_STORAGE_PG_URI
+          value: postgres://powersync_storage:$(APP_SEED)@db:5432/wger
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000
@@ -491,16 +508,21 @@ spec:
         - -r
         - unified
         env:
-        - name: ('POWERSYNC_CONFIG_PATH', '/config/powersync.yaml')
-          value: ''
-        - name: ('PS_JWKS_URL', 'http://wger_web_1:8000/api/v2/powersync-keys')
-          value: ''
-        - name: ('PS_DATABASE_URI', 'postgres://wger:wger@db:5432/wger')
-          value: ''
-        - name: ('PS_STORAGE_PG_URI', 'postgres://powersync_storage:${APP_SEED}@db:5432/wger')
-          value: ''
-        - name: ('PS_PORT', 8080)
-          value: ''
+        - name: APP_SEED
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: app_secret
+        - name: POWERSYNC_CONFIG_PATH
+          value: /config/powersync.yaml
+        - name: PS_JWKS_URL
+          value: http://web:8000/api/v2/powersync-keys
+        - name: PS_DATABASE_URI
+          value: postgres://wger:wger@db:5432/wger
+        - name: PS_STORAGE_PG_URI
+          value: postgres://powersync_storage:$(APP_SEED)@db:5432/wger
+        - name: PS_PORT
+          value: '8080'
         volumeMounts:
         - name: data
           mountPath: /config/powersync.yaml
@@ -543,8 +565,6 @@ spec:
           readOnly: true
         - name: data
           mountPath: /data
-      nodeSelector:
-        kubernetes.io/arch: amd64
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -567,6 +587,12 @@ spec:
       - name: nginx
         image: nginx:alpine3.22@sha256:b3c656d55d7ad751196f21b7fd2e8d4da9cb430e32f646adcf92441b72f82b14
         imagePullPolicy: IfNotPresent
+        env:
+        - name: APP_SEED
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: app_secret
         ports:
         - containerPort: 80
         readinessProbe:
@@ -625,8 +651,6 @@ spec:
           readOnly: true
         - name: data
           mountPath: /data
-      nodeSelector:
-        kubernetes.io/arch: amd64
 ---
 apiVersion: v1
 kind: Service
@@ -676,14 +700,19 @@ spec:
         - -c
         - max_connections=30
         env:
-        - name: ('POSTGRES_USER', 'wger')
-          value: ''
-        - name: ('POSTGRES_PASSWORD', 'wger')
-          value: ''
-        - name: ('POSTGRES_DB', 'wger')
-          value: ''
-        - name: ('TZ', 'Europe/Berlin')
-          value: ''
+        - name: APP_SEED
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: app_secret
+        - name: POSTGRES_USER
+          value: wger
+        - name: POSTGRES_PASSWORD
+          value: wger
+        - name: POSTGRES_DB
+          value: wger
+        - name: TZ
+          value: Europe/Berlin
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000
@@ -734,8 +763,6 @@ spec:
           readOnly: true
         - name: data
           mountPath: /data
-      nodeSelector:
-        kubernetes.io/arch: amd64
 ---
 apiVersion: v1
 kind: Service
@@ -770,6 +797,12 @@ spec:
       - name: cache
         image: redis:8.0.3-alpine@sha256:25c0ae32c6c2301798579f5944af53729766a18eff5660bbef196fc2e6214a9c
         imagePullPolicy: IfNotPresent
+        env:
+        - name: APP_SEED
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: app_secret
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000
@@ -859,119 +892,123 @@ spec:
         args:
         - /start-worker
         env:
-        - name: ('TIME_ZONE', 'Europe/Berlin')
+        - name: APP_SEED
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: app_secret
+        - name: TIME_ZONE
+          value: Europe/Berlin
+        - name: TZ
+          value: Europe/Berlin
+        - name: WGER_INSTANCE
+          value: https://wger.de
+        - name: ALLOW_REGISTRATION
+          value: 'True'
+        - name: ALLOW_GUEST_USERS
+          value: 'True'
+        - name: ALLOW_UPLOAD_VIDEOS
+          value: 'True'
+        - name: MIN_ACCOUNT_AGE_TO_TRUST
+          value: '21'
+        - name: SYNC_EXERCISES_CELERY
+          value: 'True'
+        - name: SYNC_EXERCISE_IMAGES_CELERY
+          value: 'True'
+        - name: SYNC_EXERCISE_VIDEOS_CELERY
+          value: 'True'
+        - name: SYNC_INGREDIENTS_CELERY
+          value: 'True'
+        - name: SYNC_INGREDIENTS_DUMP_URL
+          value: https://wger.de/media/ingredients/ingredients.jsonl.gz
+        - name: DOWNLOAD_INGREDIENTS_FROM
+          value: WGER
+        - name: CACHE_API_EXERCISES_CELERY
+          value: 'True'
+        - name: CACHE_API_EXERCISES_CELERY_FORCE_UPDATE
+          value: 'True'
+        - name: USE_CELERY
+          value: 'True'
+        - name: CELERY_BROKER
+          value: redis://cache:6379/2
+        - name: CELERY_BACKEND
+          value: redis://cache:6379/2
+        - name: CELERY_FLOWER_PASSWORD
+          value: adminadmin
+        - name: DJANGO_DB_ENGINE
+          value: django.db.backends.postgresql
+        - name: DJANGO_DB_DATABASE
+          value: wger
+        - name: DJANGO_DB_USER
+          value: wger
+        - name: DJANGO_DB_PASSWORD
+          value: wger
+        - name: DJANGO_DB_HOST
+          value: db
+        - name: DJANGO_DB_PORT
+          value: '5432'
+        - name: DJANGO_PERFORM_MIGRATIONS
+          value: 'True'
+        - name: DJANGO_CACHE_BACKEND
+          value: django_redis.cache.RedisCache
+        - name: DJANGO_CACHE_LOCATION
+          value: redis://cache:6379/1
+        - name: DJANGO_CACHE_TIMEOUT
+          value: '1296000'
+        - name: DJANGO_CACHE_CLIENT_CLASS
+          value: django_redis.client.DefaultClient
+        - name: AXES_ENABLED
+          value: 'True'
+        - name: AXES_FAILURE_LIMIT
+          value: '10'
+        - name: AXES_COOLOFF_TIME
+          value: '30'
+        - name: AXES_HANDLER
+          value: axes.handlers.cache.AxesCacheHandler
+        - name: AXES_LOCKOUT_PARAMETERS
+          value: ip_address
+        - name: AXES_IPWARE_PROXY_COUNT
+          value: '1'
+        - name: AXES_IPWARE_META_PRECEDENCE_ORDER
+          value: HTTP_X_FORWARDED_FOR,REMOTE_ADDR
+        - name: DJANGO_DEBUG
+          value: 'False'
+        - name: WGER_USE_GUNICORN
+          value: 'True'
+        - name: EXERCISE_CACHE_TTL
+          value: '18000'
+        - name: ACCESS_TOKEN_LIFETIME
+          value: '10'
+        - name: REFRESH_TOKEN_LIFETIME
+          value: '24'
+        - name: AUTH_PROXY_HEADER
           value: ''
-        - name: ('TZ', 'Europe/Berlin')
+        - name: AUTH_PROXY_TRUSTED_IPS
           value: ''
-        - name: ('WGER_INSTANCE', 'https://wger.de')
+        - name: AUTH_PROXY_CREATE_UNKNOWN_USER
+          value: 'False'
+        - name: AUTH_PROXY_USER_EMAIL_HEADER
           value: ''
-        - name: ('ALLOW_REGISTRATION', 'True')
+        - name: AUTH_PROXY_USER_NAME_HEADER
           value: ''
-        - name: ('ALLOW_GUEST_USERS', 'True')
-          value: ''
-        - name: ('ALLOW_UPLOAD_VIDEOS', 'True')
-          value: ''
-        - name: ('MIN_ACCOUNT_AGE_TO_TRUST', '21')
-          value: ''
-        - name: ('SYNC_EXERCISES_CELERY', 'True')
-          value: ''
-        - name: ('SYNC_EXERCISE_IMAGES_CELERY', 'True')
-          value: ''
-        - name: ('SYNC_EXERCISE_VIDEOS_CELERY', 'True')
-          value: ''
-        - name: ('SYNC_INGREDIENTS_CELERY', 'True')
-          value: ''
-        - name: ('SYNC_INGREDIENTS_DUMP_URL', 'https://wger.de/media/ingredients/ingredients.jsonl.gz')
-          value: ''
-        - name: ('DOWNLOAD_INGREDIENTS_FROM', 'WGER')
-          value: ''
-        - name: ('CACHE_API_EXERCISES_CELERY', 'True')
-          value: ''
-        - name: ('CACHE_API_EXERCISES_CELERY_FORCE_UPDATE', 'True')
-          value: ''
-        - name: ('USE_CELERY', 'True')
-          value: ''
-        - name: ('CELERY_BROKER', 'redis://wger_cache_1:6379/2')
-          value: ''
-        - name: ('CELERY_BACKEND', 'redis://wger_cache_1:6379/2')
-          value: ''
-        - name: ('CELERY_FLOWER_PASSWORD', 'adminadmin')
-          value: ''
-        - name: ('DJANGO_DB_ENGINE', 'django.db.backends.postgresql')
-          value: ''
-        - name: ('DJANGO_DB_DATABASE', 'wger')
-          value: ''
-        - name: ('DJANGO_DB_USER', 'wger')
-          value: ''
-        - name: ('DJANGO_DB_PASSWORD', 'wger')
-          value: ''
-        - name: ('DJANGO_DB_HOST', 'wger_db_1')
-          value: ''
-        - name: ('DJANGO_DB_PORT', '5432')
-          value: ''
-        - name: ('DJANGO_PERFORM_MIGRATIONS', 'True')
-          value: ''
-        - name: ('DJANGO_CACHE_BACKEND', 'django_redis.cache.RedisCache')
-          value: ''
-        - name: ('DJANGO_CACHE_LOCATION', 'redis://wger_cache_1:6379/1')
-          value: ''
-        - name: ('DJANGO_CACHE_TIMEOUT', '1296000')
-          value: ''
-        - name: ('DJANGO_CACHE_CLIENT_CLASS', 'django_redis.client.DefaultClient')
-          value: ''
-        - name: ('AXES_ENABLED', 'True')
-          value: ''
-        - name: ('AXES_FAILURE_LIMIT', '10')
-          value: ''
-        - name: ('AXES_COOLOFF_TIME', '30')
-          value: ''
-        - name: ('AXES_HANDLER', 'axes.handlers.cache.AxesCacheHandler')
-          value: ''
-        - name: ('AXES_LOCKOUT_PARAMETERS', 'ip_address')
-          value: ''
-        - name: ('AXES_IPWARE_PROXY_COUNT', '1')
-          value: ''
-        - name: ('AXES_IPWARE_META_PRECEDENCE_ORDER', 'HTTP_X_FORWARDED_FOR,REMOTE_ADDR')
-          value: ''
-        - name: ('DJANGO_DEBUG', 'False')
-          value: ''
-        - name: ('WGER_USE_GUNICORN', 'True')
-          value: ''
-        - name: ('EXERCISE_CACHE_TTL', '18000')
-          value: ''
-        - name: ('ACCESS_TOKEN_LIFETIME', '10')
-          value: ''
-        - name: ('REFRESH_TOKEN_LIFETIME', '24')
-          value: ''
-        - name: ('AUTH_PROXY_HEADER', '')
-          value: ''
-        - name: ('AUTH_PROXY_TRUSTED_IPS', '')
-          value: ''
-        - name: ('AUTH_PROXY_CREATE_UNKNOWN_USER', 'False')
-          value: ''
-        - name: ('AUTH_PROXY_USER_EMAIL_HEADER', '')
-          value: ''
-        - name: ('AUTH_PROXY_USER_NAME_HEADER', '')
-          value: ''
-        - name: ('LOG_LEVEL_PYTHON', 'INFO')
-          value: ''
-        - name: ('USE_RECAPTCHA', 'False')
-          value: ''
-        - name: ('DJANGO_CLEAR_STATIC_FIRST', 'False')
-          value: ''
-        - name: ('FROM_EMAIL', 'wger Workout Manager <wger@example.com>')
-          value: ''
-        - name: ('NUMBER_OF_PROXIES', '1')
-          value: ''
-        - name: ('GUNICORN_CMD_ARGS', '--workers 3 --threads 2 --worker-class gthread
-            --timeout 240')
-          value: ''
-        - name: ('SECRET_KEY', '${APP_SEED}')
-          value: ''
-        - name: ('PS_DATABASE_URI', 'postgres://wger:wger@db:5432/wger')
-          value: ''
-        - name: ('PS_STORAGE_PG_URI', 'postgres://powersync_storage:${APP_SEED}@db:5432/wger')
-          value: ''
+        - name: LOG_LEVEL_PYTHON
+          value: INFO
+        - name: USE_RECAPTCHA
+          value: 'False'
+        - name: DJANGO_CLEAR_STATIC_FIRST
+          value: 'False'
+        - name: FROM_EMAIL
+          value: wger Workout Manager <wger@example.com>
+        - name: NUMBER_OF_PROXIES
+          value: '1'
+        - name: GUNICORN_CMD_ARGS
+          value: --workers 3 --threads 2 --worker-class gthread --timeout 240
+        - name: SECRET_KEY
+          value: $(APP_SEED)
+        - name: PS_DATABASE_URI
+          value: postgres://wger:wger@db:5432/wger
+        - name: PS_STORAGE_PG_URI
+          value: postgres://powersync_storage:$(APP_SEED)@db:5432/wger
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000
@@ -1047,119 +1084,123 @@ spec:
         args:
         - /start-beat
         env:
-        - name: ('TIME_ZONE', 'Europe/Berlin')
+        - name: APP_SEED
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: app_secret
+        - name: TIME_ZONE
+          value: Europe/Berlin
+        - name: TZ
+          value: Europe/Berlin
+        - name: WGER_INSTANCE
+          value: https://wger.de
+        - name: ALLOW_REGISTRATION
+          value: 'True'
+        - name: ALLOW_GUEST_USERS
+          value: 'True'
+        - name: ALLOW_UPLOAD_VIDEOS
+          value: 'True'
+        - name: MIN_ACCOUNT_AGE_TO_TRUST
+          value: '21'
+        - name: SYNC_EXERCISES_CELERY
+          value: 'True'
+        - name: SYNC_EXERCISE_IMAGES_CELERY
+          value: 'True'
+        - name: SYNC_EXERCISE_VIDEOS_CELERY
+          value: 'True'
+        - name: SYNC_INGREDIENTS_CELERY
+          value: 'True'
+        - name: SYNC_INGREDIENTS_DUMP_URL
+          value: https://wger.de/media/ingredients/ingredients.jsonl.gz
+        - name: DOWNLOAD_INGREDIENTS_FROM
+          value: WGER
+        - name: CACHE_API_EXERCISES_CELERY
+          value: 'True'
+        - name: CACHE_API_EXERCISES_CELERY_FORCE_UPDATE
+          value: 'True'
+        - name: USE_CELERY
+          value: 'True'
+        - name: CELERY_BROKER
+          value: redis://cache:6379/2
+        - name: CELERY_BACKEND
+          value: redis://cache:6379/2
+        - name: CELERY_FLOWER_PASSWORD
+          value: adminadmin
+        - name: DJANGO_DB_ENGINE
+          value: django.db.backends.postgresql
+        - name: DJANGO_DB_DATABASE
+          value: wger
+        - name: DJANGO_DB_USER
+          value: wger
+        - name: DJANGO_DB_PASSWORD
+          value: wger
+        - name: DJANGO_DB_HOST
+          value: db
+        - name: DJANGO_DB_PORT
+          value: '5432'
+        - name: DJANGO_PERFORM_MIGRATIONS
+          value: 'True'
+        - name: DJANGO_CACHE_BACKEND
+          value: django_redis.cache.RedisCache
+        - name: DJANGO_CACHE_LOCATION
+          value: redis://cache:6379/1
+        - name: DJANGO_CACHE_TIMEOUT
+          value: '1296000'
+        - name: DJANGO_CACHE_CLIENT_CLASS
+          value: django_redis.client.DefaultClient
+        - name: AXES_ENABLED
+          value: 'True'
+        - name: AXES_FAILURE_LIMIT
+          value: '10'
+        - name: AXES_COOLOFF_TIME
+          value: '30'
+        - name: AXES_HANDLER
+          value: axes.handlers.cache.AxesCacheHandler
+        - name: AXES_LOCKOUT_PARAMETERS
+          value: ip_address
+        - name: AXES_IPWARE_PROXY_COUNT
+          value: '1'
+        - name: AXES_IPWARE_META_PRECEDENCE_ORDER
+          value: HTTP_X_FORWARDED_FOR,REMOTE_ADDR
+        - name: DJANGO_DEBUG
+          value: 'False'
+        - name: WGER_USE_GUNICORN
+          value: 'True'
+        - name: EXERCISE_CACHE_TTL
+          value: '18000'
+        - name: ACCESS_TOKEN_LIFETIME
+          value: '10'
+        - name: REFRESH_TOKEN_LIFETIME
+          value: '24'
+        - name: AUTH_PROXY_HEADER
           value: ''
-        - name: ('TZ', 'Europe/Berlin')
+        - name: AUTH_PROXY_TRUSTED_IPS
           value: ''
-        - name: ('WGER_INSTANCE', 'https://wger.de')
+        - name: AUTH_PROXY_CREATE_UNKNOWN_USER
+          value: 'False'
+        - name: AUTH_PROXY_USER_EMAIL_HEADER
           value: ''
-        - name: ('ALLOW_REGISTRATION', 'True')
+        - name: AUTH_PROXY_USER_NAME_HEADER
           value: ''
-        - name: ('ALLOW_GUEST_USERS', 'True')
-          value: ''
-        - name: ('ALLOW_UPLOAD_VIDEOS', 'True')
-          value: ''
-        - name: ('MIN_ACCOUNT_AGE_TO_TRUST', '21')
-          value: ''
-        - name: ('SYNC_EXERCISES_CELERY', 'True')
-          value: ''
-        - name: ('SYNC_EXERCISE_IMAGES_CELERY', 'True')
-          value: ''
-        - name: ('SYNC_EXERCISE_VIDEOS_CELERY', 'True')
-          value: ''
-        - name: ('SYNC_INGREDIENTS_CELERY', 'True')
-          value: ''
-        - name: ('SYNC_INGREDIENTS_DUMP_URL', 'https://wger.de/media/ingredients/ingredients.jsonl.gz')
-          value: ''
-        - name: ('DOWNLOAD_INGREDIENTS_FROM', 'WGER')
-          value: ''
-        - name: ('CACHE_API_EXERCISES_CELERY', 'True')
-          value: ''
-        - name: ('CACHE_API_EXERCISES_CELERY_FORCE_UPDATE', 'True')
-          value: ''
-        - name: ('USE_CELERY', 'True')
-          value: ''
-        - name: ('CELERY_BROKER', 'redis://wger_cache_1:6379/2')
-          value: ''
-        - name: ('CELERY_BACKEND', 'redis://wger_cache_1:6379/2')
-          value: ''
-        - name: ('CELERY_FLOWER_PASSWORD', 'adminadmin')
-          value: ''
-        - name: ('DJANGO_DB_ENGINE', 'django.db.backends.postgresql')
-          value: ''
-        - name: ('DJANGO_DB_DATABASE', 'wger')
-          value: ''
-        - name: ('DJANGO_DB_USER', 'wger')
-          value: ''
-        - name: ('DJANGO_DB_PASSWORD', 'wger')
-          value: ''
-        - name: ('DJANGO_DB_HOST', 'wger_db_1')
-          value: ''
-        - name: ('DJANGO_DB_PORT', '5432')
-          value: ''
-        - name: ('DJANGO_PERFORM_MIGRATIONS', 'True')
-          value: ''
-        - name: ('DJANGO_CACHE_BACKEND', 'django_redis.cache.RedisCache')
-          value: ''
-        - name: ('DJANGO_CACHE_LOCATION', 'redis://wger_cache_1:6379/1')
-          value: ''
-        - name: ('DJANGO_CACHE_TIMEOUT', '1296000')
-          value: ''
-        - name: ('DJANGO_CACHE_CLIENT_CLASS', 'django_redis.client.DefaultClient')
-          value: ''
-        - name: ('AXES_ENABLED', 'True')
-          value: ''
-        - name: ('AXES_FAILURE_LIMIT', '10')
-          value: ''
-        - name: ('AXES_COOLOFF_TIME', '30')
-          value: ''
-        - name: ('AXES_HANDLER', 'axes.handlers.cache.AxesCacheHandler')
-          value: ''
-        - name: ('AXES_LOCKOUT_PARAMETERS', 'ip_address')
-          value: ''
-        - name: ('AXES_IPWARE_PROXY_COUNT', '1')
-          value: ''
-        - name: ('AXES_IPWARE_META_PRECEDENCE_ORDER', 'HTTP_X_FORWARDED_FOR,REMOTE_ADDR')
-          value: ''
-        - name: ('DJANGO_DEBUG', 'False')
-          value: ''
-        - name: ('WGER_USE_GUNICORN', 'True')
-          value: ''
-        - name: ('EXERCISE_CACHE_TTL', '18000')
-          value: ''
-        - name: ('ACCESS_TOKEN_LIFETIME', '10')
-          value: ''
-        - name: ('REFRESH_TOKEN_LIFETIME', '24')
-          value: ''
-        - name: ('AUTH_PROXY_HEADER', '')
-          value: ''
-        - name: ('AUTH_PROXY_TRUSTED_IPS', '')
-          value: ''
-        - name: ('AUTH_PROXY_CREATE_UNKNOWN_USER', 'False')
-          value: ''
-        - name: ('AUTH_PROXY_USER_EMAIL_HEADER', '')
-          value: ''
-        - name: ('AUTH_PROXY_USER_NAME_HEADER', '')
-          value: ''
-        - name: ('LOG_LEVEL_PYTHON', 'INFO')
-          value: ''
-        - name: ('USE_RECAPTCHA', 'False')
-          value: ''
-        - name: ('DJANGO_CLEAR_STATIC_FIRST', 'False')
-          value: ''
-        - name: ('FROM_EMAIL', 'wger Workout Manager <wger@example.com>')
-          value: ''
-        - name: ('NUMBER_OF_PROXIES', '1')
-          value: ''
-        - name: ('GUNICORN_CMD_ARGS', '--workers 3 --threads 2 --worker-class gthread
-            --timeout 240')
-          value: ''
-        - name: ('SECRET_KEY', '${APP_SEED}')
-          value: ''
-        - name: ('PS_DATABASE_URI', 'postgres://wger:wger@db:5432/wger')
-          value: ''
-        - name: ('PS_STORAGE_PG_URI', 'postgres://powersync_storage:${APP_SEED}@db:5432/wger')
-          value: ''
+        - name: LOG_LEVEL_PYTHON
+          value: INFO
+        - name: USE_RECAPTCHA
+          value: 'False'
+        - name: DJANGO_CLEAR_STATIC_FIRST
+          value: 'False'
+        - name: FROM_EMAIL
+          value: wger Workout Manager <wger@example.com>
+        - name: NUMBER_OF_PROXIES
+          value: '1'
+        - name: GUNICORN_CMD_ARGS
+          value: --workers 3 --threads 2 --worker-class gthread --timeout 240
+        - name: SECRET_KEY
+          value: $(APP_SEED)
+        - name: PS_DATABASE_URI
+          value: postgres://wger:wger@db:5432/wger
+        - name: PS_STORAGE_PG_URI
+          value: postgres://powersync_storage:$(APP_SEED)@db:5432/wger
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000

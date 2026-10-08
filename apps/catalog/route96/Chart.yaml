@@ -2,7 +2,7 @@ apiVersion: v2
 name: route96
 description: Blossom/NIP-96 media server for Nostr
 type: application
-version: 0.1.0
+version: 0.1.1
 appVersion: 0.7.0
 dependencies:
 - name: yolab-common

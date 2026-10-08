@@ -21,6 +21,15 @@ spec:
     requests:
       storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
 ---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Release.Name }}-secrets
+  namespace: {{ .Release.Namespace }}
+type: Opaque
+stringData:
+  admin_password: {{ required "config.admin_password is required" .Values.config.admin_password | quote }}
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -50,8 +59,13 @@ spec:
         image: balzack/databag:0.1.18@sha256:37c4ab38f64842afa44ed8aea0e47271112795180708f0cb7be8ee7c7defebac
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('ADMIN', '$APP_PASSWORD')
-          value: ''
+        - name: APP_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: admin_password
+        - name: ADMIN
+          value: $(APP_PASSWORD)
         ports:
         - containerPort: 7000
         readinessProbe:

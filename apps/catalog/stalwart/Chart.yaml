@@ -2,7 +2,7 @@ apiVersion: v2
 name: stalwart
 description: All-in-one Mail & Collaboration server
 type: application
-version: 0.1.0
+version: 0.1.1
 appVersion: v0.16.24
 dependencies:
 - name: yolab-common

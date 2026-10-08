@@ -73,10 +73,10 @@ spec:
         image: linuxserver/heimdall:2.8.3@sha256:287e48152967820922969ced1e990949063679d84c11ce988726c4195b52a47f
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('PUID', '1000')
-          value: ''
-        - name: ('PGID', '1000')
-          value: ''
+        - name: PUID
+          value: '1000'
+        - name: PGID
+          value: '1000'
         ports:
         - containerPort: 80
         readinessProbe:

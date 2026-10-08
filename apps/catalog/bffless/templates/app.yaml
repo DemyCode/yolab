@@ -84,8 +84,8 @@ spec:
         image: ghcr.io/bffless/ce-nginx:umbrel@sha256:e76ceda29c799638ac88eb40ebec0ed2763a0f8750a263d03a27b5c00522b0db
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('DEVICE_DOMAIN_NAME', '${DEVICE_DOMAIN_NAME:-umbrel.local}')
-          value: ''
+        - name: DEVICE_DOMAIN_NAME
+          value: ${DEVICE_DOMAIN_NAME:-umbrel.local}
         ports:
         - containerPort: 5537
         readinessProbe:
@@ -147,12 +147,12 @@ spec:
         - -c
         - wal_buffers=4MB
         env:
-        - name: ('POSTGRES_USER', 'postgres')
-          value: ''
-        - name: ('POSTGRES_PASSWORD', 'staticfilesgobrrrr')
-          value: ''
-        - name: ('POSTGRES_DB', 'assethost')
-          value: ''
+        - name: POSTGRES_USER
+          value: postgres
+        - name: POSTGRES_PASSWORD
+          value: staticfilesgobrrrr
+        - name: POSTGRES_DB
+          value: assethost
         ports:
         - containerPort: 5432
         readinessProbe:
@@ -233,27 +233,25 @@ spec:
       labels:
         app: supertokens
     spec:
-      nodeSelector:
-        kubernetes.io/arch: amd64
       containers:
       - name: supertokens
         image: supertokens/supertokens-postgresql:9.3@sha256:39c36693b19c4e231684c9e614422c1c95751c346c6fc3ffd74980161d0b041c
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('POSTGRESQL_HOST', 'bffless_postgres_1')
-          value: ''
-        - name: ('POSTGRESQL_PORT', '5432')
-          value: ''
-        - name: ('POSTGRESQL_USER', 'postgres')
-          value: ''
-        - name: ('POSTGRESQL_PASSWORD', 'staticfilesgobrrrr')
-          value: ''
-        - name: ('POSTGRESQL_DATABASE_NAME', 'supertokens')
-          value: ''
-        - name: ('JAVA_OPTS', '-Xmx192m -Xms96m -XX:+UseSerialGC -XX:MaxMetaspaceSize
-          value: 64m')
-        - name: ('POSTGRESQL_CONNECTION_POOL_SIZE', '3')
-          value: ''
+        - name: POSTGRESQL_HOST
+          value: postgres
+        - name: POSTGRESQL_PORT
+          value: '5432'
+        - name: POSTGRESQL_USER
+          value: postgres
+        - name: POSTGRESQL_PASSWORD
+          value: staticfilesgobrrrr
+        - name: POSTGRESQL_DATABASE_NAME
+          value: supertokens
+        - name: JAVA_OPTS
+          value: -Xmx192m -Xms96m -XX:+UseSerialGC -XX:MaxMetaspaceSize=64m
+        - name: POSTGRESQL_CONNECTION_POOL_SIZE
+          value: '3'
         readinessProbe:
           exec:
             command:
@@ -295,6 +293,8 @@ spec:
           readOnly: true
         - name: data
           mountPath: /data
+      nodeSelector:
+        kubernetes.io/arch: amd64
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -318,62 +318,60 @@ spec:
         image: ghcr.io/bffless/ce-backend:umbrel@sha256:329c19087c022d4b0085d790ed3b5eca83a86d21ffa96f01ce9547d674f5a1d7
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('NODE_OPTIONS', '--max-old-space-size
-          value: 128')
-        - name: ('NODE_ENV', 'production')
+        - name: NODE_OPTIONS
+          value: --max-old-space-size=128
+        - name: NODE_ENV
+          value: production
+        - name: PORT
+          value: '3000'
+        - name: LOG_LEVEL
+          value: error,warn,log
+        - name: APP_DATA_DIR
+          value: ${APP_DATA_DIR:-/data}
+        - name: DATABASE_URL
+          value: postgresql://postgres:staticfilesgobrrrr@postgres:5432/assethost
+        - name: STORAGE_TYPE
+          value: local
+        - name: ENABLE_MINIO
+          value: 'false'
+        - name: CACHE_TYPE
+          value: memory
+        - name: ENABLE_REDIS
+          value: 'false'
+        - name: SUPERTOKENS_MODE
+          value: local
+        - name: SUPERTOKENS_CONNECTION_URI
+          value: http://bffless-supertokens:3567
+        - name: SUPERTOKENS_API_KEY
           value: ''
-        - name: ('PORT', '3000')
-          value: ''
-        - name: ('LOG_LEVEL', 'error,warn,log')
-          value: ''
-        - name: ('APP_SEED', '${APP_SEED:-}')
-          value: ''
-        - name: ('APP_DATA_DIR', '${APP_DATA_DIR:-/data}')
-          value: ''
-        - name: ('DATABASE_URL', 'postgresql://postgres:staticfilesgobrrrr@bffless_postgres_1:5432/assethost')
-          value: ''
-        - name: ('STORAGE_TYPE', 'local')
-          value: ''
-        - name: ('ENABLE_MINIO', 'false')
-          value: ''
-        - name: ('CACHE_TYPE', 'memory')
-          value: ''
-        - name: ('ENABLE_REDIS', 'false')
-          value: ''
-        - name: ('SUPERTOKENS_MODE', 'local')
-          value: ''
-        - name: ('SUPERTOKENS_CONNECTION_URI', 'http://bffless-supertokens:3567')
-          value: ''
-        - name: ('SUPERTOKENS_API_KEY', '')
-          value: ''
-        - name: ('PRIMARY_DOMAIN', 'localhost')
-          value: ''
-        - name: ('FRONTEND_URL', 'http://localhost:5537')
-          value: ''
-        - name: ('API_DOMAIN', 'http://localhost:5537')
-          value: ''
-        - name: ('ADMIN_DOMAIN', 'localhost')
-          value: ''
-        - name: ('COOKIE_SECURE', 'false')
-          value: ''
-        - name: ('COOKIE_DOMAIN', 'umbrel.local')
-          value: ''
-        - name: ('NGINX_SITES_PATH', '/etc/nginx/sites-enabled')
-          value: ''
-        - name: ('NGINX_RELOAD_WAIT_MS', '3000')
-          value: ''
-        - name: ('NGINX_LISTEN_PORT', '5537')
-          value: ''
-        - name: ('BACKEND_HOST', 'backend')
-          value: ''
-        - name: ('PROXY_MODE', 'cloudflare-tunnel')
-          value: ''
-        - name: ('FEATURE_WILDCARD_SSL', 'false')
-          value: ''
-        - name: ('FEATURE_WILDCARD_SSL_BANNER', 'false')
-          value: ''
-        - name: ('FEATURE_DOMAIN_SSL_TOGGLE', 'false')
-          value: ''
+        - name: PRIMARY_DOMAIN
+          value: localhost
+        - name: FRONTEND_URL
+          value: http://localhost:5537
+        - name: API_DOMAIN
+          value: http://localhost:5537
+        - name: ADMIN_DOMAIN
+          value: localhost
+        - name: COOKIE_SECURE
+          value: 'false'
+        - name: COOKIE_DOMAIN
+          value: umbrel.local
+        - name: NGINX_SITES_PATH
+          value: /etc/nginx/sites-enabled
+        - name: NGINX_RELOAD_WAIT_MS
+          value: '3000'
+        - name: NGINX_LISTEN_PORT
+          value: '5537'
+        - name: BACKEND_HOST
+          value: backend
+        - name: PROXY_MODE
+          value: cloudflare-tunnel
+        - name: FEATURE_WILDCARD_SSL
+          value: 'false'
+        - name: FEATURE_WILDCARD_SSL_BANNER
+          value: 'false'
+        - name: FEATURE_DOMAIN_SSL_TOGGLE
+          value: 'false'
         volumeMounts:
         - name: data
           mountPath: /app/apps/backend/uploads

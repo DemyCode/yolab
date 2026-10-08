@@ -21,6 +21,15 @@ spec:
     requests:
       storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
 ---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Release.Name }}-secrets
+  namespace: {{ .Release.Namespace }}
+type: Opaque
+stringData:
+  admin_password: {{ required "config.admin_password is required" .Values.config.admin_password | quote }}
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -43,10 +52,7 @@ spec:
       {{- if .Values.config.node }}
       nodeSelector:
         kubernetes.io/hostname: {{ .Values.config.node | quote }}
-        kubernetes.io/arch: amd64
       {{- else }}
-      nodeSelector:
-        kubernetes.io/arch: amd64
       {{- end }}
       initContainers:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
@@ -60,10 +66,15 @@ spec:
         image: technitium/dns-server:15.6.0@sha256:1045db38fd2f2e4d9578f9168b7eb4862575469ed0ffc79e03f36bdc772a93b5
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('DNS_SERVER_DOMAIN', '${DEVICE_DOMAIN_NAME}')
-          value: ''
-        - name: ('DNS_SERVER_ADMIN_PASSWORD', '${APP_PASSWORD}')
-          value: ''
+        - name: APP_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: admin_password
+        - name: DNS_SERVER_DOMAIN
+          value: localhost
+        - name: DNS_SERVER_ADMIN_PASSWORD
+          value: $(APP_PASSWORD)
         ports:
         - containerPort: 5380
         readinessProbe:

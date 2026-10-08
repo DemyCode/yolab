@@ -2,7 +2,7 @@ apiVersion: v2
 name: holesail-switchboard
 description: Manage multiple holesail P2P tunnels from a single dashboard
 type: application
-version: 0.1.0
+version: 0.1.1
 appVersion: 2.0.8-patch.1
 dependencies:
 - name: yolab-common

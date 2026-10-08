@@ -2,7 +2,7 @@ apiVersion: v2
 name: habitica
 description: An RPG for your life
 type: application
-version: 0.1.0
+version: 0.1.1
 appVersion: 5.50.6
 dependencies:
 - name: yolab-common

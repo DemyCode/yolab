@@ -49,10 +49,7 @@ spec:
       {{- if .Values.config.node }}
       nodeSelector:
         kubernetes.io/hostname: {{ .Values.config.node | quote }}
-        kubernetes.io/arch: amd64
       {{- else }}
-      nodeSelector:
-        kubernetes.io/arch: amd64
       {{- end }}
       initContainers:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
@@ -85,18 +82,18 @@ spec:
         image: ghcr.io/openhands/openhands:1.10.0@sha256:1e5c81b0ccfc4fd33a3524ba2a561f594879e238117c024a1b60edfee0412dc8
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('AGENT_SERVER_IMAGE_REPOSITORY', 'ghcr.io/openhands/agent-server')
-          value: ''
-        - name: ('AGENT_SERVER_IMAGE_TAG', '1.33.0-python')
-          value: ''
-        - name: ('SANDBOX_HOST_PORT', '3994')
-          value: ''
-        - name: ('SANDBOX_CONTAINER_URL_PATTERN', 'http://localhost:{port}')
-          value: ''
-        - name: ('WORKSPACE_MOUNT_PATH', '/opt/workspace_base')
-          value: ''
-        - name: ('LOG_ALL_EVENTS', 'true')
-          value: ''
+        - name: AGENT_SERVER_IMAGE_REPOSITORY
+          value: ghcr.io/openhands/agent-server
+        - name: AGENT_SERVER_IMAGE_TAG
+          value: 1.33.0-python
+        - name: SANDBOX_HOST_PORT
+          value: '3994'
+        - name: SANDBOX_CONTAINER_URL_PATTERN
+          value: http://localhost:{port}
+        - name: WORKSPACE_MOUNT_PATH
+          value: /opt/workspace_base
+        - name: LOG_ALL_EVENTS
+          value: 'true'
         ports:
         - containerPort: 3000
         readinessProbe:
@@ -162,8 +159,8 @@ spec:
         - --pidfile
         - /data/docker.pid
         env:
-        - name: ('DOCKER_ENSURE_BRIDGE', 'dind0:10.32.0.1/16')
-          value: ''
+        - name: DOCKER_ENSURE_BRIDGE
+          value: dind0:10.32.0.1/16
         volumeMounts:
         - name: data
           mountPath: /entrypoint.sh
@@ -200,5 +197,3 @@ spec:
           mountPath: /data
       hostNetwork: true
       dnsPolicy: ClusterFirstWithHostNet
-      nodeSelector:
-        kubernetes.io/arch: amd64

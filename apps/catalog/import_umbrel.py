@@ -176,7 +176,31 @@ def use_underscore(name):
 # ---------------------------------------------------------------------------
 
 
+SKIP = {
+    "tdex": "its proxy and daemon need a Liquid node and Tor wiring the importer cannot produce",
+}
+
+
+def bump_patch(version):
+    major, minor, patch = str(version).split(".")
+    return f"{major}.{minor}.{int(patch) + 1}"
+
+
+def carry_over(previous, chart_yaml):
+    """A regenerated chart keeps its curated annotations and moves up a version."""
+    return {
+        **chart_yaml,
+        "version": bump_patch(previous.get("version") or "0.1.0"),
+        "annotations": {
+            **(chart_yaml.get("annotations") or {}),
+            **(previous.get("annotations") or {}),
+        },
+    }
+
+
 def skip_reason(app_id, compose, existing):
+    if app_id in SKIP:
+        return SKIP[app_id]
     if app_id in existing or ALIAS.get(app_id) in existing:
         return "already in the catalogue"
 
@@ -1265,6 +1289,9 @@ def build_chart(app_id, um, compose, out_dir, src_dir, seeds=()):
 
     app_yaml = "".join(parts)
 
+    previous = os.path.join(out_dir, "Chart.yaml")
+    if os.path.isfile(previous):
+        chart_yaml = carry_over(load_yaml(previous), chart_yaml)
     os.makedirs(os.path.join(out_dir, "templates"), exist_ok=True)
     with open(os.path.join(out_dir, "Chart.yaml"), "w") as f:
         yaml.safe_dump(chart_yaml, f, sort_keys=False, allow_unicode=True, width=1000)
@@ -1314,7 +1341,11 @@ def main():
         except Exception as e:  # noqa: BLE001
             skipped.append((app_id, f"unreadable: {e}"))
             continue
-        reason = skip_reason(app_id, compose, existing)
+        reason = skip_reason(
+            app_id,
+            compose,
+            existing - {app_id, ALIAS.get(app_id)} if args.force else existing,
+        )
         if reason:
             skipped.append((app_id, reason))
             continue

@@ -50,18 +50,18 @@ spec:
         image: orenz0/holesail-switchboard:v2.0.8@sha256:87bee9070543a0ec929289fc1d6ebe37b899350b4844d35ff1f2b38e689868ad
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('HSSB_DATA_FILE', '/data/data.json')
-          value: ''
-        - name: ('HSSB_HOST', '0.0.0.0')
-          value: ''
-        - name: ('HSSB_PORT', 3160)
-          value: ''
-        - name: ('HSSB_CLIENT_HOST', '0.0.0.0')
-          value: ''
-        - name: ('HSSB_FIXED_CLIENT_PORTS', '3161-3170')
-          value: ''
-        - name: '(''HSSB_SUBTITLE'', ''For more information, visit: https://github.com/oren-z0/holesail-switchboard/blob/main/docs/Umbrel.md'')'
-          value: ''
+        - name: HSSB_DATA_FILE
+          value: /data/data.json
+        - name: HSSB_HOST
+          value: 0.0.0.0
+        - name: HSSB_PORT
+          value: '3160'
+        - name: HSSB_CLIENT_HOST
+          value: 0.0.0.0
+        - name: HSSB_FIXED_CLIENT_PORTS
+          value: 3161-3170
+        - name: HSSB_SUBTITLE
+          value: 'For more information, visit: https://github.com/oren-z0/holesail-switchboard/blob/main/docs/Umbrel.md'
         ports:
         - containerPort: 3160
         readinessProbe:

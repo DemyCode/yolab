@@ -2,7 +2,7 @@ apiVersion: v2
 name: trilium-notes
 description: Build your personal knowledge base with Trilium Notes
 type: application
-version: 0.1.0
+version: 0.1.1
 appVersion: v0.106.0
 dependencies:
 - name: yolab-common

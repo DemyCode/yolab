@@ -2,7 +2,7 @@ apiVersion: v2
 name: blockstream-blind-oracle
 description: Encrypt your wallet on Blockstream Jade
 type: application
-version: 0.1.0
+version: 0.1.1
 appVersion: 0.1.2-patch.1
 dependencies:
 - name: yolab-common

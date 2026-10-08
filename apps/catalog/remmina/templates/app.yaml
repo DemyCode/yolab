@@ -50,10 +50,10 @@ spec:
         image: linuxserver/remmina:1.4.35@sha256:ca2b6788bad28d864086649fc276ce696cac9cdf69e6976b85497b341ed07d8d
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('PUID', '1000')
-          value: ''
-        - name: ('PGID', '1000')
-          value: ''
+        - name: PUID
+          value: '1000'
+        - name: PGID
+          value: '1000'
         ports:
         - containerPort: 3000
         readinessProbe:

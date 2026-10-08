@@ -51,10 +51,7 @@ spec:
       {{- if .Values.config.node }}
       nodeSelector:
         kubernetes.io/hostname: {{ .Values.config.node | quote }}
-        kubernetes.io/arch: amd64
       {{- else }}
-      nodeSelector:
-        kubernetes.io/arch: amd64
       {{- end }}
       initContainers:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
@@ -89,10 +86,10 @@ spec:
         image: ghcr.io/music-assistant/server:2.10.5@sha256:28023f8c0d96ca2496391f3218a6d70d7ef3ba84db846b3a3f3cd9ce7ef8aedc
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('XDG_CACHE_HOME', '/data/.cache')
-          value: ''
-        - name: ('TORCH_HOME', '/data/.cache/torch')
-          value: ''
+        - name: XDG_CACHE_HOME
+          value: /data/.cache
+        - name: TORCH_HOME
+          value: /data/.cache/torch
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000

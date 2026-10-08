@@ -50,8 +50,8 @@ spec:
         image: ghcr.io/spacedriveapp/spacebot:v0.5.0@sha256:ccd9411f72def62b192e44aed23446b94e6e4774d55d7100a94de1531029f6ed
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('TZ', '${TZ:-UTC}')
-          value: ''
+        - name: TZ
+          value: ${TZ:-UTC}
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000

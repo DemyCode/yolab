@@ -2,7 +2,7 @@ apiVersion: v2
 name: mailarchiver
 description: A comprehensive solution for archiving, searching, and exporting emails
 type: application
-version: 0.1.0
+version: 0.1.1
 appVersion: '2609.1'
 dependencies:
 - name: yolab-common

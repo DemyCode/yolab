@@ -73,8 +73,8 @@ spec:
         image: agent0ai/agent-zero:v2.13@sha256:ed3948b4b317cb16413ed02dff26eb57f25f12eeb095f38fcd2a50843384e59f
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('ALLOWED_ORIGINS', 'http://${DEVICE_DOMAIN_NAME}:${APP_AGENTZERO_PORT},http://${DEVICE_HOSTNAME}:${APP_AGENTZERO_PORT},${APP_AGENTZERO_LOCAL_URLS}')
-          value: ''
+        - name: ALLOWED_ORIGINS
+          value: http://localhost:APP_AGENTZERO_PORT,http://localhost:APP_AGENTZERO_PORT,$(APP_AGENTZERO_LOCAL_URLS)
         ports:
         - containerPort: 80
         readinessProbe:

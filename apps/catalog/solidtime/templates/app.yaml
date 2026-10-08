@@ -79,70 +79,70 @@ spec:
         image: solidtime/solidtime:0.21.0@sha256:30ab1ede2a28d782c1cc2f5407bb3e20798d717b3e9acc7a8d734fdc8258cb9e
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('CONTAINER_MODE', 'http')
+        - name: CONTAINER_MODE
+          value: http
+        - name: AUTO_DB_MIGRATE
+          value: 'true'
+        - name: APP_NAME
+          value: solidtime
+        - name: VITE_APP_NAME
+          value: solidtime
+        - name: APP_ENV
+          value: production
+        - name: APP_DEBUG
+          value: 'false'
+        - name: APP_URL
+          value: http://localhost:8770
+        - name: APP_FORCE_HTTPS
+          value: 'false'
+        - name: TRUSTED_PROXIES
+          value: 0.0.0.0/0,2000:0:0:0:0:0:0:0/3
+        - name: TRUSTED_HOSTS
+          value: localhost,localhost,localhost,localhost,$(APP_SOLIDTIME_LOCAL_IPS)
+        - name: SUPER_ADMINS
+          value: umbrel@umbrel.local
+        - name: LOG_CHANNEL
+          value: stderr_daily
+        - name: LOG_LEVEL
+          value: debug
+        - name: DB_CONNECTION
+          value: pgsql
+        - name: DB_HOST
+          value: db
+        - name: DB_PORT
+          value: '5432'
+        - name: DB_SSLMODE
+          value: require
+        - name: DB_DATABASE
+          value: solidtime
+        - name: DB_USERNAME
+          value: solidtime
+        - name: DB_PASSWORD
+          value: solidtime
+        - name: MAIL_MAILER
+          value: smtp
+        - name: MAIL_HOST
           value: ''
-        - name: ('AUTO_DB_MIGRATE', 'true')
+        - name: MAIL_PORT
           value: ''
-        - name: ('APP_NAME', 'solidtime')
+        - name: MAIL_ENCRYPTION
+          value: tls
+        - name: MAIL_FROM_ADDRESS
+          value: no-reply@your-domain.com
+        - name: MAIL_FROM_NAME
+          value: solidtime
+        - name: MAIL_USERNAME
           value: ''
-        - name: ('VITE_APP_NAME', 'solidtime')
+        - name: MAIL_PASSWORD
           value: ''
-        - name: ('APP_ENV', 'production')
-          value: ''
-        - name: ('APP_DEBUG', 'false')
-          value: ''
-        - name: ('APP_URL', 'http://${DEVICE_DOMAIN_NAME}:8770')
-          value: ''
-        - name: ('APP_FORCE_HTTPS', 'false')
-          value: ''
-        - name: ('TRUSTED_PROXIES', '0.0.0.0/0,2000:0:0:0:0:0:0:0/3')
-          value: ''
-        - name: ('TRUSTED_HOSTS', '${DEVICE_DOMAIN_NAME},${DEVICE_HOSTNAME},${APP_DOMAIN},${APP_HIDDEN_SERVICE},${APP_SOLIDTIME_LOCAL_IPS}')
-          value: ''
-        - name: ('SUPER_ADMINS', 'umbrel@umbrel.local')
-          value: ''
-        - name: ('LOG_CHANNEL', 'stderr_daily')
-          value: ''
-        - name: ('LOG_LEVEL', 'debug')
-          value: ''
-        - name: ('DB_CONNECTION', 'pgsql')
-          value: ''
-        - name: ('DB_HOST', 'solidtime_db_1')
-          value: ''
-        - name: ('DB_PORT', '5432')
-          value: ''
-        - name: ('DB_SSLMODE', 'require')
-          value: ''
-        - name: ('DB_DATABASE', 'solidtime')
-          value: ''
-        - name: ('DB_USERNAME', 'solidtime')
-          value: ''
-        - name: ('DB_PASSWORD', 'solidtime')
-          value: ''
-        - name: ('MAIL_MAILER', 'smtp')
-          value: ''
-        - name: ('MAIL_HOST', '')
-          value: ''
-        - name: ('MAIL_PORT', '')
-          value: ''
-        - name: ('MAIL_ENCRYPTION', 'tls')
-          value: ''
-        - name: ('MAIL_FROM_ADDRESS', 'no-reply@your-domain.com')
-          value: ''
-        - name: ('MAIL_FROM_NAME', 'solidtime')
-          value: ''
-        - name: ('MAIL_USERNAME', '')
-          value: ''
-        - name: ('MAIL_PASSWORD', '')
-          value: ''
-        - name: ('QUEUE_CONNECTION', 'database')
-          value: ''
-        - name: ('FILESYSTEM_DISK', 'local')
-          value: ''
-        - name: ('PUBLIC_FILESYSTEM_DISK', 'public')
-          value: ''
-        - name: ('GOTENBERG_URL', 'http://solidtime_gotenberg_1:3000')
-          value: ''
+        - name: QUEUE_CONNECTION
+          value: database
+        - name: FILESYSTEM_DISK
+          value: local
+        - name: PUBLIC_FILESYSTEM_DISK
+          value: public
+        - name: GOTENBERG_URL
+          value: http://gotenberg:3000
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000
@@ -188,68 +188,68 @@ spec:
         image: solidtime/solidtime:0.21.0@sha256:30ab1ede2a28d782c1cc2f5407bb3e20798d717b3e9acc7a8d734fdc8258cb9e
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('CONTAINER_MODE', 'scheduler')
+        - name: CONTAINER_MODE
+          value: scheduler
+        - name: APP_NAME
+          value: solidtime
+        - name: VITE_APP_NAME
+          value: solidtime
+        - name: APP_ENV
+          value: production
+        - name: APP_DEBUG
+          value: 'false'
+        - name: APP_URL
+          value: http://localhost:8770
+        - name: APP_FORCE_HTTPS
+          value: 'false'
+        - name: TRUSTED_PROXIES
+          value: 0.0.0.0/0,2000:0:0:0:0:0:0:0/3
+        - name: TRUSTED_HOSTS
+          value: localhost,localhost,localhost,localhost,$(APP_SOLIDTIME_LOCAL_IPS)
+        - name: SUPER_ADMINS
+          value: umbrel@umbrel.local
+        - name: LOG_CHANNEL
+          value: stderr_daily
+        - name: LOG_LEVEL
+          value: debug
+        - name: DB_CONNECTION
+          value: pgsql
+        - name: DB_HOST
+          value: db
+        - name: DB_PORT
+          value: '5432'
+        - name: DB_SSLMODE
+          value: require
+        - name: DB_DATABASE
+          value: solidtime
+        - name: DB_USERNAME
+          value: solidtime
+        - name: DB_PASSWORD
+          value: solidtime
+        - name: MAIL_MAILER
+          value: smtp
+        - name: MAIL_HOST
           value: ''
-        - name: ('APP_NAME', 'solidtime')
+        - name: MAIL_PORT
           value: ''
-        - name: ('VITE_APP_NAME', 'solidtime')
+        - name: MAIL_ENCRYPTION
+          value: tls
+        - name: MAIL_FROM_ADDRESS
+          value: no-reply@your-domain.com
+        - name: MAIL_FROM_NAME
+          value: solidtime
+        - name: MAIL_USERNAME
           value: ''
-        - name: ('APP_ENV', 'production')
+        - name: MAIL_PASSWORD
           value: ''
-        - name: ('APP_DEBUG', 'false')
-          value: ''
-        - name: ('APP_URL', 'http://${DEVICE_DOMAIN_NAME}:8770')
-          value: ''
-        - name: ('APP_FORCE_HTTPS', 'false')
-          value: ''
-        - name: ('TRUSTED_PROXIES', '0.0.0.0/0,2000:0:0:0:0:0:0:0/3')
-          value: ''
-        - name: ('TRUSTED_HOSTS', '${DEVICE_DOMAIN_NAME},${DEVICE_HOSTNAME},${APP_DOMAIN},${APP_HIDDEN_SERVICE},${APP_SOLIDTIME_LOCAL_IPS}')
-          value: ''
-        - name: ('SUPER_ADMINS', 'umbrel@umbrel.local')
-          value: ''
-        - name: ('LOG_CHANNEL', 'stderr_daily')
-          value: ''
-        - name: ('LOG_LEVEL', 'debug')
-          value: ''
-        - name: ('DB_CONNECTION', 'pgsql')
-          value: ''
-        - name: ('DB_HOST', 'solidtime_db_1')
-          value: ''
-        - name: ('DB_PORT', '5432')
-          value: ''
-        - name: ('DB_SSLMODE', 'require')
-          value: ''
-        - name: ('DB_DATABASE', 'solidtime')
-          value: ''
-        - name: ('DB_USERNAME', 'solidtime')
-          value: ''
-        - name: ('DB_PASSWORD', 'solidtime')
-          value: ''
-        - name: ('MAIL_MAILER', 'smtp')
-          value: ''
-        - name: ('MAIL_HOST', '')
-          value: ''
-        - name: ('MAIL_PORT', '')
-          value: ''
-        - name: ('MAIL_ENCRYPTION', 'tls')
-          value: ''
-        - name: ('MAIL_FROM_ADDRESS', 'no-reply@your-domain.com')
-          value: ''
-        - name: ('MAIL_FROM_NAME', 'solidtime')
-          value: ''
-        - name: ('MAIL_USERNAME', '')
-          value: ''
-        - name: ('MAIL_PASSWORD', '')
-          value: ''
-        - name: ('QUEUE_CONNECTION', 'database')
-          value: ''
-        - name: ('FILESYSTEM_DISK', 'local')
-          value: ''
-        - name: ('PUBLIC_FILESYSTEM_DISK', 'public')
-          value: ''
-        - name: ('GOTENBERG_URL', 'http://solidtime_gotenberg_1:3000')
-          value: ''
+        - name: QUEUE_CONNECTION
+          value: database
+        - name: FILESYSTEM_DISK
+          value: local
+        - name: PUBLIC_FILESYSTEM_DISK
+          value: public
+        - name: GOTENBERG_URL
+          value: http://gotenberg:3000
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000
@@ -313,70 +313,70 @@ spec:
         image: solidtime/solidtime:0.21.0@sha256:30ab1ede2a28d782c1cc2f5407bb3e20798d717b3e9acc7a8d734fdc8258cb9e
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('CONTAINER_MODE', 'worker')
+        - name: CONTAINER_MODE
+          value: worker
+        - name: WORKER_COMMAND
+          value: php /var/www/html/artisan queue:work
+        - name: APP_NAME
+          value: solidtime
+        - name: VITE_APP_NAME
+          value: solidtime
+        - name: APP_ENV
+          value: production
+        - name: APP_DEBUG
+          value: 'false'
+        - name: APP_URL
+          value: http://localhost:8770
+        - name: APP_FORCE_HTTPS
+          value: 'false'
+        - name: TRUSTED_PROXIES
+          value: 0.0.0.0/0,2000:0:0:0:0:0:0:0/3
+        - name: TRUSTED_HOSTS
+          value: localhost,localhost,localhost,localhost,$(APP_SOLIDTIME_LOCAL_IPS)
+        - name: SUPER_ADMINS
+          value: umbrel@umbrel.local
+        - name: LOG_CHANNEL
+          value: stderr_daily
+        - name: LOG_LEVEL
+          value: debug
+        - name: DB_CONNECTION
+          value: pgsql
+        - name: DB_HOST
+          value: db
+        - name: DB_PORT
+          value: '5432'
+        - name: DB_SSLMODE
+          value: require
+        - name: DB_DATABASE
+          value: solidtime
+        - name: DB_USERNAME
+          value: solidtime
+        - name: DB_PASSWORD
+          value: solidtime
+        - name: MAIL_MAILER
+          value: smtp
+        - name: MAIL_HOST
           value: ''
-        - name: ('WORKER_COMMAND', 'php /var/www/html/artisan queue:work')
+        - name: MAIL_PORT
           value: ''
-        - name: ('APP_NAME', 'solidtime')
+        - name: MAIL_ENCRYPTION
+          value: tls
+        - name: MAIL_FROM_ADDRESS
+          value: no-reply@your-domain.com
+        - name: MAIL_FROM_NAME
+          value: solidtime
+        - name: MAIL_USERNAME
           value: ''
-        - name: ('VITE_APP_NAME', 'solidtime')
+        - name: MAIL_PASSWORD
           value: ''
-        - name: ('APP_ENV', 'production')
-          value: ''
-        - name: ('APP_DEBUG', 'false')
-          value: ''
-        - name: ('APP_URL', 'http://${DEVICE_DOMAIN_NAME}:8770')
-          value: ''
-        - name: ('APP_FORCE_HTTPS', 'false')
-          value: ''
-        - name: ('TRUSTED_PROXIES', '0.0.0.0/0,2000:0:0:0:0:0:0:0/3')
-          value: ''
-        - name: ('TRUSTED_HOSTS', '${DEVICE_DOMAIN_NAME},${DEVICE_HOSTNAME},${APP_DOMAIN},${APP_HIDDEN_SERVICE},${APP_SOLIDTIME_LOCAL_IPS}')
-          value: ''
-        - name: ('SUPER_ADMINS', 'umbrel@umbrel.local')
-          value: ''
-        - name: ('LOG_CHANNEL', 'stderr_daily')
-          value: ''
-        - name: ('LOG_LEVEL', 'debug')
-          value: ''
-        - name: ('DB_CONNECTION', 'pgsql')
-          value: ''
-        - name: ('DB_HOST', 'solidtime_db_1')
-          value: ''
-        - name: ('DB_PORT', '5432')
-          value: ''
-        - name: ('DB_SSLMODE', 'require')
-          value: ''
-        - name: ('DB_DATABASE', 'solidtime')
-          value: ''
-        - name: ('DB_USERNAME', 'solidtime')
-          value: ''
-        - name: ('DB_PASSWORD', 'solidtime')
-          value: ''
-        - name: ('MAIL_MAILER', 'smtp')
-          value: ''
-        - name: ('MAIL_HOST', '')
-          value: ''
-        - name: ('MAIL_PORT', '')
-          value: ''
-        - name: ('MAIL_ENCRYPTION', 'tls')
-          value: ''
-        - name: ('MAIL_FROM_ADDRESS', 'no-reply@your-domain.com')
-          value: ''
-        - name: ('MAIL_FROM_NAME', 'solidtime')
-          value: ''
-        - name: ('MAIL_USERNAME', '')
-          value: ''
-        - name: ('MAIL_PASSWORD', '')
-          value: ''
-        - name: ('QUEUE_CONNECTION', 'database')
-          value: ''
-        - name: ('FILESYSTEM_DISK', 'local')
-          value: ''
-        - name: ('PUBLIC_FILESYSTEM_DISK', 'public')
-          value: ''
-        - name: ('GOTENBERG_URL', 'http://solidtime_gotenberg_1:3000')
-          value: ''
+        - name: QUEUE_CONNECTION
+          value: database
+        - name: FILESYSTEM_DISK
+          value: local
+        - name: PUBLIC_FILESYSTEM_DISK
+          value: public
+        - name: GOTENBERG_URL
+          value: http://gotenberg:3000
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000
@@ -440,14 +440,14 @@ spec:
         image: postgres:17.3@sha256:0321e2252ebfeecb8bc1a899755084d29bce872953e1a5a3e25ec0860b739098
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('PGPASSWORD', 'soldtime')
-          value: ''
-        - name: ('POSTGRES_DB', 'solidtime')
-          value: ''
-        - name: ('POSTGRES_USER', 'solidtime')
-          value: ''
-        - name: ('POSTGRES_PASSWORD', 'solidtime')
-          value: ''
+        - name: PGPASSWORD
+          value: soldtime
+        - name: POSTGRES_DB
+          value: solidtime
+        - name: POSTGRES_USER
+          value: solidtime
+        - name: POSTGRES_PASSWORD
+          value: solidtime
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000
@@ -564,5 +564,3 @@ spec:
           readOnly: true
         - name: data
           mountPath: /data
-      nodeSelector:
-        kubernetes.io/arch: amd64

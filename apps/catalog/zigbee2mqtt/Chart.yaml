@@ -2,7 +2,7 @@ apiVersion: v2
 name: zigbee2mqtt
 description: Zigbee to MQTT bridge, get rid of your proprietary Zigbee bridges
 type: application
-version: 0.1.0
+version: 0.1.1
 appVersion: 2.14.2
 dependencies:
 - name: yolab-common

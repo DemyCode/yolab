@@ -21,6 +21,16 @@ spec:
     requests:
       storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
 ---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Release.Name }}-secrets
+  namespace: {{ .Release.Namespace }}
+type: Opaque
+stringData:
+  app_secret: {{ required "config.app_secret is required" .Values.config.app_secret | quote }}
+  admin_password: {{ required "config.admin_password is required" .Values.config.admin_password | quote }}
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -50,18 +60,28 @@ spec:
         image: dullage/flatnotes:v5.5.5@sha256:ca4b40ee7491aabf6b52bbb20ab140145cb96981d4b3fe96ab1e797ac6cd93e5
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('PUID', 1000)
-          value: ''
-        - name: ('PGID', 1000)
-          value: ''
-        - name: ('FLATNOTES_AUTH_TYPE', 'password')
-          value: ''
-        - name: ('FLATNOTES_USERNAME', 'admin')
-          value: ''
-        - name: ('FLATNOTES_PASSWORD', '${APP_PASSWORD}')
-          value: ''
-        - name: ('FLATNOTES_SECRET_KEY', '${APP_SEED}')
-          value: ''
+        - name: APP_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: admin_password
+        - name: APP_SEED
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: app_secret
+        - name: PUID
+          value: '1000'
+        - name: PGID
+          value: '1000'
+        - name: FLATNOTES_AUTH_TYPE
+          value: password
+        - name: FLATNOTES_USERNAME
+          value: admin
+        - name: FLATNOTES_PASSWORD
+          value: $(APP_PASSWORD)
+        - name: FLATNOTES_SECRET_KEY
+          value: $(APP_SEED)
         ports:
         - containerPort: 8080
         readinessProbe:

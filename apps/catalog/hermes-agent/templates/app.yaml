@@ -53,22 +53,22 @@ spec:
         - gateway
         - run
         env:
-        - name: ('HERMES_UID', '1000')
-          value: ''
-        - name: ('HERMES_GID', '1000')
-          value: ''
-        - name: ('HERMES_DASHBOARD', '1')
-          value: ''
-        - name: ('HERMES_DASHBOARD_PORT', '18789')
-          value: ''
-        - name: ('HERMES_UMBREL_APP_PROXY_AUTH', '1')
-          value: ''
-        - name: ('HERMES_TUI_DIR', '/app/umbrel-tui')
-          value: ''
-        - name: ('HERMES_UPSTREAM_TUI_ENTRY', '/opt/hermes/ui-tui/dist/entry.js')
-          value: ''
-        - name: ('HERMES_GATEWAY_BOOTSTRAP_STATE', 'running')
-          value: ''
+        - name: HERMES_UID
+          value: '1000'
+        - name: HERMES_GID
+          value: '1000'
+        - name: HERMES_DASHBOARD
+          value: '1'
+        - name: HERMES_DASHBOARD_PORT
+          value: '18789'
+        - name: HERMES_UMBREL_APP_PROXY_AUTH
+          value: '1'
+        - name: HERMES_TUI_DIR
+          value: /app/umbrel-tui
+        - name: HERMES_UPSTREAM_TUI_ENTRY
+          value: /opt/hermes/ui-tui/dist/entry.js
+        - name: HERMES_GATEWAY_BOOTSTRAP_STATE
+          value: running
         ports:
         - containerPort: 18789
         readinessProbe:

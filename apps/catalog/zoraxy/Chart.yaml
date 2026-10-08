@@ -2,7 +2,7 @@ apiVersion: v2
 name: zoraxy
 description: An efficient reverse proxy server with automated SSL management
 type: application
-version: 0.1.0
+version: 0.1.1
 appVersion: 3.3.4-patch.1
 dependencies:
 - name: yolab-common

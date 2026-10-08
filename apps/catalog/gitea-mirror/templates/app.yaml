@@ -21,6 +21,15 @@ spec:
     requests:
       storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
 ---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Release.Name }}-secrets
+  namespace: {{ .Release.Namespace }}
+type: Opaque
+stringData:
+  app_secret: {{ required "config.app_secret is required" .Values.config.app_secret | quote }}
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -50,26 +59,31 @@ spec:
         image: ghcr.io/raylabshq/gitea-mirror:v3.40.3@sha256:786b193599c60138a3fa04b8d7abc45faef9748af030d49da802c5a478314154
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('BETTER_AUTH_SECRET', '${APP_SEED}')
-          value: ''
-        - name: ('BETTER_AUTH_URL', 'http://${DEVICE_DOMAIN_NAME}:${APP_GITEA_MIRROR_PORT}')
-          value: ''
-        - name: ('BETTER_AUTH_TRUSTED_ORIGINS', '*')
-          value: ''
-        - name: ('NODE_ENV', 'production')
-          value: ''
-        - name: ('DATABASE_URL', 'file:data/gitea-mirror.db')
-          value: ''
-        - name: ('HOST', '0.0.0.0')
-          value: ''
-        - name: ('PORT', '4321')
-          value: ''
-        - name: ('PUBLIC_BETTER_AUTH_URL', 'http://${DEVICE_DOMAIN_NAME}:${APP_GITEA_MIRROR_PORT}')
-          value: ''
-        - name: ('MIRROR_ISSUE_CONCURRENCY', '3')
-          value: ''
-        - name: ('MIRROR_PULL_REQUEST_CONCURRENCY', '5')
-          value: ''
+        - name: APP_SEED
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: app_secret
+        - name: BETTER_AUTH_SECRET
+          value: $(APP_SEED)
+        - name: BETTER_AUTH_URL
+          value: http://localhost:APP_GITEA_MIRROR_PORT
+        - name: BETTER_AUTH_TRUSTED_ORIGINS
+          value: '*'
+        - name: NODE_ENV
+          value: production
+        - name: DATABASE_URL
+          value: file:data/gitea-mirror.db
+        - name: HOST
+          value: 0.0.0.0
+        - name: PORT
+          value: '4321'
+        - name: PUBLIC_BETTER_AUTH_URL
+          value: http://localhost:APP_GITEA_MIRROR_PORT
+        - name: MIRROR_ISSUE_CONCURRENCY
+          value: '3'
+        - name: MIRROR_PULL_REQUEST_CONCURRENCY
+          value: '5'
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000

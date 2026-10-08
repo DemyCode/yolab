@@ -54,12 +54,12 @@ spec:
         - -c
         - 'sh -c "perl -0pi -e ''s/upgradeInsecureRequests: IS_PROD \\? \\[\\] : null,?/upgradeInsecureRequests: null/g'' /var/lib/habitica/website/server/middlewares/index.js /var/lib/habitica/website/transpiled-babel/middlewares/index.js && printenv | grep -v ''no_proxy'' >> /etc/environment && /etc/init.d/cron start && node /var/lib/habitica/website/transpiled-babel/index.js"'
         env:
-        - name: ('NODE_DB_URI', 'mongodb://habitica_mongo_1/habitica')
-          value: ''
-        - name: ('BASE_URL', 'http://${DEVICE_DOMAIN_NAME}:3944')
-          value: ''
-        - name: ('INVITE_ONLY', 'false')
-          value: ''
+        - name: NODE_DB_URI
+          value: mongodb://mongo/habitica
+        - name: BASE_URL
+          value: http://localhost:3944
+        - name: INVITE_ONLY
+          value: 'false'
         ports:
         - containerPort: 3000
         readinessProbe:

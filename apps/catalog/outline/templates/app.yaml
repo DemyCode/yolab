@@ -22,6 +22,15 @@ spec:
       storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
 ---
 apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Release.Name }}-secrets
+  namespace: {{ .Release.Namespace }}
+type: Opaque
+stringData:
+  app_secret: {{ required "config.app_secret is required" .Values.config.app_secret | quote }}
+---
+apiVersion: v1
 kind: ConfigMap
 metadata:
   name: '{{ .Release.Name }}-seed'
@@ -47,8 +56,6 @@ spec:
       labels:
         app: gateway
     spec:
-      nodeSelector:
-        kubernetes.io/arch: amd64
       initContainers:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
@@ -84,52 +91,57 @@ spec:
         image: outlinewiki/outline:1.7.1@sha256:361df7040e6f0d7abac768b99f40122197921626a7e69501aabb5fcb496fc1b4
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('FORCE_HTTPS', 'false')
-          value: ''
-        - name: ('ENABLE_UPDATES', 'true')
-          value: ''
-        - name: ('WEB_CONCURRENCY', '1')
-          value: ''
-        - name: ('LOG_LEVEL', 'info')
-          value: ''
-        - name: ('NODE_ENV', 'production')
-          value: ''
-        - name: ('SECRET_KEY', '${APP_SEED}')
-          value: ''
-        - name: ('UTILS_SECRET', '${APP_SEED}')
-          value: ''
-        - name: ('DATABASE_URL', 'postgres://outline:outlinepass@outline_db_1:5432/outline')
-          value: ''
-        - name: ('PGSSLMODE', 'disable')
-          value: ''
-        - name: ('REDIS_URL', 'redis://outline_redis_1:6379')
-          value: ''
-        - name: ('URL', 'http://${DEVICE_DOMAIN_NAME}:${APP_OUTLINE_PORT}')
-          value: ''
-        - name: ('PORT', 3000)
-          value: ''
-        - name: ('FILE_STORAGE', 'local')
-          value: ''
-        - name: ('FILE_STORAGE_LOCAL_ROOT_DIR', '/var/lib/outline/data')
-          value: ''
-        - name: ('FILE_STORAGE_UPLOAD_MAX_SIZE', 262144000)
-          value: ''
-        - name: ('OIDC_CLIENT_ID', 'outline')
-          value: ''
-        - name: ('OIDC_CLIENT_SECRET', '${APP_SEED}')
-          value: ''
-        - name: ('OIDC_AUTH_URI', 'http://${DEVICE_DOMAIN_NAME}:8943/dex/auth')
-          value: ''
-        - name: ('OIDC_TOKEN_URI', 'http://outline_dex_1:5556/dex/token')
-          value: ''
-        - name: ('OIDC_USERINFO_URI', 'http://outline_dex_1:5556/dex/userinfo')
-          value: ''
-        - name: ('OIDC_USERNAME_CLAIM', 'preferred_username')
-          value: ''
-        - name: ('OIDC_DISPLAY_NAME', 'Dex')
-          value: ''
-        - name: ('OIDC_SCOPES', 'openid profile email')
-          value: ''
+        - name: APP_SEED
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: app_secret
+        - name: FORCE_HTTPS
+          value: 'false'
+        - name: ENABLE_UPDATES
+          value: 'true'
+        - name: WEB_CONCURRENCY
+          value: '1'
+        - name: LOG_LEVEL
+          value: info
+        - name: NODE_ENV
+          value: production
+        - name: SECRET_KEY
+          value: $(APP_SEED)
+        - name: UTILS_SECRET
+          value: $(APP_SEED)
+        - name: DATABASE_URL
+          value: postgres://outline:outlinepass@db:5432/outline
+        - name: PGSSLMODE
+          value: disable
+        - name: REDIS_URL
+          value: redis://redis:6379
+        - name: URL
+          value: http://localhost:APP_OUTLINE_PORT
+        - name: PORT
+          value: '3000'
+        - name: FILE_STORAGE
+          value: local
+        - name: FILE_STORAGE_LOCAL_ROOT_DIR
+          value: /var/lib/outline/data
+        - name: FILE_STORAGE_UPLOAD_MAX_SIZE
+          value: '262144000'
+        - name: OIDC_CLIENT_ID
+          value: outline
+        - name: OIDC_CLIENT_SECRET
+          value: $(APP_SEED)
+        - name: OIDC_AUTH_URI
+          value: http://localhost:8943/dex/auth
+        - name: OIDC_TOKEN_URI
+          value: http://dex:5556/dex/token
+        - name: OIDC_USERINFO_URI
+          value: http://dex:5556/dex/userinfo
+        - name: OIDC_USERNAME_CLAIM
+          value: preferred_username
+        - name: OIDC_DISPLAY_NAME
+          value: Dex
+        - name: OIDC_SCOPES
+          value: openid profile email
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000
@@ -172,12 +184,17 @@ spec:
         image: postgres:17.9-alpine@sha256:778d0b486d6daa02b77434d0358ec57a1b21fd8b6d22ac2eef56a33e816928f6
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('POSTGRES_USER', 'outline')
-          value: ''
-        - name: ('POSTGRES_PASSWORD', 'outlinepass')
-          value: ''
-        - name: ('POSTGRES_DB', 'outline')
-          value: ''
+        - name: APP_SEED
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: app_secret
+        - name: POSTGRES_USER
+          value: outline
+        - name: POSTGRES_PASSWORD
+          value: outlinepass
+        - name: POSTGRES_DB
+          value: outline
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000
@@ -227,8 +244,6 @@ spec:
           readOnly: true
         - name: data
           mountPath: /data
-      nodeSelector:
-        kubernetes.io/arch: amd64
 ---
 apiVersion: v1
 kind: Service
@@ -263,6 +278,12 @@ spec:
       - name: redis
         image: redis:8.4.2-alpine@sha256:812a2556fa70318d980d248a65f62a3bdb72c0882e90d96e50d5c8cf2bed438d
         imagePullPolicy: IfNotPresent
+        env:
+        - name: APP_SEED
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: app_secret
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000
@@ -349,6 +370,12 @@ spec:
         - dex
         - serve
         - /etc/dex/config.yaml
+        env:
+        - name: APP_SEED
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: app_secret
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000
@@ -395,8 +422,6 @@ spec:
           readOnly: true
         - name: data
           mountPath: /data
-      nodeSelector:
-        kubernetes.io/arch: amd64
 ---
 apiVersion: v1
 kind: Service

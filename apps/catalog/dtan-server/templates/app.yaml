@@ -81,8 +81,8 @@ spec:
         image: voidic/dtan-server:v0.2.0@sha256:8ffce76cc82d00fbe8571bedfd6699fbd91e97d89ff5e6cbc32dbf03b9d58ad1
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('RUST_LOG', 'info')
-          value: ''
+        - name: RUST_LOG
+          value: info
         ports:
         - containerPort: 8000
         readinessProbe:

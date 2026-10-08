@@ -2,7 +2,7 @@ apiVersion: v2
 name: nostr-vpn
 description: Admin-approved mesh VPN over Nostr
 type: application
-version: 0.1.0
+version: 0.1.1
 appVersion: v4.1.17
 dependencies:
 - name: yolab-common

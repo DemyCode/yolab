@@ -1587,6 +1587,73 @@ class ImportedEnvironment(unittest.TestCase):
         self.assertEqual(env, {"WALLET": "oceand:18000"})
 
 
+class Regenerated(unittest.TestCase):
+    def test_a_regenerated_chart_keeps_its_curated_annotations_and_moves_up(self):
+        import import_umbrel
+
+        chart = import_umbrel.carry_over(
+            {
+                "version": "0.1.9",
+                "annotations": {"yolab.io/tagline": "Curated", "yolab.io/github": "a/b"},
+            },
+            {
+                "version": "0.1.0",
+                "annotations": {"yolab.io/tagline": "Generated", "yolab.io/icon": "x"},
+            },
+        )
+        self.assertEqual(chart["version"], "0.1.10")
+        self.assertEqual(
+            chart["annotations"],
+            {"yolab.io/tagline": "Curated", "yolab.io/icon": "x", "yolab.io/github": "a/b"},
+        )
+
+    def test_tdex_is_never_imported(self):
+        import import_umbrel
+
+        self.assertIn("Liquid", import_umbrel.skip_reason("tdex", {}, set()))
+
+
+class Containers(unittest.TestCase):
+    def failures(self, containers, init=None):
+        docs = [
+            {
+                "kind": "Deployment",
+                "metadata": {"name": "gateway"},
+                "spec": {
+                    "template": {
+                        "spec": {"containers": containers, "initContainers": init or []}
+                    }
+                },
+            }
+        ]
+        found = []
+        check_charts.check_containers("app", docs, lambda app, msg: found.append(msg))
+        return found
+
+    def test_a_python_pair_rendered_as_an_env_name_is_reported(self):
+        found = self.failures(
+            [{"name": "app", "env": [{"name": "('PORT', 3000)", "value": ""}]}]
+        )
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("not a variable name", found[0])
+
+    def test_ordinary_env_names_pass(self):
+        self.assertEqual(
+            self.failures(
+                [{"name": "app", "env": [{"name": "APP_SEED"}, {"name": "spring.port"}]}]
+            ),
+            [],
+        )
+
+    def test_two_containers_with_one_name_in_a_pod_are_reported(self):
+        found = self.failures([{"name": "caddy"}, {"name": "caddy"}])
+        self.assertEqual(found, ["pod gateway has two containers named caddy"])
+
+    def test_an_init_container_may_not_reuse_a_container_s_name(self):
+        found = self.failures([{"name": "seed"}], init=[{"name": "seed"}])
+        self.assertEqual(len(found), 1, found)
+
+
 class OffersFileExplorer(unittest.TestCase):
     def test_a_chart_with_the_explorer_switch_offers_it_even_when_off_by_default(self):
         schema = {

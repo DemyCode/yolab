@@ -2,7 +2,7 @@ apiVersion: v2
 name: formicaio
 description: Run nodes on the Autonomi peer-to-peer (P2P) network
 type: application
-version: 0.1.0
+version: 0.1.1
 appVersion: 0.8.4-patch.1
 dependencies:
 - name: yolab-common

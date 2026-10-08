@@ -43,10 +43,7 @@ spec:
       {{- if .Values.config.node }}
       nodeSelector:
         kubernetes.io/hostname: {{ .Values.config.node | quote }}
-        kubernetes.io/arch: amd64
       {{- else }}
-      nodeSelector:
-        kubernetes.io/arch: amd64
       {{- end }}
       initContainers:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
@@ -63,12 +60,12 @@ spec:
         - python3
         - /app/server.py
         env:
-        - name: ('SETUP_PORT', '7586')
-          value: ''
-        - name: ('OTBR_WEB_PORT', '7587')
-          value: ''
-        - name: ('OTBR_REST_PORT', '8083')
-          value: ''
+        - name: SETUP_PORT
+          value: '7586'
+        - name: OTBR_WEB_PORT
+          value: '7587'
+        - name: OTBR_REST_PORT
+          value: '8083'
         ports:
         - containerPort: 7586
         readinessProbe:
@@ -144,10 +141,10 @@ spec:
           \ true\n      kill -TERM 1 2>/dev/null || true\n      exit 0\n    fi\n \
           \ done\n) &\nexec /init\n"
         env:
-        - name: ('OTBR_WEB_PORT', '7587')
-          value: ''
-        - name: ('OTBR_REST_PORT', '8083')
-          value: ''
+        - name: OTBR_WEB_PORT
+          value: '7587'
+        - name: OTBR_REST_PORT
+          value: '8083'
         volumeMounts:
         - name: data
           mountPath: /data
@@ -163,5 +160,3 @@ spec:
           path: /dev
       hostNetwork: true
       dnsPolicy: ClusterFirstWithHostNet
-      nodeSelector:
-        kubernetes.io/arch: amd64

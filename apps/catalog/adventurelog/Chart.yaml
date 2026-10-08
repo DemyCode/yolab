@@ -2,7 +2,7 @@ apiVersion: v2
 name: adventurelog
 description: Self-hostable travel tracker and trip planner
 type: application
-version: 0.1.0
+version: 0.1.1
 appVersion: v0.13.0
 dependencies:
 - name: yolab-common

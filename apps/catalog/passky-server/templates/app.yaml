@@ -21,6 +21,15 @@ spec:
     requests:
       storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
 ---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Release.Name }}-secrets
+  namespace: {{ .Release.Namespace }}
+type: Opaque
+stringData:
+  admin_password: {{ required "config.admin_password is required" .Values.config.admin_password | quote }}
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -68,107 +77,110 @@ spec:
       labels:
         app: server
     spec:
-      nodeSelector:
-        kubernetes.io/arch: amd64
       containers:
       - name: server
         image: rabbitcompany/passky-server:8.1.8@sha256:e9bf7b9ecdf4904f1e3893b5968e98cbb61d4984bca1482081df2f59df05fca6
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('SERVER_LOCATION', 'US')
+        - name: APP_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: admin_password
+        - name: SERVER_LOCATION
+          value: US
+        - name: SERVER_CORES
+          value: '1'
+        - name: ADMIN_USERNAME
+          value: admin
+        - name: ADMIN_PASSWORD
+          value: $(APP_PASSWORD)
+        - name: CF_TURNSTILE_SITE_KEY
+          value: 1x00000000000000000000AA
+        - name: CF_TURNSTILE_SECRET_KEY
+          value: 1x0000000000000000000000000000000AA
+        - name: DATABASE_ENGINE
+          value: sqlite
+        - name: DATABASE_FILE
+          value: passky
+        - name: MYSQL_HOST
           value: ''
-        - name: ('SERVER_CORES', 1)
+        - name: MYSQL_PORT
+          value: '3306'
+        - name: MYSQL_DATABASE
+          value: passky
+        - name: MYSQL_USER
+          value: passky
+        - name: MYSQL_PASSWORD
           value: ''
-        - name: ('ADMIN_USERNAME', 'admin')
+        - name: MYSQL_SSL
+          value: 'false'
+        - name: MYSQL_SSL_CA
+          value: /etc/ssl/certs/ca-certificates.crt
+        - name: MYSQL_CACHE_MODE
+          value: '0'
+        - name: REDIS_HOST
+          value: 127.0.0.1
+        - name: REDIS_PORT
+          value: '6379'
+        - name: REDIS_PASSWORD
           value: ''
-        - name: ('ADMIN_PASSWORD', '${APP_PASSWORD}')
+        - name: REDIS_LOCAL_HOST
+          value: 127.0.0.1
+        - name: REDIS_LOCAL_PORT
+          value: '6379'
+        - name: REDIS_LOCAL_PASSWORD
           value: ''
-        - name: ('CF_TURNSTILE_SITE_KEY', '1x00000000000000000000AA')
-          value: ''
-        - name: ('CF_TURNSTILE_SECRET_KEY', '1x0000000000000000000000000000000AA')
-          value: ''
-        - name: ('DATABASE_ENGINE', 'sqlite')
-          value: ''
-        - name: ('DATABASE_FILE', 'passky')
-          value: ''
-        - name: ('MYSQL_HOST', '')
-          value: ''
-        - name: ('MYSQL_PORT', 3306)
-          value: ''
-        - name: ('MYSQL_DATABASE', 'passky')
-          value: ''
-        - name: ('MYSQL_USER', 'passky')
-          value: ''
-        - name: ('MYSQL_PASSWORD', '')
-          value: ''
-        - name: ('MYSQL_SSL', 'false')
-          value: ''
-        - name: ('MYSQL_SSL_CA', '/etc/ssl/certs/ca-certificates.crt')
-          value: ''
-        - name: ('MYSQL_CACHE_MODE', 0)
-          value: ''
-        - name: ('REDIS_HOST', '127.0.0.1')
-          value: ''
-        - name: ('REDIS_PORT', 6379)
-          value: ''
-        - name: ('REDIS_PASSWORD', '')
-          value: ''
-        - name: ('REDIS_LOCAL_HOST', '127.0.0.1')
-          value: ''
-        - name: ('REDIS_LOCAL_PORT', 6379)
-          value: ''
-        - name: ('REDIS_LOCAL_PASSWORD', '')
-          value: ''
-        - name: ('MAIL_ENABLED', 'false')
-          value: ''
-        - name: ('ACCOUNT_MAX', 100)
-          value: ''
-        - name: ('ACCOUNT_MAX_PASSWORDS', 1000)
-          value: ''
-        - name: ('ACCOUNT_PREMIUM', -1)
-          value: ''
-        - name: ('YUBI_CLOUD', 'https://api.yubico.com/wsapi/2.0/verify')
-          value: ''
-        - name: ('YUBI_ID', 67857)
-          value: ''
-        - name: ('LIMITER_ENABLED', 'true')
-          value: ''
-        - name: ('LIMITER_GET_INFO', -1)
-          value: ''
-        - name: ('LIMITER_GET_STATS', -1)
-          value: ''
-        - name: ('LIMITER_GET_TOKEN', 3)
-          value: ''
-        - name: ('LIMITER_GET_PASSWORDS', 2)
-          value: ''
-        - name: ('LIMITER_SAVE_PASSWORD', 2)
-          value: ''
-        - name: ('LIMITER_EDIT_PASSWORD', 2)
-          value: ''
-        - name: ('LIMITER_DELETE_PASSWORD', 2)
-          value: ''
-        - name: ('LIMITER_DELETE_PASSWORDS', 10)
-          value: ''
-        - name: ('LIMITER_CREATE_ACCOUNT', 10)
-          value: ''
-        - name: ('LIMITER_DELETE_ACCOUNT', 10)
-          value: ''
-        - name: ('LIMITER_IMPORT_PASSWORDS', 10)
-          value: ''
-        - name: ('LIMITER_FORGOT_USERNAME', 60)
-          value: ''
-        - name: ('LIMITER_ENABLE_2FA', 10)
-          value: ''
-        - name: ('LIMITER_DISABLE_2FA', 10)
-          value: ''
-        - name: ('LIMITER_ADD_YUBIKEY', 10)
-          value: ''
-        - name: ('LIMITER_REMOVE_YUBIKEY', 10)
-          value: ''
-        - name: ('LIMITER_UPGRADE_ACCOUNT', 10)
-          value: ''
-        - name: ('LIMITER_GET_REPORT', -1)
-          value: ''
+        - name: MAIL_ENABLED
+          value: 'false'
+        - name: ACCOUNT_MAX
+          value: '100'
+        - name: ACCOUNT_MAX_PASSWORDS
+          value: '1000'
+        - name: ACCOUNT_PREMIUM
+          value: '-1'
+        - name: YUBI_CLOUD
+          value: https://api.yubico.com/wsapi/2.0/verify
+        - name: YUBI_ID
+          value: '67857'
+        - name: LIMITER_ENABLED
+          value: 'true'
+        - name: LIMITER_GET_INFO
+          value: '-1'
+        - name: LIMITER_GET_STATS
+          value: '-1'
+        - name: LIMITER_GET_TOKEN
+          value: '3'
+        - name: LIMITER_GET_PASSWORDS
+          value: '2'
+        - name: LIMITER_SAVE_PASSWORD
+          value: '2'
+        - name: LIMITER_EDIT_PASSWORD
+          value: '2'
+        - name: LIMITER_DELETE_PASSWORD
+          value: '2'
+        - name: LIMITER_DELETE_PASSWORDS
+          value: '10'
+        - name: LIMITER_CREATE_ACCOUNT
+          value: '10'
+        - name: LIMITER_DELETE_ACCOUNT
+          value: '10'
+        - name: LIMITER_IMPORT_PASSWORDS
+          value: '10'
+        - name: LIMITER_FORGOT_USERNAME
+          value: '60'
+        - name: LIMITER_ENABLE_2FA
+          value: '10'
+        - name: LIMITER_DISABLE_2FA
+          value: '10'
+        - name: LIMITER_ADD_YUBIKEY
+          value: '10'
+        - name: LIMITER_REMOVE_YUBIKEY
+          value: '10'
+        - name: LIMITER_UPGRADE_ACCOUNT
+          value: '10'
+        - name: LIMITER_GET_REPORT
+          value: '-1'
         ports:
         - containerPort: 80
         readinessProbe:
@@ -182,6 +194,8 @@ spec:
       - name: data
         persistentVolumeClaim:
           claimName: '{{ .Release.Name }}-data'
+      nodeSelector:
+        kubernetes.io/arch: amd64
 ---
 apiVersion: v1
 kind: Service

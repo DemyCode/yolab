@@ -2,7 +2,7 @@ apiVersion: v2
 name: just-download
 description: Download torrents. Just. Download.
 type: application
-version: 0.1.0
+version: 0.1.1
 appVersion: 1.0.9-patch.1
 dependencies:
 - name: yolab-common

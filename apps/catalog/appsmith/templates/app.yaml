@@ -21,6 +21,15 @@ spec:
     requests:
       storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
 ---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Release.Name }}-secrets
+  namespace: {{ .Release.Namespace }}
+type: Opaque
+stringData:
+  admin_password: {{ required "config.admin_password is required" .Values.config.admin_password | quote }}
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -73,10 +82,15 @@ spec:
         image: appsmith/appsmith-ce:v2.4.3@sha256:c50d5b159482981f12e6f8733c3e936376e75d0a518a3cef61b9f4f8a1967696
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('APPSMITH_ENCRYPTION_PASSWORD', '${APP_PASSWORD}')
-          value: ''
-        - name: ('APPSMITH_ENCRYPTION_SALT', '${APP_PASSWORD}')
-          value: ''
+        - name: APP_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: admin_password
+        - name: APPSMITH_ENCRYPTION_PASSWORD
+          value: $(APP_PASSWORD)
+        - name: APPSMITH_ENCRYPTION_SALT
+          value: $(APP_PASSWORD)
         ports:
         - containerPort: 80
         readinessProbe:

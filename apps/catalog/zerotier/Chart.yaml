@@ -2,7 +2,7 @@ apiVersion: v2
 name: zerotier
 description: Access your Umbrel from anywhere with a peer-to-peer mesh VPN
 type: application
-version: 0.1.0
+version: 0.1.1
 appVersion: 1.14.2
 dependencies:
 - name: yolab-common

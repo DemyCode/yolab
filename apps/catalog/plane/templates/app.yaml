@@ -22,6 +22,16 @@ spec:
       storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
 ---
 apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Release.Name }}-secrets
+  namespace: {{ .Release.Namespace }}
+type: Opaque
+stringData:
+  app_secret: {{ required "config.app_secret is required" .Values.config.app_secret | quote }}
+  admin_password: {{ required "config.admin_password is required" .Values.config.admin_password | quote }}
+---
+apiVersion: v1
 kind: ConfigMap
 metadata:
   name: '{{ .Release.Name }}-seed'
@@ -47,8 +57,6 @@ spec:
       labels:
         app: gateway
     spec:
-      nodeSelector:
-        kubernetes.io/arch: amd64
       initContainers:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
@@ -123,85 +131,95 @@ spec:
         image: postgres:17.9-alpine@sha256:778d0b486d6daa02b77434d0358ec57a1b21fd8b6d22ac2eef56a33e816928f6
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('WEB_URL', 'changeme')
+        - name: APP_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: admin_password
+        - name: APP_SEED
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: app_secret
+        - name: WEB_URL
+          value: changeme
+        - name: API_BASE_URL
+          value: changeme
+        - name: APP_DOMAIN
+          value: changeme
+        - name: ALLOWED_HOSTS
+          value: changeme
+        - name: CORS_ALLOWED_ORIGINS
+          value: changeme
+        - name: CSRF_TRUSTED_ORIGINS
+          value: changeme
+        - name: NGINX_HOST
+          value: changeme
+        - name: APP_PROTOCOL
+          value: http
+        - name: ENABLE_SIGNUP
+          value: '0'
+        - name: DEBUG
+          value: '0'
+        - name: NGINX_PORT
+          value: '8762'
+        - name: LISTEN_HTTP_PORT
+          value: '8762'
+        - name: BUCKET_NAME
+          value: uploads
+        - name: GUNICORN_WORKERS
+          value: '2'
+        - name: POSTGRES_DB
+          value: plane
+        - name: POSTGRES_USER
+          value: plane
+        - name: POSTGRES_PASSWORD
+          value: umbrelplane
+        - name: DATABASE_URL
+          value: postgresql://plane:umbrelplane@db:5432/plane
+        - name: REDIS_URL
+          value: redis://redis:6379/0
+        - name: RABBITMQ_DEFAULT_USER
+          value: plane
+        - name: RABBITMQ_DEFAULT_PASS
+          value: umbrelplane
+        - name: RABBITMQ_DEFAULT_VHOST
+          value: plane
+        - name: CELERY_BROKER_URL
+          value: amqp://plane:umbrelplane@rabbitmq:5672/plane
+        - name: USE_MINIO
+          value: '1'
+        - name: AWS_ACCESS_KEY_ID
+          value: umbrel
+        - name: AWS_SECRET_ACCESS_KEY
+          value: $(APP_PASSWORD)
+        - name: AWS_S3_ENDPOINT_URL
+          value: http://plane-minio-1:9000
+        - name: AWS_S3_BUCKET_NAME
+          value: uploads
+        - name: FILE_SIZE_LIMIT
+          value: '52428800'
+        - name: MINIO_ENDPOINT_SSL
+          value: '0'
+        - name: MINIO_ROOT_USER
+          value: umbrel
+        - name: MINIO_ROOT_PASSWORD
+          value: $(APP_PASSWORD)
+        - name: SECRET_KEY
+          value: $(APP_SEED)
+        - name: LIVE_SERVER_SECRET_KEY
+          value: $(APP_SEED)
+        - name: USE_X_FORWARDED_HOST
+          value: '1'
+        - name: SECURE_SSL_REDIRECT
+          value: '0'
+        - name: SESSION_COOKIE_SECURE
+          value: '0'
+        - name: CSRF_COOKIE_SECURE
+          value: '0'
+        - name: WEBHOOK_ALLOWED_IPS
           value: ''
-        - name: ('API_BASE_URL', 'changeme')
-          value: ''
-        - name: ('APP_DOMAIN', 'changeme')
-          value: ''
-        - name: ('ALLOWED_HOSTS', 'changeme')
-          value: ''
-        - name: ('CORS_ALLOWED_ORIGINS', 'changeme')
-          value: ''
-        - name: ('CSRF_TRUSTED_ORIGINS', 'changeme')
-          value: ''
-        - name: ('NGINX_HOST', 'changeme')
-          value: ''
-        - name: ('APP_PROTOCOL', 'http')
-          value: ''
-        - name: ('ENABLE_SIGNUP', '0')
-          value: ''
-        - name: ('DEBUG', '0')
-          value: ''
-        - name: ('NGINX_PORT', 8762)
-          value: ''
-        - name: ('LISTEN_HTTP_PORT', 8762)
-          value: ''
-        - name: ('BUCKET_NAME', 'uploads')
-          value: ''
-        - name: ('GUNICORN_WORKERS', 2)
-          value: ''
-        - name: ('POSTGRES_DB', 'plane')
-          value: ''
-        - name: ('POSTGRES_USER', 'plane')
-          value: ''
-        - name: ('POSTGRES_PASSWORD', 'umbrelplane')
-          value: ''
-        - name: ('DATABASE_URL', 'postgresql://plane:umbrelplane@plane_db_1:5432/plane')
-          value: ''
-        - name: ('REDIS_URL', 'redis://plane_redis_1:6379/0')
-          value: ''
-        - name: ('RABBITMQ_DEFAULT_USER', 'plane')
-          value: ''
-        - name: ('RABBITMQ_DEFAULT_PASS', 'umbrelplane')
-          value: ''
-        - name: ('RABBITMQ_DEFAULT_VHOST', 'plane')
-          value: ''
-        - name: ('CELERY_BROKER_URL', 'amqp://plane:umbrelplane@plane_rabbitmq_1:5672/plane')
-          value: ''
-        - name: ('USE_MINIO', 1)
-          value: ''
-        - name: ('AWS_ACCESS_KEY_ID', 'umbrel')
-          value: ''
-        - name: ('AWS_SECRET_ACCESS_KEY', '$APP_PASSWORD')
-          value: ''
-        - name: ('AWS_S3_ENDPOINT_URL', 'http://plane-minio-1:9000')
-          value: ''
-        - name: ('AWS_S3_BUCKET_NAME', 'uploads')
-          value: ''
-        - name: ('FILE_SIZE_LIMIT', 52428800)
-          value: ''
-        - name: ('MINIO_ENDPOINT_SSL', 0)
-          value: ''
-        - name: ('MINIO_ROOT_USER', 'umbrel')
-          value: ''
-        - name: ('MINIO_ROOT_PASSWORD', '$APP_PASSWORD')
-          value: ''
-        - name: ('SECRET_KEY', '$APP_SEED')
-          value: ''
-        - name: ('LIVE_SERVER_SECRET_KEY', '$APP_SEED')
-          value: ''
-        - name: ('USE_X_FORWARDED_HOST', 1)
-          value: ''
-        - name: ('SECURE_SSL_REDIRECT', 0)
-          value: ''
-        - name: ('SESSION_COOKIE_SECURE', 0)
-          value: ''
-        - name: ('CSRF_COOKIE_SECURE', 0)
-          value: ''
-        - name: ('WEBHOOK_ALLOWED_IPS', '')
-          value: ''
-        - name: ('WEBHOOK_ALLOWED_HOSTS', '')
+        - name: WEBHOOK_ALLOWED_HOSTS
           value: ''
         securityContext:
           runAsUser: 1000
@@ -250,8 +268,6 @@ spec:
           readOnly: true
         - name: data
           mountPath: /data
-      nodeSelector:
-        kubernetes.io/arch: amd64
 ---
 apiVersion: v1
 kind: Service
@@ -286,6 +302,17 @@ spec:
       - name: redis
         image: valkey/valkey:7.2.12-alpine@sha256:d0809f1d763f9fc3d77cd27e7c0393b1b0d69b6ad9269f932328b4793a620c78
         imagePullPolicy: IfNotPresent
+        env:
+        - name: APP_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: admin_password
+        - name: APP_SEED
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: app_secret
         ports:
         - containerPort: 6379
         readinessProbe:
@@ -326,8 +353,6 @@ spec:
           readOnly: true
         - name: data
           mountPath: /data
-      nodeSelector:
-        kubernetes.io/arch: amd64
 ---
 apiVersion: v1
 kind: Service
@@ -363,85 +388,95 @@ spec:
         image: rabbitmq:3.13.7-management-alpine@sha256:0c64ec4fc5596406d755dcca75e8a3b618192cc5fb69f8f0340f06290b1cc08c
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('WEB_URL', 'changeme')
+        - name: APP_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: admin_password
+        - name: APP_SEED
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: app_secret
+        - name: WEB_URL
+          value: changeme
+        - name: API_BASE_URL
+          value: changeme
+        - name: APP_DOMAIN
+          value: changeme
+        - name: ALLOWED_HOSTS
+          value: changeme
+        - name: CORS_ALLOWED_ORIGINS
+          value: changeme
+        - name: CSRF_TRUSTED_ORIGINS
+          value: changeme
+        - name: NGINX_HOST
+          value: changeme
+        - name: APP_PROTOCOL
+          value: http
+        - name: ENABLE_SIGNUP
+          value: '0'
+        - name: DEBUG
+          value: '0'
+        - name: NGINX_PORT
+          value: '8762'
+        - name: LISTEN_HTTP_PORT
+          value: '8762'
+        - name: BUCKET_NAME
+          value: uploads
+        - name: GUNICORN_WORKERS
+          value: '2'
+        - name: POSTGRES_DB
+          value: plane
+        - name: POSTGRES_USER
+          value: plane
+        - name: POSTGRES_PASSWORD
+          value: umbrelplane
+        - name: DATABASE_URL
+          value: postgresql://plane:umbrelplane@db:5432/plane
+        - name: REDIS_URL
+          value: redis://redis:6379/0
+        - name: RABBITMQ_DEFAULT_USER
+          value: plane
+        - name: RABBITMQ_DEFAULT_PASS
+          value: umbrelplane
+        - name: RABBITMQ_DEFAULT_VHOST
+          value: plane
+        - name: CELERY_BROKER_URL
+          value: amqp://plane:umbrelplane@rabbitmq:5672/plane
+        - name: USE_MINIO
+          value: '1'
+        - name: AWS_ACCESS_KEY_ID
+          value: umbrel
+        - name: AWS_SECRET_ACCESS_KEY
+          value: $(APP_PASSWORD)
+        - name: AWS_S3_ENDPOINT_URL
+          value: http://plane-minio-1:9000
+        - name: AWS_S3_BUCKET_NAME
+          value: uploads
+        - name: FILE_SIZE_LIMIT
+          value: '52428800'
+        - name: MINIO_ENDPOINT_SSL
+          value: '0'
+        - name: MINIO_ROOT_USER
+          value: umbrel
+        - name: MINIO_ROOT_PASSWORD
+          value: $(APP_PASSWORD)
+        - name: SECRET_KEY
+          value: $(APP_SEED)
+        - name: LIVE_SERVER_SECRET_KEY
+          value: $(APP_SEED)
+        - name: USE_X_FORWARDED_HOST
+          value: '1'
+        - name: SECURE_SSL_REDIRECT
+          value: '0'
+        - name: SESSION_COOKIE_SECURE
+          value: '0'
+        - name: CSRF_COOKIE_SECURE
+          value: '0'
+        - name: WEBHOOK_ALLOWED_IPS
           value: ''
-        - name: ('API_BASE_URL', 'changeme')
-          value: ''
-        - name: ('APP_DOMAIN', 'changeme')
-          value: ''
-        - name: ('ALLOWED_HOSTS', 'changeme')
-          value: ''
-        - name: ('CORS_ALLOWED_ORIGINS', 'changeme')
-          value: ''
-        - name: ('CSRF_TRUSTED_ORIGINS', 'changeme')
-          value: ''
-        - name: ('NGINX_HOST', 'changeme')
-          value: ''
-        - name: ('APP_PROTOCOL', 'http')
-          value: ''
-        - name: ('ENABLE_SIGNUP', '0')
-          value: ''
-        - name: ('DEBUG', '0')
-          value: ''
-        - name: ('NGINX_PORT', 8762)
-          value: ''
-        - name: ('LISTEN_HTTP_PORT', 8762)
-          value: ''
-        - name: ('BUCKET_NAME', 'uploads')
-          value: ''
-        - name: ('GUNICORN_WORKERS', 2)
-          value: ''
-        - name: ('POSTGRES_DB', 'plane')
-          value: ''
-        - name: ('POSTGRES_USER', 'plane')
-          value: ''
-        - name: ('POSTGRES_PASSWORD', 'umbrelplane')
-          value: ''
-        - name: ('DATABASE_URL', 'postgresql://plane:umbrelplane@plane_db_1:5432/plane')
-          value: ''
-        - name: ('REDIS_URL', 'redis://plane_redis_1:6379/0')
-          value: ''
-        - name: ('RABBITMQ_DEFAULT_USER', 'plane')
-          value: ''
-        - name: ('RABBITMQ_DEFAULT_PASS', 'umbrelplane')
-          value: ''
-        - name: ('RABBITMQ_DEFAULT_VHOST', 'plane')
-          value: ''
-        - name: ('CELERY_BROKER_URL', 'amqp://plane:umbrelplane@plane_rabbitmq_1:5672/plane')
-          value: ''
-        - name: ('USE_MINIO', 1)
-          value: ''
-        - name: ('AWS_ACCESS_KEY_ID', 'umbrel')
-          value: ''
-        - name: ('AWS_SECRET_ACCESS_KEY', '$APP_PASSWORD')
-          value: ''
-        - name: ('AWS_S3_ENDPOINT_URL', 'http://plane-minio-1:9000')
-          value: ''
-        - name: ('AWS_S3_BUCKET_NAME', 'uploads')
-          value: ''
-        - name: ('FILE_SIZE_LIMIT', 52428800)
-          value: ''
-        - name: ('MINIO_ENDPOINT_SSL', 0)
-          value: ''
-        - name: ('MINIO_ROOT_USER', 'umbrel')
-          value: ''
-        - name: ('MINIO_ROOT_PASSWORD', '$APP_PASSWORD')
-          value: ''
-        - name: ('SECRET_KEY', '$APP_SEED')
-          value: ''
-        - name: ('LIVE_SERVER_SECRET_KEY', '$APP_SEED')
-          value: ''
-        - name: ('USE_X_FORWARDED_HOST', 1)
-          value: ''
-        - name: ('SECURE_SSL_REDIRECT', 0)
-          value: ''
-        - name: ('SESSION_COOKIE_SECURE', 0)
-          value: ''
-        - name: ('CSRF_COOKIE_SECURE', 0)
-          value: ''
-        - name: ('WEBHOOK_ALLOWED_IPS', '')
-          value: ''
-        - name: ('WEBHOOK_ALLOWED_HOSTS', '')
+        - name: WEBHOOK_ALLOWED_HOSTS
           value: ''
         securityContext:
           runAsUser: 1000
@@ -528,85 +563,95 @@ spec:
         - --console-address
         - :8763
         env:
-        - name: ('WEB_URL', 'changeme')
+        - name: APP_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: admin_password
+        - name: APP_SEED
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: app_secret
+        - name: WEB_URL
+          value: changeme
+        - name: API_BASE_URL
+          value: changeme
+        - name: APP_DOMAIN
+          value: changeme
+        - name: ALLOWED_HOSTS
+          value: changeme
+        - name: CORS_ALLOWED_ORIGINS
+          value: changeme
+        - name: CSRF_TRUSTED_ORIGINS
+          value: changeme
+        - name: NGINX_HOST
+          value: changeme
+        - name: APP_PROTOCOL
+          value: http
+        - name: ENABLE_SIGNUP
+          value: '0'
+        - name: DEBUG
+          value: '0'
+        - name: NGINX_PORT
+          value: '8762'
+        - name: LISTEN_HTTP_PORT
+          value: '8762'
+        - name: BUCKET_NAME
+          value: uploads
+        - name: GUNICORN_WORKERS
+          value: '2'
+        - name: POSTGRES_DB
+          value: plane
+        - name: POSTGRES_USER
+          value: plane
+        - name: POSTGRES_PASSWORD
+          value: umbrelplane
+        - name: DATABASE_URL
+          value: postgresql://plane:umbrelplane@db:5432/plane
+        - name: REDIS_URL
+          value: redis://redis:6379/0
+        - name: RABBITMQ_DEFAULT_USER
+          value: plane
+        - name: RABBITMQ_DEFAULT_PASS
+          value: umbrelplane
+        - name: RABBITMQ_DEFAULT_VHOST
+          value: plane
+        - name: CELERY_BROKER_URL
+          value: amqp://plane:umbrelplane@rabbitmq:5672/plane
+        - name: USE_MINIO
+          value: '1'
+        - name: AWS_ACCESS_KEY_ID
+          value: umbrel
+        - name: AWS_SECRET_ACCESS_KEY
+          value: $(APP_PASSWORD)
+        - name: AWS_S3_ENDPOINT_URL
+          value: http://plane-minio-1:9000
+        - name: AWS_S3_BUCKET_NAME
+          value: uploads
+        - name: FILE_SIZE_LIMIT
+          value: '52428800'
+        - name: MINIO_ENDPOINT_SSL
+          value: '0'
+        - name: MINIO_ROOT_USER
+          value: umbrel
+        - name: MINIO_ROOT_PASSWORD
+          value: $(APP_PASSWORD)
+        - name: SECRET_KEY
+          value: $(APP_SEED)
+        - name: LIVE_SERVER_SECRET_KEY
+          value: $(APP_SEED)
+        - name: USE_X_FORWARDED_HOST
+          value: '1'
+        - name: SECURE_SSL_REDIRECT
+          value: '0'
+        - name: SESSION_COOKIE_SECURE
+          value: '0'
+        - name: CSRF_COOKIE_SECURE
+          value: '0'
+        - name: WEBHOOK_ALLOWED_IPS
           value: ''
-        - name: ('API_BASE_URL', 'changeme')
-          value: ''
-        - name: ('APP_DOMAIN', 'changeme')
-          value: ''
-        - name: ('ALLOWED_HOSTS', 'changeme')
-          value: ''
-        - name: ('CORS_ALLOWED_ORIGINS', 'changeme')
-          value: ''
-        - name: ('CSRF_TRUSTED_ORIGINS', 'changeme')
-          value: ''
-        - name: ('NGINX_HOST', 'changeme')
-          value: ''
-        - name: ('APP_PROTOCOL', 'http')
-          value: ''
-        - name: ('ENABLE_SIGNUP', '0')
-          value: ''
-        - name: ('DEBUG', '0')
-          value: ''
-        - name: ('NGINX_PORT', 8762)
-          value: ''
-        - name: ('LISTEN_HTTP_PORT', 8762)
-          value: ''
-        - name: ('BUCKET_NAME', 'uploads')
-          value: ''
-        - name: ('GUNICORN_WORKERS', 2)
-          value: ''
-        - name: ('POSTGRES_DB', 'plane')
-          value: ''
-        - name: ('POSTGRES_USER', 'plane')
-          value: ''
-        - name: ('POSTGRES_PASSWORD', 'umbrelplane')
-          value: ''
-        - name: ('DATABASE_URL', 'postgresql://plane:umbrelplane@plane_db_1:5432/plane')
-          value: ''
-        - name: ('REDIS_URL', 'redis://plane_redis_1:6379/0')
-          value: ''
-        - name: ('RABBITMQ_DEFAULT_USER', 'plane')
-          value: ''
-        - name: ('RABBITMQ_DEFAULT_PASS', 'umbrelplane')
-          value: ''
-        - name: ('RABBITMQ_DEFAULT_VHOST', 'plane')
-          value: ''
-        - name: ('CELERY_BROKER_URL', 'amqp://plane:umbrelplane@plane_rabbitmq_1:5672/plane')
-          value: ''
-        - name: ('USE_MINIO', 1)
-          value: ''
-        - name: ('AWS_ACCESS_KEY_ID', 'umbrel')
-          value: ''
-        - name: ('AWS_SECRET_ACCESS_KEY', '$APP_PASSWORD')
-          value: ''
-        - name: ('AWS_S3_ENDPOINT_URL', 'http://plane-minio-1:9000')
-          value: ''
-        - name: ('AWS_S3_BUCKET_NAME', 'uploads')
-          value: ''
-        - name: ('FILE_SIZE_LIMIT', 52428800)
-          value: ''
-        - name: ('MINIO_ENDPOINT_SSL', 0)
-          value: ''
-        - name: ('MINIO_ROOT_USER', 'umbrel')
-          value: ''
-        - name: ('MINIO_ROOT_PASSWORD', '$APP_PASSWORD')
-          value: ''
-        - name: ('SECRET_KEY', '$APP_SEED')
-          value: ''
-        - name: ('LIVE_SERVER_SECRET_KEY', '$APP_SEED')
-          value: ''
-        - name: ('USE_X_FORWARDED_HOST', 1)
-          value: ''
-        - name: ('SECURE_SSL_REDIRECT', 0)
-          value: ''
-        - name: ('SESSION_COOKIE_SECURE', 0)
-          value: ''
-        - name: ('CSRF_COOKIE_SECURE', 0)
-          value: ''
-        - name: ('WEBHOOK_ALLOWED_IPS', '')
-          value: ''
-        - name: ('WEBHOOK_ALLOWED_HOSTS', '')
+        - name: WEBHOOK_ALLOWED_HOSTS
           value: ''
         securityContext:
           runAsUser: 1000
@@ -651,8 +696,6 @@ spec:
           readOnly: true
         - name: data
           mountPath: /data
-      nodeSelector:
-        kubernetes.io/arch: amd64
 ---
 apiVersion: v1
 kind: Service
@@ -688,85 +731,95 @@ spec:
         image: makeplane/plane-backend:v1.4.2@sha256:90032ce088708889b60c00d491897916f4deb882facda27db59fd10fb68729ef
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('WEB_URL', 'changeme')
+        - name: APP_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: admin_password
+        - name: APP_SEED
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: app_secret
+        - name: WEB_URL
+          value: changeme
+        - name: API_BASE_URL
+          value: changeme
+        - name: APP_DOMAIN
+          value: changeme
+        - name: ALLOWED_HOSTS
+          value: changeme
+        - name: CORS_ALLOWED_ORIGINS
+          value: changeme
+        - name: CSRF_TRUSTED_ORIGINS
+          value: changeme
+        - name: NGINX_HOST
+          value: changeme
+        - name: APP_PROTOCOL
+          value: http
+        - name: ENABLE_SIGNUP
+          value: '0'
+        - name: DEBUG
+          value: '0'
+        - name: NGINX_PORT
+          value: '8762'
+        - name: LISTEN_HTTP_PORT
+          value: '8762'
+        - name: BUCKET_NAME
+          value: uploads
+        - name: GUNICORN_WORKERS
+          value: '2'
+        - name: POSTGRES_DB
+          value: plane
+        - name: POSTGRES_USER
+          value: plane
+        - name: POSTGRES_PASSWORD
+          value: umbrelplane
+        - name: DATABASE_URL
+          value: postgresql://plane:umbrelplane@db:5432/plane
+        - name: REDIS_URL
+          value: redis://redis:6379/0
+        - name: RABBITMQ_DEFAULT_USER
+          value: plane
+        - name: RABBITMQ_DEFAULT_PASS
+          value: umbrelplane
+        - name: RABBITMQ_DEFAULT_VHOST
+          value: plane
+        - name: CELERY_BROKER_URL
+          value: amqp://plane:umbrelplane@rabbitmq:5672/plane
+        - name: USE_MINIO
+          value: '1'
+        - name: AWS_ACCESS_KEY_ID
+          value: umbrel
+        - name: AWS_SECRET_ACCESS_KEY
+          value: $(APP_PASSWORD)
+        - name: AWS_S3_ENDPOINT_URL
+          value: http://plane-minio-1:9000
+        - name: AWS_S3_BUCKET_NAME
+          value: uploads
+        - name: FILE_SIZE_LIMIT
+          value: '52428800'
+        - name: MINIO_ENDPOINT_SSL
+          value: '0'
+        - name: MINIO_ROOT_USER
+          value: umbrel
+        - name: MINIO_ROOT_PASSWORD
+          value: $(APP_PASSWORD)
+        - name: SECRET_KEY
+          value: $(APP_SEED)
+        - name: LIVE_SERVER_SECRET_KEY
+          value: $(APP_SEED)
+        - name: USE_X_FORWARDED_HOST
+          value: '1'
+        - name: SECURE_SSL_REDIRECT
+          value: '0'
+        - name: SESSION_COOKIE_SECURE
+          value: '0'
+        - name: CSRF_COOKIE_SECURE
+          value: '0'
+        - name: WEBHOOK_ALLOWED_IPS
           value: ''
-        - name: ('API_BASE_URL', 'changeme')
-          value: ''
-        - name: ('APP_DOMAIN', 'changeme')
-          value: ''
-        - name: ('ALLOWED_HOSTS', 'changeme')
-          value: ''
-        - name: ('CORS_ALLOWED_ORIGINS', 'changeme')
-          value: ''
-        - name: ('CSRF_TRUSTED_ORIGINS', 'changeme')
-          value: ''
-        - name: ('NGINX_HOST', 'changeme')
-          value: ''
-        - name: ('APP_PROTOCOL', 'http')
-          value: ''
-        - name: ('ENABLE_SIGNUP', '0')
-          value: ''
-        - name: ('DEBUG', '0')
-          value: ''
-        - name: ('NGINX_PORT', 8762)
-          value: ''
-        - name: ('LISTEN_HTTP_PORT', 8762)
-          value: ''
-        - name: ('BUCKET_NAME', 'uploads')
-          value: ''
-        - name: ('GUNICORN_WORKERS', 2)
-          value: ''
-        - name: ('POSTGRES_DB', 'plane')
-          value: ''
-        - name: ('POSTGRES_USER', 'plane')
-          value: ''
-        - name: ('POSTGRES_PASSWORD', 'umbrelplane')
-          value: ''
-        - name: ('DATABASE_URL', 'postgresql://plane:umbrelplane@plane_db_1:5432/plane')
-          value: ''
-        - name: ('REDIS_URL', 'redis://plane_redis_1:6379/0')
-          value: ''
-        - name: ('RABBITMQ_DEFAULT_USER', 'plane')
-          value: ''
-        - name: ('RABBITMQ_DEFAULT_PASS', 'umbrelplane')
-          value: ''
-        - name: ('RABBITMQ_DEFAULT_VHOST', 'plane')
-          value: ''
-        - name: ('CELERY_BROKER_URL', 'amqp://plane:umbrelplane@plane_rabbitmq_1:5672/plane')
-          value: ''
-        - name: ('USE_MINIO', 1)
-          value: ''
-        - name: ('AWS_ACCESS_KEY_ID', 'umbrel')
-          value: ''
-        - name: ('AWS_SECRET_ACCESS_KEY', '$APP_PASSWORD')
-          value: ''
-        - name: ('AWS_S3_ENDPOINT_URL', 'http://plane-minio-1:9000')
-          value: ''
-        - name: ('AWS_S3_BUCKET_NAME', 'uploads')
-          value: ''
-        - name: ('FILE_SIZE_LIMIT', 52428800)
-          value: ''
-        - name: ('MINIO_ENDPOINT_SSL', 0)
-          value: ''
-        - name: ('MINIO_ROOT_USER', 'umbrel')
-          value: ''
-        - name: ('MINIO_ROOT_PASSWORD', '$APP_PASSWORD')
-          value: ''
-        - name: ('SECRET_KEY', '$APP_SEED')
-          value: ''
-        - name: ('LIVE_SERVER_SECRET_KEY', '$APP_SEED')
-          value: ''
-        - name: ('USE_X_FORWARDED_HOST', 1)
-          value: ''
-        - name: ('SECURE_SSL_REDIRECT', 0)
-          value: ''
-        - name: ('SESSION_COOKIE_SECURE', 0)
-          value: ''
-        - name: ('CSRF_COOKIE_SECURE', 0)
-          value: ''
-        - name: ('WEBHOOK_ALLOWED_IPS', '')
-          value: ''
-        - name: ('WEBHOOK_ALLOWED_HOSTS', '')
+        - name: WEBHOOK_ALLOWED_HOSTS
           value: ''
         securityContext:
           runAsUser: 1000
@@ -802,8 +855,6 @@ spec:
           readOnly: true
         - name: data
           mountPath: /data
-      nodeSelector:
-        kubernetes.io/arch: amd64
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -831,85 +882,95 @@ spec:
         - -c
         - celery -A plane worker --loglevel=info
         env:
-        - name: ('WEB_URL', 'changeme')
+        - name: APP_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: admin_password
+        - name: APP_SEED
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: app_secret
+        - name: WEB_URL
+          value: changeme
+        - name: API_BASE_URL
+          value: changeme
+        - name: APP_DOMAIN
+          value: changeme
+        - name: ALLOWED_HOSTS
+          value: changeme
+        - name: CORS_ALLOWED_ORIGINS
+          value: changeme
+        - name: CSRF_TRUSTED_ORIGINS
+          value: changeme
+        - name: NGINX_HOST
+          value: changeme
+        - name: APP_PROTOCOL
+          value: http
+        - name: ENABLE_SIGNUP
+          value: '0'
+        - name: DEBUG
+          value: '0'
+        - name: NGINX_PORT
+          value: '8762'
+        - name: LISTEN_HTTP_PORT
+          value: '8762'
+        - name: BUCKET_NAME
+          value: uploads
+        - name: GUNICORN_WORKERS
+          value: '2'
+        - name: POSTGRES_DB
+          value: plane
+        - name: POSTGRES_USER
+          value: plane
+        - name: POSTGRES_PASSWORD
+          value: umbrelplane
+        - name: DATABASE_URL
+          value: postgresql://plane:umbrelplane@db:5432/plane
+        - name: REDIS_URL
+          value: redis://redis:6379/0
+        - name: RABBITMQ_DEFAULT_USER
+          value: plane
+        - name: RABBITMQ_DEFAULT_PASS
+          value: umbrelplane
+        - name: RABBITMQ_DEFAULT_VHOST
+          value: plane
+        - name: CELERY_BROKER_URL
+          value: amqp://plane:umbrelplane@rabbitmq:5672/plane
+        - name: USE_MINIO
+          value: '1'
+        - name: AWS_ACCESS_KEY_ID
+          value: umbrel
+        - name: AWS_SECRET_ACCESS_KEY
+          value: $(APP_PASSWORD)
+        - name: AWS_S3_ENDPOINT_URL
+          value: http://plane-minio-1:9000
+        - name: AWS_S3_BUCKET_NAME
+          value: uploads
+        - name: FILE_SIZE_LIMIT
+          value: '52428800'
+        - name: MINIO_ENDPOINT_SSL
+          value: '0'
+        - name: MINIO_ROOT_USER
+          value: umbrel
+        - name: MINIO_ROOT_PASSWORD
+          value: $(APP_PASSWORD)
+        - name: SECRET_KEY
+          value: $(APP_SEED)
+        - name: LIVE_SERVER_SECRET_KEY
+          value: $(APP_SEED)
+        - name: USE_X_FORWARDED_HOST
+          value: '1'
+        - name: SECURE_SSL_REDIRECT
+          value: '0'
+        - name: SESSION_COOKIE_SECURE
+          value: '0'
+        - name: CSRF_COOKIE_SECURE
+          value: '0'
+        - name: WEBHOOK_ALLOWED_IPS
           value: ''
-        - name: ('API_BASE_URL', 'changeme')
-          value: ''
-        - name: ('APP_DOMAIN', 'changeme')
-          value: ''
-        - name: ('ALLOWED_HOSTS', 'changeme')
-          value: ''
-        - name: ('CORS_ALLOWED_ORIGINS', 'changeme')
-          value: ''
-        - name: ('CSRF_TRUSTED_ORIGINS', 'changeme')
-          value: ''
-        - name: ('NGINX_HOST', 'changeme')
-          value: ''
-        - name: ('APP_PROTOCOL', 'http')
-          value: ''
-        - name: ('ENABLE_SIGNUP', '0')
-          value: ''
-        - name: ('DEBUG', '0')
-          value: ''
-        - name: ('NGINX_PORT', 8762)
-          value: ''
-        - name: ('LISTEN_HTTP_PORT', 8762)
-          value: ''
-        - name: ('BUCKET_NAME', 'uploads')
-          value: ''
-        - name: ('GUNICORN_WORKERS', 2)
-          value: ''
-        - name: ('POSTGRES_DB', 'plane')
-          value: ''
-        - name: ('POSTGRES_USER', 'plane')
-          value: ''
-        - name: ('POSTGRES_PASSWORD', 'umbrelplane')
-          value: ''
-        - name: ('DATABASE_URL', 'postgresql://plane:umbrelplane@plane_db_1:5432/plane')
-          value: ''
-        - name: ('REDIS_URL', 'redis://plane_redis_1:6379/0')
-          value: ''
-        - name: ('RABBITMQ_DEFAULT_USER', 'plane')
-          value: ''
-        - name: ('RABBITMQ_DEFAULT_PASS', 'umbrelplane')
-          value: ''
-        - name: ('RABBITMQ_DEFAULT_VHOST', 'plane')
-          value: ''
-        - name: ('CELERY_BROKER_URL', 'amqp://plane:umbrelplane@plane_rabbitmq_1:5672/plane')
-          value: ''
-        - name: ('USE_MINIO', 1)
-          value: ''
-        - name: ('AWS_ACCESS_KEY_ID', 'umbrel')
-          value: ''
-        - name: ('AWS_SECRET_ACCESS_KEY', '$APP_PASSWORD')
-          value: ''
-        - name: ('AWS_S3_ENDPOINT_URL', 'http://plane-minio-1:9000')
-          value: ''
-        - name: ('AWS_S3_BUCKET_NAME', 'uploads')
-          value: ''
-        - name: ('FILE_SIZE_LIMIT', 52428800)
-          value: ''
-        - name: ('MINIO_ENDPOINT_SSL', 0)
-          value: ''
-        - name: ('MINIO_ROOT_USER', 'umbrel')
-          value: ''
-        - name: ('MINIO_ROOT_PASSWORD', '$APP_PASSWORD')
-          value: ''
-        - name: ('SECRET_KEY', '$APP_SEED')
-          value: ''
-        - name: ('LIVE_SERVER_SECRET_KEY', '$APP_SEED')
-          value: ''
-        - name: ('USE_X_FORWARDED_HOST', 1)
-          value: ''
-        - name: ('SECURE_SSL_REDIRECT', 0)
-          value: ''
-        - name: ('SESSION_COOKIE_SECURE', 0)
-          value: ''
-        - name: ('CSRF_COOKIE_SECURE', 0)
-          value: ''
-        - name: ('WEBHOOK_ALLOWED_IPS', '')
-          value: ''
-        - name: ('WEBHOOK_ALLOWED_HOSTS', '')
+        - name: WEBHOOK_ALLOWED_HOSTS
           value: ''
         securityContext:
           runAsUser: 1000
@@ -945,8 +1006,6 @@ spec:
           readOnly: true
         - name: data
           mountPath: /data
-      nodeSelector:
-        kubernetes.io/arch: amd64
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -974,85 +1033,95 @@ spec:
         - -c
         - celery -A plane beat --loglevel=info
         env:
-        - name: ('WEB_URL', 'changeme')
+        - name: APP_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: admin_password
+        - name: APP_SEED
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: app_secret
+        - name: WEB_URL
+          value: changeme
+        - name: API_BASE_URL
+          value: changeme
+        - name: APP_DOMAIN
+          value: changeme
+        - name: ALLOWED_HOSTS
+          value: changeme
+        - name: CORS_ALLOWED_ORIGINS
+          value: changeme
+        - name: CSRF_TRUSTED_ORIGINS
+          value: changeme
+        - name: NGINX_HOST
+          value: changeme
+        - name: APP_PROTOCOL
+          value: http
+        - name: ENABLE_SIGNUP
+          value: '0'
+        - name: DEBUG
+          value: '0'
+        - name: NGINX_PORT
+          value: '8762'
+        - name: LISTEN_HTTP_PORT
+          value: '8762'
+        - name: BUCKET_NAME
+          value: uploads
+        - name: GUNICORN_WORKERS
+          value: '2'
+        - name: POSTGRES_DB
+          value: plane
+        - name: POSTGRES_USER
+          value: plane
+        - name: POSTGRES_PASSWORD
+          value: umbrelplane
+        - name: DATABASE_URL
+          value: postgresql://plane:umbrelplane@db:5432/plane
+        - name: REDIS_URL
+          value: redis://redis:6379/0
+        - name: RABBITMQ_DEFAULT_USER
+          value: plane
+        - name: RABBITMQ_DEFAULT_PASS
+          value: umbrelplane
+        - name: RABBITMQ_DEFAULT_VHOST
+          value: plane
+        - name: CELERY_BROKER_URL
+          value: amqp://plane:umbrelplane@rabbitmq:5672/plane
+        - name: USE_MINIO
+          value: '1'
+        - name: AWS_ACCESS_KEY_ID
+          value: umbrel
+        - name: AWS_SECRET_ACCESS_KEY
+          value: $(APP_PASSWORD)
+        - name: AWS_S3_ENDPOINT_URL
+          value: http://plane-minio-1:9000
+        - name: AWS_S3_BUCKET_NAME
+          value: uploads
+        - name: FILE_SIZE_LIMIT
+          value: '52428800'
+        - name: MINIO_ENDPOINT_SSL
+          value: '0'
+        - name: MINIO_ROOT_USER
+          value: umbrel
+        - name: MINIO_ROOT_PASSWORD
+          value: $(APP_PASSWORD)
+        - name: SECRET_KEY
+          value: $(APP_SEED)
+        - name: LIVE_SERVER_SECRET_KEY
+          value: $(APP_SEED)
+        - name: USE_X_FORWARDED_HOST
+          value: '1'
+        - name: SECURE_SSL_REDIRECT
+          value: '0'
+        - name: SESSION_COOKIE_SECURE
+          value: '0'
+        - name: CSRF_COOKIE_SECURE
+          value: '0'
+        - name: WEBHOOK_ALLOWED_IPS
           value: ''
-        - name: ('API_BASE_URL', 'changeme')
-          value: ''
-        - name: ('APP_DOMAIN', 'changeme')
-          value: ''
-        - name: ('ALLOWED_HOSTS', 'changeme')
-          value: ''
-        - name: ('CORS_ALLOWED_ORIGINS', 'changeme')
-          value: ''
-        - name: ('CSRF_TRUSTED_ORIGINS', 'changeme')
-          value: ''
-        - name: ('NGINX_HOST', 'changeme')
-          value: ''
-        - name: ('APP_PROTOCOL', 'http')
-          value: ''
-        - name: ('ENABLE_SIGNUP', '0')
-          value: ''
-        - name: ('DEBUG', '0')
-          value: ''
-        - name: ('NGINX_PORT', 8762)
-          value: ''
-        - name: ('LISTEN_HTTP_PORT', 8762)
-          value: ''
-        - name: ('BUCKET_NAME', 'uploads')
-          value: ''
-        - name: ('GUNICORN_WORKERS', 2)
-          value: ''
-        - name: ('POSTGRES_DB', 'plane')
-          value: ''
-        - name: ('POSTGRES_USER', 'plane')
-          value: ''
-        - name: ('POSTGRES_PASSWORD', 'umbrelplane')
-          value: ''
-        - name: ('DATABASE_URL', 'postgresql://plane:umbrelplane@plane_db_1:5432/plane')
-          value: ''
-        - name: ('REDIS_URL', 'redis://plane_redis_1:6379/0')
-          value: ''
-        - name: ('RABBITMQ_DEFAULT_USER', 'plane')
-          value: ''
-        - name: ('RABBITMQ_DEFAULT_PASS', 'umbrelplane')
-          value: ''
-        - name: ('RABBITMQ_DEFAULT_VHOST', 'plane')
-          value: ''
-        - name: ('CELERY_BROKER_URL', 'amqp://plane:umbrelplane@plane_rabbitmq_1:5672/plane')
-          value: ''
-        - name: ('USE_MINIO', 1)
-          value: ''
-        - name: ('AWS_ACCESS_KEY_ID', 'umbrel')
-          value: ''
-        - name: ('AWS_SECRET_ACCESS_KEY', '$APP_PASSWORD')
-          value: ''
-        - name: ('AWS_S3_ENDPOINT_URL', 'http://plane-minio-1:9000')
-          value: ''
-        - name: ('AWS_S3_BUCKET_NAME', 'uploads')
-          value: ''
-        - name: ('FILE_SIZE_LIMIT', 52428800)
-          value: ''
-        - name: ('MINIO_ENDPOINT_SSL', 0)
-          value: ''
-        - name: ('MINIO_ROOT_USER', 'umbrel')
-          value: ''
-        - name: ('MINIO_ROOT_PASSWORD', '$APP_PASSWORD')
-          value: ''
-        - name: ('SECRET_KEY', '$APP_SEED')
-          value: ''
-        - name: ('LIVE_SERVER_SECRET_KEY', '$APP_SEED')
-          value: ''
-        - name: ('USE_X_FORWARDED_HOST', 1)
-          value: ''
-        - name: ('SECURE_SSL_REDIRECT', 0)
-          value: ''
-        - name: ('SESSION_COOKIE_SECURE', 0)
-          value: ''
-        - name: ('CSRF_COOKIE_SECURE', 0)
-          value: ''
-        - name: ('WEBHOOK_ALLOWED_IPS', '')
-          value: ''
-        - name: ('WEBHOOK_ALLOWED_HOSTS', '')
+        - name: WEBHOOK_ALLOWED_HOSTS
           value: ''
         securityContext:
           runAsUser: 1000
@@ -1088,8 +1157,6 @@ spec:
           readOnly: true
         - name: data
           mountPath: /data
-      nodeSelector:
-        kubernetes.io/arch: amd64
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -1117,85 +1184,95 @@ spec:
         - -c
         - python manage.py wait_for_db && python manage.py migrate
         env:
-        - name: ('WEB_URL', 'changeme')
+        - name: APP_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: admin_password
+        - name: APP_SEED
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: app_secret
+        - name: WEB_URL
+          value: changeme
+        - name: API_BASE_URL
+          value: changeme
+        - name: APP_DOMAIN
+          value: changeme
+        - name: ALLOWED_HOSTS
+          value: changeme
+        - name: CORS_ALLOWED_ORIGINS
+          value: changeme
+        - name: CSRF_TRUSTED_ORIGINS
+          value: changeme
+        - name: NGINX_HOST
+          value: changeme
+        - name: APP_PROTOCOL
+          value: http
+        - name: ENABLE_SIGNUP
+          value: '0'
+        - name: DEBUG
+          value: '0'
+        - name: NGINX_PORT
+          value: '8762'
+        - name: LISTEN_HTTP_PORT
+          value: '8762'
+        - name: BUCKET_NAME
+          value: uploads
+        - name: GUNICORN_WORKERS
+          value: '2'
+        - name: POSTGRES_DB
+          value: plane
+        - name: POSTGRES_USER
+          value: plane
+        - name: POSTGRES_PASSWORD
+          value: umbrelplane
+        - name: DATABASE_URL
+          value: postgresql://plane:umbrelplane@db:5432/plane
+        - name: REDIS_URL
+          value: redis://redis:6379/0
+        - name: RABBITMQ_DEFAULT_USER
+          value: plane
+        - name: RABBITMQ_DEFAULT_PASS
+          value: umbrelplane
+        - name: RABBITMQ_DEFAULT_VHOST
+          value: plane
+        - name: CELERY_BROKER_URL
+          value: amqp://plane:umbrelplane@rabbitmq:5672/plane
+        - name: USE_MINIO
+          value: '1'
+        - name: AWS_ACCESS_KEY_ID
+          value: umbrel
+        - name: AWS_SECRET_ACCESS_KEY
+          value: $(APP_PASSWORD)
+        - name: AWS_S3_ENDPOINT_URL
+          value: http://plane-minio-1:9000
+        - name: AWS_S3_BUCKET_NAME
+          value: uploads
+        - name: FILE_SIZE_LIMIT
+          value: '52428800'
+        - name: MINIO_ENDPOINT_SSL
+          value: '0'
+        - name: MINIO_ROOT_USER
+          value: umbrel
+        - name: MINIO_ROOT_PASSWORD
+          value: $(APP_PASSWORD)
+        - name: SECRET_KEY
+          value: $(APP_SEED)
+        - name: LIVE_SERVER_SECRET_KEY
+          value: $(APP_SEED)
+        - name: USE_X_FORWARDED_HOST
+          value: '1'
+        - name: SECURE_SSL_REDIRECT
+          value: '0'
+        - name: SESSION_COOKIE_SECURE
+          value: '0'
+        - name: CSRF_COOKIE_SECURE
+          value: '0'
+        - name: WEBHOOK_ALLOWED_IPS
           value: ''
-        - name: ('API_BASE_URL', 'changeme')
-          value: ''
-        - name: ('APP_DOMAIN', 'changeme')
-          value: ''
-        - name: ('ALLOWED_HOSTS', 'changeme')
-          value: ''
-        - name: ('CORS_ALLOWED_ORIGINS', 'changeme')
-          value: ''
-        - name: ('CSRF_TRUSTED_ORIGINS', 'changeme')
-          value: ''
-        - name: ('NGINX_HOST', 'changeme')
-          value: ''
-        - name: ('APP_PROTOCOL', 'http')
-          value: ''
-        - name: ('ENABLE_SIGNUP', '0')
-          value: ''
-        - name: ('DEBUG', '0')
-          value: ''
-        - name: ('NGINX_PORT', 8762)
-          value: ''
-        - name: ('LISTEN_HTTP_PORT', 8762)
-          value: ''
-        - name: ('BUCKET_NAME', 'uploads')
-          value: ''
-        - name: ('GUNICORN_WORKERS', 2)
-          value: ''
-        - name: ('POSTGRES_DB', 'plane')
-          value: ''
-        - name: ('POSTGRES_USER', 'plane')
-          value: ''
-        - name: ('POSTGRES_PASSWORD', 'umbrelplane')
-          value: ''
-        - name: ('DATABASE_URL', 'postgresql://plane:umbrelplane@plane_db_1:5432/plane')
-          value: ''
-        - name: ('REDIS_URL', 'redis://plane_redis_1:6379/0')
-          value: ''
-        - name: ('RABBITMQ_DEFAULT_USER', 'plane')
-          value: ''
-        - name: ('RABBITMQ_DEFAULT_PASS', 'umbrelplane')
-          value: ''
-        - name: ('RABBITMQ_DEFAULT_VHOST', 'plane')
-          value: ''
-        - name: ('CELERY_BROKER_URL', 'amqp://plane:umbrelplane@plane_rabbitmq_1:5672/plane')
-          value: ''
-        - name: ('USE_MINIO', 1)
-          value: ''
-        - name: ('AWS_ACCESS_KEY_ID', 'umbrel')
-          value: ''
-        - name: ('AWS_SECRET_ACCESS_KEY', '$APP_PASSWORD')
-          value: ''
-        - name: ('AWS_S3_ENDPOINT_URL', 'http://plane-minio-1:9000')
-          value: ''
-        - name: ('AWS_S3_BUCKET_NAME', 'uploads')
-          value: ''
-        - name: ('FILE_SIZE_LIMIT', 52428800)
-          value: ''
-        - name: ('MINIO_ENDPOINT_SSL', 0)
-          value: ''
-        - name: ('MINIO_ROOT_USER', 'umbrel')
-          value: ''
-        - name: ('MINIO_ROOT_PASSWORD', '$APP_PASSWORD')
-          value: ''
-        - name: ('SECRET_KEY', '$APP_SEED')
-          value: ''
-        - name: ('LIVE_SERVER_SECRET_KEY', '$APP_SEED')
-          value: ''
-        - name: ('USE_X_FORWARDED_HOST', 1)
-          value: ''
-        - name: ('SECURE_SSL_REDIRECT', 0)
-          value: ''
-        - name: ('SESSION_COOKIE_SECURE', 0)
-          value: ''
-        - name: ('CSRF_COOKIE_SECURE', 0)
-          value: ''
-        - name: ('WEBHOOK_ALLOWED_IPS', '')
-          value: ''
-        - name: ('WEBHOOK_ALLOWED_HOSTS', '')
+        - name: WEBHOOK_ALLOWED_HOSTS
           value: ''
         securityContext:
           runAsUser: 1000
@@ -1231,8 +1308,6 @@ spec:
           readOnly: true
         - name: data
           mountPath: /data
-      nodeSelector:
-        kubernetes.io/arch: amd64
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -1256,85 +1331,95 @@ spec:
         image: makeplane/plane-frontend:v1.4.2@sha256:22fd2434fb8d6658439f669ab72f999ce0773abe587663da21a77d70bd63ff61
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('WEB_URL', 'changeme')
+        - name: APP_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: admin_password
+        - name: APP_SEED
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: app_secret
+        - name: WEB_URL
+          value: changeme
+        - name: API_BASE_URL
+          value: changeme
+        - name: APP_DOMAIN
+          value: changeme
+        - name: ALLOWED_HOSTS
+          value: changeme
+        - name: CORS_ALLOWED_ORIGINS
+          value: changeme
+        - name: CSRF_TRUSTED_ORIGINS
+          value: changeme
+        - name: NGINX_HOST
+          value: changeme
+        - name: APP_PROTOCOL
+          value: http
+        - name: ENABLE_SIGNUP
+          value: '0'
+        - name: DEBUG
+          value: '0'
+        - name: NGINX_PORT
+          value: '8762'
+        - name: LISTEN_HTTP_PORT
+          value: '8762'
+        - name: BUCKET_NAME
+          value: uploads
+        - name: GUNICORN_WORKERS
+          value: '2'
+        - name: POSTGRES_DB
+          value: plane
+        - name: POSTGRES_USER
+          value: plane
+        - name: POSTGRES_PASSWORD
+          value: umbrelplane
+        - name: DATABASE_URL
+          value: postgresql://plane:umbrelplane@db:5432/plane
+        - name: REDIS_URL
+          value: redis://redis:6379/0
+        - name: RABBITMQ_DEFAULT_USER
+          value: plane
+        - name: RABBITMQ_DEFAULT_PASS
+          value: umbrelplane
+        - name: RABBITMQ_DEFAULT_VHOST
+          value: plane
+        - name: CELERY_BROKER_URL
+          value: amqp://plane:umbrelplane@rabbitmq:5672/plane
+        - name: USE_MINIO
+          value: '1'
+        - name: AWS_ACCESS_KEY_ID
+          value: umbrel
+        - name: AWS_SECRET_ACCESS_KEY
+          value: $(APP_PASSWORD)
+        - name: AWS_S3_ENDPOINT_URL
+          value: http://plane-minio-1:9000
+        - name: AWS_S3_BUCKET_NAME
+          value: uploads
+        - name: FILE_SIZE_LIMIT
+          value: '52428800'
+        - name: MINIO_ENDPOINT_SSL
+          value: '0'
+        - name: MINIO_ROOT_USER
+          value: umbrel
+        - name: MINIO_ROOT_PASSWORD
+          value: $(APP_PASSWORD)
+        - name: SECRET_KEY
+          value: $(APP_SEED)
+        - name: LIVE_SERVER_SECRET_KEY
+          value: $(APP_SEED)
+        - name: USE_X_FORWARDED_HOST
+          value: '1'
+        - name: SECURE_SSL_REDIRECT
+          value: '0'
+        - name: SESSION_COOKIE_SECURE
+          value: '0'
+        - name: CSRF_COOKIE_SECURE
+          value: '0'
+        - name: WEBHOOK_ALLOWED_IPS
           value: ''
-        - name: ('API_BASE_URL', 'changeme')
-          value: ''
-        - name: ('APP_DOMAIN', 'changeme')
-          value: ''
-        - name: ('ALLOWED_HOSTS', 'changeme')
-          value: ''
-        - name: ('CORS_ALLOWED_ORIGINS', 'changeme')
-          value: ''
-        - name: ('CSRF_TRUSTED_ORIGINS', 'changeme')
-          value: ''
-        - name: ('NGINX_HOST', 'changeme')
-          value: ''
-        - name: ('APP_PROTOCOL', 'http')
-          value: ''
-        - name: ('ENABLE_SIGNUP', '0')
-          value: ''
-        - name: ('DEBUG', '0')
-          value: ''
-        - name: ('NGINX_PORT', 8762)
-          value: ''
-        - name: ('LISTEN_HTTP_PORT', 8762)
-          value: ''
-        - name: ('BUCKET_NAME', 'uploads')
-          value: ''
-        - name: ('GUNICORN_WORKERS', 2)
-          value: ''
-        - name: ('POSTGRES_DB', 'plane')
-          value: ''
-        - name: ('POSTGRES_USER', 'plane')
-          value: ''
-        - name: ('POSTGRES_PASSWORD', 'umbrelplane')
-          value: ''
-        - name: ('DATABASE_URL', 'postgresql://plane:umbrelplane@plane_db_1:5432/plane')
-          value: ''
-        - name: ('REDIS_URL', 'redis://plane_redis_1:6379/0')
-          value: ''
-        - name: ('RABBITMQ_DEFAULT_USER', 'plane')
-          value: ''
-        - name: ('RABBITMQ_DEFAULT_PASS', 'umbrelplane')
-          value: ''
-        - name: ('RABBITMQ_DEFAULT_VHOST', 'plane')
-          value: ''
-        - name: ('CELERY_BROKER_URL', 'amqp://plane:umbrelplane@plane_rabbitmq_1:5672/plane')
-          value: ''
-        - name: ('USE_MINIO', 1)
-          value: ''
-        - name: ('AWS_ACCESS_KEY_ID', 'umbrel')
-          value: ''
-        - name: ('AWS_SECRET_ACCESS_KEY', '$APP_PASSWORD')
-          value: ''
-        - name: ('AWS_S3_ENDPOINT_URL', 'http://plane-minio-1:9000')
-          value: ''
-        - name: ('AWS_S3_BUCKET_NAME', 'uploads')
-          value: ''
-        - name: ('FILE_SIZE_LIMIT', 52428800)
-          value: ''
-        - name: ('MINIO_ENDPOINT_SSL', 0)
-          value: ''
-        - name: ('MINIO_ROOT_USER', 'umbrel')
-          value: ''
-        - name: ('MINIO_ROOT_PASSWORD', '$APP_PASSWORD')
-          value: ''
-        - name: ('SECRET_KEY', '$APP_SEED')
-          value: ''
-        - name: ('LIVE_SERVER_SECRET_KEY', '$APP_SEED')
-          value: ''
-        - name: ('USE_X_FORWARDED_HOST', 1)
-          value: ''
-        - name: ('SECURE_SSL_REDIRECT', 0)
-          value: ''
-        - name: ('SESSION_COOKIE_SECURE', 0)
-          value: ''
-        - name: ('CSRF_COOKIE_SECURE', 0)
-          value: ''
-        - name: ('WEBHOOK_ALLOWED_IPS', '')
-          value: ''
-        - name: ('WEBHOOK_ALLOWED_HOSTS', '')
+        - name: WEBHOOK_ALLOWED_HOSTS
           value: ''
       volumes:
       - name: data
@@ -1367,8 +1452,6 @@ spec:
           readOnly: true
         - name: data
           mountPath: /data
-      nodeSelector:
-        kubernetes.io/arch: amd64
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -1392,85 +1475,95 @@ spec:
         image: makeplane/plane-live:v1.4.2@sha256:cbb630ccaea24bb9998040cb45c11619a7501e8b6c75d449df2f8fd9b9cddbd0
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('WEB_URL', 'changeme')
+        - name: APP_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: admin_password
+        - name: APP_SEED
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: app_secret
+        - name: WEB_URL
+          value: changeme
+        - name: API_BASE_URL
+          value: changeme
+        - name: APP_DOMAIN
+          value: changeme
+        - name: ALLOWED_HOSTS
+          value: changeme
+        - name: CORS_ALLOWED_ORIGINS
+          value: changeme
+        - name: CSRF_TRUSTED_ORIGINS
+          value: changeme
+        - name: NGINX_HOST
+          value: changeme
+        - name: APP_PROTOCOL
+          value: http
+        - name: ENABLE_SIGNUP
+          value: '0'
+        - name: DEBUG
+          value: '0'
+        - name: NGINX_PORT
+          value: '8762'
+        - name: LISTEN_HTTP_PORT
+          value: '8762'
+        - name: BUCKET_NAME
+          value: uploads
+        - name: GUNICORN_WORKERS
+          value: '2'
+        - name: POSTGRES_DB
+          value: plane
+        - name: POSTGRES_USER
+          value: plane
+        - name: POSTGRES_PASSWORD
+          value: umbrelplane
+        - name: DATABASE_URL
+          value: postgresql://plane:umbrelplane@db:5432/plane
+        - name: REDIS_URL
+          value: redis://redis:6379/0
+        - name: RABBITMQ_DEFAULT_USER
+          value: plane
+        - name: RABBITMQ_DEFAULT_PASS
+          value: umbrelplane
+        - name: RABBITMQ_DEFAULT_VHOST
+          value: plane
+        - name: CELERY_BROKER_URL
+          value: amqp://plane:umbrelplane@rabbitmq:5672/plane
+        - name: USE_MINIO
+          value: '1'
+        - name: AWS_ACCESS_KEY_ID
+          value: umbrel
+        - name: AWS_SECRET_ACCESS_KEY
+          value: $(APP_PASSWORD)
+        - name: AWS_S3_ENDPOINT_URL
+          value: http://plane-minio-1:9000
+        - name: AWS_S3_BUCKET_NAME
+          value: uploads
+        - name: FILE_SIZE_LIMIT
+          value: '52428800'
+        - name: MINIO_ENDPOINT_SSL
+          value: '0'
+        - name: MINIO_ROOT_USER
+          value: umbrel
+        - name: MINIO_ROOT_PASSWORD
+          value: $(APP_PASSWORD)
+        - name: SECRET_KEY
+          value: $(APP_SEED)
+        - name: LIVE_SERVER_SECRET_KEY
+          value: $(APP_SEED)
+        - name: USE_X_FORWARDED_HOST
+          value: '1'
+        - name: SECURE_SSL_REDIRECT
+          value: '0'
+        - name: SESSION_COOKIE_SECURE
+          value: '0'
+        - name: CSRF_COOKIE_SECURE
+          value: '0'
+        - name: WEBHOOK_ALLOWED_IPS
           value: ''
-        - name: ('API_BASE_URL', 'changeme')
-          value: ''
-        - name: ('APP_DOMAIN', 'changeme')
-          value: ''
-        - name: ('ALLOWED_HOSTS', 'changeme')
-          value: ''
-        - name: ('CORS_ALLOWED_ORIGINS', 'changeme')
-          value: ''
-        - name: ('CSRF_TRUSTED_ORIGINS', 'changeme')
-          value: ''
-        - name: ('NGINX_HOST', 'changeme')
-          value: ''
-        - name: ('APP_PROTOCOL', 'http')
-          value: ''
-        - name: ('ENABLE_SIGNUP', '0')
-          value: ''
-        - name: ('DEBUG', '0')
-          value: ''
-        - name: ('NGINX_PORT', 8762)
-          value: ''
-        - name: ('LISTEN_HTTP_PORT', 8762)
-          value: ''
-        - name: ('BUCKET_NAME', 'uploads')
-          value: ''
-        - name: ('GUNICORN_WORKERS', 2)
-          value: ''
-        - name: ('POSTGRES_DB', 'plane')
-          value: ''
-        - name: ('POSTGRES_USER', 'plane')
-          value: ''
-        - name: ('POSTGRES_PASSWORD', 'umbrelplane')
-          value: ''
-        - name: ('DATABASE_URL', 'postgresql://plane:umbrelplane@plane_db_1:5432/plane')
-          value: ''
-        - name: ('REDIS_URL', 'redis://plane_redis_1:6379/0')
-          value: ''
-        - name: ('RABBITMQ_DEFAULT_USER', 'plane')
-          value: ''
-        - name: ('RABBITMQ_DEFAULT_PASS', 'umbrelplane')
-          value: ''
-        - name: ('RABBITMQ_DEFAULT_VHOST', 'plane')
-          value: ''
-        - name: ('CELERY_BROKER_URL', 'amqp://plane:umbrelplane@plane_rabbitmq_1:5672/plane')
-          value: ''
-        - name: ('USE_MINIO', 1)
-          value: ''
-        - name: ('AWS_ACCESS_KEY_ID', 'umbrel')
-          value: ''
-        - name: ('AWS_SECRET_ACCESS_KEY', '$APP_PASSWORD')
-          value: ''
-        - name: ('AWS_S3_ENDPOINT_URL', 'http://plane-minio-1:9000')
-          value: ''
-        - name: ('AWS_S3_BUCKET_NAME', 'uploads')
-          value: ''
-        - name: ('FILE_SIZE_LIMIT', 52428800)
-          value: ''
-        - name: ('MINIO_ENDPOINT_SSL', 0)
-          value: ''
-        - name: ('MINIO_ROOT_USER', 'umbrel')
-          value: ''
-        - name: ('MINIO_ROOT_PASSWORD', '$APP_PASSWORD')
-          value: ''
-        - name: ('SECRET_KEY', '$APP_SEED')
-          value: ''
-        - name: ('LIVE_SERVER_SECRET_KEY', '$APP_SEED')
-          value: ''
-        - name: ('USE_X_FORWARDED_HOST', 1)
-          value: ''
-        - name: ('SECURE_SSL_REDIRECT', 0)
-          value: ''
-        - name: ('SESSION_COOKIE_SECURE', 0)
-          value: ''
-        - name: ('CSRF_COOKIE_SECURE', 0)
-          value: ''
-        - name: ('WEBHOOK_ALLOWED_IPS', '')
-          value: ''
-        - name: ('WEBHOOK_ALLOWED_HOSTS', '')
+        - name: WEBHOOK_ALLOWED_HOSTS
           value: ''
         securityContext:
           runAsUser: 1000
@@ -1506,8 +1599,6 @@ spec:
           readOnly: true
         - name: data
           mountPath: /data
-      nodeSelector:
-        kubernetes.io/arch: amd64
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -1531,85 +1622,95 @@ spec:
         image: makeplane/plane-space:v1.4.2@sha256:f8f842f05f41a16e9fe8c4f5e17a3bb175338ccdc094620e58ae49764ffbd671
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('WEB_URL', 'changeme')
+        - name: APP_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: admin_password
+        - name: APP_SEED
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: app_secret
+        - name: WEB_URL
+          value: changeme
+        - name: API_BASE_URL
+          value: changeme
+        - name: APP_DOMAIN
+          value: changeme
+        - name: ALLOWED_HOSTS
+          value: changeme
+        - name: CORS_ALLOWED_ORIGINS
+          value: changeme
+        - name: CSRF_TRUSTED_ORIGINS
+          value: changeme
+        - name: NGINX_HOST
+          value: changeme
+        - name: APP_PROTOCOL
+          value: http
+        - name: ENABLE_SIGNUP
+          value: '0'
+        - name: DEBUG
+          value: '0'
+        - name: NGINX_PORT
+          value: '8762'
+        - name: LISTEN_HTTP_PORT
+          value: '8762'
+        - name: BUCKET_NAME
+          value: uploads
+        - name: GUNICORN_WORKERS
+          value: '2'
+        - name: POSTGRES_DB
+          value: plane
+        - name: POSTGRES_USER
+          value: plane
+        - name: POSTGRES_PASSWORD
+          value: umbrelplane
+        - name: DATABASE_URL
+          value: postgresql://plane:umbrelplane@db:5432/plane
+        - name: REDIS_URL
+          value: redis://redis:6379/0
+        - name: RABBITMQ_DEFAULT_USER
+          value: plane
+        - name: RABBITMQ_DEFAULT_PASS
+          value: umbrelplane
+        - name: RABBITMQ_DEFAULT_VHOST
+          value: plane
+        - name: CELERY_BROKER_URL
+          value: amqp://plane:umbrelplane@rabbitmq:5672/plane
+        - name: USE_MINIO
+          value: '1'
+        - name: AWS_ACCESS_KEY_ID
+          value: umbrel
+        - name: AWS_SECRET_ACCESS_KEY
+          value: $(APP_PASSWORD)
+        - name: AWS_S3_ENDPOINT_URL
+          value: http://plane-minio-1:9000
+        - name: AWS_S3_BUCKET_NAME
+          value: uploads
+        - name: FILE_SIZE_LIMIT
+          value: '52428800'
+        - name: MINIO_ENDPOINT_SSL
+          value: '0'
+        - name: MINIO_ROOT_USER
+          value: umbrel
+        - name: MINIO_ROOT_PASSWORD
+          value: $(APP_PASSWORD)
+        - name: SECRET_KEY
+          value: $(APP_SEED)
+        - name: LIVE_SERVER_SECRET_KEY
+          value: $(APP_SEED)
+        - name: USE_X_FORWARDED_HOST
+          value: '1'
+        - name: SECURE_SSL_REDIRECT
+          value: '0'
+        - name: SESSION_COOKIE_SECURE
+          value: '0'
+        - name: CSRF_COOKIE_SECURE
+          value: '0'
+        - name: WEBHOOK_ALLOWED_IPS
           value: ''
-        - name: ('API_BASE_URL', 'changeme')
-          value: ''
-        - name: ('APP_DOMAIN', 'changeme')
-          value: ''
-        - name: ('ALLOWED_HOSTS', 'changeme')
-          value: ''
-        - name: ('CORS_ALLOWED_ORIGINS', 'changeme')
-          value: ''
-        - name: ('CSRF_TRUSTED_ORIGINS', 'changeme')
-          value: ''
-        - name: ('NGINX_HOST', 'changeme')
-          value: ''
-        - name: ('APP_PROTOCOL', 'http')
-          value: ''
-        - name: ('ENABLE_SIGNUP', '0')
-          value: ''
-        - name: ('DEBUG', '0')
-          value: ''
-        - name: ('NGINX_PORT', 8762)
-          value: ''
-        - name: ('LISTEN_HTTP_PORT', 8762)
-          value: ''
-        - name: ('BUCKET_NAME', 'uploads')
-          value: ''
-        - name: ('GUNICORN_WORKERS', 2)
-          value: ''
-        - name: ('POSTGRES_DB', 'plane')
-          value: ''
-        - name: ('POSTGRES_USER', 'plane')
-          value: ''
-        - name: ('POSTGRES_PASSWORD', 'umbrelplane')
-          value: ''
-        - name: ('DATABASE_URL', 'postgresql://plane:umbrelplane@plane_db_1:5432/plane')
-          value: ''
-        - name: ('REDIS_URL', 'redis://plane_redis_1:6379/0')
-          value: ''
-        - name: ('RABBITMQ_DEFAULT_USER', 'plane')
-          value: ''
-        - name: ('RABBITMQ_DEFAULT_PASS', 'umbrelplane')
-          value: ''
-        - name: ('RABBITMQ_DEFAULT_VHOST', 'plane')
-          value: ''
-        - name: ('CELERY_BROKER_URL', 'amqp://plane:umbrelplane@plane_rabbitmq_1:5672/plane')
-          value: ''
-        - name: ('USE_MINIO', 1)
-          value: ''
-        - name: ('AWS_ACCESS_KEY_ID', 'umbrel')
-          value: ''
-        - name: ('AWS_SECRET_ACCESS_KEY', '$APP_PASSWORD')
-          value: ''
-        - name: ('AWS_S3_ENDPOINT_URL', 'http://plane-minio-1:9000')
-          value: ''
-        - name: ('AWS_S3_BUCKET_NAME', 'uploads')
-          value: ''
-        - name: ('FILE_SIZE_LIMIT', 52428800)
-          value: ''
-        - name: ('MINIO_ENDPOINT_SSL', 0)
-          value: ''
-        - name: ('MINIO_ROOT_USER', 'umbrel')
-          value: ''
-        - name: ('MINIO_ROOT_PASSWORD', '$APP_PASSWORD')
-          value: ''
-        - name: ('SECRET_KEY', '$APP_SEED')
-          value: ''
-        - name: ('LIVE_SERVER_SECRET_KEY', '$APP_SEED')
-          value: ''
-        - name: ('USE_X_FORWARDED_HOST', 1)
-          value: ''
-        - name: ('SECURE_SSL_REDIRECT', 0)
-          value: ''
-        - name: ('SESSION_COOKIE_SECURE', 0)
-          value: ''
-        - name: ('CSRF_COOKIE_SECURE', 0)
-          value: ''
-        - name: ('WEBHOOK_ALLOWED_IPS', '')
-          value: ''
-        - name: ('WEBHOOK_ALLOWED_HOSTS', '')
+        - name: WEBHOOK_ALLOWED_HOSTS
           value: ''
         securityContext:
           runAsUser: 1000
@@ -1654,8 +1755,6 @@ spec:
           readOnly: true
         - name: data
           mountPath: /data
-      nodeSelector:
-        kubernetes.io/arch: amd64
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -1679,85 +1778,95 @@ spec:
         image: makeplane/plane-admin:v1.4.2@sha256:6e1bb1d800d3c7ce84a09f810d5588db8613b35d4464e722a1bec12556ca0ebb
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('WEB_URL', 'changeme')
+        - name: APP_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: admin_password
+        - name: APP_SEED
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: app_secret
+        - name: WEB_URL
+          value: changeme
+        - name: API_BASE_URL
+          value: changeme
+        - name: APP_DOMAIN
+          value: changeme
+        - name: ALLOWED_HOSTS
+          value: changeme
+        - name: CORS_ALLOWED_ORIGINS
+          value: changeme
+        - name: CSRF_TRUSTED_ORIGINS
+          value: changeme
+        - name: NGINX_HOST
+          value: changeme
+        - name: APP_PROTOCOL
+          value: http
+        - name: ENABLE_SIGNUP
+          value: '0'
+        - name: DEBUG
+          value: '0'
+        - name: NGINX_PORT
+          value: '8762'
+        - name: LISTEN_HTTP_PORT
+          value: '8762'
+        - name: BUCKET_NAME
+          value: uploads
+        - name: GUNICORN_WORKERS
+          value: '2'
+        - name: POSTGRES_DB
+          value: plane
+        - name: POSTGRES_USER
+          value: plane
+        - name: POSTGRES_PASSWORD
+          value: umbrelplane
+        - name: DATABASE_URL
+          value: postgresql://plane:umbrelplane@db:5432/plane
+        - name: REDIS_URL
+          value: redis://redis:6379/0
+        - name: RABBITMQ_DEFAULT_USER
+          value: plane
+        - name: RABBITMQ_DEFAULT_PASS
+          value: umbrelplane
+        - name: RABBITMQ_DEFAULT_VHOST
+          value: plane
+        - name: CELERY_BROKER_URL
+          value: amqp://plane:umbrelplane@rabbitmq:5672/plane
+        - name: USE_MINIO
+          value: '1'
+        - name: AWS_ACCESS_KEY_ID
+          value: umbrel
+        - name: AWS_SECRET_ACCESS_KEY
+          value: $(APP_PASSWORD)
+        - name: AWS_S3_ENDPOINT_URL
+          value: http://plane-minio-1:9000
+        - name: AWS_S3_BUCKET_NAME
+          value: uploads
+        - name: FILE_SIZE_LIMIT
+          value: '52428800'
+        - name: MINIO_ENDPOINT_SSL
+          value: '0'
+        - name: MINIO_ROOT_USER
+          value: umbrel
+        - name: MINIO_ROOT_PASSWORD
+          value: $(APP_PASSWORD)
+        - name: SECRET_KEY
+          value: $(APP_SEED)
+        - name: LIVE_SERVER_SECRET_KEY
+          value: $(APP_SEED)
+        - name: USE_X_FORWARDED_HOST
+          value: '1'
+        - name: SECURE_SSL_REDIRECT
+          value: '0'
+        - name: SESSION_COOKIE_SECURE
+          value: '0'
+        - name: CSRF_COOKIE_SECURE
+          value: '0'
+        - name: WEBHOOK_ALLOWED_IPS
           value: ''
-        - name: ('API_BASE_URL', 'changeme')
-          value: ''
-        - name: ('APP_DOMAIN', 'changeme')
-          value: ''
-        - name: ('ALLOWED_HOSTS', 'changeme')
-          value: ''
-        - name: ('CORS_ALLOWED_ORIGINS', 'changeme')
-          value: ''
-        - name: ('CSRF_TRUSTED_ORIGINS', 'changeme')
-          value: ''
-        - name: ('NGINX_HOST', 'changeme')
-          value: ''
-        - name: ('APP_PROTOCOL', 'http')
-          value: ''
-        - name: ('ENABLE_SIGNUP', '0')
-          value: ''
-        - name: ('DEBUG', '0')
-          value: ''
-        - name: ('NGINX_PORT', 8762)
-          value: ''
-        - name: ('LISTEN_HTTP_PORT', 8762)
-          value: ''
-        - name: ('BUCKET_NAME', 'uploads')
-          value: ''
-        - name: ('GUNICORN_WORKERS', 2)
-          value: ''
-        - name: ('POSTGRES_DB', 'plane')
-          value: ''
-        - name: ('POSTGRES_USER', 'plane')
-          value: ''
-        - name: ('POSTGRES_PASSWORD', 'umbrelplane')
-          value: ''
-        - name: ('DATABASE_URL', 'postgresql://plane:umbrelplane@plane_db_1:5432/plane')
-          value: ''
-        - name: ('REDIS_URL', 'redis://plane_redis_1:6379/0')
-          value: ''
-        - name: ('RABBITMQ_DEFAULT_USER', 'plane')
-          value: ''
-        - name: ('RABBITMQ_DEFAULT_PASS', 'umbrelplane')
-          value: ''
-        - name: ('RABBITMQ_DEFAULT_VHOST', 'plane')
-          value: ''
-        - name: ('CELERY_BROKER_URL', 'amqp://plane:umbrelplane@plane_rabbitmq_1:5672/plane')
-          value: ''
-        - name: ('USE_MINIO', 1)
-          value: ''
-        - name: ('AWS_ACCESS_KEY_ID', 'umbrel')
-          value: ''
-        - name: ('AWS_SECRET_ACCESS_KEY', '$APP_PASSWORD')
-          value: ''
-        - name: ('AWS_S3_ENDPOINT_URL', 'http://plane-minio-1:9000')
-          value: ''
-        - name: ('AWS_S3_BUCKET_NAME', 'uploads')
-          value: ''
-        - name: ('FILE_SIZE_LIMIT', 52428800)
-          value: ''
-        - name: ('MINIO_ENDPOINT_SSL', 0)
-          value: ''
-        - name: ('MINIO_ROOT_USER', 'umbrel')
-          value: ''
-        - name: ('MINIO_ROOT_PASSWORD', '$APP_PASSWORD')
-          value: ''
-        - name: ('SECRET_KEY', '$APP_SEED')
-          value: ''
-        - name: ('LIVE_SERVER_SECRET_KEY', '$APP_SEED')
-          value: ''
-        - name: ('USE_X_FORWARDED_HOST', 1)
-          value: ''
-        - name: ('SECURE_SSL_REDIRECT', 0)
-          value: ''
-        - name: ('SESSION_COOKIE_SECURE', 0)
-          value: ''
-        - name: ('CSRF_COOKIE_SECURE', 0)
-          value: ''
-        - name: ('WEBHOOK_ALLOWED_IPS', '')
-          value: ''
-        - name: ('WEBHOOK_ALLOWED_HOSTS', '')
+        - name: WEBHOOK_ALLOWED_HOSTS
           value: ''
       volumes:
       - name: data
@@ -1790,5 +1899,3 @@ spec:
           readOnly: true
         - name: data
           mountPath: /data
-      nodeSelector:
-        kubernetes.io/arch: amd64

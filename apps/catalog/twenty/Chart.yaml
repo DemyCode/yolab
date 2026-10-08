@@ -2,7 +2,7 @@ apiVersion: v2
 name: twenty
 description: An adaptable CRM solution for seamless team collaboration and growth
 type: application
-version: 0.1.0
+version: 0.1.1
 appVersion: 2.44.0
 dependencies:
 - name: yolab-common

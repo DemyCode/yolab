@@ -2,7 +2,7 @@ apiVersion: v2
 name: tailscale
 description: Zero config VPN to access your Umbrel from anywhere
 type: application
-version: 0.1.0
+version: 0.1.1
 appVersion: v1.102.5
 dependencies:
 - name: yolab-common

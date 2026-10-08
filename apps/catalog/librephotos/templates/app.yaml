@@ -21,6 +21,16 @@ spec:
     requests:
       storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
 ---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Release.Name }}-secrets
+  namespace: {{ .Release.Namespace }}
+type: Opaque
+stringData:
+  app_secret: {{ required "config.app_secret is required" .Values.config.app_secret | quote }}
+  admin_password: {{ required "config.admin_password is required" .Values.config.admin_password | quote }}
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -68,8 +78,6 @@ spec:
       labels:
         app: proxy
     spec:
-      nodeSelector:
-        kubernetes.io/arch: amd64
       containers:
       - name: proxy
         image: reallibrephotos/librephotos-proxy:2026w14@sha256:c88c0a65b50ba7e4f65ccc9aa7d5002df9827cb79edb1f88a3a4c130d0b03be4
@@ -90,6 +98,8 @@ spec:
       - name: data
         persistentVolumeClaim:
           claimName: '{{ .Release.Name }}-data'
+      nodeSelector:
+        kubernetes.io/arch: amd64
 ---
 apiVersion: v1
 kind: Service
@@ -125,12 +135,12 @@ spec:
         image: pgautoupgrade/pgautoupgrade:17-alpine3.22@sha256:2ec008ae5f0a2e5dd8f4d2475df41cf3ccc9562acf49bd668fcc0c061944b9bf
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('POSTGRES_USER', 'librephotos')
-          value: ''
-        - name: ('POSTGRES_PASSWORD', 'librephotos')
-          value: ''
-        - name: ('POSTGRES_DB', 'librephotos')
-          value: ''
+        - name: POSTGRES_USER
+          value: librephotos
+        - name: POSTGRES_PASSWORD
+          value: librephotos
+        - name: POSTGRES_DB
+          value: librephotos
         readinessProbe:
           exec:
             command:
@@ -168,8 +178,6 @@ spec:
       labels:
         app: frontend
     spec:
-      nodeSelector:
-        kubernetes.io/arch: amd64
       containers:
       - name: frontend
         image: reallibrephotos/librephotos-frontend:2026w14@sha256:e2fb909607b1d9552c033a9432446eadb6b693289af2b4b016da55d50724afcb
@@ -178,6 +186,8 @@ spec:
       - name: data
         persistentVolumeClaim:
           claimName: '{{ .Release.Name }}-data'
+      nodeSelector:
+        kubernetes.io/arch: amd64
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -196,51 +206,59 @@ spec:
       labels:
         app: backend
     spec:
-      nodeSelector:
-        kubernetes.io/arch: amd64
       containers:
       - name: backend
         image: reallibrephotos/librephotos:2026w14@sha256:3f4d6fa163bf41f2cd496aca342307fec8b827fe4a7ced1e7773a050ef7a5dca
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('SECRET_KEY', '${APP_SEED}')
+        - name: APP_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: admin_password
+        - name: APP_SEED
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: app_secret
+        - name: SECRET_KEY
+          value: $(APP_SEED)
+        - name: BACKEND_HOST
+          value: backend
+        - name: ADMIN_EMAIL
+          value: admin@admin.com
+        - name: ADMIN_USERNAME
+          value: admin
+        - name: ADMIN_PASSWORD
+          value: $(APP_PASSWORD)
+        - name: DB_BACKEND
+          value: postgresql
+        - name: DB_NAME
+          value: librephotos
+        - name: DB_USER
+          value: librephotos
+        - name: DB_PASS
+          value: librephotos
+        - name: DB_HOST
+          value: db
+        - name: DB_PORT
+          value: '5432'
+        - name: MAPBOX_API_KEY
           value: ''
-        - name: ('BACKEND_HOST', 'backend')
+        - name: WEB_CONCURRENCY
+          value: '2'
+        - name: HEAVYWEIGHT_PROCESS
+          value: '1'
+        - name: FIXPERMISSIONS
+          value: 'true'
+        - name: SKIP_PATTERNS
           value: ''
-        - name: ('ADMIN_EMAIL', 'admin@admin.com')
+        - name: ALLOW_UPLOAD
+          value: 'true'
+        - name: CSRF_TRUSTED_ORIGINS
           value: ''
-        - name: ('ADMIN_USERNAME', 'admin')
-          value: ''
-        - name: ('ADMIN_PASSWORD', '${APP_PASSWORD}')
-          value: ''
-        - name: ('DB_BACKEND', 'postgresql')
-          value: ''
-        - name: ('DB_NAME', 'librephotos')
-          value: ''
-        - name: ('DB_USER', 'librephotos')
-          value: ''
-        - name: ('DB_PASS', 'librephotos')
-          value: ''
-        - name: ('DB_HOST', 'librephotos_db_1')
-          value: ''
-        - name: ('DB_PORT', 5432)
-          value: ''
-        - name: ('MAPBOX_API_KEY', '')
-          value: ''
-        - name: ('WEB_CONCURRENCY', 2)
-          value: ''
-        - name: ('HEAVYWEIGHT_PROCESS', 1)
-          value: ''
-        - name: ('FIXPERMISSIONS', 'true')
-          value: ''
-        - name: ('SKIP_PATTERNS', '')
-          value: ''
-        - name: ('ALLOW_UPLOAD', 'true')
-          value: ''
-        - name: ('CSRF_TRUSTED_ORIGINS', '')
-          value: ''
-        - name: ('DEBUG', '0')
-          value: ''
+        - name: DEBUG
+          value: '0'
         volumeMounts:
         - name: data
           mountPath: /data
@@ -258,3 +276,5 @@ spec:
       - name: data
         persistentVolumeClaim:
           claimName: '{{ .Release.Name }}-data'
+      nodeSelector:
+        kubernetes.io/arch: amd64

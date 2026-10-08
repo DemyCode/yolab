@@ -21,6 +21,15 @@ spec:
     requests:
       storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
 ---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Release.Name }}-secrets
+  namespace: {{ .Release.Namespace }}
+type: Opaque
+stringData:
+  app_secret: {{ required "config.app_secret is required" .Values.config.app_secret | quote }}
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -50,28 +59,33 @@ spec:
         image: ghcr.io/maybe-finance/maybe:0.6.0@sha256:1e791e88ecc4d124d05142d943bcec5b5a172e889f648c97d334363133384f01
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('SELF_HOSTING_ENABLED', 'true')
-          value: ''
-        - name: ('PORT', 3063)
-          value: ''
-        - name: ('DATABASE_URL', 'postgresql://maybe:maybe@maybe%5Fdb%5F1:5432/maybe')
-          value: ''
-        - name: ('RAILS_FORCE_SSL', 'false')
-          value: ''
-        - name: ('RAILS_ASSUME_SSL', 'false')
-          value: ''
-        - name: ('POSTGRES_DB', 'maybe')
-          value: ''
-        - name: ('POSTGRES_USER', 'maybe')
-          value: ''
-        - name: ('POSTGRES_PASSWORD', 'maybe')
-          value: ''
-        - name: ('GOOD_JOB_EXECUTION_MODE', 'async')
-          value: ''
-        - name: ('SECRET_KEY_BASE', '$APP_SEED')
-          value: ''
-        - name: ('REDIS_URL', 'redis://maybe_redis_1:6379/1')
-          value: ''
+        - name: APP_SEED
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: app_secret
+        - name: SELF_HOSTING_ENABLED
+          value: 'true'
+        - name: PORT
+          value: '3063'
+        - name: DATABASE_URL
+          value: postgresql://maybe:maybe@maybe%5Fdb%5F1:5432/maybe
+        - name: RAILS_FORCE_SSL
+          value: 'false'
+        - name: RAILS_ASSUME_SSL
+          value: 'false'
+        - name: POSTGRES_DB
+          value: maybe
+        - name: POSTGRES_USER
+          value: maybe
+        - name: POSTGRES_PASSWORD
+          value: maybe
+        - name: GOOD_JOB_EXECUTION_MODE
+          value: async
+        - name: SECRET_KEY_BASE
+          value: $(APP_SEED)
+        - name: REDIS_URL
+          value: redis://redis:6379/1
         ports:
         - containerPort: 3063
         readinessProbe:
@@ -112,28 +126,33 @@ spec:
         - exec
         - sidekiq
         env:
-        - name: ('SELF_HOSTING_ENABLED', 'true')
-          value: ''
-        - name: ('PORT', 3063)
-          value: ''
-        - name: ('DATABASE_URL', 'postgresql://maybe:maybe@maybe%5Fdb%5F1:5432/maybe')
-          value: ''
-        - name: ('RAILS_FORCE_SSL', 'false')
-          value: ''
-        - name: ('RAILS_ASSUME_SSL', 'false')
-          value: ''
-        - name: ('POSTGRES_DB', 'maybe')
-          value: ''
-        - name: ('POSTGRES_USER', 'maybe')
-          value: ''
-        - name: ('POSTGRES_PASSWORD', 'maybe')
-          value: ''
-        - name: ('GOOD_JOB_EXECUTION_MODE', 'async')
-          value: ''
-        - name: ('SECRET_KEY_BASE', '$APP_SEED')
-          value: ''
-        - name: ('REDIS_URL', 'redis://maybe_redis_1:6379/1')
-          value: ''
+        - name: APP_SEED
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: app_secret
+        - name: SELF_HOSTING_ENABLED
+          value: 'true'
+        - name: PORT
+          value: '3063'
+        - name: DATABASE_URL
+          value: postgresql://maybe:maybe@maybe%5Fdb%5F1:5432/maybe
+        - name: RAILS_FORCE_SSL
+          value: 'false'
+        - name: RAILS_ASSUME_SSL
+          value: 'false'
+        - name: POSTGRES_DB
+          value: maybe
+        - name: POSTGRES_USER
+          value: maybe
+        - name: POSTGRES_PASSWORD
+          value: maybe
+        - name: GOOD_JOB_EXECUTION_MODE
+          value: async
+        - name: SECRET_KEY_BASE
+          value: $(APP_SEED)
+        - name: REDIS_URL
+          value: redis://redis:6379/1
       volumes:
       - name: data
         persistentVolumeClaim:
@@ -161,14 +180,19 @@ spec:
         image: postgres:16@sha256:1bf73ccae25238fa555100080042f0b2f9be08eb757e200fe6afc1fc413a1b3c
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('POSTGRES_DB', 'maybe')
-          value: ''
-        - name: ('POSTGRES_USER', 'maybe')
-          value: ''
-        - name: ('POSTGRES_PASSWORD', 'maybe')
-          value: ''
-        - name: ('PGDATA', '/var/lib/postgresql/data/pgdata')
-          value: ''
+        - name: APP_SEED
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: app_secret
+        - name: POSTGRES_DB
+          value: maybe
+        - name: POSTGRES_USER
+          value: maybe
+        - name: POSTGRES_PASSWORD
+          value: maybe
+        - name: PGDATA
+          value: /var/lib/postgresql/data/pgdata
         ports:
         - containerPort: 5432
         readinessProbe:
@@ -216,12 +240,16 @@ spec:
       labels:
         app: redis
     spec:
-      nodeSelector:
-        kubernetes.io/arch: amd64
       containers:
       - name: redis
         image: redis:7.4.2@sha256:fbdbaea47b9ae4ecc2082ecdb4e1cea81e32176ffb1dcf643d422ad07427e5d9
         imagePullPolicy: IfNotPresent
+        env:
+        - name: APP_SEED
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: app_secret
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000
@@ -241,6 +269,8 @@ spec:
       - name: data
         persistentVolumeClaim:
           claimName: '{{ .Release.Name }}-data'
+      nodeSelector:
+        kubernetes.io/arch: amd64
 ---
 apiVersion: v1
 kind: Service

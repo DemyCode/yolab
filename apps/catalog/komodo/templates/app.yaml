@@ -22,6 +22,16 @@ spec:
       storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
 ---
 apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Release.Name }}-secrets
+  namespace: {{ .Release.Namespace }}
+type: Opaque
+stringData:
+  app_secret: {{ required "config.app_secret is required" .Values.config.app_secret | quote }}
+  admin_password: {{ required "config.admin_password is required" .Values.config.admin_password | quote }}
+---
+apiVersion: v1
 kind: ConfigMap
 metadata:
   name: '{{ .Release.Name }}-seed'
@@ -50,10 +60,7 @@ spec:
       {{- if .Values.config.node }}
       nodeSelector:
         kubernetes.io/hostname: {{ .Values.config.node | quote }}
-        kubernetes.io/arch: amd64
       {{- else }}
-      nodeSelector:
-        kubernetes.io/arch: amd64
       {{- end }}
       initContainers:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
@@ -88,54 +95,64 @@ spec:
         image: ghcr.io/moghtech/komodo-core:2.3.3@sha256:bca73d0eee143066228fb9b80c38a5a2726e573ad2758f7aa92b5c91a8aef1c7
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('TZ', 'Europe/Berlin')
-          value: ''
-        - name: ('KOMODO_HOST', 'changeme')
-          value: ''
-        - name: ('KOMODO_TITLE', 'Komodo')
-          value: ''
-        - name: ('KOMODO_LOCAL_AUTH', 'true')
-          value: ''
-        - name: ('KOMODO_DISABLE_USER_REGISTRATION', 'false')
-          value: ''
-        - name: ('KOMODO_ENABLE_NEW_USERS', 'false')
-          value: ''
-        - name: ('KOMODO_DISABLE_NON_ADMIN_CREATE', 'false')
-          value: ''
-        - name: ('KOMODO_TRANSPARENT_MODE', 'false')
-          value: ''
-        - name: ('KOMODO_LOGGING_PRETTY', 'false')
-          value: ''
-        - name: ('KOMODO_PRETTY_STARTUP_CONFIG', 'false')
-          value: ''
-        - name: ('KOMODO_OIDC_ENABLED', 'false')
-          value: ''
-        - name: ('KOMODO_GITHUB_OAUTH_ENABLED', 'false')
-          value: ''
-        - name: ('KOMODO_GOOGLE_OAUTH_ENABLED', 'false')
-          value: ''
-        - name: ('KOMODO_DISABLE_CONFIRM_DIALOG', 'false')
-          value: ''
-        - name: ('KOMODO_MONITORING_INTERVAL', '15-sec')
-          value: ''
-        - name: ('KOMODO_RESOURCE_POLL_INTERVAL', '1-hr')
-          value: ''
-        - name: ('KOMODO_WEBHOOK_SECRET', 'W3bh00kS3cret!2025')
-          value: ''
-        - name: ('KOMODO_JWT_TTL', '1-day')
-          value: ''
-        - name: ('KOMODO_DATABASE_ADDRESS', 'komodo_ferretdb_1:27017')
-          value: ''
-        - name: ('KOMODO_DATABASE_USERNAME', 'admin')
-          value: ''
-        - name: ('KOMODO_DATABASE_PASSWORD', 'admin')
-          value: ''
-        - name: ('KOMODO_PASSKEY', '${APP_PASSWORD}')
-          value: ''
-        - name: ('KOMODO_FIRST_SERVER', 'https://komodo_periphery_1:8120')
-          value: ''
-        - name: ('KOMODO_JWT_SECRET', '${APP_SEED}')
-          value: ''
+        - name: APP_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: admin_password
+        - name: APP_SEED
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: app_secret
+        - name: TZ
+          value: Europe/Berlin
+        - name: KOMODO_HOST
+          value: changeme
+        - name: KOMODO_TITLE
+          value: Komodo
+        - name: KOMODO_LOCAL_AUTH
+          value: 'true'
+        - name: KOMODO_DISABLE_USER_REGISTRATION
+          value: 'false'
+        - name: KOMODO_ENABLE_NEW_USERS
+          value: 'false'
+        - name: KOMODO_DISABLE_NON_ADMIN_CREATE
+          value: 'false'
+        - name: KOMODO_TRANSPARENT_MODE
+          value: 'false'
+        - name: KOMODO_LOGGING_PRETTY
+          value: 'false'
+        - name: KOMODO_PRETTY_STARTUP_CONFIG
+          value: 'false'
+        - name: KOMODO_OIDC_ENABLED
+          value: 'false'
+        - name: KOMODO_GITHUB_OAUTH_ENABLED
+          value: 'false'
+        - name: KOMODO_GOOGLE_OAUTH_ENABLED
+          value: 'false'
+        - name: KOMODO_DISABLE_CONFIRM_DIALOG
+          value: 'false'
+        - name: KOMODO_MONITORING_INTERVAL
+          value: 15-sec
+        - name: KOMODO_RESOURCE_POLL_INTERVAL
+          value: 1-hr
+        - name: KOMODO_WEBHOOK_SECRET
+          value: W3bh00kS3cret!2025
+        - name: KOMODO_JWT_TTL
+          value: 1-day
+        - name: KOMODO_DATABASE_ADDRESS
+          value: ferretdb:27017
+        - name: KOMODO_DATABASE_USERNAME
+          value: admin
+        - name: KOMODO_DATABASE_PASSWORD
+          value: admin
+        - name: KOMODO_PASSKEY
+          value: $(APP_PASSWORD)
+        - name: KOMODO_FIRST_SERVER
+          value: https://periphery:8120
+        - name: KOMODO_JWT_SECRET
+          value: $(APP_SEED)
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000
@@ -195,8 +212,8 @@ spec:
         - --pidfile
         - /data/docker.pid
         env:
-        - name: ('DOCKER_ENSURE_BRIDGE', 'dind0:10.32.0.1/16')
-          value: ''
+        - name: DOCKER_ENSURE_BRIDGE
+          value: dind0:10.32.0.1/16
         volumeMounts:
         - name: data
           mountPath: /entrypoint.sh
@@ -235,8 +252,6 @@ spec:
           mountPath: /data
       hostNetwork: true
       dnsPolicy: ClusterFirstWithHostNet
-      nodeSelector:
-        kubernetes.io/arch: amd64
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -260,12 +275,12 @@ spec:
         image: ghcr.io/ferretdb/postgres-documentdb:17-0.104.0@sha256:1d709fc03dcb82faa2e3aa02c0f80ea10e483b38aff08a05da36a6faa2098608
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('POSTGRES_USER', 'admin')
-          value: ''
-        - name: ('POSTGRES_PASSWORD', 'admin')
-          value: ''
-        - name: ('POSTGRES_DB', 'postgres')
-          value: ''
+        - name: POSTGRES_USER
+          value: admin
+        - name: POSTGRES_PASSWORD
+          value: admin
+        - name: POSTGRES_DB
+          value: postgres
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000
@@ -307,8 +322,6 @@ spec:
           readOnly: true
         - name: data
           mountPath: /data
-      nodeSelector:
-        kubernetes.io/arch: amd64
 ---
 apiVersion: v1
 kind: Service
@@ -344,8 +357,8 @@ spec:
         image: ghcr.io/ferretdb/ferretdb:2.3.1@sha256:1170bd36c39378614edd3f1d2b92f0c5a9b30e482a79ea0c3fc0fe11baba3afa
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('FERRETDB_POSTGRESQL_URL', 'postgres://admin:admin@komodo_postgres_1:5432/postgres')
-          value: ''
+        - name: FERRETDB_POSTGRESQL_URL
+          value: postgres://admin:admin@postgres:5432/postgres
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000
@@ -382,8 +395,6 @@ spec:
           readOnly: true
         - name: data
           mountPath: /data
-      nodeSelector:
-        kubernetes.io/arch: amd64
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -407,26 +418,36 @@ spec:
         image: ghcr.io/moghtech/komodo-periphery:2.3.3@sha256:fa3f1a641a265216066676950d5eecdf506955a7bafe2f01996135ae93115cd5
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('COMPOSE_KOMODO_IMAGE_TAG', 'latest')
-          value: ''
-        - name: ('KOMODO_PASSKEY', '${APP_PASSWORD}')
-          value: ''
-        - name: ('TZ', 'Europe/Berlin')
-          value: ''
-        - name: ('PERIPHERY_ROOT_DIRECTORY', '/etc/komodo')
-          value: ''
-        - name: ('PERIPHERY_PASSKEYS', '${APP_PASSWORD}')
-          value: ''
-        - name: ('PERIPHERY_DISABLE_TERMINALS', 'false')
-          value: ''
-        - name: ('PERIPHERY_SSL_ENABLED', 'true')
-          value: ''
-        - name: ('PERIPHERY_INCLUDE_DISK_MOUNTS', '/etc/hostname')
-          value: ''
-        - name: ('PERIPHERY_LOGGING_PRETTY', 'false')
-          value: ''
-        - name: ('PERIPHERY_PRETTY_STARTUP_CONFIG', 'false')
-          value: ''
+        - name: APP_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: admin_password
+        - name: APP_SEED
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: app_secret
+        - name: COMPOSE_KOMODO_IMAGE_TAG
+          value: latest
+        - name: KOMODO_PASSKEY
+          value: $(APP_PASSWORD)
+        - name: TZ
+          value: Europe/Berlin
+        - name: PERIPHERY_ROOT_DIRECTORY
+          value: /etc/komodo
+        - name: PERIPHERY_PASSKEYS
+          value: $(APP_PASSWORD)
+        - name: PERIPHERY_DISABLE_TERMINALS
+          value: 'false'
+        - name: PERIPHERY_SSL_ENABLED
+          value: 'true'
+        - name: PERIPHERY_INCLUDE_DISK_MOUNTS
+          value: /etc/hostname
+        - name: PERIPHERY_LOGGING_PRETTY
+          value: 'false'
+        - name: PERIPHERY_PRETTY_STARTUP_CONFIG
+          value: 'false'
         volumeMounts:
         - name: data
           mountPath: /var/run
@@ -468,5 +489,3 @@ spec:
           readOnly: true
         - name: data
           mountPath: /data
-      nodeSelector:
-        kubernetes.io/arch: amd64

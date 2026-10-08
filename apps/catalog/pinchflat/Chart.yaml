@@ -2,7 +2,7 @@ apiVersion: v2
 name: pinchflat
 description: A automated media backup solution, for online media sources
 type: application
-version: 0.1.0
+version: 0.1.1
 appVersion: 2025.6.6-patch.1
 dependencies:
 - name: yolab-common

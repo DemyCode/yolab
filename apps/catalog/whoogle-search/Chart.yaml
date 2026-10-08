@@ -2,7 +2,7 @@ apiVersion: v2
 name: whoogle-search
 description: A self-hosted, ad-free, privacy-respecting metasearch engine
 type: application
-version: 0.1.0
+version: 0.1.1
 appVersion: 1.2.4
 dependencies:
 - name: yolab-common

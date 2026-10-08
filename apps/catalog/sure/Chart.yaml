@@ -2,7 +2,7 @@ apiVersion: v2
 name: sure
 description: The personal finance app for everyone
 type: application
-version: 0.1.0
+version: 0.1.1
 appVersion: 0.7.5
 dependencies:
 - name: yolab-common

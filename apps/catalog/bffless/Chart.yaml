@@ -2,7 +2,7 @@ apiVersion: v2
 name: bffless
 description: Self-hosted static site hosting platform
 type: application
-version: 0.1.0
+version: 0.1.1
 appVersion: 0.4.15
 dependencies:
 - name: yolab-common

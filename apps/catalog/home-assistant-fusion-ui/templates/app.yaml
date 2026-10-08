@@ -50,8 +50,8 @@ spec:
         image: ghcr.io/matt8707/ha-fusion:2024.10.1@sha256:5eea4634ab2b1e7c7523943996d13318d109b293abe8e9e86c38daf5c41830cb
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('HASS_URL', 'http://${DEVICE_DOMAIN_NAME}:8123')
-          value: ''
+        - name: HASS_URL
+          value: http://localhost:8123
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000

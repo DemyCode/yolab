@@ -50,8 +50,8 @@ spec:
         image: ghcr.io/besoeasy/zeronote:1.0.12@sha256:208586649fcf38a86b73f2b7ed5888d71faac38729fd00c5a793ab90b09ecf2f
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('NODE_ENV', 'production')
-          value: ''
+        - name: NODE_ENV
+          value: production
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000

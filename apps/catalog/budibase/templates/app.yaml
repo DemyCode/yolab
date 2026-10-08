@@ -21,6 +21,15 @@ spec:
     requests:
       storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
 ---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Release.Name }}-secrets
+  namespace: {{ .Release.Namespace }}
+type: Opaque
+stringData:
+  app_secret: {{ required "config.app_secret is required" .Values.config.app_secret | quote }}
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -73,8 +82,13 @@ spec:
         image: budibase/budibase:3.41.3@sha256:f05b90c2b8afc951feb99931bb4646d2c94af37d9c576ef3c4e01d4fdc296dc1
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('JWT_SECRET', '${APP_SEED}')
-          value: ''
+        - name: APP_SEED
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: app_secret
+        - name: JWT_SECRET
+          value: $(APP_SEED)
         ports:
         - containerPort: 80
         readinessProbe:

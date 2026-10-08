@@ -21,6 +21,15 @@ spec:
     requests:
       storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
 ---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Release.Name }}-secrets
+  namespace: {{ .Release.Namespace }}
+type: Opaque
+stringData:
+  admin_password: {{ required "config.admin_password is required" .Values.config.admin_password | quote }}
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -50,22 +59,27 @@ spec:
         image: ghcr.io/caramelfur/picsur:0.5.6@sha256:209ce21d338cd7d9a1adc838a67695e903149359bf192359819607df1b3c4417
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('PICSUR_PORT', 8286)
-          value: ''
-        - name: ('PICSUR_DB_HOST', 'picsur_db_1')
-          value: ''
-        - name: ('PICSUR_DB_PORT', 5432)
-          value: ''
-        - name: ('PICSUR_DB_USERNAME', 'picsuruser')
-          value: ''
-        - name: ('PICSUR_DB_PASSWORD', 'picsurpass')
-          value: ''
-        - name: ('PICSUR_DB_DATABASE', 'picsur')
-          value: ''
-        - name: ('PICSUR_ADMIN_PASSWORD', '${APP_PASSWORD}')
-          value: ''
-        - name: ('PICSUR_MAX_FILE_SIZE', 128000000000)
-          value: ''
+        - name: APP_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: admin_password
+        - name: PICSUR_PORT
+          value: '8286'
+        - name: PICSUR_DB_HOST
+          value: db
+        - name: PICSUR_DB_PORT
+          value: '5432'
+        - name: PICSUR_DB_USERNAME
+          value: picsuruser
+        - name: PICSUR_DB_PASSWORD
+          value: picsurpass
+        - name: PICSUR_DB_DATABASE
+          value: picsur
+        - name: PICSUR_ADMIN_PASSWORD
+          value: $(APP_PASSWORD)
+        - name: PICSUR_MAX_FILE_SIZE
+          value: '128000000000'
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000
@@ -101,12 +115,12 @@ spec:
         image: postgres:17.4@sha256:fe3f571d128e8efadcd8b2fde0e2b73ebab6dbec33f6bfe69d98c682c7d8f7bd
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('POSTGRES_DB', 'picsur')
-          value: ''
-        - name: ('POSTGRES_USER', 'picsuruser')
-          value: ''
-        - name: ('POSTGRES_PASSWORD', 'picsurpass')
-          value: ''
+        - name: POSTGRES_DB
+          value: picsur
+        - name: POSTGRES_USER
+          value: picsuruser
+        - name: POSTGRES_PASSWORD
+          value: picsurpass
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000

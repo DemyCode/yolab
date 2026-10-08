@@ -2,7 +2,7 @@ apiVersion: v2
 name: bitmagnet
 description: Self-hosted BitTorrent indexer and DHT crawler
 type: application
-version: 0.1.0
+version: 0.1.1
 appVersion: v0.10.0-patch.1
 dependencies:
 - name: yolab-common

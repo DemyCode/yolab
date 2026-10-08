@@ -2,7 +2,7 @@ apiVersion: v2
 name: dtan-server
 description: Nostr-based torrent distribution network
 type: application
-version: 0.1.0
+version: 0.1.1
 appVersion: v0.2.0
 dependencies:
 - name: yolab-common

@@ -2,7 +2,7 @@ apiVersion: v2
 name: heimdall
 description: Organize your most used web sites in a simple way
 type: application
-version: 0.1.0
+version: 0.1.1
 appVersion: 2.8.3
 dependencies:
 - name: yolab-common

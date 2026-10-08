@@ -49,10 +49,7 @@ spec:
       {{- if .Values.config.node }}
       nodeSelector:
         kubernetes.io/hostname: {{ .Values.config.node | quote }}
-        kubernetes.io/arch: amd64
       {{- else }}
-      nodeSelector:
-        kubernetes.io/arch: amd64
       {{- end }}
       initContainers:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
@@ -85,10 +82,10 @@ spec:
         image: louislam/dockge:1.5.0@sha256:335c6368b880ecc203236ed89e6e5232e0d6578e8ef5920e4a502390451502bf
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('DOCKGE_STACKS_DIR', '/opt/stacks')
-          value: ''
-        - name: ('DOCKGE_ENABLE_CONSOLE', 'true')
-          value: ''
+        - name: DOCKGE_STACKS_DIR
+          value: /opt/stacks
+        - name: DOCKGE_ENABLE_CONSOLE
+          value: 'true'
         ports:
         - containerPort: 5001
         readinessProbe:
@@ -148,8 +145,8 @@ spec:
         - --pidfile
         - /data/docker.pid
         env:
-        - name: ('DOCKER_ENSURE_BRIDGE', 'dind0:10.32.0.1/16')
-          value: ''
+        - name: DOCKER_ENSURE_BRIDGE
+          value: dind0:10.32.0.1/16
         volumeMounts:
         - name: data
           mountPath: /entrypoint.sh
@@ -186,5 +183,3 @@ spec:
           mountPath: /data
       hostNetwork: true
       dnsPolicy: ClusterFirstWithHostNet
-      nodeSelector:
-        kubernetes.io/arch: amd64

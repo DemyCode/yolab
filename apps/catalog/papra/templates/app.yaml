@@ -21,6 +21,15 @@ spec:
     requests:
       storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
 ---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Release.Name }}-secrets
+  namespace: {{ .Release.Namespace }}
+type: Opaque
+stringData:
+  app_secret: {{ required "config.app_secret is required" .Values.config.app_secret | quote }}
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -50,10 +59,15 @@ spec:
         image: ghcr.io/papra-hq/papra:26.6.2-rootless@sha256:a281cb44176dbe5323e0f7ea2d6fd34d58914a3a8525c36437a086d1d7c4fef8
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('AUTH_SECRET', '${APP_SEED}')
-          value: ''
-        - name: ('APP_BASE_URL', 'http://${DEVICE_DOMAIN_NAME}:8112')
-          value: ''
+        - name: APP_SEED
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: app_secret
+        - name: AUTH_SECRET
+          value: $(APP_SEED)
+        - name: APP_BASE_URL
+          value: http://localhost:8112
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000

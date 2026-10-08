@@ -41,10 +41,7 @@ spec:
       {{- if .Values.config.node }}
       nodeSelector:
         kubernetes.io/hostname: {{ .Values.config.node | quote }}
-        kubernetes.io/arch: amd64
       {{- else }}
-      nodeSelector:
-        kubernetes.io/arch: amd64
       {{- end }}
       initContainers:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
@@ -58,10 +55,10 @@ spec:
         image: bochaco/formicaio_proxy:0.3.0@sha256:49a8f7b1787aa356c9c444fe75b90fbd09da4d9a0be00c3f753e997a3196e1f9
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('FORMICAIO_ADDR', 'host.docker.internal:3000')
-          value: ''
-        - name: ('FORMICAIO_PROXY_PORT', 52100)
-          value: ''
+        - name: FORMICAIO_ADDR
+          value: host.docker.internal:3000
+        - name: FORMICAIO_PROXY_PORT
+          value: '52100'
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000
@@ -97,12 +94,12 @@ spec:
         image: bochaco/formicaio:0.8.4-native-lcd-disabled@sha256:9f745c0b3dac2bae47de23cb4c444d2c04ce83610a84a26c784534011f4e01f7
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('DB_PATH', '/data')
-          value: ''
-        - name: ('NODE_MGR_ROOT_DIR', '/data')
-          value: ''
-        - name: ('LEPTOS_SITE_ADDR', '0.0.0.0:3000')
-          value: ''
+        - name: DB_PATH
+          value: /data
+        - name: NODE_MGR_ROOT_DIR
+          value: /data
+        - name: LEPTOS_SITE_ADDR
+          value: 0.0.0.0:3000
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000
@@ -116,5 +113,3 @@ spec:
           claimName: '{{ .Release.Name }}-data'
       hostNetwork: true
       dnsPolicy: ClusterFirstWithHostNet
-      nodeSelector:
-        kubernetes.io/arch: amd64

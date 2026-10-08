@@ -2,7 +2,7 @@ apiVersion: v2
 name: appsmith
 description: Platform to build admin panels, internal tools, and dashboards
 type: application
-version: 0.1.0
+version: 0.1.1
 appVersion: v2.4.3
 dependencies:
 - name: yolab-common

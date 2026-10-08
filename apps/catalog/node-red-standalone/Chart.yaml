@@ -2,7 +2,7 @@ apiVersion: v2
 name: node-red-standalone
 description: Wire together the Internet of Things
 type: application
-version: 0.1.0
+version: 0.1.1
 appVersion: 5.0.7-patch.1
 dependencies:
 - name: yolab-common

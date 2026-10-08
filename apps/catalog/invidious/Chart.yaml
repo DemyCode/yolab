@@ -2,7 +2,7 @@ apiVersion: v2
 name: invidious
 description: Browse YouTube without tracking or ads
 type: application
-version: 0.1.0
+version: 0.1.1
 appVersion: 2.20260207.0
 dependencies:
 - name: yolab-common

@@ -2,7 +2,7 @@ apiVersion: v2
 name: portainer
 description: Run custom Docker containers on your Umbrel
 type: application
-version: 0.1.0
+version: 0.1.1
 appVersion: 2.45.1-1
 dependencies:
 - name: yolab-common

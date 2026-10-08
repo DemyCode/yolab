@@ -22,6 +22,16 @@ spec:
       storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
 ---
 apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Release.Name }}-secrets
+  namespace: {{ .Release.Namespace }}
+type: Opaque
+stringData:
+  app_secret: {{ required "config.app_secret is required" .Values.config.app_secret | quote }}
+  admin_password: {{ required "config.admin_password is required" .Values.config.admin_password | quote }}
+---
+apiVersion: v1
 kind: ConfigMap
 metadata:
   name: '{{ .Release.Name }}-seed'
@@ -46,8 +56,6 @@ spec:
       labels:
         app: gateway
     spec:
-      nodeSelector:
-        kubernetes.io/arch: amd64
       initContainers:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
@@ -81,40 +89,45 @@ spec:
         image: lobehub/lobehub:2.2.17@sha256:775dbfb06820e2d0f6ac24cbaaa6ee46c1e40ebce7b73fb2ce16c4d06e61a51e
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('APP_URL', 'http://${DEVICE_DOMAIN_NAME}:7455')
-          value: ''
-        - name: ('INTERNAL_APP_URL', 'http://lobe-chat_app_1:3210')
-          value: ''
-        - name: ('AUTH_TRUSTED_ORIGINS', 'http://${DEVICE_DOMAIN_NAME}:7455')
-          value: ''
-        - name: ('DATABASE_URL', 'postgresql://postgres:lobehubsecret@lobe-chat_postgres_1:5432/lobehub')
-          value: ''
-        - name: ('ES_REINDEX_STATE_DIR', '/app/.elasticsearch-reindex')
-          value: ''
-        - name: ('REDIS_URL', 'redis://lobe-chat_redis_1:6379')
-          value: ''
-        - name: ('REDIS_PREFIX', 'lobechat')
-          value: ''
-        - name: ('REDIS_TLS', '0')
-          value: ''
-        - name: ('S3_ENDPOINT', 'http://${DEVICE_DOMAIN_NAME}:7458')
-          value: ''
-        - name: ('S3_BUCKET', 'lobe')
-          value: ''
-        - name: ('S3_ACCESS_KEY', 'lobehub')
-          value: ''
-        - name: ('S3_ENABLE_PATH_STYLE', '1')
-          value: ''
-        - name: ('S3_ACCESS_KEY_ID', 'lobehub')
-          value: ''
-        - name: ('S3_SECRET_ACCESS_KEY', '${APP_PASSWORD}')
-          value: ''
-        - name: ('S3_SET_ACL', '0')
-          value: ''
-        - name: ('LLM_VISION_IMAGE_USE_BASE64', '1')
-          value: ''
-        - name: ('SEARXNG_URL', 'http://lobe-chat_searxng_1:8080')
-          value: ''
+        - name: APP_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: admin_password
+        - name: APP_URL
+          value: http://localhost:7455
+        - name: INTERNAL_APP_URL
+          value: http://app:3210
+        - name: AUTH_TRUSTED_ORIGINS
+          value: http://localhost:7455
+        - name: DATABASE_URL
+          value: postgresql://postgres:lobehubsecret@postgres:5432/lobehub
+        - name: ES_REINDEX_STATE_DIR
+          value: /app/.elasticsearch-reindex
+        - name: REDIS_URL
+          value: redis://redis:6379
+        - name: REDIS_PREFIX
+          value: lobechat
+        - name: REDIS_TLS
+          value: '0'
+        - name: S3_ENDPOINT
+          value: http://localhost:7458
+        - name: S3_BUCKET
+          value: lobe
+        - name: S3_ACCESS_KEY
+          value: lobehub
+        - name: S3_ENABLE_PATH_STYLE
+          value: '1'
+        - name: S3_ACCESS_KEY_ID
+          value: lobehub
+        - name: S3_SECRET_ACCESS_KEY
+          value: $(APP_PASSWORD)
+        - name: S3_SET_ACL
+          value: '0'
+        - name: LLM_VISION_IMAGE_USE_BASE64
+          value: '1'
+        - name: SEARXNG_URL
+          value: http://searxng:8080
         ports:
         - containerPort: 3210
         readinessProbe:
@@ -154,10 +167,15 @@ spec:
         image: paradedb/paradedb:0.22.3-pg17@sha256:746c263e546b9d8bfdd278d7da9584c47ce838670e6cdfdb32713147548b43ce
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('POSTGRES_DB', 'lobehub')
-          value: ''
-        - name: ('POSTGRES_PASSWORD', 'lobehubsecret')
-          value: ''
+        - name: APP_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: admin_password
+        - name: POSTGRES_DB
+          value: lobehub
+        - name: POSTGRES_PASSWORD
+          value: lobehubsecret
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000
@@ -201,8 +219,6 @@ spec:
           readOnly: true
         - name: data
           mountPath: /data
-      nodeSelector:
-        kubernetes.io/arch: amd64
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -232,6 +248,12 @@ spec:
         - '1000'
         - --appendonly
         - 'yes'
+        env:
+        - name: APP_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: admin_password
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000
@@ -313,20 +335,25 @@ spec:
         image: rustfs/rustfs:1.0.0-alpha.90@sha256:0725587f6fcca83c1898f321424327d6e6da5e01ea20382905dd258ed5af3be4
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('RUSTFS_ADDRESS', '0.0.0.0:9000')
-          value: ''
-        - name: ('RUSTFS_CONSOLE_ADDRESS', '0.0.0.0:9001')
-          value: ''
-        - name: ('RUSTFS_CONSOLE_ENABLE', 'true')
-          value: ''
-        - name: ('RUSTFS_VOLUMES', '/data')
-          value: ''
-        - name: ('RUSTFS_ACCESS_KEY', 'lobehub')
-          value: ''
-        - name: ('RUSTFS_SECRET_KEY', '${APP_PASSWORD}')
-          value: ''
-        - name: ('RUSTFS_OBS_LOG_DIRECTORY', '/logs')
-          value: ''
+        - name: APP_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: admin_password
+        - name: RUSTFS_ADDRESS
+          value: 0.0.0.0:9000
+        - name: RUSTFS_CONSOLE_ADDRESS
+          value: 0.0.0.0:9001
+        - name: RUSTFS_CONSOLE_ENABLE
+          value: 'true'
+        - name: RUSTFS_VOLUMES
+          value: /data
+        - name: RUSTFS_ACCESS_KEY
+          value: lobehub
+        - name: RUSTFS_SECRET_KEY
+          value: $(APP_PASSWORD)
+        - name: RUSTFS_OBS_LOG_DIRECTORY
+          value: /logs
         ports:
         - containerPort: 9000
         readinessProbe:
@@ -373,8 +400,6 @@ spec:
           readOnly: true
         - name: data
           mountPath: /data
-      nodeSelector:
-        kubernetes.io/arch: amd64
 ---
 apiVersion: v1
 kind: Service
@@ -418,6 +443,12 @@ spec:
           mc anonymous set download rustfs/lobe
 
           '
+        env:
+        - name: APP_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: admin_password
         volumeMounts:
         - name: data
           mountPath: /bucket.config.json
@@ -477,8 +508,18 @@ spec:
         image: ghcr.io/searxng/searxng:2026.4.22-74f1ca203@sha256:37c616a774b90fb5df9239eb143f1b11866ddf7b830cd1ebcca6ba11b38cc2bf
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('SEARXNG_SECRET', '${APP_SEED}')
-          value: ''
+        - name: APP_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: admin_password
+        - name: APP_SEED
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: app_secret
+        - name: SEARXNG_SECRET
+          value: $(APP_SEED)
         volumeMounts:
         - name: data
           mountPath: /etc/searxng/settings.yml
@@ -512,5 +553,3 @@ spec:
           readOnly: true
         - name: data
           mountPath: /data
-      nodeSelector:
-        kubernetes.io/arch: amd64

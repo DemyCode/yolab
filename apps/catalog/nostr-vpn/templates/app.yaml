@@ -41,10 +41,7 @@ spec:
       {{- if .Values.config.node }}
       nodeSelector:
         kubernetes.io/hostname: {{ .Values.config.node | quote }}
-        kubernetes.io/arch: amd64
       {{- else }}
-      nodeSelector:
-        kubernetes.io/arch: amd64
       {{- end }}
       initContainers:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
@@ -64,18 +61,18 @@ spec:
         - --config
         - /data/config/nvpn/config.toml
         env:
-        - name: ('HOME', '/data/home')
-          value: ''
-        - name: ('XDG_CONFIG_HOME', '/data/config')
-          value: ''
-        - name: ('NVPN_CLI_PATH', '/usr/local/bin/nvpn')
-          value: ''
-        - name: ('NVPN_DAEMON_STATUS_MODE', 'state-file')
-          value: ''
-        - name: ('NVPN_EXTERNAL_DAEMON', 'true')
-          value: ''
-        - name: ('RUST_LOG', 'info')
-          value: ''
+        - name: HOME
+          value: /data/home
+        - name: XDG_CONFIG_HOME
+          value: /data/config
+        - name: NVPN_CLI_PATH
+          value: /usr/local/bin/nvpn
+        - name: NVPN_DAEMON_STATUS_MODE
+          value: state-file
+        - name: NVPN_EXTERNAL_DAEMON
+          value: 'true'
+        - name: RUST_LOG
+          value: info
         ports:
         - containerPort: 38080
         readinessProbe:
@@ -118,12 +115,12 @@ spec:
         - --config
         - /data/config/nvpn/config.toml
         env:
-        - name: ('HOME', '/data/home')
-          value: ''
-        - name: ('XDG_CONFIG_HOME', '/data/config')
-          value: ''
-        - name: ('RUST_LOG', 'info')
-          value: ''
+        - name: HOME
+          value: /data/home
+        - name: XDG_CONFIG_HOME
+          value: /data/config
+        - name: RUST_LOG
+          value: info
         securityContext:
           capabilities:
             add:
@@ -143,5 +140,3 @@ spec:
           path: /dev/net/tun
       hostNetwork: true
       dnsPolicy: ClusterFirstWithHostNet
-      nodeSelector:
-        kubernetes.io/arch: amd64

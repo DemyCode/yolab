@@ -21,6 +21,15 @@ spec:
     requests:
       storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
 ---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Release.Name }}-secrets
+  namespace: {{ .Release.Namespace }}
+type: Opaque
+stringData:
+  app_secret: {{ required "config.app_secret is required" .Values.config.app_secret | quote }}
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -50,30 +59,35 @@ spec:
         image: ghostfolio/ghostfolio:3.79.0@sha256:589da0f3f822e04ae1e89dbc5829684e77291de31c72d7e0c5e38b11acf14e26
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('NODE_ENV', 'production')
-          value: ''
-        - name: ('HOST', '0.0.0.0')
-          value: ''
-        - name: ('PORT', 3334)
-          value: ''
-        - name: ('ACCESS_TOKEN_SALT', '$APP_GHOSTFOLIO_ACCESS_TOKEN_SALT')
-          value: ''
-        - name: ('DATABASE_URL', 'postgresql://${APP_GHOSTFOLIO_DB_USERNAME}:${APP_GHOSTFOLIO_DB_PASSWORD}@ghostfolio_postgres_1:5432/${APP_GHOSTFOLIO_DB_DATABASE_NAME}')
-          value: ''
-        - name: ('JWT_SECRET_KEY', '${APP_SEED}')
-          value: ''
-        - name: ('POSTGRES_DB', '${APP_GHOSTFOLIO_DB_DATABASE_NAME}')
-          value: ''
-        - name: ('POSTGRES_USER', '${APP_GHOSTFOLIO_DB_USERNAME}')
-          value: ''
-        - name: ('POSTGRES_PASSWORD', '${APP_GHOSTFOLIO_DB_PASSWORD}')
-          value: ''
-        - name: ('REDIS_HOST', 'ghostfolio_redis_1')
-          value: ''
-        - name: ('REDIS_PASSWORD', '${APP_GHOSTFOLIO_REDIS_PASSWORD}')
-          value: ''
-        - name: ('REDIS_PORT', 6379)
-          value: ''
+        - name: APP_SEED
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: app_secret
+        - name: NODE_ENV
+          value: production
+        - name: HOST
+          value: 0.0.0.0
+        - name: PORT
+          value: '3334'
+        - name: ACCESS_TOKEN_SALT
+          value: $(APP_SEED)
+        - name: DATABASE_URL
+          value: postgresql://$(APP_GHOSTFOLIO_DB_USERNAME):$(APP_SEED)@postgres:5432/$(APP_GHOSTFOLIO_DB_DATABASE_NAME)
+        - name: JWT_SECRET_KEY
+          value: $(APP_SEED)
+        - name: POSTGRES_DB
+          value: $(APP_GHOSTFOLIO_DB_DATABASE_NAME)
+        - name: POSTGRES_USER
+          value: $(APP_GHOSTFOLIO_DB_USERNAME)
+        - name: POSTGRES_PASSWORD
+          value: $(APP_SEED)
+        - name: REDIS_HOST
+          value: redis
+        - name: REDIS_PASSWORD
+          value: $(APP_SEED)
+        - name: REDIS_PORT
+          value: '6379'
         ports:
         - containerPort: 3334
         readinessProbe:
@@ -106,14 +120,19 @@ spec:
         image: postgres:14-bullseye@sha256:c2a30d08a6f9e6c365595fd086c9e0436064c52425f15f72379ecf0807bac518
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('POSTGRES_USER', '${APP_GHOSTFOLIO_DB_USERNAME}')
-          value: ''
-        - name: ('POSTGRES_PASSWORD', '${APP_GHOSTFOLIO_DB_PASSWORD}')
-          value: ''
-        - name: ('POSTGRES_DB', '${APP_GHOSTFOLIO_DB_DATABASE_NAME}')
-          value: ''
-        - name: ('PGDATA', '/var/lib/postgresql/data')
-          value: ''
+        - name: APP_SEED
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: app_secret
+        - name: POSTGRES_USER
+          value: $(APP_GHOSTFOLIO_DB_USERNAME)
+        - name: POSTGRES_PASSWORD
+          value: $(APP_SEED)
+        - name: POSTGRES_DB
+          value: $(APP_GHOSTFOLIO_DB_DATABASE_NAME)
+        - name: PGDATA
+          value: /var/lib/postgresql/data
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000
@@ -160,8 +179,6 @@ spec:
       labels:
         app: redis
     spec:
-      nodeSelector:
-        kubernetes.io/arch: amd64
       containers:
       - name: redis
         image: redis:6.2-bullseye@sha256:5cdb2ac6f780e1d250787f4a887c1ed1166e3389757189ea913059409acc6f7c
@@ -172,6 +189,12 @@ spec:
         - '--requirepass ${APP_GHOSTFOLIO_REDIS_PASSWORD}
 
           '
+        env:
+        - name: APP_SEED
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: app_secret
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000
@@ -188,6 +211,8 @@ spec:
       - name: data
         persistentVolumeClaim:
           claimName: '{{ .Release.Name }}-data'
+      nodeSelector:
+        kubernetes.io/arch: amd64
 ---
 apiVersion: v1
 kind: Service

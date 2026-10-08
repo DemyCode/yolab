@@ -2,7 +2,7 @@ apiVersion: v2
 name: yamtrack
 description: A self hosted media tracker
 type: application
-version: 0.1.0
+version: 0.1.1
 appVersion: 0.26.3-patch.1
 dependencies:
 - name: yolab-common

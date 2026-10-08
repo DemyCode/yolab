@@ -21,6 +21,15 @@ spec:
     requests:
       storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
 ---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Release.Name }}-secrets
+  namespace: {{ .Release.Namespace }}
+type: Opaque
+stringData:
+  app_secret: {{ required "config.app_secret is required" .Values.config.app_secret | quote }}
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -50,20 +59,25 @@ spec:
         image: martinbarilik/public-pool-web:0.2.0@sha256:f708bdea807986de548df4b2011cee47a827034786293bb7305d53a0a99f86a7
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('RAILS_MASTER_KEY', '${APP_PUBLIC_POOL_WEB_MASTER_KEY}')
-          value: ''
-        - name: ('DATABASE_URL', '${APP_PUBLIC_POOL_WEB_DATABASE_URL}')
-          value: ''
-        - name: ('REDIS_URL', '${APP_PUBLIC_POOL_WEB_REDIS_URL}')
-          value: ''
-        - name: ('PUBLIC_POOL_HOST', 'public-pool_server_1')
-          value: ''
-        - name: ('PUBLIC_POOL_PORT', '2019')
-          value: ''
-        - name: ('DONATE_BTC_ADDRESS', 'bc1qsn9x9vr9alx33687dqq9rt4cgfcldsrxz90pn4')
-          value: ''
-        - name: ('DONATE_LN_ADDRESS', 'martinbarilik@getalby.com')
-          value: ''
+        - name: APP_SEED
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: app_secret
+        - name: RAILS_MASTER_KEY
+          value: $(APP_SEED)
+        - name: DATABASE_URL
+          value: $(APP_PUBLIC_POOL_WEB_DATABASE_URL)
+        - name: REDIS_URL
+          value: $(APP_PUBLIC_POOL_WEB_REDIS_URL)
+        - name: PUBLIC_POOL_HOST
+          value: public-pool_server_1
+        - name: PUBLIC_POOL_PORT
+          value: '2019'
+        - name: DONATE_BTC_ADDRESS
+          value: bc1qsn9x9vr9alx33687dqq9rt4cgfcldsrxz90pn4
+        - name: DONATE_LN_ADDRESS
+          value: martinbarilik@getalby.com
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000
@@ -99,12 +113,17 @@ spec:
         image: pgautoupgrade/pgautoupgrade:18.4-trixie@sha256:37dfb44476ae3b753d0f305a55912e7442649d7cf020d8c3017acfce210cc062
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('POSTGRES_USER', '${APP_PUBLIC_POOL_WEB_POSTGRES_USERNAME}')
-          value: ''
-        - name: ('POSTGRES_PASSWORD', '${APP_PUBLIC_POOL_WEB_POSTGRES_PASSWORD}')
-          value: ''
-        - name: ('POSTGRES_DB', '${APP_PUBLIC_POOL_WEB_POSTGRES_DBNAME}')
-          value: ''
+        - name: APP_SEED
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: app_secret
+        - name: POSTGRES_USER
+          value: $(APP_PUBLIC_POOL_WEB_POSTGRES_USERNAME)
+        - name: POSTGRES_PASSWORD
+          value: $(APP_SEED)
+        - name: POSTGRES_DB
+          value: $(APP_PUBLIC_POOL_WEB_POSTGRES_DBNAME)
         readinessProbe:
           exec:
             command:
@@ -144,6 +163,12 @@ spec:
       - name: redis
         image: valkey/valkey:8@sha256:c6d4637d757379a2ff040148b95c85936d85a06c129eafa5fbe582f9e720e12f
         imagePullPolicy: IfNotPresent
+        env:
+        - name: APP_SEED
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: app_secret
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000
@@ -199,16 +224,21 @@ spec:
         - exec
         - sidekiq
         env:
-        - name: ('RAILS_MASTER_KEY', '${APP_PUBLIC_POOL_WEB_MASTER_KEY}')
-          value: ''
-        - name: ('REDIS_URL', '${APP_PUBLIC_POOL_WEB_REDIS_URL}')
-          value: ''
-        - name: ('DATABASE_URL', '${APP_PUBLIC_POOL_WEB_DATABASE_URL}')
-          value: ''
-        - name: ('PUBLIC_POOL_HOST', 'public-pool_server_1')
-          value: ''
-        - name: ('PUBLIC_POOL_PORT', '2019')
-          value: ''
+        - name: APP_SEED
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: app_secret
+        - name: RAILS_MASTER_KEY
+          value: $(APP_SEED)
+        - name: REDIS_URL
+          value: $(APP_PUBLIC_POOL_WEB_REDIS_URL)
+        - name: DATABASE_URL
+          value: $(APP_PUBLIC_POOL_WEB_DATABASE_URL)
+        - name: PUBLIC_POOL_HOST
+          value: public-pool_server_1
+        - name: PUBLIC_POOL_PORT
+          value: '2019'
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000

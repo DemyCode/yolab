@@ -2,7 +2,7 @@ apiVersion: v2
 name: wavelog
 description: Amateur radio logging software
 type: application
-version: 0.1.0
+version: 0.1.1
 appVersion: 3.2.3
 dependencies:
 - name: yolab-common

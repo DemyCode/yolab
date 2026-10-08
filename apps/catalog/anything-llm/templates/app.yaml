@@ -22,6 +22,15 @@ spec:
       storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
 ---
 apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Release.Name }}-secrets
+  namespace: {{ .Release.Namespace }}
+type: Opaque
+stringData:
+  app_secret: {{ required "config.app_secret is required" .Values.config.app_secret | quote }}
+---
+apiVersion: v1
 kind: ConfigMap
 metadata:
   name: '{{ .Release.Name }}-seed'
@@ -46,8 +55,6 @@ spec:
       labels:
         app: gateway
     spec:
-      nodeSelector:
-        kubernetes.io/arch: amd64
       initContainers:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
@@ -81,22 +88,27 @@ spec:
         image: mintplexlabs/anythingllm:1.17.0@sha256:f26f30df46916b6e953e3a47ca98f48817726e3df635e62d4bfdd133292ecfff
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('SERVER_PORT', 3001)
-          value: ''
-        - name: ('STORAGE_DIR', '/app/server/storage')
-          value: ''
-        - name: ('UID', 1000)
-          value: ''
-        - name: ('GID', 1000)
-          value: ''
-        - name: ('DISABLE_TELEMETRY', 'true')
-          value: ''
-        - name: ('JWT_SECRET', '${APP_ANYTHING_LLM_JWT_SECRET}')
-          value: ''
-        - name: ('SIG_KEY', '${APP_ANYTHING_LLM_SIG_KEY}')
-          value: ''
-        - name: ('SIG_SALT', '${APP_ANYTHING_LLM_SIG_SALT}')
-          value: ''
+        - name: APP_SEED
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: app_secret
+        - name: SERVER_PORT
+          value: '3001'
+        - name: STORAGE_DIR
+          value: /app/server/storage
+        - name: UID
+          value: '1000'
+        - name: GID
+          value: '1000'
+        - name: DISABLE_TELEMETRY
+          value: 'true'
+        - name: JWT_SECRET
+          value: $(APP_SEED)
+        - name: SIG_KEY
+          value: $(APP_SEED)
+        - name: SIG_SALT
+          value: $(APP_SEED)
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000

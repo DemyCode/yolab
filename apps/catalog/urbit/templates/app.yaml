@@ -49,9 +49,6 @@ spec:
       - name: manager
         image: mopfelwinrux/urbit-umbrel:v4.6@sha256:6fbc4faea5c1ddbadcc8e2d0ea8ac71da21151395af8dfd70366910c56a0246d
         imagePullPolicy: IfNotPresent
-        env:
-        - name: ('APP_PASSWORD', '${APP_PASSWORD}')
-          value: ''
         ports:
         - containerPort: 8090
         readinessProbe:

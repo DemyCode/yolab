@@ -22,6 +22,15 @@ spec:
       storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
 ---
 apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Release.Name }}-secrets
+  namespace: {{ .Release.Namespace }}
+type: Opaque
+stringData:
+  admin_password: {{ required "config.admin_password is required" .Values.config.admin_password | quote }}
+---
+apiVersion: v1
 kind: ConfigMap
 metadata:
   name: '{{ .Release.Name }}-seed'
@@ -49,10 +58,7 @@ spec:
       {{- if .Values.config.node }}
       nodeSelector:
         kubernetes.io/hostname: {{ .Values.config.node | quote }}
-        kubernetes.io/arch: amd64
       {{- else }}
-      nodeSelector:
-        kubernetes.io/arch: amd64
       {{- end }}
       initContainers:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
@@ -85,14 +91,19 @@ spec:
         image: ghcr.io/getarcaneapp/arcane:v2.15.0@sha256:aebb83a49e0e614dfc54ef8331af5826a89ed47e2e964db420a4e22756f166bc
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('APP_URL', 'http://${DEVICE_DOMAIN_NAME}:3552')
-          value: ''
-        - name: ('PUID', 1000)
-          value: ''
-        - name: ('PGID', 1000)
-          value: ''
-        - name: ('ENCRYPTION_KEY', '${APP_PASSWORD}')
-          value: ''
+        - name: APP_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: admin_password
+        - name: APP_URL
+          value: http://localhost:3552
+        - name: PUID
+          value: '1000'
+        - name: PGID
+          value: '1000'
+        - name: ENCRYPTION_KEY
+          value: $(APP_PASSWORD)
         ports:
         - containerPort: 3552
         readinessProbe:
@@ -152,8 +163,8 @@ spec:
         - --pidfile
         - /data/docker.pid
         env:
-        - name: ('DOCKER_ENSURE_BRIDGE', 'dind0:10.32.0.1/16')
-          value: ''
+        - name: DOCKER_ENSURE_BRIDGE
+          value: dind0:10.32.0.1/16
         volumeMounts:
         - name: data
           mountPath: /entrypoint.sh
@@ -190,5 +201,3 @@ spec:
           mountPath: /data
       hostNetwork: true
       dnsPolicy: ClusterFirstWithHostNet
-      nodeSelector:
-        kubernetes.io/arch: amd64

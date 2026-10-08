@@ -27,6 +27,13 @@
           "default": "",
           "description": "This app joins the machine's own network to reach devices on your LAN, so it can only run on one machine at a time. Name that machine here (the hostname shown in the fleet list); leave empty to let YoLab choose. Two apps doing this cannot share a machine unless their ports differ."
         },
+        "admin_password": {
+          "type": "string",
+          "title": "Admin password",
+          "minLength": 12,
+          "writeOnly": true,
+          "generate": true
+        },
         "file_explorer_enabled": {
           "type": "boolean",
           "title": "File explorer",

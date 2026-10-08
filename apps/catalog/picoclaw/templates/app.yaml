@@ -50,8 +50,8 @@ spec:
         image: docker.io/sipeed/picoclaw:v0.3.1-launcher@sha256:ed830c6cb71f59785062433159c45c2363465cd02046f8dd2822bd24a39510c2
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('PICOCLAW_HOME', '/data')
-          value: ''
+        - name: PICOCLAW_HOME
+          value: /data
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000

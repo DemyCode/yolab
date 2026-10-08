@@ -2,7 +2,7 @@ apiVersion: v2
 name: paperclip
 description: A team of AI agents for every person
 type: application
-version: 0.1.0
+version: 0.1.1
 appVersion: 2026.1001.0
 dependencies:
 - name: yolab-common

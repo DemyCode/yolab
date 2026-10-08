@@ -2,7 +2,7 @@ apiVersion: v2
 name: lnbits-holesail-proxy
 description: A Holesail proxy to connect remotely to your LNbits
 type: application
-version: 0.1.0
+version: 0.1.1
 appVersion: 1.0.7-patch.1
 dependencies:
 - name: yolab-common

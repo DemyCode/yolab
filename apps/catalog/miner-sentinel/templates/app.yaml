@@ -21,6 +21,16 @@ spec:
     requests:
       storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
 ---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Release.Name }}-secrets
+  namespace: {{ .Release.Namespace }}
+type: Opaque
+stringData:
+  app_secret: {{ required "config.app_secret is required" .Values.config.app_secret | quote }}
+  admin_password: {{ required "config.admin_password is required" .Values.config.admin_password | quote }}
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -73,12 +83,12 @@ spec:
         image: postgres:17.7@sha256:2006493727bd5277eece187319af1ef82b4cf82cf4fc1ed00da0775b646ac2a4
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('POSTGRES_USER', 'minersentinel')
-          value: ''
-        - name: ('POSTGRES_PASSWORD', 'minersentinel')
-          value: ''
-        - name: ('POSTGRES_DB', 'minersentinel')
-          value: ''
+        - name: POSTGRES_USER
+          value: minersentinel
+        - name: POSTGRES_PASSWORD
+          value: minersentinel
+        - name: POSTGRES_DB
+          value: minersentinel
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000
@@ -142,34 +152,44 @@ spec:
           \ minersentinel.wsgi:application --bind 0.0.0.0:8000 --workers 2 --timeout\
           \ 120\n\"\n"
         env:
-        - name: ('POSTGRES_HOST', 'miner-sentinel_db_1')
-          value: ''
-        - name: ('POSTGRES_PORT', 5432)
-          value: ''
-        - name: ('POSTGRES_DB', 'minersentinel')
-          value: ''
-        - name: ('POSTGRES_USER', 'minersentinel')
-          value: ''
-        - name: ('POSTGRES_PASSWORD', 'minersentinel')
-          value: ''
-        - name: ('DJANGO_SECRET_KEY', '${APP_SEED}')
-          value: ''
-        - name: ('DJANGO_DEBUG', 'False')
-          value: ''
-        - name: ('ALLOWED_HOSTS', '*')
-          value: ''
-        - name: ('CORS_ALLOWED_ORIGINS', 'http://${DEVICE_DOMAIN_NAME}:3082,http://*.ts.net:3082')
-          value: ''
-        - name: ('CSRF_TRUSTED_ORIGINS', 'http://${DEVICE_DOMAIN_NAME}:3082,http://*.ts.net:3082')
-          value: ''
-        - name: ('DJANGO_SUPERUSER_USERNAME', 'admin')
-          value: ''
-        - name: ('DJANGO_SUPERUSER_PASSWORD', '$APP_PASSWORD')
-          value: ''
-        - name: ('DJANGO_SUPERUSER_EMAIL', 'admin@umbrel.local')
-          value: ''
-        - name: ('API_BASE_URL', 'http://${DEVICE_DOMAIN_NAME}:3082')
-          value: ''
+        - name: APP_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: admin_password
+        - name: APP_SEED
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: app_secret
+        - name: POSTGRES_HOST
+          value: db
+        - name: POSTGRES_PORT
+          value: '5432'
+        - name: POSTGRES_DB
+          value: minersentinel
+        - name: POSTGRES_USER
+          value: minersentinel
+        - name: POSTGRES_PASSWORD
+          value: minersentinel
+        - name: DJANGO_SECRET_KEY
+          value: $(APP_SEED)
+        - name: DJANGO_DEBUG
+          value: 'False'
+        - name: ALLOWED_HOSTS
+          value: '*'
+        - name: CORS_ALLOWED_ORIGINS
+          value: http://localhost:3082,http://*.ts.net:3082
+        - name: CSRF_TRUSTED_ORIGINS
+          value: http://localhost:3082,http://*.ts.net:3082
+        - name: DJANGO_SUPERUSER_USERNAME
+          value: admin
+        - name: DJANGO_SUPERUSER_PASSWORD
+          value: $(APP_PASSWORD)
+        - name: DJANGO_SUPERUSER_EMAIL
+          value: admin@umbrel.local
+        - name: API_BASE_URL
+          value: http://localhost:3082
       volumes:
       - name: data
         persistentVolumeClaim:
@@ -197,8 +217,18 @@ spec:
         image: dcbert/minersentinel-frontend:v1.2.0@sha256:f98ece2ebc2fea9fe9cf0b8363fc1e917783c4185cdb3498bbd6a1c495fed074
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('VITE_API_URL', 'http://${DEVICE_DOMAIN_NAME}:3082')
-          value: ''
+        - name: APP_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: admin_password
+        - name: APP_SEED
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: app_secret
+        - name: VITE_API_URL
+          value: http://localhost:3082
         ports:
         - containerPort: 80
         readinessProbe:
@@ -243,29 +273,39 @@ spec:
         image: dcbert/minersentinel-data-service:v1.2.0@sha256:9fab2cce9d5b0591ca7f14b7b1af078e84cae4edd261d0d4d86d19444e4bf623
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('POSTGRES_HOST', 'miner-sentinel_db_1')
+        - name: APP_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: admin_password
+        - name: APP_SEED
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: app_secret
+        - name: POSTGRES_HOST
+          value: db
+        - name: POSTGRES_PORT
+          value: '5432'
+        - name: POSTGRES_DB
+          value: minersentinel
+        - name: POSTGRES_USER
+          value: minersentinel
+        - name: POSTGRES_PASSWORD
+          value: minersentinel
+        - name: BACKEND_URL
+          value: http://backend:8000
+        - name: BITAXE_POLL_INTERVAL
+          value: '60'
+        - name: AVALON_POLL_INTERVAL
+          value: '60'
+        - name: POOL_POLL_INTERVAL
+          value: '300'
+        - name: TELEGRAM_BOT_TOKEN
           value: ''
-        - name: ('POSTGRES_PORT', 5432)
+        - name: TELEGRAM_CHAT_ID
           value: ''
-        - name: ('POSTGRES_DB', 'minersentinel')
-          value: ''
-        - name: ('POSTGRES_USER', 'minersentinel')
-          value: ''
-        - name: ('POSTGRES_PASSWORD', 'minersentinel')
-          value: ''
-        - name: ('BACKEND_URL', 'http://miner-sentinel_backend_1:8000')
-          value: ''
-        - name: ('BITAXE_POLL_INTERVAL', 60)
-          value: ''
-        - name: ('AVALON_POLL_INTERVAL', 60)
-          value: ''
-        - name: ('POOL_POLL_INTERVAL', 300)
-          value: ''
-        - name: ('TELEGRAM_BOT_TOKEN', '')
-          value: ''
-        - name: ('TELEGRAM_CHAT_ID', '')
-          value: ''
-        - name: ('DISCORD_WEBHOOK_URL', '')
+        - name: DISCORD_WEBHOOK_URL
           value: ''
       volumes:
       - name: data

@@ -2,7 +2,7 @@ apiVersion: v2
 name: reitti
 description: A location tracking and analysis application
 type: application
-version: 0.1.0
+version: 0.1.1
 appVersion: 5.6.1
 dependencies:
 - name: yolab-common

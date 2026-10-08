@@ -73,10 +73,10 @@ spec:
         image: linuxserver/snapdrop:version-b8b78cc2@sha256:3e0af233372e6ae7ac711397d40cbe2797cefe13220d65e5e284a64252cc0c2c
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('PUID', '1000')
-          value: ''
-        - name: ('PGID', '1000')
-          value: ''
+        - name: PUID
+          value: '1000'
+        - name: PGID
+          value: '1000'
         ports:
         - containerPort: 80
         readinessProbe:

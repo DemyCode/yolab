@@ -54,30 +54,30 @@ spec:
         - --migrate
         - --generate-certificates
         env:
-        - name: ('MONETR_ALLOW_SIGN_UP', '${MONETR_ALLOW_SIGN_UP:-true}')
-          value: ''
-        - name: ('MONETR_PROOF_OF_WORK_ENABLED', '${MONETR_PROOF_OF_WORK_ENABLED:-false}')
-          value: ''
-        - name: ('MONETR_PG_USERNAME', 'postgres')
-          value: ''
-        - name: ('MONETR_PG_PASSWORD', 'm0netrPass123')
-          value: ''
-        - name: ('MONETR_PG_DATABASE', 'monetr')
-          value: ''
-        - name: ('MONETR_PG_ADDRESS', 'monetr_db_1')
-          value: ''
-        - name: ('MONETR_PG_PORT', 5432)
-          value: ''
-        - name: ('MONETR_REDIS_ENABLED', 'true')
-          value: ''
-        - name: ('MONETR_REDIS_ADDRESS', 'monetr_valkey_1')
-          value: ''
-        - name: ('MONETR_REDIS_PORT', 6379)
-          value: ''
-        - name: ('MONETR_STORAGE_ENABLED', '${MONETR_STORAGE_ENABLED:-true}')
-          value: ''
-        - name: ('MONETR_STORAGE_PROVIDER', '${MONETR_STORAGE_PROVIDER:-filesystem}')
-          value: ''
+        - name: MONETR_ALLOW_SIGN_UP
+          value: ${MONETR_ALLOW_SIGN_UP:-true}
+        - name: MONETR_PROOF_OF_WORK_ENABLED
+          value: ${MONETR_PROOF_OF_WORK_ENABLED:-false}
+        - name: MONETR_PG_USERNAME
+          value: postgres
+        - name: MONETR_PG_PASSWORD
+          value: m0netrPass123
+        - name: MONETR_PG_DATABASE
+          value: monetr
+        - name: MONETR_PG_ADDRESS
+          value: db
+        - name: MONETR_PG_PORT
+          value: '5432'
+        - name: MONETR_REDIS_ENABLED
+          value: 'true'
+        - name: MONETR_REDIS_ADDRESS
+          value: valkey
+        - name: MONETR_REDIS_PORT
+          value: '6379'
+        - name: MONETR_STORAGE_ENABLED
+          value: ${MONETR_STORAGE_ENABLED:-true}
+        - name: MONETR_STORAGE_PROVIDER
+          value: ${MONETR_STORAGE_PROVIDER:-filesystem}
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000
@@ -117,12 +117,12 @@ spec:
         image: postgres:17.9@sha256:7ad98329d513dd497293b951c195ca354274a77f12ddbbbbf85e68a811823d72
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('POSTGRES_PASSWORD', 'm0netrPass123')
-          value: ''
-        - name: ('POSTGRES_USER', 'postgres')
-          value: ''
-        - name: ('POSTGRES_DB', 'monetr')
-          value: ''
+        - name: POSTGRES_PASSWORD
+          value: m0netrPass123
+        - name: POSTGRES_USER
+          value: postgres
+        - name: POSTGRES_DB
+          value: monetr
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000

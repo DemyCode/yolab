@@ -21,6 +21,13 @@
           "default": "10Gi",
           "description": "How much CephFS storage to allocate (e.g. 20Gi, 100Gi, 500Gi)"
         },
+        "admin_password": {
+          "type": "string",
+          "title": "Admin password",
+          "minLength": 12,
+          "writeOnly": true,
+          "generate": true
+        },
         "file_explorer_enabled": {
           "type": "boolean",
           "title": "File explorer",

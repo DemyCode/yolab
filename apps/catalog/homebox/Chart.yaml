@@ -2,7 +2,7 @@ apiVersion: v2
 name: homebox
 description: An inventory and organization system built for the home user
 type: application
-version: 0.1.0
+version: 0.1.1
 appVersion: 0.26.2-patch.1
 dependencies:
 - name: yolab-common

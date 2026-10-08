@@ -68,21 +68,19 @@ spec:
       labels:
         app: web
     spec:
-      nodeSelector:
-        kubernetes.io/arch: amd64
       containers:
       - name: web
         image: stnsmith/fossflow:master-b69fc2e@sha256:c0813b19a9c8a3b8d13901de0e35edf7d9300ae8327a905ff520239d5624dafc
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('NODE_ENV', 'production')
-          value: ''
-        - name: ('ENABLE_SERVER_STORAGE', 'true')
-          value: ''
-        - name: ('STORAGE_PATH', '/data/diagrams')
-          value: ''
-        - name: ('ENABLE_GIT_BACKUP', 'false')
-          value: ''
+        - name: NODE_ENV
+          value: production
+        - name: ENABLE_SERVER_STORAGE
+          value: 'true'
+        - name: STORAGE_PATH
+          value: /data/diagrams
+        - name: ENABLE_GIT_BACKUP
+          value: 'false'
         ports:
         - containerPort: 80
         readinessProbe:
@@ -96,6 +94,8 @@ spec:
       - name: data
         persistentVolumeClaim:
           claimName: '{{ .Release.Name }}-data'
+      nodeSelector:
+        kubernetes.io/arch: amd64
 ---
 apiVersion: v1
 kind: Service

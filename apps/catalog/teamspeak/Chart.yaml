@@ -2,7 +2,7 @@ apiVersion: v2
 name: teamspeak
 description: Easy, Secure, and High-Quality Communication for Gaming, Learning, Business, and more
 type: application
-version: 0.1.0
+version: 0.1.1
 appVersion: 3.13.7
 dependencies:
 - name: yolab-common

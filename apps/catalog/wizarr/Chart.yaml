@@ -2,7 +2,7 @@ apiVersion: v2
 name: wizarr
 description: An advanced invitation and management system for media servers
 type: application
-version: 0.1.0
+version: 0.1.1
 appVersion: 2026.9.1-patch.1
 dependencies:
 - name: yolab-common

@@ -50,8 +50,8 @@ spec:
         image: ghcr.io/quad4-software/meshchatx:4.10.1@sha256:f39571d4964c7240421fa236fdcdc627dbdc9f40ffdbcb9a676238d49a7515ac
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('MESHCHAT_NO_HTTPS', 'true')
-          value: ''
+        - name: MESHCHAT_NO_HTTPS
+          value: 'true'
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000

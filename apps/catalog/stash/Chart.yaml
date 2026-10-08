@@ -2,7 +2,7 @@ apiVersion: v2
 name: stash
 description: Hoard everything, find anything — your private on-device AI inbox
 type: application
-version: 0.1.0
+version: 0.1.1
 appVersion: 1.0.1-patch.1
 dependencies:
 - name: yolab-common

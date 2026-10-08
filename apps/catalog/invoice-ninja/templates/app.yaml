@@ -22,6 +22,15 @@ spec:
       storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
 ---
 apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Release.Name }}-secrets
+  namespace: {{ .Release.Namespace }}
+type: Opaque
+stringData:
+  admin_password: {{ required "config.admin_password is required" .Values.config.admin_password | quote }}
+---
+apiVersion: v1
 kind: ConfigMap
 metadata:
   name: '{{ .Release.Name }}-seed'
@@ -186,44 +195,49 @@ spec:
         image: invoiceninja/invoiceninja-debian:5.13.43@sha256:c052414958dce9bb186f3da83c8066c84d419092e7a55025b5a7c201eff75387
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('APP_URL', 'http://${APP_DOMAIN}:8676')
+        - name: APP_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: admin_password
+        - name: APP_URL
+          value: http://localhost:8676
+        - name: APP_KEY
+          value: ${APP_KEY:-unset}
+        - name: APP_ENV
+          value: production
+        - name: APP_DEBUG
+          value: 'false'
+        - name: REQUIRE_HTTPS
+          value: 'false'
+        - name: DB_HOST
+          value: db
+        - name: DB_DATABASE
+          value: invoiceninja
+        - name: DB_USERNAME
+          value: invoiceninja
+        - name: DB_PASSWORD
+          value: moneyprintergobrrr
+        - name: IN_USER_EMAIL
+          value: admin@example.com
+        - name: IN_PASSWORD
+          value: $(APP_PASSWORD)
+        - name: IS_DOCKER
+          value: 'true'
+        - name: CACHE_DRIVER
+          value: redis
+        - name: QUEUE_CONNECTION
+          value: redis
+        - name: SESSION_DRIVER
+          value: redis
+        - name: REDIS_HOST
+          value: redis
+        - name: REDIS_PASSWORD
           value: ''
-        - name: ('APP_KEY', '${APP_KEY:-unset}')
-          value: ''
-        - name: ('APP_ENV', 'production')
-          value: ''
-        - name: ('APP_DEBUG', 'false')
-          value: ''
-        - name: ('REQUIRE_HTTPS', 'false')
-          value: ''
-        - name: ('DB_HOST', 'invoice-ninja_db_1')
-          value: ''
-        - name: ('DB_DATABASE', 'invoiceninja')
-          value: ''
-        - name: ('DB_USERNAME', 'invoiceninja')
-          value: ''
-        - name: ('DB_PASSWORD', 'moneyprintergobrrr')
-          value: ''
-        - name: ('IN_USER_EMAIL', 'admin@example.com')
-          value: ''
-        - name: ('IN_PASSWORD', '$APP_PASSWORD')
-          value: ''
-        - name: ('IS_DOCKER', 'true')
-          value: ''
-        - name: ('CACHE_DRIVER', 'redis')
-          value: ''
-        - name: ('QUEUE_CONNECTION', 'redis')
-          value: ''
-        - name: ('SESSION_DRIVER', 'redis')
-          value: ''
-        - name: ('REDIS_HOST', 'invoice-ninja_redis_1')
-          value: ''
-        - name: ('REDIS_PASSWORD', None)
-          value: ''
-        - name: ('REDIS_PORT', 6379)
-          value: ''
-        - name: ('FILESYSTEM_DISK', 'debian_docker')
-          value: ''
+        - name: REDIS_PORT
+          value: '6379'
+        - name: FILESYSTEM_DISK
+          value: debian_docker
         volumeMounts:
         - name: data
           mountPath: /var/www/html/public
@@ -283,16 +297,21 @@ spec:
         image: mariadb:11.4.5@sha256:5dfb3093333fa0ea53194ddef0a2bfa21d3b1e1353bd228b22610cd6fc0c04da
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('MYSQL_ROOT_PASSWORD', 'invoiceninja')
-          value: ''
-        - name: ('MYSQL_USER', 'invoiceninja')
-          value: ''
-        - name: ('MYSQL_PASSWORD', 'moneyprintergobrrr')
-          value: ''
-        - name: ('MYSQL_DATABASE', 'invoiceninja')
-          value: ''
-        - name: ('MARIADB_AUTO_UPGRADE', 'true')
-          value: ''
+        - name: APP_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: admin_password
+        - name: MYSQL_ROOT_PASSWORD
+          value: invoiceninja
+        - name: MYSQL_USER
+          value: invoiceninja
+        - name: MYSQL_PASSWORD
+          value: moneyprintergobrrr
+        - name: MYSQL_DATABASE
+          value: invoiceninja
+        - name: MARIADB_AUTO_UPGRADE
+          value: 'true'
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000
@@ -369,12 +388,16 @@ spec:
       labels:
         app: redis
     spec:
-      nodeSelector:
-        kubernetes.io/arch: amd64
       containers:
       - name: redis
         image: redis:7.4.3@sha256:ee8ec723c831b815c3e2f2c6fbd1c145c68d1c04ba284f044ec1434fbca0fee8
         imagePullPolicy: IfNotPresent
+        env:
+        - name: APP_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: admin_password
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000
@@ -419,6 +442,8 @@ spec:
           readOnly: true
         - name: data
           mountPath: /data
+      nodeSelector:
+        kubernetes.io/arch: amd64
 ---
 apiVersion: v1
 kind: Service

@@ -50,18 +50,18 @@ spec:
         image: lissy93/domain-locker:0.3.0@sha256:5b1b61367159c40469da92aee5af606da4205f9e81d3cebf40252ccaecbbff57
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('DL_ENV_TYPE', 'selfHosted')
-          value: ''
-        - name: ('DL_PG_HOST', 'domain-locker_postgres_1')
-          value: ''
-        - name: ('DL_PG_PORT', 5432)
-          value: ''
-        - name: ('DL_PG_USER', 'postgres')
-          value: ''
-        - name: ('DL_PG_PASSWORD', 'domain-locker')
-          value: ''
-        - name: ('DL_PG_NAME', 'domain_locker')
-          value: ''
+        - name: DL_ENV_TYPE
+          value: selfHosted
+        - name: DL_PG_HOST
+          value: postgres
+        - name: DL_PG_PORT
+          value: '5432'
+        - name: DL_PG_USER
+          value: postgres
+        - name: DL_PG_PASSWORD
+          value: domain-locker
+        - name: DL_PG_NAME
+          value: domain_locker
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000
@@ -103,12 +103,12 @@ spec:
         image: postgres:17.4@sha256:fe3f571d128e8efadcd8b2fde0e2b73ebab6dbec33f6bfe69d98c682c7d8f7bd
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('POSTGRES_DB', 'domain_locker')
-          value: ''
-        - name: ('POSTGRES_USER', 'postgres')
-          value: ''
-        - name: ('POSTGRES_PASSWORD', 'domain-locker')
-          value: ''
+        - name: POSTGRES_DB
+          value: domain_locker
+        - name: POSTGRES_USER
+          value: postgres
+        - name: POSTGRES_PASSWORD
+          value: domain-locker
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000

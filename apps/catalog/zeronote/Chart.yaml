@@ -2,7 +2,7 @@ apiVersion: v2
 name: zeronote
 description: All your notes, passwords, bookmarks, and 2FA in one secure, offline-first app
 type: application
-version: 0.1.0
+version: 0.1.1
 appVersion: 1.0.12
 dependencies:
 - name: yolab-common

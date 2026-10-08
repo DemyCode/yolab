@@ -43,10 +43,7 @@ spec:
       {{- if .Values.config.node }}
       nodeSelector:
         kubernetes.io/hostname: {{ .Values.config.node | quote }}
-        kubernetes.io/arch: amd64
       {{- else }}
-      nodeSelector:
-        kubernetes.io/arch: amd64
       {{- end }}
       initContainers:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
@@ -60,14 +57,14 @@ spec:
         image: aceberg/watchyourlan:2.1.4@sha256:f77532ca7c3c9a4398cb094df7674013a3d7fcf4699386f1e456c24df6fef00e
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('TZ', 'UTC')
-          value: ''
-        - name: ('IFACES', 'eth0 wlan0 enp1s0')
-          value: ''
-        - name: ('HOST', '0.0.0.0')
-          value: ''
-        - name: ('PORT', '8840')
-          value: ''
+        - name: TZ
+          value: UTC
+        - name: IFACES
+          value: eth0 wlan0 enp1s0
+        - name: HOST
+          value: 0.0.0.0
+        - name: PORT
+          value: '8840'
         ports:
         - containerPort: 8840
         readinessProbe:

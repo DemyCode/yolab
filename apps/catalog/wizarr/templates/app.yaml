@@ -50,16 +50,16 @@ spec:
         image: ghcr.io/wizarrrr/wizarr:v2026.9.1@sha256:3e89f4850092d60f532406209100f5e929e06dd679bfd78c5f3559065f2854e0
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('PUID', '1000')
-          value: ''
-        - name: ('PGID', '1000')
-          value: ''
-        - name: ('DISABLE_BUILTIN_AUTH', 'false')
-          value: ''
-        - name: ('PORT', '5690')
-          value: ''
-        - name: ('TZ', 'UTC')
-          value: ''
+        - name: PUID
+          value: '1000'
+        - name: PGID
+          value: '1000'
+        - name: DISABLE_BUILTIN_AUTH
+          value: 'false'
+        - name: PORT
+          value: '5690'
+        - name: TZ
+          value: UTC
         ports:
         - containerPort: 5690
         readinessProbe:

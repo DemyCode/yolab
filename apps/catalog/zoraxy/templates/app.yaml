@@ -52,14 +52,14 @@ spec:
         image: zoraxydocker/zoraxy:v3.3.4@sha256:c64ed57e10631d8f7482ce1ed6b337e653052a05646bd5dd77b009dcf0ae786d
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('FASTGEOIP', 'false')
-          value: ''
-        - name: ('ZEROTIER', 'false')
-          value: ''
-        - name: ('DOCKER', 'false')
-          value: ''
-        - name: ('NOAUTH', 'true')
-          value: ''
+        - name: FASTGEOIP
+          value: 'false'
+        - name: ZEROTIER
+          value: 'false'
+        - name: DOCKER
+          value: 'false'
+        - name: NOAUTH
+          value: 'true'
         ports:
         - containerPort: 8000
         readinessProbe:

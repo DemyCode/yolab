@@ -2,7 +2,7 @@ apiVersion: v2
 name: wanderer
 description: A self-hosted trail database
 type: application
-version: 0.1.0
+version: 0.1.1
 appVersion: 0.21.0
 dependencies:
 - name: yolab-common

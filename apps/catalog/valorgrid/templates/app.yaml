@@ -50,19 +50,19 @@ spec:
         image: ghcr.io/aivm23/valorgrid:v3.36.3@sha256:e02967996cee5376e71578d8e97d6d756a48f7cf9c30e3548bad8396f95bd3c6
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('HOST', '0.0.0.0')
+        - name: HOST
+          value: 0.0.0.0
+        - name: PORT
+          value: '1325'
+        - name: PORTFOLIO_DB_PATH
+          value: /data/portfolio.sqlite
+        - name: VALORGRID_BACKUP_DIR
+          value: /data/backups
+        - name: VALORGRID_AUTH_USER
+          value: valorgrid
+        - name: VALORGRID_AUTH_PASSWORD
           value: ''
-        - name: ('PORT', 1325)
-          value: ''
-        - name: ('PORTFOLIO_DB_PATH', '/data/portfolio.sqlite')
-          value: ''
-        - name: ('VALORGRID_BACKUP_DIR', '/data/backups')
-          value: ''
-        - name: ('VALORGRID_AUTH_USER', 'valorgrid')
-          value: ''
-        - name: ('VALORGRID_AUTH_PASSWORD', '')
-          value: ''
-        - name: ('VALORGRID_ALPHA_VANTAGE_API_KEY', '')
+        - name: VALORGRID_ALPHA_VANTAGE_API_KEY
           value: ''
         ports:
         - containerPort: 1325

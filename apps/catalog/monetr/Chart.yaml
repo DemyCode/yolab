@@ -2,7 +2,7 @@ apiVersion: v2
 name: monetr
 description: A budgeting application focused on planning for recurring expenses
 type: application
-version: 0.1.0
+version: 0.1.1
 appVersion: 1.17.1
 dependencies:
 - name: yolab-common

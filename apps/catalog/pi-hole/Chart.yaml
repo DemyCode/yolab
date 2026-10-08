@@ -2,7 +2,7 @@ apiVersion: v2
 name: pi-hole
 description: Block ads on your entire network
 type: application
-version: 0.1.0
+version: 0.1.1
 appVersion: 2026.09.0
 dependencies:
 - name: yolab-common

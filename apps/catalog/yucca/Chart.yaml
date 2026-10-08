@@ -2,7 +2,7 @@ apiVersion: v2
 name: yucca
 description: Simple NVR video surveillance solution
 type: application
-version: 0.1.0
+version: 0.1.1
 appVersion: 0.13.4-patch.1
 dependencies:
 - name: yolab-common

@@ -59,10 +59,10 @@ spec:
         - --port
         - '7070'
         env:
-        - name: ('DB_PATH', '/var/lib/bitaxe/bitaxe_sentry.db')
-          value: ''
-        - name: ('DB_DATA_DIR', '/var/lib/bitaxe')
-          value: ''
+        - name: DB_PATH
+          value: /var/lib/bitaxe/bitaxe_sentry.db
+        - name: DB_DATA_DIR
+          value: /var/lib/bitaxe
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000
@@ -102,10 +102,10 @@ spec:
         image: zachprice105/bitaxe-sentry:v0.8.0@sha256:c50dc141896314293ab4afc4fb4e1ce885cb5737c832b80adfc9cd5eb6f706cb
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('DB_PATH', '/var/lib/bitaxe/bitaxe_sentry.db')
-          value: ''
-        - name: ('DB_DATA_DIR', '/var/lib/bitaxe')
-          value: ''
+        - name: DB_PATH
+          value: /var/lib/bitaxe/bitaxe_sentry.db
+        - name: DB_DATA_DIR
+          value: /var/lib/bitaxe
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000

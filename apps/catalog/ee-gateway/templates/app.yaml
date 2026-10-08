@@ -41,10 +41,7 @@ spec:
       {{- if .Values.config.node }}
       nodeSelector:
         kubernetes.io/hostname: {{ .Values.config.node | quote }}
-        kubernetes.io/arch: amd64
       {{- else }}
-      nodeSelector:
-        kubernetes.io/arch: amd64
       {{- end }}
       initContainers:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
@@ -58,12 +55,12 @@ spec:
         image: encryptedenergy/ee-gateway-ui:0.6.5@sha256:cdfb8866e677ab206549c5ffab6bff7e9055969997230601ac098e2778ff0b5f
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('EE_DATA_DIR', '/data')
-          value: ''
-        - name: ('EE_UI_PORT', 8080)
-          value: ''
-        - name: ('EE_GATEWAY_VERSION', '0.10.7')
-          value: ''
+        - name: EE_DATA_DIR
+          value: /data
+        - name: EE_UI_PORT
+          value: '8080'
+        - name: EE_GATEWAY_VERSION
+          value: 0.10.7
         ports:
         - containerPort: 8080
         readinessProbe:
@@ -114,8 +111,6 @@ spec:
       - name: data
         persistentVolumeClaim:
           claimName: '{{ .Release.Name }}-data'
-      nodeSelector:
-        kubernetes.io/arch: amd64
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -139,8 +134,8 @@ spec:
         image: encryptedenergy/ee-gateway-worker:0.8.1@sha256:cd0aa7400fedf314e826e00c6152025c1fe60d5a5c7594cafc49a7f3ddaa6258
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('EE_DATA_DIR', '/data')
-          value: ''
+        - name: EE_DATA_DIR
+          value: /data
         securityContext:
           capabilities:
             add:
@@ -167,5 +162,3 @@ spec:
           path: /dev
       hostNetwork: true
       dnsPolicy: ClusterFirstWithHostNet
-      nodeSelector:
-        kubernetes.io/arch: amd64

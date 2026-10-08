@@ -2,7 +2,7 @@ apiVersion: v2
 name: minio
 description: The Object Store for AI Data Infrastructure
 type: application
-version: 0.1.0
+version: 0.1.1
 appVersion: RELEASE.2025-06-13T11-33-47Z-patch.1
 dependencies:
 - name: yolab-common

@@ -21,6 +21,15 @@ spec:
     requests:
       storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
 ---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Release.Name }}-secrets
+  namespace: {{ .Release.Namespace }}
+type: Opaque
+stringData:
+  app_secret: {{ required "config.app_secret is required" .Values.config.app_secret | quote }}
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -73,20 +82,25 @@ spec:
         image: ghcr.io/mauricewipf/fizzy-umbrel:5f45e54@sha256:2d7a493a8933aa784b4d06cc96bd8b047beaf19173d1eec04c767e9dd7f4c28b
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('RAILS_ENV', 'production')
-          value: ''
-        - name: ('SECRET_KEY_BASE', '${APP_SEED}')
-          value: ''
-        - name: ('DATABASE_ADAPTER', 'sqlite')
-          value: ''
-        - name: ('ACTIVE_STORAGE_SERVICE', 'local')
-          value: ''
-        - name: ('SOLID_QUEUE_IN_PUMA', 'true')
-          value: ''
-        - name: ('FORCE_SSL', 'false')
-          value: ''
-        - name: ('ASSUME_SSL', 'false')
-          value: ''
+        - name: APP_SEED
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: app_secret
+        - name: RAILS_ENV
+          value: production
+        - name: SECRET_KEY_BASE
+          value: $(APP_SEED)
+        - name: DATABASE_ADAPTER
+          value: sqlite
+        - name: ACTIVE_STORAGE_SERVICE
+          value: local
+        - name: SOLID_QUEUE_IN_PUMA
+          value: 'true'
+        - name: FORCE_SSL
+          value: 'false'
+        - name: ASSUME_SSL
+          value: 'false'
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000

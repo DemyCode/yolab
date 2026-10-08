@@ -38,8 +38,6 @@ spec:
       labels:
         app: gateway
     spec:
-      nodeSelector:
-        kubernetes.io/arch: amd64
       initContainers:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
@@ -52,14 +50,14 @@ spec:
         image: koenkk/zigbee2mqtt:2.14.2@sha256:addbfb08fcef2e4477de1535636118241e10d13e898fbe4d9faba8a4d7396311
         imagePullPolicy: IfNotPresent
         env:
-        - name: ('ZIGBEE2MQTT_CONFIG_FRONTEND_ENABLED', 'true')
-          value: ''
-        - name: ('ZIGBEE2MQTT_CONFIG_FRONTEND_PORT', 8080)
-          value: ''
-        - name: ('ZIGBEE2MQTT_CONFIG_MQTT_SERVER', 'mqtt://mosquitto_broker_1:1883')
-          value: ''
-        - name: ('Z2M_ONBOARD_NO_REDIRECT', 1)
-          value: ''
+        - name: ZIGBEE2MQTT_CONFIG_FRONTEND_ENABLED
+          value: 'true'
+        - name: ZIGBEE2MQTT_CONFIG_FRONTEND_PORT
+          value: '8080'
+        - name: ZIGBEE2MQTT_CONFIG_MQTT_SERVER
+          value: mqtt://mosquitto_broker_1:1883
+        - name: Z2M_ONBOARD_NO_REDIRECT
+          value: '1'
         ports:
         - containerPort: 8080
         readinessProbe:

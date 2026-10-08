@@ -2,7 +2,7 @@ apiVersion: v2
 name: chromium
 description: The open-source browser project
 type: application
-version: 0.1.0
+version: 0.1.1
 appVersion: 8d3cb5f1
 dependencies:
 - name: yolab-common
