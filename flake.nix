@@ -15,6 +15,8 @@
     rust-overlay.url = "github:oxalica/rust-overlay";
     rust-overlay.inputs.nixpkgs.follows = "nixpkgs";
     treefmt-nix.url = "github:numtide/treefmt-nix";
+    nixos-hardware.url = "github:NixOS/nixos-hardware";
+    nixos-hardware.inputs.nixpkgs.follows = "nixpkgs";
     treefmt-nix.inputs.nixpkgs.follows = "nixpkgs";
 
     yolab-machine = {
@@ -68,6 +70,7 @@
       rust = rustFor.${system};
       yolabConfigPath = configPath;
       yolabFacterPath = null;
+      nixosHardware = inputs.nixos-hardware;
       localApiEnv = rustFor.${system}.crates.local-api.package;
       yolabRev = self.rev or self.dirtyRev or "";
       yolabLastModified = self.lastModified or null;

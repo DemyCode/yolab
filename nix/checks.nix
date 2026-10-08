@@ -749,7 +749,9 @@ in let
       rtx3060 = card "10de" "2504" ["nouveau"];
       gtx1080 = card "10de" "1b80" ["nouveau"];
       gtx680 = card "10de" "1180" ["nouveau"];
+      gtx580 = card "10de" "1080" ["nouveau"];
       rx7900 = card "1002" "744c" ["amdgpu"];
+      hd7970 = card "1002" "6798" ["radeon"];
       iris = card "8086" "a7a0" ["i915"];
       on = cards: detect {hardware.graphics_card = cards;};
       cases = {
@@ -791,15 +793,42 @@ in let
             open = false;
           };
         };
-        "a Kepler card has no driver, so it is reported and left alone" = {
+        "a Kepler card runs the 470 branch, the last NVIDIA driver for it, closed" = {
           got = on [gtx680];
+          want = {
+            any = true;
+            nvidia = {
+              present = true;
+              unsupported = false;
+              branch = "legacy_470";
+              open = false;
+            };
+          };
+        };
+        "a Kepler card beside a Pascal one pulls the machine to 470, which drives both" = {
+          got = on [
+            gtx1080
+            gtx680
+          ];
+          want.nvidia.branch = "legacy_470";
+        };
+        "a Fermi card has no NVIDIA driver that builds, so nouveau keeps it" = {
+          got = on [gtx580];
           want = {
             any = false;
             nvidia = {
               present = false;
+              nouveauOnly = true;
               unsupported = true;
               branch = null;
             };
+          };
+        };
+        "an old Radeon still on the radeon driver is found as AMD" = {
+          got = on [hd7970];
+          want = {
+            any = true;
+            amd = true;
           };
         };
         "an AMD card is found by vendor" = {
@@ -850,12 +879,24 @@ in let
         builtins.toJSON {hardware.graphics_card = [rtx3060];}
       );
       withNvidia = nixosSystems.yolab-ci.extendModules {specialArgs.yolabFacterPath = nvidiaReport;};
+      reportOf = name: cards: builtins.toFile "facter-${name}.json" (builtins.toJSON {hardware.graphics_card = cards;});
+      withReport = name: cards: (nixosSystems.yolab-ci.extendModules {specialArgs.yolabFacterPath = reportOf name cards;}).config;
+      withKepler = withReport "kepler" [gtx680];
+      withIntel = withReport "intel" [iris];
+      withAmd = withReport "amd" [hd7970];
+      extraNames = cfg: map lib.getName cfg.hardware.graphics.extraPackages;
       plain = nixosSystems.yolab-ci.config;
       systemProblems =
         lib.optional plain.hardware.nvidia-container-toolkit.enable "a machine without a report turned the NVIDIA container toolkit on"
         ++ lib.optional (!plain.hardware.uinput.enable) "game streaming needs /dev/uinput on every machine"
         ++ lib.optional (!withNvidia.config.hardware.nvidia-container-toolkit.enable) "an NVIDIA report did not turn on the CDI spec the device plugin reads"
-        ++ lib.optional (!(builtins.elem "nvidia" withNvidia.config.services.xserver.videoDrivers)) "an NVIDIA report did not load the nvidia driver";
+        ++ lib.optional (!(builtins.elem "nvidia" withNvidia.config.services.xserver.videoDrivers)) "an NVIDIA report did not load the nvidia driver"
+        ++ lib.optional (!(lib.hasPrefix "470." withKepler.hardware.nvidia.package.version)) "a Kepler report did not build NVIDIA's 470 driver"
+        ++ lib.optional (!(builtins.elem "intel-media-driver" (extraNames withIntel))) "an Intel report did not add the VA-API driver for Broadwell and newer"
+        ++ lib.optional (!(builtins.elem "intel-vaapi-driver" (extraNames withIntel))) "an Intel report did not add the VA-API driver for chips older than Broadwell"
+        ++ lib.optional (!(builtins.elem "amdgpu.si_support=1" withAmd.boot.kernelParams)) "an AMD report left GCN 1 cards on the radeon driver, without Vulkan"
+        ++ lib.optional (!(builtins.elem "amdgpu.cik_support=1" withAmd.boot.kernelParams)) "an AMD report left GCN 2 cards on the radeon driver, without Vulkan"
+        ++ lib.optional (builtins.elem "amdgpu.si_support=1" plain.boot.kernelParams) "a machine without an AMD card got AMD kernel options";
       nvidiaToplevel = withNvidia.config.system.build.toplevel.drvPath;
     in
       pkgs.runCommand "gpu-detection-picks-the-driver-each-card-can-run" {} ''
@@ -863,6 +904,9 @@ in let
         ${lib.concatMapStrings (p: "echo ${lib.escapeShellArg p} >&2\n") systemProblems}
         ${lib.optionalString (failures != [] || systemProblems != []) "exit 1"}
         echo ${lib.escapeShellArg nvidiaToplevel} > /dev/null
+        echo ${lib.escapeShellArg withKepler.system.build.toplevel.drvPath} > /dev/null
+        echo ${lib.escapeShellArg withIntel.system.build.toplevel.drvPath} > /dev/null
+        echo ${lib.escapeShellArg withAmd.system.build.toplevel.drvPath} > /dev/null
         touch $out
       '';
 

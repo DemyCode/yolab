@@ -3,6 +3,7 @@
   lib,
   pkgs,
   yolabFacterPath ? null,
+  nixosHardware ? null,
   ...
 }: let
   report =
@@ -25,6 +26,14 @@
     '';
   };
 in {
+  imports = lib.optionals (nixosHardware != null) (
+    lib.optional gpus.intel nixosHardware.nixosModules.common-gpu-intel
+    ++ lib.optionals gpus.amd [
+      nixosHardware.nixosModules.common-gpu-amd-southern-islands
+      nixosHardware.nixosModules.common-gpu-amd-sea-islands
+    ]
+  );
+
   config = lib.mkMerge [
     {
       hardware.uinput.enable = true;
@@ -54,6 +63,7 @@ in {
 
     (lib.mkIf gpus.nvidia.present {
       nixpkgs.config.allowUnfreePredicate = pkg: lib.hasPrefix "nvidia" (lib.getName pkg);
+      nixpkgs.config.nvidia.acceptLicense = true;
 
       services.xserver.videoDrivers = ["nvidia"];
 
@@ -69,7 +79,7 @@ in {
 
     (lib.mkIf gpus.nvidia.unsupported {
       warnings = [
-        "This machine has an NVIDIA GPU older than Maxwell (GTX 7xx or earlier). No current driver supports it, so it is not used."
+        "This machine has an NVIDIA GPU older than Kepler (GTX 5xx or earlier). NVIDIA's last driver for it no longer builds, so it only gets the open nouveau driver: a display, no AI or video acceleration."
       ];
     })
   ];
