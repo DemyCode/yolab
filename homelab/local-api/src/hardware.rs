@@ -7,6 +7,7 @@ use serde_json::{json, Value};
 
 pub const LABEL_NVIDIA: &str = "yolab.io/gpu-nvidia";
 pub const LABEL_AMD: &str = "yolab.io/gpu-amd";
+pub const LABEL_AMD_ROCM: &str = "yolab.io/gpu-amd-rocm";
 pub const LABEL_INTEL: &str = "yolab.io/gpu-intel";
 pub const LABEL_INTEL_COMPUTE: &str = "yolab.io/gpu-intel-compute";
 pub const LABEL_ACCELERATOR: &str = "yolab.io/accelerator";
@@ -20,6 +21,7 @@ const NVIDIA_CDI_SPEC: &str = "var/run/cdi/nvidia-container-toolkit.json";
 pub struct Inventory {
     pub nvidia: bool,
     pub amd: bool,
+    pub amd_rocm: bool,
     pub intel: bool,
     pub intel_compute: bool,
     pub vram_bytes: Option<u64>,
@@ -31,21 +33,48 @@ impl Inventory {
     pub fn accelerator(&self) -> &'static str {
         if self.nvidia {
             "nvidia"
-        } else if self.amd {
+        } else if self.amd_rocm {
             "amd"
         } else if self.intel_compute {
             "intel"
+        } else if self.amd {
+            "vulkan"
         } else {
             "cpu"
         }
     }
 }
 
+const KFD_NODES: &str = "sys/class/kfd/kfd/topology/nodes";
+const FIRST_ROCM_GFX: u64 = 90000;
+
+fn gfx_target_versions(root: &Path) -> Option<Vec<u64>> {
+    let nodes = std::fs::read_dir(root.join(KFD_NODES)).ok()?;
+    Some(
+        nodes
+            .filter_map(|n| n.ok())
+            .filter_map(|n| std::fs::read_to_string(n.path().join("properties")).ok())
+            .filter_map(|text| {
+                text.lines().find_map(|l| {
+                    l.strip_prefix("gfx_target_version ")
+                        .and_then(|v| v.trim().parse::<u64>().ok())
+                })
+            })
+            .filter(|v| *v > 0)
+            .collect(),
+    )
+}
+
 pub fn probe(root: &Path) -> Inventory {
     let drm = drm_devices(root);
+    let amd = drm.iter().any(|d| d.driver == "amdgpu" && d.render_node);
     Inventory {
         nvidia: root.join(NVIDIA_CDI_SPEC).is_file(),
-        amd: root.join("dev/kfd").exists() && drm.iter().any(|d| d.driver == "amdgpu"),
+        amd,
+        amd_rocm: amd
+            && root.join("dev/kfd").exists()
+            && gfx_target_versions(root)
+                .is_none_or(|gfx| gfx.is_empty() || gfx.iter().any(|v| *v >= FIRST_ROCM_GFX)),
         intel: drm.iter().any(DrmDevice::is_intel_render),
         intel_compute: drm
             .iter()
@@ -153,6 +182,7 @@ pub fn labels(inv: &Inventory) -> BTreeMap<&'static str, Option<String>> {
     BTreeMap::from([
         (LABEL_NVIDIA, flag(inv.nvidia)),
         (LABEL_AMD, flag(inv.amd)),
+        (LABEL_AMD_ROCM, flag(inv.amd_rocm)),
         (LABEL_INTEL, flag(inv.intel)),
         (LABEL_INTEL_COMPUTE, flag(inv.intel_compute)),
         (LABEL_ACCELERATOR, Some(inv.accelerator().to_string())),
@@ -307,9 +337,11 @@ mod tests {
     }
 
     #[test]
-    fn an_amd_gpu_counts_only_with_the_compute_device_rocm_needs() {
+    fn rocm_needs_the_compute_device_but_video_and_vulkan_do_not() {
         let display_only = Machine::new().drm("renderD128", "amdgpu");
-        assert!(!probe(display_only.path()).amd);
+        assert!(probe(display_only.path()).amd);
+        assert!(!probe(display_only.path()).amd_rocm);
+        assert!(!probe(Machine::new().drm("card0", "amdgpu").path()).amd);
 
         let compute = Machine::new()
             .drm("renderD128", "amdgpu")
@@ -323,6 +355,57 @@ mod tests {
         assert!(inv.amd);
         assert_eq!(inv.vram_bytes, Some(17_163_091_968));
         assert_eq!(labels(&inv)[LABEL_VRAM_GIB].as_deref(), Some("16"));
+    }
+
+    fn kfd_gpu(machine: Machine, node: &str, gfx: u64) -> Machine {
+        machine.file(
+            &format!("{KFD_NODES}/{node}/properties"),
+            &format!("cpu_cores_count 0\nsimd_count 64\ngfx_target_version {gfx}\n"),
+        )
+    }
+
+    fn amd_machine() -> Machine {
+        Machine::new()
+            .drm("renderD128", "amdgpu")
+            .file("dev/kfd", "")
+            .file(
+                &format!("{KFD_NODES}/0/properties"),
+                "cpu_cores_count 8\ngfx_target_version 0\n",
+            )
+    }
+
+    #[test]
+    fn a_vega_or_newer_amd_gpu_runs_rocm() {
+        let inv = probe(kfd_gpu(amd_machine(), "1", 90006).path());
+        assert!(inv.amd_rocm);
+        assert_eq!(inv.accelerator(), "amd");
+        let rdna3 = probe(kfd_gpu(amd_machine(), "1", 110000).path());
+        assert_eq!(rdna3.accelerator(), "amd");
+    }
+
+    #[test]
+    fn an_amd_gpu_older_than_vega_runs_vulkan_because_rocm_skips_it() {
+        let polaris = probe(kfd_gpu(amd_machine(), "1", 80003).path());
+        assert!(polaris.amd);
+        assert!(!polaris.amd_rocm);
+        assert_eq!(polaris.accelerator(), "vulkan");
+    }
+
+    #[test]
+    fn a_gcn1_card_without_a_compute_device_still_runs_vulkan() {
+        let inv = probe(Machine::new().drm("renderD128", "amdgpu").path());
+        assert!(inv.amd);
+        assert!(!inv.amd_rocm);
+        assert_eq!(inv.accelerator(), "vulkan");
+        assert_eq!(labels(&inv)[LABEL_AMD].as_deref(), Some("true"));
+        assert_eq!(labels(&inv)[LABEL_AMD_ROCM], None);
+    }
+
+    #[test]
+    fn rocm_is_assumed_when_the_kernel_reports_no_gpu_architecture() {
+        let inv = probe(amd_machine().path());
+        assert!(inv.amd_rocm);
+        assert_eq!(inv.accelerator(), "amd");
     }
 
     #[test]
@@ -414,6 +497,7 @@ mod tests {
         assert_eq!(both.accelerator(), "nvidia");
         let amd_and_intel = Inventory {
             amd: true,
+            amd_rocm: true,
             intel: true,
             ..Default::default()
         };
@@ -468,6 +552,7 @@ mod tests {
     fn a_node_reads_back_the_hardware_its_labels_describe() {
         let inv = Inventory {
             amd: true,
+            amd_rocm: true,
             vram_bytes: Some(24 << 30),
             ram_bytes: Some(64 << 30),
             game_input: true,

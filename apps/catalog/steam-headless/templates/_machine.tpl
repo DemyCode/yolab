@@ -3,7 +3,7 @@
 {{- toJson .Values.machine -}}
 {{- else -}}
 {{- $best := dict -}}
-{{- $rank := dict "nvidia" 3 "amd" 2 "intel" 1 -}}
+{{- $rank := dict "nvidia" 3 "amd" 2 "vulkan" 2 "intel" 1 -}}
 {{- range ((lookup "v1" "Node" "" "").items | default list) -}}
 {{- $labels := .metadata.labels | default dict -}}
 {{- if eq (get $labels "kubernetes.io/arch") "amd64" -}}

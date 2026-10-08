@@ -691,7 +691,8 @@ class OpenWebUiEngines(RenderedChart):
     def test_each_vendor_s_engine_lands_only_where_that_vendor_is_the_best_card(self):
         engines = self.engines(self.gpu_cluster())
         self.assertEqual(
-            sorted(engines), ["ollama-amd", "ollama-intel", "ollama-nvidia"]
+            sorted(engines),
+            ["ollama-amd", "ollama-intel", "ollama-nvidia", "ollama-vulkan"],
         )
         nvidia = engines["ollama-nvidia"]
         self.assertEqual(nvidia["nodeSelector"], {"yolab.io/accelerator": "nvidia"})
@@ -723,7 +724,7 @@ class OpenWebUiEngines(RenderedChart):
         }
         self.assertEqual(
             sorted(self.engines(self.docs(nvidia_only))),
-            ["ollama-amd", "ollama-intel", "ollama-nvidia"],
+            ["ollama-amd", "ollama-intel", "ollama-nvidia", "ollama-vulkan"],
         )
 
     def test_the_ui_talks_to_every_engine_through_one_service(self):
@@ -1713,6 +1714,21 @@ class OpenWebUiOllama(RenderedChart):
     def test_by_default_it_runs_its_own_ollama(self):
         spec = self.gateway(self.docs())
         self.assertIn("ollama", {c["name"] for c in spec["containers"]})
+
+    def test_an_old_amd_machine_gets_the_vulkan_engine_through_dri(self):
+        docs = self.docs(
+            {"machines[0].name": "old-radeon", "machines[0].accelerator": "vulkan"}
+        )
+        engines = {
+            d["metadata"]["name"]: d["spec"]["template"]["spec"]
+            for d in docs
+            if d.get("kind") == "DaemonSet"
+        }
+        self.assertIn("ollama-vulkan", engines)
+        spec = engines["ollama-vulkan"]
+        self.assertEqual(spec["nodeSelector"]["yolab.io/accelerator"], "vulkan")
+        limits = spec["containers"][0]["resources"]["limits"]
+        self.assertEqual(limits, {"yolab.io/dri": "1"})
 
     def test_it_listens_on_ipv6_where_the_readiness_probe_knocks(self):
         spec = self.gateway(self.docs())

@@ -4,6 +4,7 @@
   (dict "vendor" "amd" "image" "ollama/ollama:0.35.1-rocm@sha256:c716013d3bbf1753ad82cfa0ccdb8bd3252afc6cc16ec37330e49d829560dd4f" "device" "yolab.io/kfd" "x86Only" true) -}}
 {{- if .Values.vulkanImage -}}
 {{- $engines = append $engines (dict "vendor" "intel" "image" .Values.vulkanImage "device" "yolab.io/dri" "x86Only" true) -}}
+{{- $engines = append $engines (dict "vendor" "vulkan" "image" .Values.vulkanImage "device" "yolab.io/dri" "x86Only" true) -}}
 {{- end -}}
 {{- toJson $engines -}}
 {{- end -}}

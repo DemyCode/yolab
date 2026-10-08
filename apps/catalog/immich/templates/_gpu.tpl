@@ -6,7 +6,7 @@
 {{- else -}}
 {{- $best := dict -}}
 {{- $rank := dict "nvidia" 3 "amd" 2 "intel" 1 -}}
-{{- $label := dict "nvidia" "yolab.io/gpu-nvidia" "amd" "yolab.io/gpu-amd" "intel" "yolab.io/gpu-intel-compute" -}}
+{{- $label := dict "nvidia" "yolab.io/gpu-nvidia" "amd" "yolab.io/gpu-amd-rocm" "intel" "yolab.io/gpu-intel-compute" -}}
 {{- range ((lookup "v1" "Node" "" "").items | default list) -}}
 {{- $labels := .metadata.labels | default dict -}}
 {{- if eq (get $labels "kubernetes.io/arch") "amd64" -}}
