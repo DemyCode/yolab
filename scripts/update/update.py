@@ -11,7 +11,6 @@ lists what moved, what failed and what was held back on purpose.
 """
 
 import argparse
-import hashlib
 import json
 import os
 import re
@@ -240,24 +239,22 @@ def image_refs(text):
     return {r for r in refs if not r.startswith(OWN_IMAGES)}
 
 
-def skopeo_tags(name):
-    out = run(["skopeo", "list-tags", f"docker://{name}"], timeout=180)
-    return json.loads(out).get("Tags") or []
+def registry_tags(name):
+    return run(["crane", "ls", name], timeout=180).decode().split()
 
 
-def skopeo_digest(name, tag):
-    raw = run(["skopeo", "inspect", "--raw", f"docker://{name}:{tag}"], timeout=180)
-    return "sha256:" + hashlib.sha256(raw).hexdigest()
+def registry_digest(name, tag):
+    return run(["crane", "digest", f"{name}:{tag}"], timeout=180).decode().strip()
 
 
 def resolve_image(ref):
     name, tag, _ = split_ref(ref)
     if tag is None:
         return ref, None, f"{ref}: no tag to follow, left as is"
-    tags = skopeo_tags(name)
+    tags = registry_tags(name)
     target = newer_tag(tag, tags) or tag
     major = newest_major(target, tags)
-    new = join_ref(name, target, skopeo_digest(name, target))
+    new = join_ref(name, target, registry_digest(name, target))
     note = (
         f"{name}: {major} exists, a new major line, left for a person"
         if major
@@ -613,6 +610,22 @@ def update_cargo(root, summary):
         step(summary, f"cargo {rel}", [lock, *manifests], go)
 
 
+NPM_TARGETS = ("latest", "minor", "patch")
+
+
+def first_that_works(targets, attempt, paths):
+    errors = []
+    for target in targets:
+        snap = Snapshot(paths)
+        try:
+            attempt(target)
+            return target
+        except Exception as e:  # noqa: BLE001
+            snap.restore()
+            errors.append(f"{target}: {e}")
+    raise RuntimeError("; ".join(errors))
+
+
 def npm_deps_hash(lock):
     return run(["prefetch-npm-deps", lock], timeout=1800).decode().strip()
 
@@ -635,19 +648,32 @@ def update_npm(root, summary):
 
         def go(pkg_dir=pkg_dir, lock=lock, rel=rel):
             old_hash = npm_deps_hash(lock)
-            run(["ncu", "--upgrade"], cwd=pkg_dir, capture=False)
-            run(
-                [
-                    "npm",
-                    "install",
-                    "--package-lock-only",
-                    "--ignore-scripts",
-                    "--no-audit",
-                    "--no-fund",
-                ],
-                cwd=pkg_dir,
-                capture=False,
-            )
+            manifest = os.path.join(pkg_dir, "package.json")
+
+            def attempt(target, pkg_dir=pkg_dir):
+                run(
+                    ["ncu", "--upgrade", "--peer", "--target", target],
+                    cwd=pkg_dir,
+                    capture=False,
+                )
+                run(
+                    [
+                        "npm",
+                        "install",
+                        "--package-lock-only",
+                        "--ignore-scripts",
+                        "--no-audit",
+                        "--no-fund",
+                    ],
+                    cwd=pkg_dir,
+                    capture=False,
+                )
+
+            landed = first_that_works(NPM_TARGETS, attempt, [manifest, lock])
+            if landed != NPM_TARGETS[0]:
+                summary.held.append(
+                    f"npm {rel}: the newest versions conflict with each other; took {landed} updates only"
+                )
             new_hash = npm_deps_hash(lock)
             if new_hash != old_hash and not replace_in_nix(root, old_hash, new_hash):
                 raise RuntimeError(

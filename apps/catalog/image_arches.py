@@ -65,18 +65,40 @@ def arches(image):
             found = {inspect("--config", ref).get("architecture")}
     except (RuntimeError, subprocess.TimeoutExpired) as e:
         print(f"unreadable {image}: {e}", file=sys.stderr)
-        return []
+        return None
     return sorted(a for a in found if a in ("amd64", "arm64"))
 
 
-def main():
-    images = pinned_images()
+def merged(pinned, previous, lookup):
+    missing = [i for i in pinned if not previous.get(i)]
     with ThreadPoolExecutor(max_workers=8) as pool:
-        result = dict(zip(images, pool.map(arches, images)))
+        fresh = dict(zip(missing, pool.map(lookup, missing)))
+    result = {i: previous[i] for i in pinned if previous.get(i)}
+    result.update({i: a for i, a in fresh.items() if a is not None})
+    unreadable = sorted(i for i, a in fresh.items() if a is None)
+    return result, unreadable
+
+
+def main():
+    try:
+        with open(OUT) as f:
+            previous = json.load(f)
+    except FileNotFoundError:
+        previous = {}
+    result, unreadable = merged(pinned_images(), previous, arches)
     with open(OUT, "w") as f:
         json.dump(result, f, indent=2, sort_keys=True)
         f.write("\n")
     print(f"recorded {len(result)} images in {OUT}")
+    if unreadable:
+        print(
+            f"{len(unreadable)} images could not be read and are left out; "
+            "run this again later (or after `skopeo login docker.io`):",
+            file=sys.stderr,
+        )
+        for image in unreadable:
+            print(f"  {image}", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

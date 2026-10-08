@@ -249,6 +249,7 @@
             pkgs.npm-check-updates
             pkgs.prefetch-npm-deps
             pkgs.skopeo
+            pkgs.crane
             pkgs.opentofu
             pkgs.git
             pkgs.curl

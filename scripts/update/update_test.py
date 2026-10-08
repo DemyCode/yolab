@@ -205,5 +205,36 @@ class Rollback(unittest.TestCase):
             self.assertEqual(summary.failed, ["cargo: network down"])
 
 
+class NpmTargets(unittest.TestCase):
+    def test_the_newest_versions_win_when_they_install(self):
+        tried = []
+        landed = update.first_that_works(update.NPM_TARGETS, tried.append, [])
+        self.assertEqual(landed, "latest")
+        self.assertEqual(tried, ["latest"])
+
+    def test_a_conflict_falls_back_to_minor_with_the_files_as_they_were(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest = os.path.join(tmp, "package.json")
+            update.write(manifest, "before")
+
+            def attempt(target):
+                update.write(manifest, target)
+                if target == "latest":
+                    raise RuntimeError("ERESOLVE")
+
+            landed = update.first_that_works(update.NPM_TARGETS, attempt, [manifest])
+            self.assertEqual(landed, "minor")
+            self.assertEqual(update.read(manifest), "minor")
+
+    def test_when_nothing_installs_every_reason_is_kept(self):
+        def attempt(target):
+            raise RuntimeError(f"no {target}")
+
+        with self.assertRaises(RuntimeError) as caught:
+            update.first_that_works(("latest", "minor"), attempt, [])
+        self.assertIn("latest: no latest", str(caught.exception))
+        self.assertIn("minor: no minor", str(caught.exception))
+
+
 if __name__ == "__main__":
     unittest.main()

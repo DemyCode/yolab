@@ -1786,6 +1786,47 @@ class ServiceLinks(unittest.TestCase):
         )
 
 
+class ImageArches(unittest.TestCase):
+    def test_a_known_digest_is_never_asked_again(self):
+        import image_arches
+
+        asked = []
+
+        def lookup(image):
+            asked.append(image)
+            return ["amd64"]
+
+        result, unreadable = image_arches.merged(
+            ["a@sha256:1", "b@sha256:2"], {"a@sha256:1": ["amd64", "arm64"]}, lookup
+        )
+        self.assertEqual(asked, ["b@sha256:2"])
+        self.assertEqual(result["a@sha256:1"], ["amd64", "arm64"])
+        self.assertEqual(unreadable, [])
+
+    def test_a_failed_lookup_is_left_out_not_recorded_as_running_nowhere(self):
+        import image_arches
+
+        result, unreadable = image_arches.merged(["a@sha256:1"], {}, lambda image: None)
+        self.assertEqual(result, {})
+        self.assertEqual(unreadable, ["a@sha256:1"])
+
+    def test_an_empty_entry_from_an_old_failure_is_asked_again(self):
+        import image_arches
+
+        result, _ = image_arches.merged(
+            ["a@sha256:1"], {"a@sha256:1": []}, lambda image: ["arm64"]
+        )
+        self.assertEqual(result, {"a@sha256:1": ["arm64"]})
+
+    def test_an_image_no_longer_pinned_is_dropped(self):
+        import image_arches
+
+        result, _ = image_arches.merged(
+            [], {"gone@sha256:1": ["amd64"]}, lambda image: ["amd64"]
+        )
+        self.assertEqual(result, {})
+
+
 class OffersFileExplorer(unittest.TestCase):
     def test_a_chart_with_the_explorer_switch_offers_it_even_when_off_by_default(self):
         schema = {
