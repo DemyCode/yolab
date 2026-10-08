@@ -892,6 +892,8 @@ in let
         ++ lib.optional (!withNvidia.config.hardware.nvidia-container-toolkit.enable) "an NVIDIA report did not turn on the CDI spec the device plugin reads"
         ++ lib.optional (!(builtins.elem "nvidia" withNvidia.config.services.xserver.videoDrivers)) "an NVIDIA report did not load the nvidia driver"
         ++ lib.optional (!(lib.hasPrefix "470." withKepler.hardware.nvidia.package.version)) "a Kepler report did not build NVIDIA's 470 driver"
+        ++ lib.optional (withKepler.systemd.services.nvidia-container-toolkit-cdi-generator.unitConfig.ConditionPathExists or null != "/proc/driver/nvidia/version") "the CDI generator runs before NVIDIA's driver is loaded, so switching from nouveau fails the update"
+        ++ lib.optional (withKepler.systemd.services.nvidia-persistenced.unitConfig.ConditionPathExists or null != "/proc/driver/nvidia/version") "nvidia-persistenced runs before NVIDIA's driver is loaded, so switching from nouveau fails the update"
         ++ lib.optional (!(builtins.elem "intel-media-driver" (extraNames withIntel))) "an Intel report did not add the VA-API driver for Broadwell and newer"
         ++ lib.optional (!(builtins.elem "intel-vaapi-driver" (extraNames withIntel))) "an Intel report did not add the VA-API driver for chips older than Broadwell"
         ++ lib.optional (!(builtins.elem "amdgpu.si_support=1" withAmd.boot.kernelParams)) "an AMD report left GCN 1 cards on the radeon driver, without Vulkan"

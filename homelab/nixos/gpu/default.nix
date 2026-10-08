@@ -75,6 +75,9 @@ in {
       };
 
       hardware.nvidia-container-toolkit.enable = true;
+
+      systemd.services.nvidia-container-toolkit-cdi-generator.unitConfig.ConditionPathExists = "/proc/driver/nvidia/version";
+      systemd.services.nvidia-persistenced.unitConfig.ConditionPathExists = "/proc/driver/nvidia/version";
     })
 
     (lib.mkIf gpus.nvidia.unsupported {
