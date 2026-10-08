@@ -599,15 +599,37 @@ def update_cargo(root, summary):
         rel = os.path.relpath(crate, root)
 
         def go(crate=crate, rel=rel):
-            run(
-                ["cargo", "upgrade", "--incompatible", "allow", "--pinned", "allow"],
-                cwd=crate,
-                capture=False,
-            )
+            run(["cargo", "upgrade"], cwd=crate, capture=False)
             run(["cargo", "update"], cwd=crate, capture=False)
             summary.moved.append(f"cargo {rel}")
+            try:
+                preview = run(
+                    ["cargo", "upgrade", "--dry-run", "--incompatible", "allow"],
+                    cwd=crate,
+                ).decode()
+            except RuntimeError:
+                return
+            for name, latest in major_upgrades(preview):
+                summary.held.append(
+                    f"cargo {rel}: {name} {latest} is a new major version, upgrade it by hand"
+                )
 
         step(summary, f"cargo {rel}", [lock, *manifests], go)
+
+
+VERSION = re.compile(r"^v?\d+(\.\d+)*$")
+
+
+def major_upgrades(table):
+    found = []
+    for line in table.splitlines():
+        cols = line.split()
+        if len(cols) < 5 or not all(VERSION.match(c.lstrip("=^~")) for c in cols[2:4]):
+            continue
+        name, _, compatible, latest = cols[:4]
+        if compatible != latest:
+            found.append((name, latest))
+    return found
 
 
 NPM_TARGETS = ("latest", "minor", "patch")

@@ -205,6 +205,29 @@ class Rollback(unittest.TestCase):
             self.assertEqual(summary.failed, ["cargo: network down"])
 
 
+class Cargo(unittest.TestCase):
+    def test_only_compatible_upgrades_are_applied(self):
+        import inspect
+
+        source = inspect.getsource(update.update_cargo)
+        applied = source.split("--dry-run")[0]
+        self.assertNotIn("--incompatible", applied)
+        self.assertNotIn("--pinned", applied)
+
+    def test_new_major_versions_are_read_from_the_dry_run_table(self):
+        table = (
+            "name    old req compatible latest  new req note\n"
+            "====    ======= ========== ======  ======= ====\n"
+            "tokio   1.40    1.47.1     2.0.1   2.0.1\n"
+            "serde   1.0.200 1.0.228    1.0.228 1.0.228\n"
+            "axum    0.7.5   0.7.9      0.8.4   0.8.4\n"
+            "note: Re-run with `--verbose` to show more dependencies\n"
+        )
+        self.assertEqual(
+            update.major_upgrades(table), [("tokio", "2.0.1"), ("axum", "0.8.4")]
+        )
+
+
 class NpmTargets(unittest.TestCase):
     def test_the_newest_versions_win_when_they_install(self):
         tried = []
