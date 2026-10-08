@@ -143,6 +143,10 @@
     "amd64",
     "arm64"
   ],
+  "cgr.dev/chainguard/minio-client:latest-dev@sha256:603a402c2cd1543109c39eb5d1f731bd83b3c8f6ee8299b3785c8519fad0f5b5": [
+    "amd64",
+    "arm64"
+  ],
   "cgr.dev/chainguard/minio:latest@sha256:59667194421209c2c1eacbe761e24787e047985c5dfa96b15da9b59fe9b55cd0": [
     "amd64",
     "arm64"

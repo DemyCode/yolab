@@ -2,13 +2,14 @@ apiVersion: v2
 name: sikka
 description: Feeless, quantum-safe cryptocurrency node
 type: application
-version: 0.1.1
+version: 0.1.2
 appVersion: 0.2.0-patch.1
 dependencies:
 - name: yolab-common
   version: "0.1.14"
   repository: oci://ghcr.io/demycode/charts
 annotations:
+  yolab.io/disabled: "Its image was deleted upstream; it cannot be pulled any more"
   yolab.io/display-name: Sikka
   yolab.io/icon: 🧩
   yolab.io/category: crypto

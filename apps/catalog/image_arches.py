@@ -24,9 +24,30 @@ PINNED = re.compile(
 OWN = "ghcr.io/demycode/"
 
 
+DISABLED = re.compile(r"^\s+yolab\.io/disabled:\s*\S", re.MULTILINE)
+
+
+def is_disabled(chart_yaml):
+    return bool(DISABLED.search(chart_yaml))
+
+
+def disabled_charts():
+    found = set()
+    for name in os.listdir(HERE):
+        path = os.path.join(HERE, name, "Chart.yaml")
+        if os.path.isfile(path):
+            with open(path) as f:
+                if is_disabled(f.read()):
+                    found.add(name)
+    return found
+
+
 def pinned_images():
     found = set()
+    hidden = disabled_charts()
     for root, _, files in os.walk(HERE):
+        if os.path.relpath(root, HERE).split(os.sep)[0] in hidden:
+            continue
         for name in files:
             if name.endswith((".yaml", ".tpl")):
                 with open(os.path.join(root, name)) as f:

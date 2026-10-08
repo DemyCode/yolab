@@ -310,5 +310,13 @@
         }
       }
     }
+  },
+  "x-yolab-provides": {
+    "openai-tts": {
+      "title": "Kokoro speech API",
+      "service": "kokoro",
+      "port": 8880,
+      "path": "/v1"
+    }
   }
 }

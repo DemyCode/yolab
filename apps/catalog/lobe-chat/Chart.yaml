@@ -2,7 +2,7 @@ apiVersion: v2
 name: lobe-chat
 description: Your self-hosted AI workspace for chat, agents, and knowledge
 type: application
-version: 0.1.2
+version: 0.1.3
 appVersion: 2.2.17
 dependencies:
 - name: yolab-common

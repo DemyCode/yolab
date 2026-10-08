@@ -33,6 +33,13 @@
           "title": "File explorer",
           "default": false,
           "description": "A password-protected file manager for this app's own data on its own address: browse, download, upload, rename and delete files without needing a terminal. Folders holding a database server (Postgres, MariaDB, Redis, MongoDB, MinIO) always stay read-only."
+        },
+        "tts_url": {
+          "type": "string",
+          "title": "Speech engine",
+          "format": "service-url",
+          "x-yolab-service": "openai-tts",
+          "description": "Reads documents aloud through an OpenAI-compatible speech API: pick an installed Kokoro, or give the address of another one."
         }
       },
       "dependencies": {
@@ -188,7 +195,10 @@
             }
           ]
         }
-      }
+      },
+      "required": [
+        "tts_url"
+      ]
     },
     "outputs": {
       "type": "object",

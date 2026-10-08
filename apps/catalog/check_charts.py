@@ -40,6 +40,7 @@ import sys
 import tempfile
 from pathlib import Path
 
+import image_arches
 import yaml
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -58,6 +59,8 @@ LINT_VALUES = {
     "config.gateway_token": "PlaceholderGatewayToken2026Placeholder",
     "config.server_name": "example",
     "config.server_pass": "PlaceholderPw2026",
+    "config.firefly_url": "http://firefly-iii.yolab-firefly-iii.svc.cluster.local:8080",
+    "config.tts_url": "http://kokoro.yolab-kokoro.svc.cluster.local:8880/v1",
     "config.subdomain": "example",
     "config.vpn_private_key": "PlaceholderVpnKey2026=",
     "config.vpn_addresses": "10.64.0.2/32",
@@ -435,8 +438,9 @@ def check(app, docs, fail, chart_yaml="", schema=None, arches=None):
                 f"Service {s['metadata']['name']} selector {dict(sel)} matches no pod",
             )
 
-    for d in workloads + kinds.get("Job", []):
-        check_arch(app, d, fail, ARCHES if arches is None else arches)
+    if not image_arches.is_disabled(chart_yaml):
+        for d in workloads + kinds.get("Job", []):
+            check_arch(app, d, fail, ARCHES if arches is None else arches)
 
     for d in workloads + kinds.get("Job", []):
         spec = d["spec"]["template"]["spec"]

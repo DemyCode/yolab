@@ -51,7 +51,7 @@ spec:
         imagePullPolicy: IfNotPresent
         env:
         - name: FIREFLY_III_URL
-          value: http://firefly-iii_server_1:8080
+          value: {{ required "config.firefly_url is required" .Values.config.firefly_url | quote }}
         - name: VANITY_URL
           value: http://localhost:30009
         ports:

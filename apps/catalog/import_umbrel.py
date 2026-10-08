@@ -288,9 +288,10 @@ def rewrite_value(value, app_id, secrets):
             return "/data"
         return f"$({var})"
 
-    value = PLACEHOLDER.sub(repl, value)
-    # `immich_postgres_1` -> `postgres`. The project prefix is the app id with
-    # dashes kept (Compose keeps them) or swapped for underscores.
+    return own_hostnames(PLACEHOLDER.sub(repl, value), app_id)
+
+
+def own_hostnames(value, app_id):
     for prefix in {app_id, use_underscore(app_id)}:
         value = re.sub(
             r"(?<![A-Za-z0-9_-])"
@@ -500,9 +501,9 @@ def build_container(
     entrypoint = svc.get("entrypoint")
     command = svc.get("command")
     if entrypoint is not None:
-        c["command"] = compose_cmd(entrypoint)
+        c["command"] = [own_hostnames(a, app_id) for a in compose_cmd(entrypoint)]
     if command is not None:
-        c["args"] = compose_cmd(command)
+        c["args"] = [own_hostnames(a, app_id) for a in compose_cmd(command)]
     # env_file first: Compose lets `environment` override it.
     merged = list(env_file_vars or []) + env_items(svc.get("environment"))
     env = k8s_env(merged, app_id, secrets)

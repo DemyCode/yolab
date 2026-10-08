@@ -108,7 +108,7 @@ spec:
               name: '{{ .Release.Name }}-secrets'
               key: app_secret
         - name: API_BASE
-          value: http://kokoro_web_1:8880/v1
+          value: {{ required "config.tts_url is required" .Values.config.tts_url | quote }}
         - name: API_MODEL_NAME
           value: kokoro
         - name: BASE_URL

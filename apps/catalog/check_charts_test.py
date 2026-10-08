@@ -1585,6 +1585,22 @@ class ImportedEnvironment(unittest.TestCase):
             [("A", "file"), ("B", "file"), ("A", "compose")],
         )
 
+    def test_a_compose_hostname_in_a_command_becomes_the_service_name(self):
+        import import_umbrel
+
+        c = import_umbrel.build_container(
+            "init",
+            {
+                "image": "x",
+                "command": 'sh -c "mc alias set s http://lobe-chat_rustfs_1:9000"',
+            },
+            "lobe-chat",
+            set(),
+            [],
+        )
+        self.assertIn("http://rustfs:9000", " ".join(c["args"]))
+        self.assertNotIn("_1:", " ".join(c["args"]))
+
     def test_a_cross_service_hostname_becomes_the_service_name(self):
         env = self.env({"image": "x", "environment": {"WALLET": "tdex_oceand_1:18000"}})
         self.assertEqual(env, {"WALLET": "oceand:18000"})
@@ -1844,6 +1860,18 @@ class ImageArches(unittest.TestCase):
             f"reg:5000/team/app:1@{digest}",
         ):
             self.assertEqual(len(image_arches.sources(image)), 1, image)
+
+    def test_a_disabled_chart_needs_no_platform_record(self):
+        import image_arches
+
+        self.assertTrue(
+            image_arches.is_disabled(
+                'annotations:\n  yolab.io/disabled: "image deleted upstream"\n'
+            )
+        )
+        self.assertFalse(
+            image_arches.is_disabled("annotations:\n  yolab.io/tagline: x\n")
+        )
 
     def test_an_image_no_longer_pinned_is_dropped(self):
         import image_arches

@@ -330,5 +330,12 @@
         }
       }
     }
+  },
+  "x-yolab-provides": {
+    "firefly-iii": {
+      "title": "Firefly III",
+      "service": "firefly-iii",
+      "port": 8080
+    }
   }
 }

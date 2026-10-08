@@ -127,6 +127,8 @@ spec:
       labels:
         app: app
     spec:
+      nodeSelector:
+        kubernetes.io/arch: amd64
       containers:
       - name: app
         image: interaapps/pastefy:7.2.6@sha256:d2abe24232aa54023c472b033fe50cc8db0df8769bbe8099575d2bdaeed3ecb0

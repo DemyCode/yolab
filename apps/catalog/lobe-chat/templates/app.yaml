@@ -432,18 +432,20 @@ spec:
     spec:
       containers:
       - name: rustfs-init
-        image: quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727
+        image: cgr.dev/chainguard/minio-client:latest-dev@sha256:603a402c2cd1543109c39eb5d1f731bd83b3c8f6ee8299b3785c8519fad0f5b5
         imagePullPolicy: IfNotPresent
         command:
         - /bin/sh
         args:
         - -c
-        - 'set -eu; mc --version; mc alias set rustfs "http://lobe-chat_rustfs_1:9000"
+        - 'set -eu; mc --version; mc alias set rustfs "http://rustfs:9000"
           "lobehub" "${APP_PASSWORD}"; mc ls rustfs || true; mc mb "rustfs/lobe" --ignore-existing;
           mc anonymous set download rustfs/lobe
 
           '
         env:
+        - name: MC_CONFIG_DIR
+          value: /tmp/.mc
         - name: APP_PASSWORD
           valueFrom:
             secretKeyRef:

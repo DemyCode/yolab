@@ -61,3 +61,16 @@ spec:
       {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
       {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kokoro
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    app: gateway
+  ports:
+  - name: http
+    port: 8880
+    targetPort: 8880
