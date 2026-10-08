@@ -225,6 +225,9 @@ def env_items(env):
         return list(env.items())
     items = []
     for e in env:
+        if isinstance(e, tuple):
+            items.append(e)
+            continue
         k, _, v = str(e).partition("=")
         items.append((k, v))
     return items

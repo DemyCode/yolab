@@ -1547,6 +1547,46 @@ class FileExplorerWaysRendered(RenderedChart):
         self.assertNotIn("wg-register", self.names(spec, "initContainers"))
 
 
+class ImportedEnvironment(unittest.TestCase):
+    def env(self, svc, env_file_vars=None):
+        import import_umbrel
+
+        c = import_umbrel.build_container(
+            "app", svc, "tdex", set(), [], env_file_vars=env_file_vars
+        )
+        return {e["name"]: e.get("value") for e in c.get("env") or []}
+
+    def test_a_compose_mapping_keeps_each_name_and_value(self):
+        env = self.env(
+            {"image": "x", "environment": {"OCEAN_LOG_LEVEL": 5, "OCEAN_NO_TLS": "true"}}
+        )
+        self.assertEqual(env, {"OCEAN_LOG_LEVEL": "5", "OCEAN_NO_TLS": "true"})
+
+    def test_a_compose_list_keeps_each_name_and_value(self):
+        env = self.env({"image": "x", "environment": ["A=1", "B=two=2"]})
+        self.assertEqual(env, {"A": "1", "B": "two=2"})
+
+    def test_env_file_pairs_come_first_so_compose_overrides_them(self):
+        import import_umbrel
+
+        c = import_umbrel.build_container(
+            "app",
+            {"image": "x", "environment": {"A": "compose"}},
+            "tdex",
+            set(),
+            [],
+            env_file_vars=[("A", "file"), ("B", "file")],
+        )
+        self.assertEqual(
+            [(e["name"], e["value"]) for e in c["env"]],
+            [("A", "file"), ("B", "file"), ("A", "compose")],
+        )
+
+    def test_a_cross_service_hostname_becomes_the_service_name(self):
+        env = self.env({"image": "x", "environment": {"WALLET": "tdex_oceand_1:18000"}})
+        self.assertEqual(env, {"WALLET": "oceand:18000"})
+
+
 class OffersFileExplorer(unittest.TestCase):
     def test_a_chart_with_the_explorer_switch_offers_it_even_when_off_by_default(self):
         schema = {
