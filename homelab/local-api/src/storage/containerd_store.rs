@@ -81,9 +81,8 @@ pub async fn attempt<H: Host>(
         true
     } else if !filesystem_is_usable(host, root, &dev).await {
         tracing::warn!(
-            "the image store on {dev} was not built by this swap, will not mount, read or \
-             start pods, or names layers it no longer has — rebuilding it empty; images are \
-             pulled again"
+            "the image store on {dev} was not built by this swap, or will not mount, read or \
+             start pods — rebuilding it empty; images are pulled again"
         );
         true
     } else {
@@ -234,8 +233,7 @@ async fn filesystem_is_usable<H: Host>(host: &H, root: &Path, dev: &str) -> bool
     let usable = mounted
         && is_readable_dir(&probe)
         && is_built_here(&probe)
-        && snapshotter_is_coherent(&probe)
-        && missing_layers(&probe, &containerd_root(root)).is_empty();
+        && snapshotter_is_coherent(&probe);
     if mounted {
         host.run_cmd("umount", &[probe_s.as_str()])
             .await
@@ -272,49 +270,6 @@ fn is_built_here(store: &Path) -> bool {
     store.join(BUILT_HERE).is_file()
 }
 
-const CONTAINERD_LOG: &str = "containerd.log";
-const LOG_TAIL_BYTES: u64 = 4 << 20;
-const OVERLAY_SNAPSHOTS: &str = "io.containerd.snapshotter.v1.overlayfs/snapshots";
-const MISSING_LAYER: &str = "/fs: no such file or directory";
-
-fn log_tail(path: &Path) -> String {
-    use std::io::{Read, Seek, SeekFrom};
-    let Ok(mut file) = std::fs::File::open(path) else {
-        return String::new();
-    };
-    let len = file.metadata().map(|m| m.len()).unwrap_or(0);
-    if file
-        .seek(SeekFrom::Start(len.saturating_sub(LOG_TAIL_BYTES)))
-        .is_err()
-    {
-        return String::new();
-    }
-    let mut bytes = Vec::new();
-    let _ = file.read_to_end(&mut bytes);
-    String::from_utf8_lossy(&bytes).into_owned()
-}
-
-fn layer_named_missing(line: &str, snapshots: &str) -> Option<String> {
-    if !line.contains("failed to create containerd container") {
-        return None;
-    }
-    let (before, _) = line.split_once(MISSING_LAYER)?;
-    let id = &before[before.rfind(snapshots)? + snapshots.len()..];
-    (!id.is_empty() && id.bytes().all(|b| b.is_ascii_digit())).then(|| id.to_string())
-}
-
-fn missing_layers(store: &Path, seen_at: &Path) -> Vec<String> {
-    let snapshots = format!("{}/", seen_at.join(OVERLAY_SNAPSHOTS).display());
-    let mut out: Vec<String> = log_tail(&store.join(CONTAINERD_LOG))
-        .lines()
-        .filter_map(|l| layer_named_missing(l, &snapshots))
-        .filter(|id| !store.join(OVERLAY_SNAPSHOTS).join(id).join("fs").exists())
-        .collect();
-    out.sort();
-    out.dedup();
-    out
-}
-
 async fn is_mounted<H: Host>(host: &H, root: &Path) -> bool {
     let croot = containerd_root(root);
     is_mountpoint(host, &croot.to_string_lossy()).await
@@ -327,10 +282,7 @@ pub async fn workloads_run_here<H: Host>(host: &H, k3s_unit: &str) -> bool {
 }
 
 pub async fn is_in_place<H: Host>(host: &H, root: &Path) -> bool {
-    let croot = containerd_root(root);
-    is_mounted(host, root).await
-        && is_built_here(&croot)
-        && missing_layers(&croot, &croot).is_empty()
+    is_mounted(host, root).await && is_built_here(&containerd_root(root))
 }
 
 pub const PODS_SLICE: &str = "kubepods.slice";
@@ -413,18 +365,8 @@ async fn unmount_untrusted<H: Host>(host: &H, root: &Path) -> Result<Option<Stri
     if !is_mounted(host, root).await {
         return Ok(None);
     }
-    let croot = containerd_root(root);
-    let croot_s = croot.to_string_lossy().into_owned();
-    let missing = missing_layers(&croot, &croot);
-    if missing.is_empty() {
-        tracing::warn!("the image store at {croot_s} was not built by this swap — rebuilding it");
-    } else {
-        tracing::warn!(
-            "the image store at {croot_s} fails to create containers because layers {} are \
-             gone — rebuilding it",
-            missing.join(", ")
-        );
-    }
+    let croot_s = containerd_root(root).to_string_lossy().into_owned();
+    tracing::warn!("the image store at {croot_s} was not built by this swap — rebuilding it");
     let out = host.run_cmd("umount", &[croot_s.as_str()]).await?;
     if out.success {
         return Ok(None);
@@ -1186,121 +1128,6 @@ mod tests {
         assert!(not_yet(out).contains(ORPHAN));
         assert!(!host.ran("mkfs"));
         assert!(!ran_mount(&host));
-    }
-
-    fn failed_create(seen_at: &Path, id: u32) -> String {
-        format!(
-            "time=\"2026-10-08T20:54:31Z\" level=error msg=\"CreateContainer within sandbox \
-             \\\"442401\\\" for name:\\\"coredns\\\" attempt:20 failed\" error=\"rpc error: \
-             code = Unknown desc = failed to create containerd container: open {}/{OVERLAY_SNAPSHOTS}/{id}/fs: \
-             no such file or directory\"\n",
-            seen_at.display()
-        )
-    }
-
-    fn logged(store: &Path, text: &str) {
-        std::fs::create_dir_all(store.join(OVERLAY_SNAPSHOTS)).unwrap();
-        let mut log = std::fs::read_to_string(store.join(CONTAINERD_LOG)).unwrap_or_default();
-        log.push_str(text);
-        std::fs::write(store.join(CONTAINERD_LOG), log).unwrap();
-    }
-
-    #[test]
-    fn only_a_container_that_could_not_be_created_names_a_missing_layer() {
-        let dr = Path::new("/var/lib/rancher/k3s/agent/containerd");
-        let snapshots = format!("{}/", dr.join(OVERLAY_SNAPSHOTS).display());
-        assert_eq!(
-            layer_named_missing(&failed_create(dr, 48), &snapshots),
-            Some("48".into())
-        );
-        let usage = format!(
-            "level=error msg=\"Failed to get usage for snapshot\" error=\"lstat {snapshots}1661/fs: \
-             no such file or directory\""
-        );
-        assert_eq!(layer_named_missing(&usage, &snapshots), None);
-        let elsewhere = failed_create(Path::new("/var/lib/other"), 48);
-        assert_eq!(layer_named_missing(&elsewhere, &snapshots), None);
-    }
-
-    #[test]
-    fn a_layer_is_missing_only_while_it_is_still_gone() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = dir.path();
-        logged(store, &failed_create(store, 48));
-        logged(store, &failed_create(store, 48));
-        logged(store, &failed_create(store, 7));
-        std::fs::create_dir_all(store.join(OVERLAY_SNAPSHOTS).join("7/fs")).unwrap();
-        assert_eq!(missing_layers(store, store), vec!["48".to_string()]);
-    }
-
-    #[test]
-    fn a_store_with_no_log_misses_nothing() {
-        let dir = tempfile::tempdir().unwrap();
-        assert!(missing_layers(dir.path(), dir.path()).is_empty());
-    }
-
-    #[test]
-    fn only_the_tail_of_a_long_log_is_read() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = dir.path();
-        logged(store, &failed_create(store, 48));
-        logged(store, &"x".repeat(LOG_TAIL_BYTES as usize + 1));
-        assert!(missing_layers(store, store).is_empty());
-    }
-
-    #[tokio::test]
-    async fn a_marked_store_that_cannot_create_containers_is_not_in_place() {
-        let dir = tempfile::tempdir().unwrap();
-        let croot = containerd_root(dir.path());
-        built_here_in_place(dir.path());
-        let mounted = || FakeHost::new().ok("findmnt -rno TARGET --mountpoint", "");
-        assert!(is_in_place(&mounted(), dir.path()).await);
-        logged(&croot, &failed_create(&croot, 48));
-        assert!(!is_in_place(&mounted(), dir.path()).await);
-    }
-
-    #[tokio::test]
-    async fn a_marked_store_whose_log_names_a_missing_layer_is_rebuilt_at_boot() {
-        let dir = tempfile::tempdir().unwrap();
-        built_here_on_probe(dir.path());
-        snapshotter_at(&probe_dir(dir.path()), 262_144, 4);
-        logged(
-            &probe_dir(dir.path()),
-            &failed_create(&containerd_root(dir.path()), 48),
-        );
-        let host = mapped()
-            .ok("blkid /dev/rbd0", "TYPE=xfs")
-            .ok("mount", "")
-            .ok("umount", "")
-            .ok("mkfs.xfs", "");
-
-        attempt(&host, dir.path(), "yolab-n1", &policy())
-            .await
-            .unwrap();
-
-        assert!(host.ran("mkfs.xfs"), "{:?}", host.calls());
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn a_mounted_store_missing_layers_is_rebuilt_while_k3s_is_down() {
-        let dir = tempfile::tempdir().unwrap();
-        let croot = containerd_root(dir.path());
-        built_here_in_place(dir.path());
-        logged(&croot, &failed_create(&croot, 48));
-        let host = mounted_untrusted().ok("umount", "");
-        let out = pivot(&host, dir.path(), "yolab-n1", &policy(), K3S)
-            .await
-            .unwrap();
-        assert_eq!(out, Attempt::Ready(()));
-        let stopped = at(&host, "systemctl stop k3s.service");
-        let unmounted = at(&host, &format!("umount {}", croot.display()));
-        let rebuilt = at(&host, "mkfs.xfs -f -K -m crc=1 /dev/rbd0");
-        let started = at(&host, "systemctl start --no-block k3s.service");
-        assert!(
-            stopped < unmounted && unmounted < rebuilt && rebuilt < started,
-            "{:?}",
-            host.calls()
-        );
     }
 
     #[test]
