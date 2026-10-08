@@ -275,6 +275,12 @@ async fn is_mounted<H: Host>(host: &H, root: &Path) -> bool {
     is_mountpoint(host, &croot.to_string_lossy()).await
 }
 
+pub async fn workloads_run_here<H: Host>(host: &H, k3s_unit: &str) -> bool {
+    host.systemctl(&["is-active", "--quiet", k3s_unit])
+        .await
+        .is_ok_and(|o| o.success)
+}
+
 pub async fn is_in_place<H: Host>(host: &H, root: &Path) -> bool {
     is_mounted(host, root).await && is_built_here(&containerd_root(root))
 }
@@ -471,6 +477,18 @@ mod tests {
             Attempt::NotYet(why) => why,
             Attempt::Ready(()) => panic!("expected NotYet"),
         }
+    }
+
+    #[tokio::test]
+    async fn workloads_run_here_only_while_k3s_is_active() {
+        let active = FakeHost::new().ok("systemctl is-active --quiet k3s.service", "");
+        assert!(workloads_run_here(&active, "k3s.service").await);
+
+        let stuck_starting = FakeHost::new().fail("systemctl is-active --quiet k3s.service", "");
+        assert!(
+            !workloads_run_here(&stuck_starting, "k3s.service").await,
+            "a k3s that cannot start because its image store is dead runs no workloads to disrupt"
+        );
     }
 
     fn booting() -> FakeHost {

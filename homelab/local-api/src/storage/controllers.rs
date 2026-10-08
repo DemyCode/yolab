@@ -333,6 +333,9 @@ impl crate::runtime::resource::Resource for ContainerdStoreResource {
     fn disruption(&self) -> crate::runtime::resource::Disruption {
         crate::runtime::resource::Disruption::RestartsWorkloads
     }
+    async fn disrupts_now(&self) -> bool {
+        containerd_store::workloads_run_here(&HOST, K3S_UNIT).await
+    }
     async fn check(&self, _ctx: &Ctx) -> crate::runtime::resource::State {
         use crate::runtime::resource::State;
         if containerd_store::is_in_place(&HOST, root()).await {

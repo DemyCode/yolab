@@ -78,6 +78,10 @@ pub trait Resource: Send + Sync + 'static {
         Disruption::None
     }
 
+    fn disrupts_now(&self) -> impl Future<Output = bool> + Send {
+        async { true }
+    }
+
     fn check(&self, ctx: &Ctx) -> impl Future<Output = State> + Send;
 
     fn converge(&self, ctx: &Ctx) -> impl Future<Output = anyhow::Result<Tick>> + Send;
@@ -350,6 +354,7 @@ async fn run<R: Resource>(resource: Arc<R>, notify: Arc<Notify>, leader: leader:
 
     let mut last_start: Option<Instant> = None;
     let mut was_settled = false;
+    let mut last_pause: Option<String> = None;
 
     macro_rules! becomes_ready {
         () => {{
@@ -413,12 +418,18 @@ async fn run<R: Resource>(resource: Arc<R>, notify: Arc<Notify>, leader: leader:
             continue;
         }
 
-        if let activity::Gate::Paused(why) = activity::gate(&effective_pauses(
-            resource.disruption(),
-            resource.pauses_during(),
-        ))
-        .await
+        let disruption = if resource.disrupts_now().await {
+            resource.disruption()
+        } else {
+            Disruption::None
+        };
+        if let activity::Gate::Paused(why) =
+            activity::gate(&effective_pauses(disruption, resource.pauses_during())).await
         {
+            if last_pause.as_deref() != Some(why.as_str()) {
+                tracing::warn!("resource {name}: paused, {why}");
+                last_pause = Some(why.clone());
+            }
             set_state(name, State::NotYet(why.clone()));
             was_settled = false;
             reg.set_phase(name, Phase::Paused(why));
@@ -426,6 +437,7 @@ async fn run<R: Resource>(resource: Arc<R>, notify: Arc<Notify>, leader: leader:
             continue;
         }
 
+        last_pause = None;
         last_start = Some(Instant::now());
         reg.started(name);
         let r = resource.clone();
@@ -845,6 +857,71 @@ mod tests {
             &[activity::Activity::Restore],
         );
         assert_eq!(pauses.len(), 1, "{pauses:?}");
+    }
+
+    struct Disruptive {
+        name: &'static str,
+        disrupting: bool,
+        converges: Arc<AtomicU32>,
+    }
+
+    impl Resource for Disruptive {
+        fn name(&self) -> &'static str {
+            self.name
+        }
+        fn interval(&self) -> Duration {
+            Duration::from_secs(1)
+        }
+        fn disruption(&self) -> Disruption {
+            Disruption::RestartsWorkloads
+        }
+        async fn disrupts_now(&self) -> bool {
+            self.disrupting
+        }
+        async fn check(&self, _ctx: &Ctx) -> State {
+            State::Unchecked
+        }
+        async fn converge(&self, _ctx: &Ctx) -> anyhow::Result<Tick> {
+            self.converges.fetch_add(1, Ordering::SeqCst);
+            Ok(Tick::Done)
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_repair_with_nothing_running_to_disrupt_does_not_wait_on_the_restore_check() {
+        let converges = Arc::new(AtomicU32::new(0));
+        spawn(
+            Disruptive {
+                name: "test-nothing-to-disrupt",
+                disrupting: false,
+                converges: converges.clone(),
+            },
+            leader::Leadership::fixed_for_tests(true),
+        );
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        assert!(
+            converges.load(Ordering::SeqCst) > 0,
+            "the restore check cannot be answered here, and that must not block a repair that restarts nothing"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_repair_that_would_restart_running_workloads_still_waits_for_the_restore_check() {
+        let converges = Arc::new(AtomicU32::new(0));
+        spawn(
+            Disruptive {
+                name: "test-would-disrupt",
+                disrupting: true,
+                converges: converges.clone(),
+            },
+            leader::Leadership::fixed_for_tests(true),
+        );
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        assert_eq!(converges.load(Ordering::SeqCst), 0);
+        match state_of("test-would-disrupt") {
+            Some(State::NotYet(why)) => assert!(why.contains("restore"), "{why}"),
+            other => panic!("expected a pause naming the restore check, got {other:?}"),
+        }
     }
 
     struct NeverDone {
