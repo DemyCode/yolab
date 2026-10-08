@@ -50,7 +50,7 @@ spec:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
       - name: gen-secrets
-        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        image: busybox:1.38@sha256:fd7dc98638c8e305f4dc34e979f1c0fdfdcaeb0fbf8fcff77ae834b6da3d7e6e
         imagePullPolicy: IfNotPresent
         command:
         - /bin/sh
@@ -66,7 +66,7 @@ spec:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
       - name: app
-        image: freikin/dawarich:latest@sha256:4e3c55c4cd572373624e75c9e02075ff436c83a3ea952595ae0d4ffc4c7ae52b
+        image: freikin/dawarich:latest@sha256:589e3606b11b61c3fa2d9661832cb73645a9b93a9cc7d807a071e2bc6c584498
         imagePullPolicy: IfNotPresent
         readinessProbe:
           httpGet:
@@ -158,7 +158,7 @@ spec:
     spec:
       containers:
       - name: sidekiq
-        image: freikin/dawarich:latest@sha256:4e3c55c4cd572373624e75c9e02075ff436c83a3ea952595ae0d4ffc4c7ae52b
+        image: freikin/dawarich:latest@sha256:589e3606b11b61c3fa2d9661832cb73645a9b93a9cc7d807a071e2bc6c584498
         imagePullPolicy: IfNotPresent
         command:
         - /bin/sh
@@ -236,7 +236,7 @@ spec:
         kubernetes.io/arch: amd64
       containers:
       - name: postgres
-        image: postgis/postgis:17-3.5-alpine@sha256:978a2e6671c956d650d1f240dba7c73b8519a5f5af8685165fca616cc4ae3568
+        image: postgis/postgis:17-3.5-alpine@sha256:894f570c0cf0664ed5576a8fd5d5bfb8fb1b19d592885b686c3a88c8bd90c41f
         imagePullPolicy: IfNotPresent
         readinessProbe:
           exec:
@@ -295,7 +295,7 @@ spec:
         kubernetes.io/arch: amd64
       containers:
       - name: redis
-        image: redis:7.4-alpine@sha256:e7723ff73d963f5cc6d9c4643ea3d989527a402a319239054e9472a7fb9219a2
+        image: redis:7.4-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
         imagePullPolicy: IfNotPresent
         readinessProbe:
           exec:

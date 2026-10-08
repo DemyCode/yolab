@@ -40,7 +40,7 @@ spec:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
       - name: gen-secrets
-        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        image: busybox:1.38@sha256:fd7dc98638c8e305f4dc34e979f1c0fdfdcaeb0fbf8fcff77ae834b6da3d7e6e
         imagePullPolicy: IfNotPresent
         command:
         - /bin/sh
@@ -56,7 +56,7 @@ spec:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
       - name: app
-        image: amruthpillai/reactive-resume:latest@sha256:ff5d74fed8f8611b3e3182b9420b6b6ed7020aa39db9b5f8e9d8fb090a9374e9
+        image: amruthpillai/reactive-resume:latest@sha256:20d73d848c6c7e48d8dc273b542bfd2cb47ad6ea3cf5a5cab8fa37de820e9c89
         imagePullPolicy: IfNotPresent
         readinessProbe:
           httpGet:
@@ -129,7 +129,7 @@ spec:
     spec:
       containers:
       - name: postgres
-        image: postgres:16-alpine@sha256:57c72fd2a128e416c7fcc499958864df5301e940bca0a56f58fddf30ffc07777
+        image: postgres:16-alpine@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea
         imagePullPolicy: IfNotPresent
         readinessProbe:
           exec:
@@ -186,7 +186,7 @@ spec:
     spec:
       containers:
       - name: minio
-        image: cgr.dev/chainguard/minio:latest@sha256:4cf4831a2bbcf13ddca09c1cbcc9faff716dd3c4247e0babc32864b8ee8e0034
+        image: cgr.dev/chainguard/minio:latest@sha256:59667194421209c2c1eacbe761e24787e047985c5dfa96b15da9b59fe9b55cd0
         imagePullPolicy: IfNotPresent
         securityContext:
           runAsUser: 0
@@ -246,7 +246,7 @@ spec:
     spec:
       containers:
       - name: chrome
-        image: ghcr.io/browserless/chromium:v2.18.0@sha256:b0adebacc9b737505e3de46b1feec1f184410b22091a778f94fd09bcc48806f1
+        image: ghcr.io/browserless/chromium:v2.57.0@sha256:6bac628b3d8293f8fb251d3a6b63030dfc5a1cb0c7e5c39abe5efd8f4b25360b
         imagePullPolicy: IfNotPresent
         env:
         - name: TIMEOUT

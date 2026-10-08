@@ -177,7 +177,7 @@ spec:
     spec:
       containers:
       - name: db
-        image: postgres:16@sha256:1bf73ccae25238fa555100080042f0b2f9be08eb757e200fe6afc1fc413a1b3c
+        image: postgres:16@sha256:ca0bd484cb98bf4b24eb1010e73fb3fcbd6714d240fbc1a10eea5b7dbecb641d
         imagePullPolicy: IfNotPresent
         env:
         - name: APP_SEED
@@ -242,7 +242,7 @@ spec:
     spec:
       containers:
       - name: redis
-        image: redis:7.4.2@sha256:fbdbaea47b9ae4ecc2082ecdb4e1cea81e32176ffb1dcf643d422ad07427e5d9
+        image: redis:7.4.11@sha256:4fa24486b8bcca8eec45ee0eb166edc674795e53a2b53d1a9ef263eecebaac85
         imagePullPolicy: IfNotPresent
         env:
         - name: APP_SEED

@@ -71,7 +71,7 @@ spec:
     spec:
       containers:
       - name: wallos
-        image: ghcr.io/ellite/wallos:latest@sha256:316f26e13265958e7946ef98ff600516fddc51d698ee98bd1ae1577e5e00789f
+        image: ghcr.io/ellite/wallos:latest@sha256:0006879778f31a962a3873f7682514b92a3c7665dcbc4764fcc241ad968eaccd
         imagePullPolicy: IfNotPresent
         env:
           - name: TZ

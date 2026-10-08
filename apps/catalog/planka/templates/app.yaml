@@ -55,7 +55,7 @@ spec:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
       - name: planka
-        image: ghcr.io/plankanban/planka:latest@sha256:19b507ae3ab5cb1855c3f6984249e4a4881ed0b912febdfd492139c29bf10f39
+        image: ghcr.io/plankanban/planka:latest@sha256:125f45330853210c678fed1132bedc0912b4a11a27779b79802fbca108e069e2
         imagePullPolicy: IfNotPresent
         command:
           - /bin/sh
@@ -117,7 +117,7 @@ spec:
     spec:
       containers:
         - name: postgres
-          image: postgres:17-alpine@sha256:742f40ea20b9ff2ff31db5458d127452988a2164df9e17441e191f3b72252193
+          image: postgres:17-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
           imagePullPolicy: IfNotPresent
           env:
             - name: POSTGRES_USER

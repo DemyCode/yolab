@@ -40,7 +40,7 @@ spec:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
       - name: ssh-host-keys
-        image: docker.gitea.com/gitea:1.25.4@sha256:17d18218be2dad1f8ed402a4f906989505c90ab8b66ee9befcecfb5d470133e7
+        image: docker.gitea.com/gitea:1.27.3@sha256:87a67ee09d3ae0d1df5fda5dcda3e2a1f9236a45b0a59025d6e00e46adc43bef
         imagePullPolicy: IfNotPresent
         command:
         - sh
@@ -53,7 +53,7 @@ spec:
         - name: ssh-host-keys
           mountPath: /ssh-live
       - name: regenerate-auth-keys
-        image: docker.gitea.com/gitea:1.25.4@sha256:17d18218be2dad1f8ed402a4f906989505c90ab8b66ee9befcecfb5d470133e7
+        image: docker.gitea.com/gitea:1.27.3@sha256:87a67ee09d3ae0d1df5fda5dcda3e2a1f9236a45b0a59025d6e00e46adc43bef
         imagePullPolicy: IfNotPresent
         command:
         - sh
@@ -86,7 +86,7 @@ spec:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
       - name: gitea
-        image: docker.gitea.com/gitea:1.25.4@sha256:17d18218be2dad1f8ed402a4f906989505c90ab8b66ee9befcecfb5d470133e7
+        image: docker.gitea.com/gitea:1.27.3@sha256:87a67ee09d3ae0d1df5fda5dcda3e2a1f9236a45b0a59025d6e00e46adc43bef
         imagePullPolicy: IfNotPresent
         readinessProbe:
           httpGet:
@@ -140,7 +140,7 @@ spec:
         - name: yolab
           mountPath: /yolab
       - name: anubis
-        image: ghcr.io/techarohq/anubis:latest@sha256:5cf4c0d6c7ea01a356c6685a779971bdd28d6a5a4a6719201f73a9c4ae108db0
+        image: ghcr.io/techarohq/anubis:latest@sha256:8828275668b7bc675679f100970f9714f731388fbbf66ae94de8aca952e3fc4a
         imagePullPolicy: IfNotPresent
         env:
         - name: BIND
@@ -176,7 +176,7 @@ spec:
     spec:
       containers:
       - name: postgres
-        image: postgres:17-alpine@sha256:742f40ea20b9ff2ff31db5458d127452988a2164df9e17441e191f3b72252193
+        image: postgres:17-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
         imagePullPolicy: IfNotPresent
         readinessProbe:
           exec:

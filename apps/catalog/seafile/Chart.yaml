@@ -2,11 +2,11 @@ apiVersion: v2
 name: seafile
 description: Reliable and Performant File Sync and Share Solution
 type: application
-version: 0.1.1
+version: 0.1.2
 appVersion: 13.0.28
 dependencies:
 - name: yolab-common
-  version: 0.1.13
+  version: "0.1.14"
   repository: oci://ghcr.io/demycode/charts
 annotations:
   yolab.io/display-name: Seafile

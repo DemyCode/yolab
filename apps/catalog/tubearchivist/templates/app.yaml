@@ -118,7 +118,7 @@ spec:
     spec:
       containers:
       - name: redis
-        image: redis:8.2.2-bookworm@sha256:4521b581dbddea6e7d81f8fe95ede93f5648aaa66a9dacd581611bf6fe7527bd
+        image: redis:8.4.0-bookworm@sha256:c22af04bb576503bf16b3e34a1fd2fd82de0f765afd866d2e380145e0af30d78
         imagePullPolicy: IfNotPresent
         env:
         - name: APP_PASSWORD
@@ -176,7 +176,7 @@ spec:
     spec:
       containers:
       - name: elasticsearch
-        image: elasticsearch:8.19.6@sha256:e2d7e20893ad820bcad241bf47b89958787f6b38225478dfe100b66937840b0f
+        image: elasticsearch:8.19.23@sha256:8b1751877c984f3e4f59bafb15fc890e01969a744255fd5f6860c060b62cff36
         imagePullPolicy: IfNotPresent
         env:
         - name: APP_PASSWORD

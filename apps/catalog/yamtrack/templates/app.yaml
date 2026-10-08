@@ -101,7 +101,7 @@ spec:
     spec:
       containers:
       - name: redis
-        image: redis:8.0.2@sha256:b43d2dcbbdb1f9e1582e3a0f37e53bf79038522ccffb56a25858969d7a9b6c11
+        image: redis:8.10.2@sha256:2c2dff791878316e3b083188be0d578423b24813cdda5de0e80ea4f7b3e6bfd6
         imagePullPolicy: IfNotPresent
         env:
         - name: APP_SEED

@@ -57,7 +57,7 @@ spec:
       {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
       {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
       - name: ui
-        image: joni1802/ts3-manager:v2.2.1@sha256:d69890c323e8715cef0f625036c7c51ec7e7da321438897633fff5df83da1e39
+        image: joni1802/ts3-manager:v2.2.6@sha256:c096582784d5ee1aaeb866e90e310b531bf07b659983ba11394a027c48f1818b
         imagePullPolicy: IfNotPresent
         env:
         - name: APP_SEED
@@ -99,7 +99,7 @@ spec:
     spec:
       containers:
       - name: server
-        image: teamspeak:3.13.7@sha256:b5bdec55bc87b992c5658e739f3ce465644efa6d997633110b12be3dc3a10796
+        image: teamspeak:3.13.8@sha256:6dfdfb22869adf50e1b66d024b360b786d57a85ea09e8e8fdb6cca23949b2813
         imagePullPolicy: IfNotPresent
         env:
         - name: APP_PASSWORD

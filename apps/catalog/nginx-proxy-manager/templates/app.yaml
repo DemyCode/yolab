@@ -87,7 +87,7 @@ spec:
     spec:
       containers:
       - name: docker-host
-        image: qoomon/docker-host:3.3.1@sha256:ec9d214d7fa88932e9186ca2f4419d44661376929931248525b08e7fa9e270f7
+        image: qoomon/docker-host:3.5.2@sha256:662848eb04c394f89432b6e59e6197a1e6e86e1f8209588ed9a8dfaf137f36a4
         imagePullPolicy: IfNotPresent
         securityContext:
           capabilities:

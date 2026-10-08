@@ -47,7 +47,7 @@ spec:
       {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
       {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
       - name: server
-        image: linuxserver/emby:version-4.10.1.0@sha256:9642a578312eac8ca5ec0b979c90b22d96021db9551bfab6a7c89b3f2098c1ff
+        image: linuxserver/emby:version-4.10.1.0@sha256:71442bd80a56b6edac1b620bef50570fe5bc8a6bf5c25c4da05261a0a095e01e
         imagePullPolicy: IfNotPresent
         env:
         - name: TZ

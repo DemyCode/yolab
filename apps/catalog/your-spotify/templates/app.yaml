@@ -67,7 +67,7 @@ spec:
       {{- include "yolab-common.yolabEnvInit" . | nindent 6 }}
       containers:
         - name: your-spotify
-          image: linuxserver/your_spotify:version-1.20.0@sha256:d688da0fa8d78f7e99e644ccfbf6eadae2d0fe6f9d5e6460b70d51f1f7af3bee
+          image: linuxserver/your_spotify:version-1.20.0@sha256:34f592ef352cce88db8f64ca502d646b17aa2ecd6076df47e053241b0dbef2da
           imagePullPolicy: IfNotPresent
           # APP_URL is the address Spotify redirects back to after you authorise it,
           # and CORS is what the browser bundle is allowed to call. Both must be the
@@ -140,7 +140,7 @@ spec:
     spec:
       containers:
         - name: mongo
-          image: mongo:7.0@sha256:b6421fd6d1c5ded6377b397d8983e2f82e2100dc5123332dcfda2065a472be5b
+          image: mongo:7.0@sha256:1f995ad6fdb93244a1addab1b58f934a0bc2f5643c38e02f5e9d7f0c7d227a7b
           imagePullPolicy: IfNotPresent
           readinessProbe:
             tcpSocket:

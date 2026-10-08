@@ -38,7 +38,7 @@ import yaml
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_SRC = "/tmp/opencode/umbrel-apps"
-LIB_VERSION = "0.1.13"
+LIB_VERSION = "0.1.14"
 
 # Which processors each pinned image is published for, recorded by
 # image_arches.py. Read when present so a workload running an x86-only image is

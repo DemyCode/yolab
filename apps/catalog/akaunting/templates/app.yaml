@@ -79,7 +79,7 @@ spec:
     spec:
       containers:
       - name: app
-        image: akaunting/akaunting:3.1.21@sha256:918bbc77981e5b96ab6aa6838491cfa7c98cb4ee7bbf9532ee083e7e66d04255
+        image: akaunting/akaunting:3.1.21@sha256:50940112be48a229a2f567dc50ace9886fe5b14e1fe33f0232e704d0fb96f29f
         imagePullPolicy: IfNotPresent
         env:
         - name: APP_PASSWORD
@@ -152,7 +152,7 @@ spec:
     spec:
       containers:
       - name: db
-        image: mariadb:11.8.2@sha256:2bcbaec92bd9d4f6591bc8103d3a8e6d0512ee2235506e47a2e129d190444405
+        image: mariadb:11.8.9@sha256:6422478cb8e159f080fb1d8ccf65101e26fe51385787fde7d16c3b165a331f15
         imagePullPolicy: IfNotPresent
         env:
         - name: APP_PASSWORD

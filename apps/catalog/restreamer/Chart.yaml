@@ -2,11 +2,11 @@ apiVersion: v2
 name: restreamer
 description: An easy to use open source video server
 type: application
-version: 0.1.1
+version: 0.1.2
 appVersion: 2.12.0
 dependencies:
 - name: yolab-common
-  version: 0.1.13
+  version: "0.1.14"
   repository: oci://ghcr.io/demycode/charts
 annotations:
   yolab.io/display-name: Restreamer

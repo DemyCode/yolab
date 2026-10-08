@@ -2,11 +2,11 @@ apiVersion: v2
 name: nginx-proxy-manager
 description: Expose your services easily and securely
 type: application
-version: 0.1.1
+version: 0.1.2
 appVersion: 2.16.0
 dependencies:
 - name: yolab-common
-  version: 0.1.13
+  version: "0.1.14"
   repository: oci://ghcr.io/demycode/charts
 annotations:
   yolab.io/disabled: "Remote access is YoLab's own tunnel"

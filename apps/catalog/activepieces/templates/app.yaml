@@ -80,7 +80,7 @@ spec:
     spec:
       containers:
       - name: app
-        image: ghcr.io/activepieces/activepieces:0.92.1@sha256:d22e3f36f78d70264a020d309aa4535c161ba9ee25eeb783759cde3308cd803a
+        image: ghcr.io/activepieces/activepieces:0.92.2@sha256:87295caa32a14b4a35f3c8681ebbcb6c49bedfdf7bf732c5469d5a0a4417e5ee
         imagePullPolicy: IfNotPresent
         env:
         - name: APP_PASSWORD
@@ -176,7 +176,7 @@ spec:
     spec:
       containers:
       - name: db
-        image: postgres:17.4@sha256:4aed4b0525233308fc5de1b8d47f92326460d598dc5f004d14b41f183360b4e9
+        image: postgres:17.11@sha256:2d2b8998d31037bf721cfdf764d76ba74171b4fab3431b7f72c27c56ddbdf9e3
         imagePullPolicy: IfNotPresent
         env:
         - name: APP_PASSWORD
@@ -247,7 +247,7 @@ spec:
     spec:
       containers:
       - name: redis
-        image: redis:7.4.3@sha256:ee8ec723c831b815c3e2f2c6fbd1c145c68d1c04ba284f044ec1434fbca0fee8
+        image: redis:7.4.11@sha256:4fa24486b8bcca8eec45ee0eb166edc674795e53a2b53d1a9ef263eecebaac85
         imagePullPolicy: IfNotPresent
         env:
         - name: APP_PASSWORD

@@ -9,7 +9,7 @@
 {{- end -}}
 
 {{- define "yolab-common.image.caddy" -}}
-{{- (((.Values.yolab).images).caddy) | default "caddy:2@sha256:ec18ee54aab3315c22e25f3b2babda73ff8007d39b13b3bd1bfffa2f0444c7d9" -}}
+{{- (((.Values.yolab).images).caddy) | default "caddy:2@sha256:f2a1290d0463aad60660d4ec134943f183ee2a5f6c3eb7bf32dd984f2f020772" -}}
 {{- end -}}
 
 {{- define "yolab-common.image.fileExplorer" -}}

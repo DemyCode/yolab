@@ -47,7 +47,7 @@ spec:
       {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
       {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
       - name: kavita
-        image: jvmilazz0/kavita:latest@sha256:ca6af7a18d7124d014702983c2364e485294f808c1552e9555f2595b7cda7982
+        image: jvmilazz0/kavita:latest@sha256:31181a32f0dda73cae68721867028a7253d57881b58bea5754cd9e578e75421a
         imagePullPolicy: IfNotPresent
         readinessProbe:
           tcpSocket:

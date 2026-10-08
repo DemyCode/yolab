@@ -2,11 +2,11 @@ apiVersion: v2
 name: forgejo
 description: A self-hosted lightweight software forge
 type: application
-version: 0.1.1
+version: 0.1.2
 appVersion: 16.0.5
 dependencies:
 - name: yolab-common
-  version: 0.1.13
+  version: "0.1.14"
   repository: oci://ghcr.io/demycode/charts
 annotations:
   yolab.io/display-name: Forgejo

@@ -56,7 +56,7 @@ spec:
       {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
       {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
       - name: code-server
-        image: ghcr.io/linuxserver/code-server:latest@sha256:621d47575a19645f4267f68a77167ca0b4562d042717dbe0dbba318c9753bad7
+        image: ghcr.io/linuxserver/code-server:latest@sha256:0d590a1a80a36bd2559222ad6e9f69559e962cca003f6f716b62487999d575f5
         imagePullPolicy: IfNotPresent
         env:
           - name: PUID

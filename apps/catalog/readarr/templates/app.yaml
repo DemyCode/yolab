@@ -47,7 +47,7 @@ spec:
       {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
       {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
       - name: server
-        image: linuxserver/readarr:develop-version-0.4.18.2805@sha256:b6a7420770adeea5cac1f3ee5da606183d014e3f96fb473f3abd88ed11d9f344
+        image: linuxserver/readarr:develop-version-0.4.18.2805@sha256:baf471a7101b58f361ef960de91cd15f23bae82d0126df6a9edbeaf5c5aa4392
         imagePullPolicy: IfNotPresent
         env:
         - name: PUID
@@ -90,7 +90,7 @@ spec:
     spec:
       containers:
       - name: mac
-        image: getumbrel/media-app-configurator:v1.3.0@sha256:67e75dd9f5a14402b7816119a8e20189bc2465484cea077909d164687e59742b
+        image: getumbrel/media-app-configurator:v1.3.2@sha256:9ff34bda1e36ffe5a028d2463f4aaa9f20b93e8bec4392da077137c56bea3c34
         imagePullPolicy: IfNotPresent
         env:
         - name: APP_ID

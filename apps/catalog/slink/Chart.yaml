@@ -2,11 +2,11 @@ apiVersion: v2
 name: slink
 description: A powerful, privacy-first image sharing platform
 type: application
-version: 0.1.1
+version: 0.1.2
 appVersion: 1.14.0
 dependencies:
 - name: yolab-common
-  version: 0.1.13
+  version: "0.1.14"
   repository: oci://ghcr.io/demycode/charts
 annotations:
   yolab.io/display-name: Slink

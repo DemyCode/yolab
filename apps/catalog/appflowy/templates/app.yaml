@@ -49,7 +49,7 @@ spec:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
       - name: gen-secrets
-        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        image: busybox:1.38@sha256:fd7dc98638c8e305f4dc34e979f1c0fdfdcaeb0fbf8fcff77ae834b6da3d7e6e
         imagePullPolicy: IfNotPresent
         command:
         - /bin/sh
@@ -65,7 +65,7 @@ spec:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
       - name: app
-        image: appflowyinc/appflowy_web:latest@sha256:67852883fa09c4494207755a2c73722362d8b831e8894cbb0c7df65de1ed695f
+        image: appflowyinc/appflowy_web:latest@sha256:4e3b871bd2369e29f15242303c17cbedb86ac342498b9c9b84fc0cb205297bb1
         imagePullPolicy: IfNotPresent
         readinessProbe:
           httpGet:
@@ -106,7 +106,7 @@ spec:
       initContainers:
       
       - name: prepare-database
-        image: pgvector/pgvector:pg16@sha256:a36250871de0833b8757561c72f2477ef1ddd1101afa4e617fb552e0de514c6b
+        image: pgvector/pgvector:pg16@sha256:7b822b0aac60967beb1ea5e576b8602c94c300a157d187f385ae3e0da199b90a
         imagePullPolicy: IfNotPresent
         command:
         - /bin/sh
@@ -133,7 +133,7 @@ spec:
           value: postgres://appflowy:appflowy@postgres.{{ .Release.Namespace }}.svc.cluster.local:5432/appflowy
       containers:
       - name: cloud
-        image: appflowyinc/appflowy_cloud:latest@sha256:92821ef7b9057c5a0c4878df21ed550be38a389b2cd16ad9ac1a349f352274dd
+        image: appflowyinc/appflowy_cloud:latest@sha256:9304b5e31530b7fed47d87e5cdf72ec3f8223d66b1cbf6537ac847d8cbc27e7a
         imagePullPolicy: IfNotPresent
         readinessProbe:
           tcpSocket:
@@ -224,7 +224,7 @@ spec:
     spec:
       containers:
       - name: worker
-        image: appflowyinc/appflowy_worker:latest@sha256:badc04dcd007b3b3f94d2982dc512c5c9a1fb16cdb6f87103cd5a967a05a676a
+        image: appflowyinc/appflowy_worker:latest@sha256:d2e74402ba0c40d80a454f2414cce53e07168077464414b5e5337b60ca9bf63f
         imagePullPolicy: IfNotPresent
         env:
         - name: RUST_LOG
@@ -270,7 +270,7 @@ spec:
       {{- include "yolab-common.yolabEnvInit" . | nindent 6 }}
       containers:
       - name: gotrue
-        image: appflowyinc/gotrue:latest@sha256:87149e0003af9462824548d47f9ecc3e2b5e3c85501f4c8eb37b5efb55abc6a7
+        image: appflowyinc/gotrue:latest@sha256:74b60212c3e6a044555badb9085870708f806e54e422096fb8c4b7025133d1ba
         imagePullPolicy: IfNotPresent
         readinessProbe:
           httpGet:
@@ -366,7 +366,7 @@ spec:
     spec:
       containers:
       - name: minio
-        image: cgr.dev/chainguard/minio:latest@sha256:4cf4831a2bbcf13ddca09c1cbcc9faff716dd3c4247e0babc32864b8ee8e0034
+        image: cgr.dev/chainguard/minio:latest@sha256:59667194421209c2c1eacbe761e24787e047985c5dfa96b15da9b59fe9b55cd0
         imagePullPolicy: IfNotPresent
         securityContext:
           runAsUser: 0
@@ -432,7 +432,7 @@ spec:
     spec:
       containers:
       - name: postgres
-        image: pgvector/pgvector:pg16@sha256:a36250871de0833b8757561c72f2477ef1ddd1101afa4e617fb552e0de514c6b
+        image: pgvector/pgvector:pg16@sha256:7b822b0aac60967beb1ea5e576b8602c94c300a157d187f385ae3e0da199b90a
         imagePullPolicy: IfNotPresent
         readinessProbe:
           exec:
@@ -493,7 +493,7 @@ spec:
         kubernetes.io/arch: amd64
       containers:
       - name: redis
-        image: redis:7.4-alpine@sha256:e7723ff73d963f5cc6d9c4643ea3d989527a402a319239054e9472a7fb9219a2
+        image: redis:7.4-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
         imagePullPolicy: IfNotPresent
         readinessProbe:
           exec:

@@ -2,11 +2,11 @@ apiVersion: v2
 name: agent-zero
 description: A personal, organic agentic framework that grows and learns with you
 type: application
-version: 0.1.1
+version: 0.1.2
 appVersion: v2.13
 dependencies:
 - name: yolab-common
-  version: 0.1.13
+  version: "0.1.14"
   repository: oci://ghcr.io/demycode/charts
 annotations:
   yolab.io/display-name: Agent Zero

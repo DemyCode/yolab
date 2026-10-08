@@ -45,7 +45,7 @@ spec:
       # already-configured Nextcloud connector, which fails as "document server
       # unreachable" rather than as a changed secret.
       - name: gen-secrets
-        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        image: busybox:1.38@sha256:fd7dc98638c8e305f4dc34e979f1c0fdfdcaeb0fbf8fcff77ae834b6da3d7e6e
         imagePullPolicy: IfNotPresent
         command: ["/bin/sh", "-c"]
         args:
@@ -66,7 +66,7 @@ spec:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
       - name: onlyoffice
-        image: linuxserver/onlyoffice:version-v9.4.0@sha256:ae98080ae9c867e586bf512e0a8bbf13a8458f3eb1a2c894be5e5d5fc99ba4b1
+        image: linuxserver/onlyoffice:version-v9.4.0@sha256:09fb44964c66bd8f0beb80dc60a3e5a2f20ea35e9243e1e4c95ee2b288f966db
         imagePullPolicy: IfNotPresent
         command: ["/bin/sh", "-c"]
         args:

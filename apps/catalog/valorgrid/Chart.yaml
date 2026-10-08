@@ -2,11 +2,11 @@ apiVersion: v2
 name: valorgrid
 description: Private and auditable investment portfolio tracking
 type: application
-version: 0.1.1
+version: 0.1.2
 appVersion: 3.36.3
 dependencies:
 - name: yolab-common
-  version: 0.1.13
+  version: "0.1.14"
   repository: oci://ghcr.io/demycode/charts
 annotations:
   yolab.io/display-name: ValorGrid

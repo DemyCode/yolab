@@ -2,11 +2,11 @@ apiVersion: v2
 name: pastefy
 description: An easy paste for seamless sharing
 type: application
-version: 0.1.1
+version: 0.1.2
 appVersion: 7.1.6-patch.1
 dependencies:
 - name: yolab-common
-  version: 0.1.13
+  version: "0.1.14"
   repository: oci://ghcr.io/demycode/charts
 annotations:
   yolab.io/display-name: Pastefy

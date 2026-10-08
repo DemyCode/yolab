@@ -70,7 +70,7 @@ spec:
     spec:
       containers:
       - name: db
-        image: mariadb:11.4.5@sha256:5dfb3093333fa0ea53194ddef0a2bfa21d3b1e1353bd228b22610cd6fc0c04da
+        image: mariadb:11.8.9@sha256:6422478cb8e159f080fb1d8ccf65101e26fe51385787fde7d16c3b165a331f15
         imagePullPolicy: IfNotPresent
         env:
         - name: MYSQL_ROOT_PASSWORD
@@ -129,7 +129,7 @@ spec:
     spec:
       containers:
       - name: app
-        image: interaapps/pastefy:7.1.6@sha256:353ce246ccf24ab1dec42e3c387744b47925065c207699f0bf1ce8e560619ca9
+        image: interaapps/pastefy:7.2.6@sha256:d2abe24232aa54023c472b033fe50cc8db0df8769bbe8099575d2bdaeed3ecb0
         imagePullPolicy: IfNotPresent
         env:
         - name: HTTP_SERVER_CORS
