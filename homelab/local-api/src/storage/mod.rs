@@ -147,7 +147,13 @@ pub async fn run(args: &[String]) -> i32 {
     let env = StorageEnv::from_env();
     let node = crate::system::hostname();
 
-    let known = ["noout-clear", "noout-set", "bootstrap", "reset-wipe"];
+    let known = [
+        "noout-clear",
+        "noout-set",
+        "bootstrap",
+        "reset-wipe",
+        "release-images",
+    ];
     if !known.contains(&sub) {
         eprintln!("storage: unknown subcommand '{sub}'");
         return 2;
@@ -174,6 +180,7 @@ pub async fn run(args: &[String]) -> i32 {
     let result: Result<()> = match sub {
         "noout-clear" => noout::clear(&host, root()).await,
         "noout-set" => noout::set(&host, root()).await,
+        "release-images" => containerd_store::release(&host, root()).await,
         "bootstrap" => bootstrap::run(&host, root(), &node, &env.bootstrap_args()).await,
         "reset-wipe" => {
             let config = crate::config::machine_dir().join("config.toml");
