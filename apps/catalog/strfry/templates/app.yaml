@@ -43,7 +43,7 @@ spec:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
       - name: strfry
-        image: dockurr/strfry:latest@sha256:7ae77f50cc0cf5dab53a50c2790681dfaa40d7d6df3e0d77df6bf0a84fff58bd
+        image: dockurr/strfry:latest@sha256:599ab3500dbfbe6cb78c668e1892cd9802c192d066df4660e8e3175034a8344d
         imagePullPolicy: IfNotPresent
         readinessProbe:
           tcpSocket:

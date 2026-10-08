@@ -51,7 +51,7 @@ spec:
       {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
       {{- include "yolab-common.privateAccessInit" . | nindent 6 }}
       - name: seed
-        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        image: busybox:1.38@sha256:fd7dc98638c8e305f4dc34e979f1c0fdfdcaeb0fbf8fcff77ae834b6da3d7e6e
         imagePullPolicy: IfNotPresent
         command:
         - /bin/sh
@@ -157,7 +157,7 @@ spec:
     spec:
       containers:
       - name: mongodb
-        image: mongo:8.0.10@sha256:15fb53a5160ebabff5ecade8f8b5d48721b68ea190957a7f35b5b38e8340e62b
+        image: mongo:8.3.11@sha256:d731d77bfd7afd66bd487bdf627b5bf7ce4c3602ec461d635977021db529ebbc
         imagePullPolicy: IfNotPresent
         args:
         - mongod
@@ -183,7 +183,7 @@ spec:
           name: '{{ .Release.Name }}-seed'
       initContainers:
       - name: seed
-        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        image: busybox:1.38@sha256:fd7dc98638c8e305f4dc34e979f1c0fdfdcaeb0fbf8fcff77ae834b6da3d7e6e
         imagePullPolicy: IfNotPresent
         command:
         - /bin/sh
@@ -235,7 +235,7 @@ spec:
     spec:
       containers:
       - name: meilisearch
-        image: getmeili/meilisearch:v1.12.3@sha256:4acfcbbb9e089aa1aac838cfda3fba7f07aaaef044c23da8acbe0ab741400dac
+        image: getmeili/meilisearch:v1.54.3@sha256:e68913ab7d6f5b159529e472cfd362ce3c741fafd3c127961b2142abbe41b3c9
         imagePullPolicy: IfNotPresent
         env:
         - name: MEILI_HOST
@@ -260,7 +260,7 @@ spec:
           name: '{{ .Release.Name }}-seed'
       initContainers:
       - name: seed
-        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        image: busybox:1.38@sha256:fd7dc98638c8e305f4dc34e979f1c0fdfdcaeb0fbf8fcff77ae834b6da3d7e6e
         imagePullPolicy: IfNotPresent
         command:
         - /bin/sh
@@ -327,7 +327,7 @@ spec:
           name: '{{ .Release.Name }}-seed'
       initContainers:
       - name: seed
-        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        image: busybox:1.38@sha256:fd7dc98638c8e305f4dc34e979f1c0fdfdcaeb0fbf8fcff77ae834b6da3d7e6e
         imagePullPolicy: IfNotPresent
         command:
         - /bin/sh
@@ -403,7 +403,7 @@ spec:
           name: '{{ .Release.Name }}-seed'
       initContainers:
       - name: seed
-        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        image: busybox:1.38@sha256:fd7dc98638c8e305f4dc34e979f1c0fdfdcaeb0fbf8fcff77ae834b6da3d7e6e
         imagePullPolicy: IfNotPresent
         command:
         - /bin/sh

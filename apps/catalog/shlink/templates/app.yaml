@@ -54,7 +54,7 @@ spec:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
       - name: shlink
-        image: shlinkio/shlink:stable@sha256:77b8eb87bcb1a56bd0ecc590398d415545e5ba83414f28d37dc565a91c3c50b2
+        image: shlinkio/shlink:stable@sha256:844e1f2b6455331c5b49207bad3a2455ccd65e62bb9daa09a6c57afff26bd9c8
         imagePullPolicy: IfNotPresent
         command:
           - /bin/sh

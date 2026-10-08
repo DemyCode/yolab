@@ -47,7 +47,7 @@ spec:
       {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
       {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
       - name: app
-        image: lissy93/domain-locker:0.3.0@sha256:5b1b61367159c40469da92aee5af606da4205f9e81d3cebf40252ccaecbbff57
+        image: lissy93/domain-locker:0.3.1@sha256:58a903b2cdd9dd7fd6602b74c462812df3f3014be83f7dafc772d545b8d7f3aa
         imagePullPolicy: IfNotPresent
         env:
         - name: DL_ENV_TYPE
@@ -100,7 +100,7 @@ spec:
     spec:
       containers:
       - name: postgres
-        image: postgres:17.4@sha256:fe3f571d128e8efadcd8b2fde0e2b73ebab6dbec33f6bfe69d98c682c7d8f7bd
+        image: postgres:17.11@sha256:2d2b8998d31037bf721cfdf764d76ba74171b4fab3431b7f72c27c56ddbdf9e3
         imagePullPolicy: IfNotPresent
         env:
         - name: POSTGRES_DB

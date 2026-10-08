@@ -47,7 +47,7 @@ spec:
       {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
       {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
       - name: app
-        image: linuxserver/sqlitebrowser:3.13.1@sha256:1b1e81f0af222af3353a4c8d3c4737264a1816a43e4410819430335fa099b1da
+        image: linuxserver/sqlitebrowser:3.13.1@sha256:33d1ccd978a4fbe2d04e4117d7607a7719be7707aa08ffccf7c6017ae981a8b3
         imagePullPolicy: IfNotPresent
         env:
         - name: PUID

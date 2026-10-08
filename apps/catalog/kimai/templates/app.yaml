@@ -68,7 +68,7 @@ spec:
       # Symfony signs cookies with APP_SECRET. Rotating it logs everyone out, so it is
       # generated once and kept next to the data it protects.
       - name: gen-secrets
-        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        image: busybox:1.38@sha256:fd7dc98638c8e305f4dc34e979f1c0fdfdcaeb0fbf8fcff77ae834b6da3d7e6e
         imagePullPolicy: IfNotPresent
         command: ["/bin/sh", "-c"]
         args:
@@ -85,7 +85,7 @@ spec:
             subPath: {{ .Release.Name }}/yolab-state
       containers:
         - name: kimai
-          image: linuxserver/kimai:version-2.65.0@sha256:4bf90d6ab578e3ad53f7fc4a54c764aeeb24ba4d9d617c68b8e49cec52646235
+          image: linuxserver/kimai:version-2.65.0@sha256:16a81de3af04166d399e10630bd4b274260404e44f5c0c76647e2f36fe104393
           imagePullPolicy: IfNotPresent
           # TRUSTED_HOSTS is a Symfony allow-list: a request whose Host header is not
           # on it is rejected outright, so the app is unreachable without the real
@@ -164,7 +164,7 @@ spec:
     spec:
       containers:
         - name: mariadb
-          image: mariadb:11.4@sha256:611a2fcc5fa7c6ceb8644c6f74b25ede004ff6c3a6b38c8f8c23d3bbf6c26430
+          image: mariadb:11.8@sha256:6422478cb8e159f080fb1d8ccf65101e26fe51385787fde7d16c3b165a331f15
           imagePullPolicy: IfNotPresent
           env:
             - name: MARIADB_ROOT_PASSWORD

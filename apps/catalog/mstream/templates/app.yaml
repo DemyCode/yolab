@@ -47,7 +47,7 @@ spec:
       {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
       {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
       - name: server
-        image: linuxserver/mstream:6.31.1@sha256:087024466308b1cb67b805c32b26613054c4c3705fc663bea7c790045c90ecb5
+        image: linuxserver/mstream:6.31.1@sha256:ea4f5c37b94c3a3abba766177e75176f5c891945b2de5dfc917e5b2195823cea
         imagePullPolicy: IfNotPresent
         env:
         - name: PUID

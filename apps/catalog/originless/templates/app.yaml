@@ -47,7 +47,7 @@ spec:
       {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
       {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
       - name: app
-        image: ghcr.io/besoeasy/originless:0.1.0@sha256:f4f232052e2763eb23bd9019da885f5700fae947b8760a695be6774bfc9c38b9
+        image: ghcr.io/besoeasy/originless:0.1.34@sha256:30781e79b54f8b48261a629578f5c6e5ec92a8f93e35f39eb81b359ce8c621b2
         imagePullPolicy: IfNotPresent
         env:
         - name: NODE_ENV

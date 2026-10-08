@@ -61,7 +61,7 @@ spec:
       {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
       {{- include "yolab-common.privateAccessInit" . | nindent 6 }}
       - name: seed
-        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        image: busybox:1.38@sha256:fd7dc98638c8e305f4dc34e979f1c0fdfdcaeb0fbf8fcff77ae834b6da3d7e6e
         imagePullPolicy: IfNotPresent
         command:
         - /bin/sh
@@ -88,7 +88,7 @@ spec:
       {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
       {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
       - name: web
-        image: outlinewiki/outline:1.7.1@sha256:361df7040e6f0d7abac768b99f40122197921626a7e69501aabb5fcb496fc1b4
+        image: outlinewiki/outline:1.10.1@sha256:832051f039b446c87aa23929cf92c00980c66aaa2d744d118c48c016ec816ad8
         imagePullPolicy: IfNotPresent
         env:
         - name: APP_SEED
@@ -181,7 +181,7 @@ spec:
     spec:
       containers:
       - name: db
-        image: postgres:17.9-alpine@sha256:778d0b486d6daa02b77434d0358ec57a1b21fd8b6d22ac2eef56a33e816928f6
+        image: postgres:17.11-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
         imagePullPolicy: IfNotPresent
         env:
         - name: APP_SEED
@@ -222,7 +222,7 @@ spec:
           name: '{{ .Release.Name }}-seed'
       initContainers:
       - name: seed
-        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        image: busybox:1.38@sha256:fd7dc98638c8e305f4dc34e979f1c0fdfdcaeb0fbf8fcff77ae834b6da3d7e6e
         imagePullPolicy: IfNotPresent
         command:
         - /bin/sh
@@ -276,7 +276,7 @@ spec:
     spec:
       containers:
       - name: redis
-        image: redis:8.4.2-alpine@sha256:812a2556fa70318d980d248a65f62a3bdb72c0882e90d96e50d5c8cf2bed438d
+        image: redis:8.10.2-alpine@sha256:3811787313eba226a2ef38658c6ccb91cd5e110edc89c37767de373120a0e5a0
         imagePullPolicy: IfNotPresent
         env:
         - name: APP_SEED
@@ -308,7 +308,7 @@ spec:
           name: '{{ .Release.Name }}-seed'
       initContainers:
       - name: seed
-        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        image: busybox:1.38@sha256:fd7dc98638c8e305f4dc34e979f1c0fdfdcaeb0fbf8fcff77ae834b6da3d7e6e
         imagePullPolicy: IfNotPresent
         command:
         - /bin/sh
@@ -364,7 +364,7 @@ spec:
     spec:
       containers:
       - name: dex
-        image: dexidp/dex:v2.45.1@sha256:8499afd690c437f52301efd2b05b2455da5bd2dfc20332cd697dc9937f808462
+        image: dexidp/dex:v2.46.0@sha256:933fcd3f523338c847b88ef84a7145fb2fcb7b9917f08418612afeaaa2001777
         imagePullPolicy: IfNotPresent
         args:
         - dex
@@ -400,7 +400,7 @@ spec:
           name: '{{ .Release.Name }}-seed'
       initContainers:
       - name: seed
-        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        image: busybox:1.38@sha256:fd7dc98638c8e305f4dc34e979f1c0fdfdcaeb0fbf8fcff77ae834b6da3d7e6e
         imagePullPolicy: IfNotPresent
         command:
         - /bin/sh

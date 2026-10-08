@@ -51,7 +51,7 @@ spec:
       {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
       {{- include "yolab-common.privateAccessInit" . | nindent 6 }}
       - name: seed
-        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        image: busybox:1.38@sha256:fd7dc98638c8e305f4dc34e979f1c0fdfdcaeb0fbf8fcff77ae834b6da3d7e6e
         imagePullPolicy: IfNotPresent
         command:
         - /bin/sh
@@ -122,7 +122,7 @@ spec:
     spec:
       containers:
       - name: relay
-        image: getumbrel/nostr-rs-relay:0.8.1@sha256:a6c857aecd4964bf058ec5c3c0fea95e0d87ed0cc789f2140f96de108e5515ec
+        image: getumbrel/nostr-rs-relay:0.8.1@sha256:7d370d3013391741e6e85c43cce8677eda0b6b7785e949d3506546ac6bffa810
         imagePullPolicy: IfNotPresent
         securityContext:
           runAsUser: 1000
@@ -143,7 +143,7 @@ spec:
           name: '{{ .Release.Name }}-seed'
       initContainers:
       - name: seed
-        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        image: busybox:1.38@sha256:fd7dc98638c8e305f4dc34e979f1c0fdfdcaeb0fbf8fcff77ae834b6da3d7e6e
         imagePullPolicy: IfNotPresent
         command:
         - /bin/sh
@@ -206,7 +206,7 @@ spec:
           name: '{{ .Release.Name }}-seed'
       initContainers:
       - name: seed
-        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        image: busybox:1.38@sha256:fd7dc98638c8e305f4dc34e979f1c0fdfdcaeb0fbf8fcff77ae834b6da3d7e6e
         imagePullPolicy: IfNotPresent
         command:
         - /bin/sh

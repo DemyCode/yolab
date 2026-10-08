@@ -71,7 +71,7 @@ spec:
     spec:
       containers:
       - name: grocy
-        image: lscr.io/linuxserver/grocy:latest@sha256:35b2c85b1238f8249c9b349fb03619d1915917e61b2e4bff580729ec87397b4c
+        image: lscr.io/linuxserver/grocy:latest@sha256:c0d0d9d22d3a54fe3f779a743baa2d7bab96b73fad5597ff1a631e2be4b863c8
         imagePullPolicy: IfNotPresent
         env:
           - name: PUID

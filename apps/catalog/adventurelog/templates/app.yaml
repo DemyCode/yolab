@@ -85,7 +85,7 @@ spec:
     spec:
       containers:
       - name: db
-        image: ghcr.io/baosystems/postgis:15-3.5@sha256:ac619116c8ee81a386eb878956950d798b57c502985c12eb6e7be1598aa8d02f
+        image: ghcr.io/baosystems/postgis:15-3.5@sha256:45b53fc243d815e2d6279ff1b2d3e07ffd03da4a6bed5ca101abe51d9c8e7f3a
         imagePullPolicy: IfNotPresent
         env:
         - name: POSTGRES_DB

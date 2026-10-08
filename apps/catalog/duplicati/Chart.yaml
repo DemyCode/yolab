@@ -2,11 +2,11 @@ apiVersion: v2
 name: duplicati
 description: Store securely encrypted backups in the cloud
 type: application
-version: 0.1.1
+version: 0.1.2
 appVersion: v2.4.0.0_stable_2026-09-03-patch.1
 dependencies:
 - name: yolab-common
-  version: 0.1.13
+  version: "0.1.14"
   repository: oci://ghcr.io/demycode/charts
 annotations:
   yolab.io/display-name: Duplicati

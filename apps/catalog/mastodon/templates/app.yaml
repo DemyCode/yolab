@@ -6,7 +6,7 @@
 ---
 {{ include "yolab-common.uninstallHook" . }}
 ---
-{{- $img := "linuxserver/mastodon:version-v4.7.0@sha256:cef14ec8b56dad042d404d01de6d16546b0a4ad23517af3dda7b35a14d3c0678" }}
+{{- $img := "linuxserver/mastodon:version-v4.7.0@sha256:2de60e78c598007b0353e2e42e9638ac67961dfa697f9714151e632f58049bce" }}
 {{- $db := "mastodon" }}
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -362,7 +362,7 @@ spec:
     spec:
       containers:
         - name: postgres
-          image: postgres:17-alpine@sha256:742f40ea20b9ff2ff31db5458d127452988a2164df9e17441e191f3b72252193
+          image: postgres:17-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
           imagePullPolicy: IfNotPresent
           readinessProbe:
             exec:
@@ -420,7 +420,7 @@ spec:
         kubernetes.io/arch: amd64
       containers:
         - name: redis
-          image: redis:7.4-alpine@sha256:e7723ff73d963f5cc6d9c4643ea3d989527a402a319239054e9472a7fb9219a2
+          image: redis:7.4-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
           imagePullPolicy: IfNotPresent
           readinessProbe:
             exec:

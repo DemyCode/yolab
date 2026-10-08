@@ -54,7 +54,7 @@ spec:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
       - name: firefly-iii
-        image: fireflyiii/core:latest@sha256:ae69fdd95cdef9038cd7a460a5aec731f14813973e4f096511d5a4ea9ff0e972
+        image: fireflyiii/core:latest@sha256:2f5e2595bc1ac06276032d6fc89febb4ecfd3f73fa0630e7a97693bb98bde431
         imagePullPolicy: IfNotPresent
         command:
           - /bin/sh
@@ -119,7 +119,7 @@ spec:
     spec:
       containers:
         - name: postgres
-          image: postgres:17-alpine@sha256:742f40ea20b9ff2ff31db5458d127452988a2164df9e17441e191f3b72252193
+          image: postgres:17-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
           imagePullPolicy: IfNotPresent
           env:
             - name: POSTGRES_USER

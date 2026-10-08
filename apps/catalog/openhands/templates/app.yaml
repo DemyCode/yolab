@@ -56,7 +56,7 @@ spec:
       {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
       {{- include "yolab-common.privateAccessInit" . | nindent 6 }}
       - name: seed
-        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        image: busybox:1.38@sha256:fd7dc98638c8e305f4dc34e979f1c0fdfdcaeb0fbf8fcff77ae834b6da3d7e6e
         imagePullPolicy: IfNotPresent
         command:
         - /bin/sh
@@ -79,7 +79,7 @@ spec:
       {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
       {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
       - name: web
-        image: ghcr.io/openhands/openhands:1.10.0@sha256:1e5c81b0ccfc4fd33a3524ba2a561f594879e238117c024a1b60edfee0412dc8
+        image: ghcr.io/openhands/openhands:1.13.1@sha256:bb3eabbe1149a07d2a85276c594a99845906764f6b4f1015074850d4a1c501d4
         imagePullPolicy: IfNotPresent
         env:
         - name: AGENT_SERVER_IMAGE_REPOSITORY
@@ -141,7 +141,7 @@ spec:
     spec:
       containers:
       - name: docker
-        image: docker:28.0.4-dind@sha256:ddb0033088b4fab74881ade341a582e3c6c8021b82377703ba1a6106bd3ded44
+        image: docker:28.5.2-dind@sha256:2a232a42256f70d78e3cc5d2b5d6b3276710a0de0596c145f627ecfae90282ac
         imagePullPolicy: IfNotPresent
         command:
         - /entrypoint.sh
@@ -177,7 +177,7 @@ spec:
           name: '{{ .Release.Name }}-seed'
       initContainers:
       - name: seed
-        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        image: busybox:1.38@sha256:fd7dc98638c8e305f4dc34e979f1c0fdfdcaeb0fbf8fcff77ae834b6da3d7e6e
         imagePullPolicy: IfNotPresent
         command:
         - /bin/sh

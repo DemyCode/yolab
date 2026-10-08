@@ -26,7 +26,7 @@
 {{- $images := dict
   "nvidia" "ghcr.io/immich-app/immich-machine-learning:release-cuda@sha256:b9fdebfe7f07ff71f77e9d67d509d83c5e055da486a07c12080669c82a80c65e"
   "amd" "ghcr.io/immich-app/immich-machine-learning:release-rocm@sha256:5be1881160b2fe976f5e3fca28b1b88f58ed7031fb391378fd9d955bc400a7db"
-  "intel" "ghcr.io/immich-app/immich-machine-learning:release-openvino@sha256:ee28c9419670b7f4c17765fb089527eff977deb8e8fb83e714aa1fa57aa89736" -}}
+  "intel" "ghcr.io/immich-app/immich-machine-learning:release-openvino@sha256:a79670d05f8da90c86f8074afe1beaf51abee53c58692ad45cae2efd9afd4aca" -}}
 {{- get $images (.accelerator | default "") | default "ghcr.io/immich-app/immich-machine-learning:release@sha256:e16c2f166a8174901959fdf85e2e4c7bd1ebc4b37e0b6655de97c41408a260c4" -}}
 {{- end -}}
 

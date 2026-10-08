@@ -3,10 +3,10 @@ name: unifi
 description: "The controller for UniFi access points and switches"
 home: https://ui.com
 type: application
-version: 0.1.15
+version: 0.1.16
 dependencies:
   - name: yolab-common
-    version: "0.1.13"
+    version: "0.1.14"
     repository: "oci://ghcr.io/demycode/charts"
 annotations:
   yolab.io/display-name: "UniFi Network"

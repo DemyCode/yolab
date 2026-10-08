@@ -91,7 +91,7 @@ spec:
     spec:
       containers:
       - name: postgis
-        image: imresamu/postgis:17-3.5-alpine@sha256:ba5f5012ffe7a01a78e85404d3e081ed7e961013161bb09d39ff09c867ada17b
+        image: imresamu/postgis:17-3.5-alpine@sha256:2490d4b7b2ac8ee0da57637e1d6fb4caf28c9f367049e2b266b8fc12acb51f4c
         imagePullPolicy: IfNotPresent
         env:
         - name: POSTGRES_USER
@@ -152,7 +152,7 @@ spec:
     spec:
       containers:
       - name: redis
-        image: redis:7.4.9-alpine@sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99
+        image: redis:7.4.11-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
         imagePullPolicy: IfNotPresent
         securityContext:
           runAsUser: 1000

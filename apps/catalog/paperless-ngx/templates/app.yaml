@@ -53,7 +53,7 @@ spec:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
       - name: paperless-ngx
-        image: ghcr.io/paperless-ngx/paperless-ngx:latest@sha256:65a4cabf0169ea7fbd90ab7bb28ba3f8b5909613635acda1a03ad606f34b456b
+        image: ghcr.io/paperless-ngx/paperless-ngx:latest@sha256:6b94799bc769a063b3340cc5847402e626d4d91d29a295a8e747f8e9bead4207
         imagePullPolicy: IfNotPresent
         command:
           - /bin/sh
@@ -130,7 +130,7 @@ spec:
     spec:
       containers:
         - name: postgres
-          image: postgres:17-alpine@sha256:742f40ea20b9ff2ff31db5458d127452988a2164df9e17441e191f3b72252193
+          image: postgres:17-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
           imagePullPolicy: IfNotPresent
           env:
             - name: POSTGRES_USER
@@ -188,7 +188,7 @@ spec:
         kubernetes.io/arch: amd64
       containers:
         - name: redis
-          image: redis:7-alpine@sha256:e7723ff73d963f5cc6d9c4643ea3d989527a402a319239054e9472a7fb9219a2
+          image: redis:7-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
           imagePullPolicy: IfNotPresent
           readinessProbe:
             exec:

@@ -56,7 +56,7 @@ spec:
       {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
       {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
       - name: gateway
-        image: nginx:1.30.5-alpine@sha256:615b06367e419b29d378b4abc498563db191380469007e5b0153f4387470bff4
+        image: nginx:1.31.6-alpine@sha256:df221db836e1754089190208cee7eeda94f233197056426eda74a43ab1abeac2
         imagePullPolicy: IfNotPresent
         command:
         - nginx

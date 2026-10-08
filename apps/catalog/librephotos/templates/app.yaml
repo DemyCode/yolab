@@ -132,7 +132,7 @@ spec:
     spec:
       containers:
       - name: db
-        image: pgautoupgrade/pgautoupgrade:17-alpine3.22@sha256:2ec008ae5f0a2e5dd8f4d2475df41cf3ccc9562acf49bd668fcc0c061944b9bf
+        image: pgautoupgrade/pgautoupgrade:17-alpine3.22@sha256:0ccc3afa238756b4ca61d9aa4741c6cf74531da4eb44672d7d6c1df0c26269a6
         imagePullPolicy: IfNotPresent
         env:
         - name: POSTGRES_USER

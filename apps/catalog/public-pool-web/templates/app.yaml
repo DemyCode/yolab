@@ -110,7 +110,7 @@ spec:
     spec:
       containers:
       - name: db
-        image: pgautoupgrade/pgautoupgrade:18.4-trixie@sha256:37dfb44476ae3b753d0f305a55912e7442649d7cf020d8c3017acfce210cc062
+        image: pgautoupgrade/pgautoupgrade:18.6-trixie@sha256:4c0354c65d4926734458029f99f57e6c383b7e1885e46a8ab88a73edd8ed46df
         imagePullPolicy: IfNotPresent
         env:
         - name: APP_SEED
@@ -161,7 +161,7 @@ spec:
     spec:
       containers:
       - name: redis
-        image: valkey/valkey:8@sha256:c6d4637d757379a2ff040148b95c85936d85a06c129eafa5fbe582f9e720e12f
+        image: valkey/valkey:8@sha256:640c5e62cea04b6d6f2084232651d0cc70362d31f4f805e7be94dbed6855e8f2
         imagePullPolicy: IfNotPresent
         env:
         - name: APP_SEED

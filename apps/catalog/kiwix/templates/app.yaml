@@ -49,7 +49,7 @@ spec:
       {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
       {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
       - name: web
-        image: ghcr.io/kiwix/kiwix-serve:3.8.2@sha256:de4d451d9d9e3e2d37c1a7b5a861698c67cc4c52c364c2a593ba554cddd6ce03
+        image: ghcr.io/kiwix/kiwix-serve:3.8.2@sha256:e478554a9920412eeb5ce1d73f24e4b28445ebed233187cdd03c623c32be46a5
         imagePullPolicy: IfNotPresent
         args:
         - /data/*.zim

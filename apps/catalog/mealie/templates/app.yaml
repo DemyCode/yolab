@@ -47,7 +47,7 @@ spec:
       {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
       {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
       - name: mealie
-        image: ghcr.io/mealie-recipes/mealie:latest@sha256:36c28f0642fb6c75fae8997a2d55994631b9b4bcffba3016c208fc132a4c1e69
+        image: ghcr.io/mealie-recipes/mealie:latest@sha256:8b02290f4d1806f02acac6f25f6d48a3c965612fda1f8e914d5af533276f8688
         imagePullPolicy: IfNotPresent
         env:
           - name: ALLOW_SIGNUP

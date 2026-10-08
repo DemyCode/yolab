@@ -89,7 +89,7 @@ spec:
         kubernetes.io/arch: amd64
       containers:
       - name: redis
-        image: redis:6.2.2-buster@sha256:e10f55f92478715698a2cef97c2bbdc48df2a05081edd884938903aa60df6396
+        image: redis:6.2.6-buster@sha256:11f7040a861a1456ecad6d58babe47e2c8d05b626187a671bd72aa876d7cd419
         imagePullPolicy: IfNotPresent
         args:
         - redis-server

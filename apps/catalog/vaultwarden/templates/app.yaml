@@ -70,7 +70,7 @@ spec:
     spec:
       containers:
       - name: vaultwarden
-        image: vaultwarden/server:latest@sha256:d626d04934cd1192ad8ced1adb975099fca78cec33ab467d2d3c923cde7f3b0c
+        image: vaultwarden/server:latest@sha256:efb3cde962015fcc036b2ea625242248611943b27212ebf4392841fb30fad055
         imagePullPolicy: IfNotPresent
         readinessProbe:
           httpGet:

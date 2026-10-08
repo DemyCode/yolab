@@ -56,7 +56,7 @@ spec:
       {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
       {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
       - name: server
-        image: ghostfolio/ghostfolio:3.79.0@sha256:589da0f3f822e04ae1e89dbc5829684e77291de31c72d7e0c5e38b11acf14e26
+        image: ghostfolio/ghostfolio:3.81.0@sha256:7c925671dba267cc2175195f064b42b9733f3ea170a21db488b7d2be3319e088
         imagePullPolicy: IfNotPresent
         env:
         - name: APP_SEED
@@ -117,7 +117,7 @@ spec:
     spec:
       containers:
       - name: postgres
-        image: postgres:14-bullseye@sha256:c2a30d08a6f9e6c365595fd086c9e0436064c52425f15f72379ecf0807bac518
+        image: postgres:14-bullseye@sha256:230c8fb46b449f08ba70dd5b4d28df778e162ccc467d35500d50ae2e785da07b
         imagePullPolicy: IfNotPresent
         env:
         - name: APP_SEED
@@ -181,7 +181,7 @@ spec:
     spec:
       containers:
       - name: redis
-        image: redis:6.2-bullseye@sha256:5cdb2ac6f780e1d250787f4a887c1ed1166e3389757189ea913059409acc6f7c
+        image: redis:6.2-bullseye@sha256:cc16416c5bef3bf82bfe5a7a55e586648b21202993b436307a2de25eded6dd6c
         imagePullPolicy: IfNotPresent
         args:
         - /bin/sh

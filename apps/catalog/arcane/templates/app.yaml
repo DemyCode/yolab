@@ -65,7 +65,7 @@ spec:
       {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
       {{- include "yolab-common.privateAccessInit" . | nindent 6 }}
       - name: seed
-        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        image: busybox:1.38@sha256:fd7dc98638c8e305f4dc34e979f1c0fdfdcaeb0fbf8fcff77ae834b6da3d7e6e
         imagePullPolicy: IfNotPresent
         command:
         - /bin/sh
@@ -88,7 +88,7 @@ spec:
       {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
       {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
       - name: arcane
-        image: ghcr.io/getarcaneapp/arcane:v2.15.0@sha256:aebb83a49e0e614dfc54ef8331af5826a89ed47e2e964db420a4e22756f166bc
+        image: ghcr.io/getarcaneapp/arcane:v2.15.1@sha256:540c01198ca3e58dfd398d25c57c8dc241fa7e7f3d1d8d646c8268f19525b1a8
         imagePullPolicy: IfNotPresent
         env:
         - name: APP_PASSWORD
@@ -146,7 +146,7 @@ spec:
     spec:
       containers:
       - name: docker
-        image: docker:27.2.0-dind@sha256:f9f72ad901a78f27be922b2d320bbc263174f12919c1b37e6a01f828fa904565
+        image: docker:27.5.1-dind@sha256:aa3df78ecf320f5fafdce71c659f1629e96e9de0968305fe1de670e0ca9176ce
         imagePullPolicy: IfNotPresent
         command:
         - /entrypoint.sh
@@ -181,7 +181,7 @@ spec:
           name: '{{ .Release.Name }}-seed'
       initContainers:
       - name: seed
-        image: busybox:1.37@sha256:9db7b59979c38555a39def84a31fb98b5296952f9e3afd4f6f11f05b07adfab0
+        image: busybox:1.38@sha256:fd7dc98638c8e305f4dc34e979f1c0fdfdcaeb0fbf8fcff77ae834b6da3d7e6e
         imagePullPolicy: IfNotPresent
         command:
         - /bin/sh

@@ -8,7 +8,7 @@
 {{- $yolabOn := eq (include "yolab-common.yolab.enabled" .) "true" -}}
 {{- $electrs := .Values.config.electrs_enabled -}}
 {{- $mempool := and $electrs .Values.config.mempool_enabled -}}
-{{- $nodeImage := ternary "ghcr.io/retropex/umbrel-bitcoin-knots:1.2.13@sha256:65978ca7980fd2cb171fd142602b841dadd169b3862c27991cddff3bc3a7fcf2" "ghcr.io/getumbrel/umbrel-bitcoin:v1.4.0@sha256:13a24256cdd7b1cead36c2e4dcedc699b31fc235a0e4179c8c4527f0c361e6bf" $isKnots -}}
+{{- $nodeImage := ternary "ghcr.io/retropex/umbrel-bitcoin-knots:1.2.19@sha256:075e50f5e74ac290137de9a5972c70d7f8e6fe00aabfdad0ed222c2939c00cbe" "ghcr.io/getumbrel/umbrel-bitcoin:v1.4.0@sha256:13a24256cdd7b1cead36c2e4dcedc699b31fc235a0e4179c8c4527f0c361e6bf" $isKnots -}}
 {{ include "yolab-common.uninstallHook" . }}
 ---
 apiVersion: v1
@@ -446,7 +446,7 @@ spec:
             mountPath: /backend/cache
             subPath: {{ printf "%s/mempool" .Release.Name | quote }}
       - name: db
-        image: mariadb:10.5.12@sha256:dfcba5641bdbfd7cbf5b07eeed707e6a3672f46823695a0d3aba2e49bbd9b1dd
+        image: mariadb:10.11.19@sha256:7db29378d4fdab73f8123bbc2b48905c90d1a4b00cf848b028f1e81e623257f2
         imagePullPolicy: IfNotPresent
         securityContext:
           runAsUser: 1000

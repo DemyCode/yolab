@@ -117,7 +117,7 @@ spec:
       {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
       {{- include "yolab-common.autheliaContainer" . | nindent 6 }}
       - name: jellyfin
-        image: lscr.io/linuxserver/jellyfin:latest@sha256:b8dcc7b71d0ea872b74314da4b995c0cf282b1778438c295996e7be88c70fdda
+        image: lscr.io/linuxserver/jellyfin:latest@sha256:1bb4f88d822a0510bb3604b68aacb80d77c1d2a30181e500090c65111b98723b
         imagePullPolicy: IfNotPresent
         command:
           - /bin/sh
@@ -187,7 +187,7 @@ spec:
             mountPath: /data
             subPath: {{ .Release.Name }}/data
       - name: cleanuparr
-        image: ghcr.io/cleanuparr/cleanuparr:2.10.8@sha256:ec444338a67e429a20f6eef938e1ed771ce357ed4831765026096061a09bbbb7
+        image: ghcr.io/cleanuparr/cleanuparr:2.10.9@sha256:cfada3e5721451403a878ef67afb317692bb3afe277328b28ce4470bfba915d0
         imagePullPolicy: IfNotPresent
         env:
           - name: PUID
@@ -291,7 +291,7 @@ spec:
           - name: TZ
             value: {{ .Values.config.timezone | default "Etc/UTC" | quote }}
       - name: qbittorrent
-        image: ghcr.io/linuxserver/qbittorrent:latest@sha256:b024436f8ca665d16d9a997d26fd27fdf867ee5566ba09f32764e7b2976d3e02
+        image: ghcr.io/linuxserver/qbittorrent:latest@sha256:b522f9f4b769f8f36d49d22d5eb6a92e9aa18904c6a1830b1439df511ec21983
         imagePullPolicy: IfNotPresent
         env:
           - name: PUID
@@ -315,7 +315,7 @@ spec:
             mountPath: /data
             subPath: {{ .Release.Name }}/data
       - name: prowlarr
-        image: linuxserver/prowlarr:version-2.5.2.5491@sha256:1295cff29d10b486c0d8324d1559a552140a5932bf8b3d87e398654414f63f92
+        image: linuxserver/prowlarr:version-2.5.2.5491@sha256:aaa16ba7d66e413db6d0358d3b6c68d833578ba7f176f24a51807181e7637fce
         imagePullPolicy: IfNotPresent
         env:
           - name: PUID
@@ -347,7 +347,7 @@ spec:
           initialDelaySeconds: 15
           periodSeconds: 10
       - name: sonarr
-        image: linuxserver/sonarr:version-4.0.19.2979@sha256:c19aa4ecdf03d73e1d5c901da33744cb7eb4d921f89bafed1ca264601d7fa224
+        image: linuxserver/sonarr:version-4.0.19.2979@sha256:82172b363f9eddc02aca544f880a044f2ceb9aaf190bc87e4454e2f705eb91d0
         imagePullPolicy: IfNotPresent
         env:
           - name: PUID
@@ -369,7 +369,7 @@ spec:
             mountPath: /data
             subPath: {{ .Release.Name }}/data
       - name: radarr
-        image: linuxserver/radarr:version-6.3.0.10514@sha256:119aaa4a4f7349bcd2a136c5373a0d7925b5479915c7dfe0c0ad352db2a6d438
+        image: linuxserver/radarr:version-6.3.0.10514@sha256:fe051413dfd91b383ba04910552e83fb0306895fefee275c48dafe7bb90807dc
         imagePullPolicy: IfNotPresent
         env:
           - name: PUID

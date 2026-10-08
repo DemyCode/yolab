@@ -79,7 +79,7 @@ spec:
     spec:
       containers:
       - name: server
-        image: ghcr.io/basecamp/once-campfire:1.5.1@sha256:75a3e9a8cd473e696a174e79298dab261ab6690f3f4f5c540ce3870656c1c3d4
+        image: ghcr.io/basecamp/once-campfire:1.5.2@sha256:71dbc0874c41192361828dfa2f9d936d32c488073c77d436d09aa1718dfa7088
         imagePullPolicy: IfNotPresent
         env:
         - name: APP_SEED
@@ -149,7 +149,7 @@ spec:
     spec:
       containers:
       - name: redis
-        image: redis:7-alpine@sha256:ee64a64eaab618d88051c3ade8f6352d11531fcf79d9a4818b9b183d8c1d18ba
+        image: redis:7-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
         imagePullPolicy: IfNotPresent
         args:
         - redis-server

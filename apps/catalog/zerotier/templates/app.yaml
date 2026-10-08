@@ -122,7 +122,7 @@ spec:
     spec:
       containers:
       - name: web
-        image: ghcr.io/andrijdavid/umbrel-zerotier-web:0.1.1@sha256:0177ec5254860e3ad0c59e174034816496bd0a63cda203a2c663f08b3c205063
+        image: ghcr.io/andrijdavid/umbrel-zerotier-web:0.1.2@sha256:c0f06f6cf37379241b08f2b7b3aaf654f87beac90ee5a271d72024b1a6d851d1
         imagePullPolicy: IfNotPresent
         env:
         - name: APP_PASSWORD

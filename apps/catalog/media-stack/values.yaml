@@ -13,7 +13,7 @@ yolab:
   accountToken: ""
   serviceName: ""
   images:
-    authelia: docker.io/authelia/authelia:4.39.1@sha256:e325963609cc928861ffe8130c09111862df88dd8fcafbcd2c47e5ff0a4ae268
+    authelia: docker.io/authelia/authelia:4.39.28@sha256:bd97cff4fcbf715b5ff1f9ae286afbe6033afce385302520b0368122d43a6f54
   auth:
     sharedSession: true
   gateway:

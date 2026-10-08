@@ -47,7 +47,7 @@ spec:
       {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
       {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
       - name: server
-        image: linuxserver/remmina:1.4.35@sha256:ca2b6788bad28d864086649fc276ce696cac9cdf69e6976b85497b341ed07d8d
+        image: linuxserver/remmina:1.4.43@sha256:99a10c613e87f8f31acb1f25565b4c7c8d96b8fbe2c6528897b03d179a8918a6
         imagePullPolicy: IfNotPresent
         env:
         - name: PUID

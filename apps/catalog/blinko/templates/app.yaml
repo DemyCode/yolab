@@ -115,7 +115,7 @@ spec:
     spec:
       containers:
       - name: db
-        image: postgres:17.3@sha256:6e3358e46e34dae6c184f48fd06fe1b3dbf958ad5b83480031907e52b9ec2a7d
+        image: postgres:17.11@sha256:2d2b8998d31037bf721cfdf764d76ba74171b4fab3431b7f72c27c56ddbdf9e3
         imagePullPolicy: IfNotPresent
         env:
         - name: POSTGRES_DB

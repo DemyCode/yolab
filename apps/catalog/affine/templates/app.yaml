@@ -144,7 +144,7 @@ spec:
     spec:
       containers:
       - name: redis
-        image: redis:7.2.4@sha256:e647cfe134bf5e8e74e620f66346f93418acfc240b71dd85640325cb7cd01402
+        image: redis:7.4.11@sha256:4fa24486b8bcca8eec45ee0eb166edc674795e53a2b53d1a9ef263eecebaac85
         imagePullPolicy: IfNotPresent
         ports:
         - containerPort: 6379
@@ -198,7 +198,7 @@ spec:
     spec:
       containers:
       - name: db
-        image: postgres:16.2@sha256:f58300ac8d393b2e3b09d36ea12d7d24ee9440440e421472a300e929ddb63460
+        image: postgres:16.15@sha256:ca0bd484cb98bf4b24eb1010e73fb3fcbd6714d240fbc1a10eea5b7dbecb641d
         imagePullPolicy: IfNotPresent
         env:
         - name: POSTGRES_USER

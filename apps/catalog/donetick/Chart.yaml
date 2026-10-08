@@ -2,11 +2,11 @@ apiVersion: v2
 name: donetick
 description: An intelligent way to organize tasks and chores
 type: application
-version: 0.1.1
+version: 0.1.2
 appVersion: 0.1.80
 dependencies:
 - name: yolab-common
-  version: 0.1.13
+  version: "0.1.14"
   repository: oci://ghcr.io/demycode/charts
 annotations:
   yolab.io/display-name: Donetick

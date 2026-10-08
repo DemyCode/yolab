@@ -49,7 +49,7 @@ spec:
       {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
       {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
       - name: web
-        image: secondark/bark-web:0.8.0@sha256:c7ee6f6f92bc0e67d98dc0336ec85d4a3ac96e323cd8fb758175747532e1bcae
+        image: secondark/bark-web:0.8.1@sha256:5bea782ea7970af58253f7501403fade9d5c498fddbc889592fd35212a5efd51
         imagePullPolicy: IfNotPresent
         ports:
         - containerPort: 8080
@@ -80,7 +80,7 @@ spec:
     spec:
       containers:
       - name: api
-        image: secondark/bark-web-api:0.8.0@sha256:2ccf75c99873e99182d61f64cd2d9ff03fb376812bbc9a9e43abd10d9afc38ab
+        image: secondark/bark-web-api:0.8.1@sha256:fc082fe2487d9fbb4647000a7ed738b3811b1cd62f1832786156165ac64a8daa
         imagePullPolicy: IfNotPresent
         env:
         - name: PORT

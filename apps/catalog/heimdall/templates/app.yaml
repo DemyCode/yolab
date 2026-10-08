@@ -70,7 +70,7 @@ spec:
     spec:
       containers:
       - name: server
-        image: linuxserver/heimdall:2.8.3@sha256:287e48152967820922969ced1e990949063679d84c11ce988726c4195b52a47f
+        image: linuxserver/heimdall:2.8.3@sha256:4c2b77d7e391ac794ee7504839ed699a7f98309f853670ee45a7712a14c41001
         imagePullPolicy: IfNotPresent
         env:
         - name: PUID

@@ -79,7 +79,7 @@ spec:
     spec:
       containers:
       - name: frontend
-        image: ghcr.io/maathimself/mailflow-frontend:3.8.2@sha256:a70043e715330c247b386f84722d333b5b458c81291fd1b662250e50a4da976e
+        image: ghcr.io/maathimself/mailflow-frontend:3.8.3@sha256:2ab91b244217e2a2fd43e6ea84d995409ebac9d3a7b00e1f329a89060922cddb
         imagePullPolicy: IfNotPresent
         ports:
         - containerPort: 80
@@ -127,7 +127,7 @@ spec:
     spec:
       containers:
       - name: backend
-        image: ghcr.io/maathimself/mailflow-backend:3.8.2@sha256:ff53786c8d7295d9e9921884e7c9b19d23ed3230aa5ce139f8016f7221794771
+        image: ghcr.io/maathimself/mailflow-backend:3.8.3@sha256:cc29ac2473680c0f802c2a3eea9a27aa1a6a3da4ad8a29efb934f321d6ea505d
         imagePullPolicy: IfNotPresent
         env:
         - name: APP_SEED
@@ -205,7 +205,7 @@ spec:
     spec:
       containers:
       - name: postgres
-        image: postgres:16-alpine@sha256:16bc17c64a573ef34162af9298258d1aec548232985b33ed7b1eac33ba35c229
+        image: postgres:16-alpine@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea
         imagePullPolicy: IfNotPresent
         env:
         - name: APP_SEED
@@ -272,7 +272,7 @@ spec:
     spec:
       containers:
       - name: redis
-        image: redis:7-alpine@sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99
+        image: redis:7-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
         imagePullPolicy: IfNotPresent
         args:
         - redis-server

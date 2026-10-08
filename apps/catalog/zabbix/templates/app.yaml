@@ -176,7 +176,7 @@ spec:
     spec:
       containers:
       - name: zabbix-database
-        image: postgres:13.18-alpine3.20@sha256:77815c1f18ae761b0e503503a494475a03149d7ce544934ccecdbafdb3956c94
+        image: postgres:13.21-alpine3.20@sha256:05162f3c0226f6df1268e90db2db4e19c41b3e61b440e2293f09f965ab7986e3
         imagePullPolicy: IfNotPresent
         env:
         - name: POSTGRES_PASSWORD

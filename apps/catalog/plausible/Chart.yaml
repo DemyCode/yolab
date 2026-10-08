@@ -2,11 +2,11 @@ apiVersion: v2
 name: plausible
 description: Easy to use and privacy-friendly Google Analytics alternative
 type: application
-version: 0.1.1
+version: 0.1.2
 appVersion: 3.2.1-1
 dependencies:
 - name: yolab-common
-  version: 0.1.13
+  version: "0.1.14"
   repository: oci://ghcr.io/demycode/charts
 annotations:
   yolab.io/display-name: Plausible Analytics
