@@ -1147,10 +1147,7 @@ mod tests {
             .fail("systemctl stop k3s.service", "Job canceled")
             .ok("umount", "");
 
-        let err = release(&host, dir.path(), K3S)
-            .await
-            .unwrap_err()
-            .to_string();
+        let err = release(&host, dir.path(), K3S).await.unwrap_err().to_string();
 
         assert!(err.contains("could not stop k3s.service"), "{err}");
         assert!(!host.ran("pkill"));
@@ -1201,10 +1198,7 @@ mod tests {
         a_process_holding(dir.path(), 4242, "containerd", &croot.join("meta.db"));
         let host = releasable().ok("umount", "");
 
-        let err = release(&host, dir.path(), K3S)
-            .await
-            .unwrap_err()
-            .to_string();
+        let err = release(&host, dir.path(), K3S).await.unwrap_err().to_string();
 
         assert!(err.contains("pid 4242 (containerd)"), "{err}");
         assert!(!host.ran(&format!("umount {}", croot.display())));
