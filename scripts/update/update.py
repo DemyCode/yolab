@@ -164,9 +164,9 @@ def newest_major(tag, candidates):
         cs = tag_shape(c)
         if cs is None or cs[0] != prefix or cs[2] != suffix or len(cs[1]) != len(nums):
             continue
-        if cs[1] > nums and not same_line(nums, cs[1]):
-            if best is None or cs[1] > tag_shape(best)[1]:
-                best = c
+        newer_line = cs[1] > nums and not same_line(nums, cs[1])
+        if newer_line and (best is None or cs[1] > tag_shape(best)[1]):
+            best = c
     return best
 
 
@@ -251,7 +251,7 @@ def skopeo_digest(name, tag):
 
 
 def resolve_image(ref):
-    name, tag, digest = split_ref(ref)
+    name, tag, _ = split_ref(ref)
     if tag is None:
         return ref, None, f"{ref}: no tag to follow, left as is"
     tags = skopeo_tags(name)
@@ -441,7 +441,7 @@ def update_helmcharts(root, summary):
             if target:
                 new_text = re.sub(
                     r"(\n\s+version:\s*)" + re.escape(version) + r"\b",
-                    lambda m: m.group(1) + target,
+                    lambda m, target=target: m.group(1) + target,
                     new_text,
                     count=1,
                 )
@@ -719,7 +719,7 @@ def main(argv=None):
                 summary,
                 f"flake {os.path.basename(root)}",
                 [os.path.join(root, "flake.lock")],
-                lambda: update_flake(root, summary),
+                lambda root=root: update_flake(root, summary),
             )
         if "cargo" in only:
             update_cargo(root, summary)
