@@ -2,13 +2,14 @@ apiVersion: v2
 name: zerotier
 description: Access your Umbrel from anywhere with a peer-to-peer mesh VPN
 type: application
-version: 0.1.1
+version: 0.1.2
 appVersion: 1.14.2
 dependencies:
 - name: yolab-common
   version: 0.1.13
   repository: oci://ghcr.io/demycode/charts
 annotations:
+  yolab.io/disabled: "Remote access is YoLab's own tunnel"
   yolab.io/display-name: ZeroTier
   yolab.io/icon: 🌐
   yolab.io/category: networking

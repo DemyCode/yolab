@@ -2,13 +2,14 @@ apiVersion: v2
 name: watch-your-lan
 description: Lightweight network IP scanner
 type: application
-version: 0.1.1
+version: 0.1.2
 appVersion: 2.1.4-patch.1
 dependencies:
 - name: yolab-common
   version: 0.1.13
   repository: oci://ghcr.io/demycode/charts
 annotations:
+  yolab.io/disabled: "Must sit on the home LAN itself, not behind a tunnel"
   yolab.io/display-name: WatchYourLAN
   yolab.io/icon: 🌐
   yolab.io/category: networking

@@ -2,13 +2,14 @@ apiVersion: v2
 name: snapdrop
 description: Opensource Airdrop Alternative
 type: application
-version: 0.1.1
+version: 0.1.2
 appVersion: b8b78cc2-patch.1
 dependencies:
 - name: yolab-common
   version: 0.1.13
   repository: oci://ghcr.io/demycode/charts
 annotations:
+  yolab.io/disabled: "pairdrop is the maintained version of the same app"
   yolab.io/display-name: Snapdrop
   yolab.io/icon: 📁
   yolab.io/category: files

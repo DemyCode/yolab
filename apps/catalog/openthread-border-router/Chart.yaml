@@ -2,13 +2,14 @@ apiVersion: v2
 name: openthread-border-router
 description: Thread border router for Home Assistant and Matter
 type: application
-version: 0.1.1
+version: 0.1.2
 appVersion: 0.3.0
 dependencies:
 - name: yolab-common
   version: 0.1.13
   repository: oci://ghcr.io/demycode/charts
 annotations:
+  yolab.io/disabled: "Needs a USB, radio or Bluetooth device; no device passthrough yet"
   yolab.io/display-name: OpenThread Border Router
   yolab.io/icon: 🤖
   yolab.io/category: automation

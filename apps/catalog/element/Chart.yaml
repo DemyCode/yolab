@@ -2,13 +2,14 @@ apiVersion: v2
 name: element
 description: A glossy Matrix client compatible with Synapse
 type: application
-version: 0.1.0
+version: 0.1.1
 appVersion: 1.12.30
 dependencies:
 - name: yolab-common
   version: 0.1.13
   repository: oci://ghcr.io/demycode/charts
 annotations:
+  yolab.io/disabled: "synapse already ships Element Web"
   yolab.io/display-name: Element
   yolab.io/icon: 💬
   yolab.io/category: social

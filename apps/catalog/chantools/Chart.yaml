@@ -2,13 +2,14 @@ apiVersion: v2
 name: chantools
 description: lnd and cln channel rescue utility
 type: application
-version: 0.1.0
+version: 0.1.1
 appVersion: v1.14.1-patch.1
 dependencies:
 - name: yolab-common
   version: 0.1.13
   repository: oci://ghcr.io/demycode/charts
 annotations:
+  yolab.io/disabled: "Needs a Lightning node's raw data; no node in the catalog"
   yolab.io/display-name: chantools CLI
   yolab.io/icon: ₿
   yolab.io/category: bitcoin

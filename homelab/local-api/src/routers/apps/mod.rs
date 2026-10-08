@@ -274,6 +274,7 @@ const ANN_CATEGORY: &str = "yolab.io/category";
 const ANN_GITHUB: &str = "yolab.io/github";
 const ANN_TAGLINE: &str = "yolab.io/tagline";
 const ANN_COLLECTIONS: &str = "yolab.io/collections";
+const ANN_DISABLED: &str = "yolab.io/disabled";
 
 #[derive(Deserialize, Default)]
 struct ChartYaml {
@@ -302,6 +303,9 @@ impl ChartMeta {
             .get(key)
             .map(String::as_str)
             .unwrap_or("")
+    }
+    fn in_store(&self) -> bool {
+        self.ann(ANN_DISABLED).trim().is_empty()
     }
     fn display_name(&self) -> String {
         let n = self.ann(ANN_DISPLAY_NAME);
@@ -653,7 +657,7 @@ pub async fn catalog(State(state): State<AppState>) -> Result<Json<Vec<CatalogAp
             let Some(meta) = read_chart(&entry.path()) else {
                 continue;
             };
-            if !seen.insert(meta.chart.name.clone()) {
+            if !seen.insert(meta.chart.name.clone()) || !meta.in_store() {
                 continue;
             }
             apps.push(catalog_entry_from(repo.clone(), meta, &stars));
@@ -1903,6 +1907,21 @@ async fn follow_pod_logs(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_disabled_chart_is_left_out_of_the_store_but_still_readable() {
+        let dir = tempfile::tempdir().unwrap();
+        let chart = |ann: &str| {
+            std::fs::write(
+                dir.path().join("Chart.yaml"),
+                format!("apiVersion: v2\nname: notes\nversion: 0.1.0\nannotations:\n{ann}"),
+            )
+            .unwrap();
+            super::read_chart(dir.path()).expect("a disabled chart still reads")
+        };
+        assert!(chart("  yolab.io/tagline: Notes\n").in_store());
+        assert!(!chart("  yolab.io/disabled: upstream archived\n").in_store());
+        assert!(chart("  yolab.io/disabled: \"\"\n").in_store());
+    }
 
     fn pod(name: &str) -> Value {
         json!({"metadata": {"name": name}})

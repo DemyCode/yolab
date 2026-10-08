@@ -2,13 +2,14 @@ apiVersion: v2
 name: influxdb
 description: High performance time series database
 type: application
-version: 0.1.1
+version: 0.1.2
 appVersion: 1.13.1
 dependencies:
 - name: yolab-common
   version: 0.1.13
   repository: oci://ghcr.io/demycode/charts
 annotations:
+  yolab.io/disabled: "InfluxDB v1; influxdb2 replaces it"
   yolab.io/display-name: InfluxDB
   yolab.io/icon: 🛠
   yolab.io/category: developer

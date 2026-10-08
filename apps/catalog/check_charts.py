@@ -1108,6 +1108,10 @@ def check_store_annotations(app, annotations, fail):
     github = annotations.get("yolab.io/github")
     if github is not None and not GITHUB_REPO.match(str(github)):
         fail(app, f"yolab.io/github {github!r} is not an owner/repo path")
+    if "yolab.io/disabled" in annotations:
+        reason = annotations.get("yolab.io/disabled")
+        if not isinstance(reason, str) or not reason.strip():
+            fail(app, "yolab.io/disabled is set but does not say why the app is hidden")
     for slug in str(annotations.get("yolab.io/collections") or "").split(","):
         if slug.strip() and slug.strip() not in COLLECTIONS:
             fail(

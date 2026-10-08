@@ -2,13 +2,14 @@ apiVersion: v2
 name: esphome
 description: Intelligently manage all your ESP8266/ESP32 devices
 type: application
-version: 0.1.0
+version: 0.1.1
 appVersion: 2026.9.1
 dependencies:
 - name: yolab-common
   version: 0.1.13
   repository: oci://ghcr.io/demycode/charts
 annotations:
+  yolab.io/disabled: "Needs a USB, radio or Bluetooth device; no device passthrough yet"
   yolab.io/display-name: ESPHome
   yolab.io/icon: 🤖
   yolab.io/category: automation

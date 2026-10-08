@@ -2,13 +2,14 @@ apiVersion: v2
 name: maybe
 description: The OS for your personal finances
 type: application
-version: 0.1.1
+version: 0.1.2
 appVersion: 0.6.0
 dependencies:
 - name: yolab-common
   version: 0.1.13
   repository: oci://ghcr.io/demycode/charts
 annotations:
+  yolab.io/disabled: "Upstream archived; sure is its community fork"
   yolab.io/display-name: Maybe
   yolab.io/icon: 💰
   yolab.io/category: finance

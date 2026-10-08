@@ -2,13 +2,14 @@ apiVersion: v2
 name: portainer
 description: Run custom Docker containers on your Umbrel
 type: application
-version: 0.1.1
+version: 0.1.2
 appVersion: 2.45.1-1
 dependencies:
 - name: yolab-common
   version: 0.1.13
   repository: oci://ghcr.io/demycode/charts
 annotations:
+  yolab.io/disabled: "Needs the Docker socket; YoLab runs k3s"
   yolab.io/display-name: Portainer
   yolab.io/icon: 🛠
   yolab.io/category: developer

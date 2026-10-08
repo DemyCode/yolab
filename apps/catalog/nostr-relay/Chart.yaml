@@ -2,13 +2,14 @@ apiVersion: v2
 name: nostr-relay
 description: Backup all your Nostr activity with your private relay
 type: application
-version: 0.1.1
+version: 0.1.2
 appVersion: 1.2.0
 dependencies:
 - name: yolab-common
   version: 0.1.13
   repository: oci://ghcr.io/demycode/charts
 annotations:
+  yolab.io/disabled: "Upstream stale"
   yolab.io/display-name: Nostr Relay
   yolab.io/icon: 💬
   yolab.io/category: social

@@ -2,13 +2,14 @@ apiVersion: v2
 name: pi-hole
 description: Block ads on your entire network
 type: application
-version: 0.1.1
+version: 0.1.2
 appVersion: 2026.09.0
 dependencies:
 - name: yolab-common
   version: 0.1.13
   repository: oci://ghcr.io/demycode/charts
 annotations:
+  yolab.io/disabled: "Network DNS on one machine: when it stops, the house loses internet"
   yolab.io/display-name: Pi-hole
   yolab.io/icon: 🌐
   yolab.io/category: networking

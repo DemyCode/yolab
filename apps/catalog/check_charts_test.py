@@ -1669,6 +1669,25 @@ class Containers(unittest.TestCase):
         self.assertEqual(len(found), 1, found)
 
 
+class Disabled(unittest.TestCase):
+    def failures(self, annotations):
+        found = []
+        check_charts.check_store_annotations(
+            "app",
+            {"yolab.io/tagline": "A line", **annotations},
+            lambda app, msg: found.append(msg),
+        )
+        return found
+
+    def test_a_disabled_app_says_why(self):
+        self.assertEqual(self.failures({"yolab.io/disabled": "upstream archived"}), [])
+
+    def test_a_disabled_app_without_a_reason_is_reported(self):
+        found = self.failures({"yolab.io/disabled": ""})
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("does not say why", found[0])
+
+
 class OffersFileExplorer(unittest.TestCase):
     def test_a_chart_with_the_explorer_switch_offers_it_even_when_off_by_default(self):
         schema = {
