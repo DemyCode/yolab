@@ -347,7 +347,7 @@ impl<H: Host + 'static> crate::runtime::resource::Resource for ContainerdStoreRe
             State::Ready
         } else {
             State::NotYet(
-                "containerd's data-root is not yet on an image store this swap built".into(),
+                "containerd's data-root is not yet on a whole image store this swap built".into(),
             )
         }
     }
