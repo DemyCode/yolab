@@ -713,7 +713,7 @@ def build_schema(name, display, has_app_secret, has_admin_password, offer_node=F
     config["file_explorer_enabled"] = {
         "type": "boolean",
         "title": "File explorer",
-        "default": True,
+        "default": False,
         "description": "A password-protected file manager for this app's own data on its own address: browse, download, upload, rename and delete files without needing a terminal. Folders holding a database server (Postgres, MariaDB, Redis, MongoDB, MinIO) always stay read-only.",
     }
 

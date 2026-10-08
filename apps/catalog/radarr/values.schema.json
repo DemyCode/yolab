@@ -23,7 +23,7 @@
         "file_explorer_enabled": {
           "type": "boolean",
           "title": "File explorer",
-          "default": true,
+          "default": false,
           "description": "A password-protected file manager for this app's own data on its own address: browse, download, upload, rename and delete files without needing a terminal. Folders holding a database server (Postgres, MariaDB, Redis, MongoDB, MinIO) always stay read-only."
         }
       },
