@@ -206,26 +206,20 @@ class Rollback(unittest.TestCase):
 
 
 class Cargo(unittest.TestCase):
-    def test_only_compatible_upgrades_are_applied(self):
-        import inspect
-
-        source = inspect.getsource(update.update_cargo)
-        applied = source.split("--dry-run")[0]
-        self.assertNotIn("--incompatible", applied)
-        self.assertNotIn("--pinned", applied)
-
-    def test_new_major_versions_are_read_from_the_dry_run_table(self):
-        table = (
-            "name    old req compatible latest  new req note\n"
-            "====    ======= ========== ======  ======= ====\n"
-            "tokio   1.40    1.47.1     2.0.1   2.0.1\n"
-            "serde   1.0.200 1.0.228    1.0.228 1.0.228\n"
-            "axum    0.7.5   0.7.9      0.8.4   0.8.4\n"
-            "note: Re-run with `--verbose` to show more dependencies\n"
-        )
+    def test_every_upgrade_is_tried_first_majors_and_pins_included(self):
+        self.assertEqual(next(iter(update.CARGO_TARGETS)), "every")
         self.assertEqual(
-            update.major_upgrades(table), [("tokio", "2.0.1"), ("axum", "0.8.4")]
+            update.CARGO_TARGETS["every"],
+            ["--incompatible", "allow", "--pinned", "allow"],
         )
+
+    def test_a_graph_that_does_not_resolve_falls_back_to_compatible(self):
+        def attempt(target):
+            if target == "every":
+                raise RuntimeError("failed to select a version")
+
+        landed = update.first_that_works(tuple(update.CARGO_TARGETS), attempt, [])
+        self.assertEqual(landed, "compatible")
 
 
 class NpmTargets(unittest.TestCase):
