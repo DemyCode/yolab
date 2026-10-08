@@ -1760,6 +1760,45 @@ class OpenWebUiOllama(RenderedChart):
         self.assertEqual(env["OLLAMA_BASE_URL"], url)
 
 
+class OllamaEngine(RenderedChart):
+    CHART = "ollama"
+
+    def engine(self, extra=None):
+        return self.deployments(self.docs(extra))["ollama"]
+
+    def test_without_a_gpu_anywhere_it_runs_on_the_cpu_wherever_it_fits(self):
+        spec = self.engine()
+        self.assertNotIn("nodeSelector", spec)
+        self.assertNotIn("resources", spec["containers"][0])
+        self.assertIn("ollama/ollama:0.35.1@", spec["containers"][0]["image"])
+
+    def test_it_runs_on_the_best_gpu_machine_with_that_cards_engine(self):
+        cases = {
+            "nvidia": ("ollama/ollama:0.35.1@", "nvidia.com/gpu-all"),
+            "amd": ("-rocm@", "yolab.io/kfd"),
+            "vulkan": ("ghcr.io/demycode/ollama-vulkan", "yolab.io/dri"),
+            "intel": ("ghcr.io/demycode/ollama-vulkan", "yolab.io/dri"),
+        }
+        for accelerator, (image, device) in cases.items():
+            spec = self.engine(
+                {"machine.name": "box", "machine.accelerator": accelerator}
+            )
+            self.assertEqual(
+                spec["nodeSelector"]["kubernetes.io/hostname"], "box", accelerator
+            )
+            container = spec["containers"][0]
+            self.assertIn(image, container["image"], accelerator)
+            self.assertEqual(container["resources"]["limits"], {device: "1"})
+
+    def test_the_gateway_reaches_ollama_through_its_service(self):
+        docs = self.docs()
+        gateway = self.deployments(docs)["gateway"]
+        self.assertNotIn("ollama", [c["name"] for c in gateway["containers"]])
+        services = [d for d in docs if d.get("kind") == "Service"]
+        ollama = next(s for s in services if s["metadata"]["name"] == "ollama")
+        self.assertEqual(ollama["spec"]["selector"], {"app": "ollama"})
+
+
 class ServiceLinks(unittest.TestCase):
     def collect(self, fn, *args):
         found = []

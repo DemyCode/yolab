@@ -1,3 +1,4 @@
+{{- $engine := include "ollama.engine" . | fromJson }}
 {{ include "yolab-common.caddyConfigMap" . }}
 ---
 {{ include "yolab-common.fileExplorerSecret" . }}
@@ -46,16 +47,48 @@ spec:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
       {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
+      volumes:
+      {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ollama
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: ollama
+  template:
+    metadata:
+      labels:
+        app: ollama
+    spec:
+      {{- if or $engine.machine $engine.x86Only }}
+      nodeSelector:
+        {{- if $engine.machine }}
+        kubernetes.io/hostname: {{ $engine.machine | quote }}
+        {{- end }}
+        {{- if $engine.x86Only }}
+        kubernetes.io/arch: amd64
+        {{- end }}
+      {{- end }}
+      containers:
       - name: ollama
-        image: ollama/ollama:0.35.1@sha256:292ee7945dfc3d5840a181f3ab86fedb1e66703e02c8af98b50f4da56b7e278c
+        image: {{ $engine.image }}
         imagePullPolicy: IfNotPresent
         env:
+        - name: OLLAMA_HOST
+          value: "[::]:11434"
         - name: OLLAMA_ORIGINS
           value: '*'
         - name: OLLAMA_CONTEXT_LENGTH
           value: '8192'
-        - name: OLLAMA_VULKAN
-          value: '1'
         - name: OLLAMA_IGPU_ENABLE
           value: '1'
         ports:
@@ -63,14 +96,19 @@ spec:
         readinessProbe:
           tcpSocket:
             port: 11434
+        {{- if $engine.device }}
+        resources:
+          limits:
+            {{ $engine.device }}: "1"
+        {{- end }}
         volumeMounts:
         - name: data
           mountPath: /root/.ollama
           subPath: '{{ .Release.Name }}/data'
       volumes:
-      {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
-      {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
-      {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}
+      - name: data
+        persistentVolumeClaim:
+          claimName: {{ .Release.Name }}-data
 ---
 apiVersion: v1
 kind: Service
@@ -79,7 +117,7 @@ metadata:
   namespace: {{ .Release.Namespace }}
 spec:
   selector:
-    app: gateway
+    app: ollama
   ports:
   - name: http
     port: 11434

@@ -98,6 +98,11 @@ VARIANTS = {
         {"gpu.name": "nuc", "gpu.accelerator": "intel"},
         {"gpu.name": "gpu-box", "gpu.accelerator": "nvidia"},
     ],
+    "ollama": [
+        {"machine.name": "gpu-box", "machine.accelerator": "nvidia"},
+        {"machine.name": "old-radeon", "machine.accelerator": "vulkan"},
+        {"machine.name": "vega", "machine.accelerator": "amd"},
+    ],
     "steam-headless": [
         {"machine.name": "gpu-box", "machine.accelerator": "nvidia"},
         {"machine.name": "nuc", "machine.accelerator": "intel"},

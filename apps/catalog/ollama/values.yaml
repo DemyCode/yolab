@@ -1,9 +1,14 @@
 config:
   subdomain: ollama
   storage_size: 10Gi
+machine: {}
+images:
+  cuda: ollama/ollama:0.35.1@sha256:292ee7945dfc3d5840a181f3ab86fedb1e66703e02c8af98b50f4da56b7e278c
+  rocm: ollama/ollama:0.35.1-rocm@sha256:c716013d3bbf1753ad82cfa0ccdb8bd3252afc6cc16ec37330e49d829560dd4f
+  vulkan: ghcr.io/demycode/ollama-vulkan:0.35.1@sha256:e30ea10bce7e4893749d9194d6c0f85d6df55ccd55263d974510a7ad492012d9
 yolab:
   platformApiUrl: ''
   accountToken: ''
   serviceName: ''
   gateway:
-    upstream: localhost:11434
+    upstream: ollama:11434
