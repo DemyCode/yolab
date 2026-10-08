@@ -1309,7 +1309,7 @@ const INSTANCE_SUFFIX_LEN: usize = 4;
 
 fn instance_suffix() -> String {
     (0..INSTANCE_SUFFIX_LEN)
-        .map(|_| SUFFIX_ALPHABET[rand::random::<usize>() % SUFFIX_ALPHABET.len()] as char)
+        .map(|_| SUFFIX_ALPHABET[rand::random_range(0..SUFFIX_ALPHABET.len())] as char)
         .collect()
 }
 

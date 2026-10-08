@@ -52,22 +52,22 @@ pub fn build_router(state: AppState) -> Router {
             post(backups::run_backup_now),
         )
         .route(
-            "/api/backups/apps/:namespace/run-now",
+            "/api/backups/apps/{namespace}/run-now",
             post(backups::run_app_backup_now),
         )
         .route(
-            "/api/backups/apps/:namespace/definition",
+            "/api/backups/apps/{namespace}/definition",
             get(backups::app_definition_from_backup),
         )
         .route("/api/backups/protected", get(backups::list_protected_apps))
         .route(
-            "/api/backups/apps/:namespace/points",
+            "/api/backups/apps/{namespace}/points",
             get(backups::app_restore_points),
         )
         .route("/api/logs", get(logs::list_logs))
         .route("/api/disks", get(disks::list_disks))
         .route(
-            "/api/disks/:node/:id",
+            "/api/disks/{node}/{id}",
             axum::routing::put(disks::set_disk_state),
         )
         .route("/api/store/v2/sync", post(crate::store::sync::handler))
@@ -100,10 +100,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/ceph/dashboard", get(ceph_api::dashboard_creds))
         .route("/ceph-dashboard", any(ceph_api::dashboard_proxy))
         .route("/ceph-dashboard/", any(ceph_api::dashboard_proxy))
-        .route("/ceph-dashboard/*rest", any(ceph_api::dashboard_proxy))
+        .route("/ceph-dashboard/{*rest}", any(ceph_api::dashboard_proxy))
         .route("/api/cluster/health", get(ceph_api::cluster_health))
-        .route("/api/ceph/osd/:id/mark-in", post(ceph_api::osd_mark_in))
-        .route("/api/ceph/osd/:id/mark-out", post(ceph_api::osd_mark_out))
+        .route("/api/ceph/osd/{id}/mark-in", post(ceph_api::osd_mark_in))
+        .route("/api/ceph/osd/{id}/mark-out", post(ceph_api::osd_mark_out))
         .route("/api/nodes", get(nodes::nodes))
         .route("/api/nodes/links", get(nodes::node_links))
         .route("/api/cluster/join-info", get(nodes::join_info))
@@ -114,13 +114,13 @@ pub fn build_router(state: AppState) -> Router {
             "/api/apps/repos",
             get(apps::list_repos).post(apps::add_repo),
         )
-        .route("/api/apps/repos/:name", delete(apps::remove_repo))
+        .route("/api/apps/repos/{name}", delete(apps::remove_repo))
         .route("/api/apps/repos/sync", post(apps::sync_repos))
         .route(
             "/api/apps/custom",
             get(custom_app::list_custom).post(custom_app::save_custom),
         )
-        .route("/api/apps/custom/:id", delete(custom_app::delete_custom))
+        .route("/api/apps/custom/{id}", delete(custom_app::delete_custom))
         .route(
             "/api/apps/custom/chart",
             post(custom_app::upload_chart)
@@ -134,36 +134,36 @@ pub fn build_router(state: AppState) -> Router {
             get(store::settings).put(store::set_settings),
         )
         .route(
-            "/api/store/apps/:id/heart",
+            "/api/store/apps/{id}/heart",
             get(store::my_heart).put(store::set_heart),
         )
         .route(
-            "/api/store/apps/:id/comments",
+            "/api/store/apps/{id}/comments",
             get(store::comments).post(store::post_comment),
         )
-        .route("/api/store/comments/:id", delete(store::delete_comment))
+        .route("/api/store/comments/{id}", delete(store::delete_comment))
         .route(
-            "/api/store/comments/:id/report",
+            "/api/store/comments/{id}/report",
             post(store::report_comment),
         )
         .route(
-            "/api/apps/catalog/:id/refresh",
+            "/api/apps/catalog/{id}/refresh",
             post(apps::refresh_catalog_app),
         )
-        .route("/api/services/:kind", get(apps::list_services))
+        .route("/api/services/{kind}", get(apps::list_services))
         .route("/api/apps", get(apps::list_apps))
         .route(
-            "/api/apps/:id",
+            "/api/apps/{id}",
             post(apps::install_app).delete(apps::uninstall_app),
         )
-        .route("/api/apps/:id/update", post(apps::update_app))
-        .route("/api/apps/:id/definition", get(apps::app_definition))
-        .route("/api/apps/:id/schema", get(apps::app_settings_schema))
-        .route("/api/apps/:id/backup", put(apps::set_backup_policy))
-        .route("/api/apps/:id/outputs", get(apps::app_outputs))
-        .route("/api/apps/:id/scan-outputs", post(apps::scan_outputs))
-        .route("/api/apps/:id/pods", get(apps::list_pods))
-        .route("/api/apps/:id/logs/:pod_name", get(apps::pod_logs))
+        .route("/api/apps/{id}/update", post(apps::update_app))
+        .route("/api/apps/{id}/definition", get(apps::app_definition))
+        .route("/api/apps/{id}/schema", get(apps::app_settings_schema))
+        .route("/api/apps/{id}/backup", put(apps::set_backup_policy))
+        .route("/api/apps/{id}/outputs", get(apps::app_outputs))
+        .route("/api/apps/{id}/scan-outputs", post(apps::scan_outputs))
+        .route("/api/apps/{id}/pods", get(apps::list_pods))
+        .route("/api/apps/{id}/logs/{pod_name}", get(apps::pod_logs))
         .layer(middleware::from_fn_with_state(auth_state, auth_middleware))
         .layer(cors)
         .with_state(state)

@@ -69,9 +69,9 @@ async fn cluster_password<H: Host>(host: &H) -> Option<String> {
 }
 
 fn generate_password() -> String {
-    use rand::Rng;
-    rand::thread_rng()
-        .sample_iter(&rand::distributions::Alphanumeric)
+    use rand::RngExt;
+    rand::rng()
+        .sample_iter(&rand::distr::Alphanumeric)
         .take(20)
         .map(char::from)
         .collect()

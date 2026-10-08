@@ -14,7 +14,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
-use rand::Rng;
+use rand::RngExt;
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
@@ -249,8 +249,8 @@ pub async fn login(
     if !hash.is_empty() && !verify_password(&body.password, &hash) {
         return (StatusCode::UNAUTHORIZED, r#"{"detail":"Wrong password"}"#).into_response();
     }
-    let token: String = rand::thread_rng()
-        .sample_iter(&rand::distributions::Alphanumeric)
+    let token: String = rand::rng()
+        .sample_iter(&rand::distr::Alphanumeric)
         .take(64)
         .map(char::from)
         .collect();

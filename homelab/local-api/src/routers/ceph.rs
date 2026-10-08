@@ -1425,7 +1425,7 @@ mod dashboard_route_tests {
         Router::new()
             .route("/ceph-dashboard", any(reached))
             .route("/ceph-dashboard/", any(reached))
-            .route("/ceph-dashboard/*rest", any(reached))
+            .route("/ceph-dashboard/{*rest}", any(reached))
     }
 
     async fn status_for(path: &str) -> StatusCode {
@@ -1460,7 +1460,7 @@ mod dashboard_route_tests {
 
     #[tokio::test]
     async fn a_wildcard_alone_does_not_match_a_bare_trailing_slash() {
-        let only_wildcard = Router::new().route("/ceph-dashboard/*rest", any(reached));
+        let only_wildcard = Router::new().route("/ceph-dashboard/{*rest}", any(reached));
         let status = only_wildcard
             .oneshot(
                 Request::builder()

@@ -24,12 +24,12 @@ pub(crate) const ROUTE_TABLE: &[(&str, &[&str])] = &[
     ("/api/backups/apps", &["GET"]),
     ("/api/backups/protected", &["GET"]),
     ("/api/backups/cluster/run-now", &["POST"]),
-    ("/api/backups/apps/:namespace/run-now", &["POST"]),
-    ("/api/backups/apps/:namespace/definition", &["GET"]),
-    ("/api/backups/apps/:namespace/points", &["GET"]),
+    ("/api/backups/apps/{namespace}/run-now", &["POST"]),
+    ("/api/backups/apps/{namespace}/definition", &["GET"]),
+    ("/api/backups/apps/{namespace}/points", &["GET"]),
     ("/api/logs", &["GET"]),
     ("/api/disks", &["GET"]),
-    ("/api/disks/:node/:id", &["PUT"]),
+    ("/api/disks/{node}/{id}", &["PUT"]),
     ("/api/store/v2/sync", &["POST"]),
     ("/api/heal", &["GET", "POST"]),
     ("/api/heal/peer", &["GET"]),
@@ -48,10 +48,10 @@ pub(crate) const ROUTE_TABLE: &[(&str, &[&str])] = &[
     ("/api/ceph/dashboard", &["GET"]),
     ("/ceph-dashboard", &["ANY"]),
     ("/ceph-dashboard/", &["ANY"]),
-    ("/ceph-dashboard/*rest", &["ANY"]),
+    ("/ceph-dashboard/{*rest}", &["ANY"]),
     ("/api/cluster/health", &["GET"]),
-    ("/api/ceph/osd/:id/mark-in", &["POST"]),
-    ("/api/ceph/osd/:id/mark-out", &["POST"]),
+    ("/api/ceph/osd/{id}/mark-in", &["POST"]),
+    ("/api/ceph/osd/{id}/mark-out", &["POST"]),
     ("/api/nodes", &["GET"]),
     ("/api/nodes/links", &["GET"]),
     ("/api/cluster/join-info", &["GET"]),
@@ -59,31 +59,31 @@ pub(crate) const ROUTE_TABLE: &[(&str, &[&str])] = &[
     ("/api/mesh/paths", &["GET"]),
     ("/api/cluster/ceph-join", &["GET"]),
     ("/api/apps/repos", &["GET", "POST"]),
-    ("/api/apps/repos/:name", &["DELETE"]),
+    ("/api/apps/repos/{name}", &["DELETE"]),
     ("/api/apps/repos/sync", &["POST"]),
     ("/api/apps/custom", &["GET", "POST"]),
-    ("/api/apps/custom/:id", &["DELETE"]),
+    ("/api/apps/custom/{id}", &["DELETE"]),
     ("/api/apps/custom/chart", &["POST"]),
     ("/api/tunnel/domain", &["GET"]),
     ("/api/apps/catalog", &["GET"]),
     ("/api/store/stats", &["GET"]),
     ("/api/store/settings", &["GET", "PUT"]),
-    ("/api/store/apps/:id/heart", &["GET", "PUT"]),
-    ("/api/store/apps/:id/comments", &["GET", "POST"]),
-    ("/api/store/comments/:id", &["DELETE"]),
-    ("/api/store/comments/:id/report", &["POST"]),
-    ("/api/apps/catalog/:id/refresh", &["POST"]),
-    ("/api/services/:kind", &["GET"]),
+    ("/api/store/apps/{id}/heart", &["GET", "PUT"]),
+    ("/api/store/apps/{id}/comments", &["GET", "POST"]),
+    ("/api/store/comments/{id}", &["DELETE"]),
+    ("/api/store/comments/{id}/report", &["POST"]),
+    ("/api/apps/catalog/{id}/refresh", &["POST"]),
+    ("/api/services/{kind}", &["GET"]),
     ("/api/apps", &["GET"]),
-    ("/api/apps/:id", &["POST", "DELETE"]),
-    ("/api/apps/:id/update", &["POST"]),
-    ("/api/apps/:id/definition", &["GET"]),
-    ("/api/apps/:id/schema", &["GET"]),
-    ("/api/apps/:id/backup", &["PUT"]),
-    ("/api/apps/:id/outputs", &["GET"]),
-    ("/api/apps/:id/scan-outputs", &["POST"]),
-    ("/api/apps/:id/pods", &["GET"]),
-    ("/api/apps/:id/logs/:pod_name", &["GET"]),
+    ("/api/apps/{id}", &["POST", "DELETE"]),
+    ("/api/apps/{id}/update", &["POST"]),
+    ("/api/apps/{id}/definition", &["GET"]),
+    ("/api/apps/{id}/schema", &["GET"]),
+    ("/api/apps/{id}/backup", &["PUT"]),
+    ("/api/apps/{id}/outputs", &["GET"]),
+    ("/api/apps/{id}/scan-outputs", &["POST"]),
+    ("/api/apps/{id}/pods", &["GET"]),
+    ("/api/apps/{id}/logs/{pod_name}", &["GET"]),
 ];
 
 pub(crate) const PUBLIC_ROUTES: &[&str] = &["/api/login"];
@@ -91,8 +91,7 @@ pub(crate) const PUBLIC_ROUTES: &[&str] = &["/api/login"];
 fn concrete(path: &str) -> String {
     path.split('/')
         .map(|seg| match seg.chars().next() {
-            Some(':') => "probe",
-            Some('*') => "probe",
+            Some(':') | Some('*') | Some('{') => "probe",
             _ => seg,
         })
         .collect::<Vec<_>>()
@@ -252,8 +251,8 @@ mod tests {
     #[test]
     fn concrete_fills_in_every_kind_of_path_parameter() {
         assert_eq!(concrete("/api/apps"), "/api/apps");
-        assert_eq!(concrete("/api/apps/:id/pods"), "/api/apps/probe/pods");
-        assert_eq!(concrete("/api/disks/:node/:id"), "/api/disks/probe/probe");
-        assert_eq!(concrete("/ceph-dashboard/*rest"), "/ceph-dashboard/probe");
+        assert_eq!(concrete("/api/apps/{id}/pods"), "/api/apps/probe/pods");
+        assert_eq!(concrete("/api/disks/{node}/{id}"), "/api/disks/probe/probe");
+        assert_eq!(concrete("/ceph-dashboard/{*rest}"), "/ceph-dashboard/probe");
     }
 }

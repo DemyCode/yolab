@@ -36,9 +36,8 @@ pub(crate) async fn apply_secret(
 }
 
 pub(crate) fn random_hex(bytes: usize) -> String {
-    use rand::RngCore as _;
     let mut buf = vec![0u8; bytes];
-    rand::thread_rng().fill_bytes(&mut buf);
+    rand::fill(&mut buf[..]);
     hex::encode(buf)
 }
 
