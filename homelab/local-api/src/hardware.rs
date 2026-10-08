@@ -45,6 +45,15 @@ impl Inventory {
     }
 }
 
+const FIRST_MAXWELL_DEVICE_ID: u16 = 0x1340;
+
+fn nvidia_serves_apps(drm: &[DrmDevice]) -> bool {
+    drm.iter()
+        .filter(|d| d.driver == "nvidia")
+        .filter_map(|d| d.device_id)
+        .all(|id| id >= FIRST_MAXWELL_DEVICE_ID)
+}
+
 const KFD_NODES: &str = "sys/class/kfd/kfd/topology/nodes";
 const FIRST_ROCM_GFX: u64 = 90000;
 
@@ -69,7 +78,7 @@ pub fn probe(root: &Path) -> Inventory {
     let drm = drm_devices(root);
     let amd = drm.iter().any(|d| d.driver == "amdgpu" && d.render_node);
     Inventory {
-        nvidia: root.join(NVIDIA_CDI_SPEC).is_file(),
+        nvidia: root.join(NVIDIA_CDI_SPEC).is_file() && nvidia_serves_apps(&drm),
         amd,
         amd_rocm: amd
             && root.join("dev/kfd").exists()
@@ -372,6 +381,21 @@ mod tests {
                 &format!("{KFD_NODES}/0/properties"),
                 "cpu_cores_count 8\ngfx_target_version 0\n",
             )
+    }
+
+    #[test]
+    fn a_kepler_card_is_driven_but_not_offered_to_apps() {
+        let gt710 = Machine::new()
+            .pci("card0", "nvidia", "0x128b")
+            .file(NVIDIA_CDI_SPEC, "{}");
+        let inv = probe(gt710.path());
+        assert!(!inv.nvidia);
+        assert_eq!(inv.accelerator(), "cpu");
+
+        let gtx1080 = Machine::new()
+            .pci("card0", "nvidia", "0x1b80")
+            .file(NVIDIA_CDI_SPEC, "{}");
+        assert_eq!(probe(gtx1080.path()).accelerator(), "nvidia");
     }
 
     #[test]
