@@ -34,6 +34,7 @@ import {
   instanceStem,
   latestRestore,
   newerVersion,
+  podProblem,
   podStatus,
   waitNote,
   type AppState,
@@ -115,6 +116,7 @@ function useNow(everyMs: number): number {
   return now;
 }
 
+const POD_REFRESH_MS = 5000;
 const MAX_LOG_LINES = 1000;
 
 function TechnicalDetails({ app }: { app: AppInfo }) {
@@ -167,16 +169,20 @@ function TechnicalDetails({ app }: { app: AppInfo }) {
 
   useEffect(() => {
     let cancelled = false;
-    void api
-      .get<PodInfo[]>(`/api/apps/${app.instance_name}/pods`)
-      .then((p) => {
-        if (!cancelled) setPods(p);
-      })
-      .catch(() => {
-        if (!cancelled) setPods([]);
-      });
+    const load = () =>
+      void api
+        .get<PodInfo[]>(`/api/apps/${app.instance_name}/pods`)
+        .then((p) => {
+          if (!cancelled) setPods(p);
+        })
+        .catch(() => {
+          if (!cancelled) setPods((prev) => prev ?? []);
+        });
+    load();
+    const timer = setInterval(load, POD_REFRESH_MS);
     return () => {
       cancelled = true;
+      clearInterval(timer);
     };
   }, [app.instance_name]);
 
@@ -198,37 +204,81 @@ function TechnicalDetails({ app }: { app: AppInfo }) {
               as="li"
               items={pods}
               keyOf={(pod) => pod.name}
-              itemClassName="flex items-center gap-2 px-3 py-1.5"
+              itemClassName="px-3 py-1.5"
             >
-              {(pod) => (
-                <>
-                  <span
-                    className={cn(
-                      "h-2 w-2 shrink-0 rounded-full transition-colors duration-300",
-                      pod.ready ? "bg-success" : "bg-warning",
+              {(pod) => {
+                const status = podProblem(pod) ?? podStatus(pod);
+                return (
+                  <>
+                    <div className="flex items-center gap-2">
+                      <span
+                        className={cn(
+                          "h-2 w-2 shrink-0 rounded-full transition-colors duration-300",
+                          pod.ready ? "bg-success" : "bg-warning",
+                        )}
+                        aria-hidden
+                      />
+                      <span className="min-w-0 flex-1 truncate font-mono text-xs text-fg-muted">
+                        {pod.name}
+                      </span>
+                      <span
+                        className="shrink-0 text-xs text-fg-subtle"
+                        title={pod.phase}
+                      >
+                        <Swap id={status}>{status}</Swap>
+                      </span>
+                      <RowAction
+                        onClick={() =>
+                          logs?.pod === pod.name && logs.live
+                            ? stopLogs()
+                            : startLogs(pod.name)
+                        }
+                      >
+                        {logs?.pod === pod.name && logs.live ? "Stop" : "Logs"}
+                      </RowAction>
+                    </div>
+                    <p className="mt-0.5 pl-4 text-xs text-fg-subtle">
+                      {pod.node
+                        ? `On ${pod.node}`
+                        : "Not placed on a machine yet"}
+                      {pod.restarts ? ` · restarted ${pod.restarts}×` : ""}
+                    </p>
+                    {(pod.containers ?? []).length > 0 && (
+                      <ul className="mt-1 space-y-0.5 pl-4">
+                        {(pod.containers ?? []).map((c) => (
+                          <li
+                            key={`${c.init ? "init-" : ""}${c.name}`}
+                            className="flex items-center gap-2 text-xs"
+                          >
+                            <span
+                              className={cn(
+                                "h-1.5 w-1.5 shrink-0 rounded-full",
+                                c.ready || c.state === "Completed"
+                                  ? "bg-success"
+                                  : c.state === "running" ||
+                                      c.state === "PodInitializing"
+                                    ? "bg-warning"
+                                    : "bg-danger",
+                              )}
+                              aria-hidden
+                            />
+                            <span className="min-w-0 flex-1 truncate font-mono text-fg-muted">
+                              {c.name}
+                              {c.init && (
+                                <span className="text-fg-subtle"> (setup)</span>
+                              )}
+                            </span>
+                            <span className="shrink-0 text-fg-subtle">
+                              {c.state}
+                              {c.restarts > 0 ? ` · ${c.restarts}×` : ""}
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
                     )}
-                    aria-hidden
-                  />
-                  <span className="min-w-0 flex-1 truncate font-mono text-xs text-fg-muted">
-                    {pod.name}
-                  </span>
-                  <span
-                    className="shrink-0 text-xs text-fg-subtle"
-                    title={pod.phase}
-                  >
-                    <Swap id={podStatus(pod)}>{podStatus(pod)}</Swap>
-                  </span>
-                  <RowAction
-                    onClick={() =>
-                      logs?.pod === pod.name && logs.live
-                        ? stopLogs()
-                        : startLogs(pod.name)
-                    }
-                  >
-                    {logs?.pod === pod.name && logs.live ? "Stop" : "Logs"}
-                  </RowAction>
-                </>
-              )}
+                  </>
+                );
+              }}
             </AnimatedList>
           </ul>
         )}

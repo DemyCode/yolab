@@ -264,6 +264,16 @@ export function waitNote(
     : `Started ${roughDuration(waited)} ago.`;
 }
 
+const SETTLED = new Set(["running", "Completed"]);
+
+export function podProblem(pod: PodInfo): string | null {
+  if (pod.ready) return null;
+  const stuck = (pod.containers ?? []).find(
+    (c) => !SETTLED.has(c.state) && !(c.state === "PodInitializing"),
+  );
+  return stuck ? `${stuck.name}: ${stuck.state}` : null;
+}
+
 export function podStatus(pod: PodInfo): string {
   if (pod.ready) return "Running";
   switch (pod.phase) {

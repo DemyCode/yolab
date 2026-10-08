@@ -97,6 +97,80 @@ pub struct PodInfo {
     pub name: String,
     pub phase: String,
     pub ready: bool,
+    pub node: String,
+    pub restarts: u64,
+    pub containers: Vec<ContainerInfo>,
+}
+
+#[derive(Serialize, Debug, PartialEq)]
+pub struct ContainerInfo {
+    pub name: String,
+    pub init: bool,
+    pub ready: bool,
+    pub state: String,
+    pub restarts: u64,
+}
+
+fn container_state(status: &Value) -> String {
+    let state = &status["state"];
+    if state["running"].is_object() {
+        return "running".into();
+    }
+    if let Some(w) = state["waiting"].as_object() {
+        return w
+            .get("reason")
+            .and_then(Value::as_str)
+            .unwrap_or("waiting")
+            .to_string();
+    }
+    if let Some(t) = state["terminated"].as_object() {
+        let reason = t.get("reason").and_then(Value::as_str).unwrap_or("stopped");
+        return match t.get("exitCode").and_then(Value::as_i64) {
+            Some(0) | None => reason.to_string(),
+            Some(code) => format!("{reason} (exit {code})"),
+        };
+    }
+    "not started".into()
+}
+
+fn pod_info(p: &Value) -> PodInfo {
+    let containers: Vec<ContainerInfo> = [
+        ("initContainerStatuses", true),
+        ("containerStatuses", false),
+    ]
+    .into_iter()
+    .flat_map(|(key, init)| {
+        p["status"][key]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .map(move |c| ContainerInfo {
+                name: c["name"].as_str().unwrap_or("").to_string(),
+                init,
+                ready: c["ready"].as_bool().unwrap_or(false),
+                state: container_state(&c),
+                restarts: c["restartCount"].as_u64().unwrap_or(0),
+            })
+    })
+    .collect();
+    PodInfo {
+        name: p["metadata"]["name"].as_str().unwrap_or("").to_string(),
+        phase: p["status"]["phase"]
+            .as_str()
+            .unwrap_or("Unknown")
+            .to_string(),
+        ready: p["status"]["conditions"]
+            .as_array()
+            .map(|cs| {
+                cs.iter()
+                    .any(|c| c["type"] == "Ready" && c["status"] == "True")
+            })
+            .unwrap_or(false),
+        node: p["spec"]["nodeName"].as_str().unwrap_or("").to_string(),
+        restarts: containers.iter().map(|c| c.restarts).sum(),
+        containers,
+    }
 }
 
 #[derive(Serialize)]
@@ -1885,20 +1959,7 @@ pub async fn list_pods(
     Ok(Json(
         pods.iter()
             .filter(|p| !is_backup_mover_pod(p))
-            .map(|p| PodInfo {
-                name: p["metadata"]["name"].as_str().unwrap_or("").to_string(),
-                phase: p["status"]["phase"]
-                    .as_str()
-                    .unwrap_or("Unknown")
-                    .to_string(),
-                ready: p["status"]["conditions"]
-                    .as_array()
-                    .map(|cs| {
-                        cs.iter()
-                            .any(|c| c["type"] == "Ready" && c["status"] == "True")
-                    })
-                    .unwrap_or(false),
-            })
+            .map(pod_info)
             .collect(),
     ))
 }
@@ -1974,6 +2035,59 @@ async fn follow_pod_logs(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_pod_says_which_machine_it_is_on_and_how_each_part_is_doing() {
+        use serde_json::json;
+        let pod = json!({
+            "metadata": { "name": "gateway-abc" },
+            "spec": { "nodeName": "node3" },
+            "status": {
+                "phase": "Pending",
+                "conditions": [{ "type": "Ready", "status": "False" }],
+                "initContainerStatuses": [
+                    { "name": "wg-register", "ready": false, "restartCount": 0,
+                      "state": { "terminated": { "reason": "Completed", "exitCode": 0 } } }
+                ],
+                "containerStatuses": [
+                    { "name": "caddy", "ready": true, "restartCount": 1,
+                      "state": { "running": { "startedAt": "now" } } },
+                    { "name": "ollama", "ready": false, "restartCount": 4,
+                      "state": { "waiting": { "reason": "CrashLoopBackOff" } } },
+                    { "name": "worker", "ready": false, "restartCount": 0,
+                      "state": { "terminated": { "reason": "Error", "exitCode": 137 } } }
+                ]
+            }
+        });
+        let info = super::pod_info(&pod);
+        assert_eq!(info.node, "node3");
+        assert!(!info.ready);
+        assert_eq!(info.restarts, 5);
+        let states: Vec<(&str, bool, &str)> = info
+            .containers
+            .iter()
+            .map(|c| (c.name.as_str(), c.init, c.state.as_str()))
+            .collect();
+        assert_eq!(
+            states,
+            vec![
+                ("wg-register", true, "Completed"),
+                ("caddy", false, "running"),
+                ("ollama", false, "CrashLoopBackOff"),
+                ("worker", false, "Error (exit 137)"),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_pod_not_yet_placed_has_no_machine() {
+        let info = super::pod_info(&serde_json::json!({
+            "metadata": { "name": "web" },
+            "status": { "phase": "Pending" }
+        }));
+        assert_eq!(info.node, "");
+        assert!(info.containers.is_empty());
+    }
+
     #[test]
     fn an_update_fetches_the_newest_chart_unless_asked_to_keep_the_current_one() {
         let plain: super::UpdateRequest =
@@ -3610,7 +3724,8 @@ mod tests {
             assert_eq!(res.status, axum::http::StatusCode::OK, "{}", res.body);
             assert_eq!(
                 res.json(),
-                json!([{ "name": "notes-0", "phase": "Running", "ready": true }])
+                json!([{ "name": "notes-0", "phase": "Running", "ready": true,
+                         "node": "", "restarts": 0, "containers": [] }])
             );
         }
 

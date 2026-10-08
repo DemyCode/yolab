@@ -16,6 +16,7 @@ import {
   RESTORE_DONE_SHOWN_MS,
   SLOW_START_MS,
   podStatus,
+  podProblem,
   waitNote,
   type RestoreRecord,
 } from "./apps";
@@ -466,6 +467,45 @@ describe("waitNote", () => {
     expect(waitNote(app({ since: ago(60_000) }), "ready", now)).toBeNull();
     expect(
       waitNote(app({ status: "starting", since: "soon" }), "starting", now),
+    ).toBeNull();
+  });
+});
+
+describe("podProblem", () => {
+  const container = (name: string, state: string, init = false) => ({
+    name,
+    init,
+    ready: state === "running",
+    state,
+    restarts: 0,
+  });
+
+  it("names the part that holds a pod back", () => {
+    expect(
+      podProblem({
+        name: "gateway",
+        phase: "Pending",
+        ready: false,
+        containers: [
+          container("wg-register", "Completed", true),
+          container("caddy", "PodInitializing"),
+          container("ollama", "ImagePullBackOff"),
+        ],
+      }),
+    ).toBe("ollama: ImagePullBackOff");
+  });
+
+  it("says nothing for a ready pod or one that is only waiting its turn", () => {
+    expect(
+      podProblem({ name: "p", phase: "Running", ready: true, containers: [] }),
+    ).toBeNull();
+    expect(
+      podProblem({
+        name: "p",
+        phase: "Pending",
+        ready: false,
+        containers: [container("app", "PodInitializing")],
+      }),
     ).toBeNull();
   });
 });

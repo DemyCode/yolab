@@ -67,10 +67,21 @@ export interface CatalogApp {
   schema: object;
 }
 
+export interface ContainerInfo {
+  name: string;
+  init: boolean;
+  ready: boolean;
+  state: string;
+  restarts: number;
+}
+
 export interface PodInfo {
   name: string;
   phase: string;
   ready: boolean;
+  node?: string;
+  restarts?: number;
+  containers?: ContainerInfo[];
 }
 
 export interface OutputsResponse {
