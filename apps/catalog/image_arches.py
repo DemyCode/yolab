@@ -51,22 +51,41 @@ def inspect(*args):
     return json.loads(out.stdout)
 
 
+def sources(image):
+    bare = without_tag(image)
+    name = bare.split("@", 1)[0]
+    host = name.split("/", 1)[0]
+    elsewhere = "/" in name and host != "docker.io" and ("." in host or ":" in host)
+    if elsewhere:
+        return [bare]
+    path = bare.removeprefix("docker.io/")
+    if "/" not in path.split("@", 1)[0]:
+        path = f"library/{path}"
+    return [f"mirror.gcr.io/{path}", bare]
+
+
+def arches_at(ref):
+    raw = inspect("--raw", ref)
+    if "manifests" in raw:
+        return {
+            m.get("platform", {}).get("architecture")
+            for m in raw["manifests"]
+            if m.get("platform", {}).get("os") == "linux"
+        }
+    return {inspect("--config", ref).get("architecture")}
+
+
 def arches(image):
-    ref = f"docker://{without_tag(image)}"
-    try:
-        raw = inspect("--raw", ref)
-        if "manifests" in raw:
-            found = {
-                m.get("platform", {}).get("architecture")
-                for m in raw["manifests"]
-                if m.get("platform", {}).get("os") == "linux"
-            }
-        else:
-            found = {inspect("--config", ref).get("architecture")}
-    except (RuntimeError, subprocess.TimeoutExpired) as e:
-        print(f"unreadable {image}: {e}", file=sys.stderr)
-        return None
-    return sorted(a for a in found if a in ("amd64", "arm64"))
+    error = None
+    for source in sources(image):
+        try:
+            found = arches_at(f"docker://{source}")
+        except (RuntimeError, subprocess.TimeoutExpired) as e:
+            error = e
+            continue
+        return sorted(a for a in found if a in ("amd64", "arm64"))
+    print(f"unreadable {image}: {error}", file=sys.stderr)
+    return None
 
 
 def merged(pinned, previous, lookup):

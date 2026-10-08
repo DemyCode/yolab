@@ -1818,6 +1818,33 @@ class ImageArches(unittest.TestCase):
         )
         self.assertEqual(result, {"a@sha256:1": ["arm64"]})
 
+    def test_docker_hub_images_are_read_from_googles_mirror_first(self):
+        import image_arches
+
+        digest = "sha256:" + "a" * 64
+        self.assertEqual(
+            image_arches.sources(f"postgres:17@{digest}"),
+            [f"mirror.gcr.io/library/postgres@{digest}", f"postgres@{digest}"],
+        )
+        self.assertEqual(
+            image_arches.sources(f"docker.io/akaunting/akaunting:3@{digest}"),
+            [
+                f"mirror.gcr.io/akaunting/akaunting@{digest}",
+                f"docker.io/akaunting/akaunting@{digest}",
+            ],
+        )
+
+    def test_other_registries_are_read_directly(self):
+        import image_arches
+
+        digest = "sha256:" + "a" * 64
+        for image in (
+            f"ghcr.io/immich-app/server:v2@{digest}",
+            f"lscr.io/linuxserver/jellyfin:latest@{digest}",
+            f"reg:5000/team/app:1@{digest}",
+        ):
+            self.assertEqual(len(image_arches.sources(image)), 1, image)
+
     def test_an_image_no_longer_pinned_is_dropped(self):
         import image_arches
 
