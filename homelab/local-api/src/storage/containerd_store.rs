@@ -390,12 +390,19 @@ pub async fn is_in_place<H: Host>(host: &H, root: &Path) -> bool {
 
 const CONTAINERD: &str = "containerd";
 
-pub async fn release<H: Host>(host: &H, root: &Path) -> Result<()> {
+pub async fn release<H: Host>(host: &H, root: &Path, k3s_unit: &str) -> Result<()> {
     if !is_mounted(host, root).await {
         return Ok(());
     }
     let croot = containerd_root(root);
     let croot_s = croot.to_string_lossy().into_owned();
+    let stopped = host.systemctl(&["stop", k3s_unit]).await?;
+    if !stopped.success {
+        bail!(
+            "could not stop {k3s_unit} to release the image store: {}",
+            stopped.stderr.trim()
+        );
+    }
     let _ = host.run_cmd("pkill", &["-TERM", "-x", CONTAINERD]).await;
     if let Some(why) = quiesce(host, root).await {
         bail!("{why}");
@@ -1117,17 +1124,35 @@ mod tests {
         built_here_in_place(dir.path());
         let host = releasable().ok("umount", "");
 
-        release(&host, dir.path()).await.unwrap();
+        release(&host, dir.path(), K3S).await.unwrap();
 
+        let k3s = at(&host, "systemctl stop k3s.service");
         let containerd = at(&host, "pkill -TERM -x containerd");
         let shims = at(&host, "pkill -KILL -f containerd-shim-runc-v2");
         let unmounted = at(&host, &format!("umount {}", croot.display()));
         assert!(
-            containerd < shims && shims < unmounted,
+            k3s < containerd && containerd < shims && shims < unmounted,
             "{:?}",
             host.calls()
         );
         assert!(was_released_cleanly(&croot));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_k3s_that_will_not_stop_keeps_its_image_store_mounted_and_in_use() {
+        let dir = tempfile::tempdir().unwrap();
+        let croot = containerd_root(dir.path());
+        built_here_in_place(dir.path());
+        let host = releasable()
+            .fail("systemctl stop k3s.service", "Job canceled")
+            .ok("umount", "");
+
+        let err = release(&host, dir.path(), K3S).await.unwrap_err().to_string();
+
+        assert!(err.contains("could not stop k3s.service"), "{err}");
+        assert!(!host.ran("pkill"));
+        assert!(!host.ran(&format!("umount {}", croot.display())));
+        assert!(is_marked_in_use(&croot));
     }
 
     #[tokio::test(start_paused = true)]
@@ -1137,7 +1162,7 @@ mod tests {
         built_here_in_place(dir.path());
         let host = releasable().fail("umount", "target is busy");
 
-        assert!(release(&host, dir.path()).await.is_err());
+        assert!(release(&host, dir.path(), K3S).await.is_err());
 
         assert!(is_marked_in_use(&croot));
         assert!(!was_released_cleanly(&croot));
@@ -1151,7 +1176,7 @@ mod tests {
         std::fs::remove_file(croot.join(IN_USE)).unwrap();
         let host = releasable().ok("umount", "");
 
-        release(&host, dir.path()).await.unwrap();
+        release(&host, dir.path(), K3S).await.unwrap();
 
         assert!(host.ran(&format!("umount {}", croot.display())));
         assert!(!croot.join(RELEASED).exists());
@@ -1161,7 +1186,7 @@ mod tests {
     async fn releasing_a_store_that_is_not_mounted_does_nothing() {
         let dir = tempfile::tempdir().unwrap();
         let host = FakeHost::new().fail(FINDMNT, "");
-        release(&host, dir.path()).await.unwrap();
+        release(&host, dir.path(), K3S).await.unwrap();
         assert_eq!(host.calls().len(), 1, "{:?}", host.calls());
     }
 
@@ -1173,7 +1198,7 @@ mod tests {
         a_process_holding(dir.path(), 4242, "containerd", &croot.join("meta.db"));
         let host = releasable().ok("umount", "");
 
-        let err = release(&host, dir.path()).await.unwrap_err().to_string();
+        let err = release(&host, dir.path(), K3S).await.unwrap_err().to_string();
 
         assert!(err.contains("pid 4242 (containerd)"), "{err}");
         assert!(!host.ran(&format!("umount {}", croot.display())));

@@ -180,7 +180,9 @@ pub async fn run(args: &[String]) -> i32 {
     let result: Result<()> = match sub {
         "noout-clear" => noout::clear(&host, root()).await,
         "noout-set" => noout::set(&host, root()).await,
-        "release-images" => containerd_store::release(&host, root()).await,
+        "release-images" => {
+            containerd_store::release(&host, root(), controllers::K3S_UNIT).await
+        }
         "bootstrap" => bootstrap::run(&host, root(), &node, &env.bootstrap_args()).await,
         "reset-wipe" => {
             let config = crate::config::machine_dir().join("config.toml");

@@ -650,7 +650,7 @@ in let
       host = nixosSystems.yolab-ci.config.networking.hostName;
       has = list: builtins.elem unit list;
       failures =
-        pkgs.lib.optional (!(has (svcs.k3s.after or []))) "k3s must stop before ${unit}"
+        pkgs.lib.optional (has (svcs.k3s.after or [])) "k3s must never be ordered on ${unit}: the release stops k3s itself"
         ++ pkgs.lib.optional (!(has (svcs.yolab-local-api.after or []))) "local-api must stop before ${unit}"
         ++ pkgs.lib.optional (!(has (svcs."yolab-ceph-osd@".before or []))) "OSDs must stop after ${unit}"
         ++ map (u: "${unit} must stop before ${u}") (

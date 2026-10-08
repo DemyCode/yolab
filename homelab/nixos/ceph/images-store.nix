@@ -70,7 +70,6 @@ in {
     };
 
     systemd.services."yolab-ceph-osd@".before = [releaseUnit];
-    systemd.services.k3s.after = [releaseUnit];
     systemd.services.yolab-local-api.after = [releaseUnit];
   };
 }
