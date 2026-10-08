@@ -316,11 +316,16 @@ async fn once_per_boot(marker: &std::path::Path, client: &kube::Client) -> Resul
 
 pub const K3S_UNIT: &str = "k3s.service";
 
-pub struct ContainerdStoreResource {
-    pub env: StorageEnv,
+pub struct ContainerdStoreResource<H: 'static> {
+    env: StorageEnv,
+    host: &'static H,
 }
 
-impl crate::runtime::resource::Resource for ContainerdStoreResource {
+pub fn containerd_store_resource(env: StorageEnv) -> ContainerdStoreResource<impl Host> {
+    ContainerdStoreResource { env, host: &HOST }
+}
+
+impl<H: Host + 'static> crate::runtime::resource::Resource for ContainerdStoreResource<H> {
     fn name(&self) -> &'static str {
         "containerd-store"
     }
@@ -334,11 +339,11 @@ impl crate::runtime::resource::Resource for ContainerdStoreResource {
         crate::runtime::resource::Disruption::RestartsWorkloads
     }
     async fn disrupts_now(&self) -> bool {
-        containerd_store::workloads_run_here(&HOST, K3S_UNIT).await
+        containerd_store::workloads_run_here(self.host, K3S_UNIT).await
     }
     async fn check(&self, _ctx: &Ctx) -> crate::runtime::resource::State {
         use crate::runtime::resource::State;
-        if containerd_store::is_in_place(&HOST, root()).await {
+        if containerd_store::is_in_place(self.host, root()).await {
             State::Ready
         } else {
             State::NotYet(
@@ -350,7 +355,7 @@ impl crate::runtime::resource::Resource for ContainerdStoreResource {
         let policy = self.env.containerd_store_policy();
         locked_tick("containerd-store", || async {
             Ok(tick_of(
-                containerd_store::pivot(&HOST, root(), &ctx.node, &policy, K3S_UNIT).await?,
+                containerd_store::pivot(self.host, root(), &ctx.node, &policy, K3S_UNIT).await?,
             ))
         })
         .await

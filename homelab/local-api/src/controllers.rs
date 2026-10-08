@@ -105,7 +105,7 @@ pub fn spawn_all(leader: Leadership) {
         spawn(storage::SystemOsdController { env: env.clone() }, &leader);
         spawn(storage::ImagesRbdController { env: env.clone() }, &leader);
         runtime::resource::spawn(
-            storage::ContainerdStoreResource { env: env.clone() },
+            storage::containerd_store_resource(env.clone()),
             leader.clone(),
         );
         spawn(storage::ImagesGrowController { env: env.clone() }, &leader);
@@ -188,7 +188,7 @@ pub async fn run_named(name: &str) -> anyhow::Result<runtime::Tick> {
         "ceph-join" => runtime::run_once(&storage::CephJoinController { env }).await,
         "csi-recovery" => runtime::run_once(&storage::CsiRecoveryController).await,
         "containerd-store" => {
-            runtime::resource::run_once(&storage::ContainerdStoreResource { env }).await
+            runtime::resource::run_once(&storage::containerd_store_resource(env)).await
         }
         _ => anyhow::bail!("unknown controller '{name}' (known: {})", NAMES.join(", ")),
     }

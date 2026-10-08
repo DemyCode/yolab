@@ -404,7 +404,7 @@ in let
         "runtime/watch.rs" = 1;
         "shared_names.rs" = 1;
         "storage/bootstrap.rs" = 1;
-        "storage/controllers.rs" = 14;
+        "storage/controllers.rs" = 13;
         "storage/dashboard.rs" = 1;
         "storage/mod.rs" = 2;
         "store/sync.rs" = 1;
