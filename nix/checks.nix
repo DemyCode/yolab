@@ -910,6 +910,31 @@ in let
         touch $out
       '';
 
+    hardware-report-picks-cpu-and-disk-modules = let
+      inherit (pkgs) lib;
+      reportOf = name: hardware: builtins.toFile "facter-${name}.json" (builtins.toJSON {inherit hardware;});
+      on = name: hardware: (nixosSystems.yolab-ci.extendModules {specialArgs.yolabFacterPath = reportOf name hardware;}).config;
+      intel = on "intel-cpu" {cpu = [{vendor_name = "GenuineIntel";}];};
+      amd = on "amd-cpu" {cpu = [{vendor_name = "AuthenticAMD";}];};
+      plain = nixosSystems.yolab-ci.config;
+      problems =
+        lib.optional (!intel.hardware.cpu.intel.updateMicrocode) "an Intel CPU did not get its microcode updates"
+        ++ lib.optional intel.hardware.cpu.amd.updateMicrocode "an Intel CPU got AMD microcode"
+        ++ lib.optional (!amd.hardware.cpu.amd.updateMicrocode) "an AMD CPU did not get its microcode updates"
+        ++ lib.optional (!(builtins.elem "amd_pstate=active" amd.boot.kernelParams)) "an AMD CPU did not get the amd-pstate frequency driver"
+        ++ lib.optional (builtins.elem "amd_pstate=active" intel.boot.kernelParams) "an Intel CPU got AMD kernel options"
+        ++ lib.optional (!intel.hardware.enableRedistributableFirmware) "a machine with a report did not get the firmware its microcode ships in"
+        ++ lib.optional (!intel.services.fstrim.enable) "a machine with a report does not TRIM its SSDs"
+        ++ lib.optional plain.hardware.cpu.intel.updateMicrocode "a machine without a report guessed its CPU";
+    in
+      pkgs.runCommand "hardware-report-picks-cpu-and-disk-modules" {} ''
+        ${lib.concatMapStrings (p: "echo ${lib.escapeShellArg p} >&2\n") problems}
+        ${lib.optionalString (problems != []) "exit 1"}
+        echo ${lib.escapeShellArg intel.system.build.toplevel.drvPath} > /dev/null
+        echo ${lib.escapeShellArg amd.system.build.toplevel.drvPath} > /dev/null
+        touch $out
+      '';
+
     a-machine-builds-for-the-processor-it-has = let
       inherit (pkgs) lib;
       systems = [

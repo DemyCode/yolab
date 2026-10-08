@@ -50,6 +50,7 @@ in {
     ./ceph/maintenance.nix
     ./ceph/dashboard.nix
     ./gpu
+    ./hardware
   ];
 
   options.yolab = {
