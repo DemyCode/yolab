@@ -385,9 +385,7 @@ async fn arm_release<H: Host>(host: &H) -> Attempt<()> {
 }
 
 pub async fn is_in_place<H: Host>(host: &H, root: &Path) -> bool {
-    is_mounted(host, root).await
-        && is_whole(&containerd_root(root))
-        && release_is_armed(host).await
+    is_mounted(host, root).await && is_whole(&containerd_root(root)) && release_is_armed(host).await
 }
 
 const CONTAINERD: &str = "containerd";
@@ -1029,7 +1027,10 @@ mod tests {
         built_here_in_place(dir.path());
         let host = FakeHost::new()
             .ok("findmnt -rno TARGET --mountpoint", "")
-            .fail("systemctl start", "Unit yolab-image-store.service not found.");
+            .fail(
+                "systemctl start",
+                "Unit yolab-image-store.service not found.",
+            );
         let why = not_yet(
             pivot(&host, dir.path(), "yolab-n1", &policy(), K3S)
                 .await
@@ -1046,7 +1047,11 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            first_mount(&host) < at(&host, "systemctl start --no-block yolab-image-store.service"),
+            first_mount(&host)
+                < at(
+                    &host,
+                    "systemctl start --no-block yolab-image-store.service"
+                ),
             "{:?}",
             host.calls()
         );
