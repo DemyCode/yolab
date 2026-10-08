@@ -21,6 +21,7 @@ spec:
     requests:
       storage: 50Gi
 {{- $onGpu := include "open-webui.onGpu" . }}
+{{- $external := .Values.config.ollama_url | default "" }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -72,7 +73,7 @@ spec:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
       {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
-      {{- if not $onGpu }}
+      {{- if and (not $external) (not $onGpu) }}
       - name: ollama
         image: ollama/ollama:0.35.1@sha256:292ee7945dfc3d5840a181f3ab86fedb1e66703e02c8af98b50f4da56b7e278c
         imagePullPolicy: IfNotPresent
@@ -100,7 +101,7 @@ spec:
           periodSeconds: 10
         env:
         - name: OLLAMA_BASE_URL
-          value: {{ if $onGpu }}http://ollama:11434{{ else }}http://localhost:11434{{ end }}
+          value: {{ if $external }}{{ $external | quote }}{{ else if $onGpu }}http://ollama:11434{{ else }}http://localhost:11434{{ end }}
         volumeMounts:
         - name: data
           mountPath: /app/backend/data
@@ -109,7 +110,7 @@ spec:
       {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
       {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}
-{{- if $onGpu }}
+{{- if and (not $external) $onGpu }}
 {{- range (include "open-webui.engines" . | fromJsonArray) }}
 ---
 apiVersion: apps/v1

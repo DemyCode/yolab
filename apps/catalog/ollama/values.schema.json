@@ -310,5 +310,12 @@
         }
       }
     }
+  },
+  "x-yolab-provides": {
+    "ollama": {
+      "title": "Ollama API",
+      "service": "ollama",
+      "port": 11434
+    }
   }
 }

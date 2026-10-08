@@ -1729,6 +1729,55 @@ pub(crate) async fn installed_apps(client: &Client) -> anyhow::Result<Vec<Instal
         .collect())
 }
 
+#[derive(Serialize, Debug, PartialEq)]
+pub struct ServiceInstance {
+    pub instance: String,
+    pub app_id: String,
+    pub title: String,
+    pub url: String,
+}
+
+fn instances_of(
+    kind: &str,
+    apps: Vec<(String, String, crate::appschema::AppSchema)>,
+) -> Vec<ServiceInstance> {
+    let mut found: Vec<ServiceInstance> = apps
+        .into_iter()
+        .flat_map(|(namespace, app_id, schema)| {
+            schema
+                .provides()
+                .into_iter()
+                .filter(|p| p.kind == kind)
+                .map(|p| ServiceInstance {
+                    instance: namespace
+                        .strip_prefix("yolab-")
+                        .unwrap_or(&namespace)
+                        .to_string(),
+                    app_id: app_id.clone(),
+                    title: p.title.clone(),
+                    url: p.url(&namespace),
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    found.sort_by(|a, b| a.instance.cmp(&b.instance));
+    found
+}
+
+pub async fn list_services(
+    State(state): State<AppState>,
+    Path(kind): Path<String>,
+) -> Result<Json<Vec<ServiceInstance>>> {
+    let client = state.kube.client().await?;
+    let catalog = state.config.catalog_dir();
+    let mut apps = Vec::new();
+    for app in installed_apps(&client).await? {
+        let schema = installed_schema(&client, &app.namespace, &app.app_id, &catalog).await;
+        apps.push((app.namespace, app.app_id, schema));
+    }
+    Ok(Json(instances_of(&kind, apps)))
+}
+
 pub(crate) struct KnownOutputs {
     pub specs: Vec<crate::appschema::OutputSpec>,
     pub remembered: crate::outputs::Remembered,
@@ -1907,6 +1956,45 @@ async fn follow_pod_logs(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn installed_instances_of_a_service_kind_are_listed_with_their_internal_address() {
+        use crate::appschema::AppSchema;
+        use serde_json::json;
+        let ollama = || {
+            AppSchema::new(json!({
+                "x-yolab-provides": { "ollama": { "title": "Ollama API", "service": "ollama", "port": 11434 } }
+            }))
+        };
+        let apps = vec![
+            ("yolab-gpu-box".to_string(), "ollama".to_string(), ollama()),
+            (
+                "yolab-notes".to_string(),
+                "memos".to_string(),
+                AppSchema::new(serde_json::Value::Null),
+            ),
+            ("yolab-ai".to_string(), "ollama".to_string(), ollama()),
+        ];
+        let found = super::instances_of("ollama", apps);
+        assert_eq!(
+            found,
+            vec![
+                super::ServiceInstance {
+                    instance: "ai".into(),
+                    app_id: "ollama".into(),
+                    title: "Ollama API".into(),
+                    url: "http://ollama.yolab-ai.svc.cluster.local:11434".into(),
+                },
+                super::ServiceInstance {
+                    instance: "gpu-box".into(),
+                    app_id: "ollama".into(),
+                    title: "Ollama API".into(),
+                    url: "http://ollama.yolab-gpu-box.svc.cluster.local:11434".into(),
+                },
+            ]
+        );
+        assert!(super::instances_of("electrum", vec![]).is_empty());
+    }
+
     #[test]
     fn a_disabled_chart_is_left_out_of_the_store_but_still_readable() {
         let dir = tempfile::tempdir().unwrap();

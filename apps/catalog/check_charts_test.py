@@ -1688,6 +1688,104 @@ class Disabled(unittest.TestCase):
         self.assertIn("does not say why", found[0])
 
 
+class OpenWebUiOllama(RenderedChart):
+    CHART = "open-webui"
+
+    def gateway(self, docs):
+        return self.deployments(docs)["gateway"]
+
+    def test_by_default_it_runs_its_own_ollama(self):
+        spec = self.gateway(self.docs())
+        self.assertIn("ollama", {c["name"] for c in spec["containers"]})
+
+    def test_a_linked_ollama_replaces_its_own_everywhere(self):
+        url = "http://ollama.yolab-ai.svc.cluster.local:11434"
+        docs = self.docs(
+            {
+                "config.ollama_url": url,
+                "machines[0].name": "gpu-box",
+                "machines[0].accelerator": "nvidia",
+            }
+        )
+        spec = self.gateway(docs)
+        self.assertNotIn("ollama", {c["name"] for c in spec["containers"]})
+        self.assertFalse([d for d in docs if d.get("kind") == "DaemonSet"])
+        self.assertFalse(
+            [
+                d
+                for d in docs
+                if d.get("kind") == "Service" and d["metadata"]["name"] == "ollama"
+            ]
+        )
+        webui = next(c for c in spec["containers"] if c["name"] == "open-webui")
+        env = {e["name"]: e.get("value") for e in webui["env"]}
+        self.assertEqual(env["OLLAMA_BASE_URL"], url)
+
+
+class ServiceLinks(unittest.TestCase):
+    def collect(self, fn, *args):
+        found = []
+        fn(*args, lambda app, msg: found.append(msg))
+        return found
+
+    def test_a_provided_service_must_be_rendered_on_its_port(self):
+        schema = {"x-yolab-provides": {"ollama": {"service": "ollama", "port": 11434}}}
+        service = {
+            "kind": "Service",
+            "metadata": {"name": "ollama"},
+            "spec": {"ports": [{"port": 11434}]},
+        }
+        self.assertEqual(
+            self.collect(check_charts.check_provides, "ollama", schema, [service]), []
+        )
+        found = self.collect(check_charts.check_provides, "ollama", schema, [])
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("does not render", found[0])
+
+    def test_a_provided_service_needs_a_name_and_a_port(self):
+        found = self.collect(
+            check_charts.check_provides,
+            "x",
+            {"x-yolab-provides": {"api": {"service": "x"}}},
+            [],
+        )
+        self.assertIn("needs a service name and a numeric port", found[0])
+
+    def test_link_fields_are_found_behind_switches(self):
+        schema = {
+            "properties": {
+                "config": {
+                    "dependencies": {
+                        "ai": {
+                            "oneOf": [
+                                {
+                                    "properties": {
+                                        "ollama_url": {
+                                            "type": "string",
+                                            "format": "service-url",
+                                            "x-yolab-service": "ollama",
+                                        }
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                }
+            }
+        }
+        self.assertEqual(check_charts.wanted_kinds(schema), {"ollama"})
+
+    def test_a_link_to_a_service_nobody_provides_is_reported(self):
+        found = self.collect(
+            check_charts.check_links,
+            {"open-webui": {"ollama"}, "lnd-ui": {"lnd-grpc"}},
+            {"ollama": {"ollama"}},
+        )
+        self.assertEqual(
+            found, ["a service-url field wants lnd-grpc, which no chart provides"]
+        )
+
+
 class OffersFileExplorer(unittest.TestCase):
     def test_a_chart_with_the_explorer_switch_offers_it_even_when_off_by_default(self):
         schema = {

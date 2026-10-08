@@ -77,6 +77,11 @@ VARIANTS = {
             "machines[2].name": "old-pc",
             "machines[2].accelerator": "cpu",
         },
+        {
+            "machines[0].name": "gpu-box",
+            "machines[0].accelerator": "nvidia",
+            "config.ollama_url": "http://ollama.yolab-ai.svc.cluster.local:11434",
+        },
     ],
     "jellyfin": [
         {"gpu.name": "nuc", "gpu.accelerator": "intel"},
@@ -1203,6 +1208,58 @@ def check_schema(app, schema, chart_yaml, fail):
             fail(app, f"{where}: `when` must be a schema")
 
 
+def provided_kinds(schema):
+    return set((schema.get("x-yolab-provides") or {}).keys())
+
+
+def wanted_kinds(schema):
+    found = set()
+
+    def walk(node):
+        if isinstance(node, dict):
+            if node.get("format") == "service-url":
+                found.add(node.get("x-yolab-service") or "")
+            for v in node.values():
+                walk(v)
+        elif isinstance(node, list):
+            for v in node:
+                walk(v)
+
+    walk((schema.get("properties") or {}).get("config") or {})
+    return found
+
+
+def check_provides(app, schema, docs, fail):
+    services = {
+        d["metadata"]["name"]: {
+            p.get("port") for p in (d.get("spec") or {}).get("ports") or []
+        }
+        for d in docs
+        if d.get("kind") == "Service"
+    }
+    for kind, spec in (schema.get("x-yolab-provides") or {}).items():
+        name, port = spec.get("service"), spec.get("port")
+        if not name or not isinstance(port, int):
+            fail(
+                app, f"x-yolab-provides {kind} needs a service name and a numeric port"
+            )
+        elif port not in services.get(name, set()):
+            fail(
+                app,
+                f"x-yolab-provides {kind} points at Service {name} port {port}, "
+                f"which the chart does not render",
+            )
+
+
+def check_links(wanted, provided, fail):
+    for app, kinds in sorted(wanted.items()):
+        for kind in sorted(kinds):
+            if not kind:
+                fail(app, "a service-url field does not name its x-yolab-service")
+            elif not any(kind in p for p in provided.values()):
+                fail(app, f"a service-url field wants {kind}, which no chart provides")
+
+
 def main(argv):
     chart_dirs = argv[1:] or sorted(
         d
@@ -1233,6 +1290,7 @@ def main(argv):
         )
         library_tgz = glob.glob(os.path.join(tmp, "yolab-common-*.tgz"))[0]
 
+        wanted, provided = {}, {}
         for chart_dir in chart_dirs:
             app = os.path.basename(chart_dir.rstrip("/"))
             text = Path(chart_dir, "Chart.yaml").read_text()
@@ -1268,7 +1326,10 @@ def main(argv):
                 fail(app, f"values.schema.json is not valid JSON: {e}")
                 schema = {}
             check_schema(app, schema, text, fail)
+            wanted[app] = wanted_kinds(schema)
+            provided[app] = provided_kinds(schema)
             check(app, docs, fail, text, schema)
+            check_provides(app, schema, docs, fail)
             check_file_explorer(app, docs, fail)
             values_path = Path(chart_dir, "values.yaml")
             check_private_access_offer(
@@ -1377,6 +1438,8 @@ def main(argv):
                 app, [d for d in yaml.safe_load_all(rendered) if d], fail
             )
 
+    if not argv[1:]:
+        check_links(wanted, provided, fail)
     print(f"checked {len(chart_dirs)} charts")
     for f in fail.items:
         print("FAIL " + f)

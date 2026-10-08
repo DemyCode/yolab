@@ -39,6 +39,25 @@ pub struct OutputSpec {
     when: Option<Value>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct Provided {
+    pub kind: String,
+    pub title: String,
+    scheme: String,
+    service: String,
+    port: u16,
+    path: String,
+}
+
+impl Provided {
+    pub fn url(&self, namespace: &str) -> String {
+        format!(
+            "{}://{}.{}.svc.cluster.local:{}{}",
+            self.scheme, self.service, namespace, self.port, self.path
+        )
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct AppSchema {
     document: Value,
@@ -89,6 +108,31 @@ impl AppSchema {
                     tracing::warn!("output {key} is ignored: {why}");
                     None
                 }
+            })
+            .collect()
+    }
+
+    pub fn provides(&self) -> Vec<Provided> {
+        let Some(kinds) = self.document["x-yolab-provides"].as_object() else {
+            return Vec::new();
+        };
+        kinds
+            .iter()
+            .filter_map(|(kind, spec)| {
+                let service = spec["service"].as_str().filter(|s| !s.is_empty());
+                let port = spec["port"].as_u64().and_then(|p| u16::try_from(p).ok());
+                let (Some(service), Some(port)) = (service, port) else {
+                    tracing::warn!("provided {kind} is ignored: it needs a service and a port");
+                    return None;
+                };
+                Some(Provided {
+                    kind: kind.clone(),
+                    title: spec["title"].as_str().unwrap_or(kind).to_string(),
+                    scheme: spec["scheme"].as_str().unwrap_or("http").to_string(),
+                    service: service.to_string(),
+                    port,
+                    path: spec["path"].as_str().unwrap_or("").to_string(),
+                })
             })
             .collect()
     }
@@ -219,6 +263,35 @@ mod tests {
                 }
             }),
         )
+    }
+
+    #[test]
+    fn a_provided_service_is_reached_by_its_in_cluster_address() {
+        let app = AppSchema::new(json!({
+            "x-yolab-provides": {
+                "ollama": { "title": "Ollama API", "service": "ollama", "port": 11434 },
+                "electrum": { "scheme": "tcp", "service": "electrs", "port": 50001 },
+                "broken": { "service": "x" }
+            }
+        }));
+        let provided = app.provides();
+        assert_eq!(provided.len(), 2);
+        let ollama = provided.iter().find(|p| p.kind == "ollama").unwrap();
+        assert_eq!(ollama.title, "Ollama API");
+        assert_eq!(
+            ollama.url("yolab-ollama"),
+            "http://ollama.yolab-ollama.svc.cluster.local:11434"
+        );
+        let electrum = provided.iter().find(|p| p.kind == "electrum").unwrap();
+        assert_eq!(
+            electrum.url("yolab-node"),
+            "tcp://electrs.yolab-node.svc.cluster.local:50001"
+        );
+    }
+
+    #[test]
+    fn an_app_that_provides_nothing_lists_nothing() {
+        assert!(AppSchema::new(Value::Null).provides().is_empty());
     }
 
     #[test]

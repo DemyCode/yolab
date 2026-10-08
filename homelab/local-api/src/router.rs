@@ -150,6 +150,7 @@ pub fn build_router(state: AppState) -> Router {
             "/api/apps/catalog/:id/refresh",
             post(apps::refresh_catalog_app),
         )
+        .route("/api/services/:kind", get(apps::list_services))
         .route("/api/apps", get(apps::list_apps))
         .route(
             "/api/apps/:id",

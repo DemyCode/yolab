@@ -1,8 +1,14 @@
 import { useState } from "react";
 import type { WidgetProps } from "@rjsf/utils";
 import { Eye, EyeOff, RefreshCw } from "lucide-react";
-import { Input, Toggle } from "@/components/ui/input";
+import { Input, Select, Toggle } from "@/components/ui/input";
 import { generateSecret } from "@/lib/format";
+import {
+  serviceChoice,
+  serviceLabel,
+  type ServiceInstance,
+} from "@/lib/services";
+import { useApi } from "@/lib/useResource";
 import { cn } from "@/lib/utils";
 
 export function TunnelWidget(props: WidgetProps) {
@@ -82,6 +88,64 @@ export function YolabTokenWidget(props: WidgetProps) {
       >
         Use this box&apos;s
       </button>
+    </div>
+  );
+}
+
+const OWN = "own";
+const BY_HAND = "url";
+
+export function ServiceUrlWidget(props: WidgetProps) {
+  const { value, onChange, disabled, readonly, id, options, required } = props;
+  const service = String(options?.service ?? "");
+  const installed =
+    useApi<ServiceInstance[]>(
+      service ? `services:${service}` : null,
+      `/api/services/${encodeURIComponent(service)}`,
+    ).data ?? [];
+  const v = typeof value === "string" ? value : "";
+  const [typing, setTyping] = useState(false);
+  const choice = typing
+    ? ({ kind: "url", url: v } as const)
+    : serviceChoice(v, installed, !required);
+  const selected =
+    choice.kind === "own"
+      ? OWN
+      : choice.kind === "installed"
+        ? choice.url
+        : BY_HAND;
+
+  return (
+    <div className="space-y-2">
+      <Select
+        id={id}
+        value={selected}
+        disabled={disabled || readonly}
+        onChange={(e) => {
+          const next = e.target.value;
+          setTyping(next === BY_HAND);
+          if (next === OWN) onChange(undefined);
+          else if (next === BY_HAND) onChange(choice.kind === "url" ? v : "");
+          else onChange(next);
+        }}
+      >
+        {!required && <option value={OWN}>Run its own</option>}
+        {installed.map((s) => (
+          <option key={s.url} value={s.url}>
+            Use {serviceLabel(s)}
+          </option>
+        ))}
+        <option value={BY_HAND}>Another address…</option>
+      </Select>
+      {selected === BY_HAND && (
+        <Input
+          value={v}
+          placeholder="http://192.168.1.20:8080"
+          disabled={disabled || readonly}
+          onChange={(e) => onChange(e.target.value || undefined)}
+          className="font-mono"
+        />
+      )}
     </div>
   );
 }

@@ -337,3 +337,22 @@ describe("the file explorer's own ways in", () => {
     expect(addressField(explorer)).toBeUndefined();
   });
 });
+
+describe("a link to another app's service", () => {
+  it("gets the installed-or-URL widget, told which service to look for", () => {
+    const ui = uiSchemaFor(
+      {
+        properties: {
+          ollama_url: {
+            type: "string",
+            format: "service-url",
+            "x-yolab-service": "ollama",
+          },
+        },
+      },
+      "6.yolab.io",
+    ) as Record<string, Record<string, unknown>>;
+    expect(ui.ollama_url["ui:widget"]).toBe("ServiceUrlWidget");
+    expect(ui.ollama_url["ui:options"]).toEqual({ service: "ollama" });
+  });
+});

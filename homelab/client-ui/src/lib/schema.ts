@@ -10,6 +10,7 @@ export interface SchemaProp {
   maxLength?: number;
   writeOnly?: boolean;
   generate?: boolean;
+  "x-yolab-service"?: string;
   properties?: Record<string, SchemaProp>;
 }
 
@@ -71,6 +72,12 @@ export function revealedBy(schema: ConfigSchema): Map<string, string[]> {
 function fieldUi(prop: SchemaProp, domain: string): UiSchema | undefined {
   if (prop.format === "tunnel") {
     return { "ui:widget": "TunnelWidget", "ui:options": { domain } };
+  }
+  if (prop.format === "service-url") {
+    return {
+      "ui:widget": "ServiceUrlWidget",
+      "ui:options": { service: prop["x-yolab-service"] ?? "" },
+    };
   }
   if (prop.format === "yolab-token") {
     return { "ui:widget": "YolabTokenWidget" };
