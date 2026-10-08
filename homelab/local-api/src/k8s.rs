@@ -10,15 +10,20 @@ pub async fn client() -> anyhow::Result<Client> {
     static CLIENT: OnceCell<Client> = OnceCell::const_new();
     let client = CLIENT
         .get_or_try_init(|| async {
-            let mut config = Config::infer()
+            let config = Config::infer()
                 .await
                 .map_err(|e| anyhow::anyhow!("no way to reach Kubernetes yet: {e}"))?;
-            config.read_timeout = Some(REQUEST_TIMEOUT);
-            config.write_timeout = Some(REQUEST_TIMEOUT);
-            Client::try_from(config).map_err(anyhow::Error::from)
+            Client::try_from(bounded(config)).map_err(anyhow::Error::from)
         })
         .await?;
     Ok(client.clone())
+}
+
+fn bounded(mut config: Config) -> Config {
+    config.read_timeout = Some(REQUEST_TIMEOUT);
+    config.write_timeout = Some(REQUEST_TIMEOUT);
+    config.default_retry = false;
+    config
 }
 
 #[derive(Clone)]
@@ -418,6 +423,17 @@ mod tests {
     use serde_json::json;
     use wiremock::matchers::{method, path, query_param};
     use wiremock::{Mock, ResponseTemplate};
+
+    #[test]
+    fn a_kubernetes_call_fails_once_instead_of_retrying_for_minutes() {
+        let config = super::bounded(kube::Config::new("https://127.0.0.1:6443".parse().unwrap()));
+        assert!(
+            !config.default_retry,
+            "kube retries a 503 fifteen times with backoff; with the API down every call took about three minutes"
+        );
+        assert_eq!(config.read_timeout, Some(super::REQUEST_TIMEOUT));
+        assert_eq!(config.write_timeout, Some(super::REQUEST_TIMEOUT));
+    }
 
     #[tokio::test]
     async fn a_client_pointed_at_the_mock_server_lists_what_it_serves() {
