@@ -312,7 +312,9 @@ def replace_refs(text, changes):
     return pattern.sub(lambda m: changes[m.group(0)], text)
 
 
-TOP_VERSION = re.compile(r"^version:\s*[\"']?([0-9]+\.[0-9]+\.[0-9]+)[\"']?\s*$", re.M)
+TOP_VERSION = re.compile(
+    r"^version:\s*[\"']?([0-9]+\.[0-9]+\.[0-9]+)[\"']?\s*$", re.MULTILINE
+)
 LIB_DEP = re.compile(
     r"(- name: yolab-common\n\s+version: )[\"']?[0-9]+\.[0-9]+\.[0-9]+[\"']?"
 )
@@ -379,7 +381,7 @@ def bump_charts(root, touched, summary):
                     r'^LIB_VERSION = "[^"]+"',
                     f'LIB_VERSION = "{lib}"',
                     read(importer),
-                    flags=re.M,
+                    flags=re.MULTILINE,
                 ),
             )
         summary.moved.append(f"chart yolab-common -> {lib} (every app chart follows)")
