@@ -697,6 +697,13 @@ PRIVATE_ACCESS_ON = {
 }
 
 
+def offers_file_explorer(schema):
+    config = ((schema.get("properties") or {}).get("config") or {}).get(
+        "properties"
+    ) or {}
+    return "file_explorer_enabled" in config
+
+
 def offered_private_access(schema):
     config = ((schema.get("properties") or {}).get("config") or {}).get(
         "properties"
@@ -847,7 +854,9 @@ EXPLORER_WAYS = {
         "port": 18793,
     },
 }
+EXPLORER_ENABLED = {"config.file_explorer_enabled": "true"}
 EXPLORER_WAYS_ON = {
+    **EXPLORER_ENABLED,
     "config.file_explorer_tor_enabled": "true",
     "config.file_explorer_tailscale_enabled": "true",
     "config.file_explorer_tailscale_auth_key": "tskey-auth-placeholder",
@@ -1299,8 +1308,22 @@ def main(argv):
                     schema,
                 )
 
-            if explorer_pod(docs)[1] is None:
+            if not offers_file_explorer(schema):
                 continue
+            enabled, err = render(chart_dir, library_tgz, tmp, EXPLORER_ENABLED)
+            if enabled is None:
+                fail(
+                    app,
+                    f"helm template with the file explorer on failed: "
+                    f"{err.splitlines()[-1] if err else 'unknown'}",
+                )
+                continue
+            enabled_docs = [d for d in yaml.safe_load_all(enabled) if d]
+            if explorer_pod(enabled_docs)[1] is None:
+                fail(app, "the file explorer is switched on but does not run")
+                continue
+            check(app, enabled_docs, fail, text, schema)
+            check_file_explorer(app, enabled_docs, fail)
             ways, err = render(chart_dir, library_tgz, tmp, EXPLORER_WAYS_ON)
             if ways is None:
                 fail(
@@ -1317,7 +1340,7 @@ def main(argv):
                 chart_dir,
                 library_tgz,
                 tmp,
-                {"config.file_explorer_read_only": "true"},
+                {**EXPLORER_ENABLED, "config.file_explorer_read_only": "true"},
             )
             if rendered is None:
                 fail(

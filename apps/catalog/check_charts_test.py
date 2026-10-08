@@ -1183,7 +1183,9 @@ class PrivateAccessRendered(RenderedChart):
         self.assertIn("tailscale_auth_key", err)
 
     def test_the_file_explorer_cannot_change_the_onion_key_or_tailscale_identity(self):
-        spec = self.deployments(self.docs(PRIVATE_ON))["gateway"]
+        spec = self.deployments(
+            self.docs({**PRIVATE_ON, **check_charts.EXPLORER_ENABLED})
+        )["gateway"]
         explorer = next(c for c in spec["containers"] if c["name"] == "file-explorer")
         read_only = {
             m.get("subPath")
@@ -1372,6 +1374,7 @@ class YolabOffRendered(RenderedChart):
         self.assertEqual(len(found), 1)
 
 
+EXPLORER_ENABLED = check_charts.EXPLORER_ENABLED
 EXPLORER_WAYS_ON = check_charts.EXPLORER_WAYS_ON
 
 
@@ -1391,8 +1394,19 @@ class FileExplorerWaysRendered(RenderedChart):
         )
         return found
 
-    def test_by_default_the_explorer_has_only_its_yolab_address(self):
+    def test_by_default_the_explorer_is_off(self):
         docs = self.docs()
+        self.assertFalse(
+            {"file-explorer", "file-explorer-tor", "file-explorer-tailscale"}
+            & self.names(self.gateway(docs))
+        )
+        self.assertNotIn(
+            "{$FILE_EXPLORER_FQDN}",
+            check_charts.configmap_data(docs, "-caddy", "Caddyfile"),
+        )
+
+    def test_switched_on_the_explorer_has_only_its_yolab_address(self):
+        docs = self.docs(EXPLORER_ENABLED)
         containers = self.names(self.gateway(docs))
         self.assertIn("file-explorer", containers)
         self.assertFalse({"file-explorer-tor", "file-explorer-tailscale"} & containers)
@@ -1433,7 +1447,7 @@ class FileExplorerWaysRendered(RenderedChart):
             self.chart,
             self.library,
             self.tmp.name,
-            {"config.file_explorer_tailscale_enabled": "true"},
+            {**EXPLORER_ENABLED, "config.file_explorer_tailscale_enabled": "true"},
         )
         self.assertIsNone(text)
         self.assertIn("file_explorer_tailscale_auth_key", err)
@@ -1488,6 +1502,7 @@ class FileExplorerWaysRendered(RenderedChart):
     def test_app_address_off_and_explorer_s_on_registers_only_the_explorer(self):
         docs = self.docs(
             {
+                **EXPLORER_ENABLED,
                 "config.yolab_enabled": "false",
                 "config.tor_enabled": "true",
                 "config.file_explorer_yolab_enabled": "true",
@@ -1506,6 +1521,7 @@ class FileExplorerWaysRendered(RenderedChart):
     def test_an_explorer_reached_only_over_tor_needs_no_tunnel(self):
         docs = self.docs(
             {
+                **EXPLORER_ENABLED,
                 "config.yolab_enabled": "false",
                 "config.tor_enabled": "true",
                 "config.file_explorer_yolab_enabled": "false",
@@ -1526,9 +1542,29 @@ class FileExplorerWaysRendered(RenderedChart):
         self.assertNotIn("FILE_EXPLORER_FQDN", caddyfile)
 
     def test_from_before_the_switches_the_explorer_follows_the_app_s_address(self):
-        spec = self.gateway(self.docs(YOLAB_OFF))
+        spec = self.gateway(self.docs({**YOLAB_OFF, **EXPLORER_ENABLED}))
         self.assertNotIn("file-explorer", self.names(spec))
         self.assertNotIn("wg-register", self.names(spec, "initContainers"))
+
+
+class OffersFileExplorer(unittest.TestCase):
+    def test_a_chart_with_the_explorer_switch_offers_it_even_when_off_by_default(self):
+        schema = {
+            "properties": {
+                "config": {
+                    "properties": {
+                        "file_explorer_enabled": {"type": "boolean", "default": False}
+                    }
+                }
+            }
+        }
+        self.assertTrue(check_charts.offers_file_explorer(schema))
+
+    def test_a_chart_without_the_switch_does_not_offer_it(self):
+        self.assertFalse(
+            check_charts.offers_file_explorer({"properties": {"config": {}}})
+        )
+        self.assertFalse(check_charts.offers_file_explorer({}))
 
 
 if __name__ == "__main__":
