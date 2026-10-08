@@ -281,7 +281,7 @@ in {
       enable = true;
       package = pkgs.caddy.withPlugins {
         plugins = ["github.com/caddy-dns/acmedns@v0.7.0"];
-        hash = "sha256-iKExEW87Jd6DXrNBxqvkWkKjkh3KwpNZsBIf1HmSGE4=";
+        hash = "sha256-hlu5ryAU9eUGVQmDrAF6tWKQ6wbJTwkVg8crx4497kU=";
       };
       configFile = pkgs.writeText "Caddyfile" ''
         # A certificate for a shared name: `import shared_tls <name>`. The key is
