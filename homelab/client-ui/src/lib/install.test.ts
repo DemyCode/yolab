@@ -9,6 +9,7 @@ import {
   stripInstanceId,
   seedForm,
   instanceNameFor,
+  readsLiveApp,
 } from "./install";
 import type { AppDefinition } from "@/types/apps";
 import type { ConfigSchema } from "./schema";
@@ -457,5 +458,31 @@ describe("seedForm with the YoLab address switch", () => {
   it("starts a new install on, with the app's subdomain and no token", () => {
     const seed = seedForm(schema, null, "fresh", () => "x");
     expect(seed).toEqual({ yolab_enabled: true, subdomain: "jellyfin" });
+  });
+});
+
+describe("changing the settings of an installed app", () => {
+  it("reads an edit from the address", () => {
+    const origin = installOrigin(params("edit=gitea-ab12"));
+    expect(origin.mode).toBe("edit");
+    expect(origin.fromInstance).toBe("gitea-ab12");
+  });
+
+  it("keeps the app's own name and address", () => {
+    expect(instanceNameFor("edit", "gitea", definition())).toBe("gitea-ab12");
+    expect(keepsSourceAddress("edit")).toBe(true);
+  });
+
+  it("reads the running app's settings, as a duplicate does", () => {
+    expect(readsLiveApp("edit")).toBe(true);
+    expect(readsLiveApp("duplicate")).toBe(true);
+    expect(readsLiveApp("restore")).toBe(false);
+  });
+
+  it("never copies files or names a source to install from", () => {
+    expect(copiesDataByDefault("edit")).toBe(false);
+    expect(
+      installSource(installOrigin(params("edit=gitea-ab12")), false, ""),
+    ).toBeUndefined();
   });
 });

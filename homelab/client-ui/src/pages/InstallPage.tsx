@@ -13,7 +13,7 @@ import { Card } from "@/components/ui/card";
 import { Select, Switch } from "@/components/ui/input";
 import { Row, Section } from "@/components/ui/list";
 import { Banner, Spinner } from "@/components/ui/feedback";
-import { api } from "@/lib/api";
+import { api, streamEvents } from "@/lib/api";
 import { useApi } from "@/lib/useResource";
 import { formatDateTime, generateSecret } from "@/lib/format";
 import Form from "@rjsf/core";
@@ -28,6 +28,7 @@ import {
   seedForm,
   snapshotNamespace,
   instanceNameFor,
+  readsLiveApp,
 } from "@/lib/install";
 import { AppIconTile } from "@/components/AppIcon";
 import { configSchemaOf, generatedFields, uiSchemaFor } from "@/lib/schema";
@@ -120,10 +121,9 @@ export function InstallPage() {
   useEffect(() => {
     if (origin.mode === "fresh") return;
     let cancelled = false;
-    const url =
-      origin.mode === "duplicate"
-        ? `/api/apps/${origin.fromInstance}/definition`
-        : `/api/backups/apps/${origin.namespace}/definition?snapshot_id=${encodeURIComponent(origin.snapshot ?? "")}`;
+    const url = readsLiveApp(origin.mode)
+      ? `/api/apps/${origin.fromInstance}/definition`
+      : `/api/backups/apps/${origin.namespace}/definition?snapshot_id=${encodeURIComponent(origin.snapshot ?? "")}`;
     void api
       .get<AppDefinition>(url)
       .then((d) => {
@@ -163,7 +163,25 @@ export function InstallPage() {
     };
   }, [backupNamespace, copyData]);
 
-  const schema = useMemo(() => configSchemaOf(app?.schema), [app?.schema]);
+  const [liveSchema, setLiveSchema] = useState<object | null>(null);
+  useEffect(() => {
+    if (origin.mode !== "edit") return;
+    let cancelled = false;
+    void api
+      .get<object>(`/api/apps/${origin.fromInstance}/schema`)
+      .then((s) => {
+        if (!cancelled) setLiveSchema(s);
+      })
+      .catch(() => {
+        if (!cancelled) setLiveSchema(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [origin]);
+
+  const shownSchema = liveSchema ?? app?.schema;
+  const schema = useMemo(() => configSchemaOf(shownSchema), [shownSchema]);
   const required = useMemo(
     () => new Set(schema.required ?? []),
     [schema.required],
@@ -230,6 +248,24 @@ export function InstallPage() {
         return schema.properties?.[name]?.default !== undefined;
       }),
     );
+
+    if (origin.mode === "edit") {
+      const result = await streamEvents(
+        `/api/apps/${instanceName}/update`,
+        {
+          method: "POST",
+          body: JSON.stringify({ config: payload, keep_version: true }),
+        },
+        () => {},
+      );
+      if (result.ok) {
+        navigate(`/app/${instanceName}`);
+      } else {
+        setError(result.error ?? "The new settings were not applied.");
+        setInstalling(false);
+      }
+      return;
+    }
 
     try {
       const begun = await api.post<{ instance_name: string }>(
@@ -325,7 +361,14 @@ export function InstallPage() {
       : (sourceDef?.instance_name ?? origin.namespace);
 
   const notice = error ? (
-    <Banner tone="error" title="The install could not start">
+    <Banner
+      tone="error"
+      title={
+        origin.mode === "edit"
+          ? "The new settings were not applied"
+          : "The install could not start"
+      }
+    >
       {error}
     </Banner>
   ) : app.repo !== "official" ? (
@@ -505,14 +548,18 @@ export function InstallPage() {
       ? `Duplicate ${sourceName ?? app.name}`
       : origin.mode === "restore"
         ? `Restore ${sourceName ?? app.name}`
-        : `Install ${app.name}`;
+        : origin.mode === "edit"
+          ? `Settings of ${sourceName ?? app.name}`
+          : `Install ${app.name}`;
 
   const subtitle =
     origin.mode === "duplicate"
       ? "A separate app from the same settings, with its own address and storage."
       : origin.mode === "restore"
         ? "Its settings come back from the backup; change any of them before it is installed."
-        : "Choose how it is set up. You can change these settings later.";
+        : origin.mode === "edit"
+          ? "Applied to the version it runs now. Its files stay as they are."
+          : "Choose how it is set up. You can change these settings later.";
 
   return (
     <Page>
@@ -521,6 +568,11 @@ export function InstallPage() {
           <ArrowLeft className="h-4 w-4" />
           {app.name}
         </button>
+      ) : origin.mode === "edit" ? (
+        <Link to={`/app/${origin.fromInstance}`} className={backLink}>
+          <ArrowLeft className="h-4 w-4" />
+          {sourceName ?? app.name}
+        </Link>
       ) : (
         <Link to="/add" className={backLink}>
           <ArrowLeft className="h-4 w-4" />
@@ -564,7 +616,7 @@ export function InstallPage() {
         </Card>
       </section>
 
-      {origin.mode !== "fresh" && (
+      {(origin.mode === "duplicate" || origin.mode === "restore") && (
         <Section title="Files">
           <Row
             label={
@@ -631,10 +683,14 @@ export function InstallPage() {
           disabled={blocker !== null || installing}
         >
           {installing
-            ? "Starting…"
+            ? origin.mode === "edit"
+              ? "Applying…"
+              : "Starting…"
             : origin.mode === "restore"
               ? `Restore ${app.name}`
-              : `Install ${app.name}`}
+              : origin.mode === "edit"
+                ? "Apply these settings"
+                : `Install ${app.name}`}
         </Button>
         {blocker && (
           <p className="mt-2 text-center text-sm text-fg-muted" role="status">

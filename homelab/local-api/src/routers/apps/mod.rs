@@ -1551,6 +1551,8 @@ pub(crate) async fn stage_install(
 #[derive(Deserialize)]
 pub struct UpdateRequest {
     pub config: Option<serde_json::Map<String, Value>>,
+    #[serde(default)]
+    pub keep_version: bool,
 }
 
 pub async fn update_app(
@@ -1597,7 +1599,11 @@ pub async fn update_app(
         }
     };
 
-    let mut config = match body.and_then(|b| b.0.config) {
+    let (incoming, keep_version) = match body {
+        Some(Json(b)) => (b.config, b.keep_version),
+        None => (None, false),
+    };
+    let mut config = match incoming {
         Some(incoming) => merge_credentials(incoming, &stored_config, &app),
         None => stored_config,
     };
@@ -1638,6 +1644,7 @@ pub async fn update_app(
         config,
         chart_repo: annotation(ANN_CHART_REPO),
         backup: stored.map(|d| d.backup).unwrap_or_default(),
+        keep_version,
     };
     let b = match state.backend().await {
         Ok(b) => b,
@@ -1680,6 +1687,17 @@ pub async fn app_definition(
     let def = read_definition(&client, &ns).await?;
     let app = installed_schema(&client, &ns, &def.app_id, &state.config.catalog_dir()).await;
     Ok(Json(redact_definition(&def, &app)))
+}
+
+pub async fn app_settings_schema(
+    State(state): State<AppState>,
+    Path(instance_name): Path<String>,
+) -> Result<Json<Value>> {
+    let ns = format!("yolab-{instance_name}");
+    let client = state.kube.client().await?;
+    let def = read_definition(&client, &ns).await?;
+    let app = installed_schema(&client, &ns, &def.app_id, &state.config.catalog_dir()).await;
+    Ok(Json(app.config()))
 }
 
 fn saved_settings(ann: &serde_json::Map<String, Value>) -> serde_json::Map<String, Value> {
@@ -1956,6 +1974,17 @@ async fn follow_pod_logs(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_update_fetches_the_newest_chart_unless_asked_to_keep_the_current_one() {
+        let plain: super::UpdateRequest =
+            serde_json::from_value(serde_json::json!({ "config": {} })).unwrap();
+        assert!(!plain.keep_version);
+        let keep: super::UpdateRequest =
+            serde_json::from_value(serde_json::json!({ "config": {}, "keep_version": true }))
+                .unwrap();
+        assert!(keep.keep_version);
+    }
+
     #[test]
     fn installed_instances_of_a_service_kind_are_listed_with_their_internal_address() {
         use crate::appschema::AppSchema;

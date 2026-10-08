@@ -6,7 +6,7 @@ import {
   type ConfigSchema,
 } from "./schema";
 
-export type InstallMode = "fresh" | "duplicate" | "restore";
+export type InstallMode = "fresh" | "duplicate" | "restore" | "edit";
 
 export interface InstallOrigin {
   mode: InstallMode;
@@ -24,6 +24,15 @@ export interface InstallSourcePayload {
 }
 
 export function installOrigin(params: URLSearchParams): InstallOrigin {
+  const editing = params.get("edit");
+  if (editing) {
+    return {
+      mode: "edit",
+      fromInstance: editing,
+      namespace: null,
+      snapshot: null,
+    };
+  }
   const fromInstance = params.get("from");
   const namespace = params.get("restore");
   const snapshot = params.get("snapshot");
@@ -68,7 +77,11 @@ export function installSource(
 }
 
 export function keepsSourceAddress(mode: InstallMode): boolean {
-  return mode === "restore";
+  return mode === "restore" || mode === "edit";
+}
+
+export function readsLiveApp(mode: InstallMode): boolean {
+  return mode === "duplicate" || mode === "edit";
 }
 
 export function instanceNameFor(
@@ -79,6 +92,7 @@ export function instanceNameFor(
   if (mode === "restore" && source?.instance_name) {
     return stripInstanceId(source.instance_name);
   }
+  if (mode === "edit") return source?.instance_name ?? "";
   return appId;
 }
 

@@ -584,6 +584,7 @@ pub(crate) struct UpgradePlan {
     pub(crate) config: Map<String, Value>,
     pub(crate) chart_repo: Option<String>,
     pub(crate) backup: BackupPolicy,
+    pub(crate) keep_version: bool,
 }
 
 pub(crate) async fn upgrade<H: Host + 'static>(
@@ -592,28 +593,44 @@ pub(crate) async fn upgrade<H: Host + 'static>(
     plan: &UpgradePlan,
     log: &Log,
 ) -> anyhow::Result<()> {
-    log.say("Fetching the newest version…");
-    let repos = crate::charts::list_repos(&b.kube).await;
     let from = plan.chart_repo.as_deref();
-    if let Err(e) = crate::charts::fetch_newest(
-        &b.host,
-        std::path::Path::new(crate::charts::CACHE_DIR),
-        &repos,
-        &plan.app_id,
-        from,
-    )
-    .await
-    {
-        log.say(format!(
-            "Could not fetch the newest version ({e:#}) — using the one fetched last"
-        ));
-    }
+    let pinned = if plan.keep_version {
+        log.say("Keeping the version it runs now…");
+        let namespace = format!("yolab-{}", plan.instance_name);
+        let current = source(b, &ConfigOrigin::LiveApp { namespace }).await?;
+        let pin = pin_chart(current.as_ref()).map_err(|_| {
+            anyhow::anyhow!(
+                "this app never recorded which version of its chart it runs, so its settings can only change with an update to the newest version"
+            )
+        })?;
+        pinned_chart(b, &plan.app_id, &pin, log).await?
+    } else {
+        log.say("Fetching the newest version…");
+        let repos = crate::charts::list_repos(&b.kube).await;
+        if let Err(e) = crate::charts::fetch_newest(
+            &b.host,
+            std::path::Path::new(crate::charts::CACHE_DIR),
+            &repos,
+            &plan.app_id,
+            from,
+        )
+        .await
+        {
+            log.say(format!(
+                "Could not fetch the newest version ({e:#}) — using the one fetched last"
+            ));
+        }
+        None
+    };
     let job = ChartJob {
         app_id: &plan.app_id,
         instance_name: &plan.instance_name,
         release: &plan.release,
         config: &plan.config,
-        chart: ChartAt::Catalog { repo: from },
+        chart: pinned
+            .as_ref()
+            .map(PinnedChart::at)
+            .unwrap_or(ChartAt::Catalog { repo: from }),
         backup: &plan.backup,
         verb: "Updating…",
     };

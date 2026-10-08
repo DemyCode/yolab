@@ -780,6 +780,17 @@ export function AppDetailPage() {
               <Button
                 size="sm"
                 variant="secondary"
+                onClick={() =>
+                  navigate(
+                    `/add/${current.app_id}?edit=${current.instance_name}`,
+                  )
+                }
+              >
+                Change settings
+              </Button>
+              <Button
+                size="sm"
+                variant="secondary"
                 onClick={() => setConfirmRemove(true)}
               >
                 Remove it
@@ -997,6 +1008,15 @@ export function AppDetailPage() {
         {stem !== app.app_id && <Row label="Name" detail={stem} />}
         {app.instance_id && (
           <ValueRow label="ID" value={app.instance_id} copy />
+        )}
+        {actions.has("settings") && (
+          <Row
+            label="Change settings"
+            detail="Point it at another app, change what it was installed with"
+            onClick={() =>
+              navigate(`/add/${app.app_id}?edit=${app.instance_name}`)
+            }
+          />
         )}
         {actions.has("duplicate") && (
           <Row

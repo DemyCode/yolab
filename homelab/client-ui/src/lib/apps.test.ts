@@ -328,11 +328,25 @@ describe("newerVersion", () => {
 });
 
 describe("availableActions", () => {
-  it("offers a failed install only a retry and removal", () => {
+  it("offers a failed install a retry, new settings and removal", () => {
     expect([...availableActions("failed", false)].sort()).toEqual([
       "remove",
       "retry",
+      "settings",
     ]);
+  });
+
+  it("lets settings change in every state but removal", () => {
+    for (const state of [
+      "starting",
+      "copying",
+      "stopped",
+      "ready",
+      "failed",
+    ] as const) {
+      expect(availableActions(state, false).has("settings")).toBe(true);
+    }
+    expect(availableActions("removing", false).has("settings")).toBe(false);
   });
 
   it("offers nothing while the app is being removed or restored", () => {
