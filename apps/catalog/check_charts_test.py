@@ -1558,7 +1558,10 @@ class ImportedEnvironment(unittest.TestCase):
 
     def test_a_compose_mapping_keeps_each_name_and_value(self):
         env = self.env(
-            {"image": "x", "environment": {"OCEAN_LOG_LEVEL": 5, "OCEAN_NO_TLS": "true"}}
+            {
+                "image": "x",
+                "environment": {"OCEAN_LOG_LEVEL": 5, "OCEAN_NO_TLS": "true"},
+            }
         )
         self.assertEqual(env, {"OCEAN_LOG_LEVEL": "5", "OCEAN_NO_TLS": "true"})
 
@@ -1594,7 +1597,10 @@ class Regenerated(unittest.TestCase):
         chart = import_umbrel.carry_over(
             {
                 "version": "0.1.9",
-                "annotations": {"yolab.io/tagline": "Curated", "yolab.io/github": "a/b"},
+                "annotations": {
+                    "yolab.io/tagline": "Curated",
+                    "yolab.io/github": "a/b",
+                },
             },
             {
                 "version": "0.1.0",
@@ -1604,7 +1610,11 @@ class Regenerated(unittest.TestCase):
         self.assertEqual(chart["version"], "0.1.10")
         self.assertEqual(
             chart["annotations"],
-            {"yolab.io/tagline": "Curated", "yolab.io/icon": "x", "yolab.io/github": "a/b"},
+            {
+                "yolab.io/tagline": "Curated",
+                "yolab.io/icon": "x",
+                "yolab.io/github": "a/b",
+            },
         )
 
     def test_tdex_is_never_imported(self):
@@ -1640,7 +1650,12 @@ class Containers(unittest.TestCase):
     def test_ordinary_env_names_pass(self):
         self.assertEqual(
             self.failures(
-                [{"name": "app", "env": [{"name": "APP_SEED"}, {"name": "spring.port"}]}]
+                [
+                    {
+                        "name": "app",
+                        "env": [{"name": "APP_SEED"}, {"name": "spring.port"}],
+                    }
+                ]
             ),
             [],
         )

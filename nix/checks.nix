@@ -78,6 +78,18 @@ in let
         touch $out
       '';
 
+    update-tests =
+      pkgs.runCommand "update-tests"
+      {
+        nativeBuildInputs = [(pkgs.python3.withPackages (ps: [ps.pyyaml]))];
+        src = ../scripts/update;
+      }
+      ''
+        cp -r "$src" ./update
+        (cd ./update && python3 -m unittest update_test)
+        touch $out
+      '';
+
     nixos-create = toplevel "yolab-ci";
     nixos-join = toplevel "yolab-ci-join";
 

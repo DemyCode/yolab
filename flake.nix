@@ -237,6 +237,29 @@
         program = "${self.packages.${system}.desktop-client}/bin/yolab-desktop";
         meta.description = "Open the YoLab desktop window";
       };
+      update = let
+        pkgs = pkgsFor system;
+        program = pkgs.writeShellApplication {
+          name = "yolab-update";
+          runtimeInputs = [
+            (pkgs.python3.withPackages (ps: [ps.pyyaml]))
+            pkgs.cargo
+            pkgs.cargo-edit
+            pkgs.nodejs
+            pkgs.npm-check-updates
+            pkgs.prefetch-npm-deps
+            pkgs.skopeo
+            pkgs.opentofu
+            pkgs.git
+            pkgs.curl
+          ];
+          text = ''exec python3 ${./scripts/update/update.py} "$@"'';
+        };
+      in {
+        type = "app";
+        program = "${program}/bin/yolab-update";
+        meta.description = "Update every pinned dependency of yolab and yolab-external";
+      };
     });
 
     devShells = lib.genAttrs systems devShellsFor;
