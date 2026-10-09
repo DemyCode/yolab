@@ -1489,7 +1489,7 @@ def check_folders(app, field, docs, fail):
     if spec.get("storageClassName") != "":
         fail(
             app,
-            "the folder claim must have storageClassName \"\" — it binds to the "
+            'the folder claim must have storageClassName "" — it binds to the '
             "folder YoLab mounts, never to a new empty volume",
         )
     if spec.get("volumeName") != f"{namespace}.folder-{FOLDER_PROBE}":

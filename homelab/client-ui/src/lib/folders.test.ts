@@ -41,8 +41,8 @@ describe("how a folder is described", () => {
     expect(usedByLine({ ...movies, used_by: ["jellyfin", "sonarr"] })).toBe(
       "Used by jellyfin, sonarr",
     );
-    expect(
-      usedByLine({ ...movies, used_by: ["a", "b", "c", "d", "e"] }),
-    ).toBe("Used by a, b and 3 more");
+    expect(usedByLine({ ...movies, used_by: ["a", "b", "c", "d", "e"] })).toBe(
+      "Used by a, b and 3 more",
+    );
   });
 });

@@ -616,20 +616,20 @@ async fn refresh_consumers<H: Host + 'static>(
     provider: &str,
     log: &Log,
 ) {
-    let consumers =
-        match crate::routers::apps::consumers_of(&b.kube, &cfg.catalog_dir(), provider).await {
-            Ok(found) => found,
-            Err(e) => {
-                log.say(format!(
+    let consumers = match crate::routers::apps::consumers_of(&b.kube, &cfg.catalog_dir(), provider)
+        .await
+    {
+        Ok(found) => found,
+        Err(e) => {
+            log.say(format!(
                     "[WARN] could not find the apps that use this one ({e:#}) — change their settings to pick up the new values"
                 ));
-                return;
-            }
-        };
+            return;
+        }
+    };
     for consumer in consumers {
         log.say(format!("Updating {consumer} so it uses the new settings…"));
-        let refreshed = match crate::routers::apps::stored_upgrade_plan(&b.kube, &consumer).await
-        {
+        let refreshed = match crate::routers::apps::stored_upgrade_plan(&b.kube, &consumer).await {
             Ok(plan) => upgrade_one(b, cfg, &plan, log).await,
             Err(e) => Err(e),
         };

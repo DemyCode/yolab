@@ -213,7 +213,11 @@ pub(crate) fn usable(repo: &str, offered: Vec<CatalogSetup>) -> Vec<CatalogSetup
                 tracing::warn!(
                     "{repo}: setup {:?} is skipped: {}",
                     s.id,
-                    if id_ok { problems.join("; ") } else { "its id is not a plain name".into() }
+                    if id_ok {
+                        problems.join("; ")
+                    } else {
+                        "its id is not a plain name".into()
+                    }
                 );
             }
             problems.is_empty() && id_ok
@@ -248,7 +252,10 @@ apps:
         assert_eq!(setup.main.as_deref(), Some("jellyfin"));
         assert_eq!(setup.folders["media"].title, "Movies & TV");
         assert_eq!(setup.apps.len(), 3);
-        assert_eq!(setup.apps["jellyfin"].settings["hardware_transcoding"], json!(true));
+        assert_eq!(
+            setup.apps["jellyfin"].settings["hardware_transcoding"],
+            json!(true)
+        );
         assert_eq!(setup.apps["sonarr"].folders["media_folder"], "media");
     }
 
@@ -306,7 +313,9 @@ apps:
     #[test]
     fn exporting_a_group_keeps_its_choices_but_never_its_secrets() {
         let titles: BTreeMap<String, String> =
-            [("movies-tv".to_string(), "Movies & TV".to_string())].into_iter().collect();
+            [("movies-tv".to_string(), "Movies & TV".to_string())]
+                .into_iter()
+                .collect();
         let setup = export(
             "Movies & TV",
             &[
@@ -336,7 +345,10 @@ apps:
         assert!(setup.apps["sonarr-2"].settings.is_empty());
         assert_eq!(
             setup.apps["jellyfin"].settings,
-            json!({ "hardware_transcoding": true }).as_object().cloned().unwrap()
+            json!({ "hardware_transcoding": true })
+                .as_object()
+                .cloned()
+                .unwrap()
         );
         let text = setup.to_yaml().unwrap();
         assert!(!text.contains("hunter2") && !text.contains("tok"), "{text}");
@@ -385,7 +397,12 @@ apps:
     fn an_app_keeping_its_files_inside_uses_no_folder() {
         let setup = export(
             "Solo",
-            &[member("sonarr", "sonarr", false, json!({ "media_folder": "" }))],
+            &[member(
+                "sonarr",
+                "sonarr",
+                false,
+                json!({ "media_folder": "" }),
+            )],
             &BTreeMap::new(),
         );
         assert!(setup.folders.is_empty());

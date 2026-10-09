@@ -1,10 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  adoptsDefault,
-  connectionChoice,
-  usedBy,
-  usesOf,
-} from "./connections";
+import { adoptsDefault, connectionChoice, usedBy, usesOf } from "./connections";
 import type { ServiceInstance } from "./services";
 
 const ollama: ServiceInstance = {

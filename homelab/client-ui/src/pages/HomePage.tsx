@@ -140,10 +140,7 @@ export function HomePage() {
       ) : (
         <>
           <div className="grid animate-fade-in grid-cols-3 gap-2 sm:grid-cols-4 md:grid-cols-6">
-            <AnimatedList
-              items={home.loose}
-              keyOf={(app) => app.instance_name}
-            >
+            <AnimatedList items={home.loose} keyOf={(app) => app.instance_name}>
               {(app) => (
                 <AppTile
                   app={app}

@@ -36,8 +36,8 @@ export function SetupsRow({ catalog }: { catalog: CatalogApp[] }) {
         <div>
           <h2 className="text-base font-semibold text-fg">Ready-made setups</h2>
           <p className="mt-0.5 text-sm text-fg-muted">
-            Several apps that work together, installed in one go. Each one
-            stays a normal app you can change or remove later.
+            Several apps that work together, installed in one go. Each one stays
+            a normal app you can change or remove later.
           </p>
         </div>
         <div className="flex gap-1">

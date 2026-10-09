@@ -64,9 +64,7 @@ export function SetupPage() {
   const folders = useApi<Folder[]>("folders", "/api/folders");
 
   const setup: Setup | undefined =
-    setupId === "file"
-      ? fromFile
-      : setups.data?.find((s) => s.id === setupId);
+    setupId === "file" ? fromFile : setups.data?.find((s) => s.id === setupId);
 
   const installed = useMemo(() => apps.data ?? [], [apps.data]);
   const [plan, setPlan] = useState<SetupPlan | null>(null);

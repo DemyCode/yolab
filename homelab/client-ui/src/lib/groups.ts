@@ -68,13 +68,10 @@ export function arrangeHome(apps: AppInfo[]): {
 }
 
 export type FolderPlan =
-  | { kind: "existing"; name: string }
-  | { kind: "new"; title: string };
+  { kind: "existing"; name: string } | { kind: "new"; title: string };
 
 export type AppPlan =
-  | { kind: "new" }
-  | { kind: "existing"; instance: string }
-  | { kind: "skip" };
+  { kind: "new" } | { kind: "existing"; instance: string } | { kind: "skip" };
 
 export interface SetupPlan {
   title: string;

@@ -26,7 +26,10 @@ pub async fn set_group(
     match namespace(&client, &ns).await {
         Ok(Some(_)) => {}
         Ok(None) => {
-            return (StatusCode::NOT_FOUND, format!("{instance_name} is not installed"))
+            return (
+                StatusCode::NOT_FOUND,
+                format!("{instance_name} is not installed"),
+            )
                 .into_response()
         }
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")).into_response(),
@@ -50,14 +53,18 @@ pub async fn export_group(
     Path(group): Path<String>,
 ) -> axum::response::Response {
     if !crate::folders::is_name(&group) {
-        return (StatusCode::BAD_REQUEST, format!("{group:?} is not a group name")).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            format!("{group:?} is not a group name"),
+        )
+            .into_response();
     }
     let client = match state.kube.client().await {
         Ok(c) => c,
         Err(e) => return (StatusCode::SERVICE_UNAVAILABLE, format!("{e:#}")).into_response(),
     };
-    let in_group = kube::api::ListParams::default()
-        .labels(&format!("{}={group}", crate::groups::LABEL_GROUP));
+    let in_group =
+        kube::api::ListParams::default().labels(&format!("{}={group}", crate::groups::LABEL_GROUP));
     let namespaces = match crate::k8s::list(&client, "v1", "Namespace", None, &in_group).await {
         Ok(found) => found,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")).into_response(),
@@ -68,7 +75,11 @@ pub async fn export_group(
         .and_then(|ns| crate::groups::group_of(ns))
         .map(|m| m.title)
     else {
-        return (StatusCode::NOT_FOUND, format!("no app is in the group {group}")).into_response();
+        return (
+            StatusCode::NOT_FOUND,
+            format!("no app is in the group {group}"),
+        )
+            .into_response();
     };
     let catalog = state.config.catalog_dir();
     let mut exported = Vec::new();
@@ -103,7 +114,10 @@ pub async fn export_group(
     match crate::setups::export(&title, &exported, &titles).to_yaml() {
         Ok(text) => (
             [
-                (axum::http::header::CONTENT_TYPE, "application/yaml".to_string()),
+                (
+                    axum::http::header::CONTENT_TYPE,
+                    "application/yaml".to_string(),
+                ),
                 (
                     axum::http::header::CONTENT_DISPOSITION,
                     format!("attachment; filename=\"{group}.yaml\""),

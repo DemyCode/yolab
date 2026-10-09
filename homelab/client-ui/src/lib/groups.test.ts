@@ -158,9 +158,9 @@ describe("a setup that connects its own apps", () => {
   });
 
   it("leaves the connection to the form when the partner was left out", () => {
-    expect(setupConfig({ ollama: {} }, ai.apps["open-webui"], {}, {})).toEqual(
-      { ollama: {} },
-    );
+    expect(setupConfig({ ollama: {} }, ai.apps["open-webui"], {}, {})).toEqual({
+      ollama: {},
+    });
   });
 
   it("an app that uses itself or a loop does not hang the order", () => {

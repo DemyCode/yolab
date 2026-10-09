@@ -200,7 +200,12 @@ pub(crate) async fn attach(
 async fn source(client: &Client, folder: &str) -> anyhow::Result<Source> {
     let claim = crate::k8s::get(
         client,
-        &crate::k8s::reference("v1", "PersistentVolumeClaim", NAMESPACE, &claim_name(folder)),
+        &crate::k8s::reference(
+            "v1",
+            "PersistentVolumeClaim",
+            NAMESPACE,
+            &claim_name(folder),
+        ),
     )
     .await?
     .ok_or_else(|| {
@@ -282,7 +287,9 @@ fn users(volumes: &[Value], folder: &str) -> Vec<String> {
 }
 
 fn folder_of(claim: &Value, volumes: &[Value]) -> Option<Folder> {
-    let name = claim["metadata"]["labels"][LABEL_FOLDER].as_str()?.to_string();
+    let name = claim["metadata"]["labels"][LABEL_FOLDER]
+        .as_str()?
+        .to_string();
     Some(Folder {
         title: claim["metadata"]["annotations"][ANN_TITLE]
             .as_str()
@@ -311,7 +318,10 @@ async fn owner_claims(client: &Client) -> anyhow::Result<Vec<Value>> {
 
 pub(crate) async fn list(client: &Client) -> anyhow::Result<Vec<Folder>> {
     let (claims, volumes) = tokio::try_join!(owner_claims(client), attached_volumes(client))?;
-    let mut folders: Vec<Folder> = claims.iter().filter_map(|c| folder_of(c, &volumes)).collect();
+    let mut folders: Vec<Folder> = claims
+        .iter()
+        .filter_map(|c| folder_of(c, &volumes))
+        .collect();
     folders.sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase()));
     Ok(folders)
 }
@@ -353,7 +363,12 @@ pub(crate) async fn remove(client: &Client, folder: &str) -> anyhow::Result<Remo
     }
     crate::k8s::delete_if_present(
         client,
-        &crate::k8s::reference("v1", "PersistentVolumeClaim", NAMESPACE, &claim_name(folder)),
+        &crate::k8s::reference(
+            "v1",
+            "PersistentVolumeClaim",
+            NAMESPACE,
+            &claim_name(folder),
+        ),
     )
     .await?;
     Ok(Removal::Removed)
@@ -383,7 +398,10 @@ mod tests {
     #[test]
     fn a_title_becomes_a_name_people_can_still_recognise() {
         assert_eq!(name_from_title("Movies & TV").as_deref(), Some("movies-tv"));
-        assert_eq!(name_from_title("  Photos 2026 ").as_deref(), Some("photos-2026"));
+        assert_eq!(
+            name_from_title("  Photos 2026 ").as_deref(),
+            Some("photos-2026")
+        );
         assert_eq!(name_from_title("Été / Ski").as_deref(), Some("t-ski"));
         assert_eq!(name_from_title("&&&"), None);
         let long = name_from_title(&"a ".repeat(60)).unwrap();
@@ -417,7 +435,10 @@ mod tests {
         let pv = app_pv("yolab-jellyfin", "movies");
         assert_eq!(pv["metadata"]["name"], "yolab-jellyfin.folder-movies");
         assert_eq!(pv["spec"]["persistentVolumeReclaimPolicy"], "Retain");
-        assert_eq!(pv["spec"]["csi"]["volumeAttributes"]["staticVolume"], "true");
+        assert_eq!(
+            pv["spec"]["csi"]["volumeAttributes"]["staticVolume"],
+            "true"
+        );
         assert_eq!(
             pv["spec"]["csi"]["volumeAttributes"]["rootPath"],
             "/volumes/csi/csi-vol-1/abc"
@@ -439,7 +460,9 @@ mod tests {
     #[test]
     fn a_folder_mount_is_recognised_even_when_the_chart_forgot_its_label() {
         let labelled: std::collections::BTreeMap<String, String> =
-            [(LABEL_FOLDER.to_string(), "movies".to_string())].into_iter().collect();
+            [(LABEL_FOLDER.to_string(), "movies".to_string())]
+                .into_iter()
+                .collect();
         assert!(is_mount("yolab-a", Some(&labelled), None));
         assert!(is_mount("yolab-a", None, Some("yolab-a.folder-movies")));
         assert!(!is_mount("yolab-a", None, Some("yolab-b.folder-movies")));
@@ -512,7 +535,10 @@ mod tests {
         assert!(users(&volumes, "docs").is_empty());
         assert_eq!(
             attached(&volumes, "yolab-sonarr"),
-            vec![("yolab-sonarr.folder-movies".to_string(), "movies".to_string())]
+            vec![(
+                "yolab-sonarr.folder-movies".to_string(),
+                "movies".to_string()
+            )]
         );
     }
 
@@ -569,7 +595,10 @@ mod tests {
             attach(&client, "yolab-jellyfin", &folders).await.unwrap();
             let applied = patched(&server).await;
             assert_eq!(applied.len(), 1);
-            assert_eq!(applied[0]["metadata"]["name"], "yolab-jellyfin.folder-movies");
+            assert_eq!(
+                applied[0]["metadata"]["name"],
+                "yolab-jellyfin.folder-movies"
+            );
             assert_eq!(
                 applied[0]["spec"]["csi"]["volumeAttributes"]["rootPath"],
                 "/volumes/csi/csi-vol-9/xyz"
@@ -587,7 +616,9 @@ mod tests {
             )
             .await;
             let folders: BTreeSet<String> = ["gone".to_string()].into_iter().collect();
-            let e = attach(&client, "yolab-jellyfin", &folders).await.unwrap_err();
+            let e = attach(&client, "yolab-jellyfin", &folders)
+                .await
+                .unwrap_err();
             assert!(format!("{e:#}").contains("does not exist"), "{e:#}");
             assert!(patched(&server).await.is_empty());
         }
@@ -612,7 +643,11 @@ mod tests {
             let (server, client) = api_server().await;
             let folders: BTreeSet<String> = ["../etc".to_string()].into_iter().collect();
             assert!(attach(&client, "yolab-x", &folders).await.is_err());
-            assert!(server.received_requests().await.unwrap_or_default().is_empty());
+            assert!(server
+                .received_requests()
+                .await
+                .unwrap_or_default()
+                .is_empty());
         }
 
         async fn serve_volumes(server: &wiremock::MockServer, items: Vec<Value>) {
@@ -657,7 +692,9 @@ mod tests {
             .await;
             accept_deletes(&server).await;
             let keep: BTreeSet<String> = ["movies".to_string()].into_iter().collect();
-            release_unused(&client, "yolab-sonarr", &keep).await.unwrap();
+            release_unused(&client, "yolab-sonarr", &keep)
+                .await
+                .unwrap();
             assert_eq!(
                 deleted(&server).await,
                 vec!["/api/v1/persistentvolumes/yolab-sonarr.folder-old"]
@@ -669,7 +706,10 @@ mod tests {
             let (server, client) = api_server().await;
             serve_volumes(
                 &server,
-                vec![app_pv("yolab-sonarr", "movies"), app_pv("yolab-sonarr", "tv")],
+                vec![
+                    app_pv("yolab-sonarr", "movies"),
+                    app_pv("yolab-sonarr", "tv"),
+                ],
             )
             .await;
             accept_deletes(&server).await;
@@ -694,10 +734,15 @@ mod tests {
             let (server, client) = api_server().await;
             serve_volumes(&server, vec![]).await;
             accept_deletes(&server).await;
-            assert!(matches!(remove(&client, "movies").await.unwrap(), Removal::Removed));
+            assert!(matches!(
+                remove(&client, "movies").await.unwrap(),
+                Removal::Removed
+            ));
             assert_eq!(
                 deleted(&server).await,
-                vec![format!("/api/v1/namespaces/{NAMESPACE}/persistentvolumeclaims/folder-movies")]
+                vec![format!(
+                    "/api/v1/namespaces/{NAMESPACE}/persistentvolumeclaims/folder-movies"
+                )]
             );
         }
 

@@ -56,7 +56,11 @@ pub async fn create(State(state): State<AppState>, Json(body): Json<CreateFolder
 
 pub async fn remove(State(state): State<AppState>, Path(name): Path<String>) -> Response {
     if !folders::is_name(&name) {
-        return (StatusCode::BAD_REQUEST, format!("{name:?} is not a folder name")).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            format!("{name:?} is not a folder name"),
+        )
+            .into_response();
     }
     let client = match state.kube.client().await {
         Ok(c) => c,

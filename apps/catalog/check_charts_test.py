@@ -2212,9 +2212,7 @@ class Setups(unittest.TestCase):
         self.assertTrue(any("has no folder field music" in f for f in found), found)
 
     def test_a_folder_the_setup_does_not_list_is_refused(self):
-        apps = {
-            "jellyfin": {"chart": "jellyfin", "folders": {"media_folder": "films"}}
-        }
+        apps = {"jellyfin": {"chart": "jellyfin", "folders": {"media_folder": "films"}}}
         found = self.collect(self.setup(apps=apps))
         self.assertTrue(any("uses folder films" in f for f in found), found)
 

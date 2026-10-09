@@ -196,8 +196,8 @@ export function FilesPage() {
           <>
             {removing && removing.used_by.length > 0 ? (
               <p>
-                {usedByLine(removing)}. Change their settings first so they
-                stop using it.
+                {usedByLine(removing)}. Change their settings first so they stop
+                using it.
               </p>
             ) : (
               <p>

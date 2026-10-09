@@ -80,12 +80,15 @@ pub(crate) async fn resolve_connections(
             "{field} names {from:?}, which is not an installed app"
         );
         let (app_id, provided, settings) = provided_by(client, catalog, from).await?;
-        let offered = provided.into_iter().find(|p| p.kind == wants).ok_or_else(|| {
-            anyhow::anyhow!(
+        let offered = provided
+            .into_iter()
+            .find(|p| p.kind == wants)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
                 "{} ({app_id}) does not offer {wants} — pick another one in this app's settings",
                 from.trim_start_matches("yolab-")
             )
-        })?;
+            })?;
         resolved.insert(field, connected(from, offered.deliver(from, &settings)));
     }
     Ok(resolved)
@@ -285,7 +288,11 @@ mod tests {
             )
             .await
             .is_err());
-            assert!(server.received_requests().await.unwrap_or_default().is_empty());
+            assert!(server
+                .received_requests()
+                .await
+                .unwrap_or_default()
+                .is_empty());
         }
     }
 }
