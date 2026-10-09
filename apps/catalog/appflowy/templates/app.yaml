@@ -65,7 +65,7 @@ spec:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
       - name: app
-        image: appflowyinc/appflowy_web:latest@sha256:4e3b871bd2369e29f15242303c17cbedb86ac342498b9c9b84fc0cb205297bb1
+        image: appflowyinc/appflowy_web:latest@sha256:8c5e4ec657d3227e7018f0919710c70aa9589fc5ab36ab2f6b98f34048ac4a79
         imagePullPolicy: IfNotPresent
         readinessProbe:
           httpGet:
@@ -366,7 +366,7 @@ spec:
     spec:
       containers:
       - name: minio
-        image: cgr.dev/chainguard/minio:latest@sha256:59667194421209c2c1eacbe761e24787e047985c5dfa96b15da9b59fe9b55cd0
+        image: cgr.dev/chainguard/minio:latest@sha256:f74600a1a46330cdbda1ef760d17a96bd6e0f4a6f0a2c49792ca3ee7e4c6fa18
         imagePullPolicy: IfNotPresent
         securityContext:
           runAsUser: 0

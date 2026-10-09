@@ -3,12 +3,12 @@ name: copyparty
 description: "Fast file server for your browser: upload, download, search and share files and folders"
 home: https://github.com/9001/copyparty
 type: application
-version: 0.1.1
+version: 0.1.2
 appVersion: "1.20.25"
 
 dependencies:
   - name: yolab-common
-    version: "0.1.14"
+    version: "0.1.15"
     repository: "oci://ghcr.io/demycode/charts"
 
 annotations:

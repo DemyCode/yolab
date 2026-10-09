@@ -432,7 +432,7 @@ spec:
     spec:
       containers:
       - name: rustfs-init
-        image: cgr.dev/chainguard/minio-client:latest-dev@sha256:603a402c2cd1543109c39eb5d1f731bd83b3c8f6ee8299b3785c8519fad0f5b5
+        image: cgr.dev/chainguard/minio-client:latest-dev@sha256:5feb4dcc570e7578f82e6c84384849e6557d005fb9b06f714c63f7184883b13f
         imagePullPolicy: IfNotPresent
         command:
         - /bin/sh

@@ -1,5 +1,5 @@
 {{- define "yolab-common.image.tor" -}}
-{{- (((.Values.yolab).images).tor) | default "docker.io/osminogin/tor-simple:0.4.9.13@sha256:9cd994f3bb813ae4ebd148ef077f8a61fd4420899e7ed5bcaa24aabd2d119648" -}}
+{{- (((.Values.yolab).images).tor) | default "docker.io/osminogin/tor-simple:0.4.9.14@sha256:ea335859425375b3294b15a5df61ca317ca4fdd143cf7a8d568bb2cd48217774" -}}
 {{- end -}}
 
 {{- define "yolab-common.image.tailscale" -}}

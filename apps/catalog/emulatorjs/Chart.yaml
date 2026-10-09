@@ -3,10 +3,10 @@ name: emulatorjs
 description: "Play your retro game collection in the browser"
 home: https://emulatorjs.org
 type: application
-version: 0.1.17
+version: 0.1.18
 dependencies:
   - name: yolab-common
-    version: "0.1.14"
+    version: "0.1.15"
     repository: "oci://ghcr.io/demycode/charts"
 
 annotations:
