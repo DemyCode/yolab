@@ -12,6 +12,22 @@
     else lib.importJSON yolabFacterPath;
   gpus = import ./detect.nix lib report;
 
+  aur470 = pkgs.fetchgit {
+    url = "https://aur.archlinux.org/nvidia-470xx-utils.git";
+    rev = "af0b7617132e32dd39174779aa8ced2a726afc51";
+    hash = "sha256-2PCK42OH0oxRlG5R9ptXDTOWMsMD7wdBZJIRsZC46AI=";
+  };
+  legacy470 = config.boot.kernelPackages.nvidiaPackages.legacy_470.overrideAttrs (old: {
+    patches =
+      old.patches
+      ++ map (p: "${aur470}/${p}") [
+        "nvidia-470xx-fix-linux-7.2-part1.patch"
+        "nvidia-470xx-fix-linux-7.2-part2.patch"
+        "nvidia-470xx-fix-linux-7.2-part3.patch"
+        "nvidia-470xx-fix-linux-7.3.patch"
+      ];
+  });
+
   reportFile = "${config.yolab.machineDir}/facter.json";
   writeReport = pkgs.writeShellApplication {
     name = "yolab-hardware-report";
@@ -72,6 +88,7 @@ in {
         modesetting.enable = true;
         nvidiaPersistenced = true;
         nvidiaSettings = false;
+        package = lib.mkIf (gpus.nvidia.branch == "legacy_470") legacy470;
       };
 
       hardware.nvidia-container-toolkit.enable = true;
