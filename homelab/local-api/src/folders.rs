@@ -322,7 +322,7 @@ pub(crate) async fn list(client: &Client) -> anyhow::Result<Vec<Folder>> {
         .iter()
         .filter_map(|c| folder_of(c, &volumes))
         .collect();
-    folders.sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase()));
+    folders.sort_by_key(|f| f.title.to_lowercase());
     Ok(folders)
 }
 
