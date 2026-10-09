@@ -809,7 +809,8 @@ mod tests {
             let b = Backend { kube, host };
             apply_policy(&b, &policy(2, "osd")).await;
             assert!(
-                b.host.ran("ceph osd pool set images crush_rule replicated_osd"),
+                b.host
+                    .ran("ceph osd pool set images crush_rule replicated_osd"),
                 "{:?}",
                 b.host.calls()
             );
