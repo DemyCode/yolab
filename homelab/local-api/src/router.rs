@@ -152,7 +152,10 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route("/api/services/{kind}", get(apps::list_services))
         .route("/api/folders", get(folders::list).post(folders::create))
-        .route("/api/groups", get(apps::list_groups).post(apps::install_group))
+        .route(
+            "/api/groups",
+            get(apps::list_groups).post(apps::install_group),
+        )
         .route(
             "/api/groups/{name}",
             get(apps::get_group)

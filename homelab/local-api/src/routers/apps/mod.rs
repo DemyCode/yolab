@@ -667,7 +667,10 @@ fn catalog_entry_from(
         let resolved = resolved_schema(&meta, sources)
             .map(|app| app.config())
             .unwrap_or_else(|why| {
-                tracing::warn!("group {}: its form does not resolve: {why}", meta.chart.name);
+                tracing::warn!(
+                    "group {}: its form does not resolve: {why}",
+                    meta.chart.name
+                );
                 Value::Null
             });
         ("group", resolved)

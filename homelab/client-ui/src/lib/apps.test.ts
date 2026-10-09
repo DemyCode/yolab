@@ -558,9 +558,7 @@ describe("picking an app the group should use", () => {
         status: "uninstalling" as const,
       },
     ];
-    expect(
-      appChoices("", [], ["qbittorrent", "transmission"], apps),
-    ).toEqual([
+    expect(appChoices("", [], ["qbittorrent", "transmission"], apps)).toEqual([
       { namespace: "yolab-qbittorrent", label: "qbittorrent" },
       { namespace: "yolab-tr-x2k4", label: "tr-x2k4 (transmission)" },
     ]);
