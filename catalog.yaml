@@ -165,9 +165,9 @@ charts:
   - name: filebrowser
     version: "0.1.20"
   - name: firefly-iii-importer
-    version: "0.1.4"
+    version: "0.1.5"
   - name: firefly-iii
-    version: "0.1.18"
+    version: "0.1.19"
   - name: firefox
     version: "0.1.3"
   - name: fizzy
@@ -279,7 +279,7 @@ charts:
   - name: kiwix
     version: "0.1.2"
   - name: kokoro
-    version: "0.1.3"
+    version: "0.1.4"
   - name: komodo
     version: "0.1.4"
   - name: l-town
@@ -405,7 +405,7 @@ charts:
   - name: octoprint
     version: "0.1.3"
   - name: ollama
-    version: "0.2.2"
+    version: "0.2.3"
   - name: omnitools
     version: "0.1.2"
   - name: onedev
@@ -415,7 +415,7 @@ charts:
   - name: onlyoffice
     version: "0.1.18"
   - name: open-webui
-    version: "0.2.13"
+    version: "0.2.14"
   - name: openclaw
     version: "0.1.17"
   - name: opencode
@@ -425,7 +425,7 @@ charts:
   - name: openhands
     version: "0.1.4"
   - name: openreader
-    version: "0.1.4"
+    version: "0.1.5"
   - name: openresty-manager
     version: "0.1.4"
   - name: openthread-border-router
@@ -688,3 +688,61 @@ charts:
     version: "0.1.4"
   - name: zoraxy
     version: "0.1.4"
+setups:
+  - id: ai-chat
+    title: AI chat
+    tagline: A private ChatGPT that runs on your own machines
+    main: open-webui
+    apps:
+      open-webui:
+        chart: open-webui
+        uses:
+          ollama: ollama
+      ollama:
+        chart: ollama
+  - id: movies-tv
+    title: Movies & TV
+    tagline: Find, download and watch your movies and shows on every screen
+    main: jellyfin
+    folders:
+      media:
+        title: Movies & TV
+    apps:
+      jellyfin:
+        chart: jellyfin
+        folders:
+          media_folder: media
+      sonarr:
+        chart: sonarr
+        folders:
+          media_folder: media
+      radarr:
+        chart: radarr
+        folders:
+          media_folder: media
+      prowlarr:
+        chart: prowlarr
+      qbittorrent:
+        chart: qbittorrent
+        folders:
+          media_folder: media
+  - id: music
+    title: Music
+    tagline: Your own music library, streamed to every device
+    main: navidrome
+    folders:
+      music:
+        title: Music
+    apps:
+      navidrome:
+        chart: navidrome
+        folders:
+          music_folder: music
+      lidarr:
+        chart: lidarr
+        folders:
+          media_folder: music
+      qbittorrent:
+        chart: qbittorrent
+        folders:
+          media_folder: music
