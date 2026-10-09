@@ -1,0 +1,13 @@
+apiVersion: v2
+name: music
+description: Navidrome to listen, Lidarr to find albums and a download client, sharing one music folder.
+type: application
+version: 0.1.0
+
+annotations:
+  yolab.io/kind: group
+  yolab.io/display-name: "Music"
+  yolab.io/icon: "🎧"
+  yolab.io/category: "media"
+  yolab.io/tagline: "Your own music library on every device"
+  yolab.io/collections: "watch-and-listen"

@@ -1,5 +1,6 @@
 import type { AppInfo, AppOutput, CatalogApp, PodInfo } from "@/types/apps";
 import { roughDuration } from "./format";
+import { serviceLabel, type ServiceInstance } from "./services";
 
 export interface AppLink {
   label: string;
@@ -292,4 +293,32 @@ export function podStatus(pod: PodInfo): string {
     default:
       return "Not responding";
   }
+}
+
+export interface AppChoice {
+  namespace: string;
+  label: string;
+}
+
+export function appChoices(
+  provides: string,
+  services: ServiceInstance[],
+  charts: string[],
+  apps: AppInfo[],
+): AppChoice[] {
+  if (provides) {
+    return services.map((s) => ({
+      namespace: s.namespace,
+      label: serviceLabel(s),
+    }));
+  }
+  return apps
+    .filter((a) => charts.includes(a.app_id) && a.status !== "uninstalling")
+    .map((a) => ({
+      namespace: `yolab-${a.instance_name}`,
+      label:
+        a.instance_name === a.app_id
+          ? a.instance_name
+          : `${a.instance_name} (${a.app_id})`,
+    }));
 }

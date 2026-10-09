@@ -2145,138 +2145,141 @@ class Folders(unittest.TestCase):
         self.assertFalse(check_charts.is_folder_claim(own))
 
 
-class Setups(unittest.TestCase):
-    SCHEMAS: ClassVar[dict] = {
-        "jellyfin": {
-            "properties": {
-                "config": {
-                    "properties": {
-                        "media_folder": {"type": "string", "format": "folder"},
-                        "hardware_transcoding": {"type": "boolean"},
-                    }
-                }
-            }
-        },
-        "prowlarr": {},
-    }
-
-    def collect(self, setup, setup_id="movies-tv"):
-        found = []
-        check_charts.check_setup(
-            setup_id, setup, self.SCHEMAS, lambda where, msg: found.append(msg)
-        )
-        return found
-
-    def setup(self, **overrides):
-        setup = {
-            "title": "Movies & TV",
-            "main": "jellyfin",
-            "folders": {"media": {"title": "Movies & TV"}},
-            "apps": {
-                "jellyfin": {
-                    "chart": "jellyfin",
-                    "settings": {"hardware_transcoding": True},
-                    "folders": {"media_folder": "media"},
-                },
-                "prowlarr": {"chart": "prowlarr"},
-            },
-        }
-        setup.update(overrides)
-        return setup
-
-    def test_a_well_formed_setup_passes(self):
-        self.assertEqual(self.collect(self.setup()), [])
-
-    def test_the_catalog_setups_are_well_formed(self):
-        schemas = {}
-        for chart in Path(check_charts.HERE).glob("*/Chart.yaml"):
-            schema = chart.parent / "values.schema.json"
-            schemas[chart.parent.name] = (
-                json.loads(schema.read_text()) if schema.exists() else {}
-            )
-        found = []
-        check_charts.check_setups(
-            Path(check_charts.HERE, "setups"),
-            schemas,
-            lambda where, msg: found.append(f"{where}: {msg}"),
-        )
-        self.assertTrue(list(Path(check_charts.HERE, "setups").glob("*.yaml")))
-        self.assertEqual(found, [])
-
-    def test_a_setup_installing_a_chart_the_catalog_lacks_is_refused(self):
-        found = self.collect(self.setup(apps={"plex": {"chart": "plex"}}, main=None))
-        self.assertTrue(any("not a chart in this catalog" in f for f in found), found)
-
-    def test_a_folder_field_the_chart_does_not_offer_is_refused(self):
-        apps = {"jellyfin": {"chart": "jellyfin", "folders": {"music": "media"}}}
-        found = self.collect(self.setup(apps=apps))
-        self.assertTrue(any("has no folder field music" in f for f in found), found)
-
-    def test_a_folder_the_setup_does_not_list_is_refused(self):
-        apps = {"jellyfin": {"chart": "jellyfin", "folders": {"media_folder": "films"}}}
-        found = self.collect(self.setup(apps=apps))
-        self.assertTrue(any("uses folder films" in f for f in found), found)
-
-    def test_a_setting_the_chart_does_not_have_is_refused(self):
-        apps = {"jellyfin": {"chart": "jellyfin", "settings": {"turbo": True}}}
-        found = self.collect(self.setup(apps=apps))
-        self.assertTrue(any("has no setting turbo" in f for f in found), found)
-
-    def test_a_misspelt_key_is_refused(self):
-        found = self.collect(self.setup(mains="jellyfin"))
-        self.assertTrue(any("unknown key mains" in f for f in found), found)
-
-    def test_a_main_app_outside_the_setup_is_refused(self):
-        found = self.collect(self.setup(main="plex"))
-        self.assertTrue(any("main names plex" in f for f in found), found)
-
-    def check_ai(self, apps):
-        schemas = {
-            **self.SCHEMAS,
-            "open-webui": {
+class Groups(unittest.TestCase):
+    CHARTS: ClassVar[dict] = {
+        "jellyfin": (
+            "0.2.12",
+            {
                 "properties": {
                     "config": {
                         "properties": {
-                            "ollama": {
-                                "type": "object",
-                                "format": "connection",
-                                "x-yolab-requires": "ollama",
+                            "media_folder": {"type": "string", "format": "folder"},
+                        },
+                        "dependencies": {
+                            "gpu": {
+                                "oneOf": [
+                                    {"properties": {"hardware_transcoding": {}}}
+                                ]
                             }
-                        }
+                        },
                     }
                 }
             },
-            "ollama": {"x-yolab-provides": {"ollama": ["api"]}},
-        }
+        ),
+        "prowlarr": ("0.1.4", {}),
+    }
+
+    def collect(self, fn, *args):
         found = []
-        check_charts.check_setup(
-            "ai", {"title": "AI", "apps": apps}, schemas, lambda w, m: found.append(m)
-        )
+        fn(*args, lambda where, msg: found.append(msg))
         return found
 
-    def test_a_setup_connects_an_app_to_one_that_provides_what_it_wants(self):
-        webui = {"chart": "open-webui", "uses": {"ollama": "ollama"}}
-        apps = {"open-webui": webui, "ollama": {"chart": "ollama"}}
-        self.assertEqual(self.check_ai(apps), [])
+    def resolve(self, schema):
+        found = []
+        resolved = check_charts.resolve_refs(
+            schema, self.CHARTS, lambda w, m: found.append(m), "g"
+        )
+        return resolved, found
 
-    def test_a_setup_connecting_to_an_app_that_lacks_the_interface_is_refused(self):
-        webui = {"chart": "open-webui", "uses": {"ollama": "ollama"}}
-        found = self.check_ai({"open-webui": webui, "ollama": {"chart": "prowlarr"}})
-        self.assertTrue(any("does not provide" in f for f in found), found)
+    def test_an_imported_field_arrives_whole_with_the_groups_own_words(self):
+        resolved, found = self.resolve(
+            {
+                "$ref": "chart:jellyfin#/properties/config/properties/media_folder",
+                "title": "Films",
+            }
+        )
+        self.assertEqual(found, [])
+        self.assertEqual(
+            resolved, {"type": "string", "format": "folder", "title": "Films"}
+        )
 
-    def test_a_setup_connecting_to_an_app_it_does_not_list_is_refused(self):
-        webui = {"chart": "open-webui", "uses": {"ollama": "ollama"}}
-        found = self.check_ai({"open-webui": webui})
-        self.assertTrue(any("not another app here" in f for f in found), found)
+    def test_a_reference_the_catalog_cannot_follow_is_reported(self):
+        for ref, words in [
+            ("chart:plex#/x", "no chart named plex"),
+            ("chart:jellyfin@0.1.0#/x", "not 0.1.0"),
+            ("chart:jellyfin#/nope", "nothing at /nope"),
+            ("chart:Jelly#/x", "is not chart:"),
+        ]:
+            _, found = self.resolve({"$ref": ref})
+            self.assertTrue(any(words in f for f in found), (ref, found))
 
-    def test_a_misspelt_connection_field_is_refused(self):
-        typo = {"chart": "open-webui", "uses": {"olama": "ollama"}}
-        found = self.check_ai({"open-webui": typo, "ollama": {"chart": "ollama"}})
-        self.assertTrue(any("no connection field" in f for f in found), found)
+    def test_a_pinned_version_the_catalog_has_resolves(self):
+        _, found = self.resolve(
+            {"$ref": "chart:jellyfin@0.2.12#/properties/config/properties/media_folder"}
+        )
+        self.assertEqual(found, [])
 
-    def test_a_setup_file_name_must_be_plain(self):
-        found = self.collect(self.setup(), setup_id="Movies TV")
-        self.assertTrue(any("not a plain name" in f for f in found), found)
+    def app(self, **fields):
+        return {"apiVersion": "yolab.io/v1", "kind": "App", **fields}
+
+    def test_apps_that_install_or_reuse_pass(self):
+        docs = [
+            self.app(name="jellyfin", chart="jellyfin", values={"media_folder": "m"}),
+            self.app(name="client", use="yolab-qbittorrent-ab12"),
+            self.app(name="prowlarr", chart="prowlarr@0.1.4"),
+        ]
+        found = self.collect(check_charts.check_group_apps, "g", docs, self.CHARTS)
+        self.assertEqual(found, [])
+
+    def test_a_setting_behind_a_switch_of_the_chart_counts_as_its_setting(self):
+        docs = [
+            self.app(
+                name="jellyfin",
+                chart="jellyfin",
+                values={"hardware_transcoding": True},
+            )
+        ]
+        found = self.collect(check_charts.check_group_apps, "g", docs, self.CHARTS)
+        self.assertEqual(found, [])
+
+    def test_what_a_group_may_not_render_is_reported(self):
+        cases = [
+            ({"apiVersion": "v1", "kind": "ConfigMap"}, "may only render"),
+            (self.app(name="Bad Name", chart="jellyfin"), "not a plain name"),
+            (self.app(name="a", chart="plex"), "not a chart in this catalog"),
+            (self.app(name="a", chart="jellyfin@0.1.0"), "pins jellyfin 0.1.0"),
+            (self.app(name="a", chart="jellyfin", use="yolab-x"), "exactly one"),
+            (self.app(name="a", use="kube-system"), "not an app"),
+            (
+                self.app(name="a", chart="jellyfin", values={"turbo": True}),
+                "has no setting turbo",
+            ),
+        ]
+        for doc, words in cases:
+            found = self.collect(check_charts.check_group_apps, "g", [doc], self.CHARTS)
+            self.assertTrue(any(words in f for f in found), (doc, found))
+
+    def test_two_apps_with_one_name_are_reported(self):
+        docs = [
+            self.app(name="a", chart="jellyfin"),
+            self.app(name="a", chart="prowlarr"),
+        ]
+        found = self.collect(check_charts.check_group_apps, "g", docs, self.CHARTS)
+        self.assertTrue(any("two Apps" in f for f in found), found)
+
+    def test_a_group_is_told_apart_from_an_app_by_its_annotation(self):
+        self.assertTrue(
+            check_charts.is_group_chart(
+                "name: x\nannotations:\n  yolab.io/kind: group\n"
+            )
+        )
+        self.assertFalse(check_charts.is_group_chart("name: x\n"))
+
+    def test_the_catalog_groups_resolve_and_render_every_choice(self):
+        charts = check_charts.catalog_charts()
+        groups = [
+            str(p.parent)
+            for p in Path(check_charts.HERE).glob("*/Chart.yaml")
+            if check_charts.is_group_chart(p.read_text())
+        ]
+        self.assertTrue(groups)
+        found = []
+        with tempfile.TemporaryDirectory() as tmp:
+            for group in groups:
+                check_charts.check_group(
+                    group, charts, tmp, lambda w, m: found.append(f"{w}: {m}")
+                )
+        self.assertEqual(found, [])
 
 
 class ImageArches(unittest.TestCase):

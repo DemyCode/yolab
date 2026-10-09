@@ -57,7 +57,7 @@ const cardSurface =
 export function AppCard({ app, count, stats }: CardProps) {
   return (
     <Link
-      to={`/add/${app.id}`}
+      to={app.kind === "group" ? `/add/group/${app.id}` : `/add/${app.id}`}
       className={cn(cardSurface, "flex h-full items-start gap-3.5 p-4")}
     >
       <AppIconTile appId={app.id} icon={app.icon} name={app.name} size="sm" />
@@ -76,7 +76,7 @@ export function AppCard({ app, count, stats }: CardProps) {
 export function FeaturedAppCard({ app, count, stats }: CardProps) {
   return (
     <Link
-      to={`/add/${app.id}`}
+      to={app.kind === "group" ? `/add/group/${app.id}` : `/add/${app.id}`}
       className={cn(
         cardSurface,
         "flex h-full items-start gap-4 p-5 sm:flex-col sm:gap-5",

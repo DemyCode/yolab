@@ -1517,90 +1517,188 @@ def check_folders(app, field, docs, fail):
             )
 
 
-SETUP_KEYS = {"title", "tagline", "main", "folders", "apps"}
-SETUP_APP_KEYS = {"chart", "settings", "folders", "uses"}
 PLAIN_NAME = re.compile(r"^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$")
+GROUP_KIND = "group"
+GROUP_SCHEMA = "group.schema.json"
+CHART_REF = re.compile(r"^chart:([a-z0-9-]+)(?:@([^#]+))?(?:#(/.*))?$")
+MAX_REF_DEPTH = 8
 
 
-def check_setup(setup_id, setup, schemas, fail):
-    where = f"setup {setup_id}"
-    if not isinstance(setup, dict):
-        fail(where, "is not a mapping")
-        return
-    if not PLAIN_NAME.match(setup_id):
-        fail(where, "its file name is not a plain name")
-    for key in sorted(set(setup) - SETUP_KEYS):
-        fail(where, f"unknown key {key}")
-    if not str(setup.get("title") or "").strip():
-        fail(where, "has no title")
-    folders = setup.get("folders") or {}
-    apps = setup.get("apps") or {}
-    if not apps:
-        fail(where, "has no apps")
-    if setup.get("main") is not None and setup["main"] not in apps:
-        fail(where, f"main names {setup['main']}, which is not one of its apps")
-    for key, folder in folders.items():
-        if not PLAIN_NAME.match(str(key)):
-            fail(where, f"folder {key!r} is not a plain name")
-        if not str((folder or {}).get("title") or "").strip():
-            fail(where, f"folder {key} has no title")
-    for key, app in apps.items():
-        app = app or {}
-        if not PLAIN_NAME.match(str(key)):
-            fail(where, f"app {key!r} is not a plain name")
-        for extra in sorted(set(app) - SETUP_APP_KEYS):
-            fail(where, f"app {key}: unknown key {extra}")
-        chart = app.get("chart")
-        if chart not in schemas:
+def is_group_chart(chart_yaml):
+    try:
+        annotations = (yaml.safe_load(chart_yaml) or {}).get("annotations") or {}
+    except yaml.YAMLError:
+        return False
+    return annotations.get("yolab.io/kind") == GROUP_KIND
+
+
+def catalog_charts(root=HERE):
+    found = {}
+    for chart_yaml in sorted(Path(root).glob("*/Chart.yaml")):
+        text = chart_yaml.read_text()
+        if "type: library" in text or is_group_chart(text):
+            continue
+        schema_path = chart_yaml.parent / "values.schema.json"
+        try:
+            schema = json.loads(schema_path.read_text()) if schema_path.exists() else {}
+        except json.JSONDecodeError:
+            schema = {}
+        found[chart_yaml.parent.name] = (chart_field(text, "version"), schema)
+    return found
+
+
+def json_pointer(doc, pointer):
+    for part in pointer.split("/")[1:]:
+        part = part.replace("~1", "/").replace("~0", "~")
+        doc = doc[int(part)] if isinstance(doc, list) else doc[part]
+    return doc
+
+
+def resolve_refs(node, charts, fail, where, depth=0):
+    if isinstance(node, list):
+        return [resolve_refs(v, charts, fail, where, depth) for v in node]
+    if not isinstance(node, dict):
+        return node
+    ref = node.get("$ref")
+    if not (isinstance(ref, str) and ref.startswith("chart:")):
+        return {k: resolve_refs(v, charts, fail, where, depth) for k, v in node.items()}
+    match = CHART_REF.match(ref)
+    if not match:
+        fail(where, f"{ref} is not chart:<name>[@<version>]#<pointer>")
+        return {}
+    name, version, pointer = match.groups()
+    if name not in charts:
+        fail(where, f"{ref}: there is no chart named {name}")
+        return {}
+    have, schema = charts[name]
+    if version and version != have:
+        fail(where, f"{ref}: this catalog has {name} {have}, not {version}")
+        return {}
+    if depth >= MAX_REF_DEPTH:
+        fail(where, f"{ref} leads through too many references")
+        return {}
+    try:
+        found = json_pointer(schema, pointer or "")
+    except (KeyError, IndexError, ValueError, TypeError):
+        fail(where, f"{ref}: {name} has nothing at {pointer}")
+        return {}
+    resolved = resolve_refs(found, charts, fail, where, depth + 1)
+    if isinstance(resolved, dict):
+        for k, v in node.items():
+            if k != "$ref":
+                resolved = {**resolved, k: resolve_refs(v, charts, fail, where, depth)}
+    return resolved
+
+
+def setting_names(schema):
+    config = (schema.get("properties") or {}).get("config") or {}
+    names = set(config.get("properties") or {})
+    for dep in (config.get("dependencies") or {}).values():
+        for branch in dep.get("oneOf") or []:
+            names.update(branch.get("properties") or {})
+    return names
+
+
+def check_group_apps(where, docs, charts, fail):
+    names = set()
+    for d in docs:
+        if d.get("apiVersion") != "yolab.io/v1" or d.get("kind") != "App":
             fail(
                 where,
-                f"app {key} installs {chart!r}, which is not a chart in this catalog",
+                f"renders a {d.get('kind')}, but a group may only render "
+                f"yolab.io/v1 App documents",
             )
             continue
-        offered = folder_fields(schemas[chart])
-        for field, folder in (app.get("folders") or {}).items():
-            if field not in offered:
-                fail(where, f"app {key}: {chart} has no folder field {field}")
-            if folder not in folders:
-                fail(
-                    where,
-                    f"app {key}: {field} uses folder {folder}, "
-                    f"which the setup does not list",
-                )
-        config = (schemas[chart].get("properties") or {}).get("config") or {}
-        props = config.get("properties") or {}
-        wanted_here = {
-            name: prop.get("x-yolab-requires")
-            for name, prop in props.items()
-            if isinstance(prop, dict) and prop.get("format") == "connection"
-        }
-        for field, other in (app.get("uses") or {}).items():
-            if field not in wanted_here:
-                fail(where, f"app {key}: {chart} has no connection field {field}")
-            elif other == key or other not in apps:
-                fail(where, f"app {key}: {field} uses {other}, not another app here")
-            else:
-                provider = (apps[other] or {}).get("chart")
-                offers = provided_kinds(schemas.get(provider) or {})
-                if wanted_here[field] not in offers:
-                    fail(
-                        where,
-                        f"app {key}: {field} wants {wanted_here[field]}, "
-                        f"which {provider} does not provide",
-                    )
-        for setting in app.get("settings") or {}:
-            if setting not in props:
-                fail(where, f"app {key}: {chart} has no setting {setting}")
-
-
-def check_setups(setups_dir, schemas, fail):
-    for path in sorted(Path(setups_dir).glob("*.yaml")):
-        try:
-            setup = yaml.safe_load(path.read_text())
-        except yaml.YAMLError as e:
-            fail(f"setup {path.stem}", f"is not valid YAML: {e}")
+        name = d.get("name")
+        if not isinstance(name, str) or not PLAIN_NAME.match(name):
+            fail(where, f"an App is named {name!r}, which is not a plain name")
             continue
-        check_setup(path.stem, setup, schemas, fail)
+        if name in names:
+            fail(where, f"two Apps are named {name}")
+        names.add(name)
+        chart, use = d.get("chart"), d.get("use")
+        if (chart is None) == (use is None):
+            fail(where, f"App {name} needs exactly one of chart (install) or use")
+            continue
+        if use is not None:
+            if not str(use).startswith("yolab-"):
+                fail(where, f"App {name} uses {use!r}, which is not an app")
+            continue
+        chart_name, _, version = str(chart).partition("@")
+        if chart_name not in charts:
+            fail(
+                where,
+                f"App {name} installs {chart_name}, which is not a chart in this catalog",
+            )
+            continue
+        if version and version != charts[chart_name][0]:
+            fail(
+                where,
+                f"App {name} pins {chart_name} {version}, "
+                f"but this catalog has {charts[chart_name][0]}",
+            )
+        offered = setting_names(charts[chart_name][1])
+        for key in d.get("values") or {}:
+            if key not in offered:
+                fail(where, f"App {name}: {chart_name} has no setting {key}")
+    if not names:
+        fail(where, "installs nothing")
+    return names
+
+
+def render_group(chart_dir, workdir, values_file, apps):
+    staged = os.path.join(workdir, os.path.basename(chart_dir.rstrip("/")))
+    shutil.copytree(chart_dir, staged, dirs_exist_ok=True)
+    cmd = ["helm", "template", "release", staged]
+    if values_file is not None:
+        cmd += ["--values", str(values_file)]
+    cmd += ["--set-json", f"yolab.apps={json.dumps(apps)}"]
+    out = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    shutil.rmtree(staged, ignore_errors=True)
+    if out.returncode != 0:
+        return None, out.stderr.strip()
+    return out.stdout, None
+
+
+def check_group(chart_dir, charts, workdir, fail):
+    app = os.path.basename(chart_dir.rstrip("/"))
+    text = Path(chart_dir, "Chart.yaml").read_text()
+    annotations = (yaml.safe_load(text) or {}).get("annotations") or {}
+    check_store_annotations(app, annotations, fail)
+    if Path(chart_dir, "values.schema.json").exists():
+        fail(
+            app,
+            f"a group keeps its form in {GROUP_SCHEMA}: helm would read "
+            f"values.schema.json and fail on its chart: references",
+        )
+    try:
+        schema = json.loads(Path(chart_dir, GROUP_SCHEMA).read_text())
+    except FileNotFoundError:
+        fail(app, f"a group needs {GROUP_SCHEMA}, the form people fill in")
+        schema = {}
+    except json.JSONDecodeError as e:
+        fail(app, f"{GROUP_SCHEMA} is not valid JSON: {e}")
+        schema = {}
+    resolve_refs(schema, charts, fail, app)
+    choices = [None, *sorted(Path(chart_dir, "ci").glob("*-values.yaml"))]
+    for values_file in choices:
+        where = app if values_file is None else f"{app} ({values_file.name})"
+        first, err = render_group(chart_dir, workdir, values_file, {})
+        if first is None:
+            fail(where, f"helm template failed: {err.splitlines()[-1] if err else '?'}")
+            continue
+        names = {
+            d.get("name")
+            for d in yaml.safe_load_all(first)
+            if d and isinstance(d.get("name"), str)
+        }
+        apps = {name: f"yolab-{name}-test" for name in names}
+        second, err = render_group(chart_dir, workdir, values_file, apps)
+        if second is None:
+            fail(where, f"helm template failed: {err.splitlines()[-1] if err else '?'}")
+            continue
+        docs = [d for d in yaml.safe_load_all(second) if d]
+        check_group_apps(where, docs, charts, fail)
 
 
 def main(argv):
@@ -1635,10 +1733,13 @@ def main(argv):
 
         wanted, provided = {}, {}
         wanted_by_key, provided_by_key = {}, {}
-        schemas = {}
+        groups = []
         for chart_dir in chart_dirs:
             app = os.path.basename(chart_dir.rstrip("/"))
             text = Path(chart_dir, "Chart.yaml").read_text()
+            if is_group_chart(text):
+                groups.append(chart_dir)
+                continue
 
             declared = re.search(
                 r"- name: yolab-common\s*\n\s*version:\s*\"?([^\"\n]+)", text
@@ -1671,7 +1772,6 @@ def main(argv):
                 fail(app, f"values.schema.json is not valid JSON: {e}")
                 schema = {}
             check_schema(app, schema, text, fail)
-            schemas[app] = schema
             wanted[app] = wanted_kinds(schema)
             provided[app] = provided_kinds(schema)
             wanted_by_key[app] = wanted_keys(schema)
@@ -1818,10 +1918,13 @@ def main(argv):
                 app, [d for d in yaml.safe_load_all(rendered) if d], fail
             )
 
+        charts = catalog_charts()
+        for chart_dir in groups:
+            check_group(chart_dir, charts, tmp, fail)
+
     if not argv[1:]:
         check_links(wanted, provided, fail)
         check_link_keys(wanted_by_key, provided_by_key, fail)
-        check_setups(os.path.join(HERE, "setups"), schemas, fail)
     print(f"checked {len(chart_dirs)} charts")
     for f in fail.items:
         print("FAIL " + f)

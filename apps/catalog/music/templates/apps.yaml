@@ -1,0 +1,31 @@
+{{- $c := .Values.config }}
+{{- $folder := $c.music_folder }}
+apiVersion: yolab.io/v1
+kind: App
+name: navidrome
+chart: navidrome
+main: true
+values:
+  music_folder: {{ $folder | quote }}
+---
+apiVersion: yolab.io/v1
+kind: App
+name: lidarr
+chart: lidarr
+values:
+  media_folder: {{ $folder | quote }}
+{{- if eq $c.download_client "existing" }}
+---
+apiVersion: yolab.io/v1
+kind: App
+name: download-client
+use: {{ $c.existing_client | quote }}
+{{- else if ne $c.download_client "none" }}
+---
+apiVersion: yolab.io/v1
+kind: App
+name: {{ $c.download_client }}
+chart: {{ $c.download_client }}
+values:
+  media_folder: {{ $folder | quote }}
+{{- end }}

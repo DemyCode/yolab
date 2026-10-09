@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "config": {
+      "title": "AI chat",
+      "type": "object",
+      "required": ["models_from"],
+      "properties": {
+        "models_from": {
+          "type": "string",
+          "title": "Where the models run",
+          "default": "new",
+          "oneOf": [
+            { "const": "new", "title": "Install Ollama with it" },
+            { "const": "existing", "title": "Use an Ollama I already have" },
+            { "const": "elsewhere", "title": "It runs somewhere else" }
+          ]
+        }
+      },
+      "dependencies": {
+        "models_from": {
+          "oneOf": [
+            { "properties": { "models_from": { "const": "new" } } },
+            {
+              "properties": {
+                "models_from": { "const": "existing" },
+                "existing_ollama": {
+                  "type": "string",
+                  "title": "Which Ollama",
+                  "format": "app",
+                  "x-yolab-provides": "ollama"
+                }
+              },
+              "required": ["existing_ollama"]
+            },
+            {
+              "properties": {
+                "models_from": { "const": "elsewhere" },
+                "ollama_address": {
+                  "$ref": "chart:open-webui#/properties/config/properties/ollama/properties/api",
+                  "title": "Ollama address",
+                  "minLength": 1,
+                  "description": "For example http://192.168.1.20:11434 — an Ollama on another computer."
+                }
+              },
+              "required": ["ollama_address"]
+            }
+          ]
+        }
+      }
+    }
+  }
+}

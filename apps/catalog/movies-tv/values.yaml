@@ -1,0 +1,6 @@
+config:
+  media_folder: ""
+  download_client: qbittorrent
+  existing_client: ""
+yolab:
+  apps: {}

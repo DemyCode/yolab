@@ -68,6 +68,7 @@ export interface CatalogApp {
   collections: string[];
   stars: number | null;
   pushed_at: string | null;
+  kind?: "app" | "group";
   schema: object;
 }
 

@@ -434,6 +434,12 @@ struct ChartYaml {
     dependencies: Vec<ChartDep>,
 }
 
+fn is_group(meta: &ChartYaml) -> bool {
+    meta.annotations
+        .get(crate::group_chart::KIND_ANNOTATION)
+        .is_some_and(|k| k == crate::group_chart::KIND_GROUP)
+}
+
 #[derive(Debug, Deserialize)]
 struct ChartDep {
     name: String,
@@ -641,7 +647,14 @@ async fn upload<H: Host>(
             return bad(format!("this chart does not render: {}", r.reason));
         }
     };
-    if let Err(r) = validate_rendered(&rendered, &release_ns) {
+    let checked = if is_group(&meta) {
+        crate::group_chart::members(&rendered)
+            .map(|_| ())
+            .map_err(|why| reject(format!("this group does not work as uploaded: {why}")))
+    } else {
+        validate_rendered(&rendered, &release_ns)
+    };
+    if let Err(r) = checked {
         let _ = tokio::fs::remove_dir_all(&tmp).await;
         return bad(r.reason);
     }

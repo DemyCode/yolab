@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   accessRows,
+  appChoices,
   appLinks,
   outputState,
   stillWaiting,
@@ -532,5 +533,49 @@ describe("podStatus", () => {
     expect(podStatus(pod("Succeeded"))).toBe("Finished its job");
     expect(podStatus(pod("Failed"))).toBe("Stopped");
     expect(podStatus(pod("Unknown"))).toBe("Not responding");
+  });
+});
+
+describe("picking an app the group should use", () => {
+  const base = {
+    chart_version: "1",
+    status: "running" as const,
+    detail: "",
+    outputs: [],
+    config: {},
+    backup: { enabled: false, schedule: "", last_ok_at: null, running: false },
+  };
+
+  it("lists installed apps of the charts it accepts, by namespace", () => {
+    const apps = [
+      { ...base, app_id: "qbittorrent", instance_name: "qbittorrent" },
+      { ...base, app_id: "transmission", instance_name: "tr-x2k4" },
+      { ...base, app_id: "sonarr", instance_name: "sonarr" },
+      {
+        ...base,
+        app_id: "qbittorrent",
+        instance_name: "old",
+        status: "uninstalling" as const,
+      },
+    ];
+    expect(
+      appChoices("", [], ["qbittorrent", "transmission"], apps),
+    ).toEqual([
+      { namespace: "yolab-qbittorrent", label: "qbittorrent" },
+      { namespace: "yolab-tr-x2k4", label: "tr-x2k4 (transmission)" },
+    ]);
+  });
+
+  it("lists every app that provides the interface it wants", () => {
+    const ollama = {
+      instance: "ai",
+      namespace: "yolab-ai",
+      app_id: "ollama",
+      title: "Ollama API",
+      url: "",
+    };
+    expect(appChoices("ollama", [ollama], [], [])).toEqual([
+      { namespace: "yolab-ai", label: "ai (ollama)" },
+    ]);
   });
 });

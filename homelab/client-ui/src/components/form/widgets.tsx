@@ -11,6 +11,8 @@ import {
   type ServiceInstance,
 } from "@/lib/services";
 import { useApi } from "@/lib/useResource";
+import { appChoices } from "@/lib/apps";
+import type { AppInfo } from "@/types/apps";
 import { cn } from "@/lib/utils";
 
 export function TunnelWidget(props: WidgetProps) {
@@ -314,5 +316,37 @@ export function FolderWidget(props: WidgetProps) {
       )}
       {error && <p className="text-sm text-danger">{error}</p>}
     </div>
+  );
+}
+
+export function AppWidget(props: WidgetProps) {
+  const { value, onChange, disabled, readonly, id, options } = props;
+  const provides = String(options?.provides ?? "");
+  const charts = (options?.charts as string[] | undefined) ?? [];
+  const services =
+    useApi<ServiceInstance[]>(
+      provides ? `services:${provides}` : null,
+      `/api/services/${encodeURIComponent(provides)}`,
+    ).data ?? [];
+  const apps = useApi<AppInfo[]>("apps", "/api/apps").data ?? [];
+  const choices = appChoices(provides, services, charts, apps);
+  const v = typeof value === "string" ? value : "";
+
+  return (
+    <Select
+      id={id}
+      value={v}
+      disabled={disabled || readonly}
+      onChange={(e) => onChange(e.target.value || undefined)}
+    >
+      <option value="">
+        {choices.length > 0 ? "Pick one…" : "You have none installed yet"}
+      </option>
+      {choices.map((c) => (
+        <option key={c.namespace} value={c.namespace}>
+          {c.label}
+        </option>
+      ))}
+    </Select>
   );
 }

@@ -338,6 +338,28 @@ describe("the file explorer's own ways in", () => {
   });
 });
 
+describe("an app the person already has", () => {
+  it("gets the installed-app picker, told what to look for", () => {
+    const ui = uiSchemaFor(
+      {
+        properties: {
+          client: {
+            type: "string",
+            format: "app",
+            "x-yolab-charts": ["qbittorrent"],
+          },
+        },
+      },
+      "6.yolab.io",
+    ) as Record<string, Record<string, unknown>>;
+    expect(ui.client["ui:widget"]).toBe("AppWidget");
+    expect(ui.client["ui:options"]).toEqual({
+      provides: "",
+      charts: ["qbittorrent"],
+    });
+  });
+});
+
 describe("a connection to another app", () => {
   it("gets the connection picker as a whole field", () => {
     const ui = uiSchemaFor(

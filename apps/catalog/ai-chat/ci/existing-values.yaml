@@ -1,0 +1,3 @@
+config:
+  models_from: existing
+  existing_ollama: yolab-ollama-ab12

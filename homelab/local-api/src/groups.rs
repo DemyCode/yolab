@@ -14,36 +14,6 @@ pub struct Membership {
     pub main: bool,
 }
 
-#[derive(Deserialize, Debug, Clone, PartialEq)]
-pub struct Joining {
-    pub title: String,
-    #[serde(default)]
-    pub name: Option<String>,
-    #[serde(default)]
-    pub main: bool,
-}
-
-impl Joining {
-    pub(crate) fn membership(&self) -> Result<Membership, String> {
-        let title = self.title.trim();
-        let name = match &self.name {
-            Some(name) if crate::folders::is_name(name) => name.clone(),
-            Some(name) => return Err(format!("{name:?} is not a group name")),
-            None => crate::folders::name_from_title(title)
-                .ok_or("a group needs a name with at least one letter or number")?,
-        };
-        let title = match title {
-            "" => name.clone(),
-            title => title.to_string(),
-        };
-        Ok(Membership {
-            name,
-            title,
-            main: self.main,
-        })
-    }
-}
-
 pub(crate) fn group_of(namespace: &Value) -> Option<Membership> {
     let labels = &namespace["metadata"]["labels"];
     let name = labels[LABEL_GROUP].as_str().filter(|n| !n.is_empty())?;
@@ -83,13 +53,6 @@ pub(crate) async fn set(
     membership: Option<&Membership>,
 ) -> anyhow::Result<()> {
     crate::k8s::merge_patch(client, &membership_patch(namespace, membership)).await
-}
-
-pub(crate) fn members<'a>(namespaces: &'a [Value], group: &str) -> Vec<&'a Value> {
-    namespaces
-        .iter()
-        .filter(|ns| group_of(ns).is_some_and(|m| m.name == group))
-        .collect()
 }
 
 #[cfg(test)]
@@ -150,43 +113,5 @@ mod tests {
         assert_eq!(patch["metadata"]["labels"][LABEL_GROUP], "movies-tv");
         assert_eq!(patch["metadata"]["labels"][LABEL_MAIN], Value::Null);
         assert_eq!(patch["metadata"]["annotations"][ANN_TITLE], "Movies & TV");
-    }
-
-    #[test]
-    fn joining_by_title_names_the_group_after_it() {
-        let joining = Joining {
-            title: " Movies & TV ".into(),
-            name: None,
-            main: true,
-        };
-        assert_eq!(
-            joining.membership().unwrap(),
-            Membership {
-                name: "movies-tv".into(),
-                title: "Movies & TV".into(),
-                main: true,
-            }
-        );
-        let bad = Joining {
-            title: "x".into(),
-            name: Some("Not A Name".into()),
-            main: false,
-        };
-        assert!(bad.membership().is_err());
-        let empty = Joining {
-            title: "&&".into(),
-            name: None,
-            main: false,
-        };
-        assert!(empty.membership().is_err());
-    }
-
-    #[test]
-    fn a_group_lists_only_its_own_members() {
-        let a = namespace(json!({ LABEL_GROUP: "movies-tv" }), json!({}));
-        let b = namespace(json!({ LABEL_GROUP: "photos" }), json!({}));
-        let c = namespace(json!({}), json!({}));
-        let all = vec![a.clone(), b, c];
-        assert_eq!(members(&all, "movies-tv"), vec![&a]);
     }
 }

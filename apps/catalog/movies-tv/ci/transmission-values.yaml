@@ -1,0 +1,3 @@
+config:
+  media_folder: shared
+  download_client: transmission

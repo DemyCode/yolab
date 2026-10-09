@@ -1,0 +1,13 @@
+apiVersion: v2
+name: movies-tv
+description: Jellyfin to watch, Sonarr and Radarr to find, Prowlarr to search and a download client, sharing one folder.
+type: application
+version: 0.1.0
+
+annotations:
+  yolab.io/kind: group
+  yolab.io/display-name: "Movies & TV"
+  yolab.io/icon: "🍿"
+  yolab.io/category: "media"
+  yolab.io/tagline: "Find, download and watch your films and shows"
+  yolab.io/collections: "watch-and-listen"

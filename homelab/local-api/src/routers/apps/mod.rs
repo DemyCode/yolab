@@ -95,6 +95,7 @@ pub struct CatalogApp {
     pub stars: Option<u64>,
     pub pushed_at: Option<String>,
     pub chart_version: String,
+    pub kind: String,
     pub schema: Value,
 }
 
@@ -230,8 +231,6 @@ pub struct InstallRequest {
     pub config: serde_json::Map<String, Value>,
     #[serde(default)]
     pub source: Option<install::InstallSource>,
-    #[serde(default)]
-    pub group: Option<crate::groups::Joining>,
 }
 
 fn namespace_ref(ns: &str) -> Value {
@@ -441,6 +440,7 @@ fn read_chart(dir: &std::path::Path) -> Option<ChartMeta> {
         return None;
     }
     let schema = std::fs::read_to_string(dir.join("values.schema.json"))
+        .or_else(|_| std::fs::read_to_string(dir.join(crate::group_chart::SCHEMA_FILE)))
         .ok()
         .and_then(|s| serde_json::from_str::<Value>(&s).ok())
         .unwrap_or(Value::Null);
@@ -661,7 +661,19 @@ fn catalog_entry_from(
     repo: String,
     meta: ChartMeta,
     stars: &std::collections::HashMap<String, crate::github::RepoStats>,
+    sources: &[(String, std::path::PathBuf)],
 ) -> CatalogApp {
+    let (kind, schema) = if is_group(&meta) {
+        let resolved = resolved_schema(&meta, sources)
+            .map(|app| app.config())
+            .unwrap_or_else(|why| {
+                tracing::warn!("group {}: its form does not resolve: {why}", meta.chart.name);
+                Value::Null
+            });
+        ("group", resolved)
+    } else {
+        ("app", meta.app.config())
+    };
     let github = meta.ann(ANN_GITHUB).to_string();
     let known = stars.get(&github).filter(|s| !s.archived || s.stars > 0);
     CatalogApp {
@@ -684,7 +696,8 @@ fn catalog_entry_from(
         pushed_at: known.and_then(|s| s.pushed_at.clone()),
         github,
         chart_version: meta.chart.version.clone(),
-        schema: meta.app.config(),
+        kind: kind.to_string(),
+        schema,
     }
 }
 
@@ -707,13 +720,11 @@ pub async fn refresh_catalog_app(
     };
 
     let stars = crate::github::read_all(&b.kube).await.unwrap_or_default();
-    let entry = crate::charts::chart_sources(&b.kube)
-        .await
-        .into_iter()
-        .find_map(|(repo, dir)| {
-            let m = read_chart(&dir.join(&id))?;
-            Some(catalog_entry_from(repo, m, &stars))
-        });
+    let sources = crate::charts::chart_sources(&b.kube).await;
+    let entry = sources.iter().find_map(|(repo, dir)| {
+        let m = read_chart(&dir.join(&id))?;
+        Some(catalog_entry_from(repo.clone(), m, &stars, &sources))
+    });
 
     Ok(Json(serde_json::json!({
         "refreshed": refreshed,
@@ -740,8 +751,9 @@ pub async fn catalog(State(state): State<AppState>) -> Result<Json<Vec<CatalogAp
         }
     }
     let stars = crate::github::read_all(&client).await.unwrap_or_default();
-    for (repo, dir) in crate::charts::chart_sources(&client).await {
-        let Ok(rd) = std::fs::read_dir(&dir) else {
+    let sources = crate::charts::chart_sources(&client).await;
+    for (repo, dir) in &sources {
+        let Ok(rd) = std::fs::read_dir(dir) else {
             continue;
         };
         for entry in rd.flatten() {
@@ -751,7 +763,7 @@ pub async fn catalog(State(state): State<AppState>) -> Result<Json<Vec<CatalogAp
             if !seen.insert(meta.chart.name.clone()) || !meta.in_store() {
                 continue;
             }
-            apps.push(catalog_entry_from(repo.clone(), meta, &stars));
+            apps.push(catalog_entry_from(repo.clone(), meta, &stars, &sources));
         }
     }
     apps.sort_by_key(|a| a.name.to_lowercase());
@@ -1451,15 +1463,6 @@ pub async fn install_app(
         Ok(s) => s,
         Err(e) => return refuse(e),
     };
-    let joining = match body
-        .group
-        .as_ref()
-        .map(crate::groups::Joining::membership)
-        .transpose()
-    {
-        Ok(m) => m,
-        Err(why) => return refuse(why),
-    };
     let b = match state.backend().await {
         Ok(b) => b,
         Err(e) => return (StatusCode::SERVICE_UNAVAILABLE, format!("{e:#}")).into_response(),
@@ -1522,7 +1525,6 @@ pub async fn install_app(
             return (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")).into_response();
         }
     }
-    join_on_install(&b.kube, &format!("yolab-{instance_name}"), joining.as_ref()).await;
     install::start(b, state.config.clone(), plan, state.http.clone());
     (
         StatusCode::ACCEPTED,
@@ -1594,6 +1596,9 @@ async fn open_app_namespace(
     let Some(meta) = read_chart(&chart_dir) else {
         anyhow::bail!("{id} is not a valid chart");
     };
+    if is_group(&meta) {
+        anyhow::bail!("{id} is a group of apps — install it from its own page, not as one app");
+    }
     let ns = format!("yolab-{instance_name}");
     ensure_app_namespace(client, &ns, id, &repo, &meta.chart.version)
         .await

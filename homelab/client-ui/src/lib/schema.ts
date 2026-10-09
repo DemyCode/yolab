@@ -12,6 +12,8 @@ export interface SchemaProp {
   generate?: boolean;
   "x-yolab-service"?: string;
   "x-yolab-requires"?: string;
+  "x-yolab-provides"?: string;
+  "x-yolab-charts"?: string[];
   properties?: Record<string, SchemaProp>;
 }
 
@@ -85,6 +87,15 @@ function fieldUi(prop: SchemaProp, domain: string): UiSchema | undefined {
   }
   if (prop.format === "connection") {
     return { "ui:field": "ConnectionField" };
+  }
+  if (prop.format === "app") {
+    return {
+      "ui:widget": "AppWidget",
+      "ui:options": {
+        provides: prop["x-yolab-provides"] ?? "",
+        charts: prop["x-yolab-charts"] ?? [],
+      },
+    };
   }
   if (prop.format === "yolab-token") {
     return { "ui:widget": "YolabTokenWidget" };

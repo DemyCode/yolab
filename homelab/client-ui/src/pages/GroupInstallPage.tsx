@@ -1,0 +1,158 @@
+import { useEffect, useMemo, useState } from "react";
+import { Link, useNavigate, useParams } from "react-router-dom";
+import { Page } from "@/components/AppShell";
+import { AppIconTile } from "@/components/AppIcon";
+import { GroupForm } from "@/components/GroupForm";
+import { Button } from "@/components/ui/button";
+import { buttonClass } from "@/components/ui/button-variants";
+import { EmptyState, Spinner } from "@/components/ui/feedback";
+import { Field, Input } from "@/components/ui/input";
+import { api } from "@/lib/api";
+import { generateSecret } from "@/lib/format";
+import { groupNameFor, type GroupRecord } from "@/lib/groups";
+import { seedForm } from "@/lib/install";
+import { configSchemaOf } from "@/lib/schema";
+import { useApi } from "@/lib/useResource";
+import type { CatalogApp } from "@/types/apps";
+
+export function GroupInstallPage() {
+  const { groupId = "" } = useParams();
+  const navigate = useNavigate();
+  const catalog = useApi<CatalogApp[]>("catalog", "/api/apps/catalog");
+  const groups = useApi<GroupRecord[]>("groups", "/api/groups");
+  const entry = catalog.data?.find(
+    (a) => a.id === groupId && a.kind === "group",
+  );
+  const config = useMemo(() => configSchemaOf(entry?.schema), [entry?.schema]);
+
+  const [formData, setFormData] = useState<Record<string, unknown> | null>(
+    null,
+  );
+  const [name, setName] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (formData === null && config.properties) {
+      setFormData(seedForm(config, null, "fresh", generateSecret));
+    }
+  }, [config, formData]);
+
+  useEffect(() => {
+    if (name === null && groups.data) {
+      setName(
+        groupNameFor(
+          groupId,
+          groups.data.map((g) => g.name),
+        ),
+      );
+    }
+  }, [name, groups.data, groupId]);
+
+  if (!entry) {
+    if (catalog.loading) {
+      return (
+        <Page>
+          <div className="flex justify-center py-20">
+            <Spinner />
+          </div>
+        </Page>
+      );
+    }
+    return (
+      <Page>
+        <EmptyState
+          title="This group is not in your catalog"
+          body="It may have been removed, or it comes from a source you no longer use."
+          action={
+            <Link to="/add" className={buttonClass()}>
+              Back to apps
+            </Link>
+          }
+        />
+      </Page>
+    );
+  }
+
+  async function install() {
+    if (!entry || !name || !formData) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await api.post("/api/groups", {
+        chart: entry.id,
+        repo: entry.repo,
+        name,
+        config: formData,
+      });
+      navigate(`/group/${name}`);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Page>
+      <div className="flex items-center gap-4">
+        <AppIconTile appId={entry.id} icon={entry.icon} name={entry.name} />
+        <div>
+          <h1 className="font-display text-2xl text-fg">{entry.name}</h1>
+          <p className="text-sm text-fg-muted">{entry.tagline}</p>
+        </div>
+      </div>
+      <p className="mt-4 text-sm text-fg-muted">{entry.description}</p>
+      <p className="mt-2 text-sm text-fg-muted">
+        Each app it installs is a normal app: you can open, change or remove it
+        on its own. The group remembers your choices so you can change them
+        later.
+      </p>
+
+      <div className="mt-6">
+        <Field
+          label="Name of this group"
+          htmlFor="group-name"
+          help="Lowercase letters, numbers and hyphens."
+        >
+          <Input
+            id="group-name"
+            value={name ?? ""}
+            onChange={(e) =>
+              setName(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, "-"))
+            }
+          />
+        </Field>
+      </div>
+
+      <section className="mt-8">
+        <h2 className="mb-2 px-1 text-sm font-semibold text-fg-muted">
+          Your choices
+        </h2>
+        {entry.schema && formData ? (
+          <GroupForm
+            schema={entry.schema}
+            formData={formData}
+            onChange={setFormData}
+          />
+        ) : (
+          <p className="text-sm text-danger">
+            This group&apos;s form could not be read. Its catalog may be missing
+            one of the apps it uses.
+          </p>
+        )}
+      </section>
+
+      {error && <p className="mt-4 text-sm text-danger">{error}</p>}
+
+      <div className="mt-8 flex justify-end">
+        <Button
+          onClick={() => void install()}
+          loading={busy}
+          disabled={!name || !formData || !entry.schema}
+        >
+          Install {entry.name}
+        </Button>
+      </div>
+    </Page>
+  );
+}

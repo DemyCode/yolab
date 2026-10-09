@@ -65,24 +65,6 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return (await res.json()) as T;
 }
 
-async function requestText(path: string): Promise<string> {
-  const headers = new Headers();
-  if (authToken) headers.set("Authorization", `Bearer ${authToken}`);
-  const res = await fetch(`${baseUrl}${path}`, {
-    headers,
-    credentials: "include",
-  });
-  if (res.status === 401) {
-    onUnauthorized?.();
-    throw new ApiError(401, "Your session expired. Please sign in again.");
-  }
-  const body = await res.text().catch(() => "");
-  if (!res.ok) {
-    throw new ApiError(res.status, errorMessageFrom(body, res.status));
-  }
-  return body;
-}
-
 export const api = {
   get: <T>(path: string) => request<T>(path),
   post: <T>(path: string, body?: unknown) =>
@@ -96,7 +78,6 @@ export const api = {
       body: body === undefined ? undefined : JSON.stringify(body),
     }),
   del: <T>(path: string) => request<T>(path, { method: "DELETE" }),
-  text: (path: string) => requestText(path),
 };
 
 export interface StreamResult {

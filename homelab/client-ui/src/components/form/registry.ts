@@ -6,6 +6,7 @@ import {
 } from "./templates";
 import {
   CheckboxWidget,
+  AppWidget,
   FolderWidget,
   PasswordWidget,
   ServiceUrlWidget,
@@ -29,6 +30,7 @@ export const widgets = {
   YolabTokenWidget,
   ServiceUrlWidget,
   FolderWidget,
+  AppWidget,
   PasswordWidget,
   CheckboxWidget,
   TextareaWidget,

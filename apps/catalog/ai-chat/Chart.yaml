@@ -1,0 +1,13 @@
+apiVersion: v2
+name: ai-chat
+description: Open WebUI connected to an Ollama, installed with it, one you already run, or one somewhere else.
+type: application
+version: 0.1.0
+
+annotations:
+  yolab.io/kind: group
+  yolab.io/display-name: "AI chat"
+  yolab.io/icon: "💬"
+  yolab.io/category: "ai"
+  yolab.io/tagline: "A private ChatGPT on your own machines"
+  yolab.io/collections: "privacy"

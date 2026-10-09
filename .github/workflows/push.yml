@@ -289,7 +289,11 @@ jobs:
             # hook is what does that (see yolab-common/templates/_uninstall.tpl). A
             # chart missing this leaks an orphaned tunnel on the platform every time
             # it's removed, silently, with nothing in the uninstall response to say so.
-            grep -rq "yolab-common.uninstallHook" "$chart" || { failed="$failed $name(no-uninstall-hook)"; continue; }
+            # A group (yolab.io/kind: group) is never installed itself: it only names
+            # the apps to install, and each of those carries its own hook.
+            grep -q "yolab.io/kind: group" "$chart/Chart.yaml" \
+              || grep -rq "yolab-common.uninstallHook" "$chart" \
+              || { failed="$failed $name(no-uninstall-hook)"; continue; }
 
             # Charts whose schema marks fields required legitimately fail lint against
             # default values, so lint with a filled-in set — the point is catching
@@ -377,15 +381,6 @@ jobs:
                 echo "::warning::${name} is not readable in the registry (HTTP ${code}) — omitted" >&2
               fi
             done
-            # Setups (several apps installed together, sharing folders) are
-            # small files with no package of their own, so they ride along here.
-            if compgen -G "apps/catalog/setups/*.yaml" > /dev/null; then
-              echo "setups:"
-              for setup in apps/catalog/setups/*.yaml; do
-                echo "  - id: $(basename "$setup" .yaml)"
-                sed 's/^/    /' "$setup"
-              done
-            fi
           } > catalog.yaml
           cat catalog.yaml
 

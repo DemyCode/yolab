@@ -1,0 +1,43 @@
+{{- $c := .Values.config }}
+{{- $folder := $c.media_folder }}
+apiVersion: yolab.io/v1
+kind: App
+name: jellyfin
+chart: jellyfin
+main: true
+values:
+  media_folder: {{ $folder | quote }}
+---
+apiVersion: yolab.io/v1
+kind: App
+name: sonarr
+chart: sonarr
+values:
+  media_folder: {{ $folder | quote }}
+---
+apiVersion: yolab.io/v1
+kind: App
+name: radarr
+chart: radarr
+values:
+  media_folder: {{ $folder | quote }}
+---
+apiVersion: yolab.io/v1
+kind: App
+name: prowlarr
+chart: prowlarr
+{{- if eq $c.download_client "existing" }}
+---
+apiVersion: yolab.io/v1
+kind: App
+name: download-client
+use: {{ $c.existing_client | quote }}
+{{- else if ne $c.download_client "none" }}
+---
+apiVersion: yolab.io/v1
+kind: App
+name: {{ $c.download_client }}
+chart: {{ $c.download_client }}
+values:
+  media_folder: {{ $folder | quote }}
+{{- end }}

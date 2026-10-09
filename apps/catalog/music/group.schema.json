@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "config": {
+      "title": "Music",
+      "type": "object",
+      "required": ["music_folder", "download_client"],
+      "properties": {
+        "music_folder": {
+          "$ref": "chart:navidrome#/properties/config/properties/music_folder",
+          "minLength": 1,
+          "description": "One folder for your downloads and your albums, shared by every app here. Create one, or pick one you have."
+        },
+        "download_client": {
+          "type": "string",
+          "title": "Download client",
+          "default": "qbittorrent",
+          "oneOf": [
+            { "const": "qbittorrent", "title": "Install qBittorrent" },
+            { "const": "transmission", "title": "Install Transmission" },
+            { "const": "existing", "title": "Use one I already have" },
+            { "const": "none", "title": "No download client" }
+          ]
+        }
+      },
+      "dependencies": {
+        "download_client": {
+          "oneOf": [
+            {
+              "properties": {
+                "download_client": { "enum": ["qbittorrent", "transmission", "none"] }
+              }
+            },
+            {
+              "properties": {
+                "download_client": { "const": "existing" },
+                "existing_client": {
+                  "type": "string",
+                  "title": "Which one",
+                  "format": "app",
+                  "x-yolab-charts": ["qbittorrent", "transmission"],
+                  "description": "It joins this group as it is: point it at the music folder in its own settings."
+                }
+              },
+              "required": ["existing_client"]
+            }
+          ]
+        }
+      }
+    }
+  }
+}

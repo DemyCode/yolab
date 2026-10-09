@@ -1,0 +1,6 @@
+config:
+  models_from: new
+  existing_ollama: ""
+  ollama_address: ""
+yolab:
+  apps: {}

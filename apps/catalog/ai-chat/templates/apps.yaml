@@ -1,0 +1,27 @@
+{{- $c := .Values.config }}
+{{- if eq $c.models_from "new" }}
+apiVersion: yolab.io/v1
+kind: App
+name: ollama
+chart: ollama
+---
+{{- else if eq $c.models_from "existing" }}
+apiVersion: yolab.io/v1
+kind: App
+name: ollama
+use: {{ $c.existing_ollama | quote }}
+---
+{{- end }}
+apiVersion: yolab.io/v1
+kind: App
+name: open-webui
+chart: open-webui
+main: true
+values:
+  ollama:
+  {{- if eq $c.models_from "elsewhere" }}
+    from: ""
+    api: {{ $c.ollama_address | quote }}
+  {{- else }}
+    from: {{ index .Values.yolab.apps "ollama" | default "" | quote }}
+  {{- end }}

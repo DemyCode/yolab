@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "config": {
+      "title": "Movies & TV",
+      "type": "object",
+      "required": ["media_folder", "download_client"],
+      "properties": {
+        "media_folder": {
+          "$ref": "chart:jellyfin#/properties/config/properties/media_folder",
+          "title": "Media folder",
+          "minLength": 1,
+          "description": "One folder for your downloads and your library, shared by every app here, so a finished download is moved instantly instead of copied. Create one, or pick one you have."
+        },
+        "download_client": {
+          "type": "string",
+          "title": "Download client",
+          "default": "qbittorrent",
+          "oneOf": [
+            { "const": "qbittorrent", "title": "Install qBittorrent" },
+            { "const": "transmission", "title": "Install Transmission" },
+            { "const": "existing", "title": "Use one I already have" },
+            { "const": "none", "title": "No download client" }
+          ]
+        }
+      },
+      "dependencies": {
+        "download_client": {
+          "oneOf": [
+            {
+              "properties": {
+                "download_client": { "enum": ["qbittorrent", "transmission", "none"] }
+              }
+            },
+            {
+              "properties": {
+                "download_client": { "const": "existing" },
+                "existing_client": {
+                  "type": "string",
+                  "title": "Which one",
+                  "format": "app",
+                  "x-yolab-charts": ["qbittorrent", "transmission"],
+                  "description": "It joins this group as it is: point it at the media folder in its own settings."
+                }
+              },
+              "required": ["existing_client"]
+            }
+          ]
+        }
+      }
+    }
+  }
+}
