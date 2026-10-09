@@ -521,7 +521,6 @@ fn build_values(
 
 pub(crate) const YOLAB_SWITCH: &str = "yolab_enabled";
 pub(crate) const YOLAB_TOKEN_FIELD: &str = "yolab_token";
-const EXPLORER_YOLAB_SWITCH: &str = "file_explorer_yolab_enabled";
 const TUNNEL_SECRET: &str = "yolab-tunnel-credentials";
 const LABEL_TOKEN_SOURCE: &str = "yolab.io/token-source";
 const TOKEN_FROM_FORM: &str = "form";
@@ -530,33 +529,6 @@ pub(crate) fn take_yolab_token(config: &mut serde_json::Map<String, Value>) -> O
     let token = config.remove(YOLAB_TOKEN_FIELD)?;
     let token = token.as_str()?.trim();
     (!token.is_empty() && token != REDACTED).then(|| token.to_string())
-}
-
-pub(crate) fn way_in_refused(
-    config_schema: &Value,
-    config: &serde_json::Map<String, Value>,
-) -> Option<&'static str> {
-    if config_schema["properties"][YOLAB_SWITCH].is_null() {
-        return None;
-    }
-    let on = |key: &str| config.get(key) == Some(&Value::Bool(true));
-    let offered = |key: &str| !config_schema["properties"][key].is_null();
-    let yolab = config.get(YOLAB_SWITCH) != Some(&Value::Bool(false));
-    let other_ways_offered = offered("tor_enabled") || offered("tailscale_enabled");
-    if other_ways_offered && !(yolab || on("tor_enabled") || on("tailscale_enabled")) {
-        return Some(
-            "Turn on at least one way to reach this app: the YoLab address, Tor or Tailscale.",
-        );
-    }
-    let explorer_yolab = match config.get(EXPLORER_YOLAB_SWITCH) {
-        Some(v) => v == &Value::Bool(true),
-        None => yolab,
-    };
-    let explorer_reachable =
-        explorer_yolab || on("file_explorer_tor_enabled") || on("file_explorer_tailscale_enabled");
-    (on("file_explorer_enabled") && !explorer_reachable).then_some(
-        "Turn on at least one way to reach the file explorer: its YoLab address, Tor or Tailscale. Or switch the file explorer off.",
-    )
 }
 
 fn box_token(tunnel_cfg: &toml::Table) -> &str {
@@ -1502,9 +1474,6 @@ pub async fn install_app(
             }
         },
     };
-    if let Some(why) = way_in_refused(&app.config(), &body.config) {
-        return refuse(why.into());
-    }
     let Some(instance_name) = unique_instance_name(&b.kube, &body.instance_name).await else {
         return refuse("could not derive a unique name for this app".into());
     };
@@ -1734,9 +1703,6 @@ pub async fn update_app(
             "this app's chart is in none of the chart repositories",
         )
             .into_response();
-    }
-    if let Some(why) = way_in_refused(&app.config(), &config) {
-        return (StatusCode::BAD_REQUEST, why).into_response();
     }
     if let Some(token) = form_token.as_deref() {
         if let Err(e) = store_form_token(&client, &ns, token).await {
@@ -3954,88 +3920,6 @@ mod tests {
         }
         let mut none = cfg(&[("subdomain", "x")]);
         assert_eq!(take_yolab_token(&mut none), None);
-    }
-
-    #[test]
-    fn an_app_with_every_way_in_switched_off_is_refused() {
-        let schema = switched_schema();
-        let refused = |v: Value| way_in_refused(&schema, &json_cfg(v)).is_some();
-        assert!(refused(serde_json::json!({"yolab_enabled": false})));
-        assert!(refused(
-            serde_json::json!({"yolab_enabled": false, "tor_enabled": false})
-        ));
-        assert!(!refused(
-            serde_json::json!({"yolab_enabled": false, "tor_enabled": true})
-        ));
-        assert!(!refused(
-            serde_json::json!({"yolab_enabled": false, "tailscale_enabled": true})
-        ));
-        assert!(!refused(serde_json::json!({"yolab_enabled": true})));
-        assert!(!refused(
-            serde_json::json!({"subdomain": "from-before-the-switch"})
-        ));
-    }
-
-    #[test]
-    fn a_file_explorer_with_every_way_in_switched_off_is_refused() {
-        let schema = switched_schema();
-        let refused = |v: Value| way_in_refused(&schema, &json_cfg(v)).is_some();
-        assert!(refused(serde_json::json!({
-            "file_explorer_enabled": true,
-            "file_explorer_yolab_enabled": false,
-        })));
-        assert!(refused(serde_json::json!({
-            "yolab_enabled": false,
-            "tor_enabled": true,
-            "file_explorer_enabled": true,
-        })));
-        assert!(!refused(serde_json::json!({
-            "file_explorer_enabled": true,
-            "file_explorer_yolab_enabled": false,
-            "file_explorer_tor_enabled": true,
-        })));
-        assert!(!refused(serde_json::json!({
-            "file_explorer_enabled": true,
-            "file_explorer_yolab_enabled": false,
-            "file_explorer_tailscale_enabled": true,
-        })));
-        assert!(!refused(serde_json::json!({
-            "file_explorer_enabled": false,
-            "file_explorer_yolab_enabled": false,
-        })));
-    }
-
-    #[test]
-    fn a_file_explorer_from_before_its_switches_follows_the_app_s_yolab_address() {
-        let schema = switched_schema();
-        let refused = |v: Value| way_in_refused(&schema, &json_cfg(v)).is_some();
-        assert!(!refused(serde_json::json!({"file_explorer_enabled": true})));
-        assert!(!refused(serde_json::json!({
-            "yolab_enabled": false,
-            "tor_enabled": true,
-            "file_explorer_enabled": true,
-            "file_explorer_yolab_enabled": true,
-        })));
-    }
-
-    #[test]
-    fn an_app_offering_only_the_yolab_address_may_switch_it_off_to_stay_internal() {
-        let mut schema = switched_schema();
-        let props = schema["properties"].as_object_mut().unwrap();
-        props.remove("tor_enabled");
-        props.remove("tailscale_enabled");
-        let refused = |v: Value| way_in_refused(&schema, &json_cfg(v)).is_some();
-        assert!(!refused(serde_json::json!({"yolab_enabled": false})));
-        assert!(refused(serde_json::json!({
-            "yolab_enabled": false,
-            "file_explorer_enabled": true,
-        })));
-    }
-
-    #[test]
-    fn apps_without_the_switch_are_not_judged() {
-        let no_switch = serde_json::json!({"properties": {"subdomain": {"format": "tunnel"}}});
-        assert_eq!(way_in_refused(&no_switch, &cfg(&[])), None);
     }
 
     #[test]
