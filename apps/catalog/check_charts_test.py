@@ -1118,7 +1118,6 @@ PRIVATE_TAILSCALE_ONLY = frozenset({"ollama"})
 
 class PrivateAccessChoice(unittest.TestCase):
     def offers(self):
-        import json
 
         found = {}
         for path in Path(check_charts.HERE).glob("*/values.schema.json"):
@@ -1338,7 +1337,6 @@ class YolabSwitch(unittest.TestCase):
         )
 
     def test_every_app_with_a_subdomain_has_the_switch(self):
-        import json
 
         for path in Path(check_charts.HERE).glob("*/values.schema.json"):
             config = json.loads(path.read_text())["properties"]["config"]
@@ -2157,9 +2155,7 @@ class Groups(unittest.TestCase):
                         },
                         "dependencies": {
                             "gpu": {
-                                "oneOf": [
-                                    {"properties": {"hardware_transcoding": {}}}
-                                ]
+                                "oneOf": [{"properties": {"hardware_transcoding": {}}}]
                             }
                         },
                     }

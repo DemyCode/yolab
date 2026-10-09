@@ -22,15 +22,19 @@ pub(crate) fn is_group(meta: &ChartMeta) -> bool {
     meta.ann(crate::group_chart::KIND_ANNOTATION) == crate::group_chart::KIND_GROUP
 }
 
-fn schema_loader(sources: &[(String, PathBuf)]) -> impl Fn(&str, Option<&str>) -> Option<Value> + '_ {
+fn schema_loader(
+    sources: &[(String, PathBuf)],
+) -> impl Fn(&str, Option<&str>) -> Option<Value> + '_ {
     move |chart: &str, version: Option<&str>| {
         let cache = std::path::Path::new(crate::charts::CACHE_DIR);
         sources.iter().find_map(|(repo, dir)| {
             let found = match version {
-                Some(v) => crate::charts::cached_at_version(cache, repo, chart, v).or_else(|| {
-                    let d = dir.join(chart);
-                    read_chart(&d).filter(|m| m.chart.version == v).map(|_| d)
-                })?,
+                Some(v) => {
+                    crate::charts::cached_at_version(cache, repo, chart, v).or_else(|| {
+                        let d = dir.join(chart);
+                        read_chart(&d).filter(|m| m.chart.version == v).map(|_| d)
+                    })?
+                }
                 None => dir.join(chart),
             };
             let text = std::fs::read_to_string(found.join("values.schema.json")).ok()?;
@@ -83,7 +87,9 @@ async fn read_record(client: &Client, name: &str) -> anyhow::Result<Option<Group
 fn record_of(secret: &Value) -> Option<GroupRecord> {
     use base64::Engine as _;
     let encoded = secret["data"][RECORD_KEY].as_str()?;
-    let bytes = base64::engine::general_purpose::STANDARD.decode(encoded).ok()?;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .ok()?;
     serde_json::from_slice(&bytes).ok()
 }
 
@@ -111,7 +117,10 @@ async fn render<H: crate::host::Host>(
     apps: &BTreeMap<String, String>,
 ) -> Result<Vec<Member>, String> {
     let staged = |e: std::io::Error| format!("could not stage the group's values: {e}");
-    let values = tempfile::Builder::new().suffix(".json").tempfile().map_err(staged)?;
+    let values = tempfile::Builder::new()
+        .suffix(".json")
+        .tempfile()
+        .map_err(staged)?;
     std::fs::write(values.path(), values_file(config, apps).to_string()).map_err(staged)?;
     let out = host
         .run_cmd_bounded(
@@ -246,7 +255,10 @@ pub async fn install_group(
         Ok(Some(_)) => {
             return refuse(
                 StatusCode::CONFLICT,
-                format!("you already have a group named {} — pick another name", body.name),
+                format!(
+                    "you already have a group named {} — pick another name",
+                    body.name
+                ),
             )
         }
         Err(e) => return refuse(StatusCode::SERVICE_UNAVAILABLE, format!("{e:#}")),
@@ -254,7 +266,10 @@ pub async fn install_group(
     let Some((repo, dir)) =
         crate::charts::resolve_chart(&b.kube, &body.chart, body.repo.as_deref()).await
     else {
-        return refuse(StatusCode::NOT_FOUND, format!("no group named {}", body.chart));
+        return refuse(
+            StatusCode::NOT_FOUND,
+            format!("no group named {}", body.chart),
+        );
     };
     let Some(meta) = read_chart(&dir).filter(is_group) else {
         return refuse(
@@ -396,9 +411,10 @@ async fn set_status(
             message,
         },
     );
-    write_record(client, record)
-        .await
-        .warn_on_err(format!("group {}: could not save its progress", record.name));
+    write_record(client, record).await.warn_on_err(format!(
+        "group {}: could not save its progress",
+        record.name
+    ));
 }
 
 async fn run_group(
@@ -413,7 +429,9 @@ async fn run_group(
         crate::groups::set(&b.kube, ns, None)
             .await
             .warn_on_err(format!("group {}: could not take {key} out", record.name));
-        record.left.push(ns.trim_start_matches("yolab-").to_string());
+        record
+            .left
+            .push(ns.trim_start_matches("yolab-").to_string());
     }
     for key in crate::group_chart::install_order(&members, &record.members) {
         let (Some(member), Some(ns)) = (
