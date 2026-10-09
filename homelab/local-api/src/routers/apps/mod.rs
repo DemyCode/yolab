@@ -663,8 +663,8 @@ fn catalog_entry_from(
     stars: &std::collections::HashMap<String, crate::github::RepoStats>,
     sources: &[(String, std::path::PathBuf)],
 ) -> CatalogApp {
-    let (kind, schema) = if is_group(&meta) {
-        let resolved = resolved_schema(&meta, sources)
+    let (kind, schema) = if group::is_group(&meta) {
+        let resolved = group::resolved_schema(&meta, sources)
             .map(|app| app.config())
             .unwrap_or_else(|why| {
                 tracing::warn!(
@@ -1599,7 +1599,7 @@ async fn open_app_namespace(
     let Some(meta) = read_chart(&chart_dir) else {
         anyhow::bail!("{id} is not a valid chart");
     };
-    if is_group(&meta) {
+    if group::is_group(&meta) {
         anyhow::bail!("{id} is a group of apps — install it from its own page, not as one app");
     }
     let ns = format!("yolab-{instance_name}");

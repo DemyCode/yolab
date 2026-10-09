@@ -18,7 +18,7 @@ const WORKING: &str = "working";
 const DONE: &str = "done";
 const FAILED: &str = "failed";
 
-pub(crate) fn is_group(meta: &ChartMeta) -> bool {
+pub(super) fn is_group(meta: &ChartMeta) -> bool {
     meta.ann(crate::group_chart::KIND_ANNOTATION) == crate::group_chart::KIND_GROUP
 }
 
@@ -43,7 +43,7 @@ fn schema_loader(
     }
 }
 
-pub(crate) fn resolved_schema(
+pub(super) fn resolved_schema(
     meta: &ChartMeta,
     sources: &[(String, PathBuf)],
 ) -> std::result::Result<crate::appschema::AppSchema, String> {
