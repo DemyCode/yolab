@@ -20,6 +20,7 @@ export interface AppInfo {
   technical?: string;
   since?: string | null;
   retry_at?: string | null;
+  reason?: string;
   outputs: AppOutput[];
   config: Record<string, unknown>;
   backup: AppBackupStatus;

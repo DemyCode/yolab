@@ -1691,6 +1691,22 @@ class Containers(unittest.TestCase):
         found = self.failures([{"name": "seed"}], init=[{"name": "seed"}])
         self.assertEqual(len(found), 1, found)
 
+    def test_a_port_name_longer_than_fifteen_characters_is_reported(self):
+        found = self.failures(
+            [{"name": "steam", "ports": [{"name": "sunshine-control", "containerPort": 1}]}]
+        )
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("sunshine-control", found[0])
+
+    def test_port_names_the_api_server_refuses_are_reported(self):
+        for bad in ["Web", "web_ui", "-web", "web-", "we--b", "8080"]:
+            found = self.failures([{"name": "app", "ports": [{"name": bad}]}])
+            self.assertEqual(len(found), 1, bad)
+
+    def test_ordinary_port_names_and_unnamed_ports_pass(self):
+        ports = [{"name": "sunshine-ctrl"}, {"name": "http"}, {"name": "h2c"}, {}]
+        self.assertEqual(self.failures([{"name": "app", "ports": ports}]), [])
+
 
 class Disabled(unittest.TestCase):
     def failures(self, annotations):

@@ -77,7 +77,8 @@ export function appState(app: AppInfo): AppState {
 }
 
 export function appLabel(app: AppInfo, state: AppState): string {
-  if (state === "failed" || state === "stopped") return appStateLabel(state);
+  if (state === "stopped") return app.reason?.trim() || appStateLabel(state);
+  if (state === "failed") return appStateLabel(state);
   return app.detail?.trim() || appStateLabel(state);
 }
 
@@ -185,7 +186,10 @@ export function availableActions(
 
 export type StatusTone = "live" | "busy" | "warn" | "error";
 
-export function appStatus(state: AppState): {
+export function appStatus(
+  state: AppState,
+  reason?: string,
+): {
   tone: StatusTone;
   label: string;
 } {
@@ -193,7 +197,7 @@ export function appStatus(state: AppState): {
     case "failed":
       return { tone: "error", label: "Failed installation" };
     case "stopped":
-      return { tone: "warn", label: "Stopped working" };
+      return { tone: "warn", label: reason?.trim() || "Stopped working" };
     case "removing":
       return { tone: "busy", label: "Being removed" };
     case "copying":

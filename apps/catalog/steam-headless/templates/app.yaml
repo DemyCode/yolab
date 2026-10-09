@@ -106,7 +106,7 @@ spec:
           containerPort: 47998
           hostPort: 47998
           protocol: UDP
-        - name: sunshine-control
+        - name: sunshine-ctrl
           containerPort: 47999
           hostPort: 47999
           protocol: UDP

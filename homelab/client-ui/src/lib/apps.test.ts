@@ -241,6 +241,17 @@ describe("appState", () => {
     expect(appLabel(stopped, appState(stopped))).toBe("Stopped working");
   });
 
+  it("shows a crashing app with the reason Kubernetes gives, as is", () => {
+    const crashing = app({ status: "stopped", reason: "CrashLoopBackOff" });
+    expect(appLabel(crashing, appState(crashing))).toBe("CrashLoopBackOff");
+    expect(appStatus("stopped", "CrashLoopBackOff").label).toBe("CrashLoopBackOff");
+  });
+
+  it("keeps \"Failed installation\" for an install that never finished", () => {
+    const failed = app({ status: "failed", reason: "CrashLoopBackOff" });
+    expect(appLabel(failed, appState(failed))).toBe("Failed installation");
+  });
+
   it("shows the server's copy progress instead of a generic label", () => {
     const copying = app({
       status: "copying",

@@ -44,6 +44,7 @@ pub struct AppInfo {
     pub technical: String,
     pub since: Option<String>,
     pub retry_at: Option<String>,
+    pub reason: String,
     pub outputs: Vec<crate::outputs::ShownOutput>,
     pub config: serde_json::Map<String, Value>,
     pub backup: AppBackupStatus,
@@ -1006,6 +1007,7 @@ const FAILURE_LOG_LINES: i64 = 5;
 pub(crate) struct ContainerFailure {
     pub pod: String,
     pub container: String,
+    pub init: bool,
     pub said: String,
     pub exit_code: Option<i64>,
     pub previous: bool,
@@ -1052,11 +1054,12 @@ impl ContainerFailure {
     }
 }
 
-fn failure_of(pod: &str, cs: &Value) -> Option<ContainerFailure> {
+fn failure_of(pod: &str, init: bool, cs: &Value) -> Option<ContainerFailure> {
     let text = |v: &Value| v["message"].as_str().unwrap_or("").trim().to_string();
     let failure = |said: String, ended: &Value, previous: bool, reason: &str| ContainerFailure {
         pod: pod.to_string(),
         container: cs["name"].as_str().unwrap_or("").to_string(),
+        init,
         said,
         exit_code: ended["exitCode"].as_i64(),
         previous,
@@ -1096,21 +1099,17 @@ fn failure_of(pod: &str, cs: &Value) -> Option<ContainerFailure> {
 pub(crate) fn container_failure(pods: &[&Value]) -> Option<ContainerFailure> {
     pods.iter().find_map(|pod| {
         let name = pod["metadata"]["name"].as_str().unwrap_or("");
-        ["initContainerStatuses", "containerStatuses"]
+        [("initContainerStatuses", true), ("containerStatuses", false)]
             .iter()
-            .flat_map(|key| pod["status"][key].as_array().into_iter().flatten())
-            .find_map(|cs| failure_of(name, cs))
-    })
-}
-
-pub(crate) fn has_come_up(deployments: &[&Value]) -> bool {
-    !deployments.is_empty()
-        && deployments.iter().all(|d| {
-            d["status"]["conditions"].as_array().is_some_and(|cs| {
-                cs.iter()
-                    .any(|c| c["type"] == "Progressing" && c["reason"] == "NewReplicaSetAvailable")
+            .flat_map(|&(key, init)| {
+                pod["status"][key]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .map(move |cs| (init, cs))
             })
-        })
+            .find_map(|(init, cs)| failure_of(name, init, cs))
+    })
 }
 
 fn last_lines(log: &str) -> String {
@@ -1216,10 +1215,9 @@ pub async fn list_apps(State(state): State<AppState>) -> Result<Json<Vec<AppInfo
         .unwrap_or_default();
     let managed = kube::api::ListParams::default().labels(&format!("{LABEL_MANAGED}=true"));
     let everything = kube::api::ListParams::default();
-    let (ns_out, pods_out, deployments_out, pvcs_out, events_out, mut remembered) = tokio::join!(
+    let (ns_out, pods_out, pvcs_out, events_out, mut remembered) = tokio::join!(
         crate::k8s::list(client, "v1", "Namespace", None, &managed),
         crate::k8s::list(client, "v1", "Pod", None, &everything),
-        crate::k8s::list(client, "apps/v1", "Deployment", None, &everything),
         crate::k8s::list(client, "v1", "PersistentVolumeClaim", None, &everything),
         crate::k8s::list(client, "v1", "Event", None, &everything),
         crate::outputs::remembered_everywhere(client),
@@ -1231,13 +1229,6 @@ pub async fn list_apps(State(state): State<AppState>) -> Result<Json<Vec<AppInfo
     for pod in &all_pod_items {
         if let Some(ns) = pod["metadata"]["namespace"].as_str() {
             pods_by_ns.entry(ns).or_default().push(pod);
-        }
-    }
-    let all_deployment_items = deployments_out.unwrap_or_default();
-    let mut deployments_by_ns: std::collections::HashMap<&str, Vec<&Value>> = Default::default();
-    for deployment in &all_deployment_items {
-        if let Some(ns) = deployment["metadata"]["namespace"].as_str() {
-            deployments_by_ns.entry(ns).or_default().push(deployment);
         }
     }
     let all_pvc_items = pvcs_out.unwrap_or_default();
@@ -1266,14 +1257,15 @@ pub async fn list_apps(State(state): State<AppState>) -> Result<Json<Vec<AppInfo
         let mut technical = String::new();
         let mut since: Option<String> = None;
         let mut retry_at: Option<String> = None;
+        let mut reason = String::new();
         let status = if phase == "Terminating" || uninstall_lock_is_fresh(&ann) {
             since = ns["metadata"]["deletionTimestamp"]
                 .as_str()
                 .map(str::to_string);
             "uninstalling".to_string()
-        } else if let Some(reason) = install_failure(&ann) {
-            detail = install_failure_headline(&reason);
-            technical = reason;
+        } else if let Some(why) = install_failure(&ann) {
+            detail = install_failure_headline(&why);
+            technical = why;
             "failed".to_string()
         } else if let Some((copying, started)) =
             copying_data(&ns_full, &pvcs_by_ns, &all_event_items)
@@ -1308,14 +1300,11 @@ pub async fn list_apps(State(state): State<AppState>) -> Result<Json<Vec<AppInfo
                 detail = failure.headline();
                 technical = explain_failure(client, &ns_full, &failure).await;
                 retry_at = failure.retry_at.clone();
-                let deployments = deployments_by_ns
-                    .get(ns_full.as_str())
-                    .map(|v| v.as_slice())
-                    .unwrap_or(&[]);
-                if has_come_up(deployments) {
-                    "stopped"
-                } else {
+                reason = failure.reason.clone();
+                if failure.init {
                     "failed"
+                } else {
+                    "stopped"
                 }
                 .to_string()
             } else {
@@ -1373,6 +1362,7 @@ pub async fn list_apps(State(state): State<AppState>) -> Result<Json<Vec<AppInfo
             technical,
             since,
             retry_at,
+            reason,
             outputs,
             config,
             backup: AppBackupStatus {
@@ -2475,38 +2465,6 @@ mod tests {
         assert_eq!(last_lines(""), "");
     }
 
-    fn deployment(reason: &str) -> Value {
-        json!({"status": {"conditions": [
-            {"type": "Available", "status": "False", "reason": "MinimumReplicasUnavailable"},
-            {"type": "Progressing", "status": "True", "reason": reason}
-        ]}})
-    }
-
-    #[test]
-    fn an_app_whose_rollout_once_completed_has_come_up() {
-        let web = deployment("NewReplicaSetAvailable");
-        let gateway = deployment("NewReplicaSetAvailable");
-        assert!(has_come_up(&[&web, &gateway]));
-    }
-
-    #[test]
-    fn an_app_with_any_rollout_still_in_progress_has_not_come_up() {
-        let web = deployment("NewReplicaSetAvailable");
-        for reason in [
-            "ReplicaSetUpdated",
-            "NewReplicaSetCreated",
-            "ProgressDeadlineExceeded",
-        ] {
-            let gateway = deployment(reason);
-            assert!(!has_come_up(&[&web, &gateway]), "{reason}");
-        }
-    }
-
-    #[test]
-    fn an_app_with_no_deployments_yet_has_not_come_up() {
-        assert!(!has_come_up(&[]));
-        assert!(!has_come_up(&[&json!({"status": {}})]));
-    }
 
     #[tokio::test]
     async fn a_failure_with_no_message_is_explained_by_the_last_lines_of_its_log() {
@@ -2527,6 +2485,7 @@ mod tests {
         let failure = ContainerFailure {
             pod: "notes-0".into(),
             container: "app".into(),
+            init: false,
             said: String::new(),
             exit_code: Some(2),
             previous: true,
@@ -2544,6 +2503,7 @@ mod tests {
         let failure = ContainerFailure {
             pod: "notes-0".into(),
             container: "app".into(),
+            init: false,
             said: String::new(),
             exit_code: Some(2),
             previous: true,
@@ -2744,6 +2704,7 @@ mod tests {
         let pull = |message: &str| ContainerFailure {
             pod: "p".into(),
             container: "app".into(),
+            init: false,
             said: message.into(),
             exit_code: None,
             previous: false,
@@ -2776,6 +2737,20 @@ mod tests {
     fn a_stuck_init_container_is_not_hidden() {
         let pod = crashing_pod("initContainerStatuses", "init-db", "");
         assert_eq!(container_failure(&[&pod]).unwrap().container, "init-db");
+    }
+
+    #[test]
+    fn only_an_init_container_failing_is_a_failed_install() {
+        let init = crashing_pod("initContainerStatuses", "init-db", "");
+        assert!(container_failure(&[&init]).unwrap().init);
+        let main = crashing_pod("containerStatuses", "app", "");
+        assert!(!container_failure(&[&main]).unwrap().init);
+    }
+
+    #[test]
+    fn a_crashing_app_carries_the_reason_kubernetes_gives() {
+        let pod = crashing_pod("containerStatuses", "app", "");
+        assert_eq!(container_failure(&[&pod]).unwrap().reason, "CrashLoopBackOff");
     }
 
     fn real_schema() -> Value {

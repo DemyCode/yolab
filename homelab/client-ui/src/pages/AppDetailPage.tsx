@@ -57,8 +57,16 @@ const DOT: Record<StatusTone, string> = {
   error: "bg-danger",
 };
 
-function StatusLine({ state, version }: { state: AppState; version: string }) {
-  const { tone, label } = appStatus(state);
+function StatusLine({
+  state,
+  version,
+  reason,
+}: {
+  state: AppState;
+  version: string;
+  reason?: string;
+}) {
+  const { tone, label } = appStatus(state, reason);
   return (
     <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-fg-muted">
       <span className="inline-flex items-center gap-1.5">
@@ -1008,7 +1016,7 @@ export function AppDetailPage() {
           <h1 className="font-display text-[1.75rem] leading-tight text-fg md:text-4xl">
             {name}
           </h1>
-          <StatusLine state={state} version={version} />
+          <StatusLine state={state} version={version} reason={app.reason} />
         </div>
       </header>
 

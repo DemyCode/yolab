@@ -523,6 +523,7 @@ def pod_specs(docs):
 
 
 ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]*$")
+PORT_NAME = re.compile(r"^(?=.{1,15}$)(?=.*[a-z])[a-z0-9]+(-[a-z0-9]+)*$")
 
 
 def check_containers(app, docs, fail):
@@ -532,6 +533,13 @@ def check_containers(app, docs, fail):
         for dup in sorted({n for n in names if names.count(n) > 1}):
             fail(app, f"pod {pod} has two containers named {dup}")
         for c in containers:
+            for p in c.get("ports") or []:
+                if "name" in p and not PORT_NAME.match(str(p["name"])):
+                    fail(
+                        app,
+                        f"container {c['name']} in pod {pod} names a port {p['name']!r}; "
+                        f"the API server refuses it (max 15 chars, a-z 0-9 and single '-')",
+                    )
             for e in c.get("env") or []:
                 if not ENV_NAME.match(str(e.get("name"))):
                     fail(

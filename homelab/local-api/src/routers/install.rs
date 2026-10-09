@@ -648,7 +648,13 @@ async fn helm_install<H: Host>(
 ) -> anyhow::Result<()> {
     let chart_dir = staged.chart_dir.to_string_lossy();
     let values = staged.values.path().to_string_lossy();
-    let say = |line: String| log.say(line);
+    let helm_said = std::sync::Mutex::new(None::<String>);
+    let say = |line: String| {
+        if let Some(error) = helm_error(&line) {
+            *helm_said.lock().unwrap_or_else(|e| e.into_inner()) = Some(error);
+        }
+        log.say(line)
+    };
     let finished = host
         .run_lines(
             "helm",
@@ -669,14 +675,22 @@ async fn helm_install<H: Host>(
         .await;
     match finished {
         Ok(true) => Ok(()),
-        Ok(false) => {
-            anyhow::bail!("{release} could not be installed — the log above is helm's own")
-        }
+        Ok(false) => match helm_said.into_inner().unwrap_or_else(|e| e.into_inner()) {
+            Some(error) => anyhow::bail!("{release} could not be installed: {error}"),
+            None => anyhow::bail!("{release} could not be installed — the log above is helm's own"),
+        },
         Err(crate::exec::CmdError::Timeout { .. }) => {
             anyhow::bail!("installing {release} took too long and was stopped")
         }
         Err(e) => anyhow::bail!("could not run helm: {e}"),
     }
+}
+
+fn helm_error(line: &str) -> Option<String> {
+    line.trim()
+        .strip_prefix("Error:")
+        .map(|rest| rest.trim().to_string())
+        .filter(|rest| !rest.is_empty())
 }
 
 pub(crate) fn verdict(
@@ -780,6 +794,16 @@ pub(crate) fn upgrade_stream(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn helm_s_own_error_line_becomes_the_failure_reason() {
+        assert_eq!(
+            helm_error("Error: Deployment.apps \"steam-headless\" is invalid: ports[5].name: must be no more than 15 characters").as_deref(),
+            Some("Deployment.apps \"steam-headless\" is invalid: ports[5].name: must be no more than 15 characters")
+        );
+        assert_eq!(helm_error("Release \"x\" does not exist. Installing it now."), None);
+        assert_eq!(helm_error("Error:   "), None);
+    }
 
     fn no_schema() -> crate::appschema::AppSchema {
         crate::appschema::AppSchema::new(Value::Null)
