@@ -61,6 +61,7 @@ pub async fn mint<H: Host>(host: &H, root: &Path, node: &str, daemon: &str) -> R
     let name = format!("{daemon}.{node}");
     let mut args: Vec<&str> = vec!["auth", "get-or-create", name.as_str()];
     args.extend(caps.iter().copied());
+    args.extend(["--key_type", super::cephx::AES256K]);
     args.push("-o");
     args.push(keyring.as_str());
     host.ceph(&args).await?;
@@ -128,7 +129,7 @@ mod tests {
         let want = dir.path().join("var/lib/ceph/mgr/ceph-n1");
         assert!(want.is_dir());
         assert!(host.ran(&format!(
-            "ceph auth get-or-create mgr.n1 mon allow profile mgr osd allow * mds allow * -o {}/keyring",
+            "ceph auth get-or-create mgr.n1 mon allow profile mgr osd allow * mds allow * --key_type aes256k -o {}/keyring",
             want.display()
         )));
         assert!(host.ran(&format!("chown -R ceph:ceph {}", want.display())));

@@ -9,6 +9,42 @@ use crate::routers::backup_common::Backend;
 
 const NS: &str = "rook-ceph";
 
+pub const PROVISIONER_ENTITY: &str = "client.csi-cephfs-provisioner";
+pub const NODE_ENTITY: &str = "client.csi-cephfs-node";
+pub const NODE_ENTITY_AES256K: &str = "client.csi-cephfs-node-aes256k";
+
+pub const PROVISIONER_CAPS: &[&str] = &[
+    "mon",
+    "allow r",
+    "mgr",
+    "allow rw",
+    "osd",
+    "allow rw tag cephfs metadata=*",
+];
+
+pub const NODE_CAPS: &[&str] = &[
+    "mon",
+    "allow r",
+    "mgr",
+    "allow rw",
+    "osd",
+    "allow rw tag cephfs *=*",
+    "mds",
+    "allow rw",
+];
+
+pub const ROOK_ONLY_LEFTOVERS: &[(&str, &str)] = &[
+    ("Secret", "rook-ceph-mon"),
+    ("Secret", "rook-ceph-config"),
+    ("Secret", "rook-ceph-crash-collector-keyring"),
+    ("Secret", "rook-ceph-exporter-keyring"),
+    ("Secret", "rook-csi-rbd-node"),
+    ("Secret", "rook-csi-rbd-provisioner"),
+    ("ConfigMap", "rook-ceph-mon-endpoints"),
+    ("ConfigMap", "rook-ceph-operator-config"),
+    ("ConfigMap", "rook-ceph-csi-mapping-config"),
+];
+
 fn mon_v1_addrs(dump: &Value) -> Vec<String> {
     let Some(mons) = dump["mons"].as_array() else {
         return Vec::new();
@@ -23,24 +59,6 @@ fn mon_v1_addrs(dump: &Value) -> Vec<String> {
                 .map(str::to_string)
         })
         .collect()
-}
-
-fn mon_endpoints(dump: &Value) -> String {
-    let Some(mons) = dump["mons"].as_array() else {
-        return String::new();
-    };
-    mons.iter()
-        .filter_map(|m| {
-            let name = m["name"].as_str()?;
-            let addr = m["public_addrs"]["addrvec"]
-                .as_array()?
-                .iter()
-                .find(|a| a["type"] == "v1")?["addr"]
-                .as_str()?;
-            Some(format!("{name}={addr}"))
-        })
-        .collect::<Vec<_>>()
-        .join(",")
 }
 
 fn csi_cluster_config_json(mon_addrs: &[String]) -> String {
@@ -93,6 +111,18 @@ async fn ensure_key<H: Host>(host: &H, entity: &str, caps: &[&str]) -> Result<St
         .to_string())
 }
 
+fn user_id(entity: &str) -> &str {
+    entity.strip_prefix("client.").unwrap_or(entity)
+}
+
+async fn node_credential<H: Host>(host: &H) -> Result<(&'static str, String)> {
+    match host.ceph(&["auth", "get-key", NODE_ENTITY_AES256K]).await {
+        Ok(key) => Ok((NODE_ENTITY_AES256K, key.trim().to_string())),
+        Err(e) if e.is_not_found() => Ok((NODE_ENTITY, ensure_key(host, NODE_ENTITY, NODE_CAPS).await?)),
+        Err(e) => Err(e).context("read the CSI node credential"),
+    }
+}
+
 async fn apply_rook_secret(
     client: &Client,
     name: &str,
@@ -108,44 +138,6 @@ async fn apply_rook_secret(
         "metadata": {"name": name, "namespace": NS},
         "type": "kubernetes.io/rook",
         "stringData": {id_key: id, secret_key: secret},
-    });
-    crate::k8s::apply(client, &manifest).await
-}
-
-async fn apply_rook_ceph_mon_secret(client: &Client, fsid: &str, admin_key: &str) -> Result<()> {
-    replace_if_wrong_type(client, "rook-ceph-mon").await;
-    let manifest = json!({
-        "apiVersion": "v1",
-        "kind": "Secret",
-        "metadata": {"name": "rook-ceph-mon", "namespace": NS},
-        "type": "kubernetes.io/rook",
-        "stringData": {
-            "cluster-name": NS,
-            "fsid": fsid,
-            "admin-secret": "admin-secret",
-            "mon-secret": "mon-secret",
-            "ceph-username": "client.admin",
-            "ceph-secret": admin_key,
-        },
-    });
-    crate::k8s::apply(client, &manifest).await
-}
-
-async fn apply_mon_endpoints_configmap(
-    client: &Client,
-    mon_endpoints: &str,
-    csi_cfg: &str,
-) -> Result<()> {
-    let manifest = json!({
-        "apiVersion": "v1",
-        "kind": "ConfigMap",
-        "metadata": {"name": "rook-ceph-mon-endpoints", "namespace": NS},
-        "data": {
-            "data": mon_endpoints,
-            "maxMonId": "0",
-            "mapping": "{}",
-            "csi-cluster-config-json": csi_cfg,
-        },
     });
     crate::k8s::apply(client, &manifest).await
 }
@@ -175,8 +167,6 @@ pub async fn run<H: Host>(b: &Backend<H>) -> Result<()> {
         return Ok(());
     }
 
-    let fsid = host.ceph(&["fsid"]).await?.trim().to_string();
-
     let dump = host
         .ceph_json(&["mon", "dump"])
         .await
@@ -188,43 +178,16 @@ pub async fn run<H: Host>(b: &Backend<H>) -> Result<()> {
         );
         return Ok(());
     }
-    let endpoints = mon_endpoints(&dump);
     let csi_cfg = csi_cluster_config_json(&v1_addrs);
 
-    let cephfs_prov = ensure_key(
-        host,
-        "client.csi-cephfs-provisioner",
-        &[
-            "mon",
-            "allow r",
-            "mgr",
-            "allow rw",
-            "osd",
-            "allow rw tag cephfs metadata=*",
-        ],
-    )
-    .await?;
-    let cephfs_node = ensure_key(
-        host,
-        "client.csi-cephfs-node",
-        &[
-            "mon",
-            "allow r",
-            "mgr",
-            "allow rw",
-            "osd",
-            "allow rw tag cephfs *=*",
-            "mds",
-            "allow rw",
-        ],
-    )
-    .await?;
+    let cephfs_prov = ensure_key(host, PROVISIONER_ENTITY, PROVISIONER_CAPS).await?;
+    let (node_entity, cephfs_node) = node_credential(host).await?;
 
     apply_rook_secret(
         client,
         "rook-csi-cephfs-provisioner",
         "adminID",
-        "csi-cephfs-provisioner",
+        user_id(PROVISIONER_ENTITY),
         "adminKey",
         &cephfs_prov,
     )
@@ -233,25 +196,20 @@ pub async fn run<H: Host>(b: &Backend<H>) -> Result<()> {
         client,
         "rook-csi-cephfs-node",
         "adminID",
-        "csi-cephfs-node",
+        user_id(node_entity),
         "adminKey",
         &cephfs_node,
     )
     .await?;
 
-    let admin_key = host.ceph(&["auth", "get-key", "client.admin"]).await?;
-    apply_rook_ceph_mon_secret(client, &fsid, admin_key.trim())
-        .await
-        .context("apply rook-ceph-mon secret")?;
-
-    apply_mon_endpoints_configmap(client, &endpoints, &csi_cfg)
-        .await
-        .context("apply rook-ceph-mon-endpoints configmap")?;
     apply_csi_config_map(client, &csi_cfg)
         .await
         .context("apply rook-ceph-csi-config configmap")?;
 
-    tracing::info!("csi-secrets: published Ceph credentials for fsid {fsid}, mons {endpoints}");
+    tracing::info!(
+        "csi-secrets: published Ceph credentials ({node_entity}) for mons {}",
+        v1_addrs.join(",")
+    );
     Ok(())
 }
 
@@ -290,15 +248,6 @@ mod tests {
     }
 
     #[test]
-    fn mon_endpoints_joins_name_equals_addr_pairs() {
-        let d = dump_with(&[("yolab-n1", "fd00:cafe::1"), ("yolab-n2", "fd00:cafe::2")]);
-        assert_eq!(
-            mon_endpoints(&d),
-            "yolab-n1=[fd00:cafe::1]:6789,yolab-n2=[fd00:cafe::2]:6789"
-        );
-    }
-
-    #[test]
     fn csi_cluster_config_names_the_cluster_id_and_carries_the_monitors() {
         let cfg: Value =
             serde_json::from_str(&csi_cluster_config_json(&["[fd00::1]:6789".into()])).unwrap();
@@ -315,7 +264,17 @@ mod tests {
 
     const NS_PATH: &str = "/api/v1/namespaces/rook-ceph";
 
+    const NO_AES256K_NODE: &str =
+        "Error ENOENT: failed to find client.csi-cephfs-node-aes256k in keyring";
+
     fn ceph_ok() -> FakeHost {
+        ceph_base().fail(
+            "ceph auth get-key client.csi-cephfs-node-aes256k",
+            NO_AES256K_NODE,
+        )
+    }
+
+    fn ceph_base() -> FakeHost {
         FakeHost::new()
             .ok("ceph -s", "")
             .ok("ceph fsid", "11111111-2222-3333-4444-555555555555\n")
@@ -328,7 +287,6 @@ mod tests {
                 "cephfsprovkey",
             )
             .ok("ceph auth get-key client.csi-cephfs-node", "cephfsnodekey")
-            .ok("ceph auth get-key client.admin", "adminkey")
     }
 
     async fn cluster_up() -> (wiremock::MockServer, Client) {
@@ -385,7 +343,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn publishes_the_cephfs_secrets_and_both_configmaps() {
+    async fn publishes_the_cephfs_secrets_and_the_csi_config() {
         let (server, kube) = cluster_up().await;
         run(&Backend {
             kube,
@@ -398,8 +356,6 @@ mod tests {
         for name in [
             "rook-csi-cephfs-provisioner",
             "rook-csi-cephfs-node",
-            "rook-ceph-mon",
-            "rook-ceph-mon-endpoints",
             "rook-ceph-csi-config",
         ] {
             assert!(
@@ -411,13 +367,75 @@ mod tests {
             !names.iter().any(|n| n.contains("rbd")),
             "no RBD credential should ever be minted or published: {names:?}"
         );
-        let mon = patched(&server)
+    }
+
+    #[tokio::test]
+    async fn the_admin_key_never_reaches_kubernetes() {
+        let (server, kube) = cluster_up().await;
+        let b = Backend {
+            kube,
+            host: ceph_ok(),
+        };
+        run(&b).await.unwrap();
+        assert!(!b.host.ran("client.admin"));
+        let names = applied_names(&server).await;
+        assert!(
+            !names.iter().any(|n| n == "rook-ceph-mon" || n == "rook-ceph-mon-endpoints"),
+            "only the Rook operator read these, and it is gone: {names:?}"
+        );
+    }
+
+    fn node_secret(patches: &[Value]) -> Value {
+        patches
+            .iter()
+            .find(|p| p["metadata"]["name"] == "rook-csi-cephfs-node")
+            .cloned()
+            .expect("the node secret was published")
+    }
+
+    #[tokio::test]
+    async fn new_mounts_use_the_aes256k_node_entity_once_it_exists() {
+        let (server, kube) = cluster_up().await;
+        let host = ceph_base().ok("ceph auth get-key client.csi-cephfs-node-aes256k", "newkey");
+        let b = Backend { kube, host };
+        run(&b).await.unwrap();
+        let secret = node_secret(&patched(&server).await);
+        assert_eq!(secret["stringData"]["adminID"], "csi-cephfs-node-aes256k");
+        assert_eq!(secret["stringData"]["adminKey"], "newkey");
+        assert!(
+            !b.host.ran("get-or-create client.csi-cephfs-node"),
+            "the old entity must never be recreated once its successor exists"
+        );
+    }
+
+    #[tokio::test]
+    async fn new_mounts_keep_the_old_node_entity_until_its_successor_exists() {
+        let (server, kube) = cluster_up().await;
+        run(&Backend {
+            kube,
+            host: ceph_ok(),
+        })
+        .await
+        .unwrap();
+        let secret = node_secret(&patched(&server).await);
+        assert_eq!(secret["stringData"]["adminID"], "csi-cephfs-node");
+        assert_eq!(secret["stringData"]["adminKey"], "cephfsnodekey");
+    }
+
+    #[tokio::test]
+    async fn an_unanswered_lookup_of_the_successor_publishes_nothing_rather_than_flip_back() {
+        let (server, kube) = cluster_up().await;
+        let host = ceph_base().fail(
+            "ceph auth get-key client.csi-cephfs-node-aes256k",
+            "RADOS timed out",
+        );
+        let b = Backend { kube, host };
+        assert!(run(&b).await.is_err());
+        assert!(!applied_names(&server)
             .await
-            .into_iter()
-            .find(|p| p["metadata"]["name"] == "rook-ceph-mon")
-            .unwrap();
-        assert_eq!(mon["type"], "kubernetes.io/rook");
-        assert_eq!(mon["stringData"]["ceph-secret"], "adminkey");
+            .iter()
+            .any(|n| n == "rook-csi-cephfs-node"));
+        assert!(!b.host.ran("get-or-create client.csi-cephfs-node"));
     }
 
     #[tokio::test]
@@ -454,7 +472,10 @@ mod tests {
                 "freshly-minted-key",
             )
             .ok("ceph auth get-key client.csi-cephfs-node", "k")
-            .ok("ceph auth get-key client.admin", "adminkey");
+            .fail(
+                "ceph auth get-key client.csi-cephfs-node-aes256k",
+                NO_AES256K_NODE,
+            );
         let b = Backend { kube, host };
 
         run(&b).await.unwrap();

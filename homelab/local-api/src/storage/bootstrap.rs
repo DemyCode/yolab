@@ -19,11 +19,11 @@ pub struct BootstrapArgs {
     pub api_port: u16,
 }
 
-fn admin_keyring_path(root: &Path) -> std::path::PathBuf {
+pub(crate) fn admin_keyring_path(root: &Path) -> std::path::PathBuf {
     root.join("etc/ceph/ceph.client.admin.keyring")
 }
 
-fn bootstrap_osd_keyring_path(root: &Path) -> std::path::PathBuf {
+pub(crate) fn bootstrap_osd_keyring_path(root: &Path) -> std::path::PathBuf {
     root.join("var/lib/ceph/bootstrap-osd/ceph.keyring")
 }
 
@@ -55,7 +55,7 @@ fn write_keyring(path: &Path, contents: &str) -> Result<()> {
     Ok(())
 }
 
-async fn fetch_join_bundle(seed_addr: &str, port: u16, token: &str) -> Result<CephJoinBundle> {
+pub(crate) async fn fetch_join_bundle(seed_addr: &str, port: u16, token: &str) -> Result<CephJoinBundle> {
     crate::http::client()
         .get(crate::http::peer_url(
             seed_addr,
@@ -99,6 +99,8 @@ async fn create_cluster<H: Host>(
             "--create-keyring",
             &tmp_mon_s,
             "--gen-key",
+            "--key-type",
+            super::cephx::AES256K,
             "-n",
             "mon.",
             "--cap",
@@ -113,6 +115,8 @@ async fn create_cluster<H: Host>(
             "--create-keyring",
             &admin_s,
             "--gen-key",
+            "--key-type",
+            super::cephx::AES256K,
             "-n",
             "client.admin",
             "--cap",
@@ -136,6 +140,8 @@ async fn create_cluster<H: Host>(
             "--create-keyring",
             &bootstrap_osd_s,
             "--gen-key",
+            "--key-type",
+            super::cephx::AES256K,
             "-n",
             "client.bootstrap-osd",
             "--cap",
@@ -360,6 +366,13 @@ mod tests {
             !host.ran("mon getmap"),
             "the create path must never fetch a monmap over the network"
         );
+        let minted: Vec<String> = host
+            .calls()
+            .into_iter()
+            .filter(|c| c.starts_with("ceph-authtool") && c.contains("--gen-key"))
+            .collect();
+        assert_eq!(minted.len(), 3);
+        assert!(minted.iter().all(|c| c.contains("--gen-key --key-type aes256k")), "{minted:?}");
     }
 
     #[tokio::test]

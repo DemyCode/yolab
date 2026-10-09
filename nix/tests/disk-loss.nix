@@ -205,6 +205,7 @@ in
       jq_ok(f"curl -sf {AUTH} {API}/api/disks", f"[.[][] | {SPARE}] | length == 2", 600)
       jq_ok("ceph config-key dump yolab/disks/", 'to_entries | map(select(.value == "OFF")) | length == 2', 600)
       # The k3s manifests tmpfiles links in survive the wipe.
-      node1.succeed("test -e /var/lib/rancher/k3s/server/manifests/rook-ceph-operator.yaml")
+      node1.succeed("test -e /var/lib/rancher/k3s/server/manifests/snap-1-crds-rbac.yaml")
+      node1.fail("test -e /var/lib/rancher/k3s/server/manifests/rook-ceph-operator.yaml")
     '';
   })

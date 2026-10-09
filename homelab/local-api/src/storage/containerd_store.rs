@@ -71,7 +71,7 @@ pub async fn attempt<H: Host>(
         }
     }
 
-    let dev = match mapped_device(host, &policy.pool_name, node).await {
+    let dev = match mapped_device(host, root, &policy.pool_name, node).await {
         Ok(dev) => dev,
         Err(why) => return Ok(Attempt::NotYet(format!("cannot map {image}: {why}"))),
     };
@@ -188,20 +188,25 @@ async fn existing_mapping<H: Host>(host: &H, pool: &str, name: &str) -> Option<S
     find_mapped_devices(&v, pool, name).into_iter().next()
 }
 
-async fn mapped_device<H: Host>(host: &H, pool: &str, name: &str) -> Result<String, String> {
+async fn mapped_device<H: Host>(
+    host: &H,
+    root: &Path,
+    pool: &str,
+    name: &str,
+) -> Result<String, String> {
     if let Some(dev) = existing_mapping(host, pool, name).await {
         return Ok(dev);
     }
+    let image = format!("{pool}/{name}");
+    let options = format!("osd_request_timeout={OSD_REQUEST_TIMEOUT_SECS}");
+    let keyring = super::cephx::images_identity(host, root, pool).await;
+    let keyring_s = keyring.as_ref().map(|k| k.to_string_lossy().into_owned());
+    let mut args = vec!["map", image.as_str(), "-o", options.as_str()];
+    if let Some(k) = keyring_s.as_deref() {
+        args.extend(["--id", super::cephx::IMAGES_ID, "--keyring", k]);
+    }
     let out = host
-        .run_cmd(
-            "rbd",
-            &[
-                "map",
-                &format!("{pool}/{name}"),
-                "-o",
-                &format!("osd_request_timeout={OSD_REQUEST_TIMEOUT_SECS}"),
-            ],
-        )
+        .run_cmd("rbd", &args)
         .await
         .map_err(|e| e.to_string())?;
     let dev = out.stdout.trim();

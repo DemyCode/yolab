@@ -1,5 +1,7 @@
 pub mod bootstrap;
+pub mod ceph_csi;
 mod ceph_shared;
+pub mod cephx;
 pub mod containerd_store;
 pub mod controllers;
 pub mod csi_secrets;

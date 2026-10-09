@@ -115,6 +115,11 @@ pub fn spawn_all(leader: Leadership) {
         spawn(storage::CephJoinController { env: env.clone() }, &leader);
         spawn(storage::CsiSecretsController, &leader);
         spawn(storage::CsiRecoveryController, &leader);
+        spawn(crate::storage::ceph_csi::RookManifestsGoneController, &leader);
+        spawn(crate::storage::ceph_csi::CephCsiController, &leader);
+        spawn(crate::storage::cephx::CephxLocalController, &leader);
+        spawn(crate::storage::cephx::AdminKeyringController { env: env.clone() }, &leader);
+        spawn(crate::storage::cephx::CephxRotationController, &leader);
     }
 
     spawn_observed(&leader);

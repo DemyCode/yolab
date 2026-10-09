@@ -147,9 +147,8 @@ in
         #    something a person would actually lose if this broke ───────────
         #
         # Not waiting for the PVC to bind or the deployment to go Ready: the
-        # VM test sandbox has no internet, so the Rook operator's Helm chart
-        # (fetched from https://charts.rook.io) never installs and there is no
-        # CephFS CSI driver to actually provision a volume — the same
+        # VM test sandbox has no internet, so the CephFS CSI images never pull
+        # and there is no CSI driver to actually provision a volume — the same
         # constraint two-node-test's rook-ceph-namespace comment describes.
         # disk-loss-test hits the same wall and works around it the same way:
         # create the objects, track the PVC's UID, and use survival of that

@@ -201,6 +201,8 @@ in {
       };
     };
 
+    boot.kernelPackages = pkgs.linuxPackages_latest;
+
     boot.kernelModules = [
       "wireguard"
       "ip6_tables"
@@ -436,6 +438,7 @@ in {
           YOLAB_CEPH_IMAGES_SHARE = toString config.yolab.ceph.imagesStore.shareOfPool;
           YOLAB_CEPH_IMAGES_MIN_GB = toString config.yolab.ceph.imagesStore.minSizeGb;
           YOLAB_CEPH_IMAGES_FS = config.yolab.ceph.imagesStore.filesystem;
+          YOLAB_CEPH_CSI_MANIFESTS = "${./ceph-csi/cephfs.yaml}";
           YOLAB_CEPH_DASHBOARD_PORT = toString config.yolab.ceph.dashboard.port;
           YOLAB_CEPH_DASHBOARD_PREFIX = config.yolab.ceph.dashboard.urlPrefix;
           YOLAB_CEPH_DASHBOARD_PASSWORD_FILE = config.yolab.ceph.dashboard.passwordFile;
@@ -558,8 +561,8 @@ in {
       "d ${config.yolab.machineDir} 0700 root root -"
       "d /var/lib/rancher/k3s/agent/etc/kubelet.conf.d 0700 root root -"
       "L+ /var/lib/rancher/k3s/agent/etc/kubelet.conf.d/10-yolab-image-gc.conf     - - - - ${./k3s/kubelet-image-gc.yaml}"
-      "L+ /var/lib/rancher/k3s/server/manifests/rook-ceph-operator.yaml              - - - - ${./rook/operator.yaml}"
-      "L+ /var/lib/rancher/k3s/server/manifests/rook-ceph-external.yaml              - - - - ${./rook/cluster-external.yaml}"
+      "r /var/lib/rancher/k3s/server/manifests/rook-ceph-operator.yaml"
+      "r /var/lib/rancher/k3s/server/manifests/rook-ceph-external.yaml"
       "L+ /var/lib/rancher/k3s/server/manifests/snap-1-crds-rbac.yaml                - - - - ${./external-snapshotter/crds-rbac.yaml}"
       "L+ /var/lib/rancher/k3s/server/manifests/snap-2-controller.yaml               - - - - ${./external-snapshotter/controller.yaml}"
       "L+ /var/lib/rancher/k3s/server/manifests/volsync.yaml                         - - - - ${./volsync/helmchart.yaml}"

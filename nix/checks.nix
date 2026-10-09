@@ -976,6 +976,34 @@ in let
         touch $out
       '';
 
+    kernel-mounts-ceph-with-aes256k-keys = let
+      inherit (pkgs) lib;
+      system = nixosSystems.yolab-ci.config;
+      kernel = system.boot.kernelPackages.kernel.version;
+      rules = system.systemd.tmpfiles.rules;
+      shipsRook = lib.any (r: lib.hasPrefix "L+" r && lib.hasInfix "rook-ceph" r) rules;
+      problems =
+        lib.optional (lib.versionOlder kernel "7.0") "kernel ${kernel} cannot authenticate to Ceph with aes256k keys; CephFS and the images RBD are kernel clients"
+        ++ lib.optional shipsRook "k3s still auto-deploys a Rook manifest; its reef client never speaks aes256k";
+    in
+      pkgs.runCommand "kernel-mounts-ceph-with-aes256k-keys" {} ''
+        ${lib.concatMapStrings (p: "echo ${lib.escapeShellArg p} >&2\n") problems}
+        ${lib.optionalString (problems != []) "exit 1"}
+        touch $out
+      '';
+
+    ceph-csi-manifest =
+      pkgs.runCommand "ceph-csi-manifest"
+      {
+        nativeBuildInputs = [(pkgs.python3.withPackages (ps: [ps.pyyaml]))];
+        src = ../homelab/nixos/ceph-csi;
+      }
+      ''
+        cp -r "$src" ./ceph-csi
+        (cd ./ceph-csi && python3 -m unittest cephfs_test)
+        touch $out
+      '';
+
     device-plugins-run-on-every-processor =
       pkgs.runCommand "device-plugins-run-on-every-processor" {nativeBuildInputs = [pkgs.gnugrep];}
       ''

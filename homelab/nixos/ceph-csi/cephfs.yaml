@@ -1,0 +1,564 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: rook-ceph
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: yolab-csi-cephfs-plugin
+  namespace: rook-ceph
+  labels:
+    app.kubernetes.io/managed-by: yolab
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: yolab-csi-cephfs-provisioner
+  namespace: rook-ceph
+  labels:
+    app.kubernetes.io/managed-by: yolab
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: yolab-csi-cephfs-plugin
+  labels:
+    app.kubernetes.io/managed-by: yolab
+rules:
+  - apiGroups: [""]
+    resources: [nodes]
+    verbs: [get]
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [get]
+  - apiGroups: [""]
+    resources: [configmaps]
+    verbs: [get]
+  - apiGroups: [""]
+    resources: [serviceaccounts]
+    verbs: [get]
+  - apiGroups: [""]
+    resources: [serviceaccounts/token]
+    verbs: [create]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: yolab-csi-cephfs-plugin
+  labels:
+    app.kubernetes.io/managed-by: yolab
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: yolab-csi-cephfs-plugin
+subjects:
+  - kind: ServiceAccount
+    name: yolab-csi-cephfs-plugin
+    namespace: rook-ceph
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: yolab-csi-cephfs-provisioner
+  labels:
+    app.kubernetes.io/managed-by: yolab
+rules:
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [get, list]
+  - apiGroups: [""]
+    resources: [configmaps]
+    verbs: [get]
+  - apiGroups: [""]
+    resources: [nodes]
+    verbs: [get, list, watch]
+  - apiGroups: [storage.k8s.io]
+    resources: [csinodes]
+    verbs: [get, list, watch]
+  - apiGroups: [""]
+    resources: [persistentvolumes]
+    verbs: [get, list, watch, create, update, delete, patch]
+  - apiGroups: [""]
+    resources: [persistentvolumeclaims]
+    verbs: [get, list, watch, patch, update]
+  - apiGroups: [storage.k8s.io]
+    resources: [storageclasses]
+    verbs: [get, list, watch]
+  - apiGroups: [""]
+    resources: [events]
+    verbs: [list, watch, create, update, patch]
+  - apiGroups: [storage.k8s.io]
+    resources: [volumeattachments]
+    verbs: [get, list, watch, patch]
+  - apiGroups: [storage.k8s.io]
+    resources: [volumeattachments/status]
+    verbs: [patch]
+  - apiGroups: [""]
+    resources: [persistentvolumeclaims/status]
+    verbs: [patch]
+  - apiGroups: [snapshot.storage.k8s.io]
+    resources: [volumesnapshots]
+    verbs: [get, list, watch]
+  - apiGroups: [snapshot.storage.k8s.io]
+    resources: [volumesnapshotclasses]
+    verbs: [get, list, watch]
+  - apiGroups: [snapshot.storage.k8s.io]
+    resources: [volumesnapshotcontents]
+    verbs: [get, list, watch, patch, update]
+  - apiGroups: [snapshot.storage.k8s.io]
+    resources: [volumesnapshotcontents/status]
+    verbs: [update, patch]
+  - apiGroups: [groupsnapshot.storage.k8s.io]
+    resources: [volumegroupsnapshotclasses]
+    verbs: [get, list, watch]
+  - apiGroups: [groupsnapshot.storage.k8s.io]
+    resources: [volumegroupsnapshotcontents]
+    verbs: [get, list, watch, update, patch]
+  - apiGroups: [groupsnapshot.storage.k8s.io]
+    resources: [volumegroupsnapshotcontents/status]
+    verbs: [update, patch]
+  - apiGroups: [""]
+    resources: [serviceaccounts]
+    verbs: [get]
+  - apiGroups: [""]
+    resources: [serviceaccounts/token]
+    verbs: [create]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: yolab-csi-cephfs-provisioner
+  labels:
+    app.kubernetes.io/managed-by: yolab
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: yolab-csi-cephfs-provisioner
+subjects:
+  - kind: ServiceAccount
+    name: yolab-csi-cephfs-provisioner
+    namespace: rook-ceph
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: yolab-csi-cephfs-provisioner
+  namespace: rook-ceph
+  labels:
+    app.kubernetes.io/managed-by: yolab
+rules:
+  - apiGroups: [coordination.k8s.io]
+    resources: [leases]
+    verbs: [get, watch, list, delete, update, create]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: yolab-csi-cephfs-provisioner
+  namespace: rook-ceph
+  labels:
+    app.kubernetes.io/managed-by: yolab
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: yolab-csi-cephfs-provisioner
+subjects:
+  - kind: ServiceAccount
+    name: yolab-csi-cephfs-provisioner
+    namespace: rook-ceph
+---
+apiVersion: storage.k8s.io/v1
+kind: CSIDriver
+metadata:
+  name: rook-ceph.cephfs.csi.ceph.com
+  labels:
+    app.kubernetes.io/managed-by: yolab
+spec:
+  attachRequired: true
+  fsGroupPolicy: File
+  podInfoOnMount: false
+  requiresRepublish: false
+  seLinuxMount: true
+  storageCapacity: false
+  volumeLifecycleModes:
+    - Persistent
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: csi-cephfsplugin
+  namespace: rook-ceph
+  labels:
+    app.kubernetes.io/managed-by: yolab
+spec:
+  selector:
+    matchLabels:
+      app: csi-cephfsplugin
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
+  template:
+    metadata:
+      labels:
+        app: csi-cephfsplugin
+        app.kubernetes.io/managed-by: yolab
+    spec:
+      serviceAccountName: yolab-csi-cephfs-plugin
+      priorityClassName: system-node-critical
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      containers:
+        - name: driver-registrar
+          image: registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.13.0@sha256:d7138bcc3aa5f267403d45ad4292c95397e421ea17a0035888850f424c7de25d
+          args:
+            - --v=0
+            - --csi-address=/csi/csi.sock
+            - --kubelet-registration-path=/var/lib/kubelet/plugins/rook-ceph.cephfs.csi.ceph.com/csi.sock
+          env:
+            - name: KUBE_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 256Mi
+          securityContext:
+            privileged: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: plugin-dir
+              mountPath: /csi
+            - name: registration-dir
+              mountPath: /registration
+        - name: csi-cephfsplugin
+          image: quay.io/cephcsi/cephcsi:v3.17.1@sha256:0b62db8afc9b174619186c87084a8952157daa719415c598603be22b63cc1293
+          args:
+            - --nodeid=$(NODE_ID)
+            - --type=cephfs
+            - --endpoint=$(CSI_ENDPOINT)
+            - --v=0
+            - --nodeserver=true
+            - --drivername=rook-ceph.cephfs.csi.ceph.com
+            - --pidlimit=-1
+            - --forcecephkernelclient=true
+          env:
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: NODE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: CSI_ENDPOINT
+              value: unix:///csi/csi.sock
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              memory: 1Gi
+          securityContext:
+            privileged: true
+            allowPrivilegeEscalation: true
+            capabilities:
+              add: [SYS_ADMIN]
+              drop: [ALL]
+          volumeMounts:
+            - name: plugin-dir
+              mountPath: /csi
+            - name: ceph-csi-mountinfo
+              mountPath: /csi/mountinfo
+            - name: csi-plugins-dir
+              mountPath: /var/lib/kubelet/plugins
+              mountPropagation: Bidirectional
+            - name: pods-mount-dir
+              mountPath: /var/lib/kubelet/pods
+              mountPropagation: Bidirectional
+            - name: host-sys
+              mountPath: /sys
+            - name: lib-modules
+              mountPath: /lib/modules
+              readOnly: true
+            - name: host-dev
+              mountPath: /dev
+            - name: ceph-csi-config
+              mountPath: /etc/ceph-csi-config/
+            - name: keys-tmp-dir
+              mountPath: /tmp/csi/keys
+            - name: host-run-mount
+              mountPath: /run/mount
+      volumes:
+        - name: ceph-csi-mountinfo
+          hostPath:
+            path: /var/lib/kubelet/plugins/rook-ceph.cephfs.csi.ceph.com/mountinfo
+            type: DirectoryOrCreate
+        - name: plugin-dir
+          hostPath:
+            path: /var/lib/kubelet/plugins/rook-ceph.cephfs.csi.ceph.com/
+            type: DirectoryOrCreate
+        - name: csi-plugins-dir
+          hostPath:
+            path: /var/lib/kubelet/plugins
+            type: Directory
+        - name: registration-dir
+          hostPath:
+            path: /var/lib/kubelet/plugins_registry/
+            type: Directory
+        - name: pods-mount-dir
+          hostPath:
+            path: /var/lib/kubelet/pods
+            type: Directory
+        - name: host-sys
+          hostPath:
+            path: /sys
+        - name: lib-modules
+          hostPath:
+            path: /lib/modules
+        - name: host-dev
+          hostPath:
+            path: /dev
+        - name: ceph-csi-config
+          configMap:
+            name: rook-ceph-csi-config
+            items:
+              - key: csi-cluster-config-json
+                path: config.json
+        - name: keys-tmp-dir
+          emptyDir:
+            medium: Memory
+        - name: host-run-mount
+          hostPath:
+            path: /run/mount
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: csi-cephfsplugin-provisioner
+  namespace: rook-ceph
+  labels:
+    app.kubernetes.io/managed-by: yolab
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: csi-cephfsplugin-provisioner
+  template:
+    metadata:
+      labels:
+        app: csi-cephfsplugin-provisioner
+        app.kubernetes.io/managed-by: yolab
+    spec:
+      serviceAccountName: yolab-csi-cephfs-provisioner
+      priorityClassName: system-cluster-critical
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchExpressions:
+                  - key: app
+                    operator: In
+                    values: [csi-cephfsplugin-provisioner]
+              topologyKey: kubernetes.io/hostname
+      containers:
+        - name: csi-attacher
+          image: registry.k8s.io/sig-storage/csi-attacher:v4.8.0@sha256:a399393ff5bd156277c56bae0c08389b1a1b95b7fd6ea44a316ce55e0dd559d7
+          args:
+            - --v=0
+            - --csi-address=$(ADDRESS)
+            - --leader-election=true
+            - --timeout=5m0s
+            - --leader-election-namespace=rook-ceph
+            - --leader-election-lease-duration=2m17s
+            - --leader-election-renew-deadline=1m47s
+            - --leader-election-retry-period=26s
+          env:
+            - name: ADDRESS
+              value: /csi/csi-provisioner.sock
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              memory: 256Mi
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /csi
+        - name: csi-snapshotter
+          image: registry.k8s.io/sig-storage/csi-snapshotter:v8.2.0@sha256:dd788d79cf4c1b8edee6d9b80b8a1ebfc51a38a365c5be656986b129be9ac784
+          args:
+            - --csi-address=$(ADDRESS)
+            - --v=0
+            - --timeout=5m0s
+            - --leader-election=true
+            - --leader-election-namespace=rook-ceph
+            - --leader-election-lease-duration=2m17s
+            - --leader-election-renew-deadline=1m47s
+            - --leader-election-retry-period=26s
+            - --extra-create-metadata=true
+          env:
+            - name: ADDRESS
+              value: unix:///csi/csi-provisioner.sock
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              memory: 256Mi
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /csi
+        - name: csi-resizer
+          image: registry.k8s.io/sig-storage/csi-resizer:v1.13.1@sha256:2a0b297cc7c4cd376ac7413df339ff2fdaa1ec9d099aed92b5ea1f031ef7f639
+          args:
+            - --csi-address=$(ADDRESS)
+            - --v=0
+            - --timeout=5m0s
+            - --leader-election=true
+            - --leader-election-namespace=rook-ceph
+            - --leader-election-lease-duration=2m17s
+            - --leader-election-renew-deadline=1m47s
+            - --leader-election-retry-period=26s
+            - --handle-volume-inuse-error=false
+            - --feature-gates=RecoverVolumeExpansionFailure=true
+          env:
+            - name: ADDRESS
+              value: unix:///csi/csi-provisioner.sock
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              memory: 256Mi
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /csi
+        - name: csi-provisioner
+          image: registry.k8s.io/sig-storage/csi-provisioner:v5.1.0@sha256:672e45d6a55678abc1d102de665b5cbd63848e75dc7896f238c8eaaf3c7d322f
+          args:
+            - --csi-address=$(ADDRESS)
+            - --v=0
+            - --timeout=5m0s
+            - --retry-interval-start=500ms
+            - --leader-election=true
+            - --leader-election-namespace=rook-ceph
+            - --feature-gates=HonorPVReclaimPolicy=true
+            - --prevent-volume-mode-conversion=true
+            - --leader-election-lease-duration=2m17s
+            - --leader-election-renew-deadline=1m47s
+            - --leader-election-retry-period=26s
+            - --extra-create-metadata=true
+          env:
+            - name: ADDRESS
+              value: unix:///csi/csi-provisioner.sock
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              memory: 256Mi
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /csi
+        - name: csi-cephfsplugin
+          image: quay.io/cephcsi/cephcsi:v3.17.1@sha256:0b62db8afc9b174619186c87084a8952157daa719415c598603be22b63cc1293
+          args:
+            - --nodeid=$(NODE_ID)
+            - --type=cephfs
+            - --endpoint=$(CSI_ENDPOINT)
+            - --v=0
+            - --controllerserver=true
+            - --drivername=rook-ceph.cephfs.csi.ceph.com
+            - --pidlimit=-1
+            - --forcecephkernelclient=true
+          env:
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: NODE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: CSI_ENDPOINT
+              value: unix:///csi/csi-provisioner.sock
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              memory: 1Gi
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /csi
+            - name: host-sys
+              mountPath: /sys
+            - name: lib-modules
+              mountPath: /lib/modules
+              readOnly: true
+            - name: host-dev
+              mountPath: /dev
+            - name: ceph-csi-config
+              mountPath: /etc/ceph-csi-config/
+            - name: keys-tmp-dir
+              mountPath: /tmp/csi/keys
+      volumes:
+        - name: socket-dir
+          emptyDir:
+            medium: Memory
+        - name: host-sys
+          hostPath:
+            path: /sys
+        - name: lib-modules
+          hostPath:
+            path: /lib/modules
+        - name: host-dev
+          hostPath:
+            path: /dev
+        - name: ceph-csi-config
+          configMap:
+            name: rook-ceph-csi-config
+            items:
+              - key: csi-cluster-config-json
+                path: config.json
+        - name: keys-tmp-dir
+          emptyDir:
+            medium: Memory
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: yolab-cephfs
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "true"
+provisioner: rook-ceph.cephfs.csi.ceph.com
+parameters:
+  clusterID: rook-ceph
+  fsName: yolab-fs
+  pool: yolab-fs-data0
+  csi.storage.k8s.io/provisioner-secret-name: rook-csi-cephfs-provisioner
+  csi.storage.k8s.io/provisioner-secret-namespace: rook-ceph
+  csi.storage.k8s.io/controller-expand-secret-name: rook-csi-cephfs-provisioner
+  csi.storage.k8s.io/controller-expand-secret-namespace: rook-ceph
+  csi.storage.k8s.io/node-stage-secret-name: rook-csi-cephfs-node
+  csi.storage.k8s.io/node-stage-secret-namespace: rook-ceph
+allowVolumeExpansion: true
+reclaimPolicy: Delete
+volumeBindingMode: Immediate

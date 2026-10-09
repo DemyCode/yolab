@@ -178,12 +178,6 @@ pub(crate) async fn observe<H: Host>(b: &Backend<H>) -> Option<Topology> {
     })
 }
 
-async fn cluster_health<H: Host>(host: &H) -> Option<String> {
-    host.ceph_json(&["health"]).await.ok()?["status"]
-        .as_str()
-        .map(str::to_string)
-}
-
 pub struct TopologyController;
 
 impl crate::runtime::Controller for TopologyController {
@@ -212,6 +206,20 @@ impl crate::runtime::Controller for TopologyController {
 }
 
 async fn tick<H: Host>(b: &Backend<H>) {
+    let policy = match read_policy_from(&b.host).await {
+        None => {
+            tracing::debug!("topology: storage policy unreadable this tick — changing nothing");
+            return;
+        }
+        Some(PolicyState::NotChosen) => {
+            return;
+        }
+        Some(PolicyState::Chosen(p)) => p,
+    };
+    apply_policy(b, &policy).await;
+}
+
+async fn apply_policy<H: Host>(b: &Backend<H>, policy: &StoragePolicy) {
     let Some(topo) = observe(b).await else {
         tracing::debug!("topology: cluster shape unknown this tick — not touching replication");
         return;
@@ -219,8 +227,8 @@ async fn tick<H: Host>(b: &Backend<H>) {
     if topo.osds == 0 {
         return;
     }
-    match cluster_health(&b.host).await.as_deref() {
-        Some("HEALTH_ERR") | None => return,
+    let target = compute_target(policy, &topo);
+| None => return,
         _ => {}
     }
 
@@ -794,7 +802,7 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn nothing_is_changed_while_the_cluster_is_in_error() {
+        async fn a_chosen_policy_is_applied_even_while_ceph_reports_an_unrelated_error() {
             let (server, kube) = api_server().await;
             Mock::given(method("GET"))
                 .and(path("/api/v1/nodes"))
@@ -805,12 +813,21 @@ mod tests {
                 .mount(&server)
                 .await;
             let host = FakeHost::new()
-                .ok("ceph osd stat", r#"{"num_up_osds": 1}"#)
+                .ok("ceph osd stat", r#"{"num_up_osds": 3}"#)
                 .ok("ceph osd tree", r#"{"nodes": []}"#)
-                .ok("ceph health", r#"{"status": "HEALTH_ERR"}"#);
+                .ok("ceph health", r#"{"status": "HEALTH_ERR"}"#)
+                .fail("ceph mon dump", "unscripted on purpose")
+                .ok("ceph osd crush rule ls", "replicated_osd\n")
+                .ok("ceph osd pool ls", "images\n")
+                .ok("ceph osd pool get images size", r#"{"size": 2}"#)
+                .ok("ceph osd pool set", "");
             let b = Backend { kube, host };
-            tick(&b).await;
-            assert!(!b.host.ran("ceph osd pool"), "{:?}", b.host.calls());
+            apply_policy(&b, &policy(2, "osd")).await;
+            assert!(
+                b.host.ran("ceph osd pool set images crush_rule replicated_osd"),
+                "{:?}",
+                b.host.calls()
+            );
         }
     }
 }
