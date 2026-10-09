@@ -410,3 +410,30 @@ describe("a link to another app's service", () => {
     expect(ui.ollama_url["ui:options"]).toEqual({ service: "ollama" });
   });
 });
+
+describe("an app's whole form inside a group", () => {
+  it("gets the same widgets and order as on its own install page", () => {
+    const ui = uiSchemaFor(
+      {
+        properties: {
+          jellyfin: {
+            type: "object",
+            title: "Jellyfin",
+            properties: {
+              yolab_enabled: { type: "boolean" },
+              admin_password: { type: "string", writeOnly: true },
+            },
+          },
+        },
+      },
+      "6.yolab.io",
+    ) as Record<string, Record<string, unknown>>;
+    const jellyfin = ui.jellyfin as Record<string, Record<string, unknown>>;
+    expect(jellyfin.admin_password["ui:widget"]).toBe("PasswordWidget");
+    expect(jellyfin["ui:order"]).toEqual([
+      "yolab_enabled",
+      "admin_password",
+      "*",
+    ]);
+  });
+});

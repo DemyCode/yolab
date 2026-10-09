@@ -1554,6 +1554,23 @@ def json_pointer(doc, pointer):
     return doc
 
 
+def omit_fields(schema, names):
+    props = schema.get("properties")
+    if isinstance(props, dict):
+        for name in names:
+            props.pop(name, None)
+    if isinstance(schema.get("required"), list):
+        schema["required"] = [r for r in schema["required"] if r not in names]
+    deps = schema.get("dependencies")
+    if isinstance(deps, dict):
+        for name in names:
+            deps.pop(name, None)
+        for dep in deps.values():
+            for branch in (dep or {}).get("oneOf") or []:
+                if isinstance(branch, dict):
+                    omit_fields(branch, names)
+
+
 def resolve_refs(node, charts, fail, where, depth=0):
     if isinstance(node, list):
         return [resolve_refs(v, charts, fail, where, depth) for v in node]
@@ -1587,6 +1604,7 @@ def resolve_refs(node, charts, fail, where, depth=0):
         for k, v in node.items():
             if k != "$ref":
                 resolved = {**resolved, k: resolve_refs(v, charts, fail, where, depth)}
+        omit_fields(resolved, set(resolved.pop("x-yolab-omit", None) or []))
     return resolved
 
 

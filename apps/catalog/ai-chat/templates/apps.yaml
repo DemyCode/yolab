@@ -4,6 +4,7 @@ apiVersion: yolab.io/v1
 kind: App
 name: ollama
 chart: ollama
+values: {{ $c.ollama | default dict | toJson }}
 ---
 {{- else if eq $c.models_from "existing" }}
 apiVersion: yolab.io/v1
@@ -12,16 +13,13 @@ name: ollama
 use: {{ $c.existing_ollama | quote }}
 ---
 {{- end }}
+{{- $ollama := dict "from" (index .Values.yolab.apps "ollama" | default "") }}
+{{- if eq $c.models_from "elsewhere" }}
+{{- $ollama = dict "from" "" "api" $c.ollama_address }}
+{{- end }}
 apiVersion: yolab.io/v1
 kind: App
 name: open-webui
 chart: open-webui
 main: true
-values:
-  ollama:
-  {{- if eq $c.models_from "elsewhere" }}
-    from: ""
-    api: {{ $c.ollama_address | quote }}
-  {{- else }}
-    from: {{ index .Values.yolab.apps "ollama" | default "" | quote }}
-  {{- end }}
+values: {{ merge (dict "ollama" $ollama) (index $c "open-webui" | default dict) | toJson }}

@@ -1,19 +1,17 @@
 {{- $c := .Values.config }}
-{{- $folder := $c.music_folder }}
+{{- $shared := dict "media_folder" $c.music_folder }}
 apiVersion: yolab.io/v1
 kind: App
 name: navidrome
 chart: navidrome
 main: true
-values:
-  music_folder: {{ $folder | quote }}
+values: {{ merge (dict "music_folder" $c.music_folder) ($c.navidrome | default dict) | toJson }}
 ---
 apiVersion: yolab.io/v1
 kind: App
 name: lidarr
 chart: lidarr
-values:
-  media_folder: {{ $folder | quote }}
+values: {{ merge (dict) $shared ($c.lidarr | default dict) | toJson }}
 {{- if eq $c.download_client "existing" }}
 ---
 apiVersion: yolab.io/v1
@@ -26,6 +24,5 @@ apiVersion: yolab.io/v1
 kind: App
 name: {{ $c.download_client }}
 chart: {{ $c.download_client }}
-values:
-  media_folder: {{ $folder | quote }}
+values: {{ merge (dict) $shared (index $c $c.download_client | default dict) | toJson }}
 {{- end }}

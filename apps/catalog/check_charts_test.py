@@ -2189,6 +2189,19 @@ class Groups(unittest.TestCase):
             resolved, {"type": "string", "format": "folder", "title": "Films"}
         )
 
+    def test_a_whole_app_form_comes_in_without_what_the_group_decides(self):
+        resolved, found = self.resolve(
+            {
+                "$ref": "chart:jellyfin#/properties/config",
+                "title": "Jellyfin",
+                "x-yolab-omit": ["media_folder"],
+            }
+        )
+        self.assertEqual(found, [])
+        self.assertNotIn("media_folder", resolved["properties"])
+        self.assertNotIn("x-yolab-omit", resolved)
+        self.assertEqual(resolved["title"], "Jellyfin")
+
     def test_a_reference_the_catalog_cannot_follow_is_reported(self):
         for ref, words in [
             ("chart:plex#/x", "no chart named plex"),

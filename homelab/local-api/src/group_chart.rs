@@ -8,6 +8,7 @@ pub(crate) const KIND_GROUP: &str = "group";
 pub(crate) const SCHEMA_FILE: &str = "group.schema.json";
 const REF_SCHEME: &str = "chart:";
 const MAX_REF_DEPTH: usize = 8;
+const OMIT: &str = "x-yolab-omit";
 const APP_API_VERSION: &str = "yolab.io/v1";
 const APP_KIND: &str = "App";
 pub(crate) const REDACTED: &str = "__redacted__";
@@ -32,6 +33,27 @@ pub(crate) fn parse_ref(raw: &str) -> Option<ChartRef> {
         version,
         pointer: pointer.to_string(),
     })
+}
+
+fn omit(schema: &mut Map<String, Value>, names: &BTreeSet<&str>) {
+    if let Some(Value::Object(props)) = schema.get_mut("properties") {
+        props.retain(|k, _| !names.contains(k.as_str()));
+    }
+    if let Some(Value::Array(required)) = schema.get_mut("required") {
+        required.retain(|r| !r.as_str().is_some_and(|r| names.contains(r)));
+    }
+    if let Some(Value::Object(deps)) = schema.get_mut("dependencies") {
+        deps.retain(|k, _| !names.contains(k.as_str()));
+        for dep in deps.values_mut() {
+            for combinator in ["oneOf", "anyOf", "allOf"] {
+                if let Some(Value::Array(branches)) = dep.get_mut(combinator) {
+                    for branch in branches.iter_mut().filter_map(Value::as_object_mut) {
+                        omit(branch, names);
+                    }
+                }
+            }
+        }
+    }
 }
 
 pub(crate) fn resolve(
@@ -70,6 +92,10 @@ fn resolve_at(
                     if let Value::Object(target) = &mut resolved {
                         for (k, v) in map.iter().filter(|(k, _)| *k != "$ref") {
                             target.insert(k.clone(), resolve_at(v, load, depth)?);
+                        }
+                        if let Some(Value::Array(dropped)) = target.remove(OMIT) {
+                            let names: BTreeSet<&str> = dropped.iter().filter_map(Value::as_str).collect();
+                            omit(target, &names);
                         }
                     }
                     return Ok(resolved);
@@ -350,7 +376,8 @@ pub(crate) fn generated(config_schema: &Value, values: &Map<String, Value>) -> M
     {
         let wanted =
             prop["writeOnly"] == Value::Bool(true) && prop["generate"] == Value::Bool(true);
-        if wanted && !filled.contains_key(name) {
+        let unset = filled.get(name).is_none_or(|v| v.as_str() == Some(""));
+        if wanted && unset {
             let length = prop["minLength"].as_u64().unwrap_or(0).max(24) as usize;
             filled.insert(name.clone(), Value::String(random_secret(length)));
         }
@@ -410,6 +437,23 @@ mod tests {
                 }}}
             })),
             ("loop", None) => Some(json!({ "a": { "$ref": "chart:loop#/a" } })),
+            ("radarr", None) => Some(json!({
+                "properties": { "config": {
+                    "type": "object",
+                    "required": ["media_folder", "subdomain"],
+                    "properties": {
+                        "media_folder": { "type": "string" },
+                        "subdomain": { "type": "string" },
+                    },
+                    "dependencies": {
+                        "media_folder": { "oneOf": [{ "properties": { "media_folder": {} } }] },
+                        "tailscale": { "oneOf": [{
+                            "properties": { "tailscale": {}, "media_folder": {} },
+                            "required": ["media_folder"],
+                        }] },
+                    },
+                }}
+            })),
             _ => None,
         }
     }
@@ -480,6 +524,24 @@ mod tests {
         assert!(nowhere.contains("nothing at /nope"), "{nowhere}");
         let looped = resolve(&json!({ "$ref": "chart:loop#/a" }), &charts).unwrap_err();
         assert!(looped.contains("too many references"), "{looped}");
+    }
+
+    #[test]
+    fn a_whole_app_form_comes_in_without_the_fields_the_group_decides_itself() {
+        let group = json!({
+            "$ref": "chart:radarr#/properties/config",
+            "title": "Radarr",
+            "x-yolab-omit": ["media_folder"],
+        });
+        let resolved = resolve(&group, &charts).unwrap();
+        assert_eq!(resolved["title"], "Radarr");
+        assert!(resolved.get("x-yolab-omit").is_none());
+        assert_eq!(resolved["properties"], json!({ "subdomain": { "type": "string" } }));
+        assert_eq!(resolved["required"], json!(["subdomain"]));
+        assert!(resolved["dependencies"].get("media_folder").is_none());
+        let branch = &resolved["dependencies"]["tailscale"]["oneOf"][0];
+        assert_eq!(branch["properties"], json!({ "tailscale": {} }));
+        assert_eq!(branch["required"], json!([]));
     }
 
     #[test]
@@ -623,7 +685,7 @@ main: true
             "chosen": { "type": "string", "writeOnly": true, "generate": true },
             "plain": { "type": "string" },
         }});
-        let values = json!({ "chosen": "mine" });
+        let values = json!({ "chosen": "mine", "password": "" });
         let filled = generated(&schema, values.as_object().unwrap());
         assert_eq!(filled["password"].as_str().unwrap().len(), 24);
         assert_eq!(filled["token"].as_str().unwrap().len(), 40);

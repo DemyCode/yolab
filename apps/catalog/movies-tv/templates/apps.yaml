@@ -1,31 +1,29 @@
 {{- $c := .Values.config }}
-{{- $folder := $c.media_folder }}
+{{- $shared := dict "media_folder" $c.media_folder }}
 apiVersion: yolab.io/v1
 kind: App
 name: jellyfin
 chart: jellyfin
 main: true
-values:
-  media_folder: {{ $folder | quote }}
+values: {{ merge (dict) $shared ($c.jellyfin | default dict) | toJson }}
 ---
 apiVersion: yolab.io/v1
 kind: App
 name: sonarr
 chart: sonarr
-values:
-  media_folder: {{ $folder | quote }}
+values: {{ merge (dict) $shared ($c.sonarr | default dict) | toJson }}
 ---
 apiVersion: yolab.io/v1
 kind: App
 name: radarr
 chart: radarr
-values:
-  media_folder: {{ $folder | quote }}
+values: {{ merge (dict) $shared ($c.radarr | default dict) | toJson }}
 ---
 apiVersion: yolab.io/v1
 kind: App
 name: prowlarr
 chart: prowlarr
+values: {{ $c.prowlarr | default dict | toJson }}
 {{- if eq $c.download_client "existing" }}
 ---
 apiVersion: yolab.io/v1
@@ -38,6 +36,21 @@ apiVersion: yolab.io/v1
 kind: App
 name: {{ $c.download_client }}
 chart: {{ $c.download_client }}
-values:
-  media_folder: {{ $folder | quote }}
+values: {{ merge (dict) $shared (index $c $c.download_client | default dict) | toJson }}
+{{- end }}
+{{- if $c.requests }}
+---
+apiVersion: yolab.io/v1
+kind: App
+name: jellyseerr
+chart: jellyseerr
+values: {{ $c.jellyseerr | default dict | toJson }}
+{{- end }}
+{{- if $c.subtitles }}
+---
+apiVersion: yolab.io/v1
+kind: App
+name: bazarr
+chart: bazarr
+values: {{ merge (dict) $shared ($c.bazarr | default dict) | toJson }}
 {{- end }}

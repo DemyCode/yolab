@@ -13,6 +13,10 @@
           "minLength": 1,
           "description": "One folder for your downloads and your library, shared by every app here, so a finished download is moved instantly instead of copied. Create one, or pick one you have."
         },
+        "jellyfin": { "$ref": "chart:jellyfin#/properties/config", "title": "Jellyfin", "description": "Where you watch: on your TV, your phone, in a browser.", "x-yolab-omit": ["media_folder"] },
+        "sonarr": { "$ref": "chart:sonarr#/properties/config", "title": "Sonarr", "description": "Finds and downloads the shows you follow.", "x-yolab-omit": ["media_folder"] },
+        "radarr": { "$ref": "chart:radarr#/properties/config", "title": "Radarr", "description": "Finds and downloads the films you want.", "x-yolab-omit": ["media_folder"] },
+        "prowlarr": { "$ref": "chart:prowlarr#/properties/config", "title": "Prowlarr", "description": "Searches the sites Sonarr and Radarr download from." },
         "download_client": {
           "type": "string",
           "title": "Download client",
@@ -23,6 +27,18 @@
             { "const": "existing", "title": "Use one I already have" },
             { "const": "none", "title": "No download client" }
           ]
+        },
+        "requests": {
+          "type": "boolean",
+          "title": "Jellyseerr",
+          "default": true,
+          "description": "Lets the people you share Jellyfin with ask for films and shows from their phone."
+        },
+        "subtitles": {
+          "type": "boolean",
+          "title": "Bazarr",
+          "default": false,
+          "description": "Finds subtitles in your languages for everything in the library."
         }
       },
       "dependencies": {
@@ -30,7 +46,14 @@
           "oneOf": [
             {
               "properties": {
-                "download_client": { "enum": ["qbittorrent", "transmission", "none"] }
+                "download_client": { "const": "qbittorrent" },
+                "qbittorrent": { "$ref": "chart:qbittorrent#/properties/config", "title": "qBittorrent", "description": "Downloads what Sonarr and Radarr ask for.", "x-yolab-omit": ["media_folder"] }
+              }
+            },
+            {
+              "properties": {
+                "download_client": { "const": "transmission" },
+                "transmission": { "$ref": "chart:transmission#/properties/config", "title": "Transmission", "description": "Downloads what Sonarr and Radarr ask for.", "x-yolab-omit": ["media_folder"] }
               }
             },
             {
@@ -45,6 +68,29 @@
                 }
               },
               "required": ["existing_client"]
+            },
+            { "properties": { "download_client": { "const": "none" } } }
+          ]
+        },
+        "requests": {
+          "oneOf": [
+            { "properties": { "requests": { "const": false } } },
+            {
+              "properties": {
+                "requests": { "const": true },
+                "jellyseerr": { "$ref": "chart:jellyseerr#/properties/config", "title": "Jellyseerr settings" }
+              }
+            }
+          ]
+        },
+        "subtitles": {
+          "oneOf": [
+            { "properties": { "subtitles": { "const": false } } },
+            {
+              "properties": {
+                "subtitles": { "const": true },
+                "bazarr": { "$ref": "chart:bazarr#/properties/config", "title": "Bazarr settings", "x-yolab-omit": ["media_folder"] }
+              }
             }
           ]
         }

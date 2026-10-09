@@ -6,7 +6,6 @@ import { GroupForm } from "@/components/GroupForm";
 import { Button } from "@/components/ui/button";
 import { buttonClass } from "@/components/ui/button-variants";
 import { EmptyState, Spinner } from "@/components/ui/feedback";
-import { Field, Input } from "@/components/ui/input";
 import { api } from "@/lib/api";
 import { generateSecret } from "@/lib/format";
 import { groupNameFor, type GroupRecord } from "@/lib/groups";
@@ -28,7 +27,6 @@ export function GroupInstallPage() {
   const [formData, setFormData] = useState<Record<string, unknown> | null>(
     null,
   );
-  const [name, setName] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -50,7 +48,7 @@ export function GroupInstallPage() {
         : null,
     [groups.data, groupId],
   );
-  const chosenName = name ?? suggested;
+  const chosenName = suggested;
 
   if (!entry) {
     if (catalog.loading) {
@@ -110,22 +108,6 @@ export function GroupInstallPage() {
         on its own. The group remembers your choices so you can change them
         later.
       </p>
-
-      <div className="mt-6">
-        <Field
-          label="Name of this group"
-          htmlFor="group-name"
-          help="Lowercase letters, numbers and hyphens."
-        >
-          <Input
-            id="group-name"
-            value={chosenName ?? ""}
-            onChange={(e) =>
-              setName(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, "-"))
-            }
-          />
-        </Field>
-      </div>
 
       <section className="mt-8">
         <h2 className="mb-2 px-1 text-sm font-semibold text-fg-muted">

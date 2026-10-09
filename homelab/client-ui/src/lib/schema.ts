@@ -110,6 +110,13 @@ function fieldUi(prop: SchemaProp, domain: string): UiSchema | undefined {
 }
 
 function nestedUi(prop: SchemaProp, domain: string): UiSchema {
+  if (
+    prop.type === "object" &&
+    prop.format !== "connection" &&
+    prop.properties
+  ) {
+    return uiSchemaFor(prop as ConfigSchema, domain);
+  }
   const ui: UiSchema = {};
   const items = (prop as { items?: SchemaProp }).items;
   for (const [name, child] of Object.entries(items?.properties ?? {})) {

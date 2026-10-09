@@ -12,6 +12,8 @@
           "minLength": 1,
           "description": "One folder for your downloads and your albums, shared by every app here. Create one, or pick one you have."
         },
+        "navidrome": { "$ref": "chart:navidrome#/properties/config", "title": "Navidrome", "description": "Where you listen: in a browser or any Subsonic app.", "x-yolab-omit": ["music_folder"] },
+        "lidarr": { "$ref": "chart:lidarr#/properties/config", "title": "Lidarr", "description": "Finds and downloads the albums of the artists you follow.", "x-yolab-omit": ["media_folder"] },
         "download_client": {
           "type": "string",
           "title": "Download client",
@@ -29,7 +31,14 @@
           "oneOf": [
             {
               "properties": {
-                "download_client": { "enum": ["qbittorrent", "transmission", "none"] }
+                "download_client": { "const": "qbittorrent" },
+                "qbittorrent": { "$ref": "chart:qbittorrent#/properties/config", "title": "qBittorrent", "description": "Downloads what Lidarr asks for.", "x-yolab-omit": ["media_folder"] }
+              }
+            },
+            {
+              "properties": {
+                "download_client": { "const": "transmission" },
+                "transmission": { "$ref": "chart:transmission#/properties/config", "title": "Transmission", "description": "Downloads what Lidarr asks for.", "x-yolab-omit": ["media_folder"] }
               }
             },
             {
@@ -44,7 +53,8 @@
                 }
               },
               "required": ["existing_client"]
-            }
+            },
+            { "properties": { "download_client": { "const": "none" } } }
           ]
         }
       }

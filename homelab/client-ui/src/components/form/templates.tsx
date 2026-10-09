@@ -77,8 +77,16 @@ export function ObjectFieldTemplate(props: ObjectFieldTemplateProps) {
     { "ui:options"?: { attached?: boolean } }
   >;
 
+  const nested = props.idSchema.$id !== "root";
+
   return (
-    <div className="space-y-5">
+    <div
+      className={
+        nested
+          ? "space-y-5 rounded-control border border-border p-4"
+          : "space-y-5"
+      }
+    >
       {props.properties.map((p) => {
         const attached = ui[p.name]?.["ui:options"]?.attached;
         return attached ? (

@@ -7,6 +7,7 @@
       "type": "object",
       "required": ["models_from"],
       "properties": {
+        "open-webui": { "$ref": "chart:open-webui#/properties/config", "title": "Open WebUI", "description": "The chat you open in your browser.", "x-yolab-omit": ["ollama"] },
         "models_from": {
           "type": "string",
           "title": "Where the models run",
@@ -21,7 +22,12 @@
       "dependencies": {
         "models_from": {
           "oneOf": [
-            { "properties": { "models_from": { "const": "new" } } },
+            {
+              "properties": {
+                "models_from": { "const": "new" },
+                "ollama": { "$ref": "chart:ollama#/properties/config", "title": "Ollama", "description": "Runs the models, on the machine with the best graphics card you have." }
+              }
+            },
             {
               "properties": {
                 "models_from": { "const": "existing" },
