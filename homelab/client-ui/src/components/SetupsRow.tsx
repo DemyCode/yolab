@@ -1,7 +1,9 @@
 import { useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { FileUp } from "lucide-react";
+import { ClipboardPaste, FileUp } from "lucide-react";
 import { AppIconTile } from "@/components/AppIcon";
+import { Button } from "@/components/ui/button";
+import { Sheet } from "@/components/ui/sheet";
 import { api } from "@/lib/api";
 import type { CatalogSetup, Setup } from "@/lib/groups";
 import { useApi } from "@/lib/useResource";
@@ -12,13 +14,14 @@ export function SetupsRow({ catalog }: { catalog: CatalogApp[] }) {
   const navigate = useNavigate();
   const picker = useRef<HTMLInputElement>(null);
   const [error, setError] = useState<string | null>(null);
+  const [pasting, setPasting] = useState(false);
+  const [pasted, setPasted] = useState("");
 
-  async function openFile(file: File) {
+  async function open(text: string) {
     setError(null);
     try {
-      const setup = await api.post<Setup>("/api/setups/parse", {
-        text: await file.text(),
-      });
+      const setup = await api.post<Setup>("/api/setups/parse", { text });
+      setPasting(false);
       navigate("/add/setup/file", { state: { setup } });
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -37,14 +40,27 @@ export function SetupsRow({ catalog }: { catalog: CatalogApp[] }) {
             stays a normal app you can change or remove later.
           </p>
         </div>
-        <button
-          type="button"
-          onClick={() => picker.current?.click()}
-          className="inline-flex items-center gap-1.5 rounded-control px-2.5 py-1.5 text-sm font-medium text-primary hover:bg-primary-soft"
-        >
-          <FileUp className="h-4 w-4" />
-          From a file
-        </button>
+        <div className="flex gap-1">
+          <button
+            type="button"
+            onClick={() => {
+              setError(null);
+              setPasting(true);
+            }}
+            className="inline-flex items-center gap-1.5 rounded-control px-2.5 py-1.5 text-sm font-medium text-primary hover:bg-primary-soft"
+          >
+            <ClipboardPaste className="h-4 w-4" />
+            Paste a setup
+          </button>
+          <button
+            type="button"
+            onClick={() => picker.current?.click()}
+            className="inline-flex items-center gap-1.5 rounded-control px-2.5 py-1.5 text-sm font-medium text-primary hover:bg-primary-soft"
+          >
+            <FileUp className="h-4 w-4" />
+            From a file
+          </button>
+        </div>
         <input
           ref={picker}
           type="file"
@@ -53,11 +69,32 @@ export function SetupsRow({ catalog }: { catalog: CatalogApp[] }) {
           onChange={(e) => {
             const file = e.target.files?.[0];
             e.target.value = "";
-            if (file) void openFile(file);
+            if (file) void file.text().then(open);
           }}
         />
       </div>
-      {error && <p className="mt-2 text-sm text-danger">{error}</p>}
+      {error && !pasting && <p className="mt-2 text-sm text-danger">{error}</p>}
+      <Sheet
+        open={pasting}
+        onClose={() => setPasting(false)}
+        title="Paste a setup"
+        subtitle="The text of a setup, as shown by “View as text” on a group."
+        wide
+      >
+        <textarea
+          value={pasted}
+          rows={14}
+          aria-label="Setup text"
+          onChange={(e) => setPasted(e.target.value)}
+          className="w-full rounded-control border border-border bg-surface px-3 py-2 font-mono text-sm text-fg focus:border-primary focus:outline-none"
+        />
+        {error && <p className="mt-2 text-sm text-danger">{error}</p>}
+        <div className="mt-4 flex justify-end">
+          <Button onClick={() => void open(pasted)} disabled={!pasted.trim()}>
+            Continue
+          </Button>
+        </div>
+      </Sheet>
       {list.length > 0 && (
         <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
           {list.map((s) => (

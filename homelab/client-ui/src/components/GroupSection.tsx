@@ -1,7 +1,10 @@
 import { useState } from "react";
-import { ChevronDown, Download } from "lucide-react";
+import { ChevronDown, Download, FileText } from "lucide-react";
 import { AppTile } from "@/components/AppTile";
 import { Collapse } from "@/components/motion";
+import { Button } from "@/components/ui/button";
+import { CopyButton } from "@/components/ui/list";
+import { Sheet } from "@/components/ui/sheet";
 import { api } from "@/lib/api";
 import { appDisplayName, catalogEntry } from "@/lib/apps";
 import type { HomeGroup } from "@/lib/groups";
@@ -29,15 +32,15 @@ export function GroupSection({
   installed: AppInfo[];
 }) {
   const [open, setOpen] = useState(false);
+  const [text, setText] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  async function exportGroup() {
+  async function showText() {
     setError(null);
     try {
-      const text = await api.text(
-        `/api/groups/${encodeURIComponent(group.name)}/setup`,
+      setText(
+        await api.text(`/api/groups/${encodeURIComponent(group.name)}/setup`),
       );
-      saveFile(`${group.name}.yaml`, text);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
@@ -58,11 +61,11 @@ export function GroupSection({
         <h2 className="text-sm font-semibold text-fg">{group.title}</h2>
         <button
           type="button"
-          onClick={() => void exportGroup()}
+          onClick={() => void showText()}
           className="inline-flex items-center gap-1.5 rounded-control px-2.5 py-1.5 text-sm font-medium text-primary hover:bg-primary-soft"
         >
-          <Download className="h-4 w-4" />
-          Save as file
+          <FileText className="h-4 w-4" />
+          View as text
         </button>
       </div>
       {error && <p className="px-2 pt-1 text-sm text-danger">{error}</p>}
@@ -92,6 +95,32 @@ export function GroupSection({
           </Collapse>
         </>
       )}
+
+      <Sheet
+        open={text !== null}
+        onClose={() => setText(null)}
+        title={`${group.title} as text`}
+        subtitle="The same setup written down, without passwords. Install it on another YoLab with “From a file”, or share it."
+        wide
+      >
+        <div className="relative">
+          <pre className="max-h-[60vh] overflow-auto rounded-control border border-border bg-surface-2 p-4 font-mono text-sm text-fg">
+            {text}
+          </pre>
+          <div className="absolute right-2 top-2">
+            <CopyButton value={text ?? ""} label="the setup" />
+          </div>
+        </div>
+        <div className="mt-6 flex justify-end">
+          <Button
+            variant="secondary"
+            onClick={() => text && saveFile(`${group.name}.yaml`, text)}
+          >
+            <Download className="h-4 w-4" />
+            Save as file
+          </Button>
+        </div>
+      </Sheet>
     </section>
   );
 }
