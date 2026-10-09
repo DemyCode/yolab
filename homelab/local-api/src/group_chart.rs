@@ -94,7 +94,8 @@ fn resolve_at(
                             target.insert(k.clone(), resolve_at(v, load, depth)?);
                         }
                         if let Some(Value::Array(dropped)) = target.remove(OMIT) {
-                            let names: BTreeSet<&str> = dropped.iter().filter_map(Value::as_str).collect();
+                            let names: BTreeSet<&str> =
+                                dropped.iter().filter_map(Value::as_str).collect();
                             omit(target, &names);
                         }
                     }
@@ -536,7 +537,10 @@ mod tests {
         let resolved = resolve(&group, &charts).unwrap();
         assert_eq!(resolved["title"], "Radarr");
         assert!(resolved.get("x-yolab-omit").is_none());
-        assert_eq!(resolved["properties"], json!({ "subdomain": { "type": "string" } }));
+        assert_eq!(
+            resolved["properties"],
+            json!({ "subdomain": { "type": "string" } })
+        );
         assert_eq!(resolved["required"], json!(["subdomain"]));
         assert!(resolved["dependencies"].get("media_folder").is_none());
         let branch = &resolved["dependencies"]["tailscale"]["oneOf"][0];
