@@ -60,7 +60,12 @@ fn still_shipping_rook(nodes: &[Value]) -> Option<String> {
     nodes
         .iter()
         .find(|n| n["metadata"]["labels"][WITHOUT_ROOK_LABEL].as_str() != Some("true"))
-        .map(|n| n["metadata"]["name"].as_str().unwrap_or("a machine").to_string())
+        .map(|n| {
+            n["metadata"]["name"]
+                .as_str()
+                .unwrap_or("a machine")
+                .to_string()
+        })
 }
 
 fn ours(object: &Value) -> bool {
@@ -85,7 +90,12 @@ async fn list_or_empty(
 }
 
 async fn retire_rook(client: &Client) -> Result<Option<String>> {
-    let chart = crate::k8s::reference("helm.cattle.io/v1", "HelmChart", "kube-system", ROOK_RELEASE);
+    let chart = crate::k8s::reference(
+        "helm.cattle.io/v1",
+        "HelmChart",
+        "kube-system",
+        ROOK_RELEASE,
+    );
     if crate::k8s::exists(client, &chart).await? {
         crate::k8s::delete_if_present(client, &chart).await?;
         return Ok(Some("uninstalling the Rook operator chart".into()));
@@ -126,16 +136,25 @@ async fn retire_rook(client: &Client) -> Result<Option<String>> {
         return Ok(Some("removing Rook's CephCluster record".into()));
     }
 
-    let crds = list_or_empty(client, "apiextensions.k8s.io/v1", "CustomResourceDefinition", None)
-        .await?
-        .into_iter()
-        .filter(released_by_rook)
-        .collect::<Vec<_>>();
+    let crds = list_or_empty(
+        client,
+        "apiextensions.k8s.io/v1",
+        "CustomResourceDefinition",
+        None,
+    )
+    .await?
+    .into_iter()
+    .filter(released_by_rook)
+    .collect::<Vec<_>>();
     for crd in &crds {
         let name = crd["metadata"]["name"].as_str().unwrap_or_default();
         crate::k8s::delete_if_present(
             client,
-            &crate::k8s::cluster_reference("apiextensions.k8s.io/v1", "CustomResourceDefinition", name),
+            &crate::k8s::cluster_reference(
+                "apiextensions.k8s.io/v1",
+                "CustomResourceDefinition",
+                name,
+            ),
         )
         .await?;
     }
@@ -161,8 +180,9 @@ pub async fn converge(client: &Client) -> Result<Tick> {
     if let Some(step) = retire_rook(client).await? {
         return Ok(Tick::NotYet(step));
     }
-    let path = std::env::var(MANIFESTS_ENV)
-        .map_err(|_| anyhow::anyhow!("{MANIFESTS_ENV} is not set; the NixOS module names the CSI manifests"))?;
+    let path = std::env::var(MANIFESTS_ENV).map_err(|_| {
+        anyhow::anyhow!("{MANIFESTS_ENV} is not set; the NixOS module names the CSI manifests")
+    })?;
     let manifests = std::fs::read_to_string(&path)
         .map_err(|e| anyhow::anyhow!("read the CSI manifests at {path}: {e}"))?;
     crate::k8s::apply_documents(client, &manifests).await?;
@@ -205,7 +225,10 @@ fn runs_cephcsi_speaking_aes256k(workload: &Value) -> bool {
 
 fn observed(workload: &Value) -> bool {
     let generation = workload["metadata"]["generation"].as_i64().unwrap_or(0);
-    workload["status"]["observedGeneration"].as_i64().unwrap_or(-1) >= generation
+    workload["status"]["observedGeneration"]
+        .as_i64()
+        .unwrap_or(-1)
+        >= generation
 }
 
 fn daemonset_rolled_out(ds: &Value) -> bool {
@@ -310,8 +333,14 @@ mod tests {
             cephcsi_version("quay.io/cephcsi/cephcsi:v3.17.1@sha256:abc"),
             Some((3, 17, 1))
         );
-        assert_eq!(cephcsi_version("quay.io/cephcsi/cephcsi:v3.13.1"), Some((3, 13, 1)));
-        assert_eq!(cephcsi_version("quay.io/cephcsi/cephcsi:v3.18.0-rc1"), Some((3, 18, 0)));
+        assert_eq!(
+            cephcsi_version("quay.io/cephcsi/cephcsi:v3.13.1"),
+            Some((3, 13, 1))
+        );
+        assert_eq!(
+            cephcsi_version("quay.io/cephcsi/cephcsi:v3.18.0-rc1"),
+            Some((3, 18, 0))
+        );
         assert_eq!(cephcsi_version("quay.io/cephcsi/cephcsi"), None);
         assert_eq!(cephcsi_version("localhost:5000/cephcsi"), None);
     }
@@ -341,9 +370,18 @@ mod tests {
 
     #[test]
     fn csi_speaks_aes256k_only_when_our_new_driver_has_fully_rolled_out() {
-        assert!(csi_speaks_aes256k(&workload(true, NEW), &workload(true, NEW)));
-        assert!(!csi_speaks_aes256k(&workload(true, OLD), &workload(true, NEW)));
-        assert!(!csi_speaks_aes256k(&workload(false, NEW), &workload(true, NEW)));
+        assert!(csi_speaks_aes256k(
+            &workload(true, NEW),
+            &workload(true, NEW)
+        ));
+        assert!(!csi_speaks_aes256k(
+            &workload(true, OLD),
+            &workload(true, NEW)
+        ));
+        assert!(!csi_speaks_aes256k(
+            &workload(false, NEW),
+            &workload(true, NEW)
+        ));
 
         let mut rolling = workload(true, NEW);
         rolling["status"]["updatedNumberScheduled"] = json!(1);
@@ -399,7 +437,10 @@ mod tests {
         accept_patches(&server).await;
         let tick = mark_node(&client, root.path(), "n1").await.unwrap();
         assert_eq!(tick, Tick::Done);
-        assert_eq!(patched(&server).await[0]["metadata"]["labels"][WITHOUT_ROOK_LABEL], "true");
+        assert_eq!(
+            patched(&server).await[0]["metadata"]["labels"][WITHOUT_ROOK_LABEL],
+            "true"
+        );
     }
 
     async fn all_nodes_marked(server: &wiremock::MockServer) {
@@ -449,7 +490,13 @@ mod tests {
     async fn the_rook_chart_is_uninstalled_first_and_nothing_of_ours_is_applied_yet() {
         let (server, client) = api_server().await;
         all_nodes_marked(&server).await;
-        serve(&server, CHART, 200, json!({"metadata": {"name": "rook-ceph"}})).await;
+        serve(
+            &server,
+            CHART,
+            200,
+            json!({"metadata": {"name": "rook-ceph"}}),
+        )
+        .await;
         Mock::given(method("DELETE"))
             .and(path(CHART))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
@@ -468,10 +515,28 @@ mod tests {
         absent(&server, CHART).await;
         absent(&server, OPERATOR).await;
         let ds = "/apis/apps/v1/namespaces/rook-ceph/daemonsets/csi-cephfsplugin";
-        serve(&server, ds, 200, json!({"metadata": {"name": "csi-cephfsplugin", "labels": {}}})).await;
-        absent(&server, "/apis/apps/v1/namespaces/rook-ceph/deployments/csi-cephfsplugin-provisioner").await;
-        absent(&server, "/apis/apps/v1/namespaces/rook-ceph/daemonsets/csi-rbdplugin").await;
-        absent(&server, "/apis/apps/v1/namespaces/rook-ceph/deployments/csi-rbdplugin-provisioner").await;
+        serve(
+            &server,
+            ds,
+            200,
+            json!({"metadata": {"name": "csi-cephfsplugin", "labels": {}}}),
+        )
+        .await;
+        absent(
+            &server,
+            "/apis/apps/v1/namespaces/rook-ceph/deployments/csi-cephfsplugin-provisioner",
+        )
+        .await;
+        absent(
+            &server,
+            "/apis/apps/v1/namespaces/rook-ceph/daemonsets/csi-rbdplugin",
+        )
+        .await;
+        absent(
+            &server,
+            "/apis/apps/v1/namespaces/rook-ceph/deployments/csi-rbdplugin-provisioner",
+        )
+        .await;
         Mock::given(method("DELETE"))
             .and(path(ds))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
@@ -497,9 +562,21 @@ mod tests {
             json!({"metadata": {"name": "csi-cephfsplugin", "labels": {"app.kubernetes.io/managed-by": "yolab"}}}),
         )
         .await;
-        absent(&server, "/apis/apps/v1/namespaces/rook-ceph/deployments/csi-cephfsplugin-provisioner").await;
-        absent(&server, "/apis/apps/v1/namespaces/rook-ceph/daemonsets/csi-rbdplugin").await;
-        absent(&server, "/apis/apps/v1/namespaces/rook-ceph/deployments/csi-rbdplugin-provisioner").await;
+        absent(
+            &server,
+            "/apis/apps/v1/namespaces/rook-ceph/deployments/csi-cephfsplugin-provisioner",
+        )
+        .await;
+        absent(
+            &server,
+            "/apis/apps/v1/namespaces/rook-ceph/daemonsets/csi-rbdplugin",
+        )
+        .await;
+        absent(
+            &server,
+            "/apis/apps/v1/namespaces/rook-ceph/deployments/csi-rbdplugin-provisioner",
+        )
+        .await;
         let _ = converge(&client).await;
         let deleted_ds = server
             .received_requests()

@@ -140,9 +140,14 @@ async fn write_keyring<H: Host>(host: &H, path: &Path, text: &str) -> Result<()>
     std::fs::write(&staged, text).with_context(|| format!("write {}", staged.display()))?;
     std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o600))?;
     let staged_s = staged.to_string_lossy().into_owned();
-    let owned = host.run_cmd("chown", &["ceph:ceph", staged_s.as_str()]).await?;
+    let owned = host
+        .run_cmd("chown", &["ceph:ceph", staged_s.as_str()])
+        .await?;
     if !owned.success {
-        return Err(anyhow!("chown ceph:ceph {staged_s}: {}", owned.stderr.trim()));
+        return Err(anyhow!(
+            "chown ceph:ceph {staged_s}: {}",
+            owned.stderr.trim()
+        ));
     }
     std::fs::rename(&staged, path).with_context(|| format!("replace {}", path.display()))?;
     Ok(())
@@ -184,12 +189,19 @@ fn listed_keys(auth_ls: &Value) -> Vec<(String, String)> {
         .as_array()
         .into_iter()
         .flatten()
-        .filter_map(|e| Some((e["entity"].as_str()?.to_string(), e["key"].as_str()?.to_string())))
+        .filter_map(|e| {
+            Some((
+                e["entity"].as_str()?.to_string(),
+                e["key"].as_str()?.to_string(),
+            ))
+        })
         .collect()
 }
 
 fn is_daemon(entity: &str) -> bool {
-    ["osd.", "mgr.", "mds."].iter().any(|p| entity.starts_with(p))
+    ["osd.", "mgr.", "mds."]
+        .iter()
+        .any(|p| entity.starts_with(p))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -256,15 +268,17 @@ fn osd_block(root: &Path, n: u32) -> Option<PathBuf> {
 }
 
 fn label_osd_key(show_label: &Value) -> Option<String> {
-    show_label
-        .as_object()?
-        .values()
-        .next()?["osd_key"]
+    show_label.as_object()?.values().next()?["osd_key"]
         .as_str()
         .map(str::to_string)
 }
 
-async fn local_key<H: Host>(host: &H, root: &Path, node: &str, d: Daemon) -> Result<Option<String>> {
+async fn local_key<H: Host>(
+    host: &H,
+    root: &Path,
+    node: &str,
+    d: Daemon,
+) -> Result<Option<String>> {
     match d {
         Daemon::Osd(n) => {
             let Some(dev) = osd_block(root, n) else {
@@ -301,7 +315,13 @@ async fn resume_stopped<H: Host>(host: &H, root: &Path) -> Result<()> {
         .into_iter()
         .flatten()
         .flatten()
-        .filter_map(|e| e.file_name().to_str()?.strip_prefix("stopped-osd.")?.parse().ok())
+        .filter_map(|e| {
+            e.file_name()
+                .to_str()?
+                .strip_prefix("stopped-osd.")?
+                .parse()
+                .ok()
+        })
         .collect();
     for n in markers {
         let unit = Daemon::Osd(n).unit("");
@@ -330,7 +350,8 @@ async fn adopt<H: Host>(host: &H, root: &Path, node: &str, d: Daemon, want: &str
             }
         }
         Daemon::Osd(n) => {
-            let dev = osd_block(root, n).ok_or_else(|| anyhow!("osd.{n} has no block device here"))?;
+            let dev =
+                osd_block(root, n).ok_or_else(|| anyhow!("osd.{n} has no block device here"))?;
             let dev_s = dev.to_string_lossy().into_owned();
             let unit = d.unit(node);
             let marker = stopped_marker(root, n);
@@ -345,13 +366,24 @@ async fn adopt<H: Host>(host: &H, root: &Path, node: &str, d: Daemon, want: &str
             let labelled = host
                 .run_cmd_bounded(
                     "ceph-bluestore-tool",
-                    &["set-label-key", "--dev", dev_s.as_str(), "-k", "osd_key", "-v", want],
+                    &[
+                        "set-label-key",
+                        "--dev",
+                        dev_s.as_str(),
+                        "-k",
+                        "osd_key",
+                        "-v",
+                        want,
+                    ],
                     PROBE,
                 )
                 .await?;
             let started = host.systemctl(&["start", unit.as_str()]).await?;
             if !labelled.success {
-                return Err(anyhow!("write osd.{n}'s new key to {dev_s}: {}", labelled.stderr.trim()));
+                return Err(anyhow!(
+                    "write osd.{n}'s new key to {dev_s}: {}",
+                    labelled.stderr.trim()
+                ));
             }
             if !started.success {
                 return Err(anyhow!("start {unit}: {}", started.stderr.trim()));
@@ -368,7 +400,10 @@ pub fn all_pgs_active(pg_stat: &Value) -> bool {
     let Some(total) = summary["num_pgs"].as_u64() else {
         return false;
     };
-    let states = summary["num_pg_by_state"].as_array().cloned().unwrap_or_default();
+    let states = summary["num_pg_by_state"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
     let active: u64 = states
         .iter()
         .filter(|s| {
@@ -444,7 +479,9 @@ pub fn lease_free_for(existing: &Value, me: &str, now: DateTime<Utc>) -> bool {
         .as_str()
         .and_then(|t| DateTime::parse_from_rfc3339(t).ok())
         .map(|t| t.with_timezone(&Utc));
-    let secs = spec["leaseDurationSeconds"].as_i64().unwrap_or(RESTART_LEASE_SECS);
+    let secs = spec["leaseDurationSeconds"]
+        .as_i64()
+        .unwrap_or(RESTART_LEASE_SECS);
     renewed.is_none_or(|t| t + chrono::Duration::seconds(secs) < now)
 }
 
@@ -483,16 +520,14 @@ pub fn admin_kernel_mapped(root: &Path) -> bool {
         .flatten()
         .flatten()
         .filter_map(|e| std::fs::read_to_string(e.path().join("config_info")).ok())
-        .any(|info| {
-            info.split([' ', ','])
-                .any(|opt| opt.trim() == "name=admin")
-        })
+        .any(|info| info.split([' ', ',']).any(|opt| opt.trim() == "name=admin"))
 }
 
 async fn publish_facts<H: Host>(host: &H, root: &Path, node: &str) -> Result<()> {
     let key = format!("{FACTS_PREFIX}{node}");
     let facts = json!({ "admin_kernel_mapped": admin_kernel_mapped(root) }).to_string();
-    host.ceph(&["config-key", "set", key.as_str(), facts.as_str()]).await?;
+    host.ceph(&["config-key", "set", key.as_str(), facts.as_str()])
+        .await?;
     Ok(())
 }
 
@@ -505,7 +540,12 @@ async fn sync_bootstrap_osd<H: Host>(host: &H, root: &Path) -> Result<()> {
         return Ok(());
     };
     if keyring_key(&text, BOOTSTRAP_OSD).as_deref() != Some(entry.key.as_str()) {
-        write_keyring(host, &path, &keyring_with_key(&text, BOOTSTRAP_OSD, &entry.key)).await?;
+        write_keyring(
+            host,
+            &path,
+            &keyring_with_key(&text, BOOTSTRAP_OSD, &entry.key),
+        )
+        .await?;
         tracing::info!("cephx: {BOOTSTRAP_OSD} keyring follows its rotated key");
     }
     Ok(())
@@ -551,7 +591,9 @@ pub async fn converge_node<H: Host>(b: &Backend<H>, root: &Path, node: &str) -> 
     };
     let entity = d.entity(node);
     if let Some(why) = may_restart(host, d).await? {
-        return Ok(Tick::NotYet(format!("{entity} needs a restart for its new key; {why}")));
+        return Ok(Tick::NotYet(format!(
+            "{entity} needs a restart for its new key; {why}"
+        )));
     }
     if !take_restart_lease(&b.kube, node).await? {
         return Ok(Tick::NotYet(format!(
@@ -607,11 +649,14 @@ pub async fn heal_admin_keyring<H: Host>(
         let path = super::bootstrap::admin_keyring_path(root);
         let text = std::fs::read_to_string(&path).unwrap_or_default();
         write_keyring(host, &path, &keyring_with_key(&text, ADMIN, &key)).await?;
-        tracing::warn!("cephx: Ceph refused this machine's admin key; took the current one from [{peer}]");
+        tracing::warn!(
+            "cephx: Ceph refused this machine's admin key; took the current one from [{peer}]"
+        );
         return Ok(Tick::Done);
     }
     Ok(Tick::NotYet(
-        "Ceph refuses this machine's admin key and no other machine handed over the current one".into(),
+        "Ceph refuses this machine's admin key and no other machine handed over the current one"
+            .into(),
     ))
 }
 
@@ -623,7 +668,10 @@ pub async fn images_identity<H: Host>(host: &H, root: &Path, pool: &str) -> Opti
     let have = std::fs::read_to_string(&path)
         .ok()
         .and_then(|text| keyring_key(&text, IMAGES_ENTITY));
-    if have.as_deref().is_some_and(|k| key_type(k) == KeyType::Aes256k) {
+    if have
+        .as_deref()
+        .is_some_and(|k| key_type(k) == KeyType::Aes256k)
+    {
         return Some(path);
     }
     let caps = format!("profile rbd pool={pool}");
@@ -649,7 +697,9 @@ pub async fn images_identity<H: Host>(host: &H, root: &Path, pool: &str) -> Opti
     };
     let key = keyring_key(&text, IMAGES_ENTITY)?;
     if key_type(&key) != KeyType::Aes256k {
-        tracing::warn!("cephx: {IMAGES_ENTITY} holds an old key type; mapping the images disk as admin");
+        tracing::warn!(
+            "cephx: {IMAGES_ENTITY} holds an old key type; mapping the images disk as admin"
+        );
         return None;
     }
     match write_keyring(host, &path, &keyring_with_key("", IMAGES_ENTITY, &key)).await {
@@ -696,7 +746,9 @@ pub fn every_kernel_speaks_aes256k(nodes: &[Value]) -> Result<(), String> {
         return Err("no machine has reported its kernel yet".into());
     }
     for n in nodes {
-        let release = n["status"]["nodeInfo"]["kernelVersion"].as_str().unwrap_or("");
+        let release = n["status"]["nodeInfo"]["kernelVersion"]
+            .as_str()
+            .unwrap_or("");
         if !kernel_speaks_aes256k(release) {
             let name = n["metadata"]["name"].as_str().unwrap_or("a machine");
             return Err(format!(
@@ -718,7 +770,10 @@ async fn daemon_host<H: Host>(host: &H, entity: &str) -> Result<Option<String>> 
 async fn full_quorum<H: Host>(host: &H) -> Result<bool> {
     let q = host.ceph_json(&["quorum_status"]).await?;
     let quorum = q["quorum_names"].as_array().map(|a| a.len()).unwrap_or(0);
-    let mons = q["monmap"]["mons"].as_array().map(|a| a.len()).unwrap_or(usize::MAX);
+    let mons = q["monmap"]["mons"]
+        .as_array()
+        .map(|a| a.len())
+        .unwrap_or(usize::MAX);
     Ok(quorum == mons)
 }
 
@@ -750,7 +805,9 @@ async fn sessions_per_active_mds<H: Host>(host: &H) -> Result<Vec<Value>> {
 
 async fn node_secret_moved(client: &Client) -> Result<bool> {
     let data = crate::k8s::secret_data(client, NS, "rook-csi-cephfs-node").await?;
-    let wanted = NODE_ENTITY_AES256K.strip_prefix("client.").unwrap_or(NODE_ENTITY_AES256K);
+    let wanted = NODE_ENTITY_AES256K
+        .strip_prefix("client.")
+        .unwrap_or(NODE_ENTITY_AES256K);
     Ok(data.is_some_and(|d| d.get("adminID").map(String::as_str) == Some(wanted)))
 }
 
@@ -763,7 +820,9 @@ async fn rotate_admin<H: Host>(host: &H, root: &Path) -> Result<Tick> {
         .pending
         .ok_or_else(|| anyhow!("{ADMIN} has no pending key after asking for one"))?;
     if key_type(&pending) != KeyType::Aes256k {
-        return Ok(Tick::NotYet(format!("{ADMIN}'s pending key is not aes256k yet")));
+        return Ok(Tick::NotYet(format!(
+            "{ADMIN}'s pending key is not aes256k yet"
+        )));
     }
     let path = super::bootstrap::admin_keyring_path(root);
     let text = std::fs::read_to_string(&path).unwrap_or_default();
@@ -781,7 +840,8 @@ pub async fn rotation_step<H: Host>(b: &Backend<H>, root: &Path) -> Result<Tick>
         return Ok(Tick::Idle("the monitors predate aes256k keys".into()));
     }
     if cipher(&monmap, "auth_preferred_cipher") != Some(AES256K) {
-        host.ceph(&["mon", "set", "auth_preferred_cipher", AES256K]).await?;
+        host.ceph(&["mon", "set", "auth_preferred_cipher", AES256K])
+            .await?;
         return Ok(Tick::NotYet("new keys are aes256k from now on".into()));
     }
 
@@ -790,7 +850,9 @@ pub async fn rotation_step<H: Host>(b: &Backend<H>, root: &Path) -> Result<Tick>
     for (entity, _) in &daemons {
         if let Some(entry) = auth_entry(host, entity).await? {
             if entry.pending.is_some() {
-                return Ok(Tick::NotYet(format!("{entity} is restarting onto its new key")));
+                return Ok(Tick::NotYet(format!(
+                    "{entity} is restarting onto its new key"
+                )));
             }
         }
     }
@@ -800,21 +862,27 @@ pub async fn rotation_step<H: Host>(b: &Backend<H>, root: &Path) -> Result<Tick>
         .find(|(_, key)| key_type(key) == KeyType::Aes)
     {
         let Some(owner) = daemon_host(host, entity).await? else {
-            return Ok(Tick::NotYet(format!("cannot tell which machine runs {entity}")));
+            return Ok(Tick::NotYet(format!(
+                "cannot tell which machine runs {entity}"
+            )));
         };
         if !node_ready(&nodes, &owner) {
             return Ok(Tick::NotYet(format!("{entity} waits for {owner} to be up")));
         }
-        host.ceph(&["auth", "get-or-create-pending", entity.as_str()]).await?;
+        host.ceph(&["auth", "get-or-create-pending", entity.as_str()])
+            .await?;
         return Ok(Tick::NotYet(format!("{entity} gets an aes256k key")));
     }
 
     if let Some(mon) = auth_entry(host, "mon.").await? {
         if key_type(&mon.key) == KeyType::Aes {
             if !full_quorum(host).await? {
-                return Ok(Tick::NotYet("mon. rotates only with every monitor in quorum".into()));
+                return Ok(Tick::NotYet(
+                    "mon. rotates only with every monitor in quorum".into(),
+                ));
             }
-            host.ceph(&["auth", "rotate", "mon.", "--key_type", AES256K]).await?;
+            host.ceph(&["auth", "rotate", "mon.", "--key_type", AES256K])
+                .await?;
             return Ok(Tick::NotYet("mon. took an aes256k key".into()));
         }
     }
@@ -823,20 +891,33 @@ pub async fn rotation_step<H: Host>(b: &Backend<H>, root: &Path) -> Result<Tick>
         return Ok(Tick::Idle(why));
     }
     if !super::ceph_csi::speaks_aes256k(client).await? {
-        return Ok(Tick::Idle("waiting for the CSI driver that speaks aes256k to roll out".into()));
+        return Ok(Tick::Idle(
+            "waiting for the CSI driver that speaks aes256k to roll out".into(),
+        ));
     }
 
     if cipher(&monmap, "auth_service_cipher") != Some(AES256K) {
-        host.ceph(&["mon", "set", "auth_service_cipher", AES256K]).await?;
-        return Ok(Tick::NotYet("service tickets are aes256k from now on".into()));
+        host.ceph(&["mon", "set", "auth_service_cipher", AES256K])
+            .await?;
+        return Ok(Tick::NotYet(
+            "service tickets are aes256k from now on".into(),
+        ));
     }
     let creatable = host
         .ceph(&["config", "get", "mon", "mon_auth_allow_insecure_key"])
         .await?;
     if creatable.trim() != "false" {
-        host.ceph(&["config", "set", "mon", "mon_auth_allow_insecure_key", "false"])
-            .await?;
-        return Ok(Tick::NotYet("no new aes key can be created any more".into()));
+        host.ceph(&[
+            "config",
+            "set",
+            "mon",
+            "mon_auth_allow_insecure_key",
+            "false",
+        ])
+        .await?;
+        return Ok(Tick::NotYet(
+            "no new aes key can be created any more".into(),
+        ));
     }
 
     let has = |entity: &str| listed.iter().any(|(e, _)| e == entity);
@@ -852,12 +933,16 @@ pub async fn rotation_step<H: Host>(b: &Backend<H>, root: &Path) -> Result<Tick>
         args.extend(["--key_type", AES256K]);
         host.ceph(&args).await?;
         crate::runtime::wake("csi-secrets");
-        return Ok(Tick::NotYet(format!("new CephFS mounts move to {NODE_ENTITY_AES256K}")));
+        return Ok(Tick::NotYet(format!(
+            "new CephFS mounts move to {NODE_ENTITY_AES256K}"
+        )));
     }
     if has(NODE_ENTITY) && has(NODE_ENTITY_AES256K) {
         if !node_secret_moved(client).await? {
             crate::runtime::wake("csi-secrets");
-            return Ok(Tick::NotYet(format!("waiting for the CSI secret to name {NODE_ENTITY_AES256K}")));
+            return Ok(Tick::NotYet(format!(
+                "waiting for the CSI secret to name {NODE_ENTITY_AES256K}"
+            )));
         }
         let sessions = sessions_per_active_mds(host).await?;
         match crate::ceph::destructive::Unmounted::by_any_session(NODE_ENTITY, &sessions) {
@@ -877,11 +962,14 @@ pub async fn rotation_step<H: Host>(b: &Backend<H>, root: &Path) -> Result<Tick>
         host.ceph(&["auth", "rotate", PROVISIONER_ENTITY, "--key_type", AES256K])
             .await?;
         crate::runtime::wake("csi-secrets");
-        return Ok(Tick::NotYet(format!("{PROVISIONER_ENTITY} took an aes256k key")));
+        return Ok(Tick::NotYet(format!(
+            "{PROVISIONER_ENTITY} took an aes256k key"
+        )));
     }
     for entity in UNUSED_CLIENTS.iter().copied().chain([BOOTSTRAP_OSD]) {
         if aes(entity) {
-            host.ceph(&["auth", "rotate", entity, "--key_type", AES256K]).await?;
+            host.ceph(&["auth", "rotate", entity, "--key_type", AES256K])
+                .await?;
             return Ok(Tick::NotYet(format!("{entity} took an aes256k key")));
         }
     }
@@ -908,8 +996,11 @@ pub async fn rotation_step<H: Host>(b: &Backend<H>, root: &Path) -> Result<Tick>
         )));
     }
     if allowed_ciphers(&monmap) != [AES256K] {
-        host.ceph(&["mon", "set", "auth_allowed_ciphers", AES256K]).await?;
-        return Ok(Tick::NotYet("only aes256k keys authenticate from now on".into()));
+        host.ceph(&["mon", "set", "auth_allowed_ciphers", AES256K])
+            .await?;
+        return Ok(Tick::NotYet(
+            "only aes256k keys authenticate from now on".into(),
+        ));
     }
     Ok(Tick::Done)
 }

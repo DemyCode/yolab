@@ -118,7 +118,9 @@ fn user_id(entity: &str) -> &str {
 async fn node_credential<H: Host>(host: &H) -> Result<(&'static str, String)> {
     match host.ceph(&["auth", "get-key", NODE_ENTITY_AES256K]).await {
         Ok(key) => Ok((NODE_ENTITY_AES256K, key.trim().to_string())),
-        Err(e) if e.is_not_found() => Ok((NODE_ENTITY, ensure_key(host, NODE_ENTITY, NODE_CAPS).await?)),
+        Err(e) if e.is_not_found() => {
+            Ok((NODE_ENTITY, ensure_key(host, NODE_ENTITY, NODE_CAPS).await?))
+        }
         Err(e) => Err(e).context("read the CSI node credential"),
     }
 }
@@ -380,7 +382,9 @@ mod tests {
         assert!(!b.host.ran("client.admin"));
         let names = applied_names(&server).await;
         assert!(
-            !names.iter().any(|n| n == "rook-ceph-mon" || n == "rook-ceph-mon-endpoints"),
+            !names
+                .iter()
+                .any(|n| n == "rook-ceph-mon" || n == "rook-ceph-mon-endpoints"),
             "only the Rook operator read these, and it is gone: {names:?}"
         );
     }

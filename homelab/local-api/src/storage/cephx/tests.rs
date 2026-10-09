@@ -24,7 +24,8 @@ fn entry(k: &str, pending: Option<&str>) -> String {
     json!([e]).to_string()
 }
 
-const LEASE: &str = "/apis/coordination.k8s.io/v1/namespaces/rook-ceph/leases/yolab-ceph-key-restart";
+const LEASE: &str =
+    "/apis/coordination.k8s.io/v1/namespaces/rook-ceph/leases/yolab-ceph-key-restart";
 const LEASES: &str = "/apis/coordination.k8s.io/v1/namespaces/rook-ceph/leases";
 
 async fn lease_free(server: &MockServer) {
@@ -71,7 +72,10 @@ fn base_host() -> FakeHost {
     FakeHost::new()
         .ok("ceph config-key set", "")
         .ok("chown", "")
-        .fail("ceph auth get client.bootstrap-osd", "Error ENOENT: no such entity")
+        .fail(
+            "ceph auth get client.bootstrap-osd",
+            "Error ENOENT: no such entity",
+        )
 }
 
 #[test]
@@ -93,7 +97,8 @@ fn only_kernels_from_7_0_authenticate_with_aes256k_keys() {
 
 #[test]
 fn a_keyring_edit_touches_only_the_named_entity() {
-    let mon_keyring = "[mon.]\n\tkey = OLD\n\tcaps mon = \"allow *\"\n[client.admin]\n\tkey = ADMIN\n";
+    let mon_keyring =
+        "[mon.]\n\tkey = OLD\n\tcaps mon = \"allow *\"\n[client.admin]\n\tkey = ADMIN\n";
     let edited = keyring_with_key(mon_keyring, "mon.", "NEW");
     assert_eq!(keyring_key(&edited, "mon."), Some("NEW".into()));
     assert_eq!(keyring_key(&edited, "client.admin"), Some("ADMIN".into()));
@@ -104,7 +109,10 @@ fn a_keyring_edit_touches_only_the_named_entity() {
 #[test]
 fn a_keyring_without_the_entity_gains_it() {
     let edited = keyring_with_key("", "client.yolab-images", "K");
-    assert_eq!(keyring_key(&edited, "client.yolab-images"), Some("K".into()));
+    assert_eq!(
+        keyring_key(&edited, "client.yolab-images"),
+        Some("K".into())
+    );
     let keyless = keyring_with_key("[mgr.n1]\n\tcaps mon = \"x\"\n[other]\n", "mgr.n1", "K");
     assert_eq!(keyring_key(&keyless, "mgr.n1"), Some("K".into()));
     assert_eq!(keyring_key(&keyless, "other"), None);
@@ -121,7 +129,10 @@ fn a_pending_key_is_what_the_daemon_must_adopt() {
 #[test]
 fn every_placement_group_must_be_active_before_a_restart() {
     let stat = |states: Value, total: u64| json!({"pg_summary": {"num_pg_by_state": states, "num_pgs": total}});
-    assert!(all_pgs_active(&stat(json!([{"name": "active+clean", "num": 3}]), 3)));
+    assert!(all_pgs_active(&stat(
+        json!([{"name": "active+clean", "num": 3}]),
+        3
+    )));
     assert!(all_pgs_active(&stat(
         json!([{"name": "active+clean", "num": 2}, {"name": "active+undersized+degraded", "num": 1}]),
         3
@@ -130,15 +141,24 @@ fn every_placement_group_must_be_active_before_a_restart() {
         json!([{"name": "active+clean", "num": 2}, {"name": "peering", "num": 1}]),
         3
     )));
-    assert!(!all_pgs_active(&stat(json!([{"name": "inactive", "num": 3}]), 3)));
+    assert!(!all_pgs_active(&stat(
+        json!([{"name": "inactive", "num": 3}]),
+        3
+    )));
     assert!(!all_pgs_active(&json!({})));
 }
 
 #[test]
 fn a_cluster_with_one_osd_or_single_copy_pools_never_waits_for_ok_to_stop() {
     assert!(redundancy_impossible(&json!([0]), &json!([{"size": 2}])));
-    assert!(redundancy_impossible(&json!([0, 1]), &json!([{"size": 2}, {"size": 1}])));
-    assert!(!redundancy_impossible(&json!([0, 1]), &json!([{"size": 2}])));
+    assert!(redundancy_impossible(
+        &json!([0, 1]),
+        &json!([{"size": 2}, {"size": 1}])
+    ));
+    assert!(!redundancy_impossible(
+        &json!([0, 1]),
+        &json!([{"size": 2}])
+    ));
 }
 
 #[test]
@@ -181,7 +201,8 @@ fn a_kernel_mapping_made_as_admin_is_seen() {
 fn every_machine_must_boot_a_kernel_that_speaks_aes256k() {
     let node = |name: &str, kernel: &str| json!({"metadata": {"name": name}, "status": {"nodeInfo": {"kernelVersion": kernel}}});
     assert!(every_kernel_speaks_aes256k(&[node("n1", "7.2.9"), node("n2", "7.2.9")]).is_ok());
-    let err = every_kernel_speaks_aes256k(&[node("n1", "7.2.9"), node("n2", "6.18.55")]).unwrap_err();
+    let err =
+        every_kernel_speaks_aes256k(&[node("n1", "7.2.9"), node("n2", "6.18.55")]).unwrap_err();
     assert!(err.contains("n2"));
     assert!(every_kernel_speaks_aes256k(&[]).is_err());
 }
@@ -198,7 +219,8 @@ async fn a_monitor_keyring_follows_a_rotated_mon_key_without_any_restart() {
     let tick = converge_node(&b, root.path(), "n1").await.unwrap();
 
     assert_eq!(tick, Tick::Done);
-    let text = std::fs::read_to_string(root.path().join("var/lib/ceph/mon/ceph-n1/keyring")).unwrap();
+    let text =
+        std::fs::read_to_string(root.path().join("var/lib/ceph/mon/ceph-n1/keyring")).unwrap();
     assert_eq!(keyring_key(&text, "mon."), Some(aes256k(2)));
     assert!(!b.host.ran("systemctl"));
 }
@@ -219,7 +241,8 @@ async fn a_manager_adopts_its_pending_key_by_restarting_under_the_lease() {
 
     assert!(matches!(tick, Tick::RequeueAfter(_)));
     assert!(b.host.ran("systemctl restart ceph-mgr-n1.service"));
-    let text = std::fs::read_to_string(root.path().join("var/lib/ceph/mgr/ceph-n1/keyring")).unwrap();
+    let text =
+        std::fs::read_to_string(root.path().join("var/lib/ceph/mgr/ceph-n1/keyring")).unwrap();
     assert_eq!(keyring_key(&text, "mgr.n1"), Some(aes256k(3)));
 }
 
@@ -238,8 +261,13 @@ async fn no_daemon_restarts_while_another_machine_holds_the_lease() {
 
     assert!(matches!(tick, Tick::NotYet(ref why) if why.contains("another machine")));
     assert!(!b.host.ran("systemctl"));
-    let text = std::fs::read_to_string(root.path().join("var/lib/ceph/mgr/ceph-n1/keyring")).unwrap();
-    assert_eq!(keyring_key(&text, "mgr.n1"), Some(aes(1)), "the key on disk is untouched");
+    let text =
+        std::fs::read_to_string(root.path().join("var/lib/ceph/mgr/ceph-n1/keyring")).unwrap();
+    assert_eq!(
+        keyring_key(&text, "mgr.n1"),
+        Some(aes(1)),
+        "the key on disk is untouched"
+    );
 }
 
 fn osd_on_disk(root: &Path, n: u32) {
@@ -264,7 +292,10 @@ async fn an_osd_waits_while_stopping_it_would_make_data_unavailable() {
         .ok("ceph auth get osd.2", &entry(&aes(1), Some(&aes256k(4))))
         .ok("ceph-bluestore-tool show-label", &label(&aes(1)))
         .ok("ceph pg stat", pgs_active())
-        .fail("ceph osd ok-to-stop 2", "Error EBUSY: would make pgs inactive")
+        .fail(
+            "ceph osd ok-to-stop 2",
+            "Error EBUSY: would make pgs inactive",
+        )
         .ok("ceph osd ls", "[0,1,2]")
         .ok("ceph osd pool ls detail", r#"[{"size":2}]"#);
     let b = Backend { kube, host };
@@ -358,12 +389,15 @@ async fn an_images_key_already_on_disk_is_reused_without_asking_ceph() {
     std::fs::write(root.path().join("proc/sys/kernel/osrelease"), "7.2.9\n").unwrap();
     std::fs::create_dir_all(root.path().join("etc/ceph")).unwrap();
     std::fs::write(
-        root.path().join("etc/ceph/ceph.client.yolab-images.keyring"),
+        root.path()
+            .join("etc/ceph/ceph.client.yolab-images.keyring"),
         format!("[client.yolab-images]\n\tkey = {}\n", aes256k(9)),
     )
     .unwrap();
     let host = FakeHost::new();
-    assert!(images_identity(&host, root.path(), "images").await.is_some());
+    assert!(images_identity(&host, root.path(), "images")
+        .await
+        .is_some());
     assert!(host.calls().is_empty());
 }
 
@@ -384,14 +418,18 @@ async fn a_refused_admin_key_without_a_cluster_token_is_reported_not_guessed() {
         "handle_auth_bad_method failed to auth with my available methods: (13) Permission denied",
     );
     let env = StorageEnv::from_lookup(|_| None);
-    let tick = heal_admin_keyring(&host, Path::new("/nonexistent"), &env, &[]).await.unwrap();
+    let tick = heal_admin_keyring(&host, Path::new("/nonexistent"), &env, &[])
+        .await
+        .unwrap();
     assert!(matches!(tick, Tick::NotYet(ref why) if why.contains("cluster token")));
 }
 
 #[test]
 fn an_unreachable_cluster_is_not_mistaken_for_a_refused_key() {
     assert!(!denied("RADOS timed out (error connecting to the cluster)"));
-    assert!(denied("[errno 13] RADOS permission denied (error connecting to the cluster)"));
+    assert!(denied(
+        "[errno 13] RADOS permission denied (error connecting to the cluster)"
+    ));
 }
 
 fn monmap(preferred: &str, service: &str, allowed: &[&str]) -> String {
@@ -442,8 +480,14 @@ async fn one_daemon_at_a_time_gets_a_pending_key() {
     let (server, kube) = api_server().await;
     k8s_nodes(&server, "6.18.55").await;
     let host = FakeHost::new()
-        .ok("ceph mon dump", &monmap("aes256k", "aes", &["aes", "aes256k"]))
-        .ok("ceph auth ls", &auth_ls(&[("osd.0", aes(1)), ("mgr.n1", aes(2))]))
+        .ok(
+            "ceph mon dump",
+            &monmap("aes256k", "aes", &["aes", "aes256k"]),
+        )
+        .ok(
+            "ceph auth ls",
+            &auth_ls(&[("osd.0", aes(1)), ("mgr.n1", aes(2))]),
+        )
         .ok("ceph auth get osd.0", &entry(&aes(1), None))
         .ok("ceph auth get mgr.n1", &entry(&aes(2), None))
         .ok("ceph osd metadata 0", r#"{"hostname":"n1"}"#)
@@ -459,8 +503,14 @@ async fn no_new_rotation_starts_while_a_daemon_is_still_taking_its_key() {
     let (server, kube) = api_server().await;
     k8s_nodes(&server, "6.18.55").await;
     let host = FakeHost::new()
-        .ok("ceph mon dump", &monmap("aes256k", "aes", &["aes", "aes256k"]))
-        .ok("ceph auth ls", &auth_ls(&[("osd.0", aes(1)), ("mgr.n1", aes(2))]))
+        .ok(
+            "ceph mon dump",
+            &monmap("aes256k", "aes", &["aes", "aes256k"]),
+        )
+        .ok(
+            "ceph auth ls",
+            &auth_ls(&[("osd.0", aes(1)), ("mgr.n1", aes(2))]),
+        )
         .ok("ceph auth get osd.0", &entry(&aes(1), Some(&aes256k(1))))
         .ok("ceph auth get mgr.n1", &entry(&aes(2), None));
     let b = Backend { kube, host };
@@ -474,7 +524,10 @@ async fn the_mon_key_rotates_only_with_every_monitor_in_quorum() {
     let (server, kube) = api_server().await;
     k8s_nodes(&server, "6.18.55").await;
     let host = FakeHost::new()
-        .ok("ceph mon dump", &monmap("aes256k", "aes", &["aes", "aes256k"]))
+        .ok(
+            "ceph mon dump",
+            &monmap("aes256k", "aes", &["aes", "aes256k"]),
+        )
         .ok("ceph auth ls", &auth_ls(&[("osd.0", aes256k(1))]))
         .ok("ceph auth get osd.0", &entry(&aes256k(1), None))
         .ok("ceph auth get mon.", &entry(&aes(5), None))
@@ -493,7 +546,10 @@ async fn service_tickets_stay_as_they_are_while_any_kernel_is_older_than_7_0() {
     let (server, kube) = api_server().await;
     k8s_nodes(&server, "6.18.55").await;
     let host = FakeHost::new()
-        .ok("ceph mon dump", &monmap("aes256k", "aes", &["aes", "aes256k"]))
+        .ok(
+            "ceph mon dump",
+            &monmap("aes256k", "aes", &["aes", "aes256k"]),
+        )
         .ok("ceph auth ls", &auth_ls(&[("osd.0", aes256k(1))]))
         .ok("ceph auth get osd.0", &entry(&aes256k(1), None))
         .ok("ceph auth get mon.", &entry(&aes256k(5), None));
@@ -516,7 +572,10 @@ async fn service_tickets_stay_as_they_are_until_our_csi_driver_has_rolled_out() 
     )
     .await;
     let host = FakeHost::new()
-        .ok("ceph mon dump", &monmap("aes256k", "aes", &["aes", "aes256k"]))
+        .ok(
+            "ceph mon dump",
+            &monmap("aes256k", "aes", &["aes", "aes256k"]),
+        )
         .ok("ceph auth ls", &auth_ls(&[("osd.0", aes256k(1))]))
         .ok("ceph auth get osd.0", &entry(&aes256k(1), None))
         .ok("ceph auth get mon.", &entry(&aes256k(5), None));

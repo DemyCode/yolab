@@ -22,7 +22,9 @@ def find(kind, name):
 
 
 def ours(d):
-    return (d["metadata"].get("labels") or {}).get("app.kubernetes.io/managed-by") == "yolab"
+    return (d["metadata"].get("labels") or {}).get(
+        "app.kubernetes.io/managed-by"
+    ) == "yolab"
 
 
 def containers(workload):
@@ -51,10 +53,14 @@ class CephfsCsiManifest(unittest.TestCase):
         )
         ds = find("DaemonSet", "csi-cephfsplugin")
         self.assertEqual(ds["metadata"]["namespace"], "rook-ceph")
-        self.assertEqual(ds["spec"]["template"]["metadata"]["labels"]["app"], "csi-cephfsplugin")
+        self.assertEqual(
+            ds["spec"]["template"]["metadata"]["labels"]["app"], "csi-cephfsplugin"
+        )
         find("Deployment", "csi-cephfsplugin-provisioner")
 
-    def test_the_node_plugin_mounts_from_the_host_network_so_mounts_outlive_its_pod(self):
+    def test_the_node_plugin_mounts_from_the_host_network_so_mounts_outlive_its_pod(
+        self,
+    ):
         ds = find("DaemonSet", "csi-cephfsplugin")
         self.assertIs(ds["spec"]["template"]["spec"]["hostNetwork"], True)
         plugin = next(c for c in containers(ds) if c["name"] == "csi-cephfsplugin")
@@ -67,7 +73,9 @@ class CephfsCsiManifest(unittest.TestCase):
             plugins = [c for c in containers(w) if c["name"] == "csi-cephfsplugin"]
             self.assertTrue(plugins, w["metadata"]["name"])
             for c in plugins:
-                self.assertGreaterEqual(cephcsi_version(c["image"]), SPEAKS_AES256K, c["image"])
+                self.assertGreaterEqual(
+                    cephcsi_version(c["image"]), SPEAKS_AES256K, c["image"]
+                )
 
     def test_every_image_is_pinned_by_digest(self):
         for w in docs():
@@ -80,12 +88,14 @@ class CephfsCsiManifest(unittest.TestCase):
         for d in docs():
             if d["kind"] in ("Namespace", "StorageClass"):
                 continue
-            self.assertTrue(ours(d), f'{d["kind"]} {d["metadata"]["name"]}')
+            self.assertTrue(ours(d), f"{d['kind']} {d['metadata']['name']}")
 
     def test_our_rbac_never_shares_a_name_with_what_a_rook_uninstall_deletes(self):
         for d in docs():
             if d["kind"] in RBAC:
-                self.assertTrue(d["metadata"]["name"].startswith("yolab-"), d["metadata"]["name"])
+                self.assertTrue(
+                    d["metadata"]["name"].startswith("yolab-"), d["metadata"]["name"]
+                )
 
 
 if __name__ == "__main__":

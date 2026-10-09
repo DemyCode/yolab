@@ -153,7 +153,10 @@ pub struct Unmounted {
 }
 
 impl Unmounted {
-    pub fn by_any_session(entity: &str, sessions_per_active_mds: &[serde_json::Value]) -> Option<Self> {
+    pub fn by_any_session(
+        entity: &str,
+        sessions_per_active_mds: &[serde_json::Value],
+    ) -> Option<Self> {
         let id = entity.strip_prefix("client.")?;
         if sessions_per_active_mds.is_empty() {
             return None;
@@ -172,7 +175,10 @@ impl Unmounted {
 
 pub async fn retire_unmounted<H: Host>(host: &H, proof: Unmounted) -> Result<(), CmdError> {
     let door = Door(());
-    tracing::warn!("removing {}: no CephFS mount uses it any more", proof.entity);
+    tracing::warn!(
+        "removing {}: no CephFS mount uses it any more",
+        proof.entity
+    );
     host.ceph_destructive(&door, &["auth", "rm", &proof.entity])
         .await
         .map(|_| ())
@@ -193,13 +199,21 @@ mod tests {
             )
         };
         let entity = "client.csi-cephfs-node";
-        assert!(Unmounted::by_any_session(entity, &[sessions(&["csi-cephfs-node-aes256k"])]).is_some());
+        assert!(
+            Unmounted::by_any_session(entity, &[sessions(&["csi-cephfs-node-aes256k"])]).is_some()
+        );
         assert!(Unmounted::by_any_session(
             entity,
-            &[sessions(&["csi-cephfs-node-aes256k"]), sessions(&["csi-cephfs-node"])]
+            &[
+                sessions(&["csi-cephfs-node-aes256k"]),
+                sessions(&["csi-cephfs-node"])
+            ]
         )
         .is_none());
-        assert!(Unmounted::by_any_session(entity, &[]).is_none(), "no MDS answered, nothing is proven");
+        assert!(
+            Unmounted::by_any_session(entity, &[]).is_none(),
+            "no MDS answered, nothing is proven"
+        );
         assert!(
             Unmounted::by_any_session(entity, &[serde_json::json!({"error": "x"})]).is_none(),
             "an unreadable listing proves nothing"
@@ -210,11 +224,8 @@ mod tests {
     #[tokio::test]
     async fn retiring_a_proven_unmounted_entity_goes_through_the_door() {
         let host = FakeHost::new().ok("ceph auth rm client.csi-cephfs-node", "");
-        let proof = Unmounted::by_any_session(
-            "client.csi-cephfs-node",
-            &[serde_json::json!([])],
-        )
-        .unwrap();
+        let proof =
+            Unmounted::by_any_session("client.csi-cephfs-node", &[serde_json::json!([])]).unwrap();
         retire_unmounted(&host, proof).await.unwrap();
         assert!(host.ran("ceph auth rm client.csi-cephfs-node"));
     }

@@ -55,7 +55,11 @@ fn write_keyring(path: &Path, contents: &str) -> Result<()> {
     Ok(())
 }
 
-pub(crate) async fn fetch_join_bundle(seed_addr: &str, port: u16, token: &str) -> Result<CephJoinBundle> {
+pub(crate) async fn fetch_join_bundle(
+    seed_addr: &str,
+    port: u16,
+    token: &str,
+) -> Result<CephJoinBundle> {
     crate::http::client()
         .get(crate::http::peer_url(
             seed_addr,
@@ -372,7 +376,12 @@ mod tests {
             .filter(|c| c.starts_with("ceph-authtool") && c.contains("--gen-key"))
             .collect();
         assert_eq!(minted.len(), 3);
-        assert!(minted.iter().all(|c| c.contains("--gen-key --key-type aes256k")), "{minted:?}");
+        assert!(
+            minted
+                .iter()
+                .all(|c| c.contains("--gen-key --key-type aes256k")),
+            "{minted:?}"
+        );
     }
 
     #[tokio::test]
