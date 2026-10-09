@@ -1,0 +1,10 @@
+title: AI chat
+tagline: A private ChatGPT that runs on your own machines
+main: open-webui
+apps:
+  open-webui:
+    chart: open-webui
+    uses:
+      ollama: ollama
+  ollama:
+    chart: ollama

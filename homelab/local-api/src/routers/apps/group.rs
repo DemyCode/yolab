@@ -90,6 +90,7 @@ pub async fn export_group(
             main: crate::groups::group_of(ns).is_some_and(|m| m.main),
             settings: without_redacted(&saved_settings(&ann)),
             folder_fields: crate::folders::folder_fields(&app.config()),
+            connection_fields: connection_fields(&app.config()).into_keys().collect(),
             credentials: app.credentials(),
         });
     }

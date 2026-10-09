@@ -199,6 +199,14 @@
       "type": "object",
       "readOnly": true,
       "properties": {
+        "api": {
+          "type": "string",
+          "title": "Firefly III",
+          "format": "uri",
+          "source": {
+            "service": { "name": "firefly-iii", "port": 8080 }
+          }
+        },
         "url": {
           "type": "string",
           "title": "Web URL",
@@ -332,10 +340,6 @@
     }
   },
   "x-yolab-provides": {
-    "firefly-iii": {
-      "title": "Firefly III",
-      "service": "firefly-iii",
-      "port": 8080
-    }
+    "firefly-iii": ["api"]
   }
 }

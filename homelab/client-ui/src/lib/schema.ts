@@ -11,6 +11,7 @@ export interface SchemaProp {
   writeOnly?: boolean;
   generate?: boolean;
   "x-yolab-service"?: string;
+  "x-yolab-requires"?: string;
   properties?: Record<string, SchemaProp>;
 }
 
@@ -81,6 +82,9 @@ function fieldUi(prop: SchemaProp, domain: string): UiSchema | undefined {
   }
   if (prop.format === "folder") {
     return { "ui:widget": "FolderWidget" };
+  }
+  if (prop.format === "connection") {
+    return { "ui:field": "ConnectionField" };
   }
   if (prop.format === "yolab-token") {
     return { "ui:widget": "YolabTokenWidget" };

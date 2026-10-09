@@ -194,6 +194,7 @@ export function SetupPage() {
     }
 
     let failed = false;
+    const instances: Record<string, string> = {};
     for (const key of appKeys) {
       const a = current.apps[key];
       const app = s.apps[key];
@@ -204,6 +205,7 @@ export function SetupPage() {
           await api.put(`/api/apps/${encodeURIComponent(a.instance)}/group`, {
             group,
           });
+          instances[key] = a.instance;
         } else {
           const chart = catalogApps.find((c) => c.id === app.chart);
           if (!chart) {
@@ -214,12 +216,13 @@ export function SetupPage() {
             seedForm(schema, null, "fresh", generateSecret),
             app,
             folderNames,
+            instances,
           );
-          await api.post(`/api/apps/${encodeURIComponent(app.chart)}`, {
-            instance_name: key,
-            config,
-            group,
-          });
+          const begun = await api.post<{ instance_name: string }>(
+            `/api/apps/${encodeURIComponent(app.chart)}`,
+            { instance_name: key, config, group },
+          );
+          instances[key] = begun.instance_name;
         }
         mark(i, "done");
       } catch (e) {

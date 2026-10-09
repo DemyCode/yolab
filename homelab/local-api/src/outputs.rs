@@ -74,22 +74,23 @@ pub fn shown(
 ) -> Vec<ShownOutput> {
     specs
         .iter()
-        .map(|spec| {
+        .filter_map(|spec| {
             let (value, found_at, from_config) = match &spec.source {
                 Source::Logs(_) => match remembered.get(&spec.key) {
                     Some(found) => (Some(found.value.clone()), Some(found.found_at), false),
                     None => (None, None, false),
                 },
                 Source::Config(field) => (config_text(config.get(field)), None, true),
+                Source::Service(_) => return None,
             };
-            ShownOutput {
+            Some(ShownOutput {
                 key: spec.key.clone(),
                 title: spec.title.clone(),
                 format: spec.format,
                 value,
                 found_at,
                 from_config,
-            }
+            })
         })
         .collect()
 }
@@ -354,6 +355,22 @@ mod tests {
             at(1),
             "it was found at 12:01, not re-found"
         );
+    }
+
+    #[test]
+    fn an_address_only_other_apps_use_is_not_listed_for_people() {
+        let service = parse_output(
+            "api",
+            &json!({ "source": { "service": { "name": "ollama", "port": 11434 } } }),
+        )
+        .unwrap();
+        let rows = shown(
+            &[service, logs("onion_address")],
+            &Remembered::new(),
+            &Map::new(),
+        );
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].key, "onion_address");
     }
 
     #[test]

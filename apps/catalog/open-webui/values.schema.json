@@ -15,13 +15,17 @@
           "default": true,
           "description": "Reachable from anywhere at https://<subdomain>.<your-number>.yolab.io, through your YoLab tunnel. Visitors need IPv6."
         },
-        "ollama_url": {
-          "type": "string",
+        "ollama": {
+          "type": "object",
           "title": "Ollama",
-          "format": "service-url",
-          "x-yolab-service": "ollama",
-          "default": "",
-          "description": "Where models run. Run its own keeps a private Ollama inside Open WebUI; pick an installed Ollama to share its models with your other AI apps, or give the address of one elsewhere."
+          "format": "connection",
+          "x-yolab-requires": "ollama",
+          "default": {},
+          "description": "Where models run. Run its own keeps a private Ollama inside Open WebUI; pick an installed Ollama to share its models with your other AI apps, or give the address of one elsewhere.",
+          "properties": {
+            "from": { "type": "string" },
+            "api": { "type": "string", "title": "Address", "format": "uri" }
+          }
         },
         "unload_after": {
           "type": "string",

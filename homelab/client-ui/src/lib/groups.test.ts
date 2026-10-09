@@ -136,3 +136,41 @@ describe("installing a setup", () => {
     ]);
   });
 });
+
+describe("a setup that connects its own apps", () => {
+  const ai: Setup = {
+    title: "AI chat",
+    main: "open-webui",
+    apps: {
+      "open-webui": { chart: "open-webui", uses: { ollama: "ollama" } },
+      ollama: { chart: "ollama" },
+    },
+  };
+
+  it("installs what an app uses before the app, even the main one", () => {
+    expect(installOrder(ai)).toEqual(["ollama", "open-webui"]);
+  });
+
+  it("points the app at the instance its partner really got", () => {
+    expect(
+      setupConfig({}, ai.apps["open-webui"], {}, { ollama: "ollama-k3m9" }),
+    ).toEqual({ ollama: { from: "yolab-ollama-k3m9" } });
+  });
+
+  it("leaves the connection to the form when the partner was left out", () => {
+    expect(setupConfig({ ollama: {} }, ai.apps["open-webui"], {}, {})).toEqual(
+      { ollama: {} },
+    );
+  });
+
+  it("an app that uses itself or a loop does not hang the order", () => {
+    const loop: Setup = {
+      title: "x",
+      apps: {
+        a: { chart: "a", uses: { x: "b" } },
+        b: { chart: "b", uses: { y: "a" } },
+      },
+    };
+    expect(installOrder(loop).sort()).toEqual(["a", "b"]);
+  });
+});

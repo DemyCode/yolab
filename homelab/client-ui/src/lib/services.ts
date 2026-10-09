@@ -1,5 +1,6 @@
 export interface ServiceInstance {
   instance: string;
+  namespace: string;
   app_id: string;
   title: string;
   url: string;

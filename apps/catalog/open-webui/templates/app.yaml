@@ -21,7 +21,7 @@ spec:
     requests:
       storage: 50Gi
 {{- $onGpu := include "open-webui.onGpu" . }}
-{{- $external := .Values.config.ollama_url | default "" }}
+{{- $external := (.Values.config.ollama | default dict).api | default .Values.config.ollama_url | default "" }}
 ---
 apiVersion: apps/v1
 kind: Deployment

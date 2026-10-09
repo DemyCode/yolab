@@ -2,7 +2,7 @@ apiVersion: v2
 name: openreader
 description: A document reader with Text-to-Speech capabilities
 type: application
-version: 0.1.4
+version: 0.1.5
 appVersion: 5.1.0
 dependencies:
 - name: yolab-common

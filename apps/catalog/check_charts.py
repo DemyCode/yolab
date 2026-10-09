@@ -59,8 +59,8 @@ LINT_VALUES = {
     "config.gateway_token": "PlaceholderGatewayToken2026Placeholder",
     "config.server_name": "example",
     "config.server_pass": "PlaceholderPw2026",
-    "config.firefly_url": "http://firefly-iii.yolab-firefly-iii.svc.cluster.local:8080",
-    "config.tts_url": "http://kokoro.yolab-kokoro.svc.cluster.local:8880/v1",
+    "config.firefly.api": "http://firefly-iii.yolab-firefly-iii.svc.cluster.local:8080",
+    "config.tts.api": "http://kokoro.yolab-kokoro.svc.cluster.local:8880/v1",
     "config.subdomain": "example",
     "config.vpn_private_key": "PlaceholderVpnKey2026=",
     "config.vpn_addresses": "10.64.0.2/32",
@@ -83,7 +83,7 @@ VARIANTS = {
         {
             "machines[0].name": "gpu-box",
             "machines[0].accelerator": "nvidia",
-            "config.ollama_url": "http://ollama.yolab-ai.svc.cluster.local:11434",
+            "config.ollama.api": "http://ollama.yolab-ai.svc.cluster.local:11434",
         },
     ],
     "jellyfin": [
@@ -1268,11 +1268,17 @@ def check_schema(app, schema, chart_yaml, fail):
                     fail(app, f"{where}: its logs pattern has no capture group")
             except (re.error, TypeError) as e:
                 fail(app, f"{where}: its logs pattern does not compile ({e})")
+        elif "service" in source:
+            target = source["service"]
+            if not isinstance(target, dict) or not target.get("name"):
+                fail(app, f"{where}: its service source needs a name")
+            elif not isinstance(target.get("port"), int):
+                fail(app, f"{where}: its service source needs a numeric port")
         elif "config" in source:
             field = source["config"]
             if field not in config:
                 fail(app, f"{where} shows config.{field}, which does not exist")
-            elif not config[field].get("generate"):
+            elif not (config[field].get("generate") or key in handed_over(schema)):
                 fail(
                     app,
                     f"{where} shows config.{field}, which the person typed "
@@ -1284,17 +1290,38 @@ def check_schema(app, schema, chart_yaml, fail):
             fail(app, f"{where}: `when` must be a schema")
 
 
+def handed_over(schema):
+    found = set()
+    for keys in (schema.get("x-yolab-provides") or {}).values():
+        if isinstance(keys, list):
+            found.update(k for k in keys if isinstance(k, str))
+    return found
+
+
 def provided_kinds(schema):
     return set((schema.get("x-yolab-provides") or {}).keys())
 
 
-def wanted_kinds(schema):
-    found = set()
+def provided_keys(schema):
+    return {
+        kind: set(spec) if isinstance(spec, list) else {"url"}
+        for kind, spec in (schema.get("x-yolab-provides") or {}).items()
+    }
+
+
+def link_fields(schema):
+    found = []
 
     def walk(node):
         if isinstance(node, dict):
-            if node.get("format") == "service-url":
-                found.add(node.get("x-yolab-service") or "")
+            for prop in (node.get("properties") or {}).values():
+                if not isinstance(prop, dict):
+                    continue
+                if prop.get("format") == "service-url":
+                    found.append((prop.get("x-yolab-service") or "", set()))
+                elif prop.get("format") == "connection":
+                    keys = set(prop.get("properties") or {}) - {"from"}
+                    found.append((prop.get("x-yolab-requires") or "", keys))
             for v in node.values():
                 walk(v)
         elif isinstance(node, list):
@@ -1302,6 +1329,17 @@ def wanted_kinds(schema):
                 walk(v)
 
     walk((schema.get("properties") or {}).get("config") or {})
+    return found
+
+
+def wanted_kinds(schema):
+    return {kind for kind, _ in link_fields(schema)}
+
+
+def wanted_keys(schema):
+    found = {}
+    for kind, keys in link_fields(schema):
+        found.setdefault(kind, set()).update(keys)
     return found
 
 
@@ -1313,27 +1351,63 @@ def check_provides(app, schema, docs, fail):
         for d in docs
         if d.get("kind") == "Service"
     }
-    for kind, spec in (schema.get("x-yolab-provides") or {}).items():
-        name, port = spec.get("service"), spec.get("port")
+    declared = (schema.get("properties") or {}).get("outputs") or {}
+    outputs = declared.get("properties") or {}
+
+    def renders(where, name, port):
         if not name or not isinstance(port, int):
-            fail(
-                app, f"x-yolab-provides {kind} needs a service name and a numeric port"
-            )
+            fail(app, f"{where} needs a service name and a numeric port")
         elif port not in services.get(name, set()):
             fail(
                 app,
-                f"x-yolab-provides {kind} points at Service {name} port {port}, "
+                f"{where} points at Service {name} port {port}, "
                 f"which the chart does not render",
             )
+
+    for key, out in outputs.items():
+        target = (out.get("source") or {}).get("service")
+        if isinstance(target, dict):
+            renders(f"outputs.{key}", target.get("name"), target.get("port"))
+    for kind, spec in (schema.get("x-yolab-provides") or {}).items():
+        if not isinstance(spec, list):
+            renders(f"x-yolab-provides {kind}", spec.get("service"), spec.get("port"))
+            continue
+        if not spec:
+            fail(app, f"x-yolab-provides {kind} hands over nothing")
+        for key in spec:
+            source = (outputs.get(key) or {}).get("source") or {}
+            if key not in outputs:
+                fail(app, f"x-yolab-provides {kind} lists {key}, which is no output")
+            elif "logs" in source:
+                fail(
+                    app,
+                    f"x-yolab-provides {kind} lists {key}, which is only known once "
+                    f"the app runs — hand over a setting or an address instead",
+                )
 
 
 def check_links(wanted, provided, fail):
     for app, kinds in sorted(wanted.items()):
         for kind in sorted(kinds):
             if not kind:
-                fail(app, "a service-url field does not name its x-yolab-service")
+                fail(app, "a link field does not name the service it wants")
             elif not any(kind in p for p in provided.values()):
-                fail(app, f"a service-url field wants {kind}, which no chart provides")
+                fail(app, f"a link field wants {kind}, which no chart provides")
+
+
+def check_link_keys(wanted, provided, fail):
+    for app, kinds in sorted(wanted.items()):
+        for kind, keys in sorted(kinds.items()):
+            for provider, offers in sorted(provided.items()):
+                if kind not in offers:
+                    continue
+                missing = keys - offers[kind]
+                if missing:
+                    fail(
+                        app,
+                        f"wants {sorted(missing)} from {kind}, which {provider} "
+                        f"does not hand over",
+                    )
 
 
 FOLDER_LABEL = "yolab.io/folder"
@@ -1444,7 +1518,7 @@ def check_folders(app, field, docs, fail):
 
 
 SETUP_KEYS = {"title", "tagline", "main", "folders", "apps"}
-SETUP_APP_KEYS = {"chart", "settings", "folders"}
+SETUP_APP_KEYS = {"chart", "settings", "folders", "uses"}
 PLAIN_NAME = re.compile(r"^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$")
 
 
@@ -1495,6 +1569,25 @@ def check_setup(setup_id, setup, schemas, fail):
                 )
         config = (schemas[chart].get("properties") or {}).get("config") or {}
         props = config.get("properties") or {}
+        wanted_here = {
+            name: prop.get("x-yolab-requires")
+            for name, prop in props.items()
+            if isinstance(prop, dict) and prop.get("format") == "connection"
+        }
+        for field, other in (app.get("uses") or {}).items():
+            if field not in wanted_here:
+                fail(where, f"app {key}: {chart} has no connection field {field}")
+            elif other == key or other not in apps:
+                fail(where, f"app {key}: {field} uses {other}, not another app here")
+            else:
+                provider = (apps[other] or {}).get("chart")
+                offers = provided_kinds(schemas.get(provider) or {})
+                if wanted_here[field] not in offers:
+                    fail(
+                        where,
+                        f"app {key}: {field} wants {wanted_here[field]}, "
+                        f"which {provider} does not provide",
+                    )
         for setting in app.get("settings") or {}:
             if setting not in props:
                 fail(where, f"app {key}: {chart} has no setting {setting}")
@@ -1541,6 +1634,7 @@ def main(argv):
         library_tgz = glob.glob(os.path.join(tmp, "yolab-common-*.tgz"))[0]
 
         wanted, provided = {}, {}
+        wanted_by_key, provided_by_key = {}, {}
         schemas = {}
         for chart_dir in chart_dirs:
             app = os.path.basename(chart_dir.rstrip("/"))
@@ -1580,6 +1674,8 @@ def main(argv):
             schemas[app] = schema
             wanted[app] = wanted_kinds(schema)
             provided[app] = provided_kinds(schema)
+            wanted_by_key[app] = wanted_keys(schema)
+            provided_by_key[app] = provided_keys(schema)
             check(app, docs, fail, text, schema)
             check_provides(app, schema, docs, fail)
             check_folder_fields(app, schema, fail)
@@ -1724,6 +1820,7 @@ def main(argv):
 
     if not argv[1:]:
         check_links(wanted, provided, fail)
+        check_link_keys(wanted_by_key, provided_by_key, fail)
         check_setups(os.path.join(HERE, "setups"), schemas, fail)
     print(f"checked {len(chart_dirs)} charts")
     for f in fail.items:

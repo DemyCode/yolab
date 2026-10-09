@@ -15,10 +15,12 @@ use crate::routers::backup_common::Backend;
 use crate::routers::install;
 use crate::{config::Config, error::Result, AppState};
 
+mod connections;
 mod definition;
 mod group;
 mod uninstall;
 
+pub(crate) use connections::*;
 pub(crate) use definition::*;
 pub(crate) use group::*;
 pub(crate) use uninstall::*;
@@ -1615,6 +1617,7 @@ pub(crate) async fn stage_install(
         .map_err(|e| anyhow::anyhow!("stage tunnel credentials: {e}"))?;
     let folders = crate::folders::wanted(&meta.app, config);
     crate::folders::attach(client, &ns, &folders).await?;
+    let resolved = resolve_connections(client, &cfg.catalog_dir(), &meta.app, config).await?;
     let service_name = resolve_service_name(&meta.app.config(), config);
     let values = tempfile::Builder::new()
         .suffix(".json")
@@ -1622,7 +1625,7 @@ pub(crate) async fn stage_install(
         .map_err(|e| anyhow::anyhow!("staging values: {e}"))?;
     std::fs::write(
         values.path(),
-        build_values(config, &tunnel_cfg, &service_name),
+        build_values(&resolved, &tunnel_cfg, &service_name),
     )
     .map_err(|e| anyhow::anyhow!("write values: {e}"))?;
     Ok(StagedInstall {
@@ -1835,6 +1838,7 @@ pub(crate) async fn installed_apps(client: &Client) -> anyhow::Result<Vec<Instal
 #[derive(Serialize, Debug, PartialEq)]
 pub struct ServiceInstance {
     pub instance: String,
+    pub namespace: String,
     pub app_id: String,
     pub title: String,
     pub url: String,
@@ -1858,7 +1862,8 @@ fn instances_of(
                         .to_string(),
                     app_id: app_id.clone(),
                     title: p.title.clone(),
-                    url: p.url(&namespace),
+                    url: p.url(&namespace).unwrap_or_default(),
+                    namespace: namespace.clone(),
                 })
                 .collect::<Vec<_>>()
         })
@@ -2180,12 +2185,14 @@ mod tests {
             vec![
                 super::ServiceInstance {
                     instance: "ai".into(),
+                    namespace: "yolab-ai".into(),
                     app_id: "ollama".into(),
                     title: "Ollama API".into(),
                     url: "http://ollama.yolab-ai.svc.cluster.local:11434".into(),
                 },
                 super::ServiceInstance {
                     instance: "gpu-box".into(),
+                    namespace: "yolab-gpu-box".into(),
                     app_id: "ollama".into(),
                     title: "Ollama API".into(),
                     url: "http://ollama.yolab-gpu-box.svc.cluster.local:11434".into(),

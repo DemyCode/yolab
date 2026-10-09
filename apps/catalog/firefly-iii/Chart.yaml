@@ -3,7 +3,7 @@ name: firefly-iii
 description: "Personal finance manager: budgets, accounts and reports"
 home: https://www.firefly-iii.org
 type: application
-version: 0.1.18
+version: 0.1.19
 appVersion: "6"
 
 dependencies:

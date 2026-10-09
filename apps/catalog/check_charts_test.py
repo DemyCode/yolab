@@ -1776,7 +1776,8 @@ class OpenWebUiOllama(RenderedChart):
         url = "http://ollama.yolab-ai.svc.cluster.local:11434"
         docs = self.docs(
             {
-                "config.ollama_url": url,
+                "config.ollama.from": "yolab-ai",
+                "config.ollama.api": url,
                 "machines[0].name": "gpu-box",
                 "machines[0].accelerator": "nvidia",
             }
@@ -1791,6 +1792,13 @@ class OpenWebUiOllama(RenderedChart):
                 if d.get("kind") == "Service" and d["metadata"]["name"] == "ollama"
             ]
         )
+        webui = next(c for c in spec["containers"] if c["name"] == "open-webui")
+        env = {e["name"]: e.get("value") for e in webui["env"]}
+        self.assertEqual(env["OLLAMA_BASE_URL"], url)
+
+    def test_an_install_from_before_connections_keeps_its_ollama(self):
+        url = "http://ollama.yolab-ai.svc.cluster.local:11434"
+        spec = self.gateway(self.docs({"config.ollama_url": url}))
         webui = next(c for c in spec["containers"] if c["name"] == "open-webui")
         env = {e["name"]: e.get("value") for e in webui["env"]}
         self.assertEqual(env["OLLAMA_BASE_URL"], url)
@@ -1888,6 +1896,102 @@ class ServiceLinks(unittest.TestCase):
         }
         self.assertEqual(check_charts.wanted_kinds(schema), {"ollama"})
 
+    def torrent_client(self, provides):
+        return {
+            "properties": {
+                "outputs": {
+                    "properties": {
+                        "api": {
+                            "title": "Web UI",
+                            "source": {"service": {"name": "qbit", "port": 8080}},
+                        },
+                        "password": {
+                            "title": "Password",
+                            "source": {"config": "password"},
+                        },
+                        "onion": {"title": "Onion", "source": {"logs": "ONION (\\S+)"}},
+                    }
+                }
+            },
+            "x-yolab-provides": provides,
+        }
+
+    def service(self, name, port):
+        return {
+            "kind": "Service",
+            "metadata": {"name": name},
+            "spec": {"ports": [{"port": port}]},
+        }
+
+    def test_a_provider_hands_over_outputs_it_declares(self):
+        schema = self.torrent_client({"torrent-client": ["api", "password"]})
+        self.assertEqual(
+            self.collect(
+                check_charts.check_provides, "q", schema, [self.service("qbit", 8080)]
+            ),
+            [],
+        )
+
+    def test_an_address_output_must_be_rendered(self):
+        schema = self.torrent_client({"torrent-client": ["api"]})
+        found = self.collect(check_charts.check_provides, "q", schema, [])
+        self.assertTrue(any("does not render" in f for f in found), found)
+
+    def test_a_value_only_known_once_the_app_runs_cannot_be_handed_over(self):
+        schema = self.torrent_client({"torrent-client": ["onion"]})
+        found = self.collect(
+            check_charts.check_provides, "q", schema, [self.service("qbit", 8080)]
+        )
+        self.assertTrue(any("only known once" in f for f in found), found)
+
+    def test_an_unknown_output_cannot_be_handed_over(self):
+        schema = self.torrent_client({"torrent-client": ["nope"]})
+        found = self.collect(
+            check_charts.check_provides, "q", schema, [self.service("qbit", 8080)]
+        )
+        self.assertTrue(any("which is no output" in f for f in found), found)
+
+    def test_a_connection_field_wants_its_keys_from_its_interface(self):
+        schema = {
+            "properties": {
+                "config": {
+                    "properties": {
+                        "download_client": {
+                            "type": "object",
+                            "format": "connection",
+                            "x-yolab-requires": "torrent-client",
+                            "properties": {
+                                "from": {"type": "string"},
+                                "api": {"type": "string"},
+                                "password": {"type": "string"},
+                            },
+                        }
+                    }
+                }
+            }
+        }
+        self.assertEqual(check_charts.wanted_kinds(schema), {"torrent-client"})
+        self.assertEqual(
+            check_charts.wanted_keys(schema), {"torrent-client": {"api", "password"}}
+        )
+
+    def test_a_consumer_wanting_a_key_a_provider_never_hands_over_is_reported(self):
+        found = self.collect(
+            check_charts.check_link_keys,
+            {"sonarr": {"torrent-client": {"api", "password"}}},
+            {
+                "qbittorrent": {"torrent-client": {"api", "password"}},
+                "transmission": {"torrent-client": {"api"}},
+            },
+        )
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("transmission", found[0])
+        self.assertIn("password", found[0])
+
+    def test_the_old_address_form_hands_over_one_url(self):
+        schema = {"x-yolab-provides": {"ollama": {"service": "ollama", "port": 1}}}
+        self.assertEqual(check_charts.provided_keys(schema), {"ollama": {"url"}})
+
     def test_a_link_to_a_service_nobody_provides_is_reported(self):
         found = self.collect(
             check_charts.check_links,
@@ -1895,7 +1999,7 @@ class ServiceLinks(unittest.TestCase):
             {"ollama": {"ollama"}},
         )
         self.assertEqual(
-            found, ["a service-url field wants lnd-grpc, which no chart provides"]
+            found, ["a link field wants lnd-grpc, which no chart provides"]
         )
 
 
@@ -2126,6 +2230,50 @@ class Setups(unittest.TestCase):
     def test_a_main_app_outside_the_setup_is_refused(self):
         found = self.collect(self.setup(main="plex"))
         self.assertTrue(any("main names plex" in f for f in found), found)
+
+    def check_ai(self, apps):
+        schemas = {
+            **self.SCHEMAS,
+            "open-webui": {
+                "properties": {
+                    "config": {
+                        "properties": {
+                            "ollama": {
+                                "type": "object",
+                                "format": "connection",
+                                "x-yolab-requires": "ollama",
+                            }
+                        }
+                    }
+                }
+            },
+            "ollama": {"x-yolab-provides": {"ollama": ["api"]}},
+        }
+        found = []
+        check_charts.check_setup(
+            "ai", {"title": "AI", "apps": apps}, schemas, lambda w, m: found.append(m)
+        )
+        return found
+
+    def test_a_setup_connects_an_app_to_one_that_provides_what_it_wants(self):
+        webui = {"chart": "open-webui", "uses": {"ollama": "ollama"}}
+        apps = {"open-webui": webui, "ollama": {"chart": "ollama"}}
+        self.assertEqual(self.check_ai(apps), [])
+
+    def test_a_setup_connecting_to_an_app_that_lacks_the_interface_is_refused(self):
+        webui = {"chart": "open-webui", "uses": {"ollama": "ollama"}}
+        found = self.check_ai({"open-webui": webui, "ollama": {"chart": "prowlarr"}})
+        self.assertTrue(any("does not provide" in f for f in found), found)
+
+    def test_a_setup_connecting_to_an_app_it_does_not_list_is_refused(self):
+        webui = {"chart": "open-webui", "uses": {"ollama": "ollama"}}
+        found = self.check_ai({"open-webui": webui})
+        self.assertTrue(any("not another app here" in f for f in found), found)
+
+    def test_a_misspelt_connection_field_is_refused(self):
+        typo = {"chart": "open-webui", "uses": {"olama": "ollama"}}
+        found = self.check_ai({"open-webui": typo, "ollama": {"chart": "ollama"}})
+        self.assertTrue(any("no connection field" in f for f in found), found)
 
     def test_a_setup_file_name_must_be_plain(self):
         found = self.collect(self.setup(), setup_id="Movies TV")

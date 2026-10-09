@@ -1,3 +1,4 @@
+import { ConnectionField } from "./fields";
 import {
   ArrayFieldTemplate,
   FieldTemplate,
@@ -17,6 +18,10 @@ export const templates = {
   FieldTemplate,
   ObjectFieldTemplate,
   ArrayFieldTemplate,
+};
+
+export const fields = {
+  ConnectionField,
 };
 
 export const widgets = {

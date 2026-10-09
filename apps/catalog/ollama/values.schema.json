@@ -233,6 +233,14 @@
       "type": "object",
       "readOnly": true,
       "properties": {
+        "api": {
+          "type": "string",
+          "title": "Ollama API",
+          "format": "uri",
+          "source": {
+            "service": { "name": "ollama", "port": 11434 }
+          }
+        },
         "url": {
           "type": "string",
           "title": "Web URL",
@@ -406,10 +414,6 @@
     }
   },
   "x-yolab-provides": {
-    "ollama": {
-      "title": "Ollama API",
-      "service": "ollama",
-      "port": 11434
-    }
+    "ollama": ["api"]
   }
 }

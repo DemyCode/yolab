@@ -108,7 +108,7 @@ spec:
               name: '{{ .Release.Name }}-secrets'
               key: app_secret
         - name: API_BASE
-          value: {{ required "config.tts_url is required" .Values.config.tts_url | quote }}
+          value: {{ required "pick a speech engine in this app's settings" ((.Values.config.tts | default dict).api | default .Values.config.tts_url) | quote }}
         - name: API_MODEL_NAME
           value: kokoro
         - name: BASE_URL

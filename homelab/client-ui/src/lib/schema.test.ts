@@ -338,6 +338,24 @@ describe("the file explorer's own ways in", () => {
   });
 });
 
+describe("a connection to another app", () => {
+  it("gets the connection picker as a whole field", () => {
+    const ui = uiSchemaFor(
+      {
+        properties: {
+          ollama: {
+            type: "object",
+            format: "connection",
+            "x-yolab-requires": "ollama",
+          },
+        },
+      },
+      "6.yolab.io",
+    ) as Record<string, Record<string, unknown>>;
+    expect(ui.ollama["ui:field"]).toBe("ConnectionField");
+  });
+});
+
 describe("a folder from Your files", () => {
   it("gets the folder picker", () => {
     const ui = uiSchemaFor(

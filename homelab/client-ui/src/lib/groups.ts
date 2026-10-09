@@ -15,6 +15,7 @@ export interface SetupApp {
   chart: string;
   settings?: Record<string, unknown>;
   folders?: Record<string, string>;
+  uses?: Record<string, string>;
 }
 
 export interface Setup {
@@ -118,11 +119,16 @@ export function setupConfig(
   seed: Record<string, unknown>,
   app: SetupApp,
   folderNames: Record<string, string>,
+  instances: Record<string, string> = {},
 ): Record<string, unknown> {
   const config: Record<string, unknown> = { ...seed, ...(app.settings ?? {}) };
   for (const [field, key] of Object.entries(app.folders ?? {})) {
     const name = folderNames[key];
     if (name) config[field] = name;
+  }
+  for (const [field, key] of Object.entries(app.uses ?? {})) {
+    const instance = instances[key];
+    if (instance) config[field] = { from: `yolab-${instance}` };
   }
   return config;
 }
@@ -138,6 +144,17 @@ export function usedFolders(setup: Setup, plan: SetupPlan): Set<string> {
 
 export function installOrder(setup: Setup): string[] {
   const keys = Object.keys(setup.apps);
-  const main = setup.main && keys.includes(setup.main) ? [setup.main] : [];
-  return [...main, ...keys.filter((k) => k !== setup.main)];
+  const first = setup.main && keys.includes(setup.main) ? [setup.main] : [];
+  const order: string[] = [];
+  const visit = (key: string, path: Set<string>) => {
+    if (order.includes(key) || path.has(key) || !setup.apps[key]) return;
+    path.add(key);
+    for (const used of Object.values(setup.apps[key].uses ?? {})) {
+      visit(used, path);
+    }
+    path.delete(key);
+    order.push(key);
+  };
+  for (const key of [...first, ...keys]) visit(key, new Set());
+  return order;
 }

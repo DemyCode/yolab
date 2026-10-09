@@ -34,6 +34,8 @@ pub struct SetupApp {
     pub settings: Map<String, Value>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub folders: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub uses: BTreeMap<String, String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -90,6 +92,13 @@ impl Setup {
                     ));
                 }
             }
+            for (field, other) in &app.uses {
+                if other == key || !self.apps.contains_key(other) {
+                    found.push(format!(
+                        "app {key}: {field} uses {other}, which is not another app of the setup"
+                    ));
+                }
+            }
         }
         found
     }
@@ -114,6 +123,7 @@ pub(crate) struct Member {
     pub main: bool,
     pub settings: Map<String, Value>,
     pub folder_fields: BTreeSet<String>,
+    pub connection_fields: BTreeSet<String>,
     pub credentials: HashSet<String>,
 }
 
@@ -122,10 +132,12 @@ pub(crate) fn export(
     members: &[Member],
     folder_titles: &BTreeMap<String, String>,
 ) -> Setup {
+    let instances: BTreeSet<&str> = members.iter().map(|m| m.instance.as_str()).collect();
     let mut folders = BTreeMap::new();
     let mut apps = BTreeMap::new();
     for m in members {
         let mut settings = Map::new();
+        let mut shares = BTreeMap::new();
         let mut uses = BTreeMap::new();
         for (key, value) in &m.settings {
             if m.credentials.contains(key) || key == crate::routers::apps::YOLAB_TOKEN_FIELD {
@@ -133,7 +145,7 @@ pub(crate) fn export(
             }
             if m.folder_fields.contains(key) {
                 if let Some(folder) = value.as_str().filter(|f| !f.is_empty()) {
-                    uses.insert(key.clone(), folder.to_string());
+                    shares.insert(key.clone(), folder.to_string());
                     folders.insert(
                         folder.to_string(),
                         SetupFolder {
@@ -146,6 +158,15 @@ pub(crate) fn export(
                 }
                 continue;
             }
+            if m.connection_fields.contains(key) {
+                let other = crate::routers::apps::provider_of(Some(value))
+                    .and_then(|ns| ns.strip_prefix("yolab-"))
+                    .filter(|other| instances.contains(other) && *other != m.instance);
+                if let Some(other) = other {
+                    uses.insert(key.clone(), other.to_string());
+                }
+                continue;
+            }
             settings.insert(key.clone(), value.clone());
         }
         apps.insert(
@@ -153,7 +174,8 @@ pub(crate) fn export(
             SetupApp {
                 chart: m.app_id.clone(),
                 settings,
-                folders: uses,
+                folders: shares,
+                uses,
             },
         );
     }
@@ -276,6 +298,7 @@ apps:
             main,
             settings: settings.as_object().cloned().unwrap(),
             folder_fields: ["media_folder".to_string()].into_iter().collect(),
+            connection_fields: ["download_client".to_string()].into_iter().collect(),
             credentials: ["admin_password".to_string()].into_iter().collect(),
         }
     }
@@ -321,6 +344,44 @@ apps:
     }
 
     #[test]
+    fn a_connection_to_another_member_travels_and_one_to_an_outsider_does_not() {
+        let setup = export(
+            "Movies & TV",
+            &[
+                member("qbittorrent", "qbittorrent", false, json!({})),
+                member(
+                    "sonarr",
+                    "sonarr",
+                    false,
+                    json!({ "download_client": { "from": "yolab-qbittorrent" } }),
+                ),
+                member(
+                    "radarr",
+                    "radarr",
+                    false,
+                    json!({ "download_client": { "from": "yolab-elsewhere" } }),
+                ),
+            ],
+            &BTreeMap::new(),
+        );
+        assert_eq!(setup.apps["sonarr"].uses["download_client"], "qbittorrent");
+        assert!(setup.apps["sonarr"].settings.is_empty());
+        assert!(setup.apps["radarr"].uses.is_empty());
+        assert!(setup.apps["radarr"].settings.is_empty());
+        assert!(Setup::parse(&setup.to_yaml().unwrap()).is_ok());
+    }
+
+    #[test]
+    fn a_setup_may_only_connect_its_own_apps_to_each_other() {
+        let e = Setup::parse(
+            "title: x\napps:\n  a: { chart: a, uses: { llm: a } }\n  b: { chart: b, uses: { llm: c } }\n",
+        )
+        .unwrap_err();
+        assert!(e.contains("app a: llm uses a"), "{e}");
+        assert!(e.contains("app b: llm uses c"), "{e}");
+    }
+
+    #[test]
     fn an_app_keeping_its_files_inside_uses_no_folder() {
         let setup = export(
             "Solo",
@@ -349,7 +410,8 @@ apps:
 
     #[test]
     fn a_catalog_entry_carries_its_id_next_to_the_setup() {
-        let entry: CatalogSetup = serde_norway::from_str(&format!("id: movies-tv\n{MOVIES}")).unwrap();
+        let entry: CatalogSetup =
+            serde_norway::from_str(&format!("id: movies-tv\n{MOVIES}")).unwrap();
         assert_eq!(entry.id, "movies-tv");
         assert_eq!(entry.setup.apps.len(), 3);
     }

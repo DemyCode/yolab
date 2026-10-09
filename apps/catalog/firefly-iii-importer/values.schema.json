@@ -27,12 +27,16 @@
           "default": false,
           "description": "A password-protected file manager for this app's own data on its own address: browse, download, upload, rename and delete files without needing a terminal. Folders holding a database server (Postgres, MariaDB, Redis, MongoDB, MinIO) always stay read-only."
         },
-        "firefly_url": {
-          "type": "string",
+        "firefly": {
+          "type": "object",
           "title": "Firefly III",
-          "format": "service-url",
-          "x-yolab-service": "firefly-iii",
-          "description": "The Firefly III to import into: pick an installed one, or give the address of one elsewhere."
+          "format": "connection",
+          "x-yolab-requires": "firefly-iii",
+          "description": "The Firefly III to import into: pick an installed one, or give the address of one elsewhere.",
+          "properties": {
+            "from": { "type": "string" },
+            "api": { "type": "string", "title": "Address", "format": "uri" }
+          }
         }
       },
       "dependencies": {
@@ -188,10 +192,7 @@
             }
           ]
         }
-      },
-      "required": [
-        "firefly_url"
-      ]
+      }
     },
     "outputs": {
       "type": "object",

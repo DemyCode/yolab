@@ -3,6 +3,7 @@ import { serviceChoice, serviceLabel, type ServiceInstance } from "./services";
 
 const ollama: ServiceInstance = {
   instance: "ai",
+  namespace: "yolab-ai",
   app_id: "ollama",
   title: "Ollama API",
   url: "http://ollama.yolab-ai.svc.cluster.local:11434",

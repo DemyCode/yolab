@@ -599,6 +599,54 @@ pub(crate) async fn upgrade<H: Host + 'static>(
     plan: &UpgradePlan,
     log: &Log,
 ) -> anyhow::Result<()> {
+    let ns = format!("yolab-{}", plan.instance_name);
+    let catalog = cfg.catalog_dir();
+    let before = crate::routers::apps::everything_provided(&b.kube, &catalog, &ns).await;
+    upgrade_one(b, cfg, plan, log).await?;
+    let after = crate::routers::apps::everything_provided(&b.kube, &catalog, &ns).await;
+    if before != after {
+        refresh_consumers(b, cfg, &ns, log).await;
+    }
+    Ok(())
+}
+
+async fn refresh_consumers<H: Host + 'static>(
+    b: &Backend<H>,
+    cfg: &Config,
+    provider: &str,
+    log: &Log,
+) {
+    let consumers =
+        match crate::routers::apps::consumers_of(&b.kube, &cfg.catalog_dir(), provider).await {
+            Ok(found) => found,
+            Err(e) => {
+                log.say(format!(
+                    "[WARN] could not find the apps that use this one ({e:#}) — change their settings to pick up the new values"
+                ));
+                return;
+            }
+        };
+    for consumer in consumers {
+        log.say(format!("Updating {consumer} so it uses the new settings…"));
+        let refreshed = match crate::routers::apps::stored_upgrade_plan(&b.kube, &consumer).await
+        {
+            Ok(plan) => upgrade_one(b, cfg, &plan, log).await,
+            Err(e) => Err(e),
+        };
+        if let Err(e) = refreshed {
+            log.say(format!(
+                "[WARN] {consumer} still uses the old settings ({e:#}) — open it and save its settings again"
+            ));
+        }
+    }
+}
+
+async fn upgrade_one<H: Host + 'static>(
+    b: &Backend<H>,
+    cfg: &Config,
+    plan: &UpgradePlan,
+    log: &Log,
+) -> anyhow::Result<()> {
     let from = plan.chart_repo.as_deref();
     let pinned = if plan.keep_version {
         log.say("Keeping the version it runs now…");
