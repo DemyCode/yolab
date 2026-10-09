@@ -167,6 +167,9 @@ jobs:
     permissions:
       contents: read
       packages: write
+    concurrency:
+      group: charts-library-${{ github.ref }}
+      cancel-in-progress: false
     outputs:
       registry: ${{ steps.registry.outputs.registry }}
       suffix: ${{ steps.registry.outputs.suffix }}
@@ -297,6 +300,9 @@ jobs:
     name: chart ${{ matrix.chart }}
     needs: charts-library
     if: needs.charts-library.outputs.charts_first != '[]'
+    concurrency:
+      group: charts-first-${{ matrix.chart }}-${{ github.ref }}
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -397,6 +403,9 @@ jobs:
       max-parallel: 20
       matrix:
         chart: ${{ fromJSON(needs.charts-library.outputs.charts_rest) }}
+    concurrency:
+      group: charts-rest-${{ matrix.chart }}-${{ github.ref }}
+      cancel-in-progress: false
     env:
       REGISTRY: ${{ needs.charts-library.outputs.registry }}
       SUFFIX: ${{ needs.charts-library.outputs.suffix }}
@@ -569,7 +578,6 @@ jobs:
             sleep $((attempt * 5))
           done
           [ -n "$pushed" ] || { echo "::error::could not push the catalog manifest"; exit 1; }
-
 
       - name: Report unpublished charts
         if: contains(fromJSON('["failure", "cancelled"]'), needs.charts-first.result) || contains(fromJSON('["failure", "cancelled"]'), needs.charts-rest.result)
