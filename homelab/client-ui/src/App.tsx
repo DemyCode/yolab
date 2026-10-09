@@ -16,6 +16,7 @@ import { InstallPage } from "@/pages/InstallPage";
 import CustomAppPage from "@/pages/CustomAppPage";
 import { AppDetailPage } from "@/pages/AppDetailPage";
 import { FilesPage } from "@/pages/FilesPage";
+import { SetupPage } from "@/pages/SetupPage";
 import { SystemPage } from "@/pages/system/SystemPage";
 import { SystemSubPage } from "@/pages/system/SystemSubPage";
 import { api, setUnauthorizedHandler } from "@/lib/api";
@@ -94,6 +95,7 @@ export default function App() {
             <Route path="/app/:instanceName" element={<AppDetailPage />} />
             <Route path="/add" element={<AppsPage />} />
             <Route path="/add/custom" element={<CustomAppPage />} />
+            <Route path="/add/setup/:setupId" element={<SetupPage />} />
             <Route path="/add/:appId" element={<InstallPage />} />
             <Route path="/files" element={<FilesPage />} />
             <Route path="/system" element={<SystemPage />} />

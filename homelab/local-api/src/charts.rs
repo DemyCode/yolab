@@ -125,6 +125,8 @@ pub struct CatalogManifest {
     pub library: Option<CatalogEntry>,
     #[serde(default)]
     pub charts: Vec<CatalogEntry>,
+    #[serde(default)]
+    pub setups: Vec<crate::setups::CatalogSetup>,
 }
 
 #[derive(Deserialize, Debug, PartialEq)]
@@ -310,6 +312,10 @@ pub async fn sync_repo<H: Host>(
 
     let dir = cache_root.join(&repo.name);
     tokio::fs::create_dir_all(&dir).await?;
+    let setups = crate::setups::usable(&repo.name, manifest.setups.clone());
+    if let Err(e) = crate::setups::keep(&dir, &setups) {
+        tracing::warn!("{}: could not keep its setups: {e:#}", repo.name);
+    }
     let stale = |entry: &CatalogEntry| {
         cached_at_version(cache_root, &repo.name, &entry.name, &entry.version).is_none()
     };

@@ -15,6 +15,7 @@ import {
 } from "@/catalog/meta";
 import { AppSources } from "@/components/AppSources";
 import { AddFromBackupButton } from "@/components/AddFromBackup";
+import { SetupsRow } from "@/components/SetupsRow";
 import { cn } from "@/lib/utils";
 import { AnimatedList, RollingNumber } from "@/components/motion";
 import {
@@ -246,6 +247,8 @@ export function AppsPage() {
               </div>
             </section>
           )}
+
+          {!narrowed && <SetupsRow catalog={all} />}
 
           {!narrowed &&
             COLLECTIONS.filter((c) => c.id !== FEATURED).map((c) => {

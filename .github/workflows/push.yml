@@ -377,6 +377,15 @@ jobs:
                 echo "::warning::${name} is not readable in the registry (HTTP ${code}) — omitted" >&2
               fi
             done
+            # Setups (several apps installed together, sharing folders) are
+            # small files with no package of their own, so they ride along here.
+            if compgen -G "apps/catalog/setups/*.yaml" > /dev/null; then
+              echo "setups:"
+              for setup in apps/catalog/setups/*.yaml; do
+                echo "  - id: $(basename "$setup" .yaml)"
+                sed 's/^/    /' "$setup"
+              done
+            fi
           } > catalog.yaml
           cat catalog.yaml
 

@@ -1,3 +1,4 @@
+import json
 import os
 import subprocess
 import tempfile
@@ -1983,7 +1984,10 @@ class Folders(unittest.TestCase):
                             "oneOf": [
                                 {
                                     "properties": {
-                                        "downloads": {"type": "string", "format": "folder"}
+                                        "downloads": {
+                                            "type": "string",
+                                            "format": "folder",
+                                        }
                                     }
                                 }
                             ]
@@ -2034,6 +2038,98 @@ class Folders(unittest.TestCase):
         }
         self.assertTrue(check_charts.is_folder_claim(self.claim()))
         self.assertFalse(check_charts.is_folder_claim(own))
+
+
+class Setups(unittest.TestCase):
+    SCHEMAS = {
+        "jellyfin": {
+            "properties": {
+                "config": {
+                    "properties": {
+                        "media_folder": {"type": "string", "format": "folder"},
+                        "hardware_transcoding": {"type": "boolean"},
+                    }
+                }
+            }
+        },
+        "prowlarr": {},
+    }
+
+    def collect(self, setup, setup_id="movies-tv"):
+        found = []
+        check_charts.check_setup(
+            setup_id, setup, self.SCHEMAS, lambda where, msg: found.append(msg)
+        )
+        return found
+
+    def setup(self, **overrides):
+        setup = {
+            "title": "Movies & TV",
+            "main": "jellyfin",
+            "folders": {"media": {"title": "Movies & TV"}},
+            "apps": {
+                "jellyfin": {
+                    "chart": "jellyfin",
+                    "settings": {"hardware_transcoding": True},
+                    "folders": {"media_folder": "media"},
+                },
+                "prowlarr": {"chart": "prowlarr"},
+            },
+        }
+        setup.update(overrides)
+        return setup
+
+    def test_a_well_formed_setup_passes(self):
+        self.assertEqual(self.collect(self.setup()), [])
+
+    def test_the_catalog_setups_are_well_formed(self):
+        schemas = {}
+        for chart in Path(check_charts.HERE).glob("*/Chart.yaml"):
+            schema = chart.parent / "values.schema.json"
+            schemas[chart.parent.name] = (
+                json.loads(schema.read_text()) if schema.exists() else {}
+            )
+        found = []
+        check_charts.check_setups(
+            Path(check_charts.HERE, "setups"),
+            schemas,
+            lambda where, msg: found.append(f"{where}: {msg}"),
+        )
+        self.assertTrue(list(Path(check_charts.HERE, "setups").glob("*.yaml")))
+        self.assertEqual(found, [])
+
+    def test_a_setup_installing_a_chart_the_catalog_lacks_is_refused(self):
+        found = self.collect(self.setup(apps={"plex": {"chart": "plex"}}, main=None))
+        self.assertTrue(any("not a chart in this catalog" in f for f in found), found)
+
+    def test_a_folder_field_the_chart_does_not_offer_is_refused(self):
+        apps = {"jellyfin": {"chart": "jellyfin", "folders": {"music": "media"}}}
+        found = self.collect(self.setup(apps=apps))
+        self.assertTrue(any("has no folder field music" in f for f in found), found)
+
+    def test_a_folder_the_setup_does_not_list_is_refused(self):
+        apps = {
+            "jellyfin": {"chart": "jellyfin", "folders": {"media_folder": "films"}}
+        }
+        found = self.collect(self.setup(apps=apps))
+        self.assertTrue(any("uses folder films" in f for f in found), found)
+
+    def test_a_setting_the_chart_does_not_have_is_refused(self):
+        apps = {"jellyfin": {"chart": "jellyfin", "settings": {"turbo": True}}}
+        found = self.collect(self.setup(apps=apps))
+        self.assertTrue(any("has no setting turbo" in f for f in found), found)
+
+    def test_a_misspelt_key_is_refused(self):
+        found = self.collect(self.setup(mains="jellyfin"))
+        self.assertTrue(any("unknown key mains" in f for f in found), found)
+
+    def test_a_main_app_outside_the_setup_is_refused(self):
+        found = self.collect(self.setup(main="plex"))
+        self.assertTrue(any("main names plex" in f for f in found), found)
+
+    def test_a_setup_file_name_must_be_plain(self):
+        found = self.collect(self.setup(), setup_id="Movies TV")
+        self.assertTrue(any("not a plain name" in f for f in found), found)
 
 
 class ImageArches(unittest.TestCase):

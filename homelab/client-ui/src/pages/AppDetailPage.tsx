@@ -1083,6 +1083,25 @@ export function AppDetailPage() {
             detail={`"${entry.repo}", a source you added yourself`}
           />
         )}
+        {app.group && (
+          <Row
+            label="Group"
+            detail={`Shown with ${app.group.title} on your home screen`}
+            trailing={
+              <RowAction
+                onClick={() =>
+                  void api
+                    .put(`/api/apps/${app.instance_name}/group`, {
+                      group: null,
+                    })
+                    .then(() => apps.refresh())
+                }
+              >
+                Take it out
+              </RowAction>
+            }
+          />
+        )}
         {stem !== app.app_id && <Row label="Name" detail={stem} />}
         {app.instance_id && (
           <ValueRow label="ID" value={app.instance_id} copy />

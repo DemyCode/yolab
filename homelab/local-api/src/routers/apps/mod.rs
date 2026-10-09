@@ -16,9 +16,11 @@ use crate::routers::install;
 use crate::{config::Config, error::Result, AppState};
 
 mod definition;
+mod group;
 mod uninstall;
 
 pub(crate) use definition::*;
+pub(crate) use group::*;
 pub(crate) use uninstall::*;
 
 const LABEL_MANAGED: &str = "yolab.io/managed";
@@ -48,6 +50,7 @@ pub struct AppInfo {
     pub outputs: Vec<crate::outputs::ShownOutput>,
     pub config: serde_json::Map<String, Value>,
     pub backup: AppBackupStatus,
+    pub group: Option<crate::groups::Membership>,
 }
 
 pub(crate) struct InstalledApp {
@@ -225,6 +228,8 @@ pub struct InstallRequest {
     pub config: serde_json::Map<String, Value>,
     #[serde(default)]
     pub source: Option<install::InstallSource>,
+    #[serde(default)]
+    pub group: Option<crate::groups::Joining>,
 }
 
 fn namespace_ref(ns: &str) -> Value {
@@ -1369,6 +1374,7 @@ pub async fn list_apps(State(state): State<AppState>) -> Result<Json<Vec<AppInfo
                 last_ok_at,
                 running,
             },
+            group: crate::groups::group_of(ns),
         });
     }
     Ok(Json(apps))
@@ -1443,6 +1449,15 @@ pub async fn install_app(
         Ok(s) => s,
         Err(e) => return refuse(e),
     };
+    let joining = match body
+        .group
+        .as_ref()
+        .map(crate::groups::Joining::membership)
+        .transpose()
+    {
+        Ok(m) => m,
+        Err(why) => return refuse(why),
+    };
     let b = match state.backend().await {
         Ok(b) => b,
         Err(e) => return (StatusCode::SERVICE_UNAVAILABLE, format!("{e:#}")).into_response(),
@@ -1505,6 +1520,7 @@ pub async fn install_app(
             return (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")).into_response();
         }
     }
+    join_on_install(&b.kube, &format!("yolab-{instance_name}"), joining.as_ref()).await;
     install::start(b, state.config.clone(), plan, state.http.clone());
     (
         StatusCode::ACCEPTED,

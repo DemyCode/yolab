@@ -152,6 +152,9 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route("/api/services/{kind}", get(apps::list_services))
         .route("/api/folders", get(folders::list).post(folders::create))
+        .route("/api/setups", get(apps::list_setups))
+        .route("/api/setups/parse", post(apps::parse_setup))
+        .route("/api/groups/{name}/setup", get(apps::export_group))
         .route("/api/folders/{name}", delete(folders::remove))
         .route("/api/apps", get(apps::list_apps))
         .route(
@@ -162,6 +165,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/apps/{id}/definition", get(apps::app_definition))
         .route("/api/apps/{id}/schema", get(apps::app_settings_schema))
         .route("/api/apps/{id}/backup", put(apps::set_backup_policy))
+        .route("/api/apps/{id}/group", put(apps::set_group))
         .route("/api/apps/{id}/outputs", get(apps::app_outputs))
         .route("/api/apps/{id}/scan-outputs", post(apps::scan_outputs))
         .route("/api/apps/{id}/pods", get(apps::list_pods))

@@ -263,7 +263,9 @@ def check(app, docs, fail, chart_yaml="", schema=None, arches=None):
         c for c in kinds.get("PersistentVolumeClaim", []) if not is_folder_claim(c)
     ]
     for kind, want in (("PersistentVolumeClaim", 1), ("Job", 1)):
-        got = len(own_claims if kind == "PersistentVolumeClaim" else kinds.get(kind, []))
+        got = len(
+            own_claims if kind == "PersistentVolumeClaim" else kinds.get(kind, [])
+        )
         if got != want:
             fail(app, f"expected {want} {kind}, got {got}")
 
@@ -1393,7 +1395,11 @@ def folder_mounts(docs, claim):
 
 def check_folders(app, field, docs, fail):
     claim_name = f"folder-{FOLDER_PROBE}"
-    claims = [d for d in docs if d.get("kind") == "PersistentVolumeClaim" and is_folder_claim(d)]
+    claims = [
+        d
+        for d in docs
+        if d.get("kind") == "PersistentVolumeClaim" and is_folder_claim(d)
+    ]
     if [c["metadata"]["name"] for c in claims] != [claim_name]:
         fail(
             app,
@@ -1437,6 +1443,73 @@ def check_folders(app, field, docs, fail):
             )
 
 
+SETUP_KEYS = {"title", "tagline", "main", "folders", "apps"}
+SETUP_APP_KEYS = {"chart", "settings", "folders"}
+PLAIN_NAME = re.compile(r"^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$")
+
+
+def check_setup(setup_id, setup, schemas, fail):
+    where = f"setup {setup_id}"
+    if not isinstance(setup, dict):
+        fail(where, "is not a mapping")
+        return
+    if not PLAIN_NAME.match(setup_id):
+        fail(where, "its file name is not a plain name")
+    for key in sorted(set(setup) - SETUP_KEYS):
+        fail(where, f"unknown key {key}")
+    if not str(setup.get("title") or "").strip():
+        fail(where, "has no title")
+    folders = setup.get("folders") or {}
+    apps = setup.get("apps") or {}
+    if not apps:
+        fail(where, "has no apps")
+    if setup.get("main") is not None and setup["main"] not in apps:
+        fail(where, f"main names {setup['main']}, which is not one of its apps")
+    for key, folder in folders.items():
+        if not PLAIN_NAME.match(str(key)):
+            fail(where, f"folder {key!r} is not a plain name")
+        if not str((folder or {}).get("title") or "").strip():
+            fail(where, f"folder {key} has no title")
+    for key, app in apps.items():
+        app = app or {}
+        if not PLAIN_NAME.match(str(key)):
+            fail(where, f"app {key!r} is not a plain name")
+        for extra in sorted(set(app) - SETUP_APP_KEYS):
+            fail(where, f"app {key}: unknown key {extra}")
+        chart = app.get("chart")
+        if chart not in schemas:
+            fail(
+                where,
+                f"app {key} installs {chart!r}, which is not a chart in this catalog",
+            )
+            continue
+        offered = folder_fields(schemas[chart])
+        for field, folder in (app.get("folders") or {}).items():
+            if field not in offered:
+                fail(where, f"app {key}: {chart} has no folder field {field}")
+            if folder not in folders:
+                fail(
+                    where,
+                    f"app {key}: {field} uses folder {folder}, "
+                    f"which the setup does not list",
+                )
+        config = (schemas[chart].get("properties") or {}).get("config") or {}
+        props = config.get("properties") or {}
+        for setting in app.get("settings") or {}:
+            if setting not in props:
+                fail(where, f"app {key}: {chart} has no setting {setting}")
+
+
+def check_setups(setups_dir, schemas, fail):
+    for path in sorted(Path(setups_dir).glob("*.yaml")):
+        try:
+            setup = yaml.safe_load(path.read_text())
+        except yaml.YAMLError as e:
+            fail(f"setup {path.stem}", f"is not valid YAML: {e}")
+            continue
+        check_setup(path.stem, setup, schemas, fail)
+
+
 def main(argv):
     chart_dirs = argv[1:] or sorted(
         d
@@ -1468,6 +1541,7 @@ def main(argv):
         library_tgz = glob.glob(os.path.join(tmp, "yolab-common-*.tgz"))[0]
 
         wanted, provided = {}, {}
+        schemas = {}
         for chart_dir in chart_dirs:
             app = os.path.basename(chart_dir.rstrip("/"))
             text = Path(chart_dir, "Chart.yaml").read_text()
@@ -1503,12 +1577,17 @@ def main(argv):
                 fail(app, f"values.schema.json is not valid JSON: {e}")
                 schema = {}
             check_schema(app, schema, text, fail)
+            schemas[app] = schema
             wanted[app] = wanted_kinds(schema)
             provided[app] = provided_kinds(schema)
             check(app, docs, fail, text, schema)
             check_provides(app, schema, docs, fail)
             check_folder_fields(app, schema, fail)
-            if any(is_folder_claim(d) for d in docs if d.get("kind") == "PersistentVolumeClaim"):
+            if any(
+                is_folder_claim(d)
+                for d in docs
+                if d.get("kind") == "PersistentVolumeClaim"
+            ):
                 fail(app, "renders a folder claim although no folder was chosen")
             for field in sorted(folder_fields(schema)):
                 chosen, err = render(
@@ -1645,6 +1724,7 @@ def main(argv):
 
     if not argv[1:]:
         check_links(wanted, provided, fail)
+        check_setups(os.path.join(HERE, "setups"), schemas, fail)
     print(f"checked {len(chart_dirs)} charts")
     for f in fail.items:
         print("FAIL " + f)

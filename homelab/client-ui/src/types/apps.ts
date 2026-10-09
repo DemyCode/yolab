@@ -1,3 +1,5 @@
+import type { Membership } from "@/lib/groups";
+
 export type OutputFormat = "text" | "uri" | "secret" | "multiline";
 
 export interface AppOutput {
@@ -24,6 +26,7 @@ export interface AppInfo {
   outputs: AppOutput[];
   config: Record<string, unknown>;
   backup: AppBackupStatus;
+  group?: Membership | null;
 }
 
 export interface AppBackupStatus {

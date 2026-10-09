@@ -1,0 +1,19 @@
+title: Music
+tagline: Your own music library, streamed to every device
+main: navidrome
+folders:
+  music:
+    title: Music
+apps:
+  navidrome:
+    chart: navidrome
+    folders:
+      music_folder: music
+  lidarr:
+    chart: lidarr
+    folders:
+      media_folder: music
+  qbittorrent:
+    chart: qbittorrent
+    folders:
+      media_folder: music
