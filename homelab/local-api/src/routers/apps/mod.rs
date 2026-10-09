@@ -540,8 +540,10 @@ pub(crate) fn way_in_refused(
         return None;
     }
     let on = |key: &str| config.get(key) == Some(&Value::Bool(true));
+    let offered = |key: &str| !config_schema["properties"][key].is_null();
     let yolab = config.get(YOLAB_SWITCH) != Some(&Value::Bool(false));
-    if !(yolab || on("tor_enabled") || on("tailscale_enabled")) {
+    let other_ways_offered = offered("tor_enabled") || offered("tailscale_enabled");
+    if other_ways_offered && !(yolab || on("tor_enabled") || on("tailscale_enabled")) {
         return Some(
             "Turn on at least one way to reach this app: the YoLab address, Tor or Tailscale.",
         );
@@ -4013,6 +4015,20 @@ mod tests {
             "tor_enabled": true,
             "file_explorer_enabled": true,
             "file_explorer_yolab_enabled": true,
+        })));
+    }
+
+    #[test]
+    fn an_app_offering_only_the_yolab_address_may_switch_it_off_to_stay_internal() {
+        let mut schema = switched_schema();
+        let props = schema["properties"].as_object_mut().unwrap();
+        props.remove("tor_enabled");
+        props.remove("tailscale_enabled");
+        let refused = |v: Value| way_in_refused(&schema, &json_cfg(v)).is_some();
+        assert!(!refused(serde_json::json!({"yolab_enabled": false})));
+        assert!(refused(serde_json::json!({
+            "yolab_enabled": false,
+            "file_explorer_enabled": true,
         })));
     }
 
