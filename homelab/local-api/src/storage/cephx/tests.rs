@@ -618,11 +618,17 @@ async fn a_refused_admin_key_is_taken_from_the_first_peer_that_hands_it_over_and
             "[errno 13] RADOS permission denied (error connecting to the cluster)",
         )
         .ok("chown", "");
-    let peers = vec![crate::testkit::PEER.to_string(), crate::testkit::PEER.to_string()];
+    let peers = vec![
+        crate::testkit::PEER.to_string(),
+        crate::testkit::PEER.to_string(),
+    ];
 
-    let tick = heal_admin_keyring(&host, root.path(), &env, &peers).await.unwrap();
+    let tick = heal_admin_keyring(&host, root.path(), &env, &peers)
+        .await
+        .unwrap();
 
     assert_eq!(tick, Tick::Done);
-    let text = std::fs::read_to_string(root.path().join("etc/ceph/ceph.client.admin.keyring")).unwrap();
+    let text =
+        std::fs::read_to_string(root.path().join("etc/ceph/ceph.client.admin.keyring")).unwrap();
     assert_eq!(keyring_key(&text, "client.admin"), Some(fresh));
 }
