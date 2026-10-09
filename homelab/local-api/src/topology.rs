@@ -228,21 +228,6 @@ async fn apply_policy<H: Host>(b: &Backend<H>, policy: &StoragePolicy) {
         return;
     }
     let target = compute_target(policy, &topo);
-| None => return,
-        _ => {}
-    }
-
-    let policy = match read_policy_from(&b.host).await {
-        None => {
-            tracing::debug!("topology: storage policy unreadable this tick — changing nothing");
-            return;
-        }
-        Some(PolicyState::NotChosen) => {
-            return;
-        }
-        Some(PolicyState::Chosen(p)) => p,
-    };
-    let target = compute_target(&policy, &topo);
 
     apply_mon_mgr(&b.host, &target).await;
     apply_pools(&b.host, &target).await;
