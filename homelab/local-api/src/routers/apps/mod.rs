@@ -1103,19 +1103,6 @@ pub(crate) fn container_failure(pods: &[&Value]) -> Option<ContainerFailure> {
     })
 }
 
-fn all_pods_ready(pods: &[&Value]) -> bool {
-    !pods.is_empty()
-        && pods.iter().all(|p| {
-            p["status"]["conditions"]
-                .as_array()
-                .is_some_and(|cs| cs.iter().any(|c| c["type"] == "Ready" && c["status"] == "True"))
-        })
-}
-
-fn install_mark_is_stale(all_ready: bool, deployments: &[&Value]) -> bool {
-    all_ready || has_come_up(deployments)
-}
-
 pub(crate) fn has_come_up(deployments: &[&Value]) -> bool {
     !deployments.is_empty()
         && deployments.iter().all(|d| {
@@ -1279,27 +1266,12 @@ pub async fn list_apps(State(state): State<AppState>) -> Result<Json<Vec<AppInfo
         let mut technical = String::new();
         let mut since: Option<String> = None;
         let mut retry_at: Option<String> = None;
-        let items: Vec<&Value> = pods_by_ns
-            .get(ns_full.as_str())
-            .map(|v| v.as_slice())
-            .unwrap_or(&[])
-            .iter()
-            .filter(|p| !is_backup_mover_pod(p) && !is_terminating_pod(p) && !is_finished_pod(p))
-            .copied()
-            .collect();
-        let deployments = deployments_by_ns
-            .get(ns_full.as_str())
-            .map(|v| v.as_slice())
-            .unwrap_or(&[]);
-        let all_ready = all_pods_ready(&items);
         let status = if phase == "Terminating" || uninstall_lock_is_fresh(&ann) {
             since = ns["metadata"]["deletionTimestamp"]
                 .as_str()
                 .map(str::to_string);
             "uninstalling".to_string()
-        } else if let Some(reason) =
-            install_failure(&ann).filter(|_| !install_mark_is_stale(all_ready, deployments))
-        {
+        } else if let Some(reason) = install_failure(&ann) {
             detail = install_failure_headline(&reason);
             technical = reason;
             "failed".to_string()
@@ -1309,27 +1281,53 @@ pub async fn list_apps(State(state): State<AppState>) -> Result<Json<Vec<AppInfo
             detail = copying;
             since = started;
             "copying".to_string()
-        } else if all_ready {
-            "running".to_string()
-        } else if let Some(failure) = container_failure(&items) {
-            detail = failure.headline();
-            technical = explain_failure(client, &ns_full, &failure).await;
-            retry_at = failure.retry_at.clone();
-            if has_come_up(deployments) {
-                "stopped"
-            } else {
-                "failed"
-            }
-            .to_string()
         } else {
-            detail = explain_app_state(&items);
-            technical = unexplained_waits(&items);
-            since = waiting_since(&items).or_else(|| {
-                ns["metadata"]["creationTimestamp"]
-                    .as_str()
-                    .map(str::to_string)
-            });
-            "starting".to_string()
+            let items: Vec<&Value> = pods_by_ns
+                .get(ns_full.as_str())
+                .map(|v| v.as_slice())
+                .unwrap_or(&[])
+                .iter()
+                .filter(|p| {
+                    !is_backup_mover_pod(p) && !is_terminating_pod(p) && !is_finished_pod(p)
+                })
+                .copied()
+                .collect();
+            let all_ready = !items.is_empty()
+                && items.iter().all(|p| {
+                    p["status"]["conditions"]
+                        .as_array()
+                        .map(|cs| {
+                            cs.iter()
+                                .any(|c| c["type"] == "Ready" && c["status"] == "True")
+                        })
+                        .unwrap_or(false)
+                });
+            if all_ready {
+                "running".to_string()
+            } else if let Some(failure) = container_failure(&items) {
+                detail = failure.headline();
+                technical = explain_failure(client, &ns_full, &failure).await;
+                retry_at = failure.retry_at.clone();
+                let deployments = deployments_by_ns
+                    .get(ns_full.as_str())
+                    .map(|v| v.as_slice())
+                    .unwrap_or(&[]);
+                if has_come_up(deployments) {
+                    "stopped"
+                } else {
+                    "failed"
+                }
+                .to_string()
+            } else {
+                detail = explain_app_state(&items);
+                technical = unexplained_waits(&items);
+                since = waiting_since(&items).or_else(|| {
+                    ns["metadata"]["creationTimestamp"]
+                        .as_str()
+                        .map(str::to_string)
+                });
+                "starting".to_string()
+            }
         };
 
         let id = ann
@@ -2502,34 +2500,6 @@ mod tests {
             let gateway = deployment(reason);
             assert!(!has_come_up(&[&web, &gateway]), "{reason}");
         }
-    }
-
-    fn ready_pod(ready: &str) -> Value {
-        json!({"status": {"conditions": [{"type": "Ready", "status": ready}]}})
-    }
-
-    #[test]
-    fn an_app_whose_pods_are_all_ready_is_not_a_failed_install() {
-        let (a, b) = (ready_pod("True"), ready_pod("True"));
-        assert!(all_pods_ready(&[&a, &b]));
-        assert!(install_mark_is_stale(all_pods_ready(&[&a, &b]), &[]));
-    }
-
-    #[test]
-    fn an_app_whose_rollout_completed_is_not_a_failed_install_even_while_restarting() {
-        let (up, down) = (ready_pod("True"), ready_pod("False"));
-        let web = deployment("NewReplicaSetAvailable");
-        assert!(!all_pods_ready(&[&up, &down]));
-        assert!(install_mark_is_stale(all_pods_ready(&[&up, &down]), &[&web]));
-    }
-
-    #[test]
-    fn an_app_that_never_came_up_keeps_its_failed_install_mark() {
-        let down = ready_pod("False");
-        let web = deployment("ProgressDeadlineExceeded");
-        assert!(!all_pods_ready(&[]));
-        assert!(!install_mark_is_stale(all_pods_ready(&[&down]), &[&web]));
-        assert!(!install_mark_is_stale(all_pods_ready(&[]), &[]));
     }
 
     #[test]
