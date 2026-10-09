@@ -2,7 +2,7 @@ apiVersion: v2
 name: bazarr
 description: Manage and download subtitles for Sonarr and Radarr
 type: application
-version: 0.1.3
+version: 0.1.4
 appVersion: 1.6.2
 dependencies:
 - name: yolab-common

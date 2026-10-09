@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { NavLink, Outlet } from "react-router-dom";
-import { Home, LayoutGrid, LogOut, Server } from "lucide-react";
+import { FolderOpen, Home, LayoutGrid, LogOut, Server } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { api } from "@/lib/api";
 import { Wordmark } from "@/components/Logo";
@@ -9,6 +9,7 @@ import { ThemeControl } from "@/components/ThemeControl";
 const NAV = [
   { to: "/", icon: Home, label: "Home", end: true },
   { to: "/add", icon: LayoutGrid, label: "Apps" },
+  { to: "/files", icon: FolderOpen, label: "Files" },
   { to: "/system", icon: Server, label: "System" },
 ];
 

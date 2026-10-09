@@ -3,7 +3,7 @@ name: qbittorrent
 description: "BitTorrent client with a web interface"
 home: https://www.qbittorrent.org
 type: application
-version: 0.1.18
+version: 0.1.19
 appVersion: "5"
 
 dependencies:

@@ -79,6 +79,9 @@ function fieldUi(prop: SchemaProp, domain: string): UiSchema | undefined {
       "ui:options": { service: prop["x-yolab-service"] ?? "" },
     };
   }
+  if (prop.format === "folder") {
+    return { "ui:widget": "FolderWidget" };
+  }
   if (prop.format === "yolab-token") {
     return { "ui:widget": "YolabTokenWidget" };
   }

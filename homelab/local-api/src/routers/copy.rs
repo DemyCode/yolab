@@ -7,7 +7,7 @@ use crate::poll::Step;
 use kube::Client;
 
 const SNAPSHOT_CLASS: &str = "csi-cephfs-snapclass";
-const CEPHFS_STORAGE_CLASS: &str = "yolab-cephfs";
+pub(crate) const CEPHFS_STORAGE_CLASS: &str = "yolab-cephfs";
 const SNAPSHOT_WAIT_SECS: u64 = 300;
 const CLONE_WAIT_SECS: u64 = 6 * 60 * 60;
 const POLL_SECS: u64 = 5;

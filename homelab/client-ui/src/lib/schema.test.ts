@@ -338,6 +338,20 @@ describe("the file explorer's own ways in", () => {
   });
 });
 
+describe("a folder from Your files", () => {
+  it("gets the folder picker", () => {
+    const ui = uiSchemaFor(
+      {
+        properties: {
+          media_folder: { type: "string", format: "folder" },
+        },
+      },
+      "6.yolab.io",
+    ) as Record<string, Record<string, unknown>>;
+    expect(ui.media_folder["ui:widget"]).toBe("FolderWidget");
+  });
+});
+
 describe("a link to another app's service", () => {
   it("gets the installed-or-URL widget, told which service to look for", () => {
     const ui = uiSchemaFor(

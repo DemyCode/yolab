@@ -134,6 +134,12 @@ pub(crate) async fn wait_for_volumes_deleted(
     .await
 }
 
+async fn release_folders(client: &Client, ns: &str) {
+    if let Err(e) = crate::folders::release_all(client, ns).await {
+        tracing::warn!("uninstall {ns}: unmount its folders: {e:#}");
+    }
+}
+
 pub(crate) async fn run_teardown<H: crate::host::Host>(
     b: &Backend<H>,
     instance_name: &str,
@@ -145,6 +151,7 @@ pub(crate) async fn run_teardown<H: crate::host::Host>(
              to finish rather than re-running helm"
         );
         delete_namespace_with_retry(&b.kube, ns).await;
+        release_folders(&b.kube, ns).await;
         return wait_for_volumes_deleted(&b.kube, ns, VOLUME_DELETE_WAIT, VOLUME_DELETE_POLL).await;
     }
 
@@ -179,6 +186,7 @@ pub(crate) async fn run_teardown<H: crate::host::Host>(
     }
 
     delete_namespace_with_retry(&b.kube, ns).await;
+    release_folders(&b.kube, ns).await;
     wait_for_volumes_deleted(&b.kube, ns, VOLUME_DELETE_WAIT, VOLUME_DELETE_POLL).await
 }
 

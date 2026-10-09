@@ -9,6 +9,14 @@
       "title": "Radarr",
       "type": "object",
       "properties": {
+        "media_folder": {
+          "type": "string",
+          "title": "Media folder",
+          "format": "folder",
+          "default": "",
+          "pattern": "^([a-z0-9]([a-z0-9-]*[a-z0-9])?)?$",
+          "description": "A folder from Your files shared with your download client and your media server, at /data/<folder>. Keep downloads and the library in this one folder so finished downloads are moved instantly instead of copied. Leave it empty to keep everything inside Radarr."
+        },
         "yolab_enabled": {
           "type": "boolean",
           "title": "YoLab address",

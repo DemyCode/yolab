@@ -7,6 +7,7 @@ pub mod ceph_join;
 pub mod copy;
 pub mod custom_app;
 pub mod disks;
+pub mod folders;
 pub mod install;
 pub mod logs;
 pub mod nodes;

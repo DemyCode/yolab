@@ -259,8 +259,11 @@ def check(app, docs, fail, chart_yaml="", schema=None, arches=None):
         "Caddyfile" in (c.get("data") or {}) for c in kinds.get("ConfigMap", [])
     )
 
+    own_claims = [
+        c for c in kinds.get("PersistentVolumeClaim", []) if not is_folder_claim(c)
+    ]
     for kind, want in (("PersistentVolumeClaim", 1), ("Job", 1)):
-        got = len(kinds.get(kind, []))
+        got = len(own_claims if kind == "PersistentVolumeClaim" else kinds.get(kind, []))
         if got != want:
             fail(app, f"expected {want} {kind}, got {got}")
 
@@ -1331,6 +1334,109 @@ def check_links(wanted, provided, fail):
                 fail(app, f"a service-url field wants {kind}, which no chart provides")
 
 
+FOLDER_LABEL = "yolab.io/folder"
+FOLDER_PATTERN = "^([a-z0-9]([a-z0-9-]*[a-z0-9])?)?$"
+FOLDER_PROBE = "probe-folder"
+
+
+def is_folder_claim(doc):
+    return FOLDER_LABEL in ((doc.get("metadata") or {}).get("labels") or {})
+
+
+def folder_fields(schema):
+    found = {}
+
+    def walk(node):
+        if isinstance(node, dict):
+            for name, prop in (node.get("properties") or {}).items():
+                if isinstance(prop, dict) and prop.get("format") == "folder":
+                    found[name] = prop
+            for v in node.values():
+                walk(v)
+        elif isinstance(node, list):
+            for v in node:
+                walk(v)
+
+    walk((schema.get("properties") or {}).get("config") or {})
+    return found
+
+
+def check_folder_fields(app, schema, fail):
+    for name, prop in sorted(folder_fields(schema).items()):
+        where = f"config.{name}"
+        if prop.get("type") != "string":
+            fail(app, f"{where} is a folder field but not a string")
+        if prop.get("default", "") != "":
+            fail(
+                app,
+                f"{where} must default to empty: an app works on its own and a "
+                f"folder is something the person chooses",
+            )
+        if prop.get("pattern") != FOLDER_PATTERN:
+            fail(app, f"{where} needs the folder name pattern {FOLDER_PATTERN}")
+        if not str(prop.get("title") or "").strip():
+            fail(app, f"{where} has no title to show")
+
+
+def folder_mounts(docs, claim):
+    for pod, spec in pod_specs(docs):
+        volumes = {
+            v["name"]
+            for v in spec.get("volumes") or []
+            if (v.get("persistentVolumeClaim") or {}).get("claimName") == claim
+        }
+        for c in (spec.get("initContainers") or []) + (spec.get("containers") or []):
+            for m in c.get("volumeMounts") or []:
+                if m["name"] in volumes:
+                    yield pod, c["name"], m
+
+
+def check_folders(app, field, docs, fail):
+    claim_name = f"folder-{FOLDER_PROBE}"
+    claims = [d for d in docs if d.get("kind") == "PersistentVolumeClaim" and is_folder_claim(d)]
+    if [c["metadata"]["name"] for c in claims] != [claim_name]:
+        fail(
+            app,
+            f"with config.{field} set the chart must render exactly one folder claim "
+            f"named {claim_name}, got {[c['metadata']['name'] for c in claims]}",
+        )
+        return
+    claim = claims[0]
+    meta, spec = claim["metadata"], claim.get("spec") or {}
+    namespace = meta.get("namespace") or "default"
+    if meta["labels"][FOLDER_LABEL] != FOLDER_PROBE:
+        fail(app, f"the folder claim's {FOLDER_LABEL} label is not the folder name")
+    if spec.get("storageClassName") != "":
+        fail(
+            app,
+            "the folder claim must have storageClassName \"\" — it binds to the "
+            "folder YoLab mounts, never to a new empty volume",
+        )
+    if spec.get("volumeName") != f"{namespace}.folder-{FOLDER_PROBE}":
+        fail(
+            app,
+            f"the folder claim must bind volumeName {{{{ .Release.Namespace }}}}.folder-<folder>, "
+            f"got {spec.get('volumeName')!r}",
+        )
+    if spec.get("accessModes") != ["ReadWriteMany"]:
+        fail(app, "the folder claim must be ReadWriteMany: other apps mount it too")
+    mounts = list(folder_mounts(docs, claim_name))
+    if not mounts:
+        fail(app, f"config.{field} is chosen but no container mounts the folder")
+    for pod, container, m in mounts:
+        if m.get("mountPath") != f"/data/{FOLDER_PROBE}":
+            fail(
+                app,
+                f"{pod}/{container} mounts the folder at {m.get('mountPath')!r}, not "
+                f"/data/<folder> — every app must see the same paths",
+            )
+        if m.get("subPath"):
+            fail(
+                app,
+                f"{pod}/{container} mounts only part of the folder; hardlinks need it whole",
+            )
+
+
 def main(argv):
     chart_dirs = argv[1:] or sorted(
         d
@@ -1401,6 +1507,23 @@ def main(argv):
             provided[app] = provided_kinds(schema)
             check(app, docs, fail, text, schema)
             check_provides(app, schema, docs, fail)
+            check_folder_fields(app, schema, fail)
+            if any(is_folder_claim(d) for d in docs if d.get("kind") == "PersistentVolumeClaim"):
+                fail(app, "renders a folder claim although no folder was chosen")
+            for field in sorted(folder_fields(schema)):
+                chosen, err = render(
+                    chart_dir, library_tgz, tmp, {f"config.{field}": FOLDER_PROBE}
+                )
+                if chosen is None:
+                    fail(
+                        app,
+                        f"helm template with config.{field} set failed: "
+                        f"{err.splitlines()[-1] if err else 'unknown'}",
+                    )
+                    continue
+                chosen_docs = [d for d in yaml.safe_load_all(chosen) if d]
+                check(app, chosen_docs, fail, text, schema)
+                check_folders(app, field, chosen_docs, fail)
             check_file_explorer(app, docs, fail)
             values_path = Path(chart_dir, "values.yaml")
             check_private_access_offer(

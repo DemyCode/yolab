@@ -3,7 +3,7 @@ name: navidrome
 description: "Music streaming server compatible with Subsonic clients"
 home: https://www.navidrome.org
 type: application
-version: 0.1.17
+version: 0.1.18
 appVersion: "0"
 
 dependencies:

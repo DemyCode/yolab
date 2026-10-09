@@ -3,6 +3,8 @@ import type { WidgetProps } from "@rjsf/utils";
 import { Eye, EyeOff, RefreshCw } from "lucide-react";
 import { Input, Select, Toggle } from "@/components/ui/input";
 import { generateSecret } from "@/lib/format";
+import { DEFAULT_SIZE_GIB, folderChoice, type Folder } from "@/lib/folders";
+import { api } from "@/lib/api";
 import {
   serviceChoice,
   serviceLabel,
@@ -218,5 +220,99 @@ export function TextareaWidget(props: WidgetProps) {
         "text-fg placeholder:text-fg-subtle focus:border-primary focus:outline-none",
       )}
     />
+  );
+}
+
+const INSIDE = "";
+const NEW_FOLDER = "__new__";
+
+export function FolderWidget(props: WidgetProps) {
+  const { value, onChange, disabled, readonly, id } = props;
+  const folders = useApi<Folder[]>("folders", "/api/folders");
+  const list = folders.data ?? [];
+  const v = typeof value === "string" ? value : "";
+  const choice = folderChoice(v, list);
+  const [creating, setCreating] = useState(false);
+  const [title, setTitle] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const off = disabled || readonly;
+
+  async function create() {
+    setBusy(true);
+    setError(null);
+    try {
+      const made = await api.post<{ name: string }>("/api/folders", {
+        title,
+        size_gib: DEFAULT_SIZE_GIB,
+      });
+      await folders.refresh();
+      onChange(made.name);
+      setCreating(false);
+      setTitle("");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="space-y-2">
+      <Select
+        id={id}
+        value={creating ? NEW_FOLDER : v}
+        disabled={off}
+        onChange={(e) => {
+          const next = e.target.value;
+          setCreating(next === NEW_FOLDER);
+          if (next !== NEW_FOLDER) onChange(next === INSIDE ? undefined : next);
+        }}
+      >
+        <option value={INSIDE}>Keep inside this app</option>
+        {list.map((f) => (
+          <option key={f.name} value={f.name}>
+            {f.ready ? f.title : `${f.title} (being created)`}
+          </option>
+        ))}
+        {choice.kind === "missing" && (
+          <option value={choice.name}>{choice.name} (no longer exists)</option>
+        )}
+        <option value={NEW_FOLDER}>Create a new folder…</option>
+      </Select>
+      {creating && (
+        <div className="flex items-center gap-2">
+          <Input
+            value={title}
+            autoFocus
+            placeholder="Movies & TV"
+            disabled={off || busy}
+            onChange={(e) => setTitle(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                if (title.trim()) void create();
+              }
+            }}
+            className="flex-1"
+          />
+          <button
+            type="button"
+            disabled={off || busy || !title.trim()}
+            onClick={() => void create()}
+            className="rounded-control px-3 py-2 text-sm font-medium text-primary hover:bg-primary-soft disabled:opacity-60"
+          >
+            {busy ? "Creating…" : "Create"}
+          </button>
+        </div>
+      )}
+      {choice.kind === "missing" && !creating && (
+        <p className="text-sm text-danger">
+          This folder was removed. Pick another one or keep the files inside
+          this app.
+        </p>
+      )}
+      {error && <p className="text-sm text-danger">{error}</p>}
+    </div>
   );
 }

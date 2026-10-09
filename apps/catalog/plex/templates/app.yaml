@@ -20,6 +20,24 @@ spec:
   resources:
     requests:
       storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
+{{- with .Values.config.media_folder }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: folder-{{ . }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    yolab.io/folder: {{ . | quote }}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: ""
+  volumeName: {{ $.Release.Namespace }}.folder-{{ . }}
+  resources:
+    requests:
+      storage: 1Gi
+{{- end }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -78,7 +96,17 @@ spec:
         - name: data
           mountPath: /downloads
           subPath: '{{ .Release.Name }}/storage/downloads'
+        {{- with .Values.config.media_folder }}
+        - name: folder
+          mountPath: /data/{{ . }}
+          readOnly: true
+        {{- end }}
       volumes:
       {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
       {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}
+      {{- with .Values.config.media_folder }}
+      - name: folder
+        persistentVolumeClaim:
+          claimName: folder-{{ . }}
+      {{- end }}

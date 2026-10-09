@@ -1548,6 +1548,7 @@ pub(crate) struct StagedInstall {
     pub(crate) service_name: String,
     pub(crate) chart_dir: std::path::PathBuf,
     pub(crate) values: tempfile::NamedTempFile,
+    pub(crate) folders: std::collections::BTreeSet<String>,
 }
 
 pub(crate) enum ChartAt<'a> {
@@ -1596,6 +1597,8 @@ pub(crate) async fn stage_install(
     ensure_tunnel_credentials(client, &ns, &tunnel_cfg)
         .await
         .map_err(|e| anyhow::anyhow!("stage tunnel credentials: {e}"))?;
+    let folders = crate::folders::wanted(&meta.app, config);
+    crate::folders::attach(client, &ns, &folders).await?;
     let service_name = resolve_service_name(&meta.app.config(), config);
     let values = tempfile::Builder::new()
         .suffix(".json")
@@ -1613,6 +1616,7 @@ pub(crate) async fn stage_install(
         service_name,
         chart_dir,
         values,
+        folders,
     })
 }
 

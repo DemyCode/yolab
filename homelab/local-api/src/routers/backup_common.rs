@@ -337,7 +337,10 @@ pub(crate) async fn user_pvcs(client: &Client) -> anyhow::Result<Vec<PvcInfo>> {
             if EXCLUDED_NS.contains(&ns.as_str()) || !managed.contains(&ns) {
                 return None;
             }
-            if name.starts_with("volsync-") {
+            let volume = claim.spec.as_ref().and_then(|s| s.volume_name.as_deref());
+            if name.starts_with("volsync-")
+                || crate::folders::is_mount(&ns, claim.metadata.labels.as_ref(), volume)
+            {
                 return None;
             }
             let capacity = claim
@@ -1261,6 +1264,33 @@ mod tests {
                 .map(|p| (p.name.as_str(), p.capacity.as_str()))
                 .collect();
             assert_eq!(names, vec![("data", "5Gi"), ("config", "?")]);
+        }
+
+        #[tokio::test]
+        async fn a_shared_folder_is_never_backed_up_or_copied_as_part_of_an_app() {
+            let (server, client) = api_server().await;
+            Mock::given(method("GET"))
+                .and(path("/api/v1/namespaces"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(list(
+                    "Namespace",
+                    vec![json!({ "metadata": { "name": "yolab-a" } })],
+                )))
+                .mount(&server)
+                .await;
+            let mut folder = claim("yolab-a", "folder-movies", Some("1Gi"));
+            folder["spec"]["volumeName"] = json!("yolab-a.folder-movies");
+            Mock::given(method("GET"))
+                .and(path("/api/v1/persistentvolumeclaims"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(list(
+                    "PersistentVolumeClaim",
+                    vec![claim("yolab-a", "data", Some("5Gi")), folder],
+                )))
+                .mount(&server)
+                .await;
+
+            let pvcs = user_pvcs(&client).await.unwrap();
+            let names: Vec<&str> = pvcs.iter().map(|p| p.name.as_str()).collect();
+            assert_eq!(names, vec!["data"]);
         }
 
         fn source(pvc: &str) -> PvcInfo {

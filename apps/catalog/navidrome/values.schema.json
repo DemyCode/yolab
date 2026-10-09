@@ -9,6 +9,14 @@
       "title": "Navidrome",
       "type": "object",
       "properties": {
+        "music_folder": {
+          "type": "string",
+          "title": "Music folder",
+          "format": "folder",
+          "default": "",
+          "pattern": "^([a-z0-9]([a-z0-9-]*[a-z0-9])?)?$",
+          "description": "A folder from Your files that Navidrome plays, at /data/<folder>. Navidrome only reads it. Leave it empty to keep your music inside Navidrome."
+        },
         "yolab_enabled": {
           "type": "boolean",
           "title": "YoLab address",

@@ -7,8 +7,8 @@ use tower_http::cors::{Any, CorsLayer};
 
 use crate::auth::auth_middleware;
 use crate::routers::{
-    apps, backups, ceph as ceph_api, ceph_join, custom_app, disks, logs, nodes, reboot, rebuild,
-    status, store, update,
+    apps, backups, ceph as ceph_api, ceph_join, custom_app, disks, folders, logs, nodes, reboot,
+    rebuild, status, store, update,
 };
 use crate::{auth, heal, mesh, notify, runtime, topology, AppState};
 
@@ -151,6 +151,8 @@ pub fn build_router(state: AppState) -> Router {
             post(apps::refresh_catalog_app),
         )
         .route("/api/services/{kind}", get(apps::list_services))
+        .route("/api/folders", get(folders::list).post(folders::create))
+        .route("/api/folders/{name}", delete(folders::remove))
         .route("/api/apps", get(apps::list_apps))
         .route(
             "/api/apps/{id}",

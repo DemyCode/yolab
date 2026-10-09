@@ -2,7 +2,7 @@ apiVersion: v2
 name: transmission
 description: A fast, easy and free BitTorrent client
 type: application
-version: 0.1.3
+version: 0.1.4
 appVersion: 4.1.3-patch.1
 dependencies:
 - name: yolab-common

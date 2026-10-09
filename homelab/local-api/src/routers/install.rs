@@ -465,6 +465,12 @@ async fn apply_chart<H: Host + 'static>(
     log.say(job.verb);
     helm_install(&b.host, &staged, job.release, log).await?;
 
+    if let Err(e) = crate::folders::release_unused(&b.kube, &staged.ns, &staged.folders).await {
+        log.say(format!(
+            "[WARN] could not unmount the folders this app no longer uses ({e:#})"
+        ));
+    }
+
     if let DataFill::Backup(payload) = fill {
         log.say("Putting this app's saved settings back…");
         payload.reapply(&b.kube).await?;

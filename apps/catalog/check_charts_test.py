@@ -1898,6 +1898,144 @@ class ServiceLinks(unittest.TestCase):
         )
 
 
+class Folders(unittest.TestCase):
+    def collect(self, fn, *args):
+        found = []
+        fn(*args, lambda app, msg: found.append(msg))
+        return found
+
+    def field(self, **overrides):
+        prop = {
+            "type": "string",
+            "format": "folder",
+            "title": "Media folder",
+            "default": "",
+            "pattern": check_charts.FOLDER_PATTERN,
+        }
+        prop.update(overrides)
+        return {"properties": {"config": {"properties": {"media_folder": prop}}}}
+
+    def claim(self, **spec_overrides):
+        spec = {
+            "accessModes": ["ReadWriteMany"],
+            "storageClassName": "",
+            "volumeName": f"default.folder-{check_charts.FOLDER_PROBE}",
+        }
+        spec.update(spec_overrides)
+        return {
+            "kind": "PersistentVolumeClaim",
+            "metadata": {
+                "name": f"folder-{check_charts.FOLDER_PROBE}",
+                "namespace": "default",
+                "labels": {check_charts.FOLDER_LABEL: check_charts.FOLDER_PROBE},
+            },
+            "spec": spec,
+        }
+
+    def deployment(self, **mount_overrides):
+        mount = {"name": "media", "mountPath": f"/data/{check_charts.FOLDER_PROBE}"}
+        mount.update(mount_overrides)
+        return {
+            "kind": "Deployment",
+            "metadata": {"name": "gateway"},
+            "spec": {
+                "template": {
+                    "spec": {
+                        "containers": [
+                            {"name": "app", "image": "x", "volumeMounts": [mount]}
+                        ],
+                        "volumes": [
+                            {
+                                "name": "media",
+                                "persistentVolumeClaim": {
+                                    "claimName": f"folder-{check_charts.FOLDER_PROBE}"
+                                },
+                            }
+                        ],
+                    }
+                }
+            },
+        }
+
+    def test_a_well_formed_folder_field_passes(self):
+        self.assertEqual(
+            self.collect(check_charts.check_folder_fields, "x", self.field()), []
+        )
+
+    def test_a_folder_chosen_by_default_is_refused(self):
+        found = self.collect(
+            check_charts.check_folder_fields, "x", self.field(default="movies")
+        )
+        self.assertIn("must default to empty", found[0])
+
+    def test_a_folder_field_without_the_name_pattern_is_refused(self):
+        found = self.collect(
+            check_charts.check_folder_fields, "x", self.field(pattern=".*")
+        )
+        self.assertIn("pattern", found[0])
+
+    def test_folder_fields_are_found_behind_switches(self):
+        schema = {
+            "properties": {
+                "config": {
+                    "dependencies": {
+                        "on": {
+                            "oneOf": [
+                                {
+                                    "properties": {
+                                        "downloads": {"type": "string", "format": "folder"}
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                }
+            }
+        }
+        self.assertEqual(set(check_charts.folder_fields(schema)), {"downloads"})
+
+    def test_a_chart_that_mounts_the_whole_folder_at_data_passes(self):
+        docs = [self.claim(), self.deployment()]
+        self.assertEqual(
+            self.collect(check_charts.check_folders, "x", "media_folder", docs), []
+        )
+
+    def test_a_folder_claim_that_would_get_a_new_empty_volume_is_refused(self):
+        docs = [self.claim(storageClassName="yolab-cephfs"), self.deployment()]
+        found = self.collect(check_charts.check_folders, "x", "media_folder", docs)
+        self.assertTrue(any("storageClassName" in f for f in found), found)
+
+    def test_a_folder_claim_bound_to_another_apps_mount_is_refused(self):
+        docs = [self.claim(volumeName="yolab-other.folder-x"), self.deployment()]
+        found = self.collect(check_charts.check_folders, "x", "media_folder", docs)
+        self.assertTrue(any("volumeName" in f for f in found), found)
+
+    def test_a_folder_mounted_somewhere_else_than_data_is_refused(self):
+        docs = [self.claim(), self.deployment(mountPath="/media")]
+        found = self.collect(check_charts.check_folders, "x", "media_folder", docs)
+        self.assertTrue(any("/data/<folder>" in f for f in found), found)
+
+    def test_a_folder_mounted_in_part_is_refused(self):
+        docs = [self.claim(), self.deployment(subPath="movies")]
+        found = self.collect(check_charts.check_folders, "x", "media_folder", docs)
+        self.assertTrue(any("hardlinks" in f for f in found), found)
+
+    def test_a_chosen_folder_nobody_mounts_is_refused(self):
+        found = self.collect(
+            check_charts.check_folders, "x", "media_folder", [self.claim()]
+        )
+        self.assertTrue(any("no container mounts" in f for f in found), found)
+
+    def test_a_folder_claim_does_not_count_as_the_apps_own_volume(self):
+        own = {
+            "kind": "PersistentVolumeClaim",
+            "metadata": {"name": "release-data"},
+            "spec": {},
+        }
+        self.assertTrue(check_charts.is_folder_claim(self.claim()))
+        self.assertFalse(check_charts.is_folder_claim(own))
+
+
 class ImageArches(unittest.TestCase):
     def test_a_known_digest_is_never_asked_again(self):
         import image_arches

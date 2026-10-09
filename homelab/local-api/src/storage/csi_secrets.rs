@@ -203,6 +203,15 @@ pub async fn run<H: Host>(b: &Backend<H>) -> Result<()> {
         &cephfs_node,
     )
     .await?;
+    apply_rook_secret(
+        client,
+        crate::folders::STATIC_SECRET,
+        "userID",
+        user_id(node_entity),
+        "userKey",
+        &cephfs_node,
+    )
+    .await?;
 
     apply_csi_config_map(client, &csi_cfg)
         .await
@@ -410,6 +419,21 @@ mod tests {
             !b.host.ran("get-or-create client.csi-cephfs-node"),
             "the old entity must never be recreated once its successor exists"
         );
+    }
+
+    #[tokio::test]
+    async fn folder_mounts_get_the_node_identity_under_the_keys_static_volumes_read() {
+        let (server, kube) = cluster_up().await;
+        let host = ceph_base().ok("ceph auth get-key client.csi-cephfs-node-aes256k", "newkey");
+        run(&Backend { kube, host }).await.unwrap();
+        let secret = patched(&server)
+            .await
+            .into_iter()
+            .find(|p| p["metadata"]["name"] == crate::folders::STATIC_SECRET)
+            .expect("the folder mount secret was published");
+        assert_eq!(secret["metadata"]["namespace"], NS);
+        assert_eq!(secret["stringData"]["userID"], "csi-cephfs-node-aes256k");
+        assert_eq!(secret["stringData"]["userKey"], "newkey");
     }
 
     #[tokio::test]

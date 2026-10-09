@@ -9,6 +9,14 @@
       "title": "Transmission",
       "type": "object",
       "properties": {
+        "media_folder": {
+          "type": "string",
+          "title": "Media folder",
+          "format": "folder",
+          "default": "",
+          "pattern": "^([a-z0-9]([a-z0-9-]*[a-z0-9])?)?$",
+          "description": "A folder from Your files to download into, at /data/<folder>. Pick the same folder as Sonarr, Radarr and your media server so finished downloads are moved instantly instead of copied. Leave it empty to keep downloads inside Transmission."
+        },
         "yolab_enabled": {
           "type": "boolean",
           "title": "YoLab address",

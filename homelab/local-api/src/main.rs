@@ -11,6 +11,7 @@ mod cron;
 mod csi;
 mod disks_reconciler;
 mod error;
+mod folders;
 mod exec;
 mod github;
 mod hardware;
