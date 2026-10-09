@@ -2,11 +2,11 @@ apiVersion: v2
 name: influxdb2
 description: The leading platform for time series data
 type: application
-version: 0.1.1
+version: 0.1.2
 appVersion: 2.9.1-patch.1
 dependencies:
 - name: yolab-common
-  version: "0.1.14"
+  version: "0.1.15"
   repository: oci://ghcr.io/demycode/charts
 annotations:
   yolab.io/display-name: InfluxDB 2
