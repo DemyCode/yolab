@@ -4,6 +4,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from typing import ClassVar
 
 import check_charts
 import yaml
@@ -2145,7 +2146,7 @@ class Folders(unittest.TestCase):
 
 
 class Setups(unittest.TestCase):
-    SCHEMAS = {
+    SCHEMAS: ClassVar[dict] = {
         "jellyfin": {
             "properties": {
                 "config": {
