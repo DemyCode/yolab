@@ -1103,6 +1103,8 @@ PRIVATE_BOTH = frozenset(
     }
 )
 
+PRIVATE_TAILSCALE_ONLY = frozenset({"ollama"})
+
 
 class PrivateAccessChoice(unittest.TestCase):
     def offers(self):
@@ -1122,12 +1124,14 @@ class PrivateAccessChoice(unittest.TestCase):
         }
         self.assertEqual(both, PRIVATE_BOTH)
 
-    def test_every_app_offering_one_way_in_offers_both_even_slow_video_over_tor(self):
+    def test_apps_offering_one_way_in_offer_both_except_apis_that_offer_only_tailscale(self):
         offers = self.offers()
         partial = {
             a for a, o in offers.items() if o != {"tor_enabled", "tailscale_enabled"}
         }
-        self.assertEqual(partial, set())
+        self.assertEqual(partial, PRIVATE_TAILSCALE_ONLY)
+        for app in PRIVATE_TAILSCALE_ONLY:
+            self.assertEqual(offers[app], {"tailscale_enabled"})
 
     def test_apps_that_pin_their_own_address_offer_neither(self):
         offers = self.offers()
