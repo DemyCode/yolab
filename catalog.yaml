@@ -55,7 +55,7 @@ charts:
   - name: bark-wallet
     version: "0.1.3"
   - name: bazarr
-    version: "0.1.3"
+    version: "0.1.4"
   - name: bentopdf
     version: "0.1.2"
   - name: bffless
@@ -257,7 +257,7 @@ charts:
   - name: jackett
     version: "0.1.3"
   - name: jellyfin
-    version: "0.2.11"
+    version: "0.2.12"
   - name: jellyseerr
     version: "0.1.18"
   - name: jotty
@@ -301,7 +301,7 @@ charts:
   - name: libretranslate
     version: "0.1.3"
   - name: lidarr
-    version: "0.1.3"
+    version: "0.1.4"
   - name: linkstack
     version: "0.1.2"
   - name: linkwarden
@@ -371,7 +371,7 @@ charts:
   - name: n8n
     version: "0.1.17"
   - name: navidrome
-    version: "0.1.17"
+    version: "0.1.18"
   - name: neko
     version: "0.1.3"
   - name: netbird
@@ -479,7 +479,7 @@ charts:
   - name: plausible
     version: "0.1.3"
   - name: plex
-    version: "0.1.3"
+    version: "0.1.4"
   - name: pocketbase
     version: "0.1.2"
   - name: portainer
@@ -495,9 +495,9 @@ charts:
   - name: pyload-ng
     version: "0.1.3"
   - name: qbittorrent
-    version: "0.1.18"
+    version: "0.1.19"
   - name: radarr
-    version: "0.1.17"
+    version: "0.1.18"
   - name: reactive-resume
     version: "0.1.19"
   - name: readarr
@@ -557,7 +557,7 @@ charts:
   - name: solidtime
     version: "0.1.3"
   - name: sonarr
-    version: "0.1.17"
+    version: "0.1.18"
   - name: spacebot
     version: "0.1.3"
   - name: speedtest-tracker
@@ -613,7 +613,7 @@ charts:
   - name: toshi-moto
     version: "0.1.3"
   - name: transmission
-    version: "0.1.3"
+    version: "0.1.4"
   - name: transmute
     version: "0.1.3"
   - name: trilium-notes
