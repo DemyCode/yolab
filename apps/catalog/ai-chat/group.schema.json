@@ -7,7 +7,6 @@
       "type": "object",
       "required": ["models_from"],
       "properties": {
-        "open-webui": { "$ref": "chart:open-webui#/properties/config", "title": "Open WebUI", "description": "The chat you open in your browser.", "x-yolab-omit": ["ollama"] },
         "models_from": {
           "type": "string",
           "title": "Where the models run",
@@ -17,17 +16,23 @@
             { "const": "existing", "title": "Use an Ollama I already have" },
             { "const": "elsewhere", "title": "It runs somewhere else" }
           ]
+        },
+        "chat_anywhere": {
+          "type": "boolean",
+          "title": "Chat from anywhere",
+          "default": true,
+          "description": "Open WebUI gets a YoLab address you can open from any network. Off, it is reachable at home only."
+        },
+        "tailscale": {
+          "$ref": "chart:open-webui#/properties/config/properties/tailscale_enabled",
+          "title": "Chat over Tailscale",
+          "description": "Open WebUI also joins your tailnet, so your own devices reach it privately."
         }
       },
       "dependencies": {
         "models_from": {
           "oneOf": [
-            {
-              "properties": {
-                "models_from": { "const": "new" },
-                "ollama": { "$ref": "chart:ollama#/properties/config", "title": "Ollama", "description": "Runs the models, on the machine with the best graphics card you have." }
-              }
-            },
+            { "properties": { "models_from": { "const": "new" } } },
             {
               "properties": {
                 "models_from": { "const": "existing" },
@@ -51,6 +56,20 @@
                 }
               },
               "required": ["ollama_address"]
+            }
+          ]
+        },
+        "tailscale": {
+          "oneOf": [
+            { "properties": { "tailscale": { "const": false } } },
+            {
+              "properties": {
+                "tailscale": { "const": true },
+                "tailscale_auth_key": {
+                  "$ref": "chart:open-webui#/properties/config/dependencies/tailscale_enabled/oneOf/1/properties/tailscale_auth_key"
+                }
+              },
+              "required": ["tailscale_auth_key"]
             }
           ]
         }

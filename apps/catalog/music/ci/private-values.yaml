@@ -1,0 +1,6 @@
+config:
+  music_folder: shared
+  listen_anywhere: false
+  manage_anywhere: false
+  tailscale: true
+  tailscale_auth_key: tskey-auth-test

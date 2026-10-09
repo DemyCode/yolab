@@ -3,5 +3,3 @@ config:
   download_client: none
   requests: false
   subtitles: true
-  bazarr:
-    file_explorer_enabled: true

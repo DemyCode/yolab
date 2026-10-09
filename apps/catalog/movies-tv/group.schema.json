@@ -13,10 +13,6 @@
           "minLength": 1,
           "description": "One folder for your downloads and your library, shared by every app here, so a finished download is moved instantly instead of copied. Create one, or pick one you have."
         },
-        "jellyfin": { "$ref": "chart:jellyfin#/properties/config", "title": "Jellyfin", "description": "Where you watch: on your TV, your phone, in a browser.", "x-yolab-omit": ["media_folder"] },
-        "sonarr": { "$ref": "chart:sonarr#/properties/config", "title": "Sonarr", "description": "Finds and downloads the shows you follow.", "x-yolab-omit": ["media_folder"] },
-        "radarr": { "$ref": "chart:radarr#/properties/config", "title": "Radarr", "description": "Finds and downloads the films you want.", "x-yolab-omit": ["media_folder"] },
-        "prowlarr": { "$ref": "chart:prowlarr#/properties/config", "title": "Prowlarr", "description": "Searches the sites Sonarr and Radarr download from." },
         "download_client": {
           "type": "string",
           "title": "Download client",
@@ -28,17 +24,37 @@
             { "const": "none", "title": "No download client" }
           ]
         },
+        "hardware_transcoding": {
+          "$ref": "chart:jellyfin#/properties/config/properties/hardware_transcoding"
+        },
         "requests": {
           "type": "boolean",
-          "title": "Jellyseerr",
+          "title": "Requests with Jellyseerr",
           "default": true,
-          "description": "Lets the people you share Jellyfin with ask for films and shows from their phone."
+          "description": "The people you share Jellyfin with can ask for films and shows from their phone."
         },
         "subtitles": {
           "type": "boolean",
-          "title": "Bazarr",
+          "title": "Subtitles with Bazarr",
           "default": false,
           "description": "Finds subtitles in your languages for everything in the library."
+        },
+        "watch_anywhere": {
+          "type": "boolean",
+          "title": "Watch from anywhere",
+          "default": true,
+          "description": "Jellyfin and Jellyseerr get a YoLab address you can open from any network. Off, they are reachable at home only."
+        },
+        "tailscale": {
+          "$ref": "chart:jellyfin#/properties/config/properties/tailscale_enabled",
+          "title": "Watch over Tailscale",
+          "description": "Jellyfin and Jellyseerr also join your tailnet, so your own devices reach them privately."
+        },
+        "manage_anywhere": {
+          "type": "boolean",
+          "title": "Manage downloads from anywhere",
+          "default": true,
+          "description": "Sonarr, Radarr, Prowlarr, Bazarr and the download client get YoLab addresses too. Off, you manage them at home only."
         }
       },
       "dependencies": {
@@ -46,14 +62,7 @@
           "oneOf": [
             {
               "properties": {
-                "download_client": { "const": "qbittorrent" },
-                "qbittorrent": { "$ref": "chart:qbittorrent#/properties/config", "title": "qBittorrent", "description": "Downloads what Sonarr and Radarr ask for.", "x-yolab-omit": ["media_folder"] }
-              }
-            },
-            {
-              "properties": {
-                "download_client": { "const": "transmission" },
-                "transmission": { "$ref": "chart:transmission#/properties/config", "title": "Transmission", "description": "Downloads what Sonarr and Radarr ask for.", "x-yolab-omit": ["media_folder"] }
+                "download_client": { "enum": ["qbittorrent", "transmission", "none"] }
               }
             },
             {
@@ -68,29 +77,21 @@
                 }
               },
               "required": ["existing_client"]
-            },
-            { "properties": { "download_client": { "const": "none" } } }
-          ]
-        },
-        "requests": {
-          "oneOf": [
-            { "properties": { "requests": { "const": false } } },
-            {
-              "properties": {
-                "requests": { "const": true },
-                "jellyseerr": { "$ref": "chart:jellyseerr#/properties/config", "title": "Jellyseerr settings" }
-              }
             }
           ]
         },
-        "subtitles": {
+        "tailscale": {
           "oneOf": [
-            { "properties": { "subtitles": { "const": false } } },
+            { "properties": { "tailscale": { "const": false } } },
             {
               "properties": {
-                "subtitles": { "const": true },
-                "bazarr": { "$ref": "chart:bazarr#/properties/config", "title": "Bazarr settings", "x-yolab-omit": ["media_folder"] }
-              }
+                "tailscale": { "const": true },
+                "tailscale_auth_key": {
+                  "$ref": "chart:jellyfin#/properties/config/dependencies/tailscale_enabled/oneOf/1/properties/tailscale_auth_key",
+                  "description": "Create a reusable one in the Tailscale admin console under Settings, Keys: Jellyfin and Jellyseerr both use it once to sign in."
+                }
+              },
+              "required": ["tailscale_auth_key"]
             }
           ]
         }

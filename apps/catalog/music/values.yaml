@@ -2,5 +2,9 @@ config:
   music_folder: ""
   download_client: qbittorrent
   existing_client: ""
+  listen_anywhere: true
+  tailscale: false
+  tailscale_auth_key: ""
+  manage_anywhere: true
 yolab:
   apps: {}

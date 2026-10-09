@@ -1,0 +1,5 @@
+config:
+  models_from: new
+  chat_anywhere: false
+  tailscale: true
+  tailscale_auth_key: tskey-auth-test

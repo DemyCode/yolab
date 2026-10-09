@@ -12,8 +12,6 @@
           "minLength": 1,
           "description": "One folder for your downloads and your albums, shared by every app here. Create one, or pick one you have."
         },
-        "navidrome": { "$ref": "chart:navidrome#/properties/config", "title": "Navidrome", "description": "Where you listen: in a browser or any Subsonic app.", "x-yolab-omit": ["music_folder"] },
-        "lidarr": { "$ref": "chart:lidarr#/properties/config", "title": "Lidarr", "description": "Finds and downloads the albums of the artists you follow.", "x-yolab-omit": ["media_folder"] },
         "download_client": {
           "type": "string",
           "title": "Download client",
@@ -24,6 +22,23 @@
             { "const": "existing", "title": "Use one I already have" },
             { "const": "none", "title": "No download client" }
           ]
+        },
+        "listen_anywhere": {
+          "type": "boolean",
+          "title": "Listen from anywhere",
+          "default": true,
+          "description": "Navidrome gets a YoLab address you can open from any network. Off, it is reachable at home only."
+        },
+        "tailscale": {
+          "$ref": "chart:navidrome#/properties/config/properties/tailscale_enabled",
+          "title": "Listen over Tailscale",
+          "description": "Navidrome also joins your tailnet, so your own devices reach it privately."
+        },
+        "manage_anywhere": {
+          "type": "boolean",
+          "title": "Manage downloads from anywhere",
+          "default": true,
+          "description": "Lidarr and the download client get YoLab addresses too. Off, you manage them at home only."
         }
       },
       "dependencies": {
@@ -31,14 +46,7 @@
           "oneOf": [
             {
               "properties": {
-                "download_client": { "const": "qbittorrent" },
-                "qbittorrent": { "$ref": "chart:qbittorrent#/properties/config", "title": "qBittorrent", "description": "Downloads what Lidarr asks for.", "x-yolab-omit": ["media_folder"] }
-              }
-            },
-            {
-              "properties": {
-                "download_client": { "const": "transmission" },
-                "transmission": { "$ref": "chart:transmission#/properties/config", "title": "Transmission", "description": "Downloads what Lidarr asks for.", "x-yolab-omit": ["media_folder"] }
+                "download_client": { "enum": ["qbittorrent", "transmission", "none"] }
               }
             },
             {
@@ -53,8 +61,21 @@
                 }
               },
               "required": ["existing_client"]
-            },
-            { "properties": { "download_client": { "const": "none" } } }
+            }
+          ]
+        },
+        "tailscale": {
+          "oneOf": [
+            { "properties": { "tailscale": { "const": false } } },
+            {
+              "properties": {
+                "tailscale": { "const": true },
+                "tailscale_auth_key": {
+                  "$ref": "chart:navidrome#/properties/config/dependencies/tailscale_enabled/oneOf/1/properties/tailscale_auth_key"
+                }
+              },
+              "required": ["tailscale_auth_key"]
+            }
           ]
         }
       }

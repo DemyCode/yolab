@@ -2,5 +2,8 @@ config:
   models_from: new
   existing_ollama: ""
   ollama_address: ""
+  chat_anywhere: true
+  tailscale: false
+  tailscale_auth_key: ""
 yolab:
   apps: {}

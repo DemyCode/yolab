@@ -2,7 +2,7 @@ apiVersion: v2
 name: music
 description: Navidrome to listen, Lidarr to find albums and a download client, sharing one music folder.
 type: application
-version: 0.1.1
+version: 0.1.2
 
 annotations:
   yolab.io/kind: group

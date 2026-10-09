@@ -1,29 +1,34 @@
 {{- $c := .Values.config }}
-{{- $shared := dict "media_folder" $c.media_folder }}
+{{- $folder := dict "media_folder" $c.media_folder }}
+{{- $manage := dict "yolab_enabled" $c.manage_anywhere }}
+{{- $watch := dict "yolab_enabled" $c.watch_anywhere "tailscale_enabled" $c.tailscale }}
+{{- if $c.tailscale }}
+{{- $_ := set $watch "tailscale_auth_key" $c.tailscale_auth_key }}
+{{- end }}
 apiVersion: yolab.io/v1
 kind: App
 name: jellyfin
 chart: jellyfin
 main: true
-values: {{ merge (dict) $shared ($c.jellyfin | default dict) | toJson }}
+values: {{ merge (dict "hardware_transcoding" $c.hardware_transcoding) $folder $watch | toJson }}
 ---
 apiVersion: yolab.io/v1
 kind: App
 name: sonarr
 chart: sonarr
-values: {{ merge (dict) $shared ($c.sonarr | default dict) | toJson }}
+values: {{ merge (dict) $folder $manage | toJson }}
 ---
 apiVersion: yolab.io/v1
 kind: App
 name: radarr
 chart: radarr
-values: {{ merge (dict) $shared ($c.radarr | default dict) | toJson }}
+values: {{ merge (dict) $folder $manage | toJson }}
 ---
 apiVersion: yolab.io/v1
 kind: App
 name: prowlarr
 chart: prowlarr
-values: {{ $c.prowlarr | default dict | toJson }}
+values: {{ $manage | toJson }}
 {{- if eq $c.download_client "existing" }}
 ---
 apiVersion: yolab.io/v1
@@ -36,7 +41,7 @@ apiVersion: yolab.io/v1
 kind: App
 name: {{ $c.download_client }}
 chart: {{ $c.download_client }}
-values: {{ merge (dict) $shared (index $c $c.download_client | default dict) | toJson }}
+values: {{ merge (dict) $folder $manage | toJson }}
 {{- end }}
 {{- if $c.requests }}
 ---
@@ -44,7 +49,7 @@ apiVersion: yolab.io/v1
 kind: App
 name: jellyseerr
 chart: jellyseerr
-values: {{ $c.jellyseerr | default dict | toJson }}
+values: {{ $watch | toJson }}
 {{- end }}
 {{- if $c.subtitles }}
 ---
@@ -52,5 +57,5 @@ apiVersion: yolab.io/v1
 kind: App
 name: bazarr
 chart: bazarr
-values: {{ merge (dict) $shared ($c.bazarr | default dict) | toJson }}
+values: {{ merge (dict) $folder $manage | toJson }}
 {{- end }}

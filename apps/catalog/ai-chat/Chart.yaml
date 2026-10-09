@@ -2,7 +2,7 @@ apiVersion: v2
 name: ai-chat
 description: Open WebUI connected to an Ollama, installed with it, one you already run, or one somewhere else.
 type: application
-version: 0.1.1
+version: 0.1.2
 
 annotations:
   yolab.io/kind: group

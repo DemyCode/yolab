@@ -1,0 +1,7 @@
+config:
+  media_folder: shared
+  watch_anywhere: false
+  manage_anywhere: false
+  tailscale: true
+  tailscale_auth_key: tskey-auth-test
+  hardware_transcoding: false

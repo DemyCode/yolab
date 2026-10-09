@@ -1,17 +1,22 @@
 {{- $c := .Values.config }}
-{{- $shared := dict "media_folder" $c.music_folder }}
+{{- $folder := dict "media_folder" $c.music_folder }}
+{{- $manage := dict "yolab_enabled" $c.manage_anywhere }}
+{{- $listen := dict "music_folder" $c.music_folder "yolab_enabled" $c.listen_anywhere "tailscale_enabled" $c.tailscale }}
+{{- if $c.tailscale }}
+{{- $_ := set $listen "tailscale_auth_key" $c.tailscale_auth_key }}
+{{- end }}
 apiVersion: yolab.io/v1
 kind: App
 name: navidrome
 chart: navidrome
 main: true
-values: {{ merge (dict "music_folder" $c.music_folder) ($c.navidrome | default dict) | toJson }}
+values: {{ $listen | toJson }}
 ---
 apiVersion: yolab.io/v1
 kind: App
 name: lidarr
 chart: lidarr
-values: {{ merge (dict) $shared ($c.lidarr | default dict) | toJson }}
+values: {{ merge (dict) $folder $manage | toJson }}
 {{- if eq $c.download_client "existing" }}
 ---
 apiVersion: yolab.io/v1
@@ -24,5 +29,5 @@ apiVersion: yolab.io/v1
 kind: App
 name: {{ $c.download_client }}
 chart: {{ $c.download_client }}
-values: {{ merge (dict) $shared (index $c $c.download_client | default dict) | toJson }}
+values: {{ merge (dict) $folder $manage | toJson }}
 {{- end }}

@@ -4,7 +4,7 @@ apiVersion: yolab.io/v1
 kind: App
 name: ollama
 chart: ollama
-values: {{ $c.ollama | default dict | toJson }}
+values: {{ dict "yolab_enabled" false | toJson }}
 ---
 {{- else if eq $c.models_from "existing" }}
 apiVersion: yolab.io/v1
@@ -17,9 +17,13 @@ use: {{ $c.existing_ollama | quote }}
 {{- if eq $c.models_from "elsewhere" }}
 {{- $ollama = dict "from" "" "api" $c.ollama_address }}
 {{- end }}
+{{- $chat := dict "ollama" $ollama "yolab_enabled" $c.chat_anywhere "tailscale_enabled" $c.tailscale }}
+{{- if $c.tailscale }}
+{{- $_ := set $chat "tailscale_auth_key" $c.tailscale_auth_key }}
+{{- end }}
 apiVersion: yolab.io/v1
 kind: App
 name: open-webui
 chart: open-webui
 main: true
-values: {{ merge (dict "ollama" $ollama) (index $c "open-webui" | default dict) | toJson }}
+values: {{ $chat | toJson }}
