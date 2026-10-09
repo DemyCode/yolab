@@ -876,6 +876,57 @@ def check_private_access(app, docs, offered, fail):
             )
 
 
+API_KEY_GUARD = '@yolab_without_api_key not header Authorization "Bearer {$YOLAB_API_KEY}"'
+
+
+def offers_api_key(schema):
+    config = ((schema.get("properties") or {}).get("config") or {}).get(
+        "properties"
+    ) or {}
+    return "api_key_enabled" in config
+
+
+def check_api_key_offer(app, schema, fail):
+    if not offers_api_key(schema):
+        return
+    props = schema.get("properties") or {}
+    config = (props.get("config") or {}).get("properties") or {}
+    if "auth_enabled" in config:
+        fail(
+            app,
+            "offers an API key next to an Authelia login: the login's site has "
+            "no API key guard",
+        )
+    out = ((props.get("outputs") or {}).get("properties") or {}).get("api_key")
+    if out is None:
+        fail(app, "offers an API key but has no api_key output, so nobody can read it")
+        return
+    if out.get("format") != "secret":
+        fail(app, "outputs.api_key must be shown as a secret")
+    when = ((out.get("when") or {}).get("properties") or {}).get("api_key_enabled")
+    if when != {"const": True}:
+        fail(app, "outputs.api_key must only show when api_key_enabled is on")
+
+
+def check_api_key(app, docs, upstream, fail):
+    caddyfile = configmap_data(docs, "-caddy", "Caddyfile") or ""
+    sites = len(re.findall(rf"reverse_proxy {re.escape(upstream)}(\s|$)", caddyfile))
+    guarded = caddyfile.count(API_KEY_GUARD)
+    inits = [
+        c["name"]
+        for _, spec in pod_specs(docs)
+        for c in spec.get("initContainers") or []
+    ]
+    if "api-key-init" not in inits:
+        fail(app, "the API key is on but no api-key-init container creates it")
+    if sites == 0 or guarded < sites:
+        fail(
+            app,
+            f"the API key is on but only {guarded} of the {sites} sites Caddy "
+            f"proxies check it",
+        )
+
+
 EXPLORER_WAYS = {
     "file_explorer_tor_enabled": {
         "container": "file-explorer-tor",
@@ -1347,6 +1398,13 @@ def main(argv):
                 values_path.read_text() if values_path.exists() else "",
                 fail,
             )
+            check_api_key_offer(app, schema, fail)
+            values = yaml.safe_load(values_path.read_text()) if values_path.exists() else {}
+            upstream = (((values or {}).get("yolab") or {}).get("gateway") or {}).get(
+                "upstream"
+            ) or ""
+            if offers_api_key(schema):
+                check_api_key(app, docs, upstream, fail)
             offered = offered_private_access(schema)
             if offered:
                 extra = {}
@@ -1363,6 +1421,8 @@ def main(argv):
                     variant_docs = [d for d in yaml.safe_load_all(variant) if d]
                     check(app, variant_docs, fail, text, schema)
                     check_private_access(app, variant_docs, offered, fail)
+                    if offers_api_key(schema):
+                        check_api_key(app, variant_docs, upstream, fail)
                 config_props = (
                     (schema.get("properties") or {}).get("config") or {}
                 ).get("properties") or {}

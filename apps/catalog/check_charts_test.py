@@ -1971,3 +1971,74 @@ class OffersFileExplorer(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def api_key_failures(s):
+    found = []
+    check_charts.check_api_key_offer("demo", s, lambda app, msg: found.append(msg))
+    return found
+
+
+API_KEY_OUTPUT = logs(
+    r"YOLAB_OUTPUT api_key (\S+)",
+    format="secret",
+    when={"properties": {"api_key_enabled": {"const": True}}},
+)
+
+
+class ApiKeyOffer(unittest.TestCase):
+    def test_an_offered_key_must_be_readable_as_a_secret_only_while_on(self):
+        on = {"api_key_enabled": {"type": "boolean", "default": True}}
+        self.assertEqual(api_key_failures(schema(config=on, outputs={"api_key": API_KEY_OUTPUT})), [])
+        self.assertTrue(api_key_failures(schema(config=on, outputs={})))
+        shown = dict(API_KEY_OUTPUT, format="text")
+        self.assertTrue(api_key_failures(schema(config=on, outputs={"api_key": shown})))
+
+    def test_a_key_next_to_an_authelia_login_is_refused(self):
+        config = {
+            "api_key_enabled": {"type": "boolean", "default": True},
+            "auth_enabled": {"type": "boolean", "default": False},
+        }
+        found = api_key_failures(schema(config=config, outputs={"api_key": API_KEY_OUTPUT}))
+        self.assertTrue(any("Authelia" in f for f in found))
+
+
+class OllamaApiKey(RenderedChart):
+    CHART = "ollama"
+    UPSTREAM = "ollama:11434"
+
+    def caddyfile(self, docs):
+        return check_charts.configmap_data(docs, "-caddy", "Caddyfile") or ""
+
+    def failures(self, docs):
+        found = []
+        check_charts.check_api_key("ollama", docs, self.UPSTREAM, lambda a, m: found.append(m))
+        return found
+
+    def test_the_key_is_required_by_default_on_the_yolab_address(self):
+        docs = self.docs()
+        self.assertIn(check_charts.API_KEY_GUARD, self.caddyfile(docs))
+        self.assertEqual(self.failures(docs), [])
+
+    def test_every_way_in_requires_the_key(self):
+        docs = self.docs(check_charts.PRIVATE_ACCESS_ON["tailscale_enabled"])
+        caddy = self.caddyfile(docs)
+        self.assertEqual(caddy.count(check_charts.API_KEY_GUARD), 2)
+        self.assertEqual(self.failures(docs), [])
+
+    def test_switching_the_key_off_removes_its_guard_and_its_init(self):
+        docs = self.docs({"config.api_key_enabled": "false"})
+        self.assertNotIn(check_charts.API_KEY_GUARD, self.caddyfile(docs))
+        inits = [
+            c["name"]
+            for spec in self.deployments(docs).values()
+            for c in spec.get("initContainers") or []
+        ]
+        self.assertNotIn("api-key-init", inits)
+
+    def test_the_key_is_kept_on_the_apps_volume_so_restarts_keep_it(self):
+        gateway = self.deployments(self.docs())["gateway"]
+        init = next(c for c in gateway["initContainers"] if c["name"] == "api-key-init")
+        mount = next(m for m in init["volumeMounts"] if m["mountPath"] == "/api-key")
+        self.assertEqual(mount["name"], "data")
+        self.assertTrue(mount["subPath"].endswith("/api-key"))

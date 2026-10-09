@@ -211,6 +211,7 @@ data:
     }
     {{- else }}
     {$YOLAB_FQDN} {
+      {{- include "yolab-common.apiKey.guard" . | nindent 6 }}
       reverse_proxy {{ required "yolab.gateway.upstream is required when no caddyfile is given" (((.Values.yolab).gateway).upstream) }}
     }
     {{- end }}

@@ -27,6 +27,12 @@
           "default": false,
           "description": "A password-protected file manager for this app's own data on its own address: browse, download, upload, rename and delete files without needing a terminal. Folders holding a database server (Postgres, MariaDB, Redis, MongoDB, MinIO) always stay read-only."
         },
+        "api_key_enabled": {
+          "type": "boolean",
+          "title": "API key",
+          "default": true,
+          "description": "Only requests that send this app's API key reach Ollama, on its YoLab address and on Tailscale. The key is shown below once installed: use it with any OpenAI-compatible client, such as opencode, as the API key with the API base URL. Other apps on this cluster that link to Ollama never need it."
+        },
         "tailscale_enabled": {
           "type": "boolean",
           "title": "Tailscale",
@@ -343,6 +349,39 @@
                 "const": true
               },
               "file_explorer_tailscale_enabled": {
+                "const": true
+              }
+            }
+          }
+        },
+        "api_key": {
+          "type": "string",
+          "title": "API key",
+          "format": "secret",
+          "source": {
+            "logs": "YOLAB_OUTPUT api_key (\\S+)"
+          },
+          "when": {
+            "properties": {
+              "api_key_enabled": {
+                "const": true
+              }
+            }
+          }
+        },
+        "api_url": {
+          "type": "string",
+          "title": "API base URL",
+          "format": "uri",
+          "source": {
+            "logs": "YOLAB_OUTPUT api_url (\\S+)"
+          },
+          "when": {
+            "properties": {
+              "api_key_enabled": {
+                "const": true
+              },
+              "yolab_enabled": {
                 "const": true
               }
             }

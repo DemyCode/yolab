@@ -12,3 +12,6 @@ yolab:
   serviceName: ''
   gateway:
     upstream: ollama:11434
+  apiKey:
+    offered: true
+    path: /v1

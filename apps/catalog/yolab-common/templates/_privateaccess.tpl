@@ -225,6 +225,7 @@ data:
 {{- if and $upstream (eq (include "yolab-common.tailscale.enabled" .) "true") }}
 http://:{{ include "yolab-common.tailscale.port" . }} {
   bind 127.0.0.1
+  {{- include "yolab-common.apiKey.guard" . | nindent 2 }}
   reverse_proxy {{ $upstream }} {
     header_up X-Forwarded-Proto https
   }
@@ -233,6 +234,7 @@ http://:{{ include "yolab-common.tailscale.port" . }} {
 {{- if and $upstream (eq (include "yolab-common.tor.enabled" .) "true") }}
 http://:{{ include "yolab-common.tor.port" . }} {
   bind 127.0.0.1
+  {{- include "yolab-common.apiKey.guard" . | nindent 2 }}
   reverse_proxy {{ $upstream }}
 }
 {{- end }}
