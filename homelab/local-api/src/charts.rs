@@ -154,8 +154,9 @@ async fn pull_into<H: Host>(
     entry: &CatalogEntry,
 ) -> anyhow::Result<()> {
     let reference = format!("{}/{}", registry.trim_end_matches('/'), entry.name);
-    let _ = tokio::fs::remove_dir_all(dir.join(&entry.name)).await;
-    let untar_dir = dir.to_string_lossy();
+    tokio::fs::create_dir_all(dir).await?;
+    let staging = tempfile::tempdir_in(dir)?;
+    let untar_dir = staging.path().to_string_lossy();
     let out = host
         .run_cmd_bounded(
             "helm",
@@ -173,6 +174,11 @@ async fn pull_into<H: Host>(
         .await?;
     if !out.success {
         anyhow::bail!("pull {reference}:{}: {}", entry.version, out.stderr.trim());
+    }
+    let pulled = staging.path().join(&entry.name);
+    if pulled.join("Chart.yaml").is_file() {
+        let _ = tokio::fs::remove_dir_all(dir.join(&entry.name)).await;
+        tokio::fs::rename(&pulled, dir.join(&entry.name)).await?;
     }
     Ok(())
 }
@@ -636,6 +642,30 @@ mod tests {
             assert!(host.ran("helm pull oci://ghcr.io/x/charts/wiki --version 2.0.0"));
             assert!(!host.ran("charts/notes"));
             assert!(!host.ran("charts/yolab-common"));
+        }
+
+        #[tokio::test]
+        async fn a_version_the_registry_does_not_have_leaves_the_last_good_copy() {
+            let (_server, repo) = catalog(
+                "registry: oci://ghcr.io/x/charts\ncharts:\n  - name: notes\n    version: \"2.0.0\"\n",
+            )
+            .await;
+            let cache = tempfile::tempdir().unwrap();
+            let dir = cache.path().join(&repo.name).join("notes");
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("Chart.yaml"), "name: notes\nversion: 1.0.0\n").unwrap();
+            let host = FakeHost::new().fail("helm pull", "notes:2.0.0: not found");
+            assert_eq!(sync_repo(&host, cache.path(), &repo).await.unwrap(), 0);
+            assert_eq!(
+                std::fs::read_to_string(dir.join("Chart.yaml")).unwrap(),
+                "name: notes\nversion: 1.0.0\n"
+            );
+            let leftovers: Vec<_> = std::fs::read_dir(cache.path().join(&repo.name))
+                .unwrap()
+                .flatten()
+                .map(|e| e.file_name())
+                .collect();
+            assert_eq!(leftovers, vec!["notes"]);
         }
 
         #[test]
