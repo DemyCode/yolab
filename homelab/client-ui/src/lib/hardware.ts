@@ -7,6 +7,7 @@ const ARCH_LABELS: Record<string, string> = {
 
 const ACCELERATOR_LABELS: Record<string, string> = {
   nvidia: "NVIDIA GPU",
+  "nvidia-legacy": "Older NVIDIA GPU · games only",
   amd: "AMD GPU",
   intel: "Intel GPU",
   cpu: "CPU only",
@@ -14,6 +15,7 @@ const ACCELERATOR_LABELS: Record<string, string> = {
 
 export function hardwareLabel(h: NodeHardware | undefined): string | null {
   if (!h?.accelerator) return null;
+  if (h.accelerator === "cpu" && h.video_gpu) return "GPU · video only";
   return ACCELERATOR_LABELS[h.accelerator] ?? h.accelerator;
 }
 

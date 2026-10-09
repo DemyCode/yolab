@@ -9,7 +9,9 @@ export interface NodeInfo {
 
 export interface NodeHardware {
   arch?: string | null;
-  accelerator: "nvidia" | "amd" | "intel" | "cpu" | null;
+  accelerator:
+    "nvidia" | "nvidia-legacy" | "amd" | "vulkan" | "intel" | "cpu" | null;
+  video_gpu?: boolean;
   vram_gib: number | null;
   ram_gib: number | null;
   game_input: boolean;

@@ -811,6 +811,14 @@ class SteamHeadless(RenderedChart):
             {"yolab.io/uinput": "1", "yolab.io/dri": "1"},
         )
 
+    def test_an_older_nvidia_card_is_pinned_and_used_through_its_cdi_device(self):
+        spec = self.game(check_charts.VARIANTS["steam-headless"][2])
+        self.assertEqual(spec["nodeSelector"]["kubernetes.io/hostname"], "gt710")
+        self.assertEqual(
+            spec["containers"][0]["resources"]["limits"],
+            {"yolab.io/uinput": "1", "nvidia.com/gpu-all": "1"},
+        )
+
     def test_without_a_known_gpu_it_still_lands_where_game_input_exists(self):
         spec = self.game()
         self.assertEqual(

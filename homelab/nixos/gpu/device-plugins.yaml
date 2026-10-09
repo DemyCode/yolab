@@ -17,8 +17,18 @@ spec:
         app.kubernetes.io/name: yolab-nvidia-cdi-plugin
     spec:
       priorityClassName: system-node-critical
-      nodeSelector:
-        yolab.io/gpu-nvidia: "true"
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: yolab.io/gpu-nvidia
+                operator: In
+                values: ["true"]
+            - matchExpressions:
+              - key: yolab.io/gpu-nvidia-legacy
+                operator: In
+                values: ["true"]
       tolerations:
       - operator: Exists
       containers:

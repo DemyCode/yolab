@@ -6,6 +6,7 @@ use serde::Serialize;
 use serde_json::{json, Value};
 
 pub const LABEL_NVIDIA: &str = "yolab.io/gpu-nvidia";
+pub const LABEL_NVIDIA_LEGACY: &str = "yolab.io/gpu-nvidia-legacy";
 pub const LABEL_AMD: &str = "yolab.io/gpu-amd";
 pub const LABEL_AMD_ROCM: &str = "yolab.io/gpu-amd-rocm";
 pub const LABEL_INTEL: &str = "yolab.io/gpu-intel";
@@ -20,6 +21,7 @@ const NVIDIA_CDI_SPEC: &str = "var/run/cdi/nvidia-container-toolkit.json";
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct Inventory {
     pub nvidia: bool,
+    pub nvidia_legacy: bool,
     pub amd: bool,
     pub amd_rocm: bool,
     pub amd_vulkan: bool,
@@ -40,6 +42,8 @@ impl Inventory {
             "intel"
         } else if self.amd_vulkan {
             "vulkan"
+        } else if self.nvidia_legacy {
+            "nvidia-legacy"
         } else {
             "cpu"
         }
@@ -78,8 +82,11 @@ fn gfx_target_versions(root: &Path) -> Option<Vec<u64>> {
 pub fn probe(root: &Path) -> Inventory {
     let drm = drm_devices(root);
     let amd_vulkan = drm.iter().any(|d| d.driver == "amdgpu" && d.render_node);
+    let nvidia_driven =
+        root.join(NVIDIA_CDI_SPEC).is_file() && drm.iter().any(|d| d.driver == "nvidia");
     Inventory {
-        nvidia: root.join(NVIDIA_CDI_SPEC).is_file() && nvidia_serves_apps(&drm),
+        nvidia: nvidia_driven && nvidia_serves_apps(&drm),
+        nvidia_legacy: nvidia_driven && !nvidia_serves_apps(&drm),
         amd: amd_vulkan || drm.iter().any(|d| d.driver == "radeon" && d.render_node),
         amd_vulkan,
         amd_rocm: amd_vulkan
@@ -192,6 +199,7 @@ pub fn labels(inv: &Inventory) -> BTreeMap<&'static str, Option<String>> {
     let flag = |on: bool| on.then(|| "true".to_string());
     BTreeMap::from([
         (LABEL_NVIDIA, flag(inv.nvidia)),
+        (LABEL_NVIDIA_LEGACY, flag(inv.nvidia_legacy)),
         (LABEL_AMD, flag(inv.amd)),
         (LABEL_AMD_ROCM, flag(inv.amd_rocm)),
         (LABEL_INTEL, flag(inv.intel)),
@@ -232,6 +240,7 @@ pub fn label_patch(
 pub struct NodeHardware {
     pub arch: Option<String>,
     pub accelerator: Option<String>,
+    pub video_gpu: bool,
     pub vram_gib: Option<u64>,
     pub ram_gib: Option<u64>,
     pub game_input: bool,
@@ -244,6 +253,7 @@ impl NodeHardware {
         NodeHardware {
             arch: get("kubernetes.io/arch").map(String::from),
             accelerator: get(LABEL_ACCELERATOR).map(String::from),
+            video_gpu: get(LABEL_INTEL) == Some("true") || get(LABEL_AMD) == Some("true"),
             vram_gib: number(LABEL_VRAM_GIB),
             ram_gib: number(LABEL_RAM_GIB),
             game_input: get(LABEL_GAME_INPUT) == Some("true"),
@@ -392,12 +402,19 @@ mod tests {
             .file(NVIDIA_CDI_SPEC, "{}");
         let inv = probe(gt710.path());
         assert!(!inv.nvidia);
-        assert_eq!(inv.accelerator(), "cpu");
+        assert!(inv.nvidia_legacy);
+        assert_eq!(inv.accelerator(), "nvidia-legacy");
+        assert_eq!(
+            labels(&inv).get(LABEL_NVIDIA_LEGACY).cloned().flatten().as_deref(),
+            Some("true")
+        );
+        assert_eq!(labels(&inv).get(LABEL_NVIDIA).cloned().flatten(), None);
 
         let gtx1080 = Machine::new()
             .pci("card0", "nvidia", "0x1b80")
             .file(NVIDIA_CDI_SPEC, "{}");
         assert_eq!(probe(gtx1080.path()).accelerator(), "nvidia");
+        assert!(!probe(gtx1080.path()).nvidia_legacy);
     }
 
     #[test]
@@ -537,6 +554,18 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(amd_and_intel.accelerator(), "amd");
+        let legacy_and_intel = Inventory {
+            nvidia_legacy: true,
+            intel: true,
+            intel_compute: true,
+            ..Default::default()
+        };
+        assert_eq!(legacy_and_intel.accelerator(), "intel");
+        let legacy = Inventory {
+            nvidia_legacy: true,
+            ..Default::default()
+        };
+        assert_eq!(legacy.accelerator(), "nvidia-legacy");
         assert_eq!(Inventory::default().accelerator(), "cpu");
     }
 
@@ -584,6 +613,25 @@ mod tests {
     }
 
     #[test]
+    fn a_haswell_machine_reads_back_as_a_video_only_gpu() {
+        let inv = Inventory {
+            intel: true,
+            ..Default::default()
+        };
+        let read = |inv: &Inventory| {
+            let labels: serde_json::Map<String, Value> = labels(inv)
+                .into_iter()
+                .filter_map(|(k, v)| Some((k.to_string(), Value::String(v?))))
+                .collect();
+            NodeHardware::from_labels(&Value::Object(labels))
+        };
+        let haswell = read(&inv);
+        assert_eq!(haswell.accelerator.as_deref(), Some("cpu"));
+        assert!(haswell.video_gpu);
+        assert!(!read(&Inventory::default()).video_gpu);
+    }
+
+    #[test]
     fn a_node_reads_back_the_hardware_its_labels_describe() {
         let inv = Inventory {
             amd: true,
@@ -603,6 +651,7 @@ mod tests {
             NodeHardware {
                 arch: Some("arm64".into()),
                 accelerator: Some("amd".into()),
+                video_gpu: true,
                 vram_gib: Some(24),
                 ram_gib: Some(64),
                 game_input: true,

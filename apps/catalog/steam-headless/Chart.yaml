@@ -3,7 +3,7 @@ name: steam-headless
 description: "Your games on any screen: Steam on a GPU machine, streamed to Moonlight or a browser"
 home: https://github.com/Steam-Headless/docker-steam-headless
 type: application
-version: 0.1.12
+version: 0.1.13
 appVersion: "2.44.20261004.1"
 
 dependencies:

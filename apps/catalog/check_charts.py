@@ -106,6 +106,7 @@ VARIANTS = {
     "steam-headless": [
         {"machine.name": "gpu-box", "machine.accelerator": "nvidia"},
         {"machine.name": "nuc", "machine.accelerator": "intel"},
+        {"machine.name": "gt710", "machine.accelerator": "nvidia-legacy"},
     ],
 }
 

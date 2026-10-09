@@ -14,6 +14,15 @@ describe("hardwareLabel", () => {
     expect(hardwareLabel({ ...machine, accelerator: "cpu" })).toBe("CPU only");
   });
 
+  it("names a GPU that apps cannot compute on instead of calling the machine CPU only", () => {
+    expect(hardwareLabel({ ...machine, accelerator: "nvidia-legacy" })).toBe(
+      "Older NVIDIA GPU · games only",
+    );
+    expect(
+      hardwareLabel({ ...machine, accelerator: "cpu", video_gpu: true }),
+    ).toBe("GPU · video only");
+  });
+
   it("says nothing for a machine that was never inspected rather than claiming CPU only", () => {
     expect(hardwareLabel(undefined)).toBeNull();
     expect(hardwareLabel({ ...machine, accelerator: null })).toBeNull();
