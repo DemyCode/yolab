@@ -162,14 +162,15 @@ jobs:
           push: true
           tags: ghcr.io/demycode/generic-cdi-plugin:7d12b0c
 
-  charts:
+  charts-library:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
       packages: write
-    concurrency:
-      group: charts-${{ github.ref }}
-      cancel-in-progress: false
+    outputs:
+      registry: ${{ steps.registry.outputs.registry }}
+      suffix: ${{ steps.registry.outputs.suffix }}
+      lib_version: ${{ steps.library.outputs.lib_version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -181,17 +182,20 @@ jobs:
           version: v3.16.3
 
       - name: Resolve registry and version suffix
+        id: registry
         run: |
           set -euo pipefail
           owner=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
-          echo "REGISTRY=oci://ghcr.io/${owner}/charts" >> "$GITHUB_ENV"
-
+          registry="oci://ghcr.io/${owner}/charts"
           if [ "${{ github.ref }}" = "refs/heads/main" ]; then
-            echo "SUFFIX=" >> "$GITHUB_ENV"
+            suffix=""
           else
-            tag=$(echo '${{ github.ref_name }}' | sed 's|[^0-9A-Za-z]|-|g')
-            echo "SUFFIX=-${tag}" >> "$GITHUB_ENV"
+            suffix="-$(echo '${{ github.ref_name }}' | sed 's|[^0-9A-Za-z]|-|g')"
           fi
+          echo "REGISTRY=${registry}" >> "$GITHUB_ENV"
+          echo "SUFFIX=${suffix}" >> "$GITHUB_ENV"
+          echo "registry=${registry}" >> "$GITHUB_OUTPUT"
+          echo "suffix=${suffix}" >> "$GITHUB_OUTPUT"
 
       - name: Log in to GHCR
         run: echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
@@ -239,12 +243,14 @@ jobs:
           echo "every changed chart bumped its version"
 
       - name: Publish the library chart
+        id: library
         run: |
           set -euo pipefail
           mkdir -p /tmp/pkg
           base=$(grep '^version:' apps/catalog/yolab-common/Chart.yaml | head -1 | awk '{print $2}' | tr -d '"')
           LIB_VERSION="${base}${SUFFIX}"
           echo "LIB_VERSION=${LIB_VERSION}" >> "$GITHUB_ENV"
+          echo "lib_version=${LIB_VERSION}" >> "$GITHUB_OUTPUT"
           helm package apps/catalog/yolab-common --version "${LIB_VERSION}" --destination /tmp/pkg
           for attempt in 1 2 3 4 5; do
             helm push /tmp/pkg/yolab-common-*.tgz "${REGISTRY}" && break
@@ -264,16 +270,53 @@ jobs:
           }
           rm -f /tmp/pkg/yolab-common-*.tgz
 
-      - name: Lint, package and push app charts
-        id: push
+
+  charts:
+    name: charts (${{ matrix.shard }}/8)
+    needs: charts-library
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+    env:
+      REGISTRY: ${{ needs.charts-library.outputs.registry }}
+      SUFFIX: ${{ needs.charts-library.outputs.suffix }}
+      LIB_VERSION: ${{ needs.charts-library.outputs.lib_version }}
+      SHARD: ${{ matrix.shard }}
+      SHARDS: 8
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Helm
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v3.16.3
+
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Lint, package and push this shard's charts
         run: |
           set -uo pipefail
+          mkdir -p /tmp/pkg
           failed=""
+          index=0
           for chart in apps/catalog/*/; do
             [ -f "$chart/Chart.yaml" ] || continue
             grep -q '^type: library' "$chart/Chart.yaml" && continue
+            mine=$((index % SHARDS))
+            index=$((index + 1))
+            [ "$mine" -eq "$SHARD" ] || continue
             name=$(grep '^name:' "$chart/Chart.yaml" | head -1 | awk '{print $2}')
             base=$(grep '^version:' "$chart/Chart.yaml" | head -1 | awk '{print $2}' | tr -d '"')
+            if helm show chart "${REGISTRY}/${name}" --version "${base}${SUFFIX}" >/dev/null 2>&1; then
+              echo "${name} ${base}${SUFFIX} is already published"
+              continue
+            fi
 
             # Point the dependency at the version just published. Without this a branch
             # build vendors main's library and silently tests the wrong thing.
@@ -289,8 +332,6 @@ jobs:
             # hook is what does that (see yolab-common/templates/_uninstall.tpl). A
             # chart missing this leaks an orphaned tunnel on the platform every time
             # it's removed, silently, with nothing in the uninstall response to say so.
-            # A group (yolab.io/kind: group) is never installed itself: it only names
-            # the apps to install, and each of those carries its own hook.
             grep -q "yolab.io/kind: group" "$chart/Chart.yaml" \
               || grep -rq "yolab-common.uninstallHook" "$chart" \
               || { failed="$failed $name(no-uninstall-hook)"; continue; }
@@ -333,10 +374,29 @@ jobs:
             [ -n "$pushed" ] || failed="$failed $name"
             sleep 3
           done
-          # The Chart.yaml edits above are build-time only; never let them reach a commit.
           git checkout -- apps/catalog
-          echo "failed=${failed}" >> "$GITHUB_OUTPUT"
-          [ -z "$failed" ] || echo "::warning::failed:${failed}"
+          if [ -n "$failed" ]; then
+            echo "::error::charts that did not publish:${failed}"
+            exit 1
+          fi
+
+  charts-catalog:
+    needs: [charts-library, charts]
+    if: always() && needs.charts-library.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: charts-catalog-${{ github.ref }}
+      cancel-in-progress: false
+    env:
+      REGISTRY: ${{ needs.charts-library.outputs.registry }}
+      SUFFIX: ${{ needs.charts-library.outputs.suffix }}
+      LIB_VERSION: ${{ needs.charts-library.outputs.lib_version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
 
       - name: Generate the catalog manifest
         run: |
@@ -415,13 +475,11 @@ jobs:
           done
           [ -n "$pushed" ] || { echo "::error::could not push the catalog manifest"; exit 1; }
 
+
       - name: Report unpublished charts
-        if: steps.push.outputs.failed != ''
+        if: needs.charts.result != 'success'
         run: |
-          # Deliberately last: on main the manifest for everything that DID publish is
-          # already committed, so a partial run still moves the catalog forward and the
-          # next run retries the rest. Failing here only makes the gap visible.
-          echo "charts that did not publish:${{ steps.push.outputs.failed }}"
+          echo "some chart shards failed; their charts are left out of the catalog until a run publishes them"
           exit 1
 
   build-iso:
