@@ -121,7 +121,16 @@ async fn retire_rook(client: &Client) -> Result<Option<String>> {
         return Ok(Some("waiting for Rook's CSI pods to go".into()));
     }
 
-    let clusters = list_or_empty(client, "ceph.rook.io/v1", "CephCluster", Some(NS)).await?;
+    let cluster_crd = crate::k8s::cluster_reference(
+        "apiextensions.k8s.io/v1",
+        "CustomResourceDefinition",
+        "cephclusters.ceph.rook.io",
+    );
+    let clusters = if crate::k8s::exists(client, &cluster_crd).await? {
+        list_or_empty(client, "ceph.rook.io/v1", "CephCluster", Some(NS)).await?
+    } else {
+        Vec::new()
+    };
     for cluster in &clusters {
         let name = cluster["metadata"]["name"].as_str().unwrap_or_default();
         let unpinned = json!({
@@ -546,6 +555,31 @@ mod tests {
         let tick = converge(&client).await.unwrap();
         assert!(matches!(tick, Tick::NotYet(ref why) if why.contains("CSI")));
         assert!(patched(&server).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn rooks_records_are_not_listed_once_their_resource_type_is_gone() {
+        let (server, client) = api_server().await;
+        all_nodes_marked(&server).await;
+        absent(&server, CHART).await;
+        absent(&server, OPERATOR).await;
+        for p in [
+            "/apis/apps/v1/namespaces/rook-ceph/daemonsets/csi-cephfsplugin",
+            "/apis/apps/v1/namespaces/rook-ceph/deployments/csi-cephfsplugin-provisioner",
+            "/apis/apps/v1/namespaces/rook-ceph/daemonsets/csi-rbdplugin",
+            "/apis/apps/v1/namespaces/rook-ceph/deployments/csi-rbdplugin-provisioner",
+            "/apis/apiextensions.k8s.io/v1/customresourcedefinitions/cephclusters.ceph.rook.io",
+        ] {
+            absent(&server, p).await;
+        }
+        let _ = converge(&client).await;
+        let asked_rook = server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .any(|r| r.url.path().starts_with("/apis/ceph.rook.io"));
+        assert!(!asked_rook);
     }
 
     #[tokio::test]
