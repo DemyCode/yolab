@@ -1124,7 +1124,9 @@ class PrivateAccessChoice(unittest.TestCase):
         }
         self.assertEqual(both, PRIVATE_BOTH)
 
-    def test_apps_offering_one_way_in_offer_both_except_apis_that_offer_only_tailscale(self):
+    def test_apps_offering_one_way_in_offer_both_except_apis_that_offer_only_tailscale(
+        self,
+    ):
         offers = self.offers()
         partial = {
             a for a, o in offers.items() if o != {"tor_enabled", "tailscale_enabled"}
