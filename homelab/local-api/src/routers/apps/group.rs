@@ -46,7 +46,7 @@ fn schema_loader(
 pub(crate) fn resolved_schema(
     meta: &ChartMeta,
     sources: &[(String, PathBuf)],
-) -> Result<crate::appschema::AppSchema, String> {
+) -> std::result::Result<crate::appschema::AppSchema, String> {
     let loader = schema_loader(sources);
     crate::group_chart::resolve(meta.app.document(), &loader).map(crate::appschema::AppSchema::new)
 }
@@ -115,7 +115,7 @@ async fn render<H: crate::host::Host>(
     dir: &std::path::Path,
     config: &Map<String, Value>,
     apps: &BTreeMap<String, String>,
-) -> Result<Vec<Member>, String> {
+) -> std::result::Result<Vec<Member>, String> {
     let staged = |e: std::io::Error| format!("could not stage the group's values: {e}");
     let values = tempfile::Builder::new()
         .suffix(".json")
@@ -151,7 +151,7 @@ async fn plan_members<H: crate::host::Host>(
     dir: &std::path::Path,
     config: &Map<String, Value>,
     known: &BTreeMap<String, String>,
-) -> Result<(Vec<Member>, BTreeMap<String, String>), String> {
+) -> std::result::Result<(Vec<Member>, BTreeMap<String, String>), String> {
     let first = render(&b.host, name, dir, config, known).await?;
     let mut namespaces = known.clone();
     for member in &first {
@@ -183,7 +183,7 @@ async fn plan_members<H: crate::host::Host>(
 fn check_config(
     app: &crate::appschema::AppSchema,
     config: &Map<String, Value>,
-) -> Result<(), String> {
+) -> std::result::Result<(), String> {
     let validator = jsonschema::validator_for(&app.config())
         .map_err(|e| format!("the group's form is not a valid schema: {e}"))?;
     let instance = Value::Object(config.clone());

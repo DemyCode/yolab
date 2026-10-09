@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { Page } from "@/components/AppShell";
 import { AppIconTile } from "@/components/AppIcon";
@@ -32,22 +32,25 @@ export function GroupInstallPage() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    if (formData === null && config.properties) {
-      setFormData(seedForm(config, null, "fresh", generateSecret));
-    }
-  }, [config, formData]);
-
-  useEffect(() => {
-    if (name === null && groups.data) {
-      setName(
-        groupNameFor(
-          groupId,
-          groups.data.map((g) => g.name),
-        ),
-      );
-    }
-  }, [name, groups.data, groupId]);
+  const seeded = useMemo(
+    () =>
+      config.properties
+        ? seedForm(config, null, "fresh", generateSecret)
+        : null,
+    [config],
+  );
+  const values = formData ?? seeded;
+  const suggested = useMemo(
+    () =>
+      groups.data
+        ? groupNameFor(
+            groupId,
+            groups.data.map((g) => g.name),
+          )
+        : null,
+    [groups.data, groupId],
+  );
+  const chosenName = name ?? suggested;
 
   if (!entry) {
     if (catalog.loading) {
@@ -75,17 +78,17 @@ export function GroupInstallPage() {
   }
 
   async function install() {
-    if (!entry || !name || !formData) return;
+    if (!entry || !chosenName || !values) return;
     setBusy(true);
     setError(null);
     try {
       await api.post("/api/groups", {
         chart: entry.id,
         repo: entry.repo,
-        name,
-        config: formData,
+        name: chosenName,
+        config: values,
       });
-      navigate(`/group/${name}`);
+      navigate(`/group/${chosenName}`);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
       setBusy(false);
@@ -116,7 +119,7 @@ export function GroupInstallPage() {
         >
           <Input
             id="group-name"
-            value={name ?? ""}
+            value={chosenName ?? ""}
             onChange={(e) =>
               setName(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, "-"))
             }
@@ -128,10 +131,10 @@ export function GroupInstallPage() {
         <h2 className="mb-2 px-1 text-sm font-semibold text-fg-muted">
           Your choices
         </h2>
-        {entry.schema && formData ? (
+        {entry.schema && values ? (
           <GroupForm
             schema={entry.schema}
-            formData={formData}
+            formData={values}
             onChange={setFormData}
           />
         ) : (
@@ -148,7 +151,7 @@ export function GroupInstallPage() {
         <Button
           onClick={() => void install()}
           loading={busy}
-          disabled={!name || !formData || !entry.schema}
+          disabled={!chosenName || !values || !entry.schema}
         >
           Install {entry.name}
         </Button>
