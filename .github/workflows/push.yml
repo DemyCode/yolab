@@ -171,7 +171,8 @@ jobs:
       registry: ${{ steps.registry.outputs.registry }}
       suffix: ${{ steps.registry.outputs.suffix }}
       lib_version: ${{ steps.library.outputs.lib_version }}
-      charts: ${{ steps.pending.outputs.charts }}
+      charts_first: ${{ steps.pending.outputs.charts_first }}
+      charts_rest: ${{ steps.pending.outputs.charts_rest }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -288,12 +289,14 @@ jobs:
           done
           echo "${#pending[@]} chart(s) to publish: ${pending[*]:-none}"
           charts=$(printf '%s\n' "${pending[@]}" | jq -R . | jq -sc 'map(select(. != ""))')
-          echo "charts=${charts}" >> "$GITHUB_OUTPUT"
+          echo "charts_first=$(echo "$charts" | jq -c '.[:256]')" >> "$GITHUB_OUTPUT"
+          echo "charts_rest=$(echo "$charts" | jq -c '.[256:]')" >> "$GITHUB_OUTPUT"
+          [ "$(echo "$charts" | jq length)" -le 512 ] || { echo "::error::more than 512 charts to publish at once"; exit 1; }
 
-  charts:
+  charts-first:
     name: chart ${{ matrix.chart }}
     needs: charts-library
-    if: needs.charts-library.outputs.charts != '[]'
+    if: needs.charts-library.outputs.charts_first != '[]'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -302,7 +305,98 @@ jobs:
       fail-fast: false
       max-parallel: 20
       matrix:
-        chart: ${{ fromJSON(needs.charts-library.outputs.charts) }}
+        chart: ${{ fromJSON(needs.charts-library.outputs.charts_first) }}
+    env:
+      REGISTRY: ${{ needs.charts-library.outputs.registry }}
+      SUFFIX: ${{ needs.charts-library.outputs.suffix }}
+      LIB_VERSION: ${{ needs.charts-library.outputs.lib_version }}
+      CHART: apps/catalog/${{ matrix.chart }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Helm
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v3.16.3
+
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Lint, package and push
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/pkg
+          name=$(grep '^name:' "$CHART/Chart.yaml" | head -1 | awk '{print $2}')
+          base=$(grep '^version:' "$CHART/Chart.yaml" | head -1 | awk '{print $2}' | tr -d '"')
+
+          # Point the dependency at the version just published. Without this a branch
+          # build vendors main's library and silently tests the wrong thing.
+          sed -i "/- name: yolab-common/{n;s|version: .*|version: \"${LIB_VERSION}\"|}" "$CHART/Chart.yaml"
+          dep=""
+          for attempt in 1 2 3 4 5; do
+            if helm dependency update "$CHART" >/dev/null; then dep=1; break; fi
+            sleep $((attempt * 15))
+          done
+          [ -n "$dep" ] || { echo "::error::${name}: its dependencies could not be fetched"; exit 1; }
+
+          # Every app must tear its tunnel down on uninstall — the shared pre-delete
+          # hook is what does that (see yolab-common/templates/_uninstall.tpl). A
+          # chart missing this leaks an orphaned tunnel on the platform every time
+          # it's removed, silently, with nothing in the uninstall response to say so.
+          grep -q "yolab.io/kind: group" "$CHART/Chart.yaml" \
+            || grep -rq "yolab-common.uninstallHook" "$CHART" \
+            || { echo "::error::${name} has no uninstall hook"; exit 1; }
+
+          # Charts whose schema marks fields required legitimately fail lint against
+          # default values, so lint with a filled-in set — the point is catching
+          # template errors, not re-testing the schema.
+          helm lint "$CHART" \
+            --set config.password=PlaceholderPw2026 \
+            --set config.admin_password=PlaceholderPw2026 \
+            --set config.admin_email=admin@example.com \
+            --set config.app_secret=PlaceholderPw2026 \
+            --set config.app_key=PlaceholderAppKey2026Placeholder \
+            --set config.api_key=PlaceholderApiKey2026 \
+            --set config.auth_secret_key=PlaceholderAuthSecretKey2026Placeholder \
+            --set config.gateway_token=PlaceholderGatewayToken2026Placeholder \
+            --set config.server_name=example \
+            --set config.server_pass=PlaceholderPw2026 \
+            --set config.vpn_private_key=PlaceholderVpnKey2026= \
+            --set config.vpn_addresses=10.64.0.2/32 \
+            --set 'config.auth_users[0].username=admin' \
+            --set 'config.auth_users[0].password=PlaceholderPw2026' \
+            --set config.desktop_password=PlaceholderPw2026 \
+            --set config.sunshine_password=PlaceholderPw2026 \
+            --set config.subdomain=example
+
+          helm package "$CHART" --version "${base}${SUFFIX}" --destination /tmp/pkg
+
+          # GitHub rate-limits creating new container packages, and each chart is its
+          # own package: the first run of this pushed 7 of 19 before a hard 403. Retry
+          # with backoff.
+          for attempt in 1 2 3 4 5; do
+            # Pushing an existing name:version is a no-op, so retries and re-runs are
+            # both safe. Published versions are never deleted — a restore from an old
+            # backup may need one.
+            if helm push "/tmp/pkg/${name}-${base}${SUFFIX}.tgz" "${REGISTRY}"; then exit 0; fi
+            sleep $((attempt * 15))
+          done
+          echo "::error::${name} ${base}${SUFFIX} could not be pushed"
+          exit 1
+
+  charts-rest:
+    name: chart ${{ matrix.chart }}
+    needs: charts-library
+    if: needs.charts-library.outputs.charts_rest != '[]'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix:
+        chart: ${{ fromJSON(needs.charts-library.outputs.charts_rest) }}
     env:
       REGISTRY: ${{ needs.charts-library.outputs.registry }}
       SUFFIX: ${{ needs.charts-library.outputs.suffix }}
@@ -382,7 +476,7 @@ jobs:
           exit 1
 
   charts-catalog:
-    needs: [charts-library, charts]
+    needs: [charts-library, charts-first, charts-rest]
     if: always() && needs.charts-library.result == 'success'
     runs-on: ubuntu-latest
     permissions:
@@ -478,7 +572,7 @@ jobs:
 
 
       - name: Report unpublished charts
-        if: needs.charts.result == 'failure' || needs.charts.result == 'cancelled'
+        if: contains(fromJSON('["failure", "cancelled"]'), needs.charts-first.result) || contains(fromJSON('["failure", "cancelled"]'), needs.charts-rest.result)
         run: |
           echo "some charts did not publish; they are left out of the catalog until a run publishes them"
           exit 1
