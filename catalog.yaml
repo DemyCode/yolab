@@ -27,7 +27,7 @@ charts:
   - name: agent-zero
     version: "0.1.3"
   - name: ai-chat
-    version: "0.1.0"
+    version: "0.1.1"
   - name: airtrail
     version: "0.1.3"
   - name: akaunting
@@ -363,7 +363,7 @@ charts:
   - name: mosquitto
     version: "0.1.2"
   - name: movies-tv
-    version: "0.1.0"
+    version: "0.1.1"
   - name: mqttx-web
     version: "0.1.2"
   - name: mstream
@@ -371,7 +371,7 @@ charts:
   - name: music-assistant
     version: "0.1.3"
   - name: music
-    version: "0.1.0"
+    version: "0.1.1"
   - name: myspeed
     version: "0.1.2"
   - name: n8n
