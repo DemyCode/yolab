@@ -405,7 +405,11 @@ mod tests {
         assert!(inv.nvidia_legacy);
         assert_eq!(inv.accelerator(), "nvidia-legacy");
         assert_eq!(
-            labels(&inv).get(LABEL_NVIDIA_LEGACY).cloned().flatten().as_deref(),
+            labels(&inv)
+                .get(LABEL_NVIDIA_LEGACY)
+                .cloned()
+                .flatten()
+                .as_deref(),
             Some("true")
         );
         assert_eq!(labels(&inv).get(LABEL_NVIDIA).cloned().flatten(), None);
