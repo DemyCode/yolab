@@ -6,14 +6,15 @@ on:
       - master
       - main
 
+concurrency:
+  group: push-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   configure:
     runs-on: ubuntu-latest
     outputs:
       jobs: ${{ steps.list.outputs.jobs }}
-    concurrency:
-      group: configure-${{ github.ref }}
-      cancel-in-progress: false
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -49,9 +50,6 @@ jobs:
       fail-fast: false
       matrix:
         job: ${{ fromJSON(needs.configure.outputs.jobs) }}
-    concurrency:
-      group: build-${{ github.ref }}-${{ matrix.job.target }}
-      cancel-in-progress: false
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -106,9 +104,6 @@ jobs:
     permissions:
       contents: read
       packages: write
-    concurrency:
-      group: build-images-${{ github.ref }}
-      cancel-in-progress: false
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -167,9 +162,6 @@ jobs:
     permissions:
       contents: read
       packages: write
-    concurrency:
-      group: charts-library-${{ github.ref }}
-      cancel-in-progress: false
     outputs:
       registry: ${{ steps.registry.outputs.registry }}
       suffix: ${{ steps.registry.outputs.suffix }}
@@ -300,9 +292,6 @@ jobs:
     name: chart ${{ matrix.chart }}
     needs: charts-library
     if: needs.charts-library.outputs.charts_first != '[]'
-    concurrency:
-      group: charts-first-${{ matrix.chart }}-${{ github.ref }}
-      cancel-in-progress: false
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -403,9 +392,6 @@ jobs:
       max-parallel: 20
       matrix:
         chart: ${{ fromJSON(needs.charts-library.outputs.charts_rest) }}
-    concurrency:
-      group: charts-rest-${{ matrix.chart }}-${{ github.ref }}
-      cancel-in-progress: false
     env:
       REGISTRY: ${{ needs.charts-library.outputs.registry }}
       SUFFIX: ${{ needs.charts-library.outputs.suffix }}
@@ -490,9 +476,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-    concurrency:
-      group: charts-catalog-${{ github.ref }}
-      cancel-in-progress: false
     env:
       REGISTRY: ${{ needs.charts-library.outputs.registry }}
       SUFFIX: ${{ needs.charts-library.outputs.suffix }}
@@ -600,9 +583,6 @@ jobs:
             config: yolab-installer-aarch64
     permissions:
       contents: write
-    concurrency:
-      group: build-iso-${{ github.ref_name }}-${{ matrix.iso.runner }}
-      cancel-in-progress: false
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -692,9 +672,6 @@ jobs:
 
   format:
     if: startsWith(github.ref, 'refs/heads/')
-    concurrency:
-      group: format-${{ github.ref_name }}
-      cancel-in-progress: false
     runs-on: ubuntu-latest
     permissions:
       contents: write
