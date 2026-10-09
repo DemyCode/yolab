@@ -584,3 +584,45 @@ async fn service_tickets_stay_as_they_are_until_our_csi_driver_has_rolled_out() 
     assert!(matches!(tick, Tick::Idle(ref why) if why.contains("CSI")));
     assert!(!b.host.ran("auth_service_cipher"));
 }
+
+#[tokio::test]
+async fn a_refused_admin_key_is_taken_from_the_first_peer_that_hands_it_over_and_no_other() {
+    let (server, port) = crate::testkit::peer().await;
+    let fresh = aes256k(42);
+    Mock::given(method("GET"))
+        .and(path("/api/cluster/ceph-join"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "fsid": "fsid-1",
+            "mon_keyring": "[mon.]\n\tkey = M\n",
+            "admin_keyring": format!("[client.admin]\n\tkey = {fresh}\n"),
+            "bootstrap_osd_keyring": "[client.bootstrap-osd]\n\tkey = B\n",
+            "mon_addrs": ["fd00:cafe::1"],
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let root = tempfile::tempdir().unwrap();
+    let config = root.path().join("config.toml");
+    std::fs::write(&config, "[tunnel]\naccount_token = \"cluster-tok\"\n").unwrap();
+    let config_s = config.to_string_lossy().into_owned();
+    let port_s = port.to_string();
+    let env = StorageEnv::from_lookup(|name| match name {
+        "YOLAB_CEPH_FSID" => Some("fsid-1".into()),
+        "YOLAB_CONFIG" => Some(config_s.clone()),
+        "YOLAB_PORT" => Some(port_s.clone()),
+        _ => None,
+    });
+    let host = FakeHost::new()
+        .fail(
+            "ceph --connect-timeout 20 -s",
+            "[errno 13] RADOS permission denied (error connecting to the cluster)",
+        )
+        .ok("chown", "");
+    let peers = vec![crate::testkit::PEER.to_string(), crate::testkit::PEER.to_string()];
+
+    let tick = heal_admin_keyring(&host, root.path(), &env, &peers).await.unwrap();
+
+    assert_eq!(tick, Tick::Done);
+    let text = std::fs::read_to_string(root.path().join("etc/ceph/ceph.client.admin.keyring")).unwrap();
+    assert_eq!(keyring_key(&text, "client.admin"), Some(fresh));
+}

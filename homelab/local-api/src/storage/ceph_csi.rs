@@ -294,8 +294,8 @@ impl Controller for RookManifestsGoneController {
         &[Requirement::KubeApi]
     }
     async fn reconcile(&self, ctx: &Ctx) -> Result<Tick> {
-        let client = crate::k8s::client().await?;
-        mark_node(&client, Path::new("/"), &ctx.node).await
+        let b = crate::routers::backup_common::Backend::real().await?;
+        mark_node(&b.kube, Path::new("/"), &ctx.node).await
     }
 }
 
@@ -315,8 +315,8 @@ impl Controller for CephCsiController {
         &[Requirement::KubeApi]
     }
     async fn reconcile(&self, _ctx: &Ctx) -> Result<Tick> {
-        let client = crate::k8s::client().await?;
-        converge(&client).await
+        let b = crate::routers::backup_common::Backend::real().await?;
+        converge(&b.kube).await
     }
 }
 

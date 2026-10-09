@@ -1043,11 +1043,11 @@ impl Controller for AdminKeyringController {
         &[Requirement::KubeApi]
     }
     async fn reconcile(&self, _ctx: &Ctx) -> Result<Tick> {
-        let client = crate::k8s::client().await?;
-        let nodes = crate::k8s::nodes(&client).await?;
+        let b = Backend::real().await?;
+        let nodes = crate::k8s::nodes(&b.kube).await?;
         let me = std::env::var("YOLAB_NODE_IPV6").unwrap_or_default();
-        let peers = crate::k8s::peer_ipv6(&nodes, &me);
-        heal_admin_keyring(&crate::host::HOST, Path::new("/"), &self.env, &peers).await
+        let peers = crate::runtime::fleet::order(&crate::k8s::peer_ipv6(&nodes, &me), &me);
+        heal_admin_keyring(&b.host, Path::new("/"), &self.env, &peers).await
     }
 }
 

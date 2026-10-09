@@ -705,6 +705,7 @@ in let
         cat > expected <<'EOF'
         routers/reboot.rs
         routers/update.rs
+        storage/cephx.rs
         EOF
         sed 's/^ *//' expected > want
 
