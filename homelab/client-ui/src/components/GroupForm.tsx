@@ -17,10 +17,7 @@ export function GroupForm({
   onChange: (next: Record<string, unknown>) => void;
 }) {
   const domain = useApi<{ domain: string }>("domain", "/api/tunnel/domain");
-  const config = useMemo(
-    () => configSchemaOf(schema ?? undefined),
-    [schema],
-  );
+  const config = useMemo(() => configSchemaOf(schema ?? undefined), [schema]);
   const rjsfSchema = useMemo(
     () => ({ type: "object", ...config }) as RJSFSchema,
     [config],

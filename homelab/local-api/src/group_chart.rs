@@ -53,14 +53,19 @@ fn resolve_at(
                     if depth >= MAX_REF_DEPTH {
                         return Err(format!("{raw} leads through too many references"));
                     }
-                    let r = parse_ref(raw).ok_or_else(|| format!("{raw} is not chart:<name>[@<version>]#<pointer>"))?;
-                    let schema = load(&r.chart, r.version.as_deref()).ok_or_else(|| match &r.version {
-                        Some(v) => format!("{raw}: version {v} of {} is not available", r.chart),
-                        None => format!("{raw}: there is no chart named {}", r.chart),
+                    let r = parse_ref(raw).ok_or_else(|| {
+                        format!("{raw} is not chart:<name>[@<version>]#<pointer>")
                     })?;
-                    let found = schema
-                        .pointer(&r.pointer)
-                        .ok_or_else(|| format!("{raw}: {} has nothing at {}", r.chart, r.pointer))?;
+                    let schema =
+                        load(&r.chart, r.version.as_deref()).ok_or_else(|| match &r.version {
+                            Some(v) => {
+                                format!("{raw}: version {v} of {} is not available", r.chart)
+                            }
+                            None => format!("{raw}: there is no chart named {}", r.chart),
+                        })?;
+                    let found = schema.pointer(&r.pointer).ok_or_else(|| {
+                        format!("{raw}: {} has nothing at {}", r.chart, r.pointer)
+                    })?;
                     let mut resolved = resolve_at(found, load, depth + 1)?;
                     if let Value::Object(target) = &mut resolved {
                         for (k, v) in map.iter().filter(|(k, _)| *k != "$ref") {
@@ -136,14 +141,18 @@ pub(crate) fn members(rendered: &str) -> Result<Vec<Member>, String> {
         if v.is_null() {
             continue;
         }
-        if v["apiVersion"].as_str() != Some(APP_API_VERSION) || v["kind"].as_str() != Some(APP_KIND) {
+        if v["apiVersion"].as_str() != Some(APP_API_VERSION) || v["kind"].as_str() != Some(APP_KIND)
+        {
             return Err(format!(
                 "a group may only render {APP_API_VERSION} {APP_KIND} documents, not {} {}",
                 v["apiVersion"].as_str().unwrap_or("?"),
                 v["kind"].as_str().unwrap_or("?")
             ));
         }
-        let key = v["name"].as_str().filter(|k| is_plain(k)).ok_or("an App needs a plain name")?;
+        let key = v["name"]
+            .as_str()
+            .filter(|k| is_plain(k))
+            .ok_or("an App needs a plain name")?;
         if !keys.insert(key.to_string()) {
             return Err(format!("two Apps are named {key}"));
         }
@@ -184,10 +193,14 @@ pub(crate) fn members(rendered: &str) -> Result<Vec<Member>, String> {
                 }
             }
             (None, None) => {
-                return Err(format!("App {key} needs either chart (install one) or use (an app you have)"))
+                return Err(format!(
+                    "App {key} needs either chart (install one) or use (an app you have)"
+                ))
             }
             (Some(_), Some(_)) => {
-                return Err(format!("App {key} has both chart and use; it is one or the other"))
+                return Err(format!(
+                    "App {key} has both chart and use; it is one or the other"
+                ))
             }
         };
         found.push(member);
@@ -219,7 +232,10 @@ pub(crate) fn reused(members: &[Member]) -> BTreeSet<String> {
         .collect()
 }
 
-pub(crate) fn install_order(members: &[Member], namespaces: &BTreeMap<String, String>) -> Vec<String> {
+pub(crate) fn install_order(
+    members: &[Member],
+    namespaces: &BTreeMap<String, String>,
+) -> Vec<String> {
     let by_namespace: BTreeMap<&str, &str> = namespaces
         .iter()
         .map(|(key, ns)| (ns.as_str(), key.as_str()))
@@ -288,7 +304,9 @@ pub(crate) fn redact(values: &Map<String, Value>, schema: &Value) -> Map<String,
         .map(|(k, v)| {
             let prop = prop_of(schema, k);
             let shown = match (prop, v) {
-                (Some(p), _) if p["writeOnly"] == Value::Bool(true) => Value::String(REDACTED.into()),
+                (Some(p), _) if p["writeOnly"] == Value::Bool(true) => {
+                    Value::String(REDACTED.into())
+                }
                 (Some(p), Value::Object(inner)) => Value::Object(redact(inner, p)),
                 _ => v.clone(),
             };
@@ -309,7 +327,11 @@ pub(crate) fn keep_secrets(
             let kept = match (prop, v) {
                 (Some(_), Value::String(s)) if s == REDACTED => stored.get(k)?.clone(),
                 (Some(p), Value::Object(inner)) => {
-                    let before = stored.get(k).and_then(Value::as_object).cloned().unwrap_or_default();
+                    let before = stored
+                        .get(k)
+                        .and_then(Value::as_object)
+                        .cloned()
+                        .unwrap_or_default();
                     Value::Object(keep_secrets(inner, &before, p))
                 }
                 _ => v.clone(),
@@ -321,8 +343,13 @@ pub(crate) fn keep_secrets(
 
 pub(crate) fn generated(config_schema: &Value, values: &Map<String, Value>) -> Map<String, Value> {
     let mut filled = values.clone();
-    for (name, prop) in config_schema["properties"].as_object().into_iter().flatten() {
-        let wanted = prop["writeOnly"] == Value::Bool(true) && prop["generate"] == Value::Bool(true);
+    for (name, prop) in config_schema["properties"]
+        .as_object()
+        .into_iter()
+        .flatten()
+    {
+        let wanted =
+            prop["writeOnly"] == Value::Bool(true) && prop["generate"] == Value::Bool(true);
         if wanted && !filled.contains_key(name) {
             let length = prop["minLength"].as_u64().unwrap_or(0).max(24) as usize;
             filled.insert(name.clone(), Value::String(random_secret(length)));
@@ -398,7 +425,13 @@ mod tests {
             })
         );
         assert_eq!(parse_ref("chart:sonarr").unwrap().pointer, "");
-        for bad in ["sonarr#/x", "chart:Sonarr#/x", "chart:a@#/x", "chart:a#x", "chart:../a#/x"] {
+        for bad in [
+            "sonarr#/x",
+            "chart:Sonarr#/x",
+            "chart:a@#/x",
+            "chart:a#x",
+            "chart:../a#/x",
+        ] {
             assert_eq!(parse_ref(bad), None, "{bad}");
         }
     }
@@ -419,7 +452,10 @@ mod tests {
             resolved["properties"]["media"],
             json!({ "type": "string", "format": "folder", "title": "Where your films go" })
         );
-        assert_eq!(resolved["properties"]["count"], json!({ "type": "integer" }));
+        assert_eq!(
+            resolved["properties"]["count"],
+            json!({ "type": "integer" })
+        );
     }
 
     #[test]
@@ -434,7 +470,10 @@ mod tests {
     #[test]
     fn a_reference_that_cannot_be_followed_says_why() {
         let missing_chart = resolve(&json!({ "$ref": "chart:plex#/x" }), &charts).unwrap_err();
-        assert!(missing_chart.contains("no chart named plex"), "{missing_chart}");
+        assert!(
+            missing_chart.contains("no chart named plex"),
+            "{missing_chart}"
+        );
         let old = resolve(&json!({ "$ref": "chart:jellyfin@0.1.0#/x" }), &charts).unwrap_err();
         assert!(old.contains("version 0.1.0"), "{old}");
         let nowhere = resolve(&json!({ "$ref": "chart:jellyfin#/nope" }), &charts).unwrap_err();
@@ -476,8 +515,10 @@ main: true
     fn a_rendered_group_lists_apps_to_install_and_apps_to_reuse() {
         let found = members(RENDERED).unwrap();
         assert_eq!(found.len(), 3);
-        assert!(matches!(&found[1], Member::Install { chart, version: Some(v), .. }
-            if chart == "sonarr" && v == "0.1.19"));
+        assert!(
+            matches!(&found[1], Member::Install { chart, version: Some(v), .. }
+            if chart == "sonarr" && v == "0.1.19")
+        );
         assert_eq!(
             found[2],
             Member::Use {

@@ -48,9 +48,7 @@ export function GroupPage() {
     `/api/groups/${encodeURIComponent(name)}`,
     { pollMs: 3_000 },
   );
-  const [editing, setEditing] = useState<Record<string, unknown> | null>(
-    null,
-  );
+  const [editing, setEditing] = useState<Record<string, unknown> | null>(null);
   const [removal, setRemoval] = useState<Removal>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -143,7 +141,9 @@ export function GroupPage() {
                 <StateIcon state={row.state} />
                 {row.instance}
                 {g.reused.includes(row.key) && (
-                  <span className="text-xs text-fg-muted">you already had it</span>
+                  <span className="text-xs text-fg-muted">
+                    you already had it
+                  </span>
                 )}
               </span>
             }
