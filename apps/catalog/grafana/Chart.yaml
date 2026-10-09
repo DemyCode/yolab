@@ -3,12 +3,12 @@ name: grafana
 description: "Dashboards and visualisation for metrics and logs"
 home: https://grafana.com
 type: application
-version: 0.1.16
+version: 0.1.17
 appVersion: "11"
 
 dependencies:
   - name: yolab-common
-    version: "0.1.14"
+    version: "0.1.15"
     repository: "oci://ghcr.io/demycode/charts"
 
 annotations:

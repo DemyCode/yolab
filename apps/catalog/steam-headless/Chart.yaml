@@ -3,12 +3,12 @@ name: steam-headless
 description: "Your games on any screen: Steam on a GPU machine, streamed to Moonlight or a browser"
 home: https://github.com/Steam-Headless/docker-steam-headless
 type: application
-version: 0.1.10
+version: 0.1.11
 appVersion: "2.44.20261004.1"
 
 dependencies:
   - name: yolab-common
-    version: "0.1.14"
+    version: "0.1.15"
     repository: "oci://ghcr.io/demycode/charts"
 
 annotations:

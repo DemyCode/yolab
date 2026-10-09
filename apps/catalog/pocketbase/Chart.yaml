@@ -2,11 +2,11 @@ apiVersion: v2
 name: pocketbase
 description: Open Source backend for your next SaaS and Mobile app in 1 file
 type: application
-version: 0.1.1
+version: 0.1.2
 appVersion: 0.40.4-patch.1
 dependencies:
 - name: yolab-common
-  version: "0.1.14"
+  version: "0.1.15"
   repository: oci://ghcr.io/demycode/charts
 annotations:
   yolab.io/display-name: PocketBase

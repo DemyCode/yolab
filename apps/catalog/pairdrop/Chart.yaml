@@ -3,11 +3,11 @@ name: pairdrop
 description: "Send files between your phone and computer, straight across the network"
 home: https://pairdrop.net
 type: application
-version: 0.1.16
+version: 0.1.17
 
 dependencies:
   - name: yolab-common
-    version: "0.1.14"
+    version: "0.1.15"
     repository: "oci://ghcr.io/demycode/charts"
 
 annotations:

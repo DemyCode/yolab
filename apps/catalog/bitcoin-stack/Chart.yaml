@@ -3,12 +3,12 @@ name: bitcoin-stack
 description: "A full Bitcoin node with its own indexer and block explorer, so wallets and apps on your machine never talk to anyone else's server"
 home: https://bitcoincore.org
 type: application
-version: 0.1.1
+version: 0.1.2
 appVersion: "1"
 
 dependencies:
   - name: yolab-common
-    version: "0.1.14"
+    version: "0.1.15"
     repository: "oci://ghcr.io/demycode/charts"
 
 annotations:

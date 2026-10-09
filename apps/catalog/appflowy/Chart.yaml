@@ -3,11 +3,11 @@ name: appflowy
 description: "Open-source alternative to Notion. Docs, wikis, and projects in one place."
 home: https://appflowy.io
 type: application
-version: 0.2.17
+version: 0.2.18
 
 dependencies:
   - name: yolab-common
-    version: "0.1.14"
+    version: "0.1.15"
     repository: "oci://ghcr.io/demycode/charts"
 
 annotations:

@@ -2,11 +2,11 @@ apiVersion: v2
 name: linkstack
 description: A highly customizable link sharing platform
 type: application
-version: 0.1.1
+version: 0.1.2
 appVersion: 4.8.6
 dependencies:
 - name: yolab-common
-  version: "0.1.14"
+  version: "0.1.15"
   repository: oci://ghcr.io/demycode/charts
 annotations:
   yolab.io/display-name: LinkStack
