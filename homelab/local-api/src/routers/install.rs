@@ -801,7 +801,10 @@ mod tests {
             helm_error("Error: Deployment.apps \"steam-headless\" is invalid: ports[5].name: must be no more than 15 characters").as_deref(),
             Some("Deployment.apps \"steam-headless\" is invalid: ports[5].name: must be no more than 15 characters")
         );
-        assert_eq!(helm_error("Release \"x\" does not exist. Installing it now."), None);
+        assert_eq!(
+            helm_error("Release \"x\" does not exist. Installing it now."),
+            None
+        );
         assert_eq!(helm_error("Error:   "), None);
     }
 

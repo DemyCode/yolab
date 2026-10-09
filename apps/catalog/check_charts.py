@@ -884,7 +884,9 @@ def check_private_access(app, docs, offered, fail):
             )
 
 
-API_KEY_GUARD = '@yolab_without_api_key not header Authorization "Bearer {$YOLAB_API_KEY}"'
+API_KEY_GUARD = (
+    '@yolab_without_api_key not header Authorization "Bearer {$YOLAB_API_KEY}"'
+)
 
 
 def offers_api_key(schema):
@@ -1407,7 +1409,9 @@ def main(argv):
                 fail,
             )
             check_api_key_offer(app, schema, fail)
-            values = yaml.safe_load(values_path.read_text()) if values_path.exists() else {}
+            values = (
+                yaml.safe_load(values_path.read_text()) if values_path.exists() else {}
+            )
             upstream = (((values or {}).get("yolab") or {}).get("gateway") or {}).get(
                 "upstream"
             ) or ""

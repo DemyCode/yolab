@@ -1693,7 +1693,12 @@ class Containers(unittest.TestCase):
 
     def test_a_port_name_longer_than_fifteen_characters_is_reported(self):
         found = self.failures(
-            [{"name": "steam", "ports": [{"name": "sunshine-control", "containerPort": 1}]}]
+            [
+                {
+                    "name": "steam",
+                    "ports": [{"name": "sunshine-control", "containerPort": 1}],
+                }
+            ]
         )
         self.assertEqual(len(found), 1, found)
         self.assertIn("sunshine-control", found[0])
@@ -2005,7 +2010,9 @@ API_KEY_OUTPUT = logs(
 class ApiKeyOffer(unittest.TestCase):
     def test_an_offered_key_must_be_readable_as_a_secret_only_while_on(self):
         on = {"api_key_enabled": {"type": "boolean", "default": True}}
-        self.assertEqual(api_key_failures(schema(config=on, outputs={"api_key": API_KEY_OUTPUT})), [])
+        self.assertEqual(
+            api_key_failures(schema(config=on, outputs={"api_key": API_KEY_OUTPUT})), []
+        )
         self.assertTrue(api_key_failures(schema(config=on, outputs={})))
         shown = dict(API_KEY_OUTPUT, format="text")
         self.assertTrue(api_key_failures(schema(config=on, outputs={"api_key": shown})))
@@ -2015,7 +2022,9 @@ class ApiKeyOffer(unittest.TestCase):
             "api_key_enabled": {"type": "boolean", "default": True},
             "auth_enabled": {"type": "boolean", "default": False},
         }
-        found = api_key_failures(schema(config=config, outputs={"api_key": API_KEY_OUTPUT}))
+        found = api_key_failures(
+            schema(config=config, outputs={"api_key": API_KEY_OUTPUT})
+        )
         self.assertTrue(any("Authelia" in f for f in found))
 
 
@@ -2028,7 +2037,9 @@ class OllamaApiKey(RenderedChart):
 
     def failures(self, docs):
         found = []
-        check_charts.check_api_key("ollama", docs, self.UPSTREAM, lambda a, m: found.append(m))
+        check_charts.check_api_key(
+            "ollama", docs, self.UPSTREAM, lambda a, m: found.append(m)
+        )
         return found
 
     def test_the_key_is_required_by_default_on_the_yolab_address(self):

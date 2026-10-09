@@ -1099,16 +1099,19 @@ fn failure_of(pod: &str, init: bool, cs: &Value) -> Option<ContainerFailure> {
 pub(crate) fn container_failure(pods: &[&Value]) -> Option<ContainerFailure> {
     pods.iter().find_map(|pod| {
         let name = pod["metadata"]["name"].as_str().unwrap_or("");
-        [("initContainerStatuses", true), ("containerStatuses", false)]
-            .iter()
-            .flat_map(|&(key, init)| {
-                pod["status"][key]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .map(move |cs| (init, cs))
-            })
-            .find_map(|(init, cs)| failure_of(name, init, cs))
+        [
+            ("initContainerStatuses", true),
+            ("containerStatuses", false),
+        ]
+        .iter()
+        .flat_map(|&(key, init)| {
+            pod["status"][key]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(move |cs| (init, cs))
+        })
+        .find_map(|(init, cs)| failure_of(name, init, cs))
     })
 }
 
@@ -1301,12 +1304,7 @@ pub async fn list_apps(State(state): State<AppState>) -> Result<Json<Vec<AppInfo
                 technical = explain_failure(client, &ns_full, &failure).await;
                 retry_at = failure.retry_at.clone();
                 reason = failure.reason.clone();
-                if failure.init {
-                    "failed"
-                } else {
-                    "stopped"
-                }
-                .to_string()
+                if failure.init { "failed" } else { "stopped" }.to_string()
             } else {
                 detail = explain_app_state(&items);
                 technical = unexplained_waits(&items);
@@ -2465,7 +2463,6 @@ mod tests {
         assert_eq!(last_lines(""), "");
     }
 
-
     #[tokio::test]
     async fn a_failure_with_no_message_is_explained_by_the_last_lines_of_its_log() {
         use crate::k8s::testing::api_server;
@@ -2750,7 +2747,10 @@ mod tests {
     #[test]
     fn a_crashing_app_carries_the_reason_kubernetes_gives() {
         let pod = crashing_pod("containerStatuses", "app", "");
-        assert_eq!(container_failure(&[&pod]).unwrap().reason, "CrashLoopBackOff");
+        assert_eq!(
+            container_failure(&[&pod]).unwrap().reason,
+            "CrashLoopBackOff"
+        );
     }
 
     fn real_schema() -> Value {
