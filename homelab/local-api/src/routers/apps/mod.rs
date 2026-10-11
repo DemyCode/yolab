@@ -3730,7 +3730,7 @@ mod tests {
             assert_eq!(res.status, axum::http::StatusCode::OK, "{}", res.body);
             assert_eq!(
                 res.json(),
-                json!([{ "name": "notes-0", "phase": "Running", "ready": true,
+                json!([{ "name": "notes-0", "member": null, "phase": "Running", "ready": true,
                          "node": "", "restarts": 0, "containers": [], "events": [] }])
             );
         }
