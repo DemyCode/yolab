@@ -29,6 +29,43 @@
           "default": true,
           "description": "Run Jellyfin on the machine with the best graphics card for video (Intel first, then NVIDIA, then AMD) so it can convert films for phones and browsers without straining the processor. Turn it on in Jellyfin too: Dashboard, Playback, Transcoding."
         },
+        "admin_password": {
+          "type": "string",
+          "title": "Admin password",
+          "writeOnly": true,
+          "generate": true,
+          "description": "The password of the user admin, set the first time Jellyfin starts so it is ready to use. Leave it empty to go through Jellyfin's own setup instead."
+        },
+        "libraries": {
+          "type": "array",
+          "title": "Libraries",
+          "default": [],
+          "description": "Libraries Jellyfin adds once it is set up, each a part of the media folder. The ones you add in Jellyfin yourself are left alone.",
+          "items": {
+            "type": "object",
+            "required": ["name", "kind", "path"],
+            "properties": {
+              "name": { "type": "string", "title": "Name", "pattern": "^[A-Za-z0-9 ]+$" },
+              "kind": {
+                "type": "string",
+                "title": "Kind",
+                "default": "movies",
+                "oneOf": [
+                  { "const": "movies", "title": "Films" },
+                  { "const": "tvshows", "title": "Shows" },
+                  { "const": "music", "title": "Music" },
+                  { "const": "books", "title": "Books" },
+                  { "const": "homevideos", "title": "Home videos and photos" }
+                ]
+              },
+              "path": {
+                "type": "string",
+                "title": "Inside the media folder",
+                "pattern": "^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$"
+              }
+            }
+          }
+        },
         "file_explorer_enabled": {
           "type": "boolean",
           "title": "File explorer",
@@ -248,6 +285,27 @@
           "source": {
             "service": { "name": "jellyfin", "port": 8096 }
           }
+        },
+        "username": {
+          "type": "string",
+          "title": "Username",
+          "format": "text",
+          "source": { "logs": "YOLAB_OUTPUT username (\\S+)" },
+          "when": { "required": ["admin_password"], "properties": { "admin_password": { "minLength": 1 } } }
+        },
+        "password": {
+          "type": "string",
+          "title": "Password",
+          "format": "secret",
+          "source": { "logs": "YOLAB_OUTPUT password (\\S+)" },
+          "when": { "required": ["admin_password"], "properties": { "admin_password": { "minLength": 1 } } }
+        },
+        "api_key": {
+          "type": "string",
+          "title": "API key",
+          "format": "secret",
+          "source": { "logs": "YOLAB_OUTPUT api_key (\\S+)" },
+          "when": { "required": ["admin_password"], "properties": { "admin_password": { "minLength": 1 } } }
         },
         "url": {
           "type": "string",

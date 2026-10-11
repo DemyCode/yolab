@@ -103,13 +103,6 @@ impl LinkRef {
         }
     }
 
-    pub(crate) fn text(&self) -> String {
-        match &self.member {
-            Some(member) => format!("{}/{member}", self.instance),
-            None => self.instance.clone(),
-        }
-    }
-
     fn describe(&self) -> String {
         match &self.member {
             Some(member) => format!("{member} in {}", self.instance),
@@ -343,6 +336,13 @@ mod tests {
         items.iter().map(|s| s.to_string()).collect()
     }
 
+    fn text(link: &LinkRef) -> String {
+        match &link.member {
+            Some(member) => format!("{}/{member}", link.instance),
+            None => link.instance.clone(),
+        }
+    }
+
     fn reference(text: &str) -> LinkRef {
         LinkRef::parse(text).unwrap()
     }
@@ -413,7 +413,7 @@ mod tests {
         let member = reference("media-ab12/sonarr");
         assert_eq!(member.member.as_deref(), Some("sonarr"));
         assert_eq!(member.namespace(), "yolab-media-ab12");
-        assert_eq!(member.text(), "media-ab12/sonarr");
+        assert_eq!(text(&member), "media-ab12/sonarr");
         assert!(LinkRef::parse("../kube-system").is_none());
         assert!(LinkRef::parse("media/../x").is_none());
         assert!(LinkRef::parse("").is_none());
@@ -427,7 +427,7 @@ mod tests {
 
     #[test]
     fn only_a_value_naming_an_app_is_a_choice() {
-        let pick = |v: Value| chosen(Some(&v)).map(|r| r.map(|l| l.text()));
+        let pick = |v: Value| chosen(Some(&v)).map(|r| r.map(|l| text(&l)));
         assert_eq!(pick(json!({ "$from": "q" })), Some(Ok("q".into())));
         assert_eq!(
             pick(json!({ "$from": "media/qbittorrent" })),
@@ -444,7 +444,7 @@ mod tests {
 
     #[test]
     fn a_choice_saved_by_the_old_connections_still_counts() {
-        let pick = |v: Value| chosen(Some(&v)).map(|r| r.map(|l| l.text()));
+        let pick = |v: Value| chosen(Some(&v)).map(|r| r.map(|l| text(&l)));
         assert_eq!(
             pick(json!({ "from": "yolab-ollama" })),
             Some(Ok("ollama".into()))

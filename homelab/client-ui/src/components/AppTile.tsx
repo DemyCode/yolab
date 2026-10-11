@@ -11,10 +11,12 @@ export function AppTile({
   app,
   name,
   icon,
+  appId = app.app_id,
 }: {
   app: AppInfo;
   name: string;
   icon: string;
+  appId?: string;
 }) {
   const state = appState(app);
   const label = appLabel(app, state);
@@ -38,7 +40,7 @@ export function AppTile({
     >
       <div className="relative mb-3">
         <AppIconTile
-          appId={app.app_id}
+          appId={appId}
           icon={icon}
           name={name}
           className="shadow-[var(--shadow-card)] transition-all duration-200 group-hover:-translate-y-0.5 group-hover:shadow-[var(--shadow-lift)]"

@@ -19,6 +19,7 @@ import {
   podProblem,
   podsByMember,
   packMembers,
+  homeLayout,
   waitNote,
   type RestoreRecord,
 } from "./apps";
@@ -610,5 +611,51 @@ describe("the running parts of a pack", () => {
     };
     expect(packMembers(app, [entry])).toEqual(["jellyfin", "sonarr"]);
     expect(packMembers({ ...app, app_id: "gone" }, [entry])).toEqual([]);
+  });
+});
+
+describe("the home screen", () => {
+  const entry = (id: string, more: Partial<CatalogApp> = {}): CatalogApp => ({
+    id,
+    repo: "official",
+    chart_version: "1",
+    name: id,
+    description: "",
+    home: "",
+    icon: "📦",
+    category: "media",
+    github: "",
+    tagline: "",
+    collections: [],
+    stars: null,
+    pushed_at: null,
+    schema: {},
+    ...more,
+  });
+  const catalog = [
+    entry("movies-tv", { kind: "pack", members: ["jellyfin", "bazarr"] }),
+    entry("jellyfin", { name: "Jellyfin", icon: "🎬" }),
+    entry("gitea"),
+  ];
+
+  it("shows a pack as its own apps, each with its own name and icon", () => {
+    const media = app({ app_id: "movies-tv", instance_name: "media" });
+    const git = app({ app_id: "gitea", instance_name: "gitea" });
+    const layout = homeLayout([media, git], catalog);
+    expect(layout.apps).toEqual([git]);
+    expect(layout.packs).toEqual([
+      {
+        app: media,
+        members: [
+          { id: "jellyfin", name: "Jellyfin", icon: "🎬" },
+          { id: "bazarr", name: "bazarr", icon: "📦" },
+        ],
+      },
+    ]);
+  });
+
+  it("an app whose chart left the catalog is shown on its own", () => {
+    const gone = app({ app_id: "gone", instance_name: "gone" });
+    expect(homeLayout([gone], catalog)).toEqual({ apps: [gone], packs: [] });
   });
 });

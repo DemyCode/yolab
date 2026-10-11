@@ -11,7 +11,19 @@ pub(crate) const NAMESPACE: &str = "yolab-folders";
 pub(crate) const STATIC_SECRET: &str = "yolab-cephfs-static";
 pub(crate) const LABEL_FOLDER: &str = "yolab.io/folder";
 const LABEL_APP_NAMESPACE: &str = "yolab.io/folder-namespace";
+const LABEL_KIND: &str = "yolab.io/folder-kind";
+pub(crate) const KIND_FILES: &str = "files";
+pub(crate) const KIND_STATE: &str = "state";
+pub(crate) const LABEL_STATE: &str = "yolab.io/state-folder";
+pub(crate) const LABEL_STATE_NAMESPACE: &str = "yolab.io/state-namespace";
+const LABEL_STATE_ORIGIN: &str = "yolab.io/state-origin";
 const ANN_TITLE: &str = "yolab.io/folder-title";
+pub(crate) const ANN_STATE_APP: &str = "yolab.io/state-app";
+pub(crate) const ANN_STATE_RELEASE: &str = "yolab.io/state-release";
+pub(crate) const ANN_STATE_CLAIM: &str = "yolab.io/state-claim";
+pub(crate) const ANN_BACKUP: &str = "yolab.io/folder-backup";
+pub(crate) const ANN_RESTORING: &str = "yolab.io/folder-restoring";
+pub(crate) const ANN_RESTORE_FAILED: &str = "yolab.io/folder-restore-failed";
 const FORMAT: &str = "folder";
 const DRIVER: &str = "rook-ceph.cephfs.csi.ceph.com";
 const CSI_NAMESPACE: &str = "rook-ceph";
@@ -25,6 +37,47 @@ pub struct Folder {
     pub size: String,
     pub ready: bool,
     pub used_by: Vec<String>,
+    pub kind: String,
+    pub app: Option<String>,
+    pub backup: FolderBackup,
+    pub restoring_from: Option<String>,
+    pub restore_error: Option<String>,
+}
+
+#[derive(serde::Deserialize, Serialize, Debug, Clone, PartialEq, Eq)]
+pub struct FolderBackup {
+    pub enabled: bool,
+    pub schedule: String,
+}
+
+pub(crate) const DEFAULT_FOLDER_SCHEDULE: &str = "30 3 * * *";
+
+impl Folder {
+    pub(crate) fn backed_up_on_its_own(&self) -> bool {
+        self.backup.enabled && self.ready && !(self.kind == KIND_STATE && !self.used_by.is_empty())
+    }
+}
+
+impl FolderBackup {
+    pub(crate) fn default_for(kind: &str) -> FolderBackup {
+        FolderBackup {
+            enabled: kind == KIND_STATE,
+            schedule: DEFAULT_FOLDER_SCHEDULE.to_string(),
+        }
+    }
+
+    pub(crate) fn of(claim: &Value) -> FolderBackup {
+        claim["metadata"]["annotations"][ANN_BACKUP]
+            .as_str()
+            .and_then(|s| serde_json::from_str(s).ok())
+            .unwrap_or_else(|| FolderBackup::default_for(kind_of(claim)))
+    }
+}
+
+fn kind_of(claim: &Value) -> &str {
+    claim["metadata"]["labels"][LABEL_KIND]
+        .as_str()
+        .unwrap_or(KIND_FILES)
 }
 
 pub(crate) fn name_from_title(title: &str) -> Option<String> {
@@ -89,7 +142,7 @@ pub(crate) fn owner_claim(folder: &str, title: &str, size_gib: u64) -> Value {
         "metadata": {
             "name": claim_name(folder),
             "namespace": NAMESPACE,
-            "labels": { LABEL_FOLDER: folder },
+            "labels": { LABEL_FOLDER: folder, LABEL_KIND: KIND_FILES },
             "annotations": { ANN_TITLE: title },
         },
         "spec": {
@@ -106,9 +159,10 @@ pub(crate) struct Source {
 }
 
 fn source_of(owner_volume: &Value) -> Option<Source> {
-    let csi = &owner_volume["spec"]["csi"];
-    let root_path = csi["volumeAttributes"]["subvolumePath"]
+    let attributes = &owner_volume["spec"]["csi"]["volumeAttributes"];
+    let root_path = attributes["subvolumePath"]
         .as_str()
+        .or_else(|| attributes["rootPath"].as_str())
         .filter(|p| p.starts_with('/'))?;
     Some(Source {
         root_path: root_path.to_string(),
@@ -147,6 +201,266 @@ pub(crate) fn app_volume(folder: &str, namespace: &str, source: &Source) -> Valu
             },
         },
     })
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct StateOwner {
+    pub app: String,
+    pub release: String,
+    pub claim: String,
+}
+
+pub(crate) fn state_owner(
+    claim: &str,
+    app_id: &str,
+    release: &str,
+    members: &[String],
+) -> StateOwner {
+    let member = claim
+        .strip_prefix(release)
+        .and_then(|rest| rest.strip_prefix('-'))
+        .and_then(|rest| {
+            members
+                .iter()
+                .filter(|m| rest.starts_with(&format!("{m}-")))
+                .max_by_key(|m| m.len())
+        });
+    match member {
+        Some(member) => StateOwner {
+            app: member.clone(),
+            release: format!("{release}-{member}"),
+            claim: claim.to_string(),
+        },
+        None => StateOwner {
+            app: app_id.to_string(),
+            release: release.to_string(),
+            claim: claim.to_string(),
+        },
+    }
+}
+
+pub(crate) fn state_folder_name(instance: &str, claim: &str) -> String {
+    let joined = if claim.starts_with(instance) {
+        claim.to_string()
+    } else {
+        format!("{instance}-{claim}")
+    };
+    name_from_title(&joined).unwrap_or_else(|| "app-data".to_string())
+}
+
+pub(crate) fn owner_volume_name(folder: &str) -> String {
+    format!("{NAMESPACE}.state-{folder}")
+}
+
+pub(crate) fn state_owner_volume(folder: &str, driver: &str, source: &Source) -> Value {
+    let name = owner_volume_name(folder);
+    json!({
+        "apiVersion": "v1",
+        "kind": "PersistentVolume",
+        "metadata": {
+            "name": name,
+            "labels": { LABEL_FOLDER: folder },
+        },
+        "spec": {
+            "accessModes": ["ReadWriteMany"],
+            "capacity": { "storage": source.capacity },
+            "persistentVolumeReclaimPolicy": "Retain",
+            "storageClassName": "",
+            "volumeMode": "Filesystem",
+            "claimRef": { "namespace": NAMESPACE, "name": claim_name(folder) },
+            "csi": {
+                "driver": driver,
+                "volumeHandle": name,
+                "nodeStageSecretRef": { "name": STATIC_SECRET, "namespace": CSI_NAMESPACE },
+                "volumeAttributes": {
+                    "clusterID": CSI_NAMESPACE,
+                    "fsName": crate::cephfs::FS_NAME,
+                    "staticVolume": "true",
+                    "rootPath": source.root_path,
+                },
+            },
+        },
+    })
+}
+
+pub(crate) fn state_owner_claim(
+    folder: &str,
+    title: &str,
+    owner: &StateOwner,
+    capacity: &str,
+) -> Value {
+    json!({
+        "apiVersion": "v1",
+        "kind": "PersistentVolumeClaim",
+        "metadata": {
+            "name": claim_name(folder),
+            "namespace": NAMESPACE,
+            "labels": { LABEL_FOLDER: folder, LABEL_KIND: KIND_STATE },
+            "annotations": {
+                ANN_TITLE: title,
+                ANN_STATE_APP: owner.app,
+                ANN_STATE_RELEASE: owner.release,
+                ANN_STATE_CLAIM: owner.claim,
+            },
+        },
+        "spec": {
+            "accessModes": ["ReadWriteMany"],
+            "storageClassName": "",
+            "volumeName": owner_volume_name(folder),
+            "resources": { "requests": { "storage": capacity } },
+        },
+    })
+}
+
+pub(crate) fn kept_for(volume: &str, folder: &str, namespace: &str) -> Value {
+    json!({
+        "apiVersion": "v1",
+        "kind": "PersistentVolume",
+        "metadata": {
+            "name": volume,
+            "labels": {
+                LABEL_STATE: folder,
+                LABEL_STATE_NAMESPACE: namespace,
+                LABEL_STATE_ORIGIN: "true",
+            },
+        },
+        "spec": { "persistentVolumeReclaimPolicy": "Retain" },
+    })
+}
+
+pub(crate) fn adoptable(claim: &Value, volume: &Value) -> bool {
+    let namespace = claim["metadata"]["namespace"].as_str().unwrap_or_default();
+    let name = claim["metadata"]["name"].as_str().unwrap_or_default();
+    let labels: Option<std::collections::BTreeMap<String, String>> =
+        serde_json::from_value(claim["metadata"]["labels"].clone()).ok();
+    claim["status"]["phase"].as_str() == Some("Bound")
+        && !name.is_empty()
+        && !name.starts_with("volsync-")
+        && !is_mount(
+            namespace,
+            labels.as_ref(),
+            claim["spec"]["volumeName"].as_str(),
+        )
+        && volume["spec"]["csi"]["driver"]
+            .as_str()
+            .is_some_and(|d| d.contains("cephfs"))
+        && source_of(volume).is_some()
+}
+
+pub(crate) fn state_folder_of(volume: &Value) -> Option<&str> {
+    volume["metadata"]["labels"][LABEL_STATE]
+        .as_str()
+        .filter(|f| !f.is_empty())
+}
+
+pub(crate) struct AppVolumes<'a> {
+    pub namespace: &'a str,
+    pub app_id: &'a str,
+    pub release: &'a str,
+    pub members: &'a [String],
+}
+
+async fn ensure_state_owner(
+    client: &Client,
+    folder: &str,
+    volume: &Value,
+    owner: &StateOwner,
+) -> anyhow::Result<()> {
+    let source = source_of(volume)
+        .ok_or_else(|| anyhow::anyhow!("{folder}: could not read where its files live"))?;
+    let driver = volume["spec"]["csi"]["driver"].as_str().unwrap_or(DRIVER);
+    let owner_volume = state_owner_volume(folder, driver, &source);
+    if !crate::k8s::exists(client, &owner_volume).await? {
+        crate::k8s::apply(client, &owner_volume).await?;
+    }
+    let owner_claim = state_owner_claim(folder, folder, owner, &source.capacity);
+    if !crate::k8s::exists(client, &owner_claim).await? {
+        crate::k8s::apply(client, &owner_claim).await?;
+    }
+    Ok(())
+}
+
+pub(crate) async fn adopt(client: &Client, app: &AppVolumes<'_>) -> anyhow::Result<Vec<String>> {
+    crate::k8s::apply(
+        client,
+        &json!({ "apiVersion": "v1", "kind": "Namespace", "metadata": { "name": NAMESPACE } }),
+    )
+    .await?;
+    let claims = crate::k8s::list(
+        client,
+        "v1",
+        "PersistentVolumeClaim",
+        Some(app.namespace),
+        &ListParams::default(),
+    )
+    .await?;
+    let mut taken: BTreeSet<String> = owner_claims(client)
+        .await?
+        .iter()
+        .filter_map(|c| {
+            c["metadata"]["labels"][LABEL_FOLDER]
+                .as_str()
+                .map(str::to_string)
+        })
+        .collect();
+    let instance = app
+        .namespace
+        .strip_prefix("yolab-")
+        .unwrap_or(app.namespace);
+    let mut adopted = Vec::new();
+    for claim in &claims {
+        let Some(volume_name) = claim["spec"]["volumeName"]
+            .as_str()
+            .filter(|v| !v.is_empty())
+        else {
+            continue;
+        };
+        let Some(volume) = crate::k8s::get(
+            client,
+            &crate::k8s::cluster_reference("v1", "PersistentVolume", volume_name),
+        )
+        .await?
+        else {
+            continue;
+        };
+        let claim_name = claim["metadata"]["name"].as_str().unwrap_or_default();
+        let owner = state_owner(claim_name, app.app_id, app.release, app.members);
+        if let Some(folder) = state_folder_of(&volume) {
+            if volume["metadata"]["labels"][LABEL_STATE_ORIGIN].as_str() == Some("true") {
+                ensure_state_owner(client, folder, &volume, &owner).await?;
+            }
+            continue;
+        }
+        if !adoptable(claim, &volume) {
+            continue;
+        }
+        let folder = free_name(&state_folder_name(instance, claim_name), &taken);
+        taken.insert(folder.clone());
+        crate::k8s::merge_patch(client, &kept_for(volume_name, &folder, app.namespace)).await?;
+        ensure_state_owner(client, &folder, &volume, &owner).await?;
+        adopted.push(folder);
+    }
+    Ok(adopted)
+}
+
+pub(crate) async fn forget_mounts_of(client: &Client, namespace: &str) -> anyhow::Result<()> {
+    for volume in folder_volumes(client).await? {
+        let labels = &volume["metadata"]["labels"];
+        if labels[LABEL_STATE_NAMESPACE].as_str() != Some(namespace)
+            || labels[LABEL_STATE_ORIGIN].as_str() == Some("true")
+            || volume["status"]["phase"].as_str() == Some("Bound")
+        {
+            continue;
+        }
+        if let Some(name) = volume["metadata"]["name"].as_str() {
+            crate::k8s::delete_if_present(
+                client,
+                &crate::k8s::cluster_reference("v1", "PersistentVolume", name),
+            )
+            .await?;
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn folder_fields(config_schema: &Value) -> BTreeSet<String> {
@@ -242,13 +556,13 @@ fn attached(volumes: &[Value], namespace: &str) -> Vec<(String, String)> {
         .collect()
 }
 
-async fn attached_volumes(client: &Client) -> anyhow::Result<Vec<Value>> {
+async fn folder_volumes(client: &Client) -> anyhow::Result<Vec<Value>> {
     crate::k8s::list(
         client,
         "v1",
         "PersistentVolume",
         None,
-        &ListParams::default().labels(LABEL_APP_NAMESPACE),
+        &ListParams::default(),
     )
     .await
 }
@@ -258,7 +572,7 @@ pub(crate) async fn release_unused(
     namespace: &str,
     keep: &BTreeSet<String>,
 ) -> anyhow::Result<()> {
-    for (volume, folder) in attached(&attached_volumes(client).await?, namespace) {
+    for (volume, folder) in attached(&folder_volumes(client).await?, namespace) {
         if !keep.contains(&folder) {
             crate::k8s::delete_if_present(
                 client,
@@ -274,11 +588,23 @@ pub(crate) async fn release_all(client: &Client, namespace: &str) -> anyhow::Res
     release_unused(client, namespace, &BTreeSet::new()).await
 }
 
+fn user_of<'a>(pv: &'a Value, folder: &str) -> Option<&'a str> {
+    let labels = &pv["metadata"]["labels"];
+    if labels[LABEL_FOLDER].as_str() == Some(folder) {
+        return labels[LABEL_APP_NAMESPACE].as_str();
+    }
+    if labels[LABEL_STATE].as_str() == Some(folder)
+        && pv["status"]["phase"].as_str() == Some("Bound")
+    {
+        return labels[LABEL_STATE_NAMESPACE].as_str();
+    }
+    None
+}
+
 fn users(volumes: &[Value], folder: &str) -> Vec<String> {
     let mut users: Vec<String> = volumes
         .iter()
-        .filter(|pv| pv["metadata"]["labels"][LABEL_FOLDER].as_str() == Some(folder))
-        .filter_map(|pv| pv["metadata"]["labels"][LABEL_APP_NAMESPACE].as_str())
+        .filter_map(|pv| user_of(pv, folder))
         .map(|ns| ns.strip_prefix("yolab-").unwrap_or(ns).to_string())
         .collect();
     users.sort();
@@ -301,8 +627,118 @@ fn folder_of(claim: &Value, volumes: &[Value]) -> Option<Folder> {
             .to_string(),
         ready: claim["status"]["phase"].as_str() == Some("Bound"),
         used_by: users(volumes, &name),
+        kind: kind_of(claim).to_string(),
+        app: claim["metadata"]["annotations"][ANN_STATE_APP]
+            .as_str()
+            .map(str::to_string),
+        backup: FolderBackup::of(claim),
+        restoring_from: annotation(claim, ANN_RESTORING),
+        restore_error: annotation(claim, ANN_RESTORE_FAILED),
         name,
     })
+}
+
+fn annotation(claim: &Value, key: &str) -> Option<String> {
+    claim["metadata"]["annotations"][key]
+        .as_str()
+        .filter(|v| !v.is_empty())
+        .map(str::to_string)
+}
+
+pub(crate) fn restored_claim(folder: &str, source: &Value, when: &str) -> Value {
+    let source_name = source["metadata"]["labels"][LABEL_FOLDER]
+        .as_str()
+        .unwrap_or_default();
+    let title = annotation(source, ANN_TITLE).unwrap_or_else(|| source_name.to_string());
+    let mut annotations = json!({
+        ANN_TITLE: format!("{title} ({when})"),
+        ANN_RESTORING: format!("{source_name}@{when}"),
+    });
+    for key in [ANN_STATE_APP, ANN_STATE_RELEASE, ANN_STATE_CLAIM] {
+        if let Some(value) = annotation(source, key) {
+            annotations[key] = Value::String(value);
+        }
+    }
+    json!({
+        "apiVersion": "v1",
+        "kind": "PersistentVolumeClaim",
+        "metadata": {
+            "name": claim_name(folder),
+            "namespace": NAMESPACE,
+            "labels": { LABEL_FOLDER: folder, LABEL_KIND: kind_of(source) },
+            "annotations": annotations,
+        },
+        "spec": {
+            "accessModes": ["ReadWriteMany"],
+            "storageClassName": crate::routers::copy::CEPHFS_STORAGE_CLASS,
+            "resources": { "requests": {
+                "storage": source["spec"]["resources"]["requests"]["storage"].clone()
+            }},
+        },
+    })
+}
+
+pub(crate) fn restore_finished(folder: &str, error: Option<&str>) -> Value {
+    json!({
+        "apiVersion": "v1",
+        "kind": "PersistentVolumeClaim",
+        "metadata": {
+            "name": claim_name(folder),
+            "namespace": NAMESPACE,
+            "annotations": {
+                ANN_RESTORING: Value::Null,
+                ANN_RESTORE_FAILED: error.map(|e| Value::String(e.to_string())).unwrap_or(Value::Null),
+            },
+        },
+    })
+}
+
+pub(crate) async fn owner_claim_of(client: &Client, folder: &str) -> anyhow::Result<Value> {
+    anyhow::ensure!(is_name(folder), "{folder:?} is not a folder name");
+    crate::k8s::get(
+        client,
+        &crate::k8s::reference(
+            "v1",
+            "PersistentVolumeClaim",
+            NAMESPACE,
+            &claim_name(folder),
+        ),
+    )
+    .await?
+    .ok_or_else(|| anyhow::anyhow!("the folder {folder} does not exist"))
+}
+
+pub(crate) async fn create_restored(
+    client: &Client,
+    source: &str,
+    when: &str,
+) -> anyhow::Result<String> {
+    let claim = owner_claim_of(client, source).await?;
+    let taken: BTreeSet<String> = list(client).await?.into_iter().map(|f| f.name).collect();
+    let wanted =
+        name_from_title(&format!("{source} restored")).unwrap_or_else(|| source.to_string());
+    let name = free_name(&wanted, &taken);
+    crate::k8s::create(client, &restored_claim(&name, &claim, when)).await?;
+    Ok(name)
+}
+
+pub(crate) async fn wait_until_ready(client: &Client, folder: &str) -> anyhow::Result<()> {
+    crate::poll::until(
+        std::time::Duration::from_secs(300),
+        std::time::Duration::from_secs(5),
+        move || async move {
+            match owner_claim_of(client, folder).await {
+                Ok(claim) if claim["status"]["phase"].as_str() == Some("Bound") => {
+                    crate::poll::Step::Done(())
+                }
+                Ok(_) => crate::poll::Step::Pending(anyhow::anyhow!(
+                    "the folder {folder} is still being created"
+                )),
+                Err(e) => crate::poll::Step::Pending(e),
+            }
+        },
+    )
+    .await
 }
 
 async fn owner_claims(client: &Client) -> anyhow::Result<Vec<Value>> {
@@ -317,7 +753,7 @@ async fn owner_claims(client: &Client) -> anyhow::Result<Vec<Value>> {
 }
 
 pub(crate) async fn list(client: &Client) -> anyhow::Result<Vec<Folder>> {
-    let (claims, volumes) = tokio::try_join!(owner_claims(client), attached_volumes(client))?;
+    let (claims, volumes) = tokio::try_join!(owner_claims(client), folder_volumes(client))?;
     let mut folders: Vec<Folder> = claims
         .iter()
         .filter_map(|c| folder_of(c, &volumes))
@@ -355,9 +791,31 @@ pub(crate) enum Removal {
     InUse(Vec<String>),
 }
 
+pub(crate) fn origins_of<'a>(volumes: &'a [Value], folder: &str) -> Vec<&'a str> {
+    volumes
+        .iter()
+        .filter(|pv| {
+            let labels = &pv["metadata"]["labels"];
+            labels[LABEL_STATE].as_str() == Some(folder)
+                && labels[LABEL_STATE_ORIGIN].as_str() == Some("true")
+        })
+        .filter_map(|pv| pv["metadata"]["name"].as_str())
+        .collect()
+}
+
+pub(crate) fn delete_when_released(volume: &str) -> Value {
+    json!({
+        "apiVersion": "v1",
+        "kind": "PersistentVolume",
+        "metadata": { "name": volume },
+        "spec": { "persistentVolumeReclaimPolicy": "Delete" },
+    })
+}
+
 pub(crate) async fn remove(client: &Client, folder: &str) -> anyhow::Result<Removal> {
     anyhow::ensure!(is_name(folder), "{folder:?} is not a folder name");
-    let in_use = users(&attached_volumes(client).await?, folder);
+    let volumes = folder_volumes(client).await?;
+    let in_use = users(&volumes, folder);
     if !in_use.is_empty() {
         return Ok(Removal::InUse(in_use));
     }
@@ -371,6 +829,20 @@ pub(crate) async fn remove(client: &Client, folder: &str) -> anyhow::Result<Remo
         ),
     )
     .await?;
+    let owner = owner_volume_name(folder);
+    if volumes
+        .iter()
+        .any(|pv| pv["metadata"]["name"].as_str() == Some(owner.as_str()))
+    {
+        crate::k8s::delete_if_present(
+            client,
+            &crate::k8s::cluster_reference("v1", "PersistentVolume", &owner),
+        )
+        .await?;
+    }
+    for origin in origins_of(&volumes, folder) {
+        crate::k8s::merge_patch(client, &delete_when_released(origin)).await?;
+    }
     Ok(Removal::Removed)
 }
 
@@ -555,10 +1027,258 @@ mod tests {
                 size: "500Gi".into(),
                 ready: true,
                 used_by: vec!["jellyfin".into()],
+                kind: KIND_FILES.into(),
+                app: None,
+                backup: FolderBackup {
+                    enabled: false,
+                    schedule: DEFAULT_FOLDER_SCHEDULE.into(),
+                },
+                restoring_from: None,
+                restore_error: None,
             }
         );
         claim["status"] = json!({ "phase": "Pending" });
         assert!(!folder_of(&claim, &[]).unwrap().ready);
+    }
+
+    fn members(names: &[&str]) -> Vec<String> {
+        names.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn an_apps_data_belongs_to_the_app_and_release_that_made_it() {
+        assert_eq!(
+            state_owner("jellyfin-data", "jellyfin", "jellyfin", &[]),
+            StateOwner {
+                app: "jellyfin".into(),
+                release: "jellyfin".into(),
+                claim: "jellyfin-data".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn data_inside_a_pack_belongs_to_the_app_of_the_pack_that_made_it() {
+        let packed = state_owner(
+            "media-sonarr-data",
+            "movies-tv",
+            "media",
+            &members(&["jellyfin", "sonarr", "radarr"]),
+        );
+        assert_eq!(
+            packed,
+            StateOwner {
+                app: "sonarr".into(),
+                release: "media-sonarr".into(),
+                claim: "media-sonarr-data".into(),
+            }
+        );
+        let shared = state_owner("media-keys", "movies-tv", "media", &members(&["sonarr"]));
+        assert_eq!(shared.app, "movies-tv");
+    }
+
+    #[test]
+    fn an_apps_data_folder_is_named_after_the_app() {
+        assert_eq!(
+            state_folder_name("jellyfin", "jellyfin-data"),
+            "jellyfin-data"
+        );
+        assert_eq!(
+            state_folder_name("notes", "data-postgres-0"),
+            "notes-data-postgres-0"
+        );
+        assert!(is_name(&state_folder_name(&"a".repeat(60), "data")));
+    }
+
+    fn app_claim(name: &str, phase: &str, volume: &str) -> Value {
+        json!({
+            "metadata": { "name": name, "namespace": "yolab-jellyfin" },
+            "spec": { "volumeName": volume },
+            "status": { "phase": phase },
+        })
+    }
+
+    fn provisioned(path: &str) -> Value {
+        json!({
+            "metadata": { "name": "pvc-123" },
+            "spec": {
+                "capacity": { "storage": "50Gi" },
+                "persistentVolumeReclaimPolicy": "Delete",
+                "csi": {
+                    "driver": "cephfs.csi.ceph.com",
+                    "volumeAttributes": { "subvolumePath": path },
+                },
+            },
+        })
+    }
+
+    #[test]
+    fn only_an_apps_own_bound_cephfs_volume_becomes_a_folder() {
+        let volume = provisioned("/volumes/csi/csi-vol-1/abc");
+        assert!(adoptable(
+            &app_claim("jellyfin-data", "Bound", "pvc-123"),
+            &volume
+        ));
+        assert!(!adoptable(
+            &app_claim("jellyfin-data", "Pending", "pvc-123"),
+            &volume
+        ));
+        assert!(!adoptable(
+            &app_claim("volsync-x", "Bound", "pvc-123"),
+            &volume
+        ));
+        assert!(!adoptable(
+            &app_claim("folder-movies", "Bound", "yolab-jellyfin.folder-movies"),
+            &volume
+        ));
+        let mut block = volume.clone();
+        block["spec"]["csi"]["driver"] = json!("rbd.csi.ceph.com");
+        assert!(!adoptable(
+            &app_claim("jellyfin-data", "Bound", "pvc-123"),
+            &block
+        ));
+        assert!(!adoptable(
+            &app_claim("jellyfin-data", "Bound", "pvc-123"),
+            &provisioned("relative")
+        ));
+    }
+
+    #[test]
+    fn adopting_keeps_the_files_when_the_app_goes_and_remembers_whose_they_are() {
+        let patch = kept_for("pvc-123", "jellyfin-data", "yolab-jellyfin");
+        assert_eq!(patch["spec"]["persistentVolumeReclaimPolicy"], "Retain");
+        assert_eq!(patch["metadata"]["labels"][LABEL_STATE], "jellyfin-data");
+        assert_eq!(
+            patch["metadata"]["labels"][LABEL_STATE_NAMESPACE],
+            "yolab-jellyfin"
+        );
+        assert_eq!(patch["metadata"]["labels"][LABEL_STATE_ORIGIN], "true");
+    }
+
+    #[test]
+    fn an_adopted_folder_points_at_the_same_files_without_copying_them() {
+        let source = source_of(&provisioned("/volumes/csi/csi-vol-1/abc")).unwrap();
+        let volume = state_owner_volume("jellyfin-data", "cephfs.csi.ceph.com", &source);
+        assert_eq!(
+            volume["metadata"]["name"],
+            "yolab-folders.state-jellyfin-data"
+        );
+        assert_eq!(
+            volume["spec"]["csi"]["volumeAttributes"]["rootPath"],
+            "/volumes/csi/csi-vol-1/abc"
+        );
+        assert_eq!(volume["spec"]["persistentVolumeReclaimPolicy"], "Retain");
+        assert_eq!(volume["spec"]["csi"]["driver"], "cephfs.csi.ceph.com");
+        let owner = StateOwner {
+            app: "jellyfin".into(),
+            release: "jellyfin".into(),
+            claim: "jellyfin-data".into(),
+        };
+        let claim = state_owner_claim("jellyfin-data", "jellyfin-data", &owner, "50Gi");
+        assert_eq!(claim["spec"]["volumeName"], volume["metadata"]["name"]);
+        assert_eq!(claim["spec"]["storageClassName"], "");
+        assert_eq!(claim["metadata"]["labels"][LABEL_KIND], KIND_STATE);
+        assert_eq!(
+            claim["metadata"]["annotations"][ANN_STATE_RELEASE],
+            "jellyfin"
+        );
+        assert_eq!(
+            claim["metadata"]["annotations"][ANN_STATE_CLAIM],
+            "jellyfin-data"
+        );
+        assert!(source_of(&volume).is_some());
+    }
+
+    fn state_pv(folder: &str, namespace: &str, phase: &str) -> Value {
+        let mut pv = provisioned("/volumes/csi/csi-vol-1/abc");
+        pv["metadata"]["labels"] =
+            kept_for("pvc-123", folder, namespace)["metadata"]["labels"].clone();
+        pv["status"] = json!({ "phase": phase });
+        pv
+    }
+
+    #[test]
+    fn an_app_uses_its_data_folder_only_while_it_is_installed() {
+        let volumes = vec![state_pv("jellyfin-data", "yolab-jellyfin", "Bound")];
+        assert_eq!(users(&volumes, "jellyfin-data"), vec!["jellyfin"]);
+        let gone = vec![state_pv("jellyfin-data", "yolab-jellyfin", "Released")];
+        assert!(users(&gone, "jellyfin-data").is_empty());
+    }
+
+    #[test]
+    fn removing_a_data_folder_lets_its_original_volume_delete_the_files() {
+        let volumes = vec![
+            state_pv("jellyfin-data", "yolab-jellyfin", "Released"),
+            state_pv("other", "yolab-x", "Released"),
+        ];
+        assert_eq!(origins_of(&volumes, "jellyfin-data"), vec!["pvc-123"]);
+        assert_eq!(
+            delete_when_released("pvc-123")["spec"]["persistentVolumeReclaimPolicy"],
+            "Delete"
+        );
+    }
+
+    #[test]
+    fn a_files_folder_is_not_backed_up_unless_asked_and_a_data_folder_is() {
+        let files = owner_claim("movies", "Movies", 10);
+        assert_eq!(
+            FolderBackup::of(&files),
+            FolderBackup::default_for(KIND_FILES)
+        );
+        assert!(!FolderBackup::of(&files).enabled);
+        let owner = StateOwner {
+            app: "a".into(),
+            release: "a".into(),
+            claim: "a-data".into(),
+        };
+        assert!(FolderBackup::of(&state_owner_claim("a-data", "a-data", &owner, "1Gi")).enabled);
+        let mut chosen = files.clone();
+        chosen["metadata"]["annotations"][ANN_BACKUP] =
+            json!(r#"{"enabled":true,"schedule":"0 1 * * *"}"#);
+        assert_eq!(
+            FolderBackup::of(&chosen),
+            FolderBackup {
+                enabled: true,
+                schedule: "0 1 * * *".into()
+            }
+        );
+    }
+
+    fn folder(kind: &str, enabled: bool, used_by: &[&str]) -> Folder {
+        Folder {
+            name: "f".into(),
+            title: "f".into(),
+            size: "1Gi".into(),
+            ready: true,
+            used_by: used_by.iter().map(|s| s.to_string()).collect(),
+            kind: kind.into(),
+            app: None,
+            backup: FolderBackup {
+                enabled,
+                schedule: DEFAULT_FOLDER_SCHEDULE.into(),
+            },
+            restoring_from: None,
+            restore_error: None,
+        }
+    }
+
+    #[test]
+    fn a_files_folder_is_backed_up_on_its_own_when_asked_whoever_uses_it() {
+        assert!(folder(KIND_FILES, true, &["jellyfin"]).backed_up_on_its_own());
+        assert!(!folder(KIND_FILES, false, &[]).backed_up_on_its_own());
+    }
+
+    #[test]
+    fn a_data_folder_is_backed_up_with_its_app_and_on_its_own_once_the_app_is_gone() {
+        assert!(!folder(KIND_STATE, true, &["jellyfin"]).backed_up_on_its_own());
+        assert!(folder(KIND_STATE, true, &[]).backed_up_on_its_own());
+    }
+
+    #[test]
+    fn a_folder_still_being_made_is_not_backed_up() {
+        let mut new = folder(KIND_FILES, true, &[]);
+        new.ready = false;
+        assert!(!new.backed_up_on_its_own());
     }
 
     mod against_kubernetes {
@@ -744,6 +1464,153 @@ mod tests {
                     "/api/v1/namespaces/{NAMESPACE}/persistentvolumeclaims/folder-movies"
                 )]
             );
+        }
+
+        async fn installed_jellyfin(server: &wiremock::MockServer, volume: Value) {
+            let mut claim = app_claim("jellyfin-data", "Bound", "pvc-123");
+            claim["apiVersion"] = json!("v1");
+            claim["kind"] = json!("PersistentVolumeClaim");
+            serve(
+                server,
+                "/api/v1/namespaces/yolab-jellyfin/persistentvolumeclaims",
+                200,
+                listed("PersistentVolumeClaim", vec![claim]),
+            )
+            .await;
+            serve(
+                server,
+                &format!("/api/v1/namespaces/{NAMESPACE}/persistentvolumeclaims"),
+                200,
+                listed("PersistentVolumeClaim", vec![]),
+            )
+            .await;
+            let mut volume = volume;
+            volume["apiVersion"] = json!("v1");
+            volume["kind"] = json!("PersistentVolume");
+            serve(server, "/api/v1/persistentvolumes/pvc-123", 200, volume).await;
+            for path in [
+                "/api/v1/persistentvolumes/yolab-folders.state-jellyfin-data".to_string(),
+                format!(
+                    "/api/v1/namespaces/{NAMESPACE}/persistentvolumeclaims/folder-jellyfin-data"
+                ),
+            ] {
+                serve(server, &path, 404, status(404, "NotFound")).await;
+            }
+            accept_patches(server).await;
+        }
+
+        fn jellyfin() -> AppVolumes<'static> {
+            AppVolumes {
+                namespace: "yolab-jellyfin",
+                app_id: "jellyfin",
+                release: "jellyfin",
+                members: &[],
+            }
+        }
+
+        #[tokio::test]
+        async fn adopting_keeps_the_files_before_it_records_them_as_a_folder() {
+            let (server, client) = api_server().await;
+            installed_jellyfin(&server, provisioned("/volumes/csi/csi-vol-1/abc")).await;
+            let adopted = adopt(&client, &jellyfin()).await.unwrap();
+            assert_eq!(adopted, vec!["jellyfin-data"]);
+            let names: Vec<String> = patched(&server)
+                .await
+                .iter()
+                .map(|p| {
+                    format!(
+                        "{}/{}",
+                        p["kind"].as_str().unwrap_or(""),
+                        p["metadata"]["name"].as_str().unwrap_or("")
+                    )
+                })
+                .collect();
+            let retain = names
+                .iter()
+                .position(|n| n == "PersistentVolume/pvc-123")
+                .unwrap();
+            let owner = names
+                .iter()
+                .position(|n| n == "PersistentVolume/yolab-folders.state-jellyfin-data")
+                .unwrap();
+            let folder = names
+                .iter()
+                .position(|n| n == "PersistentVolumeClaim/folder-jellyfin-data")
+                .unwrap();
+            assert!(retain < owner && owner < folder, "{names:?}");
+        }
+
+        #[tokio::test]
+        async fn a_volume_already_adopted_is_never_adopted_twice() {
+            let (server, client) = api_server().await;
+            let mut volume = provisioned("/volumes/csi/csi-vol-1/abc");
+            volume["metadata"]["labels"] = json!({ LABEL_STATE: "jellyfin-data" });
+            installed_jellyfin(&server, volume).await;
+            assert!(adopt(&client, &jellyfin()).await.unwrap().is_empty());
+            assert!(!patched(&server)
+                .await
+                .iter()
+                .any(|p| p["kind"] == "PersistentVolume" && p["metadata"]["name"] == "pvc-123"));
+        }
+
+        #[tokio::test]
+        async fn a_half_finished_adoption_gets_its_folder_on_the_next_pass() {
+            let (server, client) = api_server().await;
+            let mut volume = provisioned("/volumes/csi/csi-vol-1/abc");
+            volume["metadata"]["labels"] = kept_for("pvc-123", "jellyfin-data", "yolab-jellyfin")
+                ["metadata"]["labels"]
+                .clone();
+            installed_jellyfin(&server, volume).await;
+            assert!(adopt(&client, &jellyfin()).await.unwrap().is_empty());
+            assert!(patched(&server)
+                .await
+                .iter()
+                .any(|p| p["metadata"]["name"] == "folder-jellyfin-data"));
+        }
+
+        #[tokio::test]
+        async fn removing_an_unused_data_folder_lets_its_files_go() {
+            let (server, client) = api_server().await;
+            let mut owner = provisioned("/x");
+            owner["metadata"]["name"] = json!("yolab-folders.state-jellyfin-data");
+            serve_volumes(
+                &server,
+                vec![
+                    state_pv("jellyfin-data", "yolab-jellyfin", "Released"),
+                    owner,
+                ],
+            )
+            .await;
+            accept_deletes(&server).await;
+            accept_patches(&server).await;
+            assert!(matches!(
+                remove(&client, "jellyfin-data").await.unwrap(),
+                Removal::Removed
+            ));
+            assert_eq!(deleted(&server).await.len(), 2);
+            let flipped = patched(&server).await;
+            assert_eq!(flipped.len(), 1);
+            assert_eq!(flipped[0]["metadata"]["name"], "pvc-123");
+            assert_eq!(
+                flipped[0]["spec"]["persistentVolumeReclaimPolicy"],
+                "Delete"
+            );
+        }
+
+        #[tokio::test]
+        async fn a_data_folder_is_kept_while_its_app_is_installed() {
+            let (server, client) = api_server().await;
+            serve_volumes(
+                &server,
+                vec![state_pv("jellyfin-data", "yolab-jellyfin", "Bound")],
+            )
+            .await;
+            accept_deletes(&server).await;
+            assert!(matches!(
+                remove(&client, "jellyfin-data").await.unwrap(),
+                Removal::InUse(_)
+            ));
+            assert!(deleted(&server).await.is_empty());
         }
 
         #[tokio::test]

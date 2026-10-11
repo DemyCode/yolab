@@ -21,6 +21,43 @@
           "default": "5Gi",
           "description": "How much CephFS storage to allocate (e.g. 20Gi, 100Gi, 500Gi)"
         },
+        "media_server": {
+          "type": "object",
+          "title": "Jellyfin",
+          "format": "yolab-output",
+          "x-yolab-from": ["jellyfin"],
+          "x-yolab-outputs": ["internal_url", "username", "password"],
+          "description": "Seerr signs in to this Jellyfin as its admin the first time it starts, which also makes that the account you sign in to Seerr with. Leave it empty to go through Seerr's own setup.",
+          "properties": {
+            "internal_url": { "type": "string", "title": "Address", "format": "uri" },
+            "username": { "type": "string", "title": "Admin username" },
+            "password": { "type": "string", "title": "Admin password" }
+          }
+        },
+        "radarr": {
+          "type": "object",
+          "title": "Radarr",
+          "format": "yolab-output",
+          "x-yolab-from": ["radarr"],
+          "x-yolab-outputs": ["internal_url", "api_key"],
+          "description": "Film requests go to this Radarr. Seerr keeps one Radarr called \"Radarr (YoLab)\" set to it.",
+          "properties": {
+            "internal_url": { "type": "string", "title": "Address", "format": "uri" },
+            "api_key": { "type": "string", "title": "API key" }
+          }
+        },
+        "sonarr": {
+          "type": "object",
+          "title": "Sonarr",
+          "format": "yolab-output",
+          "x-yolab-from": ["sonarr"],
+          "x-yolab-outputs": ["internal_url", "api_key"],
+          "description": "Show requests go to this Sonarr. Seerr keeps one Sonarr called \"Sonarr (YoLab)\" set to it.",
+          "properties": {
+            "internal_url": { "type": "string", "title": "Address", "format": "uri" },
+            "api_key": { "type": "string", "title": "API key" }
+          }
+        },
         "file_explorer_enabled": {
           "type": "boolean",
           "title": "File explorer",
@@ -233,6 +270,18 @@
       "type": "object",
       "readOnly": true,
       "properties": {
+        "internal_url": {
+          "type": "string",
+          "title": "Address inside YoLab",
+          "format": "uri",
+          "source": { "service": { "name": "jellyseerr", "port": 5055 } }
+        },
+        "api_key": {
+          "type": "string",
+          "title": "API key",
+          "format": "secret",
+          "source": { "logs": "YOLAB_OUTPUT api_key (\\S+)" }
+        },
         "url": {
           "type": "string",
           "title": "Web URL",

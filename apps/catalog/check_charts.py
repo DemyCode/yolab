@@ -114,6 +114,39 @@ VARIANTS = {
             **linked("existing_client", QBITTORRENT_LINK),
         },
         {"config.watch_anywhere": "false", "config.manage_anywhere": "false"},
+        {"config.requests": "false", "config.subtitles": "false"},
+    ],
+    "jellyseerr": [
+        {
+            **linked(
+                "media_server",
+                {
+                    "internal_url": "http://jellyfin.yolab-j.svc.cluster.local:8096",
+                    "username": "admin",
+                    "password": "PlaceholderPw2026",
+                },
+            ),
+            **linked(
+                "radarr",
+                {
+                    "internal_url": "http://radarr.yolab-r.svc.cluster.local:7878",
+                    "api_key": "PlaceholderApiKey2026",
+                },
+            ),
+        }
+    ],
+    "bazarr": [
+        {
+            **linked(
+                "sonarr",
+                {
+                    "internal_url": "http://sonarr.yolab-s.svc.cluster.local:8989",
+                    "api_key": "PlaceholderApiKey2026",
+                },
+            ),
+            "config.subtitle_languages[0]": "fr",
+            "config.subtitle_languages[1]": "en",
+        }
     ],
     "music": [
         {
@@ -140,6 +173,12 @@ VARIANTS = {
     "jellyfin": [
         {"gpu.name": "nuc", "gpu.accelerator": "intel"},
         {"gpu.name": "gpu-box", "gpu.accelerator": "nvidia"},
+        {
+            "config.media_folder": "probe-folder",
+            "config.libraries[0].name": "Films",
+            "config.libraries[0].kind": "movies",
+            "config.libraries[0].path": "movies",
+        },
     ],
     "immich": [
         {"gpu.name": "gpu-box", "gpu.accelerator": "nvidia"},

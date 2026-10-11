@@ -322,3 +322,37 @@ export function podsByMember(pods: PodInfo[]): MemberPods[] {
 export function packMembers(app: AppInfo, catalog: CatalogApp[]): string[] {
   return catalogEntry(app, catalog)?.members ?? [];
 }
+
+export interface PackMember {
+  id: string;
+  name: string;
+  icon: string;
+}
+
+export interface HomePack {
+  app: AppInfo;
+  members: PackMember[];
+}
+
+export function homeLayout(
+  installed: AppInfo[],
+  catalog: CatalogApp[],
+): { apps: AppInfo[]; packs: HomePack[] } {
+  const apps: AppInfo[] = [];
+  const packs: HomePack[] = [];
+  for (const app of installed) {
+    const members = packMembers(app, catalog);
+    if (members.length === 0) {
+      apps.push(app);
+      continue;
+    }
+    packs.push({
+      app,
+      members: members.map((id) => {
+        const entry = catalog.find((c) => c.id === id);
+        return { id, name: entry?.name ?? id, icon: entry?.icon ?? "📦" };
+      }),
+    });
+  }
+  return { apps, packs };
+}

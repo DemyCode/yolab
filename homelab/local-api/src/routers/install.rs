@@ -484,6 +484,21 @@ async fn apply_chart<H: Host + 'static>(
         ));
     }
 
+    let members = crate::routers::apps::chart_members(&staged.chart_dir);
+    if let Err(e) = crate::routers::apps::keep_data_as_folders(
+        &b.kube,
+        &staged.ns,
+        job.app_id,
+        job.release,
+        &members,
+    )
+    .await
+    {
+        log.say(format!(
+            "[WARN] this app's data is not kept as a folder yet ({e:#}) — it is retried in the background"
+        ));
+    }
+
     let (volumes, resources) = collect_runtime(&b.kube, &staged.ns).await;
     let definition = AppDefinition {
         schema: DEFINITION_SCHEMA,

@@ -38,6 +38,18 @@
             { "const": "existing", "title": "Use a qBittorrent I already have" }
           ]
         },
+        "requests": {
+          "type": "boolean",
+          "title": "Requests with Seerr",
+          "default": true,
+          "description": "The people you share Jellyfin with sign in to Seerr with their Jellyfin account and ask for films and shows; Radarr and Sonarr fetch them."
+        },
+        "subtitles": {
+          "type": "boolean",
+          "title": "Subtitles with Bazarr",
+          "default": true,
+          "description": "Finds subtitles for everything Sonarr and Radarr bring in."
+        },
         "hardware_transcoding": {
           "type": "boolean",
           "title": "Hardware transcoding",
@@ -58,6 +70,27 @@
         }
       },
       "dependencies": {
+        "subtitles": {
+          "oneOf": [
+            {
+              "properties": {
+                "subtitles": { "const": false }
+              }
+            },
+            {
+              "properties": {
+                "subtitles": { "const": true },
+                "subtitle_languages": {
+                  "type": "array",
+                  "title": "Subtitle languages",
+                  "default": ["en"],
+                  "description": "Two-letter codes, e.g. en, fr, de.",
+                  "items": { "type": "string", "pattern": "^[a-z]{2}$" }
+                }
+              }
+            }
+          ]
+        },
         "download_client": {
           "oneOf": [
             {
@@ -147,6 +180,76 @@
           "format": "secret",
           "source": { "logs": "YOLAB_OUTPUT qbittorrent_password (\\S+)" },
           "when": { "properties": { "download_client": { "const": "new" } } }
+        },
+        "jellyfin_username": {
+          "type": "string",
+          "title": "Jellyfin username",
+          "format": "text",
+          "source": { "logs": "YOLAB_OUTPUT jellyfin_username (\\S+)" }
+        },
+        "jellyfin_password": {
+          "type": "string",
+          "title": "Jellyfin password",
+          "format": "secret",
+          "source": { "logs": "YOLAB_OUTPUT jellyfin_password (\\S+)" }
+        },
+        "jellyfin_api_key": {
+          "type": "string",
+          "title": "Jellyfin API key",
+          "format": "secret",
+          "source": { "logs": "YOLAB_OUTPUT jellyfin_api_key (\\S+)" }
+        },
+        "jellyseerr_url": {
+          "type": "string",
+          "title": "Seerr",
+          "format": "uri",
+          "source": { "logs": "YOLAB_OUTPUT jellyseerr_url (\\S+)" },
+          "when": {
+            "properties": {
+              "watch_anywhere": { "const": true },
+              "requests": { "const": true }
+            }
+          }
+        },
+        "jellyseerr_api_key": {
+          "type": "string",
+          "title": "Seerr API key",
+          "format": "secret",
+          "source": { "logs": "YOLAB_OUTPUT jellyseerr_api_key (\\S+)" },
+          "when": { "properties": { "requests": { "const": true } } }
+        },
+        "jellyseerr_internal_url": {
+          "type": "string",
+          "title": "Seerr inside YoLab",
+          "format": "uri",
+          "source": { "service": { "name": "jellyseerr", "port": 5055 } },
+          "when": { "properties": { "requests": { "const": true } } }
+        },
+        "bazarr_url": {
+          "type": "string",
+          "title": "Bazarr",
+          "format": "uri",
+          "source": { "logs": "YOLAB_OUTPUT bazarr_url (\\S+)" },
+          "when": {
+            "properties": {
+              "manage_anywhere": { "const": true },
+              "subtitles": { "const": true }
+            }
+          }
+        },
+        "bazarr_api_key": {
+          "type": "string",
+          "title": "Bazarr API key",
+          "format": "secret",
+          "source": { "logs": "YOLAB_OUTPUT bazarr_api_key (\\S+)" },
+          "when": { "properties": { "subtitles": { "const": true } } }
+        },
+        "bazarr_internal_url": {
+          "type": "string",
+          "title": "Bazarr inside YoLab",
+          "format": "uri",
+          "source": { "service": { "name": "bazarr", "port": 6767 } },
+          "when": { "properties": { "subtitles": { "const": true } } }
         },
         "sonarr_api_key": {
           "type": "string",

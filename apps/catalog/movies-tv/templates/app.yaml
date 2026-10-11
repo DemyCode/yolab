@@ -5,11 +5,14 @@
 {{- $radarrKey := include "yolab-stack.secret" (list . $keys "radarr") -}}
 {{- $prowlarrKey := include "yolab-stack.secret" (list . $keys "prowlarr") -}}
 {{- $qbittorrentPassword := include "yolab-stack.secret" (list . $keys "qbittorrent") -}}
+{{- $jellyfinPassword := include "yolab-stack.secret" (list . $keys "jellyfin") -}}
 {{- $newClient := ne ($cfg.download_client | default "new") "existing" -}}
 {{- $client := dict "internal_url" "http://qbittorrent:8080" "username" "admin" "password" $qbittorrentPassword -}}
 {{- if not $newClient }}
 {{- $client = $cfg.existing_client | default dict -}}
 {{- end }}
+{{- $sonarr := dict "internal_url" "http://sonarr:8989" "api_key" $sonarrKey -}}
+{{- $radarr := dict "internal_url" "http://radarr:7878" "api_key" $radarrKey -}}
 apiVersion: v1
 kind: Secret
 metadata:
@@ -21,6 +24,7 @@ stringData:
   radarr: {{ $radarrKey | quote }}
   prowlarr: {{ $prowlarrKey | quote }}
   qbittorrent: {{ $qbittorrentPassword | quote }}
+  jellyfin: {{ $jellyfinPassword | quote }}
 {{- with $folder }}
 ---
 {{ include "yolab-stack.folderClaim" (list $ .) }}
@@ -29,7 +33,11 @@ stringData:
 {{ include "yolab-stack.member" (list . "jellyfin" (dict
       "media_folder" $folder
       "yolab_enabled" $cfg.watch_anywhere
-      "hardware_transcoding" $cfg.hardware_transcoding)) }}
+      "hardware_transcoding" $cfg.hardware_transcoding
+      "admin_password" $jellyfinPassword
+      "libraries" (list
+        (dict "name" "Films" "kind" "movies" "path" "movies")
+        (dict "name" "Shows" "kind" "tvshows" "path" "tv")))) }}
 {{- if $newClient }}
 ---
 {{ include "yolab-stack.member" (list . "qbittorrent" (dict
@@ -53,5 +61,22 @@ stringData:
 {{ include "yolab-stack.member" (list . "prowlarr" (dict
       "yolab_enabled" $cfg.manage_anywhere
       "api_key" $prowlarrKey
-      "sonarr" (dict "internal_url" "http://sonarr:8989" "api_key" $sonarrKey)
-      "radarr" (dict "internal_url" "http://radarr:7878" "api_key" $radarrKey))) }}
+      "sonarr" $sonarr
+      "radarr" $radarr)) }}
+{{- if $cfg.requests }}
+---
+{{ include "yolab-stack.member" (list . "jellyseerr" (dict
+      "yolab_enabled" $cfg.watch_anywhere
+      "media_server" (dict "internal_url" "http://jellyfin:8096" "username" "admin" "password" $jellyfinPassword)
+      "sonarr" $sonarr
+      "radarr" $radarr)) }}
+{{- end }}
+{{- if $cfg.subtitles }}
+---
+{{ include "yolab-stack.member" (list . "bazarr" (dict
+      "media_folder" $folder
+      "yolab_enabled" $cfg.manage_anywhere
+      "subtitle_languages" $cfg.subtitle_languages
+      "sonarr" $sonarr
+      "radarr" $radarr)) }}
+{{- end }}

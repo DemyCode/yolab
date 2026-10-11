@@ -29,6 +29,37 @@
           "default": "10Gi",
           "description": "How much CephFS storage to allocate (e.g. 20Gi, 100Gi, 500Gi)"
         },
+        "subtitle_languages": {
+          "type": "array",
+          "title": "Subtitle languages",
+          "default": ["en"],
+          "description": "Two-letter codes, e.g. en, fr, de. Bazarr starts with a profile looking for these on every show and film; once it has profiles, change them in Bazarr itself.",
+          "items": { "type": "string", "pattern": "^[a-z]{2}$" }
+        },
+        "sonarr": {
+          "type": "object",
+          "title": "Sonarr",
+          "format": "yolab-output",
+          "x-yolab-from": ["sonarr"],
+          "x-yolab-outputs": ["internal_url", "api_key"],
+          "description": "Bazarr finds subtitles for the shows this Sonarr manages.",
+          "properties": {
+            "internal_url": { "type": "string", "title": "Address", "format": "uri" },
+            "api_key": { "type": "string", "title": "API key" }
+          }
+        },
+        "radarr": {
+          "type": "object",
+          "title": "Radarr",
+          "format": "yolab-output",
+          "x-yolab-from": ["radarr"],
+          "x-yolab-outputs": ["internal_url", "api_key"],
+          "description": "Bazarr finds subtitles for the films this Radarr manages.",
+          "properties": {
+            "internal_url": { "type": "string", "title": "Address", "format": "uri" },
+            "api_key": { "type": "string", "title": "API key" }
+          }
+        },
         "file_explorer_enabled": {
           "type": "boolean",
           "title": "File explorer",
@@ -195,6 +226,18 @@
       "type": "object",
       "readOnly": true,
       "properties": {
+        "internal_url": {
+          "type": "string",
+          "title": "Address inside YoLab",
+          "format": "uri",
+          "source": { "service": { "name": "bazarr", "port": 6767 } }
+        },
+        "api_key": {
+          "type": "string",
+          "title": "API key",
+          "format": "secret",
+          "source": { "logs": "YOLAB_OUTPUT api_key (\\S+)" }
+        },
         "url": {
           "type": "string",
           "title": "Web URL",

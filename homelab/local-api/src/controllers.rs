@@ -32,6 +32,7 @@ pub const NAMES: &[&str] = &[
     "ceph-keys",
     "ceph-join",
     "csi-recovery",
+    "data-folders",
 ];
 
 fn spawn_observed(leader: &Leadership) {
@@ -59,6 +60,7 @@ pub fn spawn_all(leader: Leadership) {
     restore::start_heartbeat();
     spawn(apps::UninstallWatchdogController, &leader);
     spawn(crate::outputs::OutputsController, &leader);
+    spawn(apps::DataFoldersController, &leader);
     spawn(backups::LockSweeperController, &leader);
     spawn(crate::routers::copy::CopySweeperController, &leader);
 
@@ -149,6 +151,7 @@ pub async fn run_named(name: &str) -> anyhow::Result<runtime::Tick> {
         "restore-watchdog" => runtime::run_once(&restore::RestoreWatchdogController).await,
         "uninstall-watchdog" => runtime::run_once(&apps::UninstallWatchdogController).await,
         "outputs" => runtime::run_once(&crate::outputs::OutputsController).await,
+        "data-folders" => runtime::run_once(&apps::DataFoldersController).await,
         "store-sync" => runtime::run_once(&crate::store::sync::StoreSyncController).await,
         "backup-lock-sweeper" => runtime::run_once(&backups::LockSweeperController).await,
         "copy-sweeper" => runtime::run_once(&crate::routers::copy::CopySweeperController).await,

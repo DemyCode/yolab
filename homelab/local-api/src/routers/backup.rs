@@ -59,13 +59,21 @@ pub(crate) struct BackupSet {
 pub(crate) enum BackupTarget {
     Cluster,
     App(String),
+    Folder(String),
+}
+
+pub(crate) const FOLDER_KEY: &str = "folder:";
+
+pub(crate) fn folder_key(folder: &str) -> String {
+    format!("{FOLDER_KEY}{folder}")
 }
 
 impl BackupTarget {
-    fn namespace(&self) -> &str {
+    fn key(&self) -> String {
         match self {
-            BackupTarget::Cluster => "",
-            BackupTarget::App(ns) => ns,
+            BackupTarget::Cluster => String::new(),
+            BackupTarget::App(ns) => ns.clone(),
+            BackupTarget::Folder(folder) => folder_key(folder),
         }
     }
     fn is_cluster(&self) -> bool {
@@ -199,6 +207,18 @@ pub(crate) async fn start_app<H: Host>(
     enqueue(b, BackupTarget::App(namespace.to_string()), triggered_by).await
 }
 
+pub(crate) async fn start_folder<H: Host>(
+    b: &Backend<H>,
+    folder: &str,
+    triggered_by: &str,
+) -> anyhow::Result<String> {
+    anyhow::ensure!(
+        crate::folders::is_name(folder),
+        "{folder:?} is not a folder name"
+    );
+    enqueue(b, BackupTarget::Folder(folder.to_string()), triggered_by).await
+}
+
 async fn enqueue<H: Host>(
     b: &Backend<H>,
     target: BackupTarget,
@@ -211,7 +231,7 @@ async fn enqueue<H: Host>(
         anyhow::bail!("not backing up: {why}");
     }
 
-    let namespace = target.namespace().to_string();
+    let namespace = target.key();
     let id = new_id();
     let queued = BackupSet {
         id: id.clone(),
@@ -294,9 +314,34 @@ async fn promote_next(client: &Client) -> anyhow::Result<Option<Promoted>> {
 fn target_of(set: &BackupSet) -> BackupTarget {
     if set.namespace.is_empty() {
         BackupTarget::Cluster
+    } else if let Some(folder) = set.namespace.strip_prefix(FOLDER_KEY) {
+        BackupTarget::Folder(folder.to_string())
     } else {
         BackupTarget::App(set.namespace.clone())
     }
+}
+
+async fn folder_pvc(client: &Client, folder: &str) -> anyhow::Result<PvcInfo> {
+    let name = crate::folders::claim_name(folder);
+    let claim = crate::k8s::get(
+        client,
+        &crate::k8s::reference(
+            "v1",
+            "PersistentVolumeClaim",
+            crate::folders::NAMESPACE,
+            &name,
+        ),
+    )
+    .await?
+    .ok_or_else(|| anyhow::anyhow!("the folder {folder} no longer exists"))?;
+    Ok(PvcInfo {
+        namespace: crate::folders::NAMESPACE.to_string(),
+        name,
+        capacity: claim["spec"]["resources"]["requests"]["storage"]
+            .as_str()
+            .unwrap_or("?")
+            .to_string(),
+    })
 }
 
 fn spawn_run<H: Host + 'static>(b: Backend<H>, cfg: BackupConfig, promoted: Promoted) {
@@ -315,14 +360,17 @@ async fn run_set<H: Host>(
     target: &BackupTarget,
     run_id: &str,
 ) -> anyhow::Result<(String, Vec<ServiceSummary>)> {
-    let pvcs: Vec<PvcInfo> = user_pvcs(&b.kube)
-        .await?
-        .into_iter()
-        .filter(|p| match target {
-            BackupTarget::Cluster => true,
-            BackupTarget::App(ns) => &p.namespace == ns,
-        })
-        .collect();
+    let pvcs: Vec<PvcInfo> = match target {
+        BackupTarget::Folder(folder) => vec![folder_pvc(&b.kube, folder).await?],
+        _ => user_pvcs(&b.kube)
+            .await?
+            .into_iter()
+            .filter(|p| match target {
+                BackupTarget::App(ns) => &p.namespace == ns,
+                _ => true,
+            })
+            .collect(),
+    };
     let mut pending = Vec::new();
     let mut failures = Vec::new();
     for pvc in &pvcs {
@@ -363,6 +411,19 @@ async fn run_set<H: Host>(
                 pvc.namespace, pvc.name
             )),
         }
+    }
+
+    if let BackupTarget::Folder(folder) = target {
+        anyhow::ensure!(
+            failures.is_empty(),
+            "the folder {folder} did not back up: {}",
+            failures.join("; ")
+        );
+        return pinned
+            .into_values()
+            .next()
+            .map(|snap| (snap.id, Vec::new()))
+            .ok_or_else(|| anyhow::anyhow!("the folder {folder} uploaded nothing"));
     }
 
     let (snapshot_id, services) = snapshot_cluster(b, cfg, &pinned, target, run_id).await?;
@@ -745,6 +806,7 @@ async fn snapshot_cluster_inner<H: Host>(
     let namespaces: Vec<String> = match target {
         BackupTarget::Cluster => managed_namespaces(&b.kube).await?,
         BackupTarget::App(ns) => vec![ns.clone()],
+        BackupTarget::Folder(_) => Vec::new(),
     };
     let include_etcd = target.is_cluster();
 
@@ -890,6 +952,7 @@ async fn snapshot_cluster_inner<H: Host>(
     let scope_tag = match target {
         BackupTarget::Cluster => "scope:cluster".to_string(),
         BackupTarget::App(ns) => format!("namespace:{ns}"),
+        BackupTarget::Folder(folder) => folder_key(folder),
     };
     let backup = restic_with(
         &b.host,
@@ -1157,6 +1220,35 @@ async fn schedule<H: Host + Clone + 'static>(b: &Backend<H>) -> anyhow::Result<T
                 queued += 1;
             }
             Err(e) => tracing::warn!("backup: could not queue {ns}: {e}"),
+        }
+    }
+
+    let folders = crate::folders::list(&b.kube).await.unwrap_or_else(|e| {
+        tracing::warn!("backup: could not list the folders ({e:#})");
+        Vec::new()
+    });
+    for folder in folders.iter().filter(|f| f.backed_up_on_its_own()) {
+        let key = folder_key(&folder.name);
+        if running_for(&sets, &key) || queued_for(&sets, &key).is_some() {
+            continue;
+        }
+        let Ok(schedule) = crate::cron::Cron::parse(&folder.backup.schedule) else {
+            tracing::warn!(
+                "folder {}: backup schedule {:?} is not a valid cron expression — skipping",
+                folder.name,
+                folder.backup.schedule
+            );
+            continue;
+        };
+        if !schedule.due(last_ok_for(&sets, &key), now) {
+            continue;
+        }
+        match start_folder(b, &folder.name, "schedule").await {
+            Ok(id) => {
+                tracing::info!("backup: queued the folder {} ({id})", folder.name);
+                queued += 1;
+            }
+            Err(e) => tracing::warn!("backup: could not queue the folder {}: {e}", folder.name),
         }
     }
 
@@ -1534,6 +1626,24 @@ mod tests {
             target_of(&queued_at("a", "yolab-a", "t")),
             BackupTarget::App("yolab-a".into())
         );
+    }
+
+    #[test]
+    fn a_folders_backup_is_recorded_under_its_own_key_and_runs_as_that_folder() {
+        let target = BackupTarget::Folder("movies".into());
+        assert_eq!(target.key(), "folder:movies");
+        assert_eq!(
+            target_of(&queued_at("f", &target.key(), "t")),
+            BackupTarget::Folder("movies".into())
+        );
+        assert!(!target.is_cluster());
+    }
+
+    #[test]
+    fn a_folder_and_an_app_with_the_same_name_never_share_a_queue_slot() {
+        let sets = vec![queued_at("f", &folder_key("yolab-movies"), "t")];
+        assert!(queued_for(&sets, "yolab-movies").is_none());
+        assert!(queued_for(&sets, &folder_key("yolab-movies")).is_some());
     }
 
     #[test]

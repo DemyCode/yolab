@@ -119,6 +119,7 @@ spec:
           mountPath: /data/{{ . }}
           readOnly: true
         {{- end }}
+      {{- include "jellyfin.setup" . | nindent 6 }}
       volumes:
       {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}

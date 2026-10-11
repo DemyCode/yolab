@@ -2457,6 +2457,8 @@ class PackRendered(RenderedChart):
                 "sonarr-gateway",
                 "radarr-gateway",
                 "prowlarr-gateway",
+                "jellyseerr-gateway",
+                "bazarr-gateway",
             },
         )
         register = next(
@@ -2624,3 +2626,67 @@ class NavidromeFolder(RenderedChart):
     def test_without_a_folder_it_plays_its_own_music(self):
         spec = self.deployments(self.docs())["gateway"]
         self.assertEqual(self.env(spec, "navidrome")["ND_MUSICFOLDER"], "/music")
+
+
+class PackReadyToUse(RenderedChart):
+    CHART = "movies-tv"
+    PROBE: ClassVar[dict] = {"config.media_folder": "media"}
+
+    def pods(self, extra=None):
+        return self.deployments(self.docs({**self.PROBE, **(extra or {})}))
+
+    def test_jellyfin_is_set_up_with_a_library_for_each_part_of_the_folder(self):
+        setup = self.env(self.pods()["jellyfin-gateway"], "setup")
+        self.assertEqual(setup["ROOT"], "/data/media")
+        self.assertEqual(
+            json.loads(setup["LIBRARIES"]),
+            [
+                {"name": "Films", "kind": "movies", "path": "movies"},
+                {"name": "Shows", "kind": "tvshows", "path": "tv"},
+            ],
+        )
+        self.assertEqual(len(setup["PASSWORD"]), 32)
+
+    def test_seerr_signs_in_with_the_admin_jellyfin_was_set_up_with(self):
+        pods = self.pods()
+        jellyfin = self.env(pods["jellyfin-gateway"], "setup")
+        seerr = self.env(pods["jellyseerr-gateway"], "configure")
+        self.assertEqual(seerr["JELLYFIN_URL"], "http://jellyfin:8096")
+        self.assertEqual(seerr["JELLYFIN_USERNAME"], "admin")
+        self.assertEqual(seerr["JELLYFIN_PASSWORD"], jellyfin["PASSWORD"])
+
+    def test_seerr_and_bazarr_get_the_keys_the_arrs_run_with(self):
+        pods = self.pods()
+        radarr = self.env(pods["radarr-gateway"], "radarr")["RADARR__AUTH__APIKEY"]
+        sonarr = self.env(pods["sonarr-gateway"], "sonarr")["SONARR__AUTH__APIKEY"]
+        for pod in ("jellyseerr-gateway", "bazarr-gateway"):
+            env = self.env(pods[pod], "configure")
+            self.assertEqual(env["RADARR_KEY"], radarr, pod)
+            self.assertEqual(env["SONARR_KEY"], sonarr, pod)
+
+    def test_bazarr_looks_for_the_chosen_languages(self):
+        env = self.env(
+            self.pods({"config.subtitle_languages[0]": "fr"})["bazarr-gateway"],
+            "configure",
+        )
+        self.assertEqual(env["LANGUAGES"], "fr")
+
+    def test_without_requests_and_subtitles_neither_runs(self):
+        pods = self.pods(check_charts.VARIANTS["movies-tv"][2])
+        self.assertNotIn("jellyseerr-gateway", pods)
+        self.assertNotIn("bazarr-gateway", pods)
+
+
+class JellyfinSetup(RenderedChart):
+    CHART = "jellyfin"
+
+    def test_an_install_from_before_is_left_to_its_own_setup(self):
+        spec = self.deployments(self.docs({"config.admin_password": ""}))["gateway"]
+        self.assertNotIn("setup", {c["name"] for c in spec["containers"]})
+
+    def test_a_chosen_password_sets_jellyfin_up_and_reports_how_to_sign_in(self):
+        spec = self.deployments(self.docs())["gateway"]
+        env = self.env(spec, "setup")
+        self.assertEqual(env["PASSWORD"], "PlaceholderPw2026")
+        self.assertEqual(env["USERNAME_OUTPUT"], "username")
+        self.assertEqual(env["ROOT"], "/media")

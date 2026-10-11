@@ -5,6 +5,10 @@ config:
   subdomain: media
   media_folder: ""
   download_client: new
+  requests: true
+  subtitles: true
+  subtitle_languages:
+    - en
   hardware_transcoding: true
   watch_anywhere: true
   manage_anywhere: true

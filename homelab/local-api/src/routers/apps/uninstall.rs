@@ -107,6 +107,7 @@ pub(crate) const VOLUME_DELETE_POLL: std::time::Duration = std::time::Duration::
 pub(crate) fn volumes_of(pvs: &[Value], ns: &str) -> Vec<String> {
     pvs.iter()
         .filter(|pv| pv["spec"]["claimRef"]["namespace"].as_str() == Some(ns))
+        .filter(|pv| crate::folders::state_folder_of(pv).is_none())
         .filter_map(|pv| pv["metadata"]["name"].as_str().map(str::to_string))
         .collect()
 }
@@ -137,6 +138,9 @@ pub(crate) async fn wait_for_volumes_deleted(
 async fn release_folders(client: &Client, ns: &str) {
     if let Err(e) = crate::folders::release_all(client, ns).await {
         tracing::warn!("uninstall {ns}: unmount its folders: {e:#}");
+    }
+    if let Err(e) = crate::folders::forget_mounts_of(client, ns).await {
+        tracing::warn!("uninstall {ns}: forget the data folders it used: {e:#}");
     }
 }
 

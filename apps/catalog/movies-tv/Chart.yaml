@@ -1,6 +1,6 @@
 apiVersion: v2
 name: movies-tv
-description: Jellyfin to watch, Sonarr and Radarr to find, Prowlarr to search and qBittorrent to download, sharing one folder and set up to work together.
+description: Jellyfin to watch, Seerr to ask for films and shows, Sonarr and Radarr to find them, Prowlarr to search, qBittorrent to download and Bazarr for subtitles, sharing one folder and set up to work together.
 type: application
 version: 0.2.0
 
@@ -23,9 +23,15 @@ dependencies:
   - name: radarr
     version: "0.2.0"
     repository: "oci://ghcr.io/demycode/charts"
+  - name: jellyseerr
+    version: "0.2.0"
+    repository: "oci://ghcr.io/demycode/charts"
+  - name: bazarr
+    version: "0.2.0"
+    repository: "oci://ghcr.io/demycode/charts"
 
 annotations:
-  yolab.io/members: "jellyfin,qbittorrent,prowlarr,sonarr,radarr"
+  yolab.io/members: "jellyfin,qbittorrent,prowlarr,sonarr,radarr,jellyseerr,bazarr"
   yolab.io/display-name: "Movies & TV"
   yolab.io/icon: "🍿"
   yolab.io/category: "media"

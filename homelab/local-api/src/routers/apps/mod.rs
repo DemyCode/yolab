@@ -15,10 +15,12 @@ use crate::routers::backup_common::Backend;
 use crate::routers::install;
 use crate::{config::Config, error::Result, AppState};
 
+mod data_folders;
 mod definition;
 mod links;
 mod uninstall;
 
+pub(crate) use data_folders::*;
 pub(crate) use definition::*;
 pub(crate) use links::*;
 pub(crate) use uninstall::*;
@@ -3411,6 +3413,14 @@ mod tests {
                 pv("pvc-notes-2", "yolab-notes-2"),
                 json!({ "metadata": { "name": "pvc-unbound" }, "spec": {} }),
             ];
+            assert_eq!(volumes_of(&pvs, "yolab-notes"), vec!["pvc-notes"]);
+        }
+
+        #[test]
+        fn an_apps_data_folder_is_kept_on_purpose_and_never_waited_for() {
+            let mut kept = pv("pvc-notes-data", "yolab-notes");
+            kept["metadata"]["labels"] = json!({ "yolab.io/state-folder": "notes-data" });
+            let pvs = vec![kept, pv("pvc-notes", "yolab-notes")];
             assert_eq!(volumes_of(&pvs, "yolab-notes"), vec!["pvc-notes"]);
         }
 
