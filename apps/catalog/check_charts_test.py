@@ -2512,7 +2512,8 @@ class PackRendered(RenderedChart):
         secret = self.named(self.docs(), "Secret", "release-keys")
         pods = self.deployments(self.docs())
         self.assertEqual(
-            set(secret["stringData"]), {"sonarr", "radarr", "prowlarr", "qbittorrent"}
+            set(secret["stringData"]),
+            {"jellyfin", "sonarr", "radarr", "prowlarr", "qbittorrent"},
         )
         self.assertEqual(
             len(self.env(pods["sonarr-gateway"], "sonarr")["SONARR__AUTH__APIKEY"]), 32

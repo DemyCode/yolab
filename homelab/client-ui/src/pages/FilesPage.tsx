@@ -545,7 +545,8 @@ export function FilesPage() {
               </p>
             ) : (
               <p>
-                Every file in it is deleted for good, along with its backups.
+                Every file in it is deleted for good. Any backup already taken
+                stays in your storage.
               </p>
             )}
             {error && <p className="mt-3 text-danger">{error}</p>}

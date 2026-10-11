@@ -81,26 +81,26 @@ pub async fn remove(State(state): State<AppState>, Path(name): Path<String>) -> 
 }
 
 type Backend = crate::routers::backup_common::Backend;
+type Refusal = (StatusCode, String);
 
-async fn backend(state: &AppState) -> std::result::Result<Backend, Response> {
+async fn backend(state: &AppState) -> std::result::Result<Backend, Refusal> {
     state
         .backend()
         .await
-        .map_err(|e| (StatusCode::SERVICE_UNAVAILABLE, format!("{e:#}")).into_response())
+        .map_err(|e| (StatusCode::SERVICE_UNAVAILABLE, format!("{e:#}")))
 }
 
-async fn must_exist(client: &kube::Client, name: &str) -> std::result::Result<(), Response> {
+async fn must_exist(client: &kube::Client, name: &str) -> std::result::Result<(), Refusal> {
     if !folders::is_name(name) {
         return Err((
             StatusCode::BAD_REQUEST,
             format!("{name:?} is not a folder name"),
-        )
-            .into_response());
+        ));
     }
     folders::owner_claim_of(client, name)
         .await
         .map(|_| ())
-        .map_err(|e| (StatusCode::NOT_FOUND, format!("{e:#}")).into_response())
+        .map_err(|e| (StatusCode::NOT_FOUND, format!("{e:#}")))
 }
 
 #[derive(Deserialize)]
@@ -118,8 +118,8 @@ pub async fn set_backup(
         Ok(c) => c,
         Err(e) => return (StatusCode::SERVICE_UNAVAILABLE, format!("{e:#}")).into_response(),
     };
-    if let Err(resp) = must_exist(&client, &name).await {
-        return resp;
+    if let Err((code, why)) = must_exist(&client, &name).await {
+        return (code, why).into_response();
     }
     if let Err(e) = crate::cron::Cron::parse(&body.schedule) {
         return (
@@ -141,10 +141,10 @@ pub async fn set_backup(
 pub async fn run_now(State(state): State<AppState>, Path(name): Path<String>) -> Response {
     let b = match backend(&state).await {
         Ok(b) => b,
-        Err(resp) => return resp,
+        Err((code, why)) => return (code, why).into_response(),
     };
-    if let Err(resp) = must_exist(&b.kube, &name).await {
-        return resp;
+    if let Err((code, why)) = must_exist(&b.kube, &name).await {
+        return (code, why).into_response();
     }
     match crate::routers::backup::start_folder(&b, &name, "manual").await {
         Ok(id) => {
@@ -157,10 +157,10 @@ pub async fn run_now(State(state): State<AppState>, Path(name): Path<String>) ->
 pub async fn points(State(state): State<AppState>, Path(name): Path<String>) -> Response {
     let b = match backend(&state).await {
         Ok(b) => b,
-        Err(resp) => return resp,
+        Err((code, why)) => return (code, why).into_response(),
     };
-    if let Err(resp) = must_exist(&b.kube, &name).await {
-        return resp;
+    if let Err((code, why)) = must_exist(&b.kube, &name).await {
+        return (code, why).into_response();
     }
     match crate::routers::restore::folder_points(&b, &name).await {
         Ok(points) => Json(serde_json::json!({ "points": points })).into_response(),
@@ -181,10 +181,10 @@ pub async fn restore(
 ) -> Response {
     let b = match backend(&state).await {
         Ok(b) => b,
-        Err(resp) => return resp,
+        Err((code, why)) => return (code, why).into_response(),
     };
-    if let Err(resp) = must_exist(&b.kube, &name).await {
-        return resp;
+    if let Err((code, why)) = must_exist(&b.kube, &name).await {
+        return (code, why).into_response();
     }
     let point = match &body.snapshot_id {
         Some(id) => match crate::routers::restore::folder_points(&b, &name).await {
