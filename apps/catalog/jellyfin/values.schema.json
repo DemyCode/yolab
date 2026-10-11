@@ -241,6 +241,14 @@
       "type": "object",
       "readOnly": true,
       "properties": {
+        "internal_url": {
+          "type": "string",
+          "title": "Address inside YoLab",
+          "format": "uri",
+          "source": {
+            "service": { "name": "jellyfin", "port": 8096 }
+          }
+        },
         "url": {
           "type": "string",
           "title": "Web URL",

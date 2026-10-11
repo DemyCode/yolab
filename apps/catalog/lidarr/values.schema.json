@@ -29,6 +29,27 @@
           "default": "10Gi",
           "description": "How much CephFS storage to allocate (e.g. 20Gi, 100Gi, 500Gi)"
         },
+        "api_key": {
+          "type": "string",
+          "title": "API key",
+          "writeOnly": true,
+          "generate": true,
+          "pattern": "^([A-Za-z0-9]{20,})?$",
+          "description": "What other apps use to talk to Lidarr. Leave it as it is to keep the key Lidarr has now."
+        },
+        "download_client": {
+          "type": "object",
+          "title": "Download client",
+          "format": "yolab-output",
+          "x-yolab-from": ["qbittorrent"],
+          "x-yolab-outputs": ["internal_url", "username", "password"],
+          "description": "The qBittorrent Lidarr sends albums to. Lidarr keeps one download client called \"qBittorrent (YoLab)\" set to it and leaves the ones you add yourself alone.",
+          "properties": {
+            "internal_url": { "type": "string", "title": "Address", "format": "uri" },
+            "username": { "type": "string", "title": "Username" },
+            "password": { "type": "string", "title": "Password" }
+          }
+        },
         "file_explorer_enabled": {
           "type": "boolean",
           "title": "File explorer",
@@ -195,6 +216,22 @@
       "type": "object",
       "readOnly": true,
       "properties": {
+        "internal_url": {
+          "type": "string",
+          "title": "Address inside YoLab",
+          "format": "uri",
+          "source": {
+            "service": { "name": "lidarr", "port": 8686 }
+          }
+        },
+        "api_key": {
+          "type": "string",
+          "title": "API key",
+          "format": "secret",
+          "source": {
+            "logs": "YOLAB_OUTPUT api_key (\\S+)"
+          }
+        },
         "url": {
           "type": "string",
           "title": "Web URL",

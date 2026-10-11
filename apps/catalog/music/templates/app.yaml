@@ -1,0 +1,48 @@
+{{- $cfg := .Values.config -}}
+{{- $folder := $cfg.music_folder -}}
+{{- $keys := printf "%s-keys" .Release.Name -}}
+{{- $lidarrKey := include "yolab-stack.secret" (list . $keys "lidarr") -}}
+{{- $prowlarrKey := include "yolab-stack.secret" (list . $keys "prowlarr") -}}
+{{- $qbittorrentPassword := include "yolab-stack.secret" (list . $keys "qbittorrent") -}}
+{{- $newClient := ne ($cfg.download_client | default "new") "existing" -}}
+{{- $client := dict "internal_url" "http://qbittorrent:8080" "username" "admin" "password" $qbittorrentPassword -}}
+{{- if not $newClient }}
+{{- $client = $cfg.existing_client | default dict -}}
+{{- end }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $keys }}
+  namespace: {{ .Release.Namespace }}
+type: Opaque
+stringData:
+  lidarr: {{ $lidarrKey | quote }}
+  prowlarr: {{ $prowlarrKey | quote }}
+  qbittorrent: {{ $qbittorrentPassword | quote }}
+{{- with $folder }}
+---
+{{ include "yolab-stack.folderClaim" (list $ .) }}
+{{- end }}
+---
+{{ include "yolab-stack.member" (list . "navidrome" (dict
+      "music_folder" $folder
+      "music_path" "music"
+      "yolab_enabled" $cfg.listen_anywhere)) }}
+{{- if $newClient }}
+---
+{{ include "yolab-stack.member" (list . "qbittorrent" (dict
+      "media_folder" $folder
+      "yolab_enabled" $cfg.manage_anywhere
+      "webui_password" $qbittorrentPassword)) }}
+{{- end }}
+---
+{{ include "yolab-stack.member" (list . "lidarr" (dict
+      "media_folder" $folder
+      "yolab_enabled" $cfg.manage_anywhere
+      "api_key" $lidarrKey
+      "download_client" $client)) }}
+---
+{{ include "yolab-stack.member" (list . "prowlarr" (dict
+      "yolab_enabled" $cfg.manage_anywhere
+      "api_key" $prowlarrKey
+      "lidarr" (dict "internal_url" "http://lidarr:8686" "api_key" $lidarrKey))) }}

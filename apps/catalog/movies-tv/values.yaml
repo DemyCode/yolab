@@ -1,13 +1,14 @@
+global:
+  stack: true
+
 config:
+  subdomain: media
   media_folder: ""
-  download_client: qbittorrent
-  existing_client: ""
+  download_client: new
   hardware_transcoding: true
-  requests: true
-  subtitles: false
   watch_anywhere: true
-  tailscale: false
-  tailscale_auth_key: ""
   manage_anywhere: true
+
 yolab:
-  apps: {}
+  platformApiUrl: ""
+  serviceName: ""

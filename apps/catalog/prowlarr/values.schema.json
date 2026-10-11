@@ -20,6 +20,50 @@
           "title": "Storage size",
           "default": "2Gi"
         },
+        "api_key": {
+          "type": "string",
+          "title": "API key",
+          "writeOnly": true,
+          "generate": true,
+          "pattern": "^([A-Za-z0-9]{20,})?$",
+          "description": "What other apps use to talk to Prowlarr. Leave it as it is to keep the key Prowlarr has now."
+        },
+        "sonarr": {
+          "type": "object",
+          "title": "Sonarr",
+          "format": "yolab-output",
+          "x-yolab-from": ["sonarr"],
+          "x-yolab-outputs": ["internal_url", "api_key"],
+          "description": "Prowlarr hands its indexers to this Sonarr and keeps them in sync.",
+          "properties": {
+            "internal_url": { "type": "string", "title": "Address", "format": "uri" },
+            "api_key": { "type": "string", "title": "API key" }
+          }
+        },
+        "radarr": {
+          "type": "object",
+          "title": "Radarr",
+          "format": "yolab-output",
+          "x-yolab-from": ["radarr"],
+          "x-yolab-outputs": ["internal_url", "api_key"],
+          "description": "Prowlarr hands its indexers to this Radarr and keeps them in sync.",
+          "properties": {
+            "internal_url": { "type": "string", "title": "Address", "format": "uri" },
+            "api_key": { "type": "string", "title": "API key" }
+          }
+        },
+        "lidarr": {
+          "type": "object",
+          "title": "Lidarr",
+          "format": "yolab-output",
+          "x-yolab-from": ["lidarr"],
+          "x-yolab-outputs": ["internal_url", "api_key"],
+          "description": "Prowlarr hands its indexers to this Lidarr and keeps them in sync.",
+          "properties": {
+            "internal_url": { "type": "string", "title": "Address", "format": "uri" },
+            "api_key": { "type": "string", "title": "API key" }
+          }
+        },
         "file_explorer_enabled": {
           "type": "boolean",
           "title": "File explorer",
@@ -186,6 +230,22 @@
       "type": "object",
       "readOnly": true,
       "properties": {
+        "internal_url": {
+          "type": "string",
+          "title": "Address inside YoLab",
+          "format": "uri",
+          "source": {
+            "service": { "name": "prowlarr", "port": 9696 }
+          }
+        },
+        "api_key": {
+          "type": "string",
+          "title": "API key",
+          "format": "secret",
+          "source": {
+            "logs": "YOLAB_OUTPUT api_key (\\S+)"
+          }
+        },
         "file_explorer_url": {
           "type": "string",
           "title": "File explorer",

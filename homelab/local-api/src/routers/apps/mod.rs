@@ -15,17 +15,17 @@ use crate::routers::backup_common::Backend;
 use crate::routers::install;
 use crate::{config::Config, error::Result, AppState};
 
-mod connections;
 mod definition;
-mod group;
+mod links;
 mod uninstall;
 
-pub(crate) use connections::*;
 pub(crate) use definition::*;
-pub(crate) use group::*;
+pub(crate) use links::*;
 pub(crate) use uninstall::*;
 
 const LABEL_MANAGED: &str = "yolab.io/managed";
+const LABEL_MEMBER: &str = "yolab.io/member";
+const ANN_MEMBERS: &str = "yolab.io/members";
 pub(crate) const ANN_APP_ID: &str = "yolab.io/app-id";
 pub(crate) const ANN_CHART_VERSION: &str = "yolab.io/chart-version";
 pub(crate) const ANN_CHART_REPO: &str = "yolab.io/chart-repo";
@@ -52,7 +52,6 @@ pub struct AppInfo {
     pub outputs: Vec<crate::outputs::ShownOutput>,
     pub config: serde_json::Map<String, Value>,
     pub backup: AppBackupStatus,
-    pub group: Option<crate::groups::Membership>,
 }
 
 pub(crate) struct InstalledApp {
@@ -96,12 +95,14 @@ pub struct CatalogApp {
     pub pushed_at: Option<String>,
     pub chart_version: String,
     pub kind: String,
+    pub members: Vec<String>,
     pub schema: Value,
 }
 
 #[derive(Serialize)]
 pub struct PodInfo {
     pub name: String,
+    pub member: Option<String>,
     pub phase: String,
     pub ready: bool,
     pub node: String,
@@ -197,6 +198,10 @@ fn pod_info(p: &Value) -> PodInfo {
     .collect();
     PodInfo {
         name: p["metadata"]["name"].as_str().unwrap_or("").to_string(),
+        member: p["metadata"]["labels"][LABEL_MEMBER]
+            .as_str()
+            .filter(|m| !m.is_empty())
+            .map(str::to_string),
         phase: p["status"]["phase"]
             .as_str()
             .unwrap_or("Unknown")
@@ -423,6 +428,14 @@ impl ChartMeta {
     fn in_store(&self) -> bool {
         self.ann(ANN_DISABLED).trim().is_empty()
     }
+    fn members(&self) -> Vec<String> {
+        self.ann(ANN_MEMBERS)
+            .split(',')
+            .map(str::trim)
+            .filter(|m| !m.is_empty())
+            .map(str::to_string)
+            .collect()
+    }
     fn display_name(&self) -> String {
         let n = self.ann(ANN_DISPLAY_NAME);
         if n.is_empty() {
@@ -440,7 +453,6 @@ fn read_chart(dir: &std::path::Path) -> Option<ChartMeta> {
         return None;
     }
     let schema = std::fs::read_to_string(dir.join("values.schema.json"))
-        .or_else(|_| std::fs::read_to_string(dir.join(crate::group_chart::SCHEMA_FILE)))
         .ok()
         .and_then(|s| serde_json::from_str::<Value>(&s).ok())
         .unwrap_or(Value::Null);
@@ -661,22 +673,9 @@ fn catalog_entry_from(
     repo: String,
     meta: ChartMeta,
     stars: &std::collections::HashMap<String, crate::github::RepoStats>,
-    sources: &[(String, std::path::PathBuf)],
 ) -> CatalogApp {
-    let (kind, schema) = if group::is_group(&meta) {
-        let resolved = group::resolved_schema(&meta, sources)
-            .map(|app| app.config())
-            .unwrap_or_else(|why| {
-                tracing::warn!(
-                    "group {}: its form does not resolve: {why}",
-                    meta.chart.name
-                );
-                Value::Null
-            });
-        ("group", resolved)
-    } else {
-        ("app", meta.app.config())
-    };
+    let members = meta.members();
+    let kind = if members.is_empty() { "app" } else { "pack" };
     let github = meta.ann(ANN_GITHUB).to_string();
     let known = stars.get(&github).filter(|s| !s.archived || s.stars > 0);
     CatalogApp {
@@ -700,7 +699,8 @@ fn catalog_entry_from(
         github,
         chart_version: meta.chart.version.clone(),
         kind: kind.to_string(),
-        schema,
+        members,
+        schema: meta.app.config(),
     }
 }
 
@@ -726,7 +726,7 @@ pub async fn refresh_catalog_app(
     let sources = crate::charts::chart_sources(&b.kube).await;
     let entry = sources.iter().find_map(|(repo, dir)| {
         let m = read_chart(&dir.join(&id))?;
-        Some(catalog_entry_from(repo.clone(), m, &stars, &sources))
+        Some(catalog_entry_from(repo.clone(), m, &stars))
     });
 
     Ok(Json(serde_json::json!({
@@ -766,7 +766,7 @@ pub async fn catalog(State(state): State<AppState>) -> Result<Json<Vec<CatalogAp
             if !seen.insert(meta.chart.name.clone()) || !meta.in_store() {
                 continue;
             }
-            apps.push(catalog_entry_from(repo.clone(), meta, &stars, &sources));
+            apps.push(catalog_entry_from(repo.clone(), meta, &stars));
         }
     }
     apps.sort_by_key(|a| a.name.to_lowercase());
@@ -1391,7 +1391,6 @@ pub async fn list_apps(State(state): State<AppState>) -> Result<Json<Vec<AppInfo
                 last_ok_at,
                 running,
             },
-            group: crate::groups::group_of(ns),
         });
     }
     Ok(Json(apps))
@@ -1599,9 +1598,6 @@ async fn open_app_namespace(
     let Some(meta) = read_chart(&chart_dir) else {
         anyhow::bail!("{id} is not a valid chart");
     };
-    if group::is_group(&meta) {
-        anyhow::bail!("{id} is a group of apps — install it from its own page, not as one app");
-    }
     let ns = format!("yolab-{instance_name}");
     ensure_app_namespace(client, &ns, id, &repo, &meta.chart.version)
         .await
@@ -1625,7 +1621,7 @@ pub(crate) async fn stage_install(
         .map_err(|e| anyhow::anyhow!("stage tunnel credentials: {e}"))?;
     let folders = crate::folders::wanted(&meta.app, config);
     crate::folders::attach(client, &ns, &folders).await?;
-    let resolved = resolve_connections(client, &cfg.catalog_dir(), &meta.app, config).await?;
+    let resolved = resolve_links(client, &cfg.catalog_dir(), &meta.app, config).await?;
     let service_name = resolve_service_name(&meta.app.config(), config);
     let values = tempfile::Builder::new()
         .suffix(".json")
@@ -1841,57 +1837,6 @@ pub(crate) async fn installed_apps(client: &Client) -> anyhow::Result<Vec<Instal
             })
         })
         .collect())
-}
-
-#[derive(Serialize, Debug, PartialEq)]
-pub struct ServiceInstance {
-    pub instance: String,
-    pub namespace: String,
-    pub app_id: String,
-    pub title: String,
-    pub url: String,
-}
-
-fn instances_of(
-    kind: &str,
-    apps: Vec<(String, String, crate::appschema::AppSchema)>,
-) -> Vec<ServiceInstance> {
-    let mut found: Vec<ServiceInstance> = apps
-        .into_iter()
-        .flat_map(|(namespace, app_id, schema)| {
-            schema
-                .provides()
-                .into_iter()
-                .filter(|p| p.kind == kind)
-                .map(|p| ServiceInstance {
-                    instance: namespace
-                        .strip_prefix("yolab-")
-                        .unwrap_or(&namespace)
-                        .to_string(),
-                    app_id: app_id.clone(),
-                    title: p.title.clone(),
-                    url: p.url(&namespace).unwrap_or_default(),
-                    namespace: namespace.clone(),
-                })
-                .collect::<Vec<_>>()
-        })
-        .collect();
-    found.sort_by(|a, b| a.instance.cmp(&b.instance));
-    found
-}
-
-pub async fn list_services(
-    State(state): State<AppState>,
-    Path(kind): Path<String>,
-) -> Result<Json<Vec<ServiceInstance>>> {
-    let client = state.kube.client().await?;
-    let catalog = state.config.catalog_dir();
-    let mut apps = Vec::new();
-    for app in installed_apps(&client).await? {
-        let schema = installed_schema(&client, &app.namespace, &app.app_id, &catalog).await;
-        apps.push((app.namespace, app.app_id, schema));
-    }
-    Ok(Json(instances_of(&kind, apps)))
 }
 
 pub(crate) struct KnownOutputs {
@@ -2170,47 +2115,6 @@ mod tests {
     }
 
     #[test]
-    fn installed_instances_of_a_service_kind_are_listed_with_their_internal_address() {
-        use crate::appschema::AppSchema;
-        use serde_json::json;
-        let ollama = || {
-            AppSchema::new(json!({
-                "x-yolab-provides": { "ollama": { "title": "Ollama API", "service": "ollama", "port": 11434 } }
-            }))
-        };
-        let apps = vec![
-            ("yolab-gpu-box".to_string(), "ollama".to_string(), ollama()),
-            (
-                "yolab-notes".to_string(),
-                "memos".to_string(),
-                AppSchema::new(serde_json::Value::Null),
-            ),
-            ("yolab-ai".to_string(), "ollama".to_string(), ollama()),
-        ];
-        let found = super::instances_of("ollama", apps);
-        assert_eq!(
-            found,
-            vec![
-                super::ServiceInstance {
-                    instance: "ai".into(),
-                    namespace: "yolab-ai".into(),
-                    app_id: "ollama".into(),
-                    title: "Ollama API".into(),
-                    url: "http://ollama.yolab-ai.svc.cluster.local:11434".into(),
-                },
-                super::ServiceInstance {
-                    instance: "gpu-box".into(),
-                    namespace: "yolab-gpu-box".into(),
-                    app_id: "ollama".into(),
-                    title: "Ollama API".into(),
-                    url: "http://ollama.yolab-gpu-box.svc.cluster.local:11434".into(),
-                },
-            ]
-        );
-        assert!(super::instances_of("electrum", vec![]).is_empty());
-    }
-
-    #[test]
     fn a_disabled_chart_is_left_out_of_the_store_but_still_readable() {
         let dir = tempfile::tempdir().unwrap();
         let chart = |ann: &str| {
@@ -2224,6 +2128,39 @@ mod tests {
         assert!(chart("  yolab.io/tagline: Notes\n").in_store());
         assert!(!chart("  yolab.io/disabled: upstream archived\n").in_store());
         assert!(chart("  yolab.io/disabled: \"\"\n").in_store());
+    }
+
+    #[test]
+    fn a_pack_is_listed_with_the_apps_it_installs() {
+        let dir = tempfile::tempdir().unwrap();
+        let entry = |ann: &str| {
+            std::fs::write(
+                dir.path().join("Chart.yaml"),
+                format!("apiVersion: v2\nname: movies-tv\nversion: 0.2.0\nannotations:\n{ann}"),
+            )
+            .unwrap();
+            super::catalog_entry_from(
+                "official".into(),
+                super::read_chart(dir.path()).unwrap(),
+                &Default::default(),
+            )
+        };
+        let pack = entry("  yolab.io/members: \"jellyfin, sonarr,radarr\"\n");
+        assert_eq!(pack.kind, "pack");
+        assert_eq!(pack.members, vec!["jellyfin", "sonarr", "radarr"]);
+        let app = entry("  yolab.io/tagline: Films\n");
+        assert_eq!(app.kind, "app");
+        assert!(app.members.is_empty());
+    }
+
+    #[test]
+    fn a_pod_says_which_app_of_a_pack_it_runs() {
+        let labelled = super::pod_info(&serde_json::json!({
+            "metadata": { "name": "sonarr-gateway-1", "labels": { "yolab.io/member": "sonarr" } }
+        }));
+        assert_eq!(labelled.member.as_deref(), Some("sonarr"));
+        let alone = super::pod_info(&serde_json::json!({ "metadata": { "name": "gateway-1" } }));
+        assert_eq!(alone.member, None);
     }
 
     fn pod(name: &str) -> Value {

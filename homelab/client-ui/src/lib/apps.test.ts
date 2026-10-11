@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
   accessRows,
-  appChoices,
   appLinks,
   outputState,
   stillWaiting,
@@ -18,6 +17,8 @@ import {
   SLOW_START_MS,
   podStatus,
   podProblem,
+  podsByMember,
+  packMembers,
   waitNote,
   type RestoreRecord,
 } from "./apps";
@@ -129,6 +130,17 @@ describe("appLinks", () => {
 
   it("offers nothing derived when there is no tunnel domain yet", () => {
     expect(appLinks(app({ config: { subdomain: "git" } }), "")).toEqual([]);
+  });
+
+  it("a pack offers its apps' own addresses, never one made from its subdomain", () => {
+    const jellyfin = "https://media-jellyfin.box.yolab.io";
+    const pack = app({
+      config: { subdomain: "media" },
+      outputs: [out("jellyfin_url", jellyfin, "uri", "Jellyfin")],
+    });
+    expect(appLinks(pack, "box.yolab.io", true)).toEqual([
+      { label: "Jellyfin", url: jellyfin },
+    ]);
   });
 });
 
@@ -536,44 +548,67 @@ describe("podStatus", () => {
   });
 });
 
-describe("picking an app the group should use", () => {
-  const base = {
-    chart_version: "1",
-    status: "running" as const,
-    detail: "",
-    outputs: [],
-    config: {},
-    backup: { enabled: false, schedule: "", last_ok_at: null, running: false },
-  };
+describe("the running parts of a pack", () => {
+  const pod = (name: string, member?: string | null) => ({
+    name,
+    phase: "Running",
+    ready: true,
+    member,
+  });
 
-  it("lists installed apps of the charts it accepts, by namespace", () => {
-    const apps = [
-      { ...base, app_id: "qbittorrent", instance_name: "qbittorrent" },
-      { ...base, app_id: "transmission", instance_name: "tr-x2k4" },
-      { ...base, app_id: "sonarr", instance_name: "sonarr" },
-      {
-        ...base,
-        app_id: "qbittorrent",
-        instance_name: "old",
-        status: "uninstalling" as const,
-      },
-    ];
-    expect(appChoices("", [], ["qbittorrent", "transmission"], apps)).toEqual([
-      { namespace: "yolab-qbittorrent", label: "qbittorrent" },
-      { namespace: "yolab-tr-x2k4", label: "tr-x2k4 (transmission)" },
+  it("are grouped under the app they belong to", () => {
+    const grouped = podsByMember([
+      pod("sonarr-gateway-1", "sonarr"),
+      pod("jellyfin-gateway-1", "jellyfin"),
+      pod("sonarr-gateway-2", "sonarr"),
+    ]);
+    expect(grouped.map((g) => [g.member, g.pods.map((p) => p.name)])).toEqual([
+      ["jellyfin", ["jellyfin-gateway-1"]],
+      ["sonarr", ["sonarr-gateway-1", "sonarr-gateway-2"]],
     ]);
   });
 
-  it("lists every app that provides the interface it wants", () => {
-    const ollama = {
-      instance: "ai",
-      namespace: "yolab-ai",
-      app_id: "ollama",
-      title: "Ollama API",
-      url: "",
-    };
-    expect(appChoices("ollama", [ollama], [], [])).toEqual([
-      { namespace: "yolab-ai", label: "ai (ollama)" },
+  it("an app on its own is one group with no name", () => {
+    expect(podsByMember([pod("gateway-1"), pod("gateway-2", null)])).toEqual([
+      { member: null, pods: [pod("gateway-1"), pod("gateway-2", null)] },
     ]);
+  });
+
+  it("a pack names its apps from the catalog", () => {
+    const app = {
+      app_id: "movies-tv",
+      instance_name: "media",
+      chart_version: "0.2.0",
+      status: "running" as const,
+      detail: "",
+      outputs: [],
+      config: {},
+      backup: {
+        enabled: false,
+        schedule: "",
+        last_ok_at: null,
+        running: false,
+      },
+    };
+    const entry = {
+      id: "movies-tv",
+      repo: "official",
+      chart_version: "0.2.0",
+      name: "Movies & TV",
+      description: "",
+      home: "",
+      icon: "🍿",
+      category: "media",
+      github: "",
+      tagline: "",
+      collections: [],
+      stars: null,
+      pushed_at: null,
+      kind: "pack" as const,
+      members: ["jellyfin", "sonarr"],
+      schema: {},
+    };
+    expect(packMembers(app, [entry])).toEqual(["jellyfin", "sonarr"]);
+    expect(packMembers({ ...app, app_id: "gone" }, [entry])).toEqual([]);
   });
 });

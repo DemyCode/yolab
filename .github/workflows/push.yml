@@ -166,8 +166,10 @@ jobs:
       registry: ${{ steps.registry.outputs.registry }}
       suffix: ${{ steps.registry.outputs.suffix }}
       lib_version: ${{ steps.library.outputs.lib_version }}
+      stack_version: ${{ steps.library.outputs.stack_version }}
       charts_first: ${{ steps.pending.outputs.charts_first }}
       charts_rest: ${{ steps.pending.outputs.charts_rest }}
+      packs: ${{ steps.pending.outputs.packs }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -267,11 +269,35 @@ jobs:
           }
           rm -f /tmp/pkg/yolab-common-*.tgz
 
+          base=$(grep '^version:' apps/catalog/yolab-stack/Chart.yaml | head -1 | awk '{print $2}' | tr -d '"')
+          STACK_VERSION="${base}${SUFFIX}"
+          echo "STACK_VERSION=${STACK_VERSION}" >> "$GITHUB_ENV"
+          echo "stack_version=${STACK_VERSION}" >> "$GITHUB_OUTPUT"
+          helm package apps/catalog/yolab-stack --version "${STACK_VERSION}" --destination /tmp/pkg
+          for attempt in 1 2 3 4 5; do
+            helm push /tmp/pkg/yolab-stack-*.tgz "${REGISTRY}" && break
+            sleep $((attempt * 15))
+          done
+          verified=""
+          for attempt in 1 2 3 4 5; do
+            if helm show chart "${REGISTRY}/yolab-stack" --version "${STACK_VERSION}" >/dev/null; then
+              verified=1
+              break
+            fi
+            sleep $((attempt * 15))
+          done
+          [ -n "$verified" ] || {
+            echo "::error::yolab-stack ${STACK_VERSION} is not readable after push"
+            exit 1
+          }
+          rm -f /tmp/pkg/yolab-stack-*.tgz
+
       - name: List the charts whose version is not published yet
         id: pending
         run: |
           set -euo pipefail
           pending=()
+          packs=()
           for chart in apps/catalog/*/; do
             [ -f "$chart/Chart.yaml" ] || continue
             grep -q '^type: library' "$chart/Chart.yaml" && continue
@@ -280,9 +306,15 @@ jobs:
             if helm show chart "${REGISTRY}/${name}" --version "${base}${SUFFIX}" >/dev/null 2>&1; then
               continue
             fi
-            pending+=("$(basename "$chart")")
+            if grep -q 'yolab.io/members:' "$chart/Chart.yaml"; then
+              packs+=("$(basename "$chart")")
+            else
+              pending+=("$(basename "$chart")")
+            fi
           done
           echo "${#pending[@]} chart(s) to publish: ${pending[*]:-none}"
+          echo "${#packs[@]} pack(s) to publish after them: ${packs[*]:-none}"
+          echo "packs=$(printf '%s\n' "${packs[@]}" | jq -R . | jq -sc 'map(select(. != ""))')" >> "$GITHUB_OUTPUT"
           charts=$(printf '%s\n' "${pending[@]}" | jq -R . | jq -sc 'map(select(. != ""))')
           echo "charts_first=$(echo "$charts" | jq -c '.[:256]')" >> "$GITHUB_OUTPUT"
           echo "charts_rest=$(echo "$charts" | jq -c '.[256:]')" >> "$GITHUB_OUTPUT"
@@ -305,6 +337,7 @@ jobs:
       REGISTRY: ${{ needs.charts-library.outputs.registry }}
       SUFFIX: ${{ needs.charts-library.outputs.suffix }}
       LIB_VERSION: ${{ needs.charts-library.outputs.lib_version }}
+      STACK_VERSION: ${{ needs.charts-library.outputs.stack_version }}
       CHART: apps/catalog/${{ matrix.chart }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -327,6 +360,7 @@ jobs:
           # Point the dependency at the version just published. Without this a branch
           # build vendors main's library and silently tests the wrong thing.
           sed -i "/- name: yolab-common/{n;s|version: .*|version: \"${LIB_VERSION}\"|}" "$CHART/Chart.yaml"
+          sed -i "/- name: yolab-stack/{n;s|version: .*|version: \"${STACK_VERSION}\"|}" "$CHART/Chart.yaml"
           dep=""
           for attempt in 1 2 3 4 5; do
             if helm dependency update "$CHART" >/dev/null; then dep=1; break; fi
@@ -338,8 +372,7 @@ jobs:
           # hook is what does that (see yolab-common/templates/_uninstall.tpl). A
           # chart missing this leaks an orphaned tunnel on the platform every time
           # it's removed, silently, with nothing in the uninstall response to say so.
-          grep -q "yolab.io/kind: group" "$CHART/Chart.yaml" \
-            || grep -rq "yolab-common.uninstallHook" "$CHART" \
+          grep -rq "yolab-common.uninstallHook" "$CHART" \
             || { echo "::error::${name} has no uninstall hook"; exit 1; }
 
           # Charts whose schema marks fields required legitimately fail lint against
@@ -396,6 +429,7 @@ jobs:
       REGISTRY: ${{ needs.charts-library.outputs.registry }}
       SUFFIX: ${{ needs.charts-library.outputs.suffix }}
       LIB_VERSION: ${{ needs.charts-library.outputs.lib_version }}
+      STACK_VERSION: ${{ needs.charts-library.outputs.stack_version }}
       CHART: apps/catalog/${{ matrix.chart }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -418,6 +452,7 @@ jobs:
           # Point the dependency at the version just published. Without this a branch
           # build vendors main's library and silently tests the wrong thing.
           sed -i "/- name: yolab-common/{n;s|version: .*|version: \"${LIB_VERSION}\"|}" "$CHART/Chart.yaml"
+          sed -i "/- name: yolab-stack/{n;s|version: .*|version: \"${STACK_VERSION}\"|}" "$CHART/Chart.yaml"
           dep=""
           for attempt in 1 2 3 4 5; do
             if helm dependency update "$CHART" >/dev/null; then dep=1; break; fi
@@ -429,8 +464,7 @@ jobs:
           # hook is what does that (see yolab-common/templates/_uninstall.tpl). A
           # chart missing this leaks an orphaned tunnel on the platform every time
           # it's removed, silently, with nothing in the uninstall response to say so.
-          grep -q "yolab.io/kind: group" "$CHART/Chart.yaml" \
-            || grep -rq "yolab-common.uninstallHook" "$CHART" \
+          grep -rq "yolab-common.uninstallHook" "$CHART" \
             || { echo "::error::${name} has no uninstall hook"; exit 1; }
 
           # Charts whose schema marks fields required legitimately fail lint against
@@ -470,8 +504,81 @@ jobs:
           echo "::error::${name} ${base}${SUFFIX} could not be pushed"
           exit 1
 
-  charts-catalog:
+  charts-packs:
+    name: pack ${{ matrix.chart }}
     needs: [charts-library, charts-first, charts-rest]
+    if: always() && needs.charts-library.result == 'success' && needs.charts-library.outputs.packs != '[]' && needs.charts-first.result != 'failure' && needs.charts-rest.result != 'failure'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix:
+        chart: ${{ fromJSON(needs.charts-library.outputs.packs) }}
+    env:
+      REGISTRY: ${{ needs.charts-library.outputs.registry }}
+      SUFFIX: ${{ needs.charts-library.outputs.suffix }}
+      LIB_VERSION: ${{ needs.charts-library.outputs.lib_version }}
+      STACK_VERSION: ${{ needs.charts-library.outputs.stack_version }}
+      CHART: apps/catalog/${{ matrix.chart }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Helm
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v3.16.3
+
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Lint, package and push
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/pkg
+          name=$(grep '^name:' "$CHART/Chart.yaml" | head -1 | awk '{print $2}')
+          base=$(grep '^version:' "$CHART/Chart.yaml" | head -1 | awk '{print $2}' | tr -d '"')
+
+          sed -i "/- name: yolab-stack/{n;s|version: .*|version: \"${STACK_VERSION}\"|}" "$CHART/Chart.yaml"
+          members=$(grep 'yolab.io/members:' "$CHART/Chart.yaml" | sed 's/.*members: *//' | tr -d '"' | tr ',' ' ')
+          for member in $members; do
+            version=$(grep '^version:' "apps/catalog/${member}/Chart.yaml" | head -1 | awk '{print $2}' | tr -d '"')
+            sed -i "/- name: ${member}\$/{n;s|version: .*|version: \"${version}${SUFFIX}\"|}" "$CHART/Chart.yaml"
+            served=""
+            for attempt in 1 2 3 4 5; do
+              if helm show chart "${REGISTRY}/${member}" --version "${version}${SUFFIX}" >/dev/null 2>&1; then
+                served=1
+                break
+              fi
+              sleep $((attempt * 15))
+            done
+            [ -n "$served" ] || { echo "::error::${name} is built from ${member} ${version}${SUFFIX}, which the registry does not serve"; exit 1; }
+          done
+
+          dep=""
+          for attempt in 1 2 3 4 5; do
+            if helm dependency update "$CHART" >/dev/null; then dep=1; break; fi
+            sleep $((attempt * 15))
+          done
+          [ -n "$dep" ] || { echo "::error::${name}: its apps could not be fetched"; exit 1; }
+
+          helm lint "$CHART" \
+            --set config.subdomain=example \
+            --set config.media_folder=media \
+            --set config.music_folder=music
+
+          helm package "$CHART" --version "${base}${SUFFIX}" --destination /tmp/pkg
+          for attempt in 1 2 3 4 5; do
+            if helm push "/tmp/pkg/${name}-${base}${SUFFIX}.tgz" "${REGISTRY}"; then exit 0; fi
+            sleep $((attempt * 15))
+          done
+          echo "::error::${name} ${base}${SUFFIX} could not be pushed"
+          exit 1
+
+  charts-catalog:
+    needs: [charts-library, charts-first, charts-rest, charts-packs]
     if: always() && needs.charts-library.result == 'success'
     runs-on: ubuntu-latest
     permissions:
@@ -480,6 +587,7 @@ jobs:
       REGISTRY: ${{ needs.charts-library.outputs.registry }}
       SUFFIX: ${{ needs.charts-library.outputs.suffix }}
       LIB_VERSION: ${{ needs.charts-library.outputs.lib_version }}
+      STACK_VERSION: ${{ needs.charts-library.outputs.stack_version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -518,6 +626,21 @@ jobs:
               echo "  version: \"${LIB_VERSION}\""
             else
               echo "::warning::yolab-common is not readable in the registry (HTTP ${lib_code}) — custom apps built on it will not render" >&2
+            fi
+            stack_code=$(served yolab-stack "${STACK_VERSION}")
+            if [ "$lib_code" = "200" ] || [ "$stack_code" = "200" ]; then
+              echo "libraries:"
+              if [ "$lib_code" = "200" ]; then
+                echo "  - name: yolab-common"
+                echo "    version: \"${LIB_VERSION}\""
+              fi
+              if [ "$stack_code" = "200" ]; then
+                echo "  - name: yolab-stack"
+                echo "    version: \"${STACK_VERSION}\""
+              fi
+            fi
+            if [ "$stack_code" != "200" ]; then
+              echo "::warning::yolab-stack is not readable in the registry (HTTP ${stack_code}) — custom packs built on it will not render" >&2
             fi
             echo "charts:"
             for chart in apps/catalog/*/; do

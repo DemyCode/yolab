@@ -5,14 +5,7 @@ import { Input, Select, Toggle } from "@/components/ui/input";
 import { generateSecret } from "@/lib/format";
 import { DEFAULT_SIZE_GIB, folderChoice, type Folder } from "@/lib/folders";
 import { api } from "@/lib/api";
-import {
-  serviceChoice,
-  serviceLabel,
-  type ServiceInstance,
-} from "@/lib/services";
 import { useApi } from "@/lib/useResource";
-import { appChoices } from "@/lib/apps";
-import type { AppInfo } from "@/types/apps";
 import { cn } from "@/lib/utils";
 
 export function TunnelWidget(props: WidgetProps) {
@@ -92,64 +85,6 @@ export function YolabTokenWidget(props: WidgetProps) {
       >
         Use this box&apos;s
       </button>
-    </div>
-  );
-}
-
-const OWN = "own";
-const BY_HAND = "url";
-
-export function ServiceUrlWidget(props: WidgetProps) {
-  const { value, onChange, disabled, readonly, id, options, required } = props;
-  const service = String(options?.service ?? "");
-  const installed =
-    useApi<ServiceInstance[]>(
-      service ? `services:${service}` : null,
-      `/api/services/${encodeURIComponent(service)}`,
-    ).data ?? [];
-  const v = typeof value === "string" ? value : "";
-  const [typing, setTyping] = useState(false);
-  const choice = typing
-    ? ({ kind: "url", url: v } as const)
-    : serviceChoice(v, installed, !required);
-  const selected =
-    choice.kind === "own"
-      ? OWN
-      : choice.kind === "installed"
-        ? choice.url
-        : BY_HAND;
-
-  return (
-    <div className="space-y-2">
-      <Select
-        id={id}
-        value={selected}
-        disabled={disabled || readonly}
-        onChange={(e) => {
-          const next = e.target.value;
-          setTyping(next === BY_HAND);
-          if (next === OWN) onChange(undefined);
-          else if (next === BY_HAND) onChange(choice.kind === "url" ? v : "");
-          else onChange(next);
-        }}
-      >
-        {!required && <option value={OWN}>Run its own</option>}
-        {installed.map((s) => (
-          <option key={s.url} value={s.url}>
-            Use {serviceLabel(s)}
-          </option>
-        ))}
-        <option value={BY_HAND}>Another address…</option>
-      </Select>
-      {selected === BY_HAND && (
-        <Input
-          value={v}
-          placeholder="http://192.168.1.20:8080"
-          disabled={disabled || readonly}
-          onChange={(e) => onChange(e.target.value || undefined)}
-          className="font-mono"
-        />
-      )}
     </div>
   );
 }
@@ -316,37 +251,5 @@ export function FolderWidget(props: WidgetProps) {
       )}
       {error && <p className="text-sm text-danger">{error}</p>}
     </div>
-  );
-}
-
-export function AppWidget(props: WidgetProps) {
-  const { value, onChange, disabled, readonly, id, options } = props;
-  const provides = String(options?.provides ?? "");
-  const charts = (options?.charts as string[] | undefined) ?? [];
-  const services =
-    useApi<ServiceInstance[]>(
-      provides ? `services:${provides}` : null,
-      `/api/services/${encodeURIComponent(provides)}`,
-    ).data ?? [];
-  const apps = useApi<AppInfo[]>("apps", "/api/apps").data ?? [];
-  const choices = appChoices(provides, services, charts, apps);
-  const v = typeof value === "string" ? value : "";
-
-  return (
-    <Select
-      id={id}
-      value={v}
-      disabled={disabled || readonly}
-      onChange={(e) => onChange(e.target.value || undefined)}
-    >
-      <option value="">
-        {choices.length > 0 ? "Pick one…" : "You have none installed yet"}
-      </option>
-      {choices.map((c) => (
-        <option key={c.namespace} value={c.namespace}>
-          {c.label}
-        </option>
-      ))}
-    </Select>
   );
 }

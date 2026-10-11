@@ -4,7 +4,6 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
-from typing import ClassVar
 
 import check_charts
 import yaml
@@ -1775,7 +1774,6 @@ class OpenWebUiOllama(RenderedChart):
         url = "http://ollama.yolab-ai.svc.cluster.local:11434"
         docs = self.docs(
             {
-                "config.ollama.from": "yolab-ai",
                 "config.ollama.api": url,
                 "machines[0].name": "gpu-box",
                 "machines[0].accelerator": "nvidia",
@@ -1840,166 +1838,6 @@ class OllamaEngine(RenderedChart):
         services = [d for d in docs if d.get("kind") == "Service"]
         ollama = next(s for s in services if s["metadata"]["name"] == "ollama")
         self.assertEqual(ollama["spec"]["selector"], {"app": "ollama"})
-
-
-class ServiceLinks(unittest.TestCase):
-    def collect(self, fn, *args):
-        found = []
-        fn(*args, lambda app, msg: found.append(msg))
-        return found
-
-    def test_a_provided_service_must_be_rendered_on_its_port(self):
-        schema = {"x-yolab-provides": {"ollama": {"service": "ollama", "port": 11434}}}
-        service = {
-            "kind": "Service",
-            "metadata": {"name": "ollama"},
-            "spec": {"ports": [{"port": 11434}]},
-        }
-        self.assertEqual(
-            self.collect(check_charts.check_provides, "ollama", schema, [service]), []
-        )
-        found = self.collect(check_charts.check_provides, "ollama", schema, [])
-        self.assertEqual(len(found), 1, found)
-        self.assertIn("does not render", found[0])
-
-    def test_a_provided_service_needs_a_name_and_a_port(self):
-        found = self.collect(
-            check_charts.check_provides,
-            "x",
-            {"x-yolab-provides": {"api": {"service": "x"}}},
-            [],
-        )
-        self.assertIn("needs a service name and a numeric port", found[0])
-
-    def test_link_fields_are_found_behind_switches(self):
-        schema = {
-            "properties": {
-                "config": {
-                    "dependencies": {
-                        "ai": {
-                            "oneOf": [
-                                {
-                                    "properties": {
-                                        "ollama_url": {
-                                            "type": "string",
-                                            "format": "service-url",
-                                            "x-yolab-service": "ollama",
-                                        }
-                                    }
-                                }
-                            ]
-                        }
-                    }
-                }
-            }
-        }
-        self.assertEqual(check_charts.wanted_kinds(schema), {"ollama"})
-
-    def torrent_client(self, provides):
-        return {
-            "properties": {
-                "outputs": {
-                    "properties": {
-                        "api": {
-                            "title": "Web UI",
-                            "source": {"service": {"name": "qbit", "port": 8080}},
-                        },
-                        "password": {
-                            "title": "Password",
-                            "source": {"config": "password"},
-                        },
-                        "onion": {"title": "Onion", "source": {"logs": "ONION (\\S+)"}},
-                    }
-                }
-            },
-            "x-yolab-provides": provides,
-        }
-
-    def service(self, name, port):
-        return {
-            "kind": "Service",
-            "metadata": {"name": name},
-            "spec": {"ports": [{"port": port}]},
-        }
-
-    def test_a_provider_hands_over_outputs_it_declares(self):
-        schema = self.torrent_client({"torrent-client": ["api", "password"]})
-        self.assertEqual(
-            self.collect(
-                check_charts.check_provides, "q", schema, [self.service("qbit", 8080)]
-            ),
-            [],
-        )
-
-    def test_an_address_output_must_be_rendered(self):
-        schema = self.torrent_client({"torrent-client": ["api"]})
-        found = self.collect(check_charts.check_provides, "q", schema, [])
-        self.assertTrue(any("does not render" in f for f in found), found)
-
-    def test_a_value_only_known_once_the_app_runs_cannot_be_handed_over(self):
-        schema = self.torrent_client({"torrent-client": ["onion"]})
-        found = self.collect(
-            check_charts.check_provides, "q", schema, [self.service("qbit", 8080)]
-        )
-        self.assertTrue(any("only known once" in f for f in found), found)
-
-    def test_an_unknown_output_cannot_be_handed_over(self):
-        schema = self.torrent_client({"torrent-client": ["nope"]})
-        found = self.collect(
-            check_charts.check_provides, "q", schema, [self.service("qbit", 8080)]
-        )
-        self.assertTrue(any("which is no output" in f for f in found), found)
-
-    def test_a_connection_field_wants_its_keys_from_its_interface(self):
-        schema = {
-            "properties": {
-                "config": {
-                    "properties": {
-                        "download_client": {
-                            "type": "object",
-                            "format": "connection",
-                            "x-yolab-requires": "torrent-client",
-                            "properties": {
-                                "from": {"type": "string"},
-                                "api": {"type": "string"},
-                                "password": {"type": "string"},
-                            },
-                        }
-                    }
-                }
-            }
-        }
-        self.assertEqual(check_charts.wanted_kinds(schema), {"torrent-client"})
-        self.assertEqual(
-            check_charts.wanted_keys(schema), {"torrent-client": {"api", "password"}}
-        )
-
-    def test_a_consumer_wanting_a_key_a_provider_never_hands_over_is_reported(self):
-        found = self.collect(
-            check_charts.check_link_keys,
-            {"sonarr": {"torrent-client": {"api", "password"}}},
-            {
-                "qbittorrent": {"torrent-client": {"api", "password"}},
-                "transmission": {"torrent-client": {"api"}},
-            },
-        )
-        self.assertEqual(len(found), 1, found)
-        self.assertIn("transmission", found[0])
-        self.assertIn("password", found[0])
-
-    def test_the_old_address_form_hands_over_one_url(self):
-        schema = {"x-yolab-provides": {"ollama": {"service": "ollama", "port": 1}}}
-        self.assertEqual(check_charts.provided_keys(schema), {"ollama": {"url"}})
-
-    def test_a_link_to_a_service_nobody_provides_is_reported(self):
-        found = self.collect(
-            check_charts.check_links,
-            {"open-webui": {"ollama"}, "lnd-ui": {"lnd-grpc"}},
-            {"ollama": {"ollama"}},
-        )
-        self.assertEqual(
-            found, ["a link field wants lnd-grpc, which no chart provides"]
-        )
 
 
 class Folders(unittest.TestCase):
@@ -2141,154 +1979,6 @@ class Folders(unittest.TestCase):
         }
         self.assertTrue(check_charts.is_folder_claim(self.claim()))
         self.assertFalse(check_charts.is_folder_claim(own))
-
-
-class Groups(unittest.TestCase):
-    CHARTS: ClassVar[dict] = {
-        "jellyfin": (
-            "0.2.12",
-            {
-                "properties": {
-                    "config": {
-                        "properties": {
-                            "media_folder": {"type": "string", "format": "folder"},
-                        },
-                        "dependencies": {
-                            "gpu": {
-                                "oneOf": [{"properties": {"hardware_transcoding": {}}}]
-                            }
-                        },
-                    }
-                }
-            },
-        ),
-        "prowlarr": ("0.1.4", {}),
-    }
-
-    def collect(self, fn, *args):
-        found = []
-        fn(*args, lambda where, msg: found.append(msg))
-        return found
-
-    def resolve(self, schema):
-        found = []
-        resolved = check_charts.resolve_refs(
-            schema, self.CHARTS, lambda w, m: found.append(m), "g"
-        )
-        return resolved, found
-
-    def test_an_imported_field_arrives_whole_with_the_groups_own_words(self):
-        resolved, found = self.resolve(
-            {
-                "$ref": "chart:jellyfin#/properties/config/properties/media_folder",
-                "title": "Films",
-            }
-        )
-        self.assertEqual(found, [])
-        self.assertEqual(
-            resolved, {"type": "string", "format": "folder", "title": "Films"}
-        )
-
-    def test_a_whole_app_form_comes_in_without_what_the_group_decides(self):
-        resolved, found = self.resolve(
-            {
-                "$ref": "chart:jellyfin#/properties/config",
-                "title": "Jellyfin",
-                "x-yolab-omit": ["media_folder"],
-            }
-        )
-        self.assertEqual(found, [])
-        self.assertNotIn("media_folder", resolved["properties"])
-        self.assertNotIn("x-yolab-omit", resolved)
-        self.assertEqual(resolved["title"], "Jellyfin")
-
-    def test_a_reference_the_catalog_cannot_follow_is_reported(self):
-        for ref, words in [
-            ("chart:plex#/x", "no chart named plex"),
-            ("chart:jellyfin@0.1.0#/x", "not 0.1.0"),
-            ("chart:jellyfin#/nope", "nothing at /nope"),
-            ("chart:Jelly#/x", "is not chart:"),
-        ]:
-            _, found = self.resolve({"$ref": ref})
-            self.assertTrue(any(words in f for f in found), (ref, found))
-
-    def test_a_pinned_version_the_catalog_has_resolves(self):
-        _, found = self.resolve(
-            {"$ref": "chart:jellyfin@0.2.12#/properties/config/properties/media_folder"}
-        )
-        self.assertEqual(found, [])
-
-    def app(self, **fields):
-        return {"apiVersion": "yolab.io/v1", "kind": "App", **fields}
-
-    def test_apps_that_install_or_reuse_pass(self):
-        docs = [
-            self.app(name="jellyfin", chart="jellyfin", values={"media_folder": "m"}),
-            self.app(name="client", use="yolab-qbittorrent-ab12"),
-            self.app(name="prowlarr", chart="prowlarr@0.1.4"),
-        ]
-        found = self.collect(check_charts.check_group_apps, "g", docs, self.CHARTS)
-        self.assertEqual(found, [])
-
-    def test_a_setting_behind_a_switch_of_the_chart_counts_as_its_setting(self):
-        docs = [
-            self.app(
-                name="jellyfin",
-                chart="jellyfin",
-                values={"hardware_transcoding": True},
-            )
-        ]
-        found = self.collect(check_charts.check_group_apps, "g", docs, self.CHARTS)
-        self.assertEqual(found, [])
-
-    def test_what_a_group_may_not_render_is_reported(self):
-        cases = [
-            ({"apiVersion": "v1", "kind": "ConfigMap"}, "may only render"),
-            (self.app(name="Bad Name", chart="jellyfin"), "not a plain name"),
-            (self.app(name="a", chart="plex"), "not a chart in this catalog"),
-            (self.app(name="a", chart="jellyfin@0.1.0"), "pins jellyfin 0.1.0"),
-            (self.app(name="a", chart="jellyfin", use="yolab-x"), "exactly one"),
-            (self.app(name="a", use="kube-system"), "not an app"),
-            (
-                self.app(name="a", chart="jellyfin", values={"turbo": True}),
-                "has no setting turbo",
-            ),
-        ]
-        for doc, words in cases:
-            found = self.collect(check_charts.check_group_apps, "g", [doc], self.CHARTS)
-            self.assertTrue(any(words in f for f in found), (doc, found))
-
-    def test_two_apps_with_one_name_are_reported(self):
-        docs = [
-            self.app(name="a", chart="jellyfin"),
-            self.app(name="a", chart="prowlarr"),
-        ]
-        found = self.collect(check_charts.check_group_apps, "g", docs, self.CHARTS)
-        self.assertTrue(any("two Apps" in f for f in found), found)
-
-    def test_a_group_is_told_apart_from_an_app_by_its_annotation(self):
-        self.assertTrue(
-            check_charts.is_group_chart(
-                "name: x\nannotations:\n  yolab.io/kind: group\n"
-            )
-        )
-        self.assertFalse(check_charts.is_group_chart("name: x\n"))
-
-    def test_the_catalog_groups_resolve_and_render_every_choice(self):
-        charts = check_charts.catalog_charts()
-        groups = [
-            str(p.parent)
-            for p in Path(check_charts.HERE).glob("*/Chart.yaml")
-            if check_charts.is_group_chart(p.read_text())
-        ]
-        self.assertTrue(groups)
-        found = []
-        with tempfile.TemporaryDirectory() as tmp:
-            for group in groups:
-                check_charts.check_group(
-                    group, charts, tmp, lambda w, m: found.append(f"{w}: {m}")
-                )
-        self.assertEqual(found, [])
 
 
 class ImageArches(unittest.TestCase):
@@ -2470,3 +2160,462 @@ class OllamaApiKey(RenderedChart):
         mount = next(m for m in init["volumeMounts"] if m["mountPath"] == "/api-key")
         self.assertEqual(mount["name"], "data")
         self.assertTrue(mount["subPath"].endswith("/api-key"))
+
+
+def link_field(**overrides):
+    prop = {
+        "type": "object",
+        "format": "yolab-output",
+        "x-yolab-from": ["qbittorrent"],
+        "x-yolab-outputs": ["internal_url", "password"],
+        "properties": {
+            "internal_url": {"type": "string"},
+            "password": {"type": "string"},
+        },
+    }
+    prop.update(overrides)
+    return prop
+
+
+def collected(fn, *args):
+    found = []
+    fn(*args, lambda app, msg: found.append(msg))
+    return found
+
+
+class OutputLinks(unittest.TestCase):
+    def test_a_well_formed_link_passes(self):
+        s = schema(config={"client": link_field()})
+        self.assertEqual(collected(check_charts.check_output_link_fields, "x", s), [])
+
+    def test_a_link_must_say_whose_outputs_it_takes(self):
+        s = schema(config={"client": link_field(**{"x-yolab-from": []})})
+        found = collected(check_charts.check_output_link_fields, "x", s)
+        self.assertTrue(any("x-yolab-from" in f for f in found), found)
+
+    def test_a_link_must_say_which_outputs_it_takes(self):
+        s = schema(config={"client": link_field(**{"x-yolab-outputs": "password"})})
+        found = collected(check_charts.check_output_link_fields, "x", s)
+        self.assertTrue(any("x-yolab-outputs" in f for f in found), found)
+
+    def test_a_link_offers_one_box_per_output_so_it_can_be_typed_by_hand(self):
+        s = schema(config={"client": link_field(properties={"internal_url": {}})})
+        found = collected(check_charts.check_output_link_fields, "x", s)
+        self.assertTrue(any("one box per output" in f for f in found), found)
+
+    def test_links_are_found_behind_switches(self):
+        s = schema(
+            extra={
+                "config": {
+                    "type": "object",
+                    "properties": {"mode": {"type": "string"}},
+                    "dependencies": {
+                        "mode": {"oneOf": [{"properties": {"client": link_field()}}]}
+                    },
+                }
+            }
+        )
+        self.assertEqual(set(check_charts.output_links(s)), {"client"})
+
+    def test_the_retired_ways_of_linking_are_refused(self):
+        for fmt in ("connection", "service-url", "app"):
+            s = schema(config={"client": {"type": "object", "format": fmt}})
+            found = collected(check_charts.check_output_link_fields, "x", s)
+            self.assertTrue(any("retired" in f for f in found), (fmt, found))
+        provides = {**schema(), "x-yolab-provides": {"ollama": ["api"]}}
+        found = collected(check_charts.check_output_link_fields, "x", provides)
+        self.assertTrue(any("x-yolab-provides" in f for f in found), found)
+
+    def test_a_link_to_outputs_the_other_chart_declares_passes(self):
+        charts = {
+            "qbittorrent": (
+                "0.2.0",
+                schema(
+                    outputs={
+                        "internal_url": {
+                            "source": {"service": {"name": "q", "port": 1}}
+                        },
+                        "password": logs(r"YOLAB_OUTPUT password (\S+)"),
+                    }
+                ),
+            )
+        }
+        found = collected(
+            check_charts.check_output_links,
+            {"radarr": {"client": link_field()}},
+            charts,
+        )
+        self.assertEqual(found, [])
+
+    def test_a_link_to_an_output_nobody_declares_is_reported(self):
+        charts = {"qbittorrent": ("0.2.0", schema(outputs={"internal_url": {}}))}
+        found = collected(
+            check_charts.check_output_links,
+            {"radarr": {"client": link_field()}},
+            charts,
+        )
+        self.assertEqual(
+            found,
+            [
+                "config.client takes ['password'] from qbittorrent, which does not "
+                "declare them as outputs"
+            ],
+        )
+
+    def test_a_link_to_a_chart_the_catalog_lacks_is_reported(self):
+        found = collected(
+            check_charts.check_output_links, {"radarr": {"client": link_field()}}, {}
+        )
+        self.assertTrue(any("not a chart in this catalog" in f for f in found), found)
+
+    def test_every_link_in_the_catalog_reaches_declared_outputs(self):
+        charts = check_charts.catalog_charts()
+        links = {app: check_charts.output_links(s) for app, (_, s) in charts.items()}
+        self.assertTrue(any(links.values()))
+        self.assertEqual(collected(check_charts.check_output_links, links, charts), [])
+
+
+PACK_CHART = """apiVersion: v2
+name: watch
+dependencies:
+  - name: yolab-stack
+    version: "0.1.0"
+  - name: jellyfin
+    version: "{jellyfin}"
+annotations:
+  yolab.io/members: "{members}"
+"""
+
+
+class PackDeclaration(unittest.TestCase):
+    CHARTS = {"jellyfin": ("0.3.0", {})}
+
+    def failures(self, **fill):
+        text = PACK_CHART.format(**{"jellyfin": "0.3.0", "members": "jellyfin", **fill})
+        return collected(
+            check_charts.check_pack_declaration, "watch", text, self.CHARTS
+        )
+
+    def test_a_pack_naming_its_apps_at_their_versions_passes(self):
+        self.assertEqual(self.failures(), [])
+
+    def test_a_pack_pinning_an_old_version_of_an_app_is_reported(self):
+        found = self.failures(jellyfin="0.2.12")
+        self.assertTrue(any("bump the pack" in f for f in found), found)
+
+    def test_the_members_annotation_must_match_what_the_pack_is_built_from(self):
+        found = self.failures(members="jellyfin,sonarr")
+        self.assertTrue(any("is built from" in f for f in found), found)
+
+    def test_a_pack_without_yolab_stack_is_reported(self):
+        text = PACK_CHART.format(jellyfin="0.3.0", members="jellyfin").replace(
+            "yolab-stack", "something-else"
+        )
+        found = collected(
+            check_charts.check_pack_declaration, "watch", text, self.CHARTS
+        )
+        self.assertTrue(any("yolab-stack" in f for f in found), found)
+
+    def test_a_chart_is_a_pack_only_when_it_names_its_members(self):
+        self.assertEqual(
+            check_charts.pack_members(
+                PACK_CHART.format(jellyfin="1", members=" a, b ,")
+            ),
+            ["a", "b"],
+        )
+        self.assertEqual(check_charts.pack_members("name: plain\n"), [])
+
+
+class PackMembers(unittest.TestCase):
+    MEMBERS = ["sonarr", "radarr", "qbittorrent"]
+
+    def test_each_resource_belongs_to_the_app_whose_name_it_carries(self):
+        for name, owner in [
+            ("sonarr", "sonarr"),
+            ("sonarr-gateway", "sonarr"),
+            ("release-sonarr-data", "sonarr"),
+            ("release-qbittorrent-uninstall", "qbittorrent"),
+            ("release-keys", None),
+            ("folder-media", None),
+        ]:
+            self.assertEqual(check_charts.member_of(name, self.MEMBERS), owner, name)
+
+    def test_the_longest_matching_app_name_wins(self):
+        self.assertEqual(
+            check_charts.member_of("qbit-vpn-gateway", ["qbit", "qbit-vpn"]), "qbit-vpn"
+        )
+
+    def test_two_apps_rendering_one_name_is_reported(self):
+        docs = [
+            {"kind": "Service", "metadata": {"name": "sonarr"}, "spec": {}},
+            {"kind": "Service", "metadata": {"name": "sonarr"}, "spec": {}},
+        ]
+        found = collected(check_charts.check_pack_render, "p", docs, [])
+        self.assertTrue(any("twice" in f for f in found), found)
+
+    def test_something_no_app_owns_may_only_be_a_shared_secret_or_the_folder(self):
+        docs = [
+            {"kind": "Secret", "metadata": {"name": "release-keys"}},
+            {
+                "kind": "PersistentVolumeClaim",
+                "metadata": {
+                    "name": "folder-m",
+                    "labels": {check_charts.FOLDER_LABEL: "m"},
+                },
+            },
+            {"kind": "ConfigMap", "metadata": {"name": "stray"}},
+        ]
+        found = collected(check_charts.check_pack_render, "p", docs, [])
+        self.assertEqual(
+            found, ["renders ConfigMap stray, which belongs to none of its apps"]
+        )
+
+    def test_pack_outputs_carry_their_apps_name(self):
+        s = schema(
+            outputs={
+                "sonarr_url": logs(r"YOLAB_OUTPUT sonarr_url (\S+)"),
+                "url": logs(r"YOLAB_OUTPUT url (\S+)"),
+                "radarr_api_key": logs(r"YOLAB_OUTPUT sonarr_api_key (\S+)"),
+            }
+        )
+        found = collected(check_charts.check_pack_outputs, "p", s, self.MEMBERS)
+        self.assertEqual(len(found), 2, found)
+        self.assertTrue(any("outputs.url does not start" in f for f in found), found)
+        self.assertTrue(any("reads another key's line" in f for f in found), found)
+
+
+class Composable(unittest.TestCase):
+    def test_every_app_a_pack_is_built_from_can_run_inside_it(self):
+        found = []
+        members = set()
+        for chart_yaml in Path(check_charts.HERE).glob("*/Chart.yaml"):
+            members.update(check_charts.pack_members(chart_yaml.read_text()))
+        self.assertTrue(members)
+        for member in sorted(members):
+            check_charts.check_composable(
+                member,
+                os.path.join(check_charts.HERE, member),
+                lambda app, msg: found.append(f"{app}: {msg}"),
+            )
+        self.assertEqual(found, [])
+
+    def test_a_chart_that_would_render_twice_inside_a_pack_is_reported(self):
+        with tempfile.TemporaryDirectory() as root:
+            Path(root, "templates").mkdir()
+            Path(root, "templates", "app.yaml").write_text(
+                '{{ define "demo.manifests" }}{{ end }}{{ include "demo.manifests" . }}'
+            )
+            found = collected(check_charts.check_composable, "demo", root)
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("global.stack", found[0])
+
+
+class PackRendered(RenderedChart):
+    CHART = "movies-tv"
+    PROBE = {"config.media_folder": "media"}
+
+    def docs(self, extra=None):
+        return super().docs({**self.PROBE, **(extra or {})})
+
+    def named(self, docs, kind, name):
+        return next(
+            d for d in docs if d["kind"] == kind and d["metadata"]["name"] == name
+        )
+
+    def test_the_catalog_packs_pass_every_check(self):
+        charts = check_charts.catalog_charts()
+        packs = [
+            str(p.parent)
+            for p in Path(check_charts.HERE).glob("*/Chart.yaml")
+            if check_charts.pack_members(p.read_text())
+        ]
+        self.assertTrue(packs)
+        found = []
+        for pack in packs:
+            check_charts.check_pack(
+                pack,
+                charts,
+                self.library,
+                self.tmp.name,
+                lambda w, m: found.append(f"{w}: {m}"),
+            )
+        self.assertEqual(found, [])
+
+    def test_every_app_runs_in_its_own_pod_with_its_own_address(self):
+        docs = self.docs({"yolab.serviceName": "media"})
+        pods = self.deployments(docs)
+        self.assertEqual(
+            set(pods),
+            {
+                "jellyfin-gateway",
+                "qbittorrent-gateway",
+                "sonarr-gateway",
+                "radarr-gateway",
+                "prowlarr-gateway",
+            },
+        )
+        register = next(
+            c
+            for c in pods["sonarr-gateway"]["initContainers"]
+            if c["name"] == "wg-register"
+        )
+        env = {e["name"]: e.get("value") for e in register["env"]}
+        self.assertEqual(env["SERVICE_NAME"], "media-sonarr")
+
+    def test_the_apps_share_one_folder_claimed_once(self):
+        docs = self.docs()
+        claims = [
+            d["metadata"]["name"]
+            for d in docs
+            if d["kind"] == "PersistentVolumeClaim" and check_charts.is_folder_claim(d)
+        ]
+        self.assertEqual(claims, ["folder-media"])
+
+    def test_the_arrs_send_downloads_to_the_packs_own_qbittorrent(self):
+        docs = self.docs()
+        pods = self.deployments(docs)
+        sonarr = self.env(pods["sonarr-gateway"], "configure")
+        login = next(
+            c
+            for c in pods["qbittorrent-gateway"]["initContainers"]
+            if c["name"] == "login"
+        )
+        password = {e["name"]: e.get("value") for e in login["env"]}["PASSWORD"]
+        self.assertEqual(sonarr["DC_URL"], "http://qbittorrent:8080")
+        self.assertEqual(sonarr["DC_PASSWORD"], password)
+        self.assertEqual(sonarr["ROOT_FOLDER"], "/data/media/tv")
+        self.assertEqual(
+            self.env(pods["radarr-gateway"], "configure")["ROOT_FOLDER"],
+            "/data/media/movies",
+        )
+
+    def test_prowlarr_is_handed_the_keys_the_arrs_actually_run_with(self):
+        pods = self.deployments(self.docs())
+        prowlarr = self.env(pods["prowlarr-gateway"], "configure")
+        sonarr = self.env(pods["sonarr-gateway"], "sonarr")
+        self.assertEqual(prowlarr["SONARR_URL"], "http://sonarr:8989")
+        self.assertEqual(prowlarr["SONARR_KEY"], sonarr["SONARR__AUTH__APIKEY"])
+        self.assertEqual(
+            prowlarr["RADARR_KEY"],
+            self.env(pods["radarr-gateway"], "radarr")["RADARR__AUTH__APIKEY"],
+        )
+        self.assertEqual(prowlarr["LIDARR_URL"], "")
+
+    def test_generated_keys_live_in_the_packs_own_secret(self):
+        secret = self.named(self.docs(), "Secret", "release-keys")
+        pods = self.deployments(self.docs())
+        self.assertEqual(
+            set(secret["stringData"]), {"sonarr", "radarr", "prowlarr", "qbittorrent"}
+        )
+        self.assertEqual(
+            len(self.env(pods["sonarr-gateway"], "sonarr")["SONARR__AUTH__APIKEY"]), 32
+        )
+
+    def test_with_an_existing_download_client_the_pack_runs_no_qbittorrent(self):
+        docs = self.docs(check_charts.VARIANTS["movies-tv"][0])
+        pods = self.deployments(docs)
+        self.assertNotIn("qbittorrent-gateway", pods)
+        radarr = self.env(pods["radarr-gateway"], "configure")
+        self.assertEqual(
+            radarr["DC_URL"], check_charts.QBITTORRENT_LINK["internal_url"]
+        )
+        self.assertEqual(radarr["DC_PASSWORD"], "PlaceholderPw2026")
+
+    def test_an_apps_own_volume_survives_being_switched_off(self):
+        docs = self.docs()
+        claim = self.named(docs, "PersistentVolumeClaim", "release-qbittorrent-data")
+        self.assertEqual(claim["metadata"]["annotations"][check_charts.KEEP], "keep")
+
+    def test_each_app_prints_its_outputs_under_its_own_name(self):
+        pods = self.deployments(self.docs())
+        output = next(
+            c
+            for c in pods["jellyfin-gateway"]["initContainers"]
+            if c["name"] == "stack-output"
+        )
+        self.assertIn("YOLAB_OUTPUT jellyfin_url", output["command"][2])
+        configure = self.env(pods["sonarr-gateway"], "configure")
+        self.assertEqual(configure["API_KEY_OUTPUT"], "sonarr_api_key")
+
+
+class ServarrRendered(RenderedChart):
+    CHART = "radarr"
+
+    def radarr(self, extra=None):
+        return self.deployments(self.docs(extra))["gateway"]
+
+    def test_alone_it_keeps_the_names_an_installed_radarr_already_has(self):
+        docs = self.docs()
+        self.assertIn("gateway", self.deployments(docs))
+        claims = [
+            d["metadata"]["name"] for d in docs if d["kind"] == "PersistentVolumeClaim"
+        ]
+        self.assertEqual(claims, ["release-data"])
+        claim = docs[[d["kind"] for d in docs].index("PersistentVolumeClaim")]
+        self.assertNotIn("annotations", claim["metadata"])
+
+    def test_without_a_key_of_its_own_radarr_keeps_the_one_it_made(self):
+        spec = self.radarr({"config.api_key": ""})
+        self.assertNotIn("RADARR__AUTH__APIKEY", self.env(spec, "radarr"))
+        self.assertEqual(self.env(spec, "configure")["API_KEY"], "")
+
+    def test_a_chosen_key_is_the_one_radarr_runs_with_and_reports(self):
+        spec = self.radarr()
+        key = self.env(spec, "radarr")["RADARR__AUTH__APIKEY"]
+        self.assertEqual(self.env(spec, "configure")["API_KEY"], key)
+        self.assertEqual(self.env(spec, "configure")["API_KEY_OUTPUT"], "api_key")
+
+    def test_a_linked_download_client_reaches_the_wiring(self):
+        spec = self.radarr(check_charts.VARIANTS["radarr"][0])
+        env = self.env(spec, "configure")
+        self.assertEqual(env["DC_URL"], check_charts.QBITTORRENT_LINK["internal_url"])
+        self.assertEqual(env["CATEGORY_FIELD"], "movieCategory")
+
+    def test_without_a_folder_radarr_picks_no_library_for_you(self):
+        self.assertEqual(self.env(self.radarr(), "configure")["ROOT_FOLDER"], "")
+
+
+class QbittorrentLogin(RenderedChart):
+    CHART = "qbittorrent"
+
+    def inits(self, extra=None):
+        spec = self.deployments(self.docs(extra))["gateway"]
+        return {c["name"]: c for c in spec["initContainers"]}
+
+    def test_an_install_from_before_keeps_qbittorrents_temporary_password(self):
+        self.assertNotIn("login", self.inits())
+
+    def test_a_chosen_password_is_written_before_qbittorrent_starts(self):
+        login = self.inits(check_charts.VARIANTS["qbittorrent"][0])["login"]
+        env = {e["name"]: e.get("value") for e in login["env"]}
+        self.assertEqual(env["PASSWORD"], "PlaceholderPw2026")
+        self.assertEqual(env["SAVE_PATH"], "/downloads")
+        self.assertEqual(env["PASSWORD_OUTPUT"], "password")
+
+    def test_both_password_lines_fill_the_same_output(self):
+        s = json.loads(Path(self.chart, "values.schema.json").read_text())
+        spec = s["properties"]["outputs"]["properties"]["password"]["source"]["logs"]
+        import re
+
+        pattern = re.compile(spec)
+        for line in (
+            "YOLAB_OUTPUT password hunter2",
+            "A temporary password is provided for this session: hunter2",
+        ):
+            self.assertEqual(pattern.search(line).group(1), "hunter2", line)
+
+
+class NavidromeFolder(RenderedChart):
+    CHART = "navidrome"
+
+    def test_a_chosen_folder_is_what_navidrome_plays(self):
+        spec = self.deployments(self.docs(check_charts.VARIANTS["navidrome"][0]))[
+            "gateway"
+        ]
+        self.assertEqual(
+            self.env(spec, "navidrome")["ND_MUSICFOLDER"], "/data/probe-folder/music"
+        )
+
+    def test_without_a_folder_it_plays_its_own_music(self):
+        spec = self.deployments(self.docs())["gateway"]
+        self.assertEqual(self.env(spec, "navidrome")["ND_MUSICFOLDER"], "/music")

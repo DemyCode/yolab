@@ -338,8 +338,5 @@
         }
       }
     }
-  },
-  "x-yolab-provides": {
-    "firefly-iii": ["api"]
   }
 }

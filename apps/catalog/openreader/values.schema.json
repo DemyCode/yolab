@@ -37,11 +37,11 @@
         "tts": {
           "type": "object",
           "title": "Speech engine",
-          "format": "connection",
-          "x-yolab-requires": "openai-tts",
+          "format": "yolab-output",
+          "x-yolab-from": ["kokoro"],
+          "x-yolab-outputs": ["api"],
           "description": "Reads documents aloud through an OpenAI-compatible speech API: pick an installed Kokoro, or give the address of another one.",
           "properties": {
-            "from": { "type": "string" },
             "api": { "type": "string", "title": "Address", "format": "uri" }
           }
         }

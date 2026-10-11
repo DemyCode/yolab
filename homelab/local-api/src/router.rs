@@ -150,18 +150,8 @@ pub fn build_router(state: AppState) -> Router {
             "/api/apps/catalog/{id}/refresh",
             post(apps::refresh_catalog_app),
         )
-        .route("/api/services/{kind}", get(apps::list_services))
+        .route("/api/links", get(apps::list_links))
         .route("/api/folders", get(folders::list).post(folders::create))
-        .route(
-            "/api/groups",
-            get(apps::list_groups).post(apps::install_group),
-        )
-        .route(
-            "/api/groups/{name}",
-            get(apps::get_group)
-                .put(apps::edit_group)
-                .delete(apps::delete_group),
-        )
         .route("/api/folders/{name}", delete(folders::remove))
         .route("/api/apps", get(apps::list_apps))
         .route(

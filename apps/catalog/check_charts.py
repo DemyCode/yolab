@@ -45,6 +45,7 @@ import yaml
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 LIBRARY = os.path.join(HERE, "yolab-common")
+STACK_LIBRARY = os.path.join(HERE, "yolab-stack")
 
 LINT_VALUES = {
     "config.password": "PlaceholderPw2026",
@@ -70,7 +71,57 @@ LINT_VALUES = {
     "config.sunshine_password": "PlaceholderPw2026",
 }
 
+QBITTORRENT_LINK = {
+    "internal_url": "http://qbittorrent.yolab-q.svc.cluster.local:8080",
+    "username": "admin",
+    "password": "PlaceholderPw2026",
+}
+
+
+def linked(field, values):
+    return {f"config.{field}.{k}": v for k, v in values.items()}
+
+
 VARIANTS = {
+    "qbittorrent": [{"config.webui_password": "PlaceholderPw2026"}],
+    "radarr": [linked("download_client", QBITTORRENT_LINK)],
+    "sonarr": [linked("download_client", QBITTORRENT_LINK)],
+    "lidarr": [linked("download_client", QBITTORRENT_LINK)],
+    "prowlarr": [
+        {
+            **linked(
+                "sonarr",
+                {
+                    "internal_url": "http://sonarr.yolab-s.svc.cluster.local:8989",
+                    "api_key": "PlaceholderApiKey2026",
+                },
+            ),
+            **linked(
+                "radarr",
+                {
+                    "internal_url": "http://radarr.yolab-r.svc.cluster.local:7878",
+                    "api_key": "PlaceholderApiKey2026",
+                },
+            ),
+        }
+    ],
+    "navidrome": [
+        {"config.music_folder": "probe-folder", "config.music_path": "music"}
+    ],
+    "movies-tv": [
+        {
+            "config.download_client": "existing",
+            **linked("existing_client", QBITTORRENT_LINK),
+        },
+        {"config.watch_anywhere": "false", "config.manage_anywhere": "false"},
+    ],
+    "music": [
+        {
+            "config.download_client": "existing",
+            **linked("existing_client", QBITTORRENT_LINK),
+        },
+        {"config.listen_anywhere": "false", "config.manage_anywhere": "false"},
+    ],
     "open-webui": [
         {
             "machines[0].name": "gpu-box",
@@ -136,16 +187,54 @@ def chart_field(chart_yaml, field):
     return None
 
 
+def chart_dependencies(chart_yaml):
+    try:
+        deps = (yaml.safe_load(chart_yaml) or {}).get("dependencies") or []
+    except yaml.YAMLError:
+        return []
+    return [d for d in deps if isinstance(d, dict) and d.get("name")]
+
+
+def stack_library(workdir):
+    out = os.path.join(workdir, "stack-library")
+    found = glob.glob(os.path.join(out, "yolab-stack-*.tgz"))
+    if found:
+        return found[0]
+    os.makedirs(out, exist_ok=True)
+    version = chart_field(Path(STACK_LIBRARY, "Chart.yaml").read_text(), "version")
+    subprocess.run(
+        ["helm", "package", STACK_LIBRARY, "--version", version, "--destination", out],
+        check=True,
+        capture_output=True,
+    )
+    return glob.glob(os.path.join(out, "yolab-stack-*.tgz"))[0]
+
+
+def stage(chart_dir, dest, libraries):
+    shutil.copytree(chart_dir, dest, dirs_exist_ok=True)
+    charts = os.path.join(dest, "charts")
+    os.makedirs(charts, exist_ok=True)
+    shutil.copy(libraries["yolab-common"], charts)
+    for dep in chart_dependencies(Path(chart_dir, "Chart.yaml").read_text()):
+        name = dep["name"]
+        if name == "yolab-common":
+            continue
+        if name in libraries:
+            shutil.copy(libraries[name], charts)
+        elif os.path.isfile(os.path.join(HERE, name, "Chart.yaml")):
+            stage(os.path.join(HERE, name), os.path.join(charts, name), libraries)
+
+
 def render(chart_dir, library_tgz, workdir, extra=None):
-    """helm template the chart against the local library. Returns the YAML text.
+    """helm template the chart against the local libraries. Returns the YAML text.
 
     Renders from a copy: the chart has to gain a `charts/` directory holding the
-    library, and the source tree is read-only when this runs from the nix store.
+    libraries and, for a pack, the app charts of this tree it is built from, and
+    the source tree is read-only when this runs from the nix store.
     """
     staged = os.path.join(workdir, os.path.basename(chart_dir.rstrip("/")))
-    shutil.copytree(chart_dir, staged, dirs_exist_ok=True)
-    os.makedirs(os.path.join(staged, "charts"), exist_ok=True)
-    shutil.copy(library_tgz, os.path.join(staged, "charts"))
+    libraries = {"yolab-common": library_tgz, "yolab-stack": stack_library(workdir)}
+    stage(chart_dir, staged, libraries)
 
     cmd = ["helm", "template", "release", staged]
     for k, v in {**LINT_VALUES, **(extra or {})}.items():
@@ -1278,7 +1367,7 @@ def check_schema(app, schema, chart_yaml, fail):
             field = source["config"]
             if field not in config:
                 fail(app, f"{where} shows config.{field}, which does not exist")
-            elif not (config[field].get("generate") or key in handed_over(schema)):
+            elif not config[field].get("generate"):
                 fail(
                     app,
                     f"{where} shows config.{field}, which the person typed "
@@ -1290,38 +1379,44 @@ def check_schema(app, schema, chart_yaml, fail):
             fail(app, f"{where}: `when` must be a schema")
 
 
-def handed_over(schema):
-    found = set()
-    for keys in (schema.get("x-yolab-provides") or {}).values():
-        if isinstance(keys, list):
-            found.update(k for k in keys if isinstance(k, str))
-    return found
+LINK_FORMAT = "yolab-output"
+RETIRED_LINK_FORMATS = ("connection", "service-url", "app")
 
 
-def provided_kinds(schema):
-    return set((schema.get("x-yolab-provides") or {}).keys())
-
-
-def provided_keys(schema):
-    return {
-        kind: set(spec) if isinstance(spec, list) else {"url"}
-        for kind, spec in (schema.get("x-yolab-provides") or {}).items()
+def check_service_outputs(app, schema, docs, fail):
+    services = {
+        d["metadata"]["name"]: {
+            p.get("port") for p in (d.get("spec") or {}).get("ports") or []
+        }
+        for d in docs
+        if d.get("kind") == "Service"
     }
+    outputs = ((schema.get("properties") or {}).get("outputs") or {}).get(
+        "properties"
+    ) or {}
+    for key, out in outputs.items():
+        target = (out.get("source") or {}).get("service")
+        if not isinstance(target, dict):
+            continue
+        name, port = target.get("name"), target.get("port")
+        if not name or not isinstance(port, int):
+            fail(app, f"outputs.{key} needs a service name and a numeric port")
+        elif port not in services.get(name, set()):
+            fail(
+                app,
+                f"outputs.{key} points at Service {name} port {port}, "
+                f"which the chart does not render",
+            )
 
 
-def link_fields(schema):
-    found = []
+def config_fields(schema, keep):
+    found = {}
 
     def walk(node):
         if isinstance(node, dict):
-            for prop in (node.get("properties") or {}).values():
-                if not isinstance(prop, dict):
-                    continue
-                if prop.get("format") == "service-url":
-                    found.append((prop.get("x-yolab-service") or "", set()))
-                elif prop.get("format") == "connection":
-                    keys = set(prop.get("properties") or {}) - {"from"}
-                    found.append((prop.get("x-yolab-requires") or "", keys))
+            for name, prop in (node.get("properties") or {}).items():
+                if isinstance(prop, dict) and keep(prop):
+                    found[name] = prop
             for v in node.values():
                 walk(v)
         elif isinstance(node, list):
@@ -1332,81 +1427,78 @@ def link_fields(schema):
     return found
 
 
-def wanted_kinds(schema):
-    return {kind for kind, _ in link_fields(schema)}
+def output_links(schema):
+    return config_fields(schema, lambda prop: prop.get("format") == LINK_FORMAT)
 
 
-def wanted_keys(schema):
-    found = {}
-    for kind, keys in link_fields(schema):
-        found.setdefault(kind, set()).update(keys)
-    return found
+def strings(value):
+    return (
+        isinstance(value, list)
+        and bool(value)
+        and all(isinstance(v, str) and v for v in value)
+    )
 
 
-def check_provides(app, schema, docs, fail):
-    services = {
-        d["metadata"]["name"]: {
-            p.get("port") for p in (d.get("spec") or {}).get("ports") or []
-        }
-        for d in docs
-        if d.get("kind") == "Service"
-    }
-    declared = (schema.get("properties") or {}).get("outputs") or {}
-    outputs = declared.get("properties") or {}
-
-    def renders(where, name, port):
-        if not name or not isinstance(port, int):
-            fail(app, f"{where} needs a service name and a numeric port")
-        elif port not in services.get(name, set()):
+def check_output_link_fields(app, schema, fail):
+    if "x-yolab-provides" in schema:
+        fail(
+            app,
+            "x-yolab-provides is gone: another app takes this one's outputs "
+            "through a yolab-output field",
+        )
+    retired = config_fields(
+        schema, lambda prop: prop.get("format") in RETIRED_LINK_FORMATS
+    )
+    for name, prop in sorted(retired.items()):
+        fail(
+            app,
+            f"config.{name} uses the retired {prop.get('format')} format: "
+            f"use {LINK_FORMAT} with x-yolab-from and x-yolab-outputs",
+        )
+    for name, prop in sorted(output_links(schema).items()):
+        where = f"config.{name}"
+        if prop.get("type") != "object":
+            fail(app, f"{where} takes another app's outputs but is not an object")
+        if not strings(prop.get("x-yolab-from")):
+            fail(app, f"{where} needs x-yolab-from: the charts it takes outputs from")
+        keys = prop.get("x-yolab-outputs")
+        if not strings(keys):
+            fail(app, f"{where} needs x-yolab-outputs: the outputs it takes")
+            continue
+        boxes = set(prop.get("properties") or {})
+        if boxes != set(keys):
             fail(
                 app,
-                f"{where} points at Service {name} port {port}, "
-                f"which the chart does not render",
+                f"{where} must offer one box per output it takes, "
+                f"{sorted(keys)}, so they can be typed by hand; it offers "
+                f"{sorted(boxes)}",
             )
 
-    for key, out in outputs.items():
-        target = (out.get("source") or {}).get("service")
-        if isinstance(target, dict):
-            renders(f"outputs.{key}", target.get("name"), target.get("port"))
-    for kind, spec in (schema.get("x-yolab-provides") or {}).items():
-        if not isinstance(spec, list):
-            renders(f"x-yolab-provides {kind}", spec.get("service"), spec.get("port"))
-            continue
-        if not spec:
-            fail(app, f"x-yolab-provides {kind} hands over nothing")
-        for key in spec:
-            source = (outputs.get(key) or {}).get("source") or {}
-            if key not in outputs:
-                fail(app, f"x-yolab-provides {kind} lists {key}, which is no output")
-            elif "logs" in source:
-                fail(
-                    app,
-                    f"x-yolab-provides {kind} lists {key}, which is only known once "
-                    f"the app runs — hand over a setting or an address instead",
-                )
+
+def declared_outputs(schema):
+    return set(
+        ((schema.get("properties") or {}).get("outputs") or {}).get("properties") or {}
+    )
 
 
-def check_links(wanted, provided, fail):
-    for app, kinds in sorted(wanted.items()):
-        for kind in sorted(kinds):
-            if not kind:
-                fail(app, "a link field does not name the service it wants")
-            elif not any(kind in p for p in provided.values()):
-                fail(app, f"a link field wants {kind}, which no chart provides")
-
-
-def check_link_keys(wanted, provided, fail):
-    for app, kinds in sorted(wanted.items()):
-        for kind, keys in sorted(kinds.items()):
-            for provider, offers in sorted(provided.items()):
-                if kind not in offers:
+def check_output_links(links, charts, fail):
+    for app, fields in sorted(links.items()):
+        for name, prop in sorted(fields.items()):
+            wanted = set(prop.get("x-yolab-outputs") or [])
+            for chart in prop.get("x-yolab-from") or []:
+                if chart not in charts:
+                    fail(
+                        app,
+                        f"config.{name} takes outputs from {chart}, which is not "
+                        f"a chart in this catalog",
+                    )
                     continue
-                missing = keys - offers[kind]
+                missing = sorted(wanted - declared_outputs(charts[chart][1]))
                 if missing:
                     fail(
                         app,
-                        f"wants {sorted(missing)} from {kind}, which {provider} "
-                        f"does not hand over",
+                        f"config.{name} takes {missing} from {chart}, which does "
+                        f"not declare them as outputs",
                     )
 
 
@@ -1420,21 +1512,7 @@ def is_folder_claim(doc):
 
 
 def folder_fields(schema):
-    found = {}
-
-    def walk(node):
-        if isinstance(node, dict):
-            for name, prop in (node.get("properties") or {}).items():
-                if isinstance(prop, dict) and prop.get("format") == "folder":
-                    found[name] = prop
-            for v in node.values():
-                walk(v)
-        elif isinstance(node, list):
-            for v in node:
-                walk(v)
-
-    walk((schema.get("properties") or {}).get("config") or {})
-    return found
+    return config_fields(schema, lambda prop: prop.get("format") == "folder")
 
 
 def check_folder_fields(app, schema, fail):
@@ -1517,26 +1595,31 @@ def check_folders(app, field, docs, fail):
             )
 
 
-PLAIN_NAME = re.compile(r"^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$")
-GROUP_KIND = "group"
-GROUP_SCHEMA = "group.schema.json"
-CHART_REF = re.compile(r"^chart:([a-z0-9-]+)(?:@([^#]+))?(?:#(/.*))?$")
-MAX_REF_DEPTH = 8
+LIBRARIES = ("yolab-common", "yolab-stack")
+MEMBERS = "yolab.io/members"
+MEMBER_LABEL = "yolab.io/member"
+KEEP = "helm.sh/resource-policy"
+RELEASE = "release"
+PACK_SHARED_KINDS = ("Secret",)
 
 
-def is_group_chart(chart_yaml):
+def chart_annotations(chart_yaml):
     try:
-        annotations = (yaml.safe_load(chart_yaml) or {}).get("annotations") or {}
+        return (yaml.safe_load(chart_yaml) or {}).get("annotations") or {}
     except yaml.YAMLError:
-        return False
-    return annotations.get("yolab.io/kind") == GROUP_KIND
+        return {}
+
+
+def pack_members(chart_yaml):
+    listed = str(chart_annotations(chart_yaml).get(MEMBERS) or "")
+    return [m.strip() for m in listed.split(",") if m.strip()]
 
 
 def catalog_charts(root=HERE):
     found = {}
     for chart_yaml in sorted(Path(root).glob("*/Chart.yaml")):
         text = chart_yaml.read_text()
-        if "type: library" in text or is_group_chart(text):
+        if "type: library" in text:
             continue
         schema_path = chart_yaml.parent / "values.schema.json"
         try:
@@ -1547,176 +1630,181 @@ def catalog_charts(root=HERE):
     return found
 
 
-def json_pointer(doc, pointer):
-    for part in pointer.split("/")[1:]:
-        part = part.replace("~1", "/").replace("~0", "~")
-        doc = doc[int(part)] if isinstance(doc, list) else doc[part]
-    return doc
-
-
-def omit_fields(schema, names):
-    props = schema.get("properties")
-    if isinstance(props, dict):
-        for name in names:
-            props.pop(name, None)
-    if isinstance(schema.get("required"), list):
-        schema["required"] = [r for r in schema["required"] if r not in names]
-    deps = schema.get("dependencies")
-    if isinstance(deps, dict):
-        for name in names:
-            deps.pop(name, None)
-        for dep in deps.values():
-            for branch in (dep or {}).get("oneOf") or []:
-                if isinstance(branch, dict):
-                    omit_fields(branch, names)
-
-
-def resolve_refs(node, charts, fail, where, depth=0):
-    if isinstance(node, list):
-        return [resolve_refs(v, charts, fail, where, depth) for v in node]
-    if not isinstance(node, dict):
-        return node
-    ref = node.get("$ref")
-    if not (isinstance(ref, str) and ref.startswith("chart:")):
-        return {k: resolve_refs(v, charts, fail, where, depth) for k, v in node.items()}
-    match = CHART_REF.match(ref)
-    if not match:
-        fail(where, f"{ref} is not chart:<name>[@<version>]#<pointer>")
-        return {}
-    name, version, pointer = match.groups()
-    if name not in charts:
-        fail(where, f"{ref}: there is no chart named {name}")
-        return {}
-    have, schema = charts[name]
-    if version and version != have:
-        fail(where, f"{ref}: this catalog has {name} {have}, not {version}")
-        return {}
-    if depth >= MAX_REF_DEPTH:
-        fail(where, f"{ref} leads through too many references")
-        return {}
-    try:
-        found = json_pointer(schema, pointer or "")
-    except (KeyError, IndexError, ValueError, TypeError):
-        fail(where, f"{ref}: {name} has nothing at {pointer}")
-        return {}
-    resolved = resolve_refs(found, charts, fail, where, depth + 1)
-    if isinstance(resolved, dict):
-        for k, v in node.items():
-            if k != "$ref":
-                resolved = {**resolved, k: resolve_refs(v, charts, fail, where, depth)}
-        omit_fields(resolved, set(resolved.pop("x-yolab-omit", None) or []))
-    return resolved
-
-
-def setting_names(schema):
-    config = (schema.get("properties") or {}).get("config") or {}
-    names = set(config.get("properties") or {})
-    for dep in (config.get("dependencies") or {}).values():
-        for branch in dep.get("oneOf") or []:
-            names.update(branch.get("properties") or {})
-    return names
-
-
-def check_group_apps(where, docs, charts, fail):
-    names = set()
-    for d in docs:
-        if d.get("apiVersion") != "yolab.io/v1" or d.get("kind") != "App":
-            fail(
-                where,
-                f"renders a {d.get('kind')}, but a group may only render "
-                f"yolab.io/v1 App documents",
-            )
-            continue
-        name = d.get("name")
-        if not isinstance(name, str) or not PLAIN_NAME.match(name):
-            fail(where, f"an App is named {name!r}, which is not a plain name")
-            continue
-        if name in names:
-            fail(where, f"two Apps are named {name}")
-        names.add(name)
-        chart, use = d.get("chart"), d.get("use")
-        if (chart is None) == (use is None):
-            fail(where, f"App {name} needs exactly one of chart (install) or use")
-            continue
-        if use is not None:
-            if not str(use).startswith("yolab-"):
-                fail(where, f"App {name} uses {use!r}, which is not an app")
-            continue
-        chart_name, _, version = str(chart).partition("@")
-        if chart_name not in charts:
-            fail(
-                where,
-                f"App {name} installs {chart_name}, which is not a chart in this catalog",
-            )
-            continue
-        if version and version != charts[chart_name][0]:
-            fail(
-                where,
-                f"App {name} pins {chart_name} {version}, "
-                f"but this catalog has {charts[chart_name][0]}",
-            )
-        offered = setting_names(charts[chart_name][1])
-        for key in d.get("values") or {}:
-            if key not in offered:
-                fail(where, f"App {name}: {chart_name} has no setting {key}")
-    if not names:
-        fail(where, "installs nothing")
-    return names
-
-
-def render_group(chart_dir, workdir, values_file, apps):
-    staged = os.path.join(workdir, os.path.basename(chart_dir.rstrip("/")))
-    shutil.copytree(chart_dir, staged, dirs_exist_ok=True)
-    cmd = ["helm", "template", "release", staged]
-    if values_file is not None:
-        cmd += ["--values", str(values_file)]
-    cmd += ["--set-json", f"yolab.apps={json.dumps(apps)}"]
-    out = subprocess.run(cmd, capture_output=True, text=True, check=False)
-    shutil.rmtree(staged, ignore_errors=True)
-    if out.returncode != 0:
-        return None, out.stderr.strip()
-    return out.stdout, None
-
-
-def check_group(chart_dir, charts, workdir, fail):
-    app = os.path.basename(chart_dir.rstrip("/"))
-    text = Path(chart_dir, "Chart.yaml").read_text()
-    annotations = (yaml.safe_load(text) or {}).get("annotations") or {}
-    check_store_annotations(app, annotations, fail)
-    if Path(chart_dir, "values.schema.json").exists():
+def check_pack_declaration(app, chart_yaml, charts, fail):
+    deps = chart_dependencies(chart_yaml)
+    apps = [d for d in deps if d["name"] not in LIBRARIES]
+    members = pack_members(chart_yaml)
+    if sorted(members) != sorted(d["name"] for d in apps):
         fail(
             app,
-            f"a group keeps its form in {GROUP_SCHEMA}: helm would read "
-            f"values.schema.json and fail on its chart: references",
+            f"{MEMBERS} lists {members}, but the chart is built from "
+            f"{[d['name'] for d in apps]}",
         )
+    if len(set(members)) != len(members):
+        fail(app, f"{MEMBERS} names an app twice: a pack runs each chart once")
+    if not any(d["name"] == "yolab-stack" for d in deps):
+        fail(
+            app, "a pack renders its apps through yolab-stack, so it must depend on it"
+        )
+    for dep in apps:
+        name = dep["name"]
+        if name not in charts:
+            fail(app, f"is built from {name}, which is not a chart in this catalog")
+            continue
+        if str(dep.get("version")) != charts[name][0]:
+            fail(
+                app,
+                f"pins {name} {dep.get('version')}, but this catalog has "
+                f"{charts[name][0]}: a pack moves with its apps, so pin it and "
+                f"bump the pack",
+            )
+        if pack_members(Path(HERE, name, "Chart.yaml").read_text()):
+            fail(app, f"is built from {name}, which is itself a pack")
+
+
+def check_composable(app, chart_dir, fail):
+    templates = "\n".join(
+        p.read_text()
+        for p in sorted(Path(chart_dir, "templates").glob("*"))
+        if p.is_file()
+    )
+    if f'define "{app}.manifests"' not in templates:
+        fail(
+            app,
+            f"a pack is built from it, so it must keep its manifests in "
+            f'define "{app}.manifests"',
+        )
+    if "(.Values.global).stack" not in templates:
+        fail(
+            app,
+            "a pack is built from it, so it must render nothing by itself when "
+            ".Values.global.stack is set, or a pack would run it twice",
+        )
+
+
+def member_of(name, members):
+    owners = [
+        m
+        for m in members
+        if name == m
+        or name.startswith(f"{m}-")
+        or name == f"{RELEASE}-{m}"
+        or name.startswith(f"{RELEASE}-{m}-")
+    ]
+    return max(owners, key=len) if owners else None
+
+
+def split_by_member(docs, members):
+    parts = {m: [] for m in members}
+    shared = []
+    for d in docs:
+        owner = member_of((d.get("metadata") or {}).get("name") or "", members)
+        (parts[owner] if owner else shared).append(d)
+    return parts, shared
+
+
+def check_pack_render(app, docs, members, fail):
+    seen = set()
+    for d in docs:
+        key = (d.get("kind"), (d.get("metadata") or {}).get("name"))
+        if key in seen:
+            fail(app, f"renders {key[0]} {key[1]} twice: two of its apps collide")
+        seen.add(key)
+    parts, shared = split_by_member(docs, members)
+    for d in shared:
+        if d.get("kind") in PACK_SHARED_KINDS or (
+            d.get("kind") == "PersistentVolumeClaim" and is_folder_claim(d)
+        ):
+            continue
+        fail(
+            app,
+            f"renders {d.get('kind')} {d['metadata'].get('name')}, which belongs "
+            f"to none of its apps",
+        )
+    for member, member_docs in sorted(parts.items()):
+        if not member_docs:
+            continue
+        where = f"{app}/{member}"
+        chart_yaml = Path(HERE, member, "Chart.yaml").read_text()
+        try:
+            schema = json.loads(Path(HERE, member, "values.schema.json").read_text())
+        except (FileNotFoundError, json.JSONDecodeError):
+            schema = {}
+        check(where, member_docs, fail, chart_yaml, schema)
+        for claim in member_docs:
+            if claim.get("kind") != "PersistentVolumeClaim" or is_folder_claim(claim):
+                continue
+            if (claim["metadata"].get("annotations") or {}).get(KEEP) != "keep":
+                fail(
+                    where,
+                    f"its volume {claim['metadata']['name']} is not kept when the "
+                    f"app is switched off in the pack, so switching it off deletes "
+                    f"its data",
+                )
+        for workload in member_docs:
+            if workload.get("kind") not in WORKLOAD_KINDS:
+                continue
+            labels = workload["spec"]["template"]["metadata"].get("labels") or {}
+            if labels.get(MEMBER_LABEL) != member:
+                fail(
+                    where,
+                    f"pod {workload['metadata']['name']} is not labelled "
+                    f"{MEMBER_LABEL}: {member}, so its page cannot tell whose it is",
+                )
+
+
+def check_pack_outputs(app, schema, members, fail):
+    outputs = ((schema.get("properties") or {}).get("outputs") or {}).get(
+        "properties"
+    ) or {}
+    for key, out in outputs.items():
+        if not any(key.startswith(f"{m}_") for m in members):
+            fail(
+                app,
+                f"outputs.{key} does not start with one of its apps' names, so "
+                f"nobody can tell which app it comes from",
+            )
+        logs = (out.get("source") or {}).get("logs") or ""
+        if logs.startswith("YOLAB_OUTPUT ") and not logs.startswith(
+            f"YOLAB_OUTPUT {key} "
+        ):
+            fail(app, f"outputs.{key} reads another key's line: {logs!r}")
+
+
+def check_pack(chart_dir, charts, library_tgz, workdir, fail):
+    app = os.path.basename(chart_dir.rstrip("/"))
+    text = Path(chart_dir, "Chart.yaml").read_text()
     try:
-        schema = json.loads(Path(chart_dir, GROUP_SCHEMA).read_text())
+        schema = json.loads(Path(chart_dir, "values.schema.json").read_text())
     except FileNotFoundError:
-        fail(app, f"a group needs {GROUP_SCHEMA}, the form people fill in")
+        fail(app, "a pack needs values.schema.json, the questions it asks")
         schema = {}
     except json.JSONDecodeError as e:
-        fail(app, f"{GROUP_SCHEMA} is not valid JSON: {e}")
+        fail(app, f"values.schema.json is not valid JSON: {e}")
         schema = {}
-    resolve_refs(schema, charts, fail, app)
-    choices = [None, *sorted(Path(chart_dir, "ci").glob("*-values.yaml"))]
-    for values_file in choices:
-        where = app if values_file is None else f"{app} ({values_file.name})"
-        first, err = render_group(chart_dir, workdir, values_file, {})
-        if first is None:
+    members = pack_members(text)
+    check_schema(app, schema, text, fail)
+    check_folder_fields(app, schema, fail)
+    check_output_link_fields(app, schema, fail)
+    check_pack_declaration(app, text, charts, fail)
+    check_pack_outputs(app, schema, members, fail)
+    for member in members:
+        if member in charts:
+            check_composable(member, os.path.join(HERE, member), fail)
+    probe = {f"config.{field}": FOLDER_PROBE for field in folder_fields(schema)}
+    for extra in [{}, *VARIANTS.get(app, [])]:
+        where = app if not extra else f"{app} ({extra})"
+        rendered, err = render(chart_dir, library_tgz, workdir, {**probe, **extra})
+        if rendered is None:
             fail(where, f"helm template failed: {err.splitlines()[-1] if err else '?'}")
             continue
-        names = {
-            d.get("name")
-            for d in yaml.safe_load_all(first)
-            if d and isinstance(d.get("name"), str)
-        }
-        apps = {name: f"yolab-{name}-test" for name in names}
-        second, err = render_group(chart_dir, workdir, values_file, apps)
-        if second is None:
-            fail(where, f"helm template failed: {err.splitlines()[-1] if err else '?'}")
-            continue
-        docs = [d for d in yaml.safe_load_all(second) if d]
-        check_group_apps(where, docs, charts, fail)
+        docs = [d for d in yaml.safe_load_all(rendered) if d]
+        check_pack_render(where, docs, members, fail)
+        if not extra:
+            check_service_outputs(where, schema, docs, fail)
+        for field in folder_fields(schema):
+            check_folders(where, field, docs, fail)
+    return schema
 
 
 def main(argv):
@@ -1748,26 +1836,31 @@ def main(argv):
             capture_output=True,
         )
         library_tgz = glob.glob(os.path.join(tmp, "yolab-common-*.tgz"))[0]
+        tree_libraries = {
+            "yolab-common": lib_version,
+            "yolab-stack": chart_field(
+                Path(STACK_LIBRARY, "Chart.yaml").read_text(), "version"
+            ),
+        }
 
-        wanted, provided = {}, {}
-        wanted_by_key, provided_by_key = {}, {}
-        groups = []
+        links = {}
+        packs = []
         for chart_dir in chart_dirs:
             app = os.path.basename(chart_dir.rstrip("/"))
             text = Path(chart_dir, "Chart.yaml").read_text()
-            if is_group_chart(text):
-                groups.append(chart_dir)
+            for dep in chart_dependencies(text):
+                if (
+                    dep["name"] in tree_libraries
+                    and str(dep.get("version")) != tree_libraries[dep["name"]]
+                ):
+                    fail(
+                        app,
+                        f"depends on {dep['name']} {dep.get('version')}, "
+                        f"but this tree has {tree_libraries[dep['name']]}",
+                    )
+            if pack_members(text):
+                packs.append(chart_dir)
                 continue
-
-            declared = re.search(
-                r"- name: yolab-common\s*\n\s*version:\s*\"?([^\"\n]+)", text
-            )
-            if declared and declared.group(1).strip() != lib_version:
-                fail(
-                    app,
-                    f"depends on yolab-common {declared.group(1).strip()}, "
-                    f"but this tree has {lib_version}",
-                )
 
             rendered, err = render(chart_dir, library_tgz, tmp)
             if rendered is None:
@@ -1790,12 +1883,10 @@ def main(argv):
                 fail(app, f"values.schema.json is not valid JSON: {e}")
                 schema = {}
             check_schema(app, schema, text, fail)
-            wanted[app] = wanted_kinds(schema)
-            provided[app] = provided_kinds(schema)
-            wanted_by_key[app] = wanted_keys(schema)
-            provided_by_key[app] = provided_keys(schema)
+            links[app] = output_links(schema)
             check(app, docs, fail, text, schema)
-            check_provides(app, schema, docs, fail)
+            check_service_outputs(app, schema, docs, fail)
+            check_output_link_fields(app, schema, fail)
             check_folder_fields(app, schema, fail)
             if any(
                 is_folder_claim(d)
@@ -1937,12 +2028,12 @@ def main(argv):
             )
 
         charts = catalog_charts()
-        for chart_dir in groups:
-            check_group(chart_dir, charts, tmp, fail)
+        for chart_dir in packs:
+            schema = check_pack(chart_dir, charts, library_tgz, tmp, fail)
+            links[os.path.basename(chart_dir.rstrip("/"))] = output_links(schema)
 
     if not argv[1:]:
-        check_links(wanted, provided, fail)
-        check_link_keys(wanted_by_key, provided_by_key, fail)
+        check_output_links(links, catalog_charts(), fail)
     print(f"checked {len(chart_dirs)} charts")
     for f in fail.items:
         print("FAIL " + f)

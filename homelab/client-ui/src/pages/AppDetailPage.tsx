@@ -24,7 +24,7 @@ import {
 import { api, streamEvents } from "@/lib/api";
 import { formatDateTime, relativeTime } from "@/lib/format";
 import { useApi } from "@/lib/useResource";
-import { usedBy, usesOf } from "@/lib/connections";
+import { usedBy, usesOf } from "@/lib/links";
 import {
   appDisplayName,
   appLinks,
@@ -35,7 +35,9 @@ import {
   instanceStem,
   latestRestore,
   newerVersion,
+  packMembers,
   podProblem,
+  podsByMember,
   podStatus,
   waitNote,
   type AppState,
@@ -208,108 +210,122 @@ function TechnicalDetails({ app }: { app: AppInfo }) {
         ) : pods.length === 0 ? (
           <p className="text-sm text-fg-muted">Nothing running right now.</p>
         ) : (
-          <ul className="divide-y divide-border rounded-control border border-border">
-            <AnimatedList
-              as="li"
-              items={pods}
-              keyOf={(pod) => pod.name}
-              itemClassName="px-3 py-1.5"
-            >
-              {(pod) => {
-                const status = podProblem(pod) ?? podStatus(pod);
-                return (
-                  <>
-                    <div className="flex items-center gap-2">
-                      <span
-                        className={cn(
-                          "h-2 w-2 shrink-0 rounded-full transition-colors duration-300",
-                          pod.ready ? "bg-success" : "bg-warning",
-                        )}
-                        aria-hidden
-                      />
-                      <span className="min-w-0 flex-1 truncate font-mono text-xs text-fg-muted">
-                        {pod.name}
-                      </span>
-                      <span
-                        className="shrink-0 text-xs text-fg-subtle"
-                        title={pod.phase}
-                      >
-                        <Swap id={status}>{status}</Swap>
-                      </span>
-                      <RowAction
-                        onClick={() =>
-                          logs?.pod === pod.name && logs.live
-                            ? stopLogs()
-                            : startLogs(pod.name)
-                        }
-                      >
-                        {logs?.pod === pod.name && logs.live ? "Stop" : "Logs"}
-                      </RowAction>
-                    </div>
-                    <p className="mt-0.5 pl-4 text-xs text-fg-subtle">
-                      {pod.node
-                        ? `On ${pod.node}`
-                        : "Not placed on a machine yet"}
-                      {pod.restarts ? ` · restarted ${pod.restarts}×` : ""}
-                    </p>
-                    {(pod.containers ?? []).length > 0 && (
-                      <ul className="mt-1 space-y-0.5 pl-4">
-                        {(pod.containers ?? []).map((c) => (
-                          <li
-                            key={`${c.init ? "init-" : ""}${c.name}`}
-                            className="flex items-center gap-2 text-xs"
-                          >
-                            <span
-                              className={cn(
-                                "h-1.5 w-1.5 shrink-0 rounded-full",
-                                c.ready || c.state === "Completed"
-                                  ? "bg-success"
-                                  : c.state === "running" ||
-                                      c.state === "PodInitializing"
-                                    ? "bg-warning"
-                                    : "bg-danger",
-                              )}
-                              aria-hidden
-                            />
-                            <span className="min-w-0 flex-1 truncate font-mono text-fg-muted">
-                              {c.name}
-                              {c.init && (
-                                <span className="text-fg-subtle"> (setup)</span>
-                              )}
-                            </span>
-                            <span className="shrink-0 text-fg-subtle">
-                              {c.state}
-                              {c.restarts > 0 ? ` · ${c.restarts}×` : ""}
-                            </span>
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                    {(pod.events ?? []).length > 0 && (
-                      <ul className="mt-1.5 space-y-0.5 border-l border-border pl-3 ml-4">
-                        {(pod.events ?? []).map((e, i) => (
-                          <li
-                            key={`${e.at}-${e.reason}-${i}`}
+          podsByMember(pods).map((section) => (
+            <div key={section.member ?? ""} className="mb-2 last:mb-0">
+              {section.member && (
+                <h4 className="mb-1 text-xs font-medium text-fg">
+                  {section.member}
+                </h4>
+              )}
+              <ul className="divide-y divide-border rounded-control border border-border">
+                <AnimatedList
+                  as="li"
+                  items={section.pods}
+                  keyOf={(pod) => pod.name}
+                  itemClassName="px-3 py-1.5"
+                >
+                  {(pod) => {
+                    const status = podProblem(pod) ?? podStatus(pod);
+                    return (
+                      <>
+                        <div className="flex items-center gap-2">
+                          <span
                             className={cn(
-                              "text-xs",
-                              e.warning ? "text-warning" : "text-fg-subtle",
+                              "h-2 w-2 shrink-0 rounded-full transition-colors duration-300",
+                              pod.ready ? "bg-success" : "bg-warning",
                             )}
+                            aria-hidden
+                          />
+                          <span className="min-w-0 flex-1 truncate font-mono text-xs text-fg-muted">
+                            {pod.name}
+                          </span>
+                          <span
+                            className="shrink-0 text-xs text-fg-subtle"
+                            title={pod.phase}
                           >
-                            <span title={formatDateTime(e.at)}>
-                              {relativeTime(e.at)}
-                            </span>
-                            {" · "}
-                            {e.message || e.reason}
-                            {e.count > 1 ? ` (${e.count}×)` : ""}
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                  </>
-                );
-              }}
-            </AnimatedList>
-          </ul>
+                            <Swap id={status}>{status}</Swap>
+                          </span>
+                          <RowAction
+                            onClick={() =>
+                              logs?.pod === pod.name && logs.live
+                                ? stopLogs()
+                                : startLogs(pod.name)
+                            }
+                          >
+                            {logs?.pod === pod.name && logs.live
+                              ? "Stop"
+                              : "Logs"}
+                          </RowAction>
+                        </div>
+                        <p className="mt-0.5 pl-4 text-xs text-fg-subtle">
+                          {pod.node
+                            ? `On ${pod.node}`
+                            : "Not placed on a machine yet"}
+                          {pod.restarts ? ` · restarted ${pod.restarts}×` : ""}
+                        </p>
+                        {(pod.containers ?? []).length > 0 && (
+                          <ul className="mt-1 space-y-0.5 pl-4">
+                            {(pod.containers ?? []).map((c) => (
+                              <li
+                                key={`${c.init ? "init-" : ""}${c.name}`}
+                                className="flex items-center gap-2 text-xs"
+                              >
+                                <span
+                                  className={cn(
+                                    "h-1.5 w-1.5 shrink-0 rounded-full",
+                                    c.ready || c.state === "Completed"
+                                      ? "bg-success"
+                                      : c.state === "running" ||
+                                          c.state === "PodInitializing"
+                                        ? "bg-warning"
+                                        : "bg-danger",
+                                  )}
+                                  aria-hidden
+                                />
+                                <span className="min-w-0 flex-1 truncate font-mono text-fg-muted">
+                                  {c.name}
+                                  {c.init && (
+                                    <span className="text-fg-subtle">
+                                      {" "}
+                                      (setup)
+                                    </span>
+                                  )}
+                                </span>
+                                <span className="shrink-0 text-fg-subtle">
+                                  {c.state}
+                                  {c.restarts > 0 ? ` · ${c.restarts}×` : ""}
+                                </span>
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                        {(pod.events ?? []).length > 0 && (
+                          <ul className="mt-1.5 space-y-0.5 border-l border-border pl-3 ml-4">
+                            {(pod.events ?? []).map((e, i) => (
+                              <li
+                                key={`${e.at}-${e.reason}-${i}`}
+                                className={cn(
+                                  "text-xs",
+                                  e.warning ? "text-warning" : "text-fg-subtle",
+                                )}
+                              >
+                                <span title={formatDateTime(e.at)}>
+                                  {relativeTime(e.at)}
+                                </span>
+                                {" · "}
+                                {e.message || e.reason}
+                                {e.count > 1 ? ` (${e.count}×)` : ""}
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                      </>
+                    );
+                  }}
+                </AnimatedList>
+              </ul>
+            </div>
+          ))
         )}
       </div>
 
@@ -768,7 +784,8 @@ export function AppDetailPage() {
 
   const entry = catalogEntry(app, catalog.data ?? []);
   const name = appDisplayName(app, catalog.data ?? [], apps.data ?? []);
-  const links = appLinks(app, domain.data?.domain ?? "");
+  const members = packMembers(app, catalog.data ?? []);
+  const links = appLinks(app, domain.data?.domain ?? "", members.length > 0);
   const restoring = restore?.state === "running";
   const actions = availableActions(state, restoring);
   const newer = newerVersion(app, entry);
@@ -1110,11 +1127,10 @@ export function AppDetailPage() {
             ))}
           />
         )}
-        {app.group && (
+        {members.length > 0 && (
           <Row
-            label="Group"
-            detail={`Part of ${app.group.title}`}
-            onClick={() => navigate(`/group/${app.group?.name}`)}
+            label="Apps inside"
+            detail={`${members.join(", ")}, updated and removed together`}
           />
         )}
         {stem !== app.app_id && <Row label="Name" detail={stem} />}

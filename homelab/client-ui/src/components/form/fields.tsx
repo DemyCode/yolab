@@ -3,45 +3,43 @@ import type { FieldProps } from "@rjsf/utils";
 import { Input, Select } from "@/components/ui/input";
 import {
   adoptsDefault,
-  connectionChoice,
-  type Connection,
-} from "@/lib/connections";
-import { serviceLabel, type ServiceInstance } from "@/lib/services";
+  boxesOf,
+  FROM,
+  linkChoice,
+  linkLabel,
+  linksQuery,
+  missingLabel,
+  type LinkCandidate,
+  type LinkValue,
+} from "@/lib/links";
+import type { SchemaProp } from "@/lib/schema";
 import { useApi } from "@/lib/useResource";
 
 const OWN = "__own__";
 const TYPED = "__typed__";
 
-interface KeyProp {
-  title?: string;
-  format?: string;
-}
-
-export function ConnectionField(props: FieldProps) {
+export function LinkField(props: FieldProps) {
   const { formData, onChange, schema, idSchema, disabled, readonly } = props;
   const off = disabled || readonly;
-  const wants = String(
-    (schema as Record<string, unknown>)["x-yolab-requires"] ?? "",
+  const prop = schema as unknown as SchemaProp;
+  const query = linksQuery(prop);
+  const found = useApi<LinkCandidate[]>(
+    query ? `links:${query}` : null,
+    query ?? "",
   );
-  const installed =
-    useApi<ServiceInstance[]>(
-      wants ? `services:${wants}` : null,
-      `/api/services/${encodeURIComponent(wants)}`,
-    ).data ?? [];
-  const value: Connection =
+  const candidates = found.data ?? [];
+  const value: LinkValue =
     formData && typeof formData === "object" && !Array.isArray(formData)
-      ? (formData as Connection)
+      ? (formData as LinkValue)
       : {};
   const canRunOwn = schema.default !== undefined;
-  const keys = Object.entries(
-    (schema.properties ?? {}) as Record<string, KeyProp>,
-  ).filter(([k]) => k !== "from");
+  const boxes = boxesOf(prop);
   const [typing, setTyping] = useState(false);
-  const choice = connectionChoice(value, installed, canRunOwn, typing);
+  const choice = linkChoice(value, candidates, canRunOwn, typing);
   const adopt = adoptsDefault(value, choice);
 
   useEffect(() => {
-    if (adopt && !off) onChange({ from: adopt });
+    if (adopt && !off) onChange({ [FROM]: adopt });
   }, [adopt, off, onChange]);
 
   const selected =
@@ -49,7 +47,7 @@ export function ConnectionField(props: FieldProps) {
       ? OWN
       : choice.kind === "typed"
         ? TYPED
-        : choice.namespace;
+        : choice.reference;
 
   return (
     <div className="space-y-2">
@@ -61,37 +59,44 @@ export function ConnectionField(props: FieldProps) {
           const next = e.target.value;
           setTyping(next === TYPED);
           if (next === OWN) onChange(canRunOwn ? {} : undefined);
-          else if (next === TYPED) onChange({ from: "" });
-          else onChange({ from: next });
+          else if (next === TYPED) onChange({});
+          else onChange({ [FROM]: next });
         }}
       >
         {canRunOwn && <option value={OWN}>Run its own</option>}
-        {installed.map((s) => (
-          <option key={s.namespace} value={s.namespace}>
-            Use {serviceLabel(s)}
+        {candidates.map((c) => (
+          <option key={c.reference} value={c.reference}>
+            Use {linkLabel(c)}
           </option>
         ))}
         {choice.kind === "missing" && (
-          <option value={choice.namespace}>
-            {choice.namespace.replace(/^yolab-/, "")} (no longer installed)
+          <option value={choice.reference}>
+            {missingLabel(choice.reference)} (no longer installed)
           </option>
         )}
-        <option value={TYPED}>Another address…</option>
+        <option value={TYPED}>Type it in…</option>
       </Select>
       {choice.kind === "typed" &&
-        keys.map(([key, prop]) => (
+        boxes.map(([key, box]) => (
           <Input
             key={key}
-            aria-label={prop.title ?? key}
+            aria-label={box.title ?? key}
             placeholder={
-              prop.format === "uri" ? "http://192.168.1.20:8080" : prop.title
+              box.format === "uri" ? "http://192.168.1.20:8080" : box.title
             }
-            type={key.includes("password") ? "password" : "text"}
+            type={
+              key.includes("password") || key.includes("key")
+                ? "password"
+                : "text"
+            }
             value={typeof value[key] === "string" ? (value[key] as string) : ""}
             disabled={off}
-            onChange={(e) =>
-              onChange({ ...value, from: "", [key]: e.target.value })
-            }
+            onChange={(e) => {
+              const next: LinkValue = { ...value, [key]: e.target.value };
+              delete next[FROM];
+              delete next.from;
+              onChange(next);
+            }}
             className="font-mono"
           />
         ))}

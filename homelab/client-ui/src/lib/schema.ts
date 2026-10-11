@@ -10,11 +10,15 @@ export interface SchemaProp {
   maxLength?: number;
   writeOnly?: boolean;
   generate?: boolean;
-  "x-yolab-service"?: string;
-  "x-yolab-requires"?: string;
-  "x-yolab-provides"?: string;
-  "x-yolab-charts"?: string[];
+  "x-yolab-from"?: string[];
+  "x-yolab-outputs"?: string[];
   properties?: Record<string, SchemaProp>;
+}
+
+const LINK_FORMATS = ["yolab-output", "connection"];
+
+export function isLink(prop: SchemaProp): boolean {
+  return LINK_FORMATS.includes(prop.format ?? "");
 }
 
 interface Branch {
@@ -76,26 +80,11 @@ function fieldUi(prop: SchemaProp, domain: string): UiSchema | undefined {
   if (prop.format === "tunnel") {
     return { "ui:widget": "TunnelWidget", "ui:options": { domain } };
   }
-  if (prop.format === "service-url") {
-    return {
-      "ui:widget": "ServiceUrlWidget",
-      "ui:options": { service: prop["x-yolab-service"] ?? "" },
-    };
-  }
   if (prop.format === "folder") {
     return { "ui:widget": "FolderWidget" };
   }
-  if (prop.format === "connection") {
-    return { "ui:field": "ConnectionField" };
-  }
-  if (prop.format === "app") {
-    return {
-      "ui:widget": "AppWidget",
-      "ui:options": {
-        provides: prop["x-yolab-provides"] ?? "",
-        charts: prop["x-yolab-charts"] ?? [],
-      },
-    };
+  if (isLink(prop)) {
+    return { "ui:field": "LinkField" };
   }
   if (prop.format === "yolab-token") {
     return { "ui:widget": "YolabTokenWidget" };
@@ -110,11 +99,7 @@ function fieldUi(prop: SchemaProp, domain: string): UiSchema | undefined {
 }
 
 function nestedUi(prop: SchemaProp, domain: string): UiSchema {
-  if (
-    prop.type === "object" &&
-    prop.format !== "connection" &&
-    prop.properties
-  ) {
+  if (prop.type === "object" && !isLink(prop) && prop.properties) {
     return uiSchemaFor(prop as ConfigSchema, domain);
   }
   const ui: UiSchema = {};

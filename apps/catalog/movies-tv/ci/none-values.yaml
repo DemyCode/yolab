@@ -1,5 +1,0 @@
-config:
-  media_folder: shared
-  download_client: none
-  requests: false
-  subtitles: true

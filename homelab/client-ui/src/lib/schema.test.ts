@@ -338,43 +338,63 @@ describe("the file explorer's own ways in", () => {
   });
 });
 
-describe("an app the person already has", () => {
-  it("gets the installed-app picker, told what to look for", () => {
+describe("another app's outputs", () => {
+  it("gets the link picker as a whole field, not one box per output", () => {
     const ui = uiSchemaFor(
       {
         properties: {
-          client: {
-            type: "string",
-            format: "app",
-            "x-yolab-charts": ["qbittorrent"],
-          },
-        },
-      },
-      "6.yolab.io",
-    ) as Record<string, Record<string, unknown>>;
-    expect(ui.client["ui:widget"]).toBe("AppWidget");
-    expect(ui.client["ui:options"]).toEqual({
-      provides: "",
-      charts: ["qbittorrent"],
-    });
-  });
-});
-
-describe("a connection to another app", () => {
-  it("gets the connection picker as a whole field", () => {
-    const ui = uiSchemaFor(
-      {
-        properties: {
-          ollama: {
+          download_client: {
             type: "object",
-            format: "connection",
-            "x-yolab-requires": "ollama",
+            format: "yolab-output",
+            "x-yolab-from": ["qbittorrent"],
+            "x-yolab-outputs": ["internal_url", "password"],
+            properties: {
+              internal_url: { type: "string" },
+              password: { type: "string", writeOnly: true },
+            },
           },
         },
       },
       "6.yolab.io",
     ) as Record<string, Record<string, unknown>>;
-    expect(ui.ollama["ui:field"]).toBe("ConnectionField");
+    expect(ui.download_client).toEqual({ "ui:field": "LinkField" });
+  });
+
+  it("an app saved with the old connection format gets the same picker", () => {
+    const ui = uiSchemaFor(
+      {
+        properties: {
+          ollama: { type: "object", format: "connection" },
+        },
+      },
+      "6.yolab.io",
+    ) as Record<string, Record<string, unknown>>;
+    expect(ui.ollama["ui:field"]).toBe("LinkField");
+  });
+
+  it("a link inside a pack's switch gets the picker too", () => {
+    const ui = uiSchemaFor(
+      {
+        properties: {
+          download_client: { type: "string", default: "new" },
+        },
+        dependencies: {
+          download_client: {
+            oneOf: [
+              { properties: { download_client: { const: "new" } } },
+              {
+                properties: {
+                  download_client: { const: "existing" },
+                  existing_client: { type: "object", format: "yolab-output" },
+                },
+              },
+            ],
+          },
+        },
+      },
+      "6.yolab.io",
+    ) as Record<string, Record<string, unknown>>;
+    expect(ui.existing_client["ui:field"]).toBe("LinkField");
   });
 });
 
@@ -392,27 +412,8 @@ describe("a folder from Your files", () => {
   });
 });
 
-describe("a link to another app's service", () => {
-  it("gets the installed-or-URL widget, told which service to look for", () => {
-    const ui = uiSchemaFor(
-      {
-        properties: {
-          ollama_url: {
-            type: "string",
-            format: "service-url",
-            "x-yolab-service": "ollama",
-          },
-        },
-      },
-      "6.yolab.io",
-    ) as Record<string, Record<string, unknown>>;
-    expect(ui.ollama_url["ui:widget"]).toBe("ServiceUrlWidget");
-    expect(ui.ollama_url["ui:options"]).toEqual({ service: "ollama" });
-  });
-});
-
-describe("an app's whole form inside a group", () => {
-  it("gets the same widgets and order as on its own install page", () => {
+describe("a setting made of settings", () => {
+  it("gets the same widgets and order as the form around it", () => {
     const ui = uiSchemaFor(
       {
         properties: {

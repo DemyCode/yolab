@@ -412,8 +412,5 @@
         }
       }
     }
-  },
-  "x-yolab-provides": {
-    "ollama": ["api"]
   }
 }

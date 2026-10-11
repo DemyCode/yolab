@@ -124,7 +124,21 @@ pub struct CatalogManifest {
     #[serde(default)]
     pub library: Option<CatalogEntry>,
     #[serde(default)]
+    pub libraries: Vec<CatalogEntry>,
+    #[serde(default)]
     pub charts: Vec<CatalogEntry>,
+}
+
+impl CatalogManifest {
+    pub fn all_libraries(&self) -> Vec<&CatalogEntry> {
+        let mut found: Vec<&CatalogEntry> = self.libraries.iter().collect();
+        if let Some(legacy) = &self.library {
+            if !found.iter().any(|l| l.name == legacy.name) {
+                found.insert(0, legacy);
+            }
+        }
+        found
+    }
 }
 
 #[derive(Deserialize, Debug, PartialEq)]
@@ -320,7 +334,7 @@ pub async fn sync_repo<H: Host>(
         cached_at_version(cache_root, &repo.name, &entry.name, &entry.version).is_none()
     };
 
-    if let Some(library) = manifest.library.as_ref().filter(|l| stale(l)) {
+    for library in manifest.all_libraries().into_iter().filter(|l| stale(l)) {
         if valid_chart_name(&library.name) {
             if let Err(e) = pull_into(host, &dir, &manifest.registry, library).await {
                 tracing::warn!("{}: library pull: {e}", repo.name);
@@ -571,6 +585,34 @@ mod tests {
         assert_eq!(m.charts.len(), 1);
     }
 
+    #[test]
+    fn every_library_is_pulled_once_whether_listed_the_old_way_or_the_new() {
+        let m: CatalogManifest = serde_norway::from_str(
+            "registry: oci://ghcr.io/demycode/charts\n\
+             library:\n\
+             \x20 name: yolab-common\n\
+             \x20 version: \"0.1.15\"\n\
+             libraries:\n\
+             \x20 - name: yolab-common\n\
+             \x20   version: \"0.1.15\"\n\
+             \x20 - name: yolab-stack\n\
+             \x20   version: \"0.1.0\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            m.all_libraries()
+                .iter()
+                .map(|l| l.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["yolab-common", "yolab-stack"]
+        );
+        let old: CatalogManifest = serde_norway::from_str(
+            "registry: oci://x\nlibrary:\n  name: yolab-common\n  version: \"0.1.0\"\n",
+        )
+        .unwrap();
+        assert_eq!(old.all_libraries().len(), 1);
+    }
+
     mod against_the_world {
         use super::*;
         use crate::host::fake::FakeHost;
@@ -641,6 +683,29 @@ mod tests {
             assert_eq!(sync_repo(&host, cache.path(), &repo).await.unwrap(), 1);
             assert!(host.ran("helm pull oci://ghcr.io/x/charts/wiki --version 2.0.0"));
             assert!(!host.ran("charts/notes"));
+            assert!(!host.ran("charts/yolab-common"));
+        }
+
+        #[tokio::test]
+        async fn a_sync_pulls_a_new_library_next_to_the_one_it_has() {
+            let (_server, repo) = catalog(
+                "registry: oci://ghcr.io/x/charts\n\
+                 library:\n  name: yolab-common\n  version: \"0.1.0\"\n\
+                 libraries:\n  - name: yolab-common\n    version: \"0.1.0\"\n  - name: yolab-stack\n    version: \"0.1.0\"\n\
+                 charts: []\n",
+            )
+            .await;
+            let cache = tempfile::tempdir().unwrap();
+            let dir = cache.path().join(&repo.name).join("yolab-common");
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                dir.join("Chart.yaml"),
+                "name: yolab-common\nversion: 0.1.0\n",
+            )
+            .unwrap();
+            let host = FakeHost::new().ok("helm pull", "");
+            sync_repo(&host, cache.path(), &repo).await.unwrap();
+            assert!(host.ran("helm pull oci://ghcr.io/x/charts/yolab-stack --version 0.1.0"));
             assert!(!host.ran("charts/yolab-common"));
         }
 

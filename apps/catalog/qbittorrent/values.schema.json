@@ -29,6 +29,13 @@
           "default": "200Gi",
           "description": "How much CephFS storage to allocate (e.g. 20Gi, 100Gi, 500Gi)"
         },
+        "webui_password": {
+          "type": "string",
+          "title": "Password",
+          "writeOnly": true,
+          "generate": true,
+          "description": "The password for the user admin, set on every start. Leave it empty to keep the temporary password qBittorrent prints each time it starts."
+        },
         "file_explorer_enabled": {
           "type": "boolean",
           "title": "File explorer",
@@ -210,20 +217,28 @@
             }
           }
         },
+        "internal_url": {
+          "type": "string",
+          "title": "Address inside YoLab",
+          "format": "uri",
+          "source": {
+            "service": { "name": "qbittorrent", "port": 8080 }
+          }
+        },
         "username": {
           "type": "string",
           "title": "Username",
           "format": "text",
           "source": {
-            "logs": "The WebUI administrator username is: (\\S+)"
+            "logs": "(?:YOLAB_OUTPUT username|The WebUI administrator username is:) (\\S+)"
           }
         },
         "password": {
           "type": "string",
-          "title": "Temporary password",
+          "title": "Password",
           "format": "secret",
           "source": {
-            "logs": "A temporary password is provided for this session: (\\S+)"
+            "logs": "(?:YOLAB_OUTPUT password|A temporary password is provided for this session:) (\\S+)"
           }
         },
         "file_explorer_url": {

@@ -1,10 +1,13 @@
+global:
+  stack: true
+
 config:
+  subdomain: music
   music_folder: ""
-  download_client: qbittorrent
-  existing_client: ""
+  download_client: new
   listen_anywhere: true
-  tailscale: false
-  tailscale_auth_key: ""
   manage_anywhere: true
+
 yolab:
-  apps: {}
+  platformApiUrl: ""
+  serviceName: ""

@@ -1,4 +1,4 @@
-import { ConnectionField } from "./fields";
+import { LinkField } from "./fields";
 import {
   ArrayFieldTemplate,
   FieldTemplate,
@@ -6,10 +6,8 @@ import {
 } from "./templates";
 import {
   CheckboxWidget,
-  AppWidget,
   FolderWidget,
   PasswordWidget,
-  ServiceUrlWidget,
   TextareaWidget,
   TunnelWidget,
   YolabTokenWidget,
@@ -22,15 +20,13 @@ export const templates = {
 };
 
 export const fields = {
-  ConnectionField,
+  LinkField,
 };
 
 export const widgets = {
   TunnelWidget,
   YolabTokenWidget,
-  ServiceUrlWidget,
   FolderWidget,
-  AppWidget,
   PasswordWidget,
   CheckboxWidget,
   TextareaWidget,

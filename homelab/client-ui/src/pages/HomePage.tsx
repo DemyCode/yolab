@@ -12,8 +12,6 @@ import type { AppInfo, CatalogApp } from "@/types/apps";
 import type { ClusterHealth } from "@/types/health";
 import { AnimatedList, Collapse, RollingNumber } from "@/components/motion";
 import { MovementBanner } from "@/components/DataMovement";
-import { GroupSection } from "@/components/GroupSection";
-import { arrangeHome } from "@/lib/groups";
 
 interface Concern {
   tone: "info" | "warning" | "error";
@@ -65,7 +63,6 @@ export function HomePage() {
   const concern = topConcern(health.data);
   const catalogApps = useMemo(() => catalog.data ?? [], [catalog.data]);
   const installed = useMemo(() => apps.data ?? [], [apps.data]);
-  const home = useMemo(() => arrangeHome(installed), [installed]);
 
   return (
     <Page wide>
@@ -138,37 +135,27 @@ export function HomePage() {
           }
         />
       ) : (
-        <>
-          <div className="grid animate-fade-in grid-cols-3 gap-2 sm:grid-cols-4 md:grid-cols-6">
-            <AnimatedList items={home.loose} keyOf={(app) => app.instance_name}>
-              {(app) => (
-                <AppTile
-                  app={app}
-                  name={appDisplayName(app, catalogApps, installed)}
-                  icon={catalogEntry(app, catalogApps)?.icon ?? "📦"}
-                />
-              )}
-            </AnimatedList>
+        <div className="grid animate-fade-in grid-cols-3 gap-2 sm:grid-cols-4 md:grid-cols-6">
+          <AnimatedList items={installed} keyOf={(app) => app.instance_name}>
+            {(app) => (
+              <AppTile
+                app={app}
+                name={appDisplayName(app, catalogApps, installed)}
+                icon={catalogEntry(app, catalogApps)?.icon ?? "📦"}
+              />
+            )}
+          </AnimatedList>
 
-            <Link
-              to="/add"
-              className="flex flex-col items-center rounded-card p-3 transition-colors hover:bg-surface active:scale-[0.97]"
-            >
-              <div className="mb-3 flex h-16 w-16 items-center justify-center rounded-tile border-2 border-dashed border-border-strong text-fg-subtle">
-                <Plus className="h-6 w-6" />
-              </div>
-              <span className="text-sm font-medium text-fg-muted">Add</span>
-            </Link>
-          </div>
-          {home.groups.map((group) => (
-            <GroupSection
-              key={group.name}
-              group={group}
-              catalog={catalogApps}
-              installed={installed}
-            />
-          ))}
-        </>
+          <Link
+            to="/add"
+            className="flex flex-col items-center rounded-card p-3 transition-colors hover:bg-surface active:scale-[0.97]"
+          >
+            <div className="mb-3 flex h-16 w-16 items-center justify-center rounded-tile border-2 border-dashed border-border-strong text-fg-subtle">
+              <Plus className="h-6 w-6" />
+            </div>
+            <span className="text-sm font-medium text-fg-muted">Add</span>
+          </Link>
+        </div>
       )}
     </Page>
   );

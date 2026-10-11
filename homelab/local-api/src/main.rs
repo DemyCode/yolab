@@ -14,8 +14,6 @@ mod error;
 mod exec;
 mod folders;
 mod github;
-mod group_chart;
-mod groups;
 mod hardware;
 mod heal;
 mod host;

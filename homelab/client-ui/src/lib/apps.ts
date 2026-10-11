@@ -1,6 +1,5 @@
 import type { AppInfo, AppOutput, CatalogApp, PodInfo } from "@/types/apps";
 import { roughDuration } from "./format";
-import { serviceLabel, type ServiceInstance } from "./services";
 
 export interface AppLink {
   label: string;
@@ -17,7 +16,11 @@ export function installedByChart(
   return counts;
 }
 
-export function appLinks(app: AppInfo, tunnelDomain: string): AppLink[] {
+export function appLinks(
+  app: AppInfo,
+  tunnelDomain: string,
+  pack = false,
+): AppLink[] {
   const links: AppLink[] = [];
   const seen = new Set<string>();
 
@@ -26,6 +29,7 @@ export function appLinks(app: AppInfo, tunnelDomain: string): AppLink[] {
     seen.add(o.value);
     links.push({ label: o.title || "Open", url: o.value });
   }
+  if (pack) return links;
 
   const subdomain = app.config?.subdomain;
   const yolabOn = app.config?.yolab_enabled !== false;
@@ -295,30 +299,26 @@ export function podStatus(pod: PodInfo): string {
   }
 }
 
-export interface AppChoice {
-  namespace: string;
-  label: string;
+export interface MemberPods {
+  member: string | null;
+  pods: PodInfo[];
 }
 
-export function appChoices(
-  provides: string,
-  services: ServiceInstance[],
-  charts: string[],
-  apps: AppInfo[],
-): AppChoice[] {
-  if (provides) {
-    return services.map((s) => ({
-      namespace: s.namespace,
-      label: serviceLabel(s),
-    }));
+export function podsByMember(pods: PodInfo[]): MemberPods[] {
+  const grouped = new Map<string | null, PodInfo[]>();
+  for (const pod of pods) {
+    const member = pod.member ?? null;
+    grouped.set(member, [...(grouped.get(member) ?? []), pod]);
   }
-  return apps
-    .filter((a) => charts.includes(a.app_id) && a.status !== "uninstalling")
-    .map((a) => ({
-      namespace: `yolab-${a.instance_name}`,
-      label:
-        a.instance_name === a.app_id
-          ? a.instance_name
-          : `${a.instance_name} (${a.app_id})`,
-    }));
+  return [...grouped]
+    .map(([member, list]) => ({ member, pods: list }))
+    .sort((a, b) => {
+      if (a.member === null) return -1;
+      if (b.member === null) return 1;
+      return a.member.localeCompare(b.member);
+    });
+}
+
+export function packMembers(app: AppInfo, catalog: CatalogApp[]): string[] {
+  return catalogEntry(app, catalog)?.members ?? [];
 }

@@ -1,0 +1,57 @@
+{{- $cfg := .Values.config -}}
+{{- $folder := $cfg.media_folder -}}
+{{- $keys := printf "%s-keys" .Release.Name -}}
+{{- $sonarrKey := include "yolab-stack.secret" (list . $keys "sonarr") -}}
+{{- $radarrKey := include "yolab-stack.secret" (list . $keys "radarr") -}}
+{{- $prowlarrKey := include "yolab-stack.secret" (list . $keys "prowlarr") -}}
+{{- $qbittorrentPassword := include "yolab-stack.secret" (list . $keys "qbittorrent") -}}
+{{- $newClient := ne ($cfg.download_client | default "new") "existing" -}}
+{{- $client := dict "internal_url" "http://qbittorrent:8080" "username" "admin" "password" $qbittorrentPassword -}}
+{{- if not $newClient }}
+{{- $client = $cfg.existing_client | default dict -}}
+{{- end }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $keys }}
+  namespace: {{ .Release.Namespace }}
+type: Opaque
+stringData:
+  sonarr: {{ $sonarrKey | quote }}
+  radarr: {{ $radarrKey | quote }}
+  prowlarr: {{ $prowlarrKey | quote }}
+  qbittorrent: {{ $qbittorrentPassword | quote }}
+{{- with $folder }}
+---
+{{ include "yolab-stack.folderClaim" (list $ .) }}
+{{- end }}
+---
+{{ include "yolab-stack.member" (list . "jellyfin" (dict
+      "media_folder" $folder
+      "yolab_enabled" $cfg.watch_anywhere
+      "hardware_transcoding" $cfg.hardware_transcoding)) }}
+{{- if $newClient }}
+---
+{{ include "yolab-stack.member" (list . "qbittorrent" (dict
+      "media_folder" $folder
+      "yolab_enabled" $cfg.manage_anywhere
+      "webui_password" $qbittorrentPassword)) }}
+{{- end }}
+---
+{{ include "yolab-stack.member" (list . "sonarr" (dict
+      "media_folder" $folder
+      "yolab_enabled" $cfg.manage_anywhere
+      "api_key" $sonarrKey
+      "download_client" $client)) }}
+---
+{{ include "yolab-stack.member" (list . "radarr" (dict
+      "media_folder" $folder
+      "yolab_enabled" $cfg.manage_anywhere
+      "api_key" $radarrKey
+      "download_client" $client)) }}
+---
+{{ include "yolab-stack.member" (list . "prowlarr" (dict
+      "yolab_enabled" $cfg.manage_anywhere
+      "api_key" $prowlarrKey
+      "sonarr" (dict "internal_url" "http://sonarr:8989" "api_key" $sonarrKey)
+      "radarr" (dict "internal_url" "http://radarr:7878" "api_key" $radarrKey))) }}

@@ -1,0 +1,178 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": [
+    "config"
+  ],
+  "properties": {
+    "config": {
+      "title": "Music",
+      "type": "object",
+      "required": [
+        "music_folder",
+        "subdomain"
+      ],
+      "properties": {
+        "music_folder": {
+          "type": "string",
+          "title": "Music folder",
+          "format": "folder",
+          "default": "",
+          "minLength": 1,
+          "pattern": "^([a-z0-9]([a-z0-9-]*[a-z0-9])?)?$",
+          "description": "One folder for downloads and albums, at /data/<folder> in every app: qBittorrent downloads into downloads/, Lidarr moves albums into music/, and Navidrome plays music/. It stays when you uninstall."
+        },
+        "subdomain": {
+          "type": "string",
+          "title": "Address",
+          "format": "tunnel",
+          "default": "music",
+          "description": "Each app gets its own address under it: music-navidrome, music-lidarr, music-prowlarr and music-qbittorrent."
+        },
+        "download_client": {
+          "type": "string",
+          "title": "Download client",
+          "default": "new",
+          "oneOf": [
+            { "const": "new", "title": "Install qBittorrent" },
+            { "const": "existing", "title": "Use a qBittorrent I already have" }
+          ]
+        },
+        "listen_anywhere": {
+          "type": "boolean",
+          "title": "Listen from anywhere",
+          "default": true,
+          "description": "Navidrome gets a YoLab address you can open from any network. Off, it is reachable at home only."
+        },
+        "manage_anywhere": {
+          "type": "boolean",
+          "title": "Manage downloads from anywhere",
+          "default": true,
+          "description": "Lidarr, Prowlarr and qBittorrent get YoLab addresses too. Off, you manage them at home only."
+        }
+      },
+      "dependencies": {
+        "download_client": {
+          "oneOf": [
+            {
+              "properties": {
+                "download_client": { "const": "new" }
+              }
+            },
+            {
+              "properties": {
+                "download_client": { "const": "existing" },
+                "existing_client": {
+                  "type": "object",
+                  "title": "Which qBittorrent",
+                  "format": "yolab-output",
+                  "x-yolab-from": ["qbittorrent"],
+                  "x-yolab-outputs": ["internal_url", "username", "password"],
+                  "description": "Lidarr sends its downloads to it. Point it at the same music folder in its own settings.",
+                  "properties": {
+                    "internal_url": { "type": "string", "title": "Address", "format": "uri" },
+                    "username": { "type": "string", "title": "Username" },
+                    "password": { "type": "string", "title": "Password" }
+                  }
+                }
+              },
+              "required": [
+                "existing_client"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    "outputs": {
+      "type": "object",
+      "readOnly": true,
+      "properties": {
+        "navidrome_url": {
+          "type": "string",
+          "title": "Navidrome",
+          "format": "uri",
+          "source": { "logs": "YOLAB_OUTPUT navidrome_url (\\S+)" },
+          "when": { "properties": { "listen_anywhere": { "const": true } } }
+        },
+        "lidarr_url": {
+          "type": "string",
+          "title": "Lidarr",
+          "format": "uri",
+          "source": { "logs": "YOLAB_OUTPUT lidarr_url (\\S+)" },
+          "when": { "properties": { "manage_anywhere": { "const": true } } }
+        },
+        "prowlarr_url": {
+          "type": "string",
+          "title": "Prowlarr",
+          "format": "uri",
+          "source": { "logs": "YOLAB_OUTPUT prowlarr_url (\\S+)" },
+          "when": { "properties": { "manage_anywhere": { "const": true } } }
+        },
+        "qbittorrent_url": {
+          "type": "string",
+          "title": "qBittorrent",
+          "format": "uri",
+          "source": { "logs": "YOLAB_OUTPUT qbittorrent_url (\\S+)" },
+          "when": {
+            "properties": {
+              "manage_anywhere": { "const": true },
+              "download_client": { "const": "new" }
+            }
+          }
+        },
+        "qbittorrent_username": {
+          "type": "string",
+          "title": "qBittorrent username",
+          "format": "text",
+          "source": { "logs": "YOLAB_OUTPUT qbittorrent_username (\\S+)" },
+          "when": { "properties": { "download_client": { "const": "new" } } }
+        },
+        "qbittorrent_password": {
+          "type": "string",
+          "title": "qBittorrent password",
+          "format": "secret",
+          "source": { "logs": "YOLAB_OUTPUT qbittorrent_password (\\S+)" },
+          "when": { "properties": { "download_client": { "const": "new" } } }
+        },
+        "lidarr_api_key": {
+          "type": "string",
+          "title": "Lidarr API key",
+          "format": "secret",
+          "source": { "logs": "YOLAB_OUTPUT lidarr_api_key (\\S+)" }
+        },
+        "prowlarr_api_key": {
+          "type": "string",
+          "title": "Prowlarr API key",
+          "format": "secret",
+          "source": { "logs": "YOLAB_OUTPUT prowlarr_api_key (\\S+)" }
+        },
+        "navidrome_internal_url": {
+          "type": "string",
+          "title": "Navidrome inside YoLab",
+          "format": "uri",
+          "source": { "service": { "name": "navidrome", "port": 4533 } }
+        },
+        "lidarr_internal_url": {
+          "type": "string",
+          "title": "Lidarr inside YoLab",
+          "format": "uri",
+          "source": { "service": { "name": "lidarr", "port": 8686 } }
+        },
+        "prowlarr_internal_url": {
+          "type": "string",
+          "title": "Prowlarr inside YoLab",
+          "format": "uri",
+          "source": { "service": { "name": "prowlarr", "port": 9696 } }
+        },
+        "qbittorrent_internal_url": {
+          "type": "string",
+          "title": "qBittorrent inside YoLab",
+          "format": "uri",
+          "source": { "service": { "name": "qbittorrent", "port": 8080 } },
+          "when": { "properties": { "download_client": { "const": "new" } } }
+        }
+      }
+    }
+  }
+}

@@ -318,8 +318,5 @@
         }
       }
     }
-  },
-  "x-yolab-provides": {
-    "openai-tts": ["api"]
   }
 }

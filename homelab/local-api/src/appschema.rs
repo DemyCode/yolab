@@ -62,12 +62,6 @@ impl Address {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-pub enum Delivered {
-    Address(Address),
-    Setting(String),
-}
-
 #[derive(Clone, Debug)]
 pub struct OutputSpec {
     pub key: String,
@@ -75,40 +69,6 @@ pub struct OutputSpec {
     pub format: Format,
     pub source: Source,
     when: Option<Value>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-pub struct Provided {
-    pub kind: String,
-    pub title: String,
-    pub values: Vec<(String, Delivered)>,
-}
-
-impl Provided {
-    pub fn url(&self, namespace: &str) -> Option<String> {
-        self.values.iter().find_map(|(_, d)| match d {
-            Delivered::Address(a) => Some(a.url(namespace)),
-            Delivered::Setting(_) => None,
-        })
-    }
-
-    pub fn deliver(&self, namespace: &str, settings: &Map<String, Value>) -> Map<String, Value> {
-        self.values
-            .iter()
-            .filter_map(|(key, d)| {
-                let value = match d {
-                    Delivered::Address(a) => a.url(namespace),
-                    Delivered::Setting(field) => match settings.get(field)? {
-                        Value::String(s) if !s.is_empty() => s.clone(),
-                        Value::Number(n) => n.to_string(),
-                        Value::Bool(b) => b.to_string(),
-                        _ => return None,
-                    },
-                };
-                Some((key.clone(), Value::String(value)))
-            })
-            .collect()
-    }
 }
 
 #[derive(Clone, Debug)]
@@ -167,65 +127,6 @@ impl AppSchema {
                 }
             })
             .collect()
-    }
-
-    pub fn provides(&self) -> Vec<Provided> {
-        let Some(kinds) = self.document["x-yolab-provides"].as_object() else {
-            return Vec::new();
-        };
-        kinds
-            .iter()
-            .filter_map(|(kind, spec)| match spec {
-                Value::Array(keys) => self.provided_outputs(kind, keys),
-                legacy => {
-                    let Some(address) = Address::parse(legacy) else {
-                        tracing::warn!("provided {kind} is ignored: it needs a service and a port");
-                        return None;
-                    };
-                    Some(Provided {
-                        kind: kind.clone(),
-                        title: legacy["title"].as_str().unwrap_or(kind).to_string(),
-                        values: vec![("url".to_string(), Delivered::Address(address))],
-                    })
-                }
-            })
-            .collect()
-    }
-
-    fn provided_outputs(&self, kind: &str, keys: &[Value]) -> Option<Provided> {
-        let outputs = self.outputs();
-        let mut values = Vec::new();
-        for key in keys {
-            let Some(output) = key
-                .as_str()
-                .and_then(|k| outputs.iter().find(|o| o.key == k))
-            else {
-                tracing::warn!("provided {kind} is ignored: it lists {key}, which is no output");
-                return None;
-            };
-            let delivered = match &output.source {
-                Source::Service(address) => Delivered::Address(address.clone()),
-                Source::Config(field) => Delivered::Setting(field.clone()),
-                Source::Logs(_) => {
-                    tracing::warn!(
-                        "provided {kind} is ignored: {} is only known once the app runs",
-                        output.key
-                    );
-                    return None;
-                }
-            };
-            values.push((output.key.clone(), delivered));
-        }
-        let title = values
-            .first()
-            .and_then(|(k, _)| outputs.iter().find(|o| &o.key == k))
-            .map(|o| o.title.clone())
-            .unwrap_or_else(|| kind.to_string());
-        (!values.is_empty()).then(|| Provided {
-            kind: kind.to_string(),
-            title,
-            values,
-        })
     }
 
     pub fn with_defaults(&self, config: &Map<String, Value>) -> Map<String, Value> {
@@ -359,82 +260,16 @@ mod tests {
     }
 
     #[test]
-    fn a_provided_service_is_reached_by_its_in_cluster_address() {
-        let app = AppSchema::new(json!({
-            "x-yolab-provides": {
-                "ollama": { "title": "Ollama API", "service": "ollama", "port": 11434 },
-                "electrum": { "scheme": "tcp", "service": "electrs", "port": 50001 },
-                "broken": { "service": "x" }
-            }
-        }));
-        let provided = app.provides();
-        assert_eq!(provided.len(), 2);
-        let ollama = provided.iter().find(|p| p.kind == "ollama").unwrap();
-        assert_eq!(ollama.title, "Ollama API");
+    fn a_service_output_is_reached_by_its_in_cluster_address() {
+        let electrum = json!({ "source": { "service": {
+            "scheme": "tcp", "name": "electrs", "port": 50001
+        }}});
+        let Source::Service(address) = parse_output("electrum", &electrum).unwrap().source else {
+            panic!("a service source");
+        };
         assert_eq!(
-            ollama.url("yolab-ollama").as_deref(),
-            Some("http://ollama.yolab-ollama.svc.cluster.local:11434")
-        );
-        let electrum = provided.iter().find(|p| p.kind == "electrum").unwrap();
-        assert_eq!(
-            electrum.url("yolab-node").as_deref(),
-            Some("tcp://electrs.yolab-node.svc.cluster.local:50001")
-        );
-    }
-
-    fn torrent_client() -> AppSchema {
-        AppSchema::new(json!({
-            "properties": {
-                "config": { "type": "object", "properties": {
-                    "username": { "type": "string", "default": "admin" },
-                    "password": { "type": "string", "writeOnly": true, "generate": true },
-                }},
-                "outputs": { "type": "object", "properties": {
-                    "api": { "title": "Web UI",
-                             "source": { "service": { "name": "qbittorrent", "port": 8080 } } },
-                    "username": { "title": "User", "source": { "config": "username" } },
-                    "password": { "title": "Password", "format": "secret",
-                                  "source": { "config": "password" } },
-                    "onion": { "title": "Onion", "source": { "logs": "ONION (\\S+)" } },
-                }},
-            },
-            "x-yolab-provides": {
-                "torrent-client": ["api", "username", "password"],
-                "needs-logs": ["onion"],
-                "unknown-key": ["api", "nope"],
-            },
-        }))
-    }
-
-    #[test]
-    fn a_provider_hands_over_its_address_and_settings_under_one_interface() {
-        let provided = torrent_client().provides();
-        assert_eq!(
-            provided.iter().map(|p| p.kind.as_str()).collect::<Vec<_>>(),
-            vec!["torrent-client"]
-        );
-        let client = &provided[0];
-        assert_eq!(client.title, "Web UI");
-        let settings = json!({ "username": "admin", "password": "s3cret" });
-        assert_eq!(
-            Value::Object(client.deliver("yolab-qbittorrent", settings.as_object().unwrap())),
-            json!({
-                "api": "http://qbittorrent.yolab-qbittorrent.svc.cluster.local:8080",
-                "username": "admin",
-                "password": "s3cret",
-            })
-        );
-    }
-
-    #[test]
-    fn a_setting_the_provider_never_saved_is_left_out_rather_than_sent_empty() {
-        let provided = torrent_client().provides();
-        let settings = json!({ "username": "" });
-        let delivered = provided[0].deliver("yolab-q", settings.as_object().unwrap());
-        assert_eq!(
-            delivered.keys().collect::<Vec<_>>(),
-            vec!["api"],
-            "{delivered:?}"
+            address.url("yolab-node"),
+            "tcp://electrs.yolab-node.svc.cluster.local:50001"
         );
     }
 
@@ -444,11 +279,6 @@ mod tests {
         let ok = parse_output("api", &service).unwrap();
         assert!(matches!(ok.source, Source::Service(_)));
         assert!(parse_output("api", &json!({ "source": { "service": { "name": "x" } } })).is_err());
-    }
-
-    #[test]
-    fn an_app_that_provides_nothing_lists_nothing() {
-        assert!(AppSchema::new(Value::Null).provides().is_empty());
     }
 
     #[test]

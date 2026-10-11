@@ -1,5 +1,3 @@
-import type { Membership } from "@/lib/groups";
-
 export type OutputFormat = "text" | "uri" | "secret" | "multiline";
 
 export interface AppOutput {
@@ -26,7 +24,6 @@ export interface AppInfo {
   outputs: AppOutput[];
   config: Record<string, unknown>;
   backup: AppBackupStatus;
-  group?: Membership | null;
 }
 
 export interface AppBackupStatus {
@@ -68,7 +65,8 @@ export interface CatalogApp {
   collections: string[];
   stars: number | null;
   pushed_at: string | null;
-  kind?: "app" | "group";
+  kind?: "app" | "pack";
+  members?: string[];
   schema: object;
 }
 
@@ -90,6 +88,7 @@ export interface PodEvent {
 
 export interface PodInfo {
   name: string;
+  member?: string | null;
   phase: string;
   ready: boolean;
   node?: string;

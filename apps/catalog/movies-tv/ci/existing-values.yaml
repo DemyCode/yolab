@@ -1,4 +1,0 @@
-config:
-  media_folder: shared
-  download_client: existing
-  existing_client: yolab-qbittorrent-ab12

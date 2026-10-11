@@ -1,3 +1,0 @@
-{{- if not (.Values.global).stack }}
-{{ include "jellyfin.manifests" . }}
-{{- end }}

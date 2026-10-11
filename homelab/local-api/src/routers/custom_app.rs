@@ -434,15 +434,38 @@ struct ChartYaml {
     dependencies: Vec<ChartDep>,
 }
 
-fn is_group(meta: &ChartYaml) -> bool {
-    meta.annotations
-        .get(crate::group_chart::KIND_ANNOTATION)
-        .is_some_and(|k| k == crate::group_chart::KIND_GROUP)
-}
-
 #[derive(Debug, Deserialize)]
 struct ChartDep {
     name: String,
+}
+
+const LIBRARIES: [&str; 2] = ["yolab-common", "yolab-stack"];
+
+fn shipped(charts_dir: &std::path::Path, name: &str) -> bool {
+    charts_dir.join(name).join("Chart.yaml").is_file()
+        || std::fs::read_dir(charts_dir).is_ok_and(|entries| {
+            entries.flatten().any(|e| {
+                let file = e.file_name().to_string_lossy().to_string();
+                file.strip_prefix(name)
+                    .and_then(|rest| rest.strip_prefix('-'))
+                    .is_some_and(|rest| rest.ends_with(".tgz"))
+            })
+        })
+}
+
+fn vendored(
+    meta: &ChartYaml,
+    catalog_dir: &std::path::Path,
+    root: &std::path::Path,
+) -> Vec<std::path::PathBuf> {
+    let charts_dir = root.join("charts");
+    meta.dependencies
+        .iter()
+        .filter(|d| valid_id(&d.name))
+        .filter(|d| LIBRARIES.contains(&d.name.as_str()) || !shipped(&charts_dir, &d.name))
+        .map(|d| catalog_dir.join(&d.name))
+        .filter(|dir| dir.join("Chart.yaml").is_file())
+        .collect()
 }
 
 fn validate_rendered(rendered: &str, release_ns: &str) -> Result<(), Rejection> {
@@ -609,22 +632,19 @@ async fn upload<H: Host>(
         ));
     }
 
-    if meta.dependencies.iter().any(|d| d.name == "yolab-common") {
-        let lib = catalog_dir.join("yolab-common");
-        if lib.is_dir() {
-            let charts_dir = root.join("charts");
-            let _ = tokio::fs::create_dir_all(&charts_dir).await;
-            let _ = run(
-                host,
-                "cp",
-                &[
-                    "-r",
-                    lib.to_str().unwrap_or(""),
-                    charts_dir.to_str().unwrap_or(""),
-                ],
-            )
-            .await;
-        }
+    for lib in vendored(&meta, catalog_dir, &root) {
+        let charts_dir = root.join("charts");
+        let _ = tokio::fs::create_dir_all(&charts_dir).await;
+        let _ = run(
+            host,
+            "cp",
+            &[
+                "-r",
+                lib.to_str().unwrap_or(""),
+                charts_dir.to_str().unwrap_or(""),
+            ],
+        )
+        .await;
     }
 
     let release_ns = format!("yolab-{}", meta.name);
@@ -647,14 +667,7 @@ async fn upload<H: Host>(
             return bad(format!("this chart does not render: {}", r.reason));
         }
     };
-    let checked = if is_group(&meta) {
-        crate::group_chart::members(&rendered)
-            .map(|_| ())
-            .map_err(|why| reject(format!("this group does not work as uploaded: {why}")))
-    } else {
-        validate_rendered(&rendered, &release_ns)
-    };
-    if let Err(r) = checked {
+    if let Err(r) = validate_rendered(&rendered, &release_ns) {
         let _ = tokio::fs::remove_dir_all(&tmp).await;
         return bad(r.reason);
     }
@@ -743,6 +756,67 @@ spec:
     #[test]
     fn an_ordinary_manifest_is_accepted() {
         assert_eq!(validate_manifest(POD), Ok(2 - 1));
+    }
+
+    fn chart_at(root: &std::path::Path, name: &str) {
+        std::fs::create_dir_all(root.join(name)).unwrap();
+        std::fs::write(
+            root.join(name).join("Chart.yaml"),
+            format!("name: {name}\n"),
+        )
+        .unwrap();
+    }
+
+    fn uploaded(deps: &[&str]) -> ChartYaml {
+        let deps: String = deps.iter().map(|d| format!("  - name: {d}\n")).collect();
+        serde_norway::from_str(&format!("name: watch\ndependencies:\n{deps}")).unwrap()
+    }
+
+    fn names(dirs: Vec<std::path::PathBuf>) -> Vec<String> {
+        dirs.iter()
+            .map(|d| d.file_name().unwrap().to_string_lossy().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn an_uploaded_pack_gets_the_libraries_and_the_catalog_apps_it_is_built_from() {
+        let catalog = tempfile::tempdir().unwrap();
+        for name in ["yolab-common", "yolab-stack", "jellyfin", "sonarr"] {
+            chart_at(catalog.path(), name);
+        }
+        let upload = tempfile::tempdir().unwrap();
+        let meta = uploaded(&["yolab-stack", "jellyfin", "sonarr", "not-in-catalog"]);
+        assert_eq!(
+            names(vendored(&meta, catalog.path(), upload.path())),
+            vec!["yolab-stack", "jellyfin", "sonarr"]
+        );
+    }
+
+    #[test]
+    fn an_app_the_upload_ships_itself_is_kept_but_the_libraries_are_always_ours() {
+        let catalog = tempfile::tempdir().unwrap();
+        for name in ["yolab-common", "jellyfin", "sonarr"] {
+            chart_at(catalog.path(), name);
+        }
+        let upload = tempfile::tempdir().unwrap();
+        let charts = upload.path().join("charts");
+        chart_at(&charts, "jellyfin");
+        std::fs::write(charts.join("sonarr-0.2.0.tgz"), b"").unwrap();
+        std::fs::write(charts.join("yolab-common-0.1.0.tgz"), b"").unwrap();
+        let meta = uploaded(&["yolab-common", "jellyfin", "sonarr"]);
+        assert_eq!(
+            names(vendored(&meta, catalog.path(), upload.path())),
+            vec!["yolab-common"]
+        );
+    }
+
+    #[test]
+    fn a_dependency_name_that_could_leave_the_catalog_is_never_copied() {
+        let catalog = tempfile::tempdir().unwrap();
+        let upload = tempfile::tempdir().unwrap();
+        chart_at(upload.path(), "secret");
+        let meta = uploaded(&["../secret"]);
+        assert!(vendored(&meta, catalog.path(), upload.path()).is_empty());
     }
 
     #[test]

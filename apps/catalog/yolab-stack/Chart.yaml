@@ -1,0 +1,9 @@
+apiVersion: v2
+name: yolab-stack
+description: >-
+  Lets one release run several app charts side by side. Each app chart keeps its
+  manifests in a named template, `<chart>.manifests`; alone it renders them as
+  they are, and inside a pack the pack renders them under a scoped release name,
+  so every app keeps its own names, tunnel, data and outputs.
+type: library
+version: 0.1.0
