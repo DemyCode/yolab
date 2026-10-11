@@ -1,0 +1,20 @@
+global:
+  stack: true
+
+config:
+  subdomain: media
+  media_folder: media
+  jellyfin:
+    enabled: true
+    yolab_enabled: true
+    hardware_transcoding: true
+  qbittorrent:
+    enabled: true
+    yolab_enabled: true
+  radarr:
+    enabled: true
+    yolab_enabled: true
+
+yolab:
+  platformApiUrl: ""
+  serviceName: ""

@@ -1,0 +1,26 @@
+apiVersion: v2
+name: media-stack
+description: "Jellyfin to watch, Radarr to find films and qBittorrent to download them, sharing one media folder"
+type: application
+version: 0.2.0
+
+dependencies:
+  - name: yolab-stack
+    version: "0.1.0"
+    repository: "file://../yolab-stack"
+  - name: jellyfin
+    version: "0.2.12"
+    repository: "file://../jellyfin"
+  - name: qbittorrent
+    version: "0.1.19"
+    repository: "file://../qbittorrent"
+  - name: radarr
+    version: "0.1.18"
+    repository: "file://../radarr"
+
+annotations:
+  yolab.io/display-name: "Media stack"
+  yolab.io/icon: "🎬"
+  yolab.io/category: "media"
+  yolab.io/tagline: "Find, download and watch your films"
+  yolab.io/collections: "watch-and-listen"

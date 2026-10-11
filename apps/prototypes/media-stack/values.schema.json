@@ -1,0 +1,189 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": [
+    "config"
+  ],
+  "properties": {
+    "config": {
+      "title": "Media stack",
+      "type": "object",
+      "properties": {
+        "subdomain": {
+          "type": "string",
+          "title": "Subdomain",
+          "format": "tunnel",
+          "default": "media",
+          "description": "Each app gets its own address under it: media-jellyfin, media-radarr, media-qbittorrent."
+        },
+        "media_folder": {
+          "type": "string",
+          "title": "Media folder",
+          "format": "folder",
+          "default": "media",
+          "pattern": "^([a-z0-9]([a-z0-9-]*[a-z0-9])?)?$",
+          "description": "One folder from Your files for downloads and the library, at /data/<folder> in every app: qBittorrent downloads into downloads/, Radarr moves films into movies/, Jellyfin reads it. It stays when you uninstall the stack."
+        },
+        "jellyfin": {
+          "type": "object",
+          "title": "Jellyfin",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "title": "Install Jellyfin",
+              "default": true
+            },
+            "yolab_enabled": {
+              "type": "boolean",
+              "title": "YoLab address",
+              "default": true
+            },
+            "hardware_transcoding": {
+              "type": "boolean",
+              "title": "Hardware transcoding",
+              "default": true,
+              "description": "Run Jellyfin on the machine with the best graphics card for video."
+            }
+          }
+        },
+        "qbittorrent": {
+          "type": "object",
+          "title": "qBittorrent",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "title": "Install qBittorrent",
+              "default": true,
+              "description": "Turn it off to send downloads to a qBittorrent you already run."
+            }
+          },
+          "dependencies": {
+            "enabled": {
+              "oneOf": [
+                {
+                  "properties": {
+                    "enabled": {
+                      "const": true
+                    },
+                    "yolab_enabled": {
+                      "type": "boolean",
+                      "title": "YoLab address",
+                      "default": true
+                    },
+                    "webui_password": {
+                      "type": "string",
+                      "title": "Password",
+                      "writeOnly": true,
+                      "default": "",
+                      "description": "For the user admin. Leave it empty to get a generated one."
+                    }
+                  }
+                },
+                {
+                  "properties": {
+                    "enabled": {
+                      "const": false
+                    },
+                    "host": {
+                      "type": "string",
+                      "title": "qBittorrent address",
+                      "description": "e.g. qbittorrent.yolab-qbittorrent-ab12.svc.cluster.local"
+                    },
+                    "port": {
+                      "type": "integer",
+                      "title": "Port",
+                      "default": 8080
+                    },
+                    "username": {
+                      "type": "string",
+                      "title": "Username",
+                      "default": "admin"
+                    },
+                    "password": {
+                      "type": "string",
+                      "title": "Password",
+                      "writeOnly": true
+                    }
+                  },
+                  "required": [
+                    "host"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        "radarr": {
+          "type": "object",
+          "title": "Radarr",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "title": "Install Radarr",
+              "default": true
+            },
+            "yolab_enabled": {
+              "type": "boolean",
+              "title": "YoLab address",
+              "default": true
+            }
+          }
+        }
+      }
+    },
+    "outputs": {
+      "type": "object",
+      "readOnly": true,
+      "properties": {
+        "jellyfin_url": {
+          "type": "string",
+          "title": "Jellyfin",
+          "format": "uri",
+          "source": {
+            "logs": "YOLAB_OUTPUT jellyfin_url (\\S+)"
+          }
+        },
+        "radarr_url": {
+          "type": "string",
+          "title": "Radarr",
+          "format": "uri",
+          "source": {
+            "logs": "YOLAB_OUTPUT radarr_url (\\S+)"
+          }
+        },
+        "radarr_api_key": {
+          "type": "string",
+          "title": "Radarr API key",
+          "format": "secret",
+          "source": {
+            "logs": "YOLAB_OUTPUT radarr_api_key (\\S+)"
+          }
+        },
+        "qbittorrent_url": {
+          "type": "string",
+          "title": "qBittorrent",
+          "format": "uri",
+          "source": {
+            "logs": "YOLAB_OUTPUT qbittorrent_url (\\S+)"
+          }
+        },
+        "qbittorrent_username": {
+          "type": "string",
+          "title": "qBittorrent username",
+          "format": "text",
+          "source": {
+            "logs": "YOLAB_OUTPUT qbittorrent_username (\\S+)"
+          }
+        },
+        "qbittorrent_password": {
+          "type": "string",
+          "title": "qBittorrent password",
+          "format": "secret",
+          "source": {
+            "logs": "YOLAB_OUTPUT qbittorrent_password (\\S+)"
+          }
+        }
+      }
+    }
+  }
+}

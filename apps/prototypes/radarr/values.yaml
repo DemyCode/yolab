@@ -1,0 +1,11 @@
+
+config:
+  subdomain: radarr
+  storage_size: 50Gi
+
+yolab:
+  platformApiUrl: ""
+  accountToken: ""
+  serviceName: ""
+  gateway:
+    upstream: localhost:7878

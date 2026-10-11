@@ -1,0 +1,5 @@
+apiVersion: v2
+name: yolab-stack
+description: Lets one release run several app charts side by side, each under its own names, tunnel and data.
+type: library
+version: 0.1.0

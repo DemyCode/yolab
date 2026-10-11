@@ -1,0 +1,3 @@
+{{- if not (.Values.global).stack }}
+{{ include "qbittorrent.manifests" . }}
+{{- end }}

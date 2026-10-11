@@ -1,0 +1,45 @@
+{{- $cfg := .Values.config -}}
+{{- $folder := $cfg.media_folder -}}
+{{- $jellyfin := $cfg.jellyfin | default dict -}}
+{{- $qbittorrent := $cfg.qbittorrent | default dict -}}
+{{- $radarr := $cfg.radarr | default dict -}}
+
+{{- with $folder }}
+{{ include "yolab-stack.folderClaim" (list $ .) }}
+{{- end }}
+
+{{- if $jellyfin.enabled }}
+{{- $member := deepCopy $jellyfin }}
+{{- $_ := set $member "media_folder" $folder }}
+---
+{{ include "yolab-stack.member" (list . "jellyfin" $member) }}
+{{- end }}
+
+{{- $download := dict }}
+{{- if $qbittorrent.enabled }}
+{{- $login := dict
+      "Release" (dict "Name" (include "yolab-stack.memberRelease" (list . "qbittorrent")) "Namespace" .Release.Namespace)
+      "Values" (dict "config" (dict "webui_password" $qbittorrent.webui_password)) }}
+{{- $password := include "qbittorrent.password" $login }}
+{{- $download = dict "host" "qbittorrent" "port" 8080 "username" "admin" "password" $password }}
+{{- $member := deepCopy $qbittorrent }}
+{{- $_ := set $member "media_folder" $folder }}
+{{- $_ := set $member "webui_password" $password }}
+---
+{{ include "yolab-stack.member" (list . "qbittorrent" $member) }}
+{{- else if $qbittorrent.host }}
+{{- $download = dict "host" $qbittorrent.host "port" ($qbittorrent.port | default 8080) "username" ($qbittorrent.username | default "admin") "password" ($qbittorrent.password | default "") }}
+{{- end }}
+
+{{- if $radarr.enabled }}
+{{- $member := deepCopy $radarr }}
+{{- $_ := set $member "media_folder" $folder }}
+{{- with $download }}
+{{- $_ := set $member "download_client_host" .host }}
+{{- $_ := set $member "download_client_port" .port }}
+{{- $_ := set $member "download_client_username" .username }}
+{{- $_ := set $member "download_client_password" .password }}
+{{- end }}
+---
+{{ include "yolab-stack.member" (list . "radarr" $member) }}
+{{- end }}
