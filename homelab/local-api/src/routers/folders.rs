@@ -21,12 +21,7 @@ pub struct CreateFolder {
 
 pub async fn list(State(state): State<AppState>) -> Result<Json<Vec<Folder>>> {
     let client = state.kube.client().await?;
-    let shared = folders::list(&client)
-        .await?
-        .into_iter()
-        .filter(|folder| folder.kind != folders::KIND_STATE)
-        .collect();
-    Ok(Json(shared))
+    Ok(Json(folders::list(&client).await?))
 }
 
 pub async fn create(State(state): State<AppState>, Json(body): Json<CreateFolder>) -> Response {

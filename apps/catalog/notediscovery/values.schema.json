@@ -9,6 +9,29 @@
       "title": "NoteDiscovery",
       "type": "object",
       "properties": {
+        "password": {
+          "type": "string",
+          "title": "Password",
+          "minLength": 12,
+          "writeOnly": true,
+          "generate": true,
+          "description": "The password to sign in to NoteDiscovery. At least 12 characters."
+        },
+        "notes_folder": {
+          "type": "string",
+          "title": "Notes folder",
+          "format": "folder",
+          "default": "",
+          "pattern": "^([a-z0-9]([a-z0-9-]*[a-z0-9])?)?$",
+          "description": "A folder from Your files that holds your notes, at /data/<folder>. Other apps that use the same folder see the same Markdown files. Leave it empty to keep your notes inside NoteDiscovery."
+        },
+        "notes_path": {
+          "type": "string",
+          "title": "Inside the folder",
+          "default": "",
+          "pattern": "^([A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*)?$",
+          "description": "Keep notes only in this part of the notes folder, e.g. notes. Leave it empty to use the whole folder."
+        },
         "yolab_enabled": {
           "type": "boolean",
           "title": "YoLab address",
@@ -181,7 +204,10 @@
             }
           ]
         }
-      }
+      },
+      "required": [
+        "password"
+      ]
     },
     "outputs": {
       "type": "object",
@@ -200,6 +226,14 @@
                 "const": true
               }
             }
+          }
+        },
+        "password": {
+          "type": "string",
+          "title": "Password",
+          "format": "secret",
+          "source": {
+            "config": "password"
           }
         },
         "file_explorer_url": {

@@ -24,6 +24,10 @@ export function isDataFolder(folder: Folder): boolean {
   return folder.kind === "state";
 }
 
+export function sharedFolders(folders: Folder[]): Folder[] {
+  return folders.filter((folder) => !isDataFolder(folder));
+}
+
 export function isRestoring(folder: Folder): boolean {
   return folder.restoring_from != null;
 }

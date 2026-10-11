@@ -3,7 +3,12 @@ import type { WidgetProps } from "@rjsf/utils";
 import { Eye, EyeOff, RefreshCw } from "lucide-react";
 import { Input, Select, Toggle } from "@/components/ui/input";
 import { generateSecret } from "@/lib/format";
-import { DEFAULT_SIZE_GIB, folderChoice, type Folder } from "@/lib/folders";
+import {
+  DEFAULT_SIZE_GIB,
+  folderChoice,
+  sharedFolders,
+  type Folder,
+} from "@/lib/folders";
 import { api } from "@/lib/api";
 import { useApi } from "@/lib/useResource";
 import { cn } from "@/lib/utils";
@@ -166,7 +171,7 @@ const NEW_FOLDER = "__new__";
 export function FolderWidget(props: WidgetProps) {
   const { value, onChange, disabled, readonly, id } = props;
   const folders = useApi<Folder[]>("folders", "/api/folders");
-  const list = folders.data ?? [];
+  const list = sharedFolders(folders.data ?? []);
   const v = typeof value === "string" ? value : "";
   const choice = folderChoice(v, list);
   const [creating, setCreating] = useState(false);

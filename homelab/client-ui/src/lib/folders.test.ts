@@ -5,6 +5,7 @@ import {
   folderSize,
   isDataFolder,
   isRestoring,
+  sharedFolders,
   usedByLine,
   type Folder,
 } from "./folders";
@@ -89,5 +90,17 @@ describe("how a folder's backups read", () => {
     };
     expect(isRestoring(restoring)).toBe(true);
     expect(folderBackupLabel(restoring)).toBe("Restoring");
+  });
+});
+
+describe("the folder picker", () => {
+  it("offers only shared folders, while Your files lists app folders too", () => {
+    const appData: Folder = {
+      ...movies,
+      name: "notediscovery-ikcj-data",
+      kind: "state",
+      app: "notediscovery",
+    };
+    expect(sharedFolders([movies, appData])).toEqual([movies]);
   });
 });
