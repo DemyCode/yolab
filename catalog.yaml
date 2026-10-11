@@ -404,7 +404,7 @@ charts:
   - name: nostrudel
     version: "0.1.3"
   - name: notediscovery
-    version: "0.1.2"
+    version: "0.2.0"
   - name: ntfy
     version: "0.1.17"
   - name: nutstash-wallet
