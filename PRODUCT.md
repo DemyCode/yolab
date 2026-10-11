@@ -57,14 +57,14 @@ and *my stuff should live in my house* — with privacy carrying the second.
 - Apps are reached at their own addresses from the sofa or from a beach.
 - A console at `console.yolab.io` holds the account and the boxes.
 - Money is only for traffic and storage actually used (about €2.40/month); the operating
-  system is free and open source (MIT).
+  system is free and open source (AGPL-3.0).
 - The buyer is evaluating against what they already rent: Google Photos/iCloud, Netflix/
   Disney+/Spotify, 1Password/LastPass, Dropbox/Google Drive, game realms, and a dozen
   smaller subscriptions.
 
 ## Capabilities and Constraints
 
-- Free, MIT-licensed, open-source operating system; paid tier covers traffic and storage.
+- Free, AGPL-licensed, open-source operating system; paid tier covers traffic and storage.
 - One-stick installer; no terminal; a curated app catalogue (~75 apps) covering photos,
   media, files, passwords, games, home automation, cameras, notes, budgets, documents.
 - WireGuard-based remote access; the home network is never exposed.

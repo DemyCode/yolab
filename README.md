@@ -188,4 +188,6 @@ Every push lints, builds and pushes `wg-sidecar` and `wg-register` to `ghcr.io/d
 
 ## Licence
 
-MIT — see [LICENSE](LICENSE).
+GNU Affero General Public License v3.0 or later (AGPL-3.0-or-later) — see [LICENSE](LICENSE).
+
+You may use, study, change and share YoLab. If you distribute a modified version, or let people use one over a network, you must publish its source under the same licence.
