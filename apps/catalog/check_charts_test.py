@@ -916,6 +916,45 @@ class ImmichMachineLearning(RenderedChart):
         self.assertNotIn("resources", c)
 
 
+class ImmichPhotosFolder(RenderedChart):
+    CHART = "immich"
+
+    def test_the_photo_library_lives_in_the_chosen_folder(self):
+        docs = self.docs({"config.photos_folder": "photos"})
+        claim = next(
+            d
+            for d in docs
+            if d["kind"] == "PersistentVolumeClaim"
+            and d["metadata"]["name"] == "folder-photos"
+        )
+        self.assertEqual(
+            claim["metadata"]["labels"][check_charts.FOLDER_LABEL], "photos"
+        )
+        server = self.deployments(docs)["immich-server"]
+        photos = next(v for v in server["volumes"] if v["name"] == "photos")
+        self.assertEqual(photos["persistentVolumeClaim"]["claimName"], "folder-photos")
+        container = server["containers"][0]
+        library = next(m for m in container["volumeMounts"] if m["name"] == "photos")
+        self.assertEqual(library["mountPath"], "/data/photos")
+        self.assertNotIn("subPath", library)
+        self.assertEqual(
+            self.env(server, "immich-server")["UPLOAD_LOCATION"], "/data/photos"
+        )
+
+    def test_without_a_folder_the_library_stays_on_the_apps_own_volume(self):
+        docs = self.docs()
+        server = self.deployments(docs)["immich-server"]
+        self.assertFalse(any(v["name"] == "photos" for v in server["volumes"]))
+        library = next(
+            m
+            for m in server["containers"][0]["volumeMounts"]
+            if m["mountPath"] == "/usr/src/app/upload"
+        )
+        self.assertEqual(library["name"], "data")
+        self.assertEqual(library["subPath"], "release/uploads")
+        self.assertNotIn("UPLOAD_LOCATION", self.env(server, "immich-server"))
+
+
 class FrigateAcceleration(RenderedChart):
     CHART = "frigate"
 

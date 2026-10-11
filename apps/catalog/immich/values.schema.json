@@ -9,6 +9,14 @@
       "title": "Immich",
       "type": "object",
       "properties": {
+        "photos_folder": {
+          "type": "string",
+          "title": "Photos folder",
+          "format": "folder",
+          "default": "",
+          "pattern": "^([a-z0-9]([a-z0-9-]*[a-z0-9])?)?$",
+          "description": "A folder from Your files that holds your photo and video library. A file explorer or another photo app can open the same folder. Leave it empty to keep your library inside Immich."
+        },
         "yolab_enabled": {
           "type": "boolean",
           "title": "YoLab address",

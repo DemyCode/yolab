@@ -20,6 +20,24 @@ spec:
   resources:
     requests:
       storage: 100Gi
+{{- with .Values.config.photos_folder }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: folder-{{ . }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    yolab.io/folder: {{ . | quote }}
+spec:
+  accessModes:
+  - ReadWriteMany
+  storageClassName: ""
+  volumeName: {{ $.Release.Namespace }}.folder-{{ . }}
+  resources:
+    requests:
+      storage: 1Gi
+{{- end }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -118,10 +136,19 @@ spec:
           value: http://immich-ml:3003
         - name: VIPS_NOVECTOR
           value: '1'
+        {{- with .Values.config.photos_folder }}
+        - name: UPLOAD_LOCATION
+          value: /data/{{ . }}
+        {{- end }}
         volumeMounts:
+        {{- with .Values.config.photos_folder }}
+        - name: photos
+          mountPath: /data/{{ . }}
+        {{- else }}
         - name: data
           mountPath: /usr/src/app/upload
           subPath: {{ .Release.Name }}/uploads
+        {{- end }}
         - name: data
           mountPath: /state
           subPath: {{ .Release.Name }}/yolab-state
@@ -129,6 +156,11 @@ spec:
       - name: data
         persistentVolumeClaim:
           claimName: {{ .Release.Name }}-data
+      {{- if .Values.config.photos_folder }}
+      - name: photos
+        persistentVolumeClaim:
+          claimName: folder-{{ .Values.config.photos_folder }}
+      {{- end }}
 ---
 apiVersion: v1
 kind: Service
