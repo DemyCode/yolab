@@ -74,7 +74,8 @@ impl crate::runtime::Controller for DataFoldersController {
     }
     async fn reconcile(&self, _ctx: &crate::runtime::Ctx) -> anyhow::Result<crate::runtime::Tick> {
         let catalog = crate::config::Config::from_env().catalog_dir();
-        let failed = keep_all_data_as_folders(&crate::k8s::client().await?, &catalog).await?;
+        let backend = crate::routers::backup_common::Backend::real().await?;
+        let failed = keep_all_data_as_folders(&backend.kube, &catalog).await?;
         if failed.is_empty() {
             Ok(crate::runtime::Tick::Done)
         } else {

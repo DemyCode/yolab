@@ -89,10 +89,6 @@ impl AppSchema {
         AppSchema { document }
     }
 
-    pub fn document(&self) -> &Value {
-        &self.document
-    }
-
     pub fn config(&self) -> Value {
         match &self.document["properties"]["config"] {
             Value::Null => json!({ "type": "object", "properties": {} }),

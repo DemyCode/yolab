@@ -22,6 +22,7 @@ import {
   ValueRow,
 } from "@/components/ui/list";
 import { api, streamEvents } from "@/lib/api";
+import { BACKUP_PRESETS } from "@/lib/backups";
 import { formatDateTime, relativeTime } from "@/lib/format";
 import { useApi } from "@/lib/useResource";
 import { usedBy, usesOf } from "@/lib/links";
@@ -525,13 +526,6 @@ function RestoreSheet({
     </Sheet>
   );
 }
-
-const BACKUP_PRESETS: { label: string; cron: string }[] = [
-  { label: "Every day at 03:00", cron: "0 3 * * *" },
-  { label: "Every 6 hours", cron: "0 */6 * * *" },
-  { label: "Every Sunday at 03:00", cron: "0 3 * * 0" },
-  { label: "On the 1st of each month", cron: "0 3 1 * *" },
-];
 
 function BackupsSection({
   app,

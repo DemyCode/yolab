@@ -461,6 +461,77 @@ pub(crate) async fn restore_points<H: Host>(
         .unwrap_or_default())
 }
 
+pub(crate) async fn folder_points<H: Host>(
+    b: &Backend<H>,
+    folder: &str,
+) -> anyhow::Result<Vec<AppVersion>> {
+    let Some(cfg) = master_config(&b.kube).await? else {
+        return Ok(Vec::new());
+    };
+    let name = crate::folders::claim_name(folder);
+    let mut entries = volume_snapshots(&b.host, crate::folders::NAMESPACE, &name, &cfg).await?;
+    entries.sort_by_key(|s| std::cmp::Reverse(s.time));
+    Ok(entries
+        .into_iter()
+        .map(|s| AppVersion {
+            snapshot_id: s.id,
+            time: s.time.to_rfc3339(),
+        })
+        .collect())
+}
+
+pub(crate) async fn restore_folder<H: Host>(
+    b: &Backend<H>,
+    source: &str,
+    dest: &str,
+    snapshot_id: Option<&str>,
+) -> anyhow::Result<()> {
+    let outcome = fill_folder(b, source, dest, snapshot_id).await;
+    let error = outcome.as_ref().err().map(|e| format!("{e:#}"));
+    if let Err(e) = crate::k8s::merge_patch(
+        &b.kube,
+        &crate::folders::restore_finished(dest, error.as_deref()),
+    )
+    .await
+    {
+        tracing::warn!("folder {dest}: could not record the restore outcome: {e:#}");
+    }
+    outcome
+}
+
+async fn fill_folder<H: Host>(
+    b: &Backend<H>,
+    source: &str,
+    dest: &str,
+    snapshot_id: Option<&str>,
+) -> anyhow::Result<()> {
+    let Some(cfg) = master_config(&b.kube).await? else {
+        anyhow::bail!("backups are not enabled");
+    };
+    let as_of = match snapshot_id {
+        Some(id) => Some(
+            folder_points(b, source)
+                .await?
+                .into_iter()
+                .find(|p| p.snapshot_id == id)
+                .map(|p| p.time)
+                .ok_or_else(|| anyhow::anyhow!("that backup of {source} is no longer available"))?,
+        ),
+        None => None,
+    };
+    crate::folders::wait_until_ready(&b.kube, dest).await?;
+    restore_into(
+        b,
+        crate::folders::NAMESPACE,
+        crate::folders::NAMESPACE,
+        &crate::folders::claim_name(source),
+        &crate::folders::claim_name(dest),
+        &cfg,
+        as_of.as_deref(),
+    )
+    .await
+}
+
 fn versions_by_app(snapshots: &Value, found: &Value) -> BTreeMap<String, Vec<AppVersion>> {
     let listed: Vec<(String, chrono::DateTime<Utc>, String)> = snapshots
         .as_array()
@@ -848,7 +919,7 @@ async fn restore_volume<H: Host>(
     restore_into(b, namespace, namespace, pvc, pvc, cfg, restore_as_of).await
 }
 
-async fn restore_into<H: Host>(
+pub(crate) async fn restore_into<H: Host>(
     b: &Backend<H>,
     namespace: &str,
     source_namespace: &str,

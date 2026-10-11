@@ -419,6 +419,7 @@ struct ChartJob<'a> {
     chart: ChartAt<'a>,
     backup: &'a BackupPolicy,
     verb: &'static str,
+    reuse_kept_data: bool,
 }
 
 enum DataFill<'a> {
@@ -462,6 +463,22 @@ async fn apply_chart<H: Host + 'static>(
         DataFill::None => {}
     }
 
+    let members = crate::routers::apps::chart_members(&staged.chart_dir);
+    if job.reuse_kept_data {
+        match crate::folders::reuse_data_folders(&b.kube, &staged.ns, job.release, &members).await {
+            Ok(reused) if !reused.is_empty() => {
+                log.say(format!(
+                    "Pointing this app back at the data it kept ({})",
+                    reused.join(", ")
+                ));
+            }
+            Ok(_) => {}
+            Err(e) => log.say(format!(
+                "[WARN] could not reuse this app's kept data ({e:#}) — it starts empty"
+            )),
+        }
+    }
+
     log.say(job.verb);
     helm_install(&b.host, &staged, job.release, log).await?;
 
@@ -484,7 +501,6 @@ async fn apply_chart<H: Host + 'static>(
         ));
     }
 
-    let members = crate::routers::apps::chart_members(&staged.chart_dir);
     if let Err(e) = crate::routers::apps::keep_data_as_folders(
         &b.kube,
         &staged.ns,
@@ -585,6 +601,7 @@ async fn install_inner<H: Host + 'static>(
         },
         backup: &plan.backup,
         verb: "Installing…",
+        reuse_kept_data: plan.data.is_none(),
     };
     apply_chart(b, cfg, &job, &fill, log).await?;
 
@@ -663,6 +680,7 @@ async fn upgrade_one<H: Host + 'static>(
             .unwrap_or(ChartAt::Catalog { repo: from }),
         backup: &plan.backup,
         verb: "Updating…",
+        reuse_kept_data: false,
     };
     let version = apply_chart(b, cfg, &job, &DataFill::None, log).await?;
     clear_install_failed(&b.kube, &format!("yolab-{}", plan.instance_name)).await;

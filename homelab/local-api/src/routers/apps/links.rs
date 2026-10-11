@@ -111,7 +111,7 @@ impl LinkRef {
     }
 }
 
-pub(crate) fn chosen(value: Option<&Value>) -> Option<Result<LinkRef, String>> {
+pub(crate) fn chosen(value: Option<&Value>) -> Option<std::result::Result<LinkRef, String>> {
     let value = value?;
     if let Some(text) = value[FROM].as_str().filter(|s| !s.is_empty()) {
         return Some(
@@ -131,7 +131,7 @@ pub(crate) fn picked(
     found: &BTreeMap<String, String>,
     link: &LinkRef,
     wanted: &[String],
-) -> Result<Map<String, Value>, Vec<String>> {
+) -> std::result::Result<Map<String, Value>, Vec<String>> {
     let mut values = Map::new();
     let mut missing = Vec::new();
     for output in wanted {

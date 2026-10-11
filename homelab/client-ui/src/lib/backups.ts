@@ -17,6 +17,13 @@ export interface RestorePoint {
   time: string;
 }
 
+export const BACKUP_PRESETS: { label: string; cron: string }[] = [
+  { label: "Every day at 03:00", cron: "0 3 * * *" },
+  { label: "Every 6 hours", cron: "0 */6 * * *" },
+  { label: "Every Sunday at 03:00", cron: "0 3 * * 0" },
+  { label: "On the 1st of each month", cron: "0 3 1 * *" },
+];
+
 export function protectionState(app: ProtectedApp): ProtectionState {
   if (!app.enabled) return "off";
   return app.state;

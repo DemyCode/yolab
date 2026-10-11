@@ -1,11 +1,37 @@
 import { formatBytes } from "@/lib/format";
 
+export interface FolderBackup {
+  enabled: boolean;
+  schedule: string;
+}
+
 export interface Folder {
   name: string;
   title: string;
   size: string;
   ready: boolean;
   used_by: string[];
+  kind: "files" | "state";
+  app: string | null;
+  backup: FolderBackup;
+  restoring_from: string | null;
+  restore_error: string | null;
+}
+
+export const DEFAULT_FOLDER_SCHEDULE = "30 3 * * *";
+
+export function isDataFolder(folder: Folder): boolean {
+  return folder.kind === "state";
+}
+
+export function isRestoring(folder: Folder): boolean {
+  return folder.restoring_from != null;
+}
+
+export function folderBackupLabel(folder: Folder): string | null {
+  if (isRestoring(folder)) return "Restoring";
+  if (isDataFolder(folder) && folder.used_by.length > 0) return null;
+  return folder.backup?.enabled ? "Saved automatically" : "Backups off";
 }
 
 export type FolderChoice =

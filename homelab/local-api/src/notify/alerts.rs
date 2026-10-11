@@ -28,7 +28,7 @@ pub(crate) struct Source {
 }
 
 fn is_cluster_wide(key: &str) -> bool {
-    key.starts_with("heal:") || key.starts_with("backup:")
+    key.starts_with("heal:") || key.starts_with("backup:") || key.starts_with("folder:")
 }
 
 fn sends_for_cluster(me: &str, answering: &[String]) -> bool {
@@ -210,9 +210,9 @@ fn backup_alerts(
     alerts
 }
 
-async fn backup_source<H: Host>(b: anyhow::Result<&Backend<H>>, silent: bool) -> Source {
+async fn backup_source<H: Host>(backend: &anyhow::Result<Backend<H>>, silent: bool) -> Source {
     let read = async {
-        let b = b?;
+        let b = backend.as_ref().map_err(|e| anyhow::anyhow!("{e:#}"))?;
         let sets = crate::routers::backup::list(&b.kube).await?;
         anyhow::Ok((sets, b))
     };
@@ -239,6 +239,81 @@ async fn backup_source<H: Host>(b: anyhow::Result<&Backend<H>>, silent: bool) ->
     };
     Source {
         prefix: "backup:",
+        alerts,
+        silent,
+    }
+}
+
+fn folder_backup_alerts(
+    sets: &[serde_json::Value],
+    folders: &[crate::folders::Folder],
+    now: chrono::DateTime<chrono::Utc>,
+    stale_after_hours: i64,
+) -> Vec<Alert> {
+    let mut alerts = Vec::new();
+    for folder in folders.iter().filter(|f| f.backed_up_on_its_own()) {
+        let set = newest_for(sets, &crate::routers::backup::folder_key(&folder.name));
+        let state = set.and_then(|s| s["state"].as_str()).unwrap_or("never");
+        if matches!(state, "running" | "queued") {
+            continue;
+        }
+        if state == "crashed" {
+            let why = set
+                .and_then(|s| s["error"].as_str())
+                .filter(|e| !e.is_empty())
+                .unwrap_or("it did not finish");
+            alerts.push(Alert {
+                key: format!("folder:{}", folder.name),
+                title: format!("The folder {} could not be backed up", folder.title),
+                message: why.to_string(),
+                page: "/files".into(),
+            });
+            continue;
+        }
+        let age = set
+            .and_then(|s| s["finished_at"].as_str())
+            .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
+            .map(|t| (now - t.with_timezone(&chrono::Utc)).num_hours());
+        let stale = match age {
+            Some(hours) => hours >= stale_after_hours,
+            None => true,
+        };
+        if stale {
+            alerts.push(Alert {
+                key: format!("folder:{}", folder.name),
+                title: format!("The folder {} has no recent backup", folder.title),
+                message: match age {
+                    Some(hours) => format!("The last good copy is {hours}h old."),
+                    None => "It has never been backed up.".to_string(),
+                },
+                page: "/files".into(),
+            });
+        }
+    }
+    alerts
+}
+
+async fn folder_source<H: Host>(backend: &anyhow::Result<Backend<H>>, silent: bool) -> Source {
+    let read = async {
+        let b = backend.as_ref().map_err(|e| anyhow::anyhow!("{e:#}"))?;
+        let folders = crate::folders::list(&b.kube).await?;
+        let sets = crate::routers::backup::list(&b.kube).await?;
+        anyhow::Ok((sets, folders))
+    };
+    let alerts = match read.await {
+        Ok((sets, folders)) => Some(folder_backup_alerts(
+            &sets,
+            &folders,
+            chrono::Utc::now(),
+            BACKUP_STALE_AFTER_HOURS,
+        )),
+        Err(e) => {
+            tracing::debug!("notifier: folders unreadable: {e:#}");
+            None
+        }
+    };
+    Source {
+        prefix: "folder:",
         alerts,
         silent,
     }
@@ -290,16 +365,11 @@ impl Controller for NotifierController {
         let topic = topic(&self.config.config_path)?;
         let view = crate::heal::current_view(&self.config).await;
         let quiet = !sends_for_cluster(&ctx.node, &view.answering);
+        let backend = Backend::real().await;
         let sources = [
             heal_source(&view.problems, quiet),
-            backup_source(
-                Backend::real()
-                    .await
-                    .as_ref()
-                    .map_err(|e| anyhow::anyhow!("{e:#}")),
-                quiet,
-            )
-            .await,
+            backup_source(&backend, quiet).await,
+            folder_source(&backend, quiet).await,
             disk_source(),
         ];
         let mut sent = load(root)?;
@@ -501,6 +571,57 @@ mod tests {
             "{}",
             alerts[0].title
         );
+    }
+
+    fn folder(name: &str, kind: &str, enabled: bool, used_by: &[&str]) -> crate::folders::Folder {
+        crate::folders::Folder {
+            name: name.into(),
+            title: name.into(),
+            size: "1Gi".into(),
+            ready: true,
+            used_by: used_by.iter().map(|s| s.to_string()).collect(),
+            kind: kind.into(),
+            app: None,
+            backup: crate::folders::FolderBackup {
+                enabled,
+                schedule: "0 3 * * *".into(),
+            },
+            restoring_from: None,
+            restore_error: None,
+        }
+    }
+
+    #[test]
+    fn a_folder_whose_backup_failed_is_reported() {
+        let folders = [folder("movies", "files", true, &[])];
+        let sets = [
+            json!({"id": "f-1", "namespace": "folder:movies", "state": "crashed", "error": "S3 refused"}),
+        ];
+        let alerts = folder_backup_alerts(&sets, &folders, chrono::Utc::now(), 36);
+        assert_eq!(alerts.len(), 1);
+        assert_eq!(alerts[0].key, "folder:movies");
+        assert_eq!(alerts[0].message, "S3 refused");
+        assert_eq!(alerts[0].page, "/files");
+    }
+
+    #[test]
+    fn a_folder_that_was_never_backed_up_is_reported_once() {
+        let folders = [folder("photos", "files", true, &[])];
+        let alerts = folder_backup_alerts(&[], &folders, chrono::Utc::now(), 36);
+        assert_eq!(alerts.len(), 1);
+        assert!(alerts[0].message.contains("never"), "{}", alerts[0].message);
+    }
+
+    #[test]
+    fn a_folder_with_backups_off_is_not_nagged_about() {
+        let folders = [folder("movies", "files", false, &[])];
+        assert!(folder_backup_alerts(&[], &folders, chrono::Utc::now(), 36).is_empty());
+    }
+
+    #[test]
+    fn a_data_folder_still_used_by_its_app_is_covered_by_that_apps_backup() {
+        let folders = [folder("jellyfin-data", "state", true, &["jellyfin"])];
+        assert!(folder_backup_alerts(&[], &folders, chrono::Utc::now(), 36).is_empty());
     }
 
     fn tunnel() -> Tunnel {

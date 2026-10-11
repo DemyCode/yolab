@@ -347,6 +347,91 @@ pub(crate) fn adoptable(claim: &Value, volume: &Value) -> bool {
         && source_of(volume).is_some()
 }
 
+pub(crate) fn reuse_volume(
+    app_ns: &str,
+    claim: &str,
+    folder: &str,
+    driver: &str,
+    source: &Source,
+) -> Value {
+    let name = format!("{app_ns}.{claim}");
+    json!({
+        "apiVersion": "v1",
+        "kind": "PersistentVolume",
+        "metadata": {
+            "name": name,
+            "labels": { LABEL_STATE: folder, LABEL_STATE_NAMESPACE: app_ns },
+        },
+        "spec": {
+            "accessModes": ["ReadWriteMany"],
+            "capacity": { "storage": source.capacity },
+            "persistentVolumeReclaimPolicy": "Retain",
+            "storageClassName": crate::routers::copy::CEPHFS_STORAGE_CLASS,
+            "volumeMode": "Filesystem",
+            "claimRef": { "namespace": app_ns, "name": claim },
+            "csi": {
+                "driver": driver,
+                "volumeHandle": name,
+                "nodeStageSecretRef": { "name": STATIC_SECRET, "namespace": CSI_NAMESPACE },
+                "volumeAttributes": {
+                    "clusterID": CSI_NAMESPACE,
+                    "fsName": crate::cephfs::FS_NAME,
+                    "staticVolume": "true",
+                    "rootPath": source.root_path,
+                },
+            },
+        },
+    })
+}
+
+pub(crate) async fn reuse_data_folders(
+    client: &Client,
+    app_ns: &str,
+    release: &str,
+    members: &[String],
+) -> anyhow::Result<Vec<String>> {
+    let mut releases: BTreeSet<String> = members.iter().map(|m| format!("{release}-{m}")).collect();
+    releases.insert(release.to_string());
+    let mut reused = Vec::new();
+    for claim in owner_claims(client).await? {
+        let labels = &claim["metadata"]["labels"];
+        if labels[LABEL_KIND].as_str() != Some(KIND_STATE) {
+            continue;
+        }
+        let Some(folder) = labels[LABEL_FOLDER].as_str() else {
+            continue;
+        };
+        let ann = &claim["metadata"]["annotations"];
+        if !ann[ANN_STATE_RELEASE]
+            .as_str()
+            .is_some_and(|r| releases.contains(r))
+        {
+            continue;
+        }
+        let Some(pvc) = ann[ANN_STATE_CLAIM].as_str().filter(|c| !c.is_empty()) else {
+            continue;
+        };
+        let Some(volume_name) = claim["spec"]["volumeName"].as_str() else {
+            continue;
+        };
+        let Some(volume) = crate::k8s::get(
+            client,
+            &crate::k8s::cluster_reference("v1", "PersistentVolume", volume_name),
+        )
+        .await?
+        else {
+            continue;
+        };
+        let Some(source) = source_of(&volume) else {
+            continue;
+        };
+        let driver = volume["spec"]["csi"]["driver"].as_str().unwrap_or(DRIVER);
+        crate::k8s::apply(client, &reuse_volume(app_ns, pvc, folder, driver, &source)).await?;
+        reused.push(folder.to_string());
+    }
+    Ok(reused)
+}
+
 pub(crate) fn state_folder_of(volume: &Value) -> Option<&str> {
     volume["metadata"]["labels"][LABEL_STATE]
         .as_str()
@@ -650,23 +735,17 @@ pub(crate) fn restored_claim(folder: &str, source: &Value, when: &str) -> Value 
         .as_str()
         .unwrap_or_default();
     let title = annotation(source, ANN_TITLE).unwrap_or_else(|| source_name.to_string());
-    let mut annotations = json!({
-        ANN_TITLE: format!("{title} ({when})"),
-        ANN_RESTORING: format!("{source_name}@{when}"),
-    });
-    for key in [ANN_STATE_APP, ANN_STATE_RELEASE, ANN_STATE_CLAIM] {
-        if let Some(value) = annotation(source, key) {
-            annotations[key] = Value::String(value);
-        }
-    }
     json!({
         "apiVersion": "v1",
         "kind": "PersistentVolumeClaim",
         "metadata": {
             "name": claim_name(folder),
             "namespace": NAMESPACE,
-            "labels": { LABEL_FOLDER: folder, LABEL_KIND: kind_of(source) },
-            "annotations": annotations,
+            "labels": { LABEL_FOLDER: folder, LABEL_KIND: KIND_FILES },
+            "annotations": {
+                ANN_TITLE: format!("{title} ({when})"),
+                ANN_RESTORING: format!("{source_name}@{when}"),
+            },
         },
         "spec": {
             "accessModes": ["ReadWriteMany"],
@@ -706,6 +785,30 @@ pub(crate) async fn owner_claim_of(client: &Client, folder: &str) -> anyhow::Res
     )
     .await?
     .ok_or_else(|| anyhow::anyhow!("the folder {folder} does not exist"))
+}
+
+pub(crate) fn backup_patch(folder: &str, backup: &FolderBackup) -> Value {
+    json!({
+        "apiVersion": "v1",
+        "kind": "PersistentVolumeClaim",
+        "metadata": {
+            "name": claim_name(folder),
+            "namespace": NAMESPACE,
+            "annotations": {
+                ANN_BACKUP: serde_json::to_string(backup).unwrap_or_default(),
+            },
+        },
+    })
+}
+
+pub(crate) async fn set_backup(
+    client: &Client,
+    folder: &str,
+    backup: &FolderBackup,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(is_name(folder), "{folder:?} is not a folder name");
+    crate::k8s::merge_patch(client, &backup_patch(folder, backup)).await?;
+    Ok(())
 }
 
 pub(crate) async fn create_restored(
@@ -1219,6 +1322,58 @@ mod tests {
     }
 
     #[test]
+    fn an_app_reinstalled_on_its_kept_data_binds_to_the_same_files() {
+        let source = source_of(&provisioned("/volumes/csi/csi-vol-1/abc")).unwrap();
+        let volume = reuse_volume(
+            "yolab-jellyfin",
+            "jellyfin-data",
+            "jellyfin-data",
+            "cephfs.csi.ceph.com",
+            &source,
+        );
+        assert_eq!(volume["metadata"]["name"], "yolab-jellyfin.jellyfin-data");
+        assert_eq!(
+            volume["spec"]["claimRef"],
+            json!({ "namespace": "yolab-jellyfin", "name": "jellyfin-data" })
+        );
+        assert_eq!(volume["spec"]["storageClassName"], "yolab-cephfs");
+        assert_eq!(
+            volume["spec"]["csi"]["volumeAttributes"]["rootPath"],
+            "/volumes/csi/csi-vol-1/abc"
+        );
+        assert_eq!(volume["metadata"]["labels"][LABEL_STATE], "jellyfin-data");
+        assert_eq!(
+            volume["metadata"]["labels"][LABEL_STATE_NAMESPACE],
+            "yolab-jellyfin"
+        );
+        assert!(
+            volume["metadata"]["labels"][LABEL_STATE_ORIGIN].is_null(),
+            "not an origin, so its folder is never deleted out from under the app"
+        );
+        assert_eq!(state_folder_of(&volume), Some("jellyfin-data"));
+    }
+
+    #[test]
+    fn a_restored_copy_is_a_plain_folder_not_the_apps_data() {
+        let mut source = owner_claim("jellyfin-data", "Jellyfin", 50);
+        source["metadata"]["labels"][LABEL_KIND] = json!(KIND_STATE);
+        source["metadata"]["annotations"][ANN_STATE_RELEASE] = json!("jellyfin");
+        source["metadata"]["annotations"][ANN_STATE_CLAIM] = json!("jellyfin-data");
+        let copy = restored_claim("jellyfin-data-restored", &source, "2026-10-11");
+        assert_eq!(copy["metadata"]["labels"][LABEL_KIND], KIND_FILES);
+        assert_eq!(
+            copy["metadata"]["annotations"][ANN_RESTORING],
+            "jellyfin-data@2026-10-11"
+        );
+        assert!(
+            copy["metadata"]["annotations"][ANN_STATE_RELEASE].is_null(),
+            "a copy must never look like the app's own data folder"
+        );
+        assert!(copy["metadata"]["annotations"][ANN_STATE_CLAIM].is_null());
+        assert_eq!(copy["spec"]["storageClassName"], "yolab-cephfs");
+    }
+
+    #[test]
     fn a_files_folder_is_not_backed_up_unless_asked_and_a_data_folder_is() {
         let files = owner_claim("movies", "Movies", 10);
         assert_eq!(
@@ -1611,6 +1766,75 @@ mod tests {
                 Removal::InUse(_)
             ));
             assert!(deleted(&server).await.is_empty());
+        }
+
+        #[tokio::test]
+        async fn a_reinstall_is_pointed_back_at_the_data_its_folder_kept() {
+            let (server, client) = api_server().await;
+            let owner = StateOwner {
+                app: "jellyfin".into(),
+                release: "jellyfin".into(),
+                claim: "jellyfin-data".into(),
+            };
+            let mut claim = state_owner_claim("jellyfin-data", "jellyfin-data", &owner, "50Gi");
+            claim["spec"]["volumeName"] = json!("yolab-folders.state-jellyfin-data");
+            serve(
+                &server,
+                &format!("/api/v1/namespaces/{NAMESPACE}/persistentvolumeclaims"),
+                200,
+                listed("PersistentVolumeClaim", vec![claim]),
+            )
+            .await;
+            let mut volume = provisioned("/volumes/csi/csi-vol-1/abc");
+            volume["metadata"]["name"] = json!("yolab-folders.state-jellyfin-data");
+            volume["spec"]["csi"]["driver"] = json!("cephfs.csi.ceph.com");
+            serve(
+                &server,
+                "/api/v1/persistentvolumes/yolab-folders.state-jellyfin-data",
+                200,
+                volume,
+            )
+            .await;
+            accept_patches(&server).await;
+
+            let reused = reuse_data_folders(&client, "yolab-jellyfin", "jellyfin", &[])
+                .await
+                .unwrap();
+            assert_eq!(reused, vec!["jellyfin-data"]);
+            let applied = patched(&server).await;
+            assert_eq!(applied.len(), 1);
+            assert_eq!(
+                applied[0]["metadata"]["name"],
+                "yolab-jellyfin.jellyfin-data"
+            );
+            assert_eq!(
+                applied[0]["spec"]["claimRef"],
+                json!({ "namespace": "yolab-jellyfin", "name": "jellyfin-data" })
+            );
+            assert_eq!(
+                applied[0]["spec"]["csi"]["volumeAttributes"]["rootPath"],
+                "/volumes/csi/csi-vol-1/abc"
+            );
+        }
+
+        #[tokio::test]
+        async fn a_first_install_of_an_app_with_no_kept_data_reuses_nothing() {
+            let (server, client) = api_server().await;
+            serve(
+                &server,
+                &format!("/api/v1/namespaces/{NAMESPACE}/persistentvolumeclaims"),
+                200,
+                listed("PersistentVolumeClaim", vec![]),
+            )
+            .await;
+            accept_patches(&server).await;
+            assert!(
+                reuse_data_folders(&client, "yolab-jellyfin", "jellyfin", &[])
+                    .await
+                    .unwrap()
+                    .is_empty()
+            );
+            assert!(patched(&server).await.is_empty());
         }
 
         #[tokio::test]
