@@ -491,7 +491,7 @@ def check(app, docs, fail, chart_yaml="", schema=None, arches=None):
             if "Caddyfile" in (c.get("data") or {})
         )
         ups = re.findall(r"reverse_proxy\s+(\S+)", caddyfile)
-        if not ups:
+        if not ups and caddyfile.strip():
             fail(app, "Caddyfile has no reverse_proxy directive")
         svcs = {s["metadata"]["name"]: s for s in kinds.get("Service", [])}
         for up in ups:

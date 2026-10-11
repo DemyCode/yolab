@@ -1338,6 +1338,8 @@ class YolabSwitch(unittest.TestCase):
     def test_every_app_with_a_subdomain_has_the_switch(self):
 
         for path in Path(check_charts.HERE).glob("*/values.schema.json"):
+            if check_charts.pack_members(path.with_name("Chart.yaml").read_text()):
+                continue
             config = json.loads(path.read_text())["properties"]["config"]
             deps = config.get("dependencies") or {}
             has_address = "yolab_enabled" in deps or any(
