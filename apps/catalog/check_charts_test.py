@@ -4,6 +4,7 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from typing import ClassVar
 
 import check_charts
 import yaml
@@ -2259,8 +2260,10 @@ class OutputLinks(unittest.TestCase):
         self.assertEqual(
             found,
             [
-                "config.client takes ['password'] from qbittorrent, which does not "
-                "declare them as outputs"
+                (
+                    "config.client takes ['password'] from qbittorrent, which "
+                    "does not declare them as outputs"
+                )
             ],
         )
 
@@ -2290,7 +2293,7 @@ annotations:
 
 
 class PackDeclaration(unittest.TestCase):
-    CHARTS = {"jellyfin": ("0.3.0", {})}
+    CHARTS: ClassVar[dict] = {"jellyfin": ("0.3.0", {})}
 
     def failures(self, **fill):
         text = PACK_CHART.format(**{"jellyfin": "0.3.0", "members": "jellyfin", **fill})
@@ -2329,7 +2332,7 @@ class PackDeclaration(unittest.TestCase):
 
 
 class PackMembers(unittest.TestCase):
-    MEMBERS = ["sonarr", "radarr", "qbittorrent"]
+    MEMBERS: ClassVar[list] = ["sonarr", "radarr", "qbittorrent"]
 
     def test_each_resource_belongs_to_the_app_whose_name_it_carries(self):
         for name, owner in [
@@ -2414,7 +2417,7 @@ class Composable(unittest.TestCase):
 
 class PackRendered(RenderedChart):
     CHART = "movies-tv"
-    PROBE = {"config.media_folder": "media"}
+    PROBE: ClassVar[dict] = {"config.media_folder": "media"}
 
     def docs(self, extra=None):
         return super().docs({**self.PROBE, **(extra or {})})

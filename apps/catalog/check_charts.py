@@ -1686,10 +1686,8 @@ def member_of(name, members):
     owners = [
         m
         for m in members
-        if name == m
-        or name.startswith(f"{m}-")
-        or name == f"{RELEASE}-{m}"
-        or name.startswith(f"{RELEASE}-{m}-")
+        if name in (m, f"{RELEASE}-{m}")
+        or name.startswith((f"{m}-", f"{RELEASE}-{m}-"))
     ]
     return max(owners, key=len) if owners else None
 
