@@ -3,12 +3,7 @@ import type { WidgetProps } from "@rjsf/utils";
 import { Eye, EyeOff, RefreshCw } from "lucide-react";
 import { Input, Select, Toggle } from "@/components/ui/input";
 import { generateSecret } from "@/lib/format";
-import {
-  DEFAULT_SIZE_GIB,
-  folderChoice,
-  sharedFolders,
-  type Folder,
-} from "@/lib/folders";
+import { folderChoice, sharedFolders, type Folder } from "@/lib/folders";
 import { api } from "@/lib/api";
 import { useApi } from "@/lib/useResource";
 import { cn } from "@/lib/utils";
@@ -184,10 +179,7 @@ export function FolderWidget(props: WidgetProps) {
     setBusy(true);
     setError(null);
     try {
-      const made = await api.post<{ name: string }>("/api/folders", {
-        title,
-        size_gib: DEFAULT_SIZE_GIB,
-      });
+      const made = await api.post<{ name: string }>("/api/folders", { title });
       await folders.refresh();
       onChange(made.name);
       setCreating(false);

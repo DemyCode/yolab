@@ -136,11 +136,8 @@ pub(crate) async fn wait_for_volumes_deleted(
 }
 
 async fn release_folders(client: &Client, ns: &str) {
-    if let Err(e) = crate::folders::release_all(client, ns).await {
-        tracing::warn!("uninstall {ns}: unmount its folders: {e:#}");
-    }
-    if let Err(e) = crate::folders::forget_mounts_of(client, ns).await {
-        tracing::warn!("uninstall {ns}: forget the data folders it used: {e:#}");
+    if let Err(e) = crate::folders::let_go(client, ns).await {
+        tracing::warn!("uninstall {ns}: unmount its folders and delete the unused ones: {e:#}");
     }
 }
 

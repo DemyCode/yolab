@@ -25,7 +25,7 @@ const FORMAT: &str = "folder";
 const DRIVER: &str = "rook-ceph.cephfs.csi.ceph.com";
 const CSI_NAMESPACE: &str = "rook-ceph";
 const MAX_NAME: usize = 40;
-pub(crate) const MAX_SIZE_GIB: u64 = 1 << 20;
+pub(crate) const NEW_FOLDER_SIZE: &str = "1Ti";
 
 #[derive(Serialize, Debug, PartialEq)]
 pub struct Folder {
@@ -97,10 +97,6 @@ pub(crate) fn is_mount(
 ) -> bool {
     labels.is_some_and(|l| l.contains_key(LABEL_FOLDER))
         || volume_name.is_some_and(|v| v.starts_with(&app_volume_name(namespace, "")))
-}
-
-pub(crate) fn owner_claim(folder: &str, title: &str, size_gib: u64) -> Value {
-    files_claim(folder, title, &format!("{size_gib}Gi"))
 }
 
 pub(crate) fn files_claim(folder: &str, title: &str, storage: &str) -> Value {
@@ -721,6 +717,59 @@ fn folder_of(claim: &Value, volumes: &[Value]) -> Option<Folder> {
     })
 }
 
+fn instance_of(namespace: &str) -> String {
+    namespace
+        .strip_prefix("yolab-")
+        .unwrap_or(namespace)
+        .to_string()
+}
+
+#[derive(Debug, Default, PartialEq, Eq, Serialize)]
+pub(crate) struct Kept {
+    pub title: String,
+    pub used_by: Vec<String>,
+}
+
+#[derive(Debug, Default, PartialEq, Eq, Serialize)]
+pub(crate) struct OnRemoval {
+    pub deleted: Vec<String>,
+    pub kept: Vec<Kept>,
+    #[serde(skip)]
+    delete: Vec<String>,
+}
+
+pub(crate) fn on_removal(claims: &[Value], volumes: &[Value], namespace: &str) -> OnRemoval {
+    let me = instance_of(namespace);
+    let mut plan = OnRemoval::default();
+    for folder in claims.iter().filter_map(|c| folder_of(c, volumes)) {
+        if folder.kind != KIND_FILES || !folder.used_by.contains(&me) {
+            continue;
+        }
+        let mut others = folder.used_by;
+        others.retain(|u| u != &me);
+        if others.is_empty() {
+            plan.deleted.push(folder.title);
+            plan.delete.push(folder.name);
+        } else {
+            plan.kept.push(Kept {
+                title: folder.title,
+                used_by: others,
+            });
+        }
+    }
+    plan
+}
+
+pub(crate) async fn let_go(client: &Client, namespace: &str) -> anyhow::Result<()> {
+    let (claims, volumes) = tokio::try_join!(owner_claims(client), folder_volumes(client))?;
+    let doomed = on_removal(&claims, &volumes, namespace).delete;
+    release_all(client, namespace).await?;
+    for folder in &doomed {
+        delete_folder(client, folder, &volumes).await?;
+    }
+    forget_mounts_of(client, namespace).await
+}
+
 pub(crate) async fn owner_claim_of(client: &Client, folder: &str) -> anyhow::Result<Value> {
     anyhow::ensure!(is_name(folder), "{folder:?} is not a folder name");
     crate::k8s::get(
@@ -797,19 +846,15 @@ async fn ensure_namespace(client: &Client) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub(crate) async fn create(client: &Client, title: &str, size_gib: u64) -> anyhow::Result<String> {
+pub(crate) async fn create(client: &Client, title: &str) -> anyhow::Result<String> {
     let title = title.trim();
     let wanted = name_from_title(title).ok_or_else(|| {
         anyhow::anyhow!("a folder needs a name with at least one letter or number")
     })?;
-    anyhow::ensure!(
-        (1..=MAX_SIZE_GIB).contains(&size_gib),
-        "a folder holds between 1 and {MAX_SIZE_GIB} GiB"
-    );
     ensure_namespace(client).await?;
     let taken: BTreeSet<String> = list(client).await?.into_iter().map(|f| f.name).collect();
     let name = free_name(&wanted, &taken);
-    crate::k8s::create(client, &owner_claim(&name, title, size_gib)).await?;
+    crate::k8s::create(client, &files_claim(&name, title, NEW_FOLDER_SIZE)).await?;
     Ok(name)
 }
 
@@ -839,13 +884,7 @@ pub(crate) fn delete_when_released(volume: &str) -> Value {
     })
 }
 
-pub(crate) async fn remove(client: &Client, folder: &str) -> anyhow::Result<Removal> {
-    anyhow::ensure!(is_name(folder), "{folder:?} is not a folder name");
-    let volumes = folder_volumes(client).await?;
-    let in_use = users(&volumes, folder);
-    if !in_use.is_empty() {
-        return Ok(Removal::InUse(in_use));
-    }
+async fn delete_folder(client: &Client, folder: &str, volumes: &[Value]) -> anyhow::Result<()> {
     crate::k8s::delete_if_present(
         client,
         &crate::k8s::reference(
@@ -867,9 +906,20 @@ pub(crate) async fn remove(client: &Client, folder: &str) -> anyhow::Result<Remo
         )
         .await?;
     }
-    for origin in origins_of(&volumes, folder) {
+    for origin in origins_of(volumes, folder) {
         crate::k8s::merge_patch(client, &delete_when_released(origin)).await?;
     }
+    Ok(())
+}
+
+pub(crate) async fn remove(client: &Client, folder: &str) -> anyhow::Result<Removal> {
+    anyhow::ensure!(is_name(folder), "{folder:?} is not a folder name");
+    let volumes = folder_volumes(client).await?;
+    let in_use = users(&volumes, folder);
+    if !in_use.is_empty() {
+        return Ok(Removal::InUse(in_use));
+    }
+    delete_folder(client, folder, &volumes).await?;
     Ok(Removal::Removed)
 }
 
@@ -978,11 +1028,14 @@ mod tests {
 
     #[test]
     fn the_folder_lives_on_the_shared_filesystem_and_is_not_an_app_volume() {
-        let claim = owner_claim("movies-tv", "Movies & TV", 1024);
+        let claim = files_claim("movies-tv", "Movies & TV", NEW_FOLDER_SIZE);
         assert_eq!(claim["metadata"]["namespace"], NAMESPACE);
         assert_eq!(claim["metadata"]["labels"][LABEL_FOLDER], "movies-tv");
         assert_eq!(claim["metadata"]["annotations"][ANN_TITLE], "Movies & TV");
-        assert_eq!(claim["spec"]["resources"]["requests"]["storage"], "1024Gi");
+        assert_eq!(
+            claim["spec"]["resources"]["requests"]["storage"],
+            NEW_FOLDER_SIZE
+        );
         assert_eq!(claim["spec"]["storageClassName"], "yolab-cephfs");
     }
 
@@ -1043,7 +1096,7 @@ mod tests {
 
     #[test]
     fn a_folder_shows_its_title_size_and_whether_it_is_ready() {
-        let mut claim = owner_claim("movies-tv", "Movies & TV", 500);
+        let mut claim = files_claim("movies-tv", "Movies & TV", "500Gi");
         claim["status"] = json!({ "phase": "Bound" });
         let folder = folder_of(&claim, &[app_pv("yolab-jellyfin", "movies-tv")]).unwrap();
         assert_eq!(
@@ -1060,6 +1113,38 @@ mod tests {
         );
         claim["status"] = json!({ "phase": "Pending" });
         assert!(!folder_of(&claim, &[]).unwrap().ready);
+    }
+
+    #[test]
+    fn a_shared_folder_survives_until_its_last_user_leaves() {
+        let claims = vec![files_claim("movies", "Movies", NEW_FOLDER_SIZE)];
+        let shared = vec![
+            app_pv("yolab-sonarr", "movies"),
+            app_pv("yolab-jellyfin", "movies"),
+        ];
+        let not_last = on_removal(&claims, &shared, "yolab-sonarr");
+        assert!(not_last.deleted.is_empty());
+        assert_eq!(
+            not_last.kept,
+            vec![Kept {
+                title: "Movies".into(),
+                used_by: vec!["jellyfin".into()],
+            }]
+        );
+        let alone = vec![app_pv("yolab-sonarr", "movies")];
+        let last = on_removal(&claims, &alone, "yolab-sonarr");
+        assert_eq!(last.deleted, vec!["Movies"]);
+        assert!(last.kept.is_empty());
+    }
+
+    #[test]
+    fn an_apps_own_data_is_kept_when_the_app_is_removed() {
+        let claims = vec![kept_claim("jellyfin-data", "jellyfin", "jellyfin-data")];
+        let bound = vec![state_pv("jellyfin-data", "yolab-jellyfin", "Bound")];
+        let plan = on_removal(&claims, &bound, "yolab-jellyfin");
+        assert!(plan.deleted.is_empty());
+        assert!(plan.kept.is_empty());
+        assert!(plan.delete.is_empty());
     }
 
     fn members(names: &[&str]) -> Vec<String> {
@@ -1243,7 +1328,7 @@ mod tests {
             kept_claim("jellyfin-data", "jellyfin", "jellyfin-data"),
             kept_claim("media-sonarr-config", "media-sonarr", "media-sonarr-config"),
             kept_claim("other-data", "other", "other-data"),
-            owner_claim("movies", "Movies", 10),
+            files_claim("movies", "Movies", NEW_FOLDER_SIZE),
         ];
         let found = kept_data_of(&claims, &[], "jellyfin", &[]);
         assert_eq!(
@@ -1320,7 +1405,7 @@ mod tests {
         assert_eq!(claim["metadata"]["labels"][LABEL_KIND], KIND_FILES);
         assert_eq!(claim["metadata"]["annotations"][ANN_TITLE], "Movies");
         assert_eq!(claim["spec"]["resources"]["requests"]["storage"], "500Gi");
-        assert_eq!(owner_claim("movies", "Movies", 500), claim);
+        assert_eq!(files_claim("movies", "Movies", "500Gi"), claim);
     }
 
     mod against_kubernetes {
@@ -1332,7 +1417,7 @@ mod tests {
         use wiremock::{Mock, ResponseTemplate};
 
         async fn folder_ready(server: &wiremock::MockServer, folder: &str) {
-            let mut claim = owner_claim(folder, folder, 10);
+            let mut claim = files_claim(folder, folder, NEW_FOLDER_SIZE);
             claim["spec"]["volumeName"] = json!("pvc-owner");
             serve(
                 server,
@@ -1392,7 +1477,7 @@ mod tests {
                 &server,
                 &format!("/api/v1/namespaces/{NAMESPACE}/persistentvolumeclaims/folder-new"),
                 200,
-                owner_claim("new", "New", 10),
+                files_claim("new", "New", NEW_FOLDER_SIZE),
             )
             .await;
             let folders: BTreeSet<String> = ["new".to_string()].into_iter().collect();
@@ -1477,6 +1562,47 @@ mod tests {
             accept_deletes(&server).await;
             release_all(&client, "yolab-sonarr").await.unwrap();
             assert_eq!(deleted(&server).await.len(), 2);
+        }
+
+        #[tokio::test]
+        async fn removing_an_app_deletes_only_the_shared_folders_it_was_last_to_use() {
+            let (server, client) = api_server().await;
+            serve_volumes(
+                &server,
+                vec![
+                    app_pv("yolab-sonarr", "movies"),
+                    app_pv("yolab-jellyfin", "movies"),
+                    app_pv("yolab-sonarr", "tv"),
+                ],
+            )
+            .await;
+            serve(
+                &server,
+                &format!("/api/v1/namespaces/{NAMESPACE}/persistentvolumeclaims"),
+                200,
+                listed(
+                    "PersistentVolumeClaim",
+                    vec![
+                        files_claim("movies", "Movies", NEW_FOLDER_SIZE),
+                        files_claim("tv", "TV", NEW_FOLDER_SIZE),
+                    ],
+                ),
+            )
+            .await;
+            accept_deletes(&server).await;
+            let_go(&client, "yolab-sonarr").await.unwrap();
+            let deleted = deleted(&server).await;
+            assert!(
+                deleted.contains(&"/api/v1/persistentvolumes/yolab-sonarr.folder-tv".to_string())
+            );
+            assert!(deleted
+                .contains(&"/api/v1/persistentvolumes/yolab-sonarr.folder-movies".to_string()));
+            assert!(deleted.contains(&format!(
+                "/api/v1/namespaces/{NAMESPACE}/persistentvolumeclaims/folder-tv"
+            )));
+            assert!(!deleted.contains(&format!(
+                "/api/v1/namespaces/{NAMESPACE}/persistentvolumeclaims/folder-movies"
+            )));
         }
 
         #[tokio::test]

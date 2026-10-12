@@ -10,13 +10,9 @@ use crate::error::Result;
 use crate::folders::{self, Folder, Removal};
 use crate::AppState;
 
-const DEFAULT_SIZE_GIB: u64 = 1024;
-
 #[derive(Deserialize)]
 pub struct CreateFolder {
     pub title: String,
-    #[serde(default)]
-    pub size_gib: Option<u64>,
 }
 
 pub async fn list(State(state): State<AppState>) -> Result<Json<Vec<Folder>>> {
@@ -29,7 +25,6 @@ pub async fn create(State(state): State<AppState>, Json(body): Json<CreateFolder
         Ok(c) => c,
         Err(e) => return (StatusCode::SERVICE_UNAVAILABLE, format!("{e:#}")).into_response(),
     };
-    let size = body.size_gib.unwrap_or(DEFAULT_SIZE_GIB);
     if folders::name_from_title(&body.title).is_none() {
         return (
             StatusCode::BAD_REQUEST,
@@ -37,14 +32,7 @@ pub async fn create(State(state): State<AppState>, Json(body): Json<CreateFolder
         )
             .into_response();
     }
-    if !(1..=folders::MAX_SIZE_GIB).contains(&size) {
-        return (
-            StatusCode::BAD_REQUEST,
-            format!("a folder holds between 1 and {} GiB", folders::MAX_SIZE_GIB),
-        )
-            .into_response();
-    }
-    match folders::create(&client, &body.title, size).await {
+    match folders::create(&client, &body.title).await {
         Ok(name) => (
             StatusCode::CREATED,
             Json(serde_json::json!({ "name": name })),

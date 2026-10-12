@@ -60,6 +60,3 @@ export function usedByLine(folder: Folder): string {
   if (apps.length <= 3) return `Used by ${apps.join(", ")}`;
   return `Used by ${apps.slice(0, 2).join(", ")} and ${apps.length - 2} more`;
 }
-
-export const SIZE_CHOICES_GIB = [100, 500, 1024, 2048, 4096];
-export const DEFAULT_SIZE_GIB = 1024;

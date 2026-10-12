@@ -8,18 +8,11 @@ import {
   ServiceTrouble,
   Skeleton,
 } from "@/components/ui/feedback";
-import { Field, Input, Select } from "@/components/ui/input";
+import { Field, Input } from "@/components/ui/input";
 import { Row, Section, ValueRow } from "@/components/ui/list";
 import { ConfirmDialog, Sheet } from "@/components/ui/sheet";
 import { api } from "@/lib/api";
-import {
-  DEFAULT_SIZE_GIB,
-  SIZE_CHOICES_GIB,
-  folderBackupLine,
-  folderSize,
-  usedByLine,
-  type Folder,
-} from "@/lib/folders";
+import { folderBackupLine, usedByLine, type Folder } from "@/lib/folders";
 import { useApi } from "@/lib/useResource";
 
 function NewFolderSheet({
@@ -32,7 +25,6 @@ function NewFolderSheet({
   onCreated: () => void;
 }) {
   const [title, setTitle] = useState("");
-  const [size, setSize] = useState(DEFAULT_SIZE_GIB);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -40,7 +32,7 @@ function NewFolderSheet({
     setBusy(true);
     setError(null);
     try {
-      await api.post("/api/folders", { title, size_gib: size });
+      await api.post("/api/folders", { title });
       setTitle("");
       onCreated();
       onClose();
@@ -67,23 +59,6 @@ function NewFolderSheet({
             placeholder="Movies & TV"
             onChange={(e) => setTitle(e.target.value)}
           />
-        </Field>
-        <Field
-          label="Room for"
-          htmlFor="folder-size"
-          help="The most it may hold. It only takes the space its files use."
-        >
-          <Select
-            id="folder-size"
-            value={size}
-            onChange={(e) => setSize(Number(e.target.value))}
-          >
-            {SIZE_CHOICES_GIB.map((g) => (
-              <option key={g} value={g}>
-                {folderSize(`${g}Gi`)}
-              </option>
-            ))}
-          </Select>
         </Field>
       </div>
       <div className="mt-6 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
@@ -122,7 +97,6 @@ function FolderSheet({
     >
       <Section title="This folder">
         <Row label="Used by" detail={usedByLine(folder)} />
-        <Row label="Room for" detail={folderSize(folder.size)} />
         <Row label="Backups" detail={folderBackupLine(folder)} />
         <ValueRow label="Location" value={path} copy />
       </Section>
@@ -207,7 +181,7 @@ export function FilesPage() {
               key={f.name}
               onClick={() => setSelected(f.name)}
               label={f.ready ? f.title : `${f.title} — being created`}
-              detail={`${usedByLine(f)} · room for ${folderSize(f.size)} · /data/${f.name}`}
+              detail={`${usedByLine(f)} · /data/${f.name}`}
             />
           ))}
         </Section>

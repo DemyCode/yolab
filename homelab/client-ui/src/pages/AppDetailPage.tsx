@@ -1127,7 +1127,7 @@ export function AppDetailPage() {
         <Section title="Remove">
           <Row
             label={`Remove ${name}`}
-            detail="Its own data stays in Your files, so installing it again picks it back up"
+            detail="Shared folders no other app uses are deleted; the rest and its own data stay"
             danger
             onClick={() => setConfirmRemove(true)}
           />
@@ -1160,9 +1160,10 @@ export function AppDetailPage() {
         busy={working === "remove"}
         body={
           <>
-            {name} stops and is removed. Its own data stays in Your files, so
-            installing it again picks up where it left off; delete it there to
-            free the space. Backups you already have are kept.
+            {name} stops and is removed. Shared folders no other app uses are
+            deleted with their files; folders that other apps still use are
+            kept. Its own data stays in Your files, so installing it again picks
+            up where it left off. Backups you already have are kept.
           </>
         }
       />
