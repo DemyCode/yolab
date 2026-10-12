@@ -220,12 +220,6 @@
       "type": "object",
       "readOnly": true,
       "properties": {
-        "internal_url": {
-          "type": "string",
-          "title": "Address inside YoLab",
-          "format": "uri",
-          "source": { "service": { "name": "bazarr", "port": 6767 } }
-        },
         "api_key": {
           "type": "string",
           "title": "API key",

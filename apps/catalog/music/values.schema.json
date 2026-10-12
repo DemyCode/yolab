@@ -143,31 +143,6 @@
           "title": "Prowlarr API key",
           "format": "secret",
           "source": { "logs": "YOLAB_OUTPUT prowlarr_api_key (\\S+)" }
-        },
-        "navidrome_internal_url": {
-          "type": "string",
-          "title": "Navidrome inside YoLab",
-          "format": "uri",
-          "source": { "service": { "name": "navidrome", "port": 4533 } }
-        },
-        "lidarr_internal_url": {
-          "type": "string",
-          "title": "Lidarr inside YoLab",
-          "format": "uri",
-          "source": { "service": { "name": "lidarr", "port": 8686 } }
-        },
-        "prowlarr_internal_url": {
-          "type": "string",
-          "title": "Prowlarr inside YoLab",
-          "format": "uri",
-          "source": { "service": { "name": "prowlarr", "port": 9696 } }
-        },
-        "qbittorrent_internal_url": {
-          "type": "string",
-          "title": "qBittorrent inside YoLab",
-          "format": "uri",
-          "source": { "service": { "name": "qbittorrent", "port": 8080 } },
-          "when": { "properties": { "download_client": { "const": "new" } } }
         }
       }
     }

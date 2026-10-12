@@ -3,7 +3,7 @@ name: jellyfin
 description: "Free and open source media server"
 home: https://jellyfin.org
 type: application
-version: 0.3.1
+version: 0.3.2
 
 dependencies:
   - name: yolab-common

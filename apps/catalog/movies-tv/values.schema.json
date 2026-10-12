@@ -215,13 +215,6 @@
           "source": { "logs": "YOLAB_OUTPUT jellyseerr_api_key (\\S+)" },
           "when": { "properties": { "requests": { "const": true } } }
         },
-        "jellyseerr_internal_url": {
-          "type": "string",
-          "title": "Seerr inside YoLab",
-          "format": "uri",
-          "source": { "service": { "name": "jellyseerr", "port": 5055 } },
-          "when": { "properties": { "requests": { "const": true } } }
-        },
         "bazarr_url": {
           "type": "string",
           "title": "Bazarr",
@@ -241,13 +234,6 @@
           "source": { "logs": "YOLAB_OUTPUT bazarr_api_key (\\S+)" },
           "when": { "properties": { "subtitles": { "const": true } } }
         },
-        "bazarr_internal_url": {
-          "type": "string",
-          "title": "Bazarr inside YoLab",
-          "format": "uri",
-          "source": { "service": { "name": "bazarr", "port": 6767 } },
-          "when": { "properties": { "subtitles": { "const": true } } }
-        },
         "sonarr_api_key": {
           "type": "string",
           "title": "Sonarr API key",
@@ -265,37 +251,6 @@
           "title": "Prowlarr API key",
           "format": "secret",
           "source": { "logs": "YOLAB_OUTPUT prowlarr_api_key (\\S+)" }
-        },
-        "jellyfin_internal_url": {
-          "type": "string",
-          "title": "Jellyfin inside YoLab",
-          "format": "uri",
-          "source": { "service": { "name": "jellyfin", "port": 8096 } }
-        },
-        "sonarr_internal_url": {
-          "type": "string",
-          "title": "Sonarr inside YoLab",
-          "format": "uri",
-          "source": { "service": { "name": "sonarr", "port": 8989 } }
-        },
-        "radarr_internal_url": {
-          "type": "string",
-          "title": "Radarr inside YoLab",
-          "format": "uri",
-          "source": { "service": { "name": "radarr", "port": 7878 } }
-        },
-        "prowlarr_internal_url": {
-          "type": "string",
-          "title": "Prowlarr inside YoLab",
-          "format": "uri",
-          "source": { "service": { "name": "prowlarr", "port": 9696 } }
-        },
-        "qbittorrent_internal_url": {
-          "type": "string",
-          "title": "qBittorrent inside YoLab",
-          "format": "uri",
-          "source": { "service": { "name": "qbittorrent", "port": 8080 } },
-          "when": { "properties": { "download_client": { "const": "new" } } }
         }
       }
     }

@@ -212,14 +212,6 @@
       "type": "object",
       "readOnly": true,
       "properties": {
-        "internal_url": {
-          "type": "string",
-          "title": "Address inside YoLab",
-          "format": "uri",
-          "source": {
-            "service": { "name": "sonarr", "port": 8989 }
-          }
-        },
         "api_key": {
           "type": "string",
           "title": "API key",

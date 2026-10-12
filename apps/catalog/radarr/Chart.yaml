@@ -3,7 +3,7 @@ name: radarr
 description: "Follows films you want and fetches them when they become available"
 home: https://radarr.video
 type: application
-version: 0.2.1
+version: 0.2.2
 
 dependencies:
   - name: yolab-common

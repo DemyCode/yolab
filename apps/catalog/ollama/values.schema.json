@@ -233,14 +233,6 @@
       "type": "object",
       "readOnly": true,
       "properties": {
-        "api": {
-          "type": "string",
-          "title": "Ollama API",
-          "format": "uri",
-          "source": {
-            "service": { "name": "ollama", "port": 11434 }
-          }
-        },
         "url": {
           "type": "string",
           "title": "Web URL",

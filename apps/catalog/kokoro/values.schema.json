@@ -187,14 +187,6 @@
       "type": "object",
       "readOnly": true,
       "properties": {
-        "api": {
-          "type": "string",
-          "title": "Kokoro speech API",
-          "format": "uri",
-          "source": {
-            "service": { "name": "kokoro", "port": 8880, "path": "/v1" }
-          }
-        },
         "url": {
           "type": "string",
           "title": "Web URL",

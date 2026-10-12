@@ -217,14 +217,6 @@
             }
           }
         },
-        "internal_url": {
-          "type": "string",
-          "title": "Address inside YoLab",
-          "format": "uri",
-          "source": {
-            "service": { "name": "qbittorrent", "port": 8080 }
-          }
-        },
         "username": {
           "type": "string",
           "title": "Username",

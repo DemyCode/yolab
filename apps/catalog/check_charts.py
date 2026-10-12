@@ -1397,11 +1397,11 @@ def check_schema(app, schema, chart_yaml, fail):
             except (re.error, TypeError) as e:
                 fail(app, f"{where}: its logs pattern does not compile ({e})")
         elif "service" in source:
-            target = source["service"]
-            if not isinstance(target, dict) or not target.get("name"):
-                fail(app, f"{where}: its service source needs a name")
-            elif not isinstance(target.get("port"), int):
-                fail(app, f"{where}: its service source needs a numeric port")
+            fail(
+                app,
+                f"{where} is an address for other apps, and no app reads "
+                f"another app's outputs any more: remove it",
+            )
         elif "config" in source:
             field = source["config"]
             if field not in config:
@@ -1420,32 +1420,6 @@ def check_schema(app, schema, chart_yaml, fail):
 
 RETIRED_LINK_FORMATS = ("yolab-output", "connection", "service-url", "app")
 RETIRED_LINK_KEYS = ("x-yolab-from", "x-yolab-outputs")
-
-
-def check_service_outputs(app, schema, docs, fail):
-    services = {
-        d["metadata"]["name"]: {
-            p.get("port") for p in (d.get("spec") or {}).get("ports") or []
-        }
-        for d in docs
-        if d.get("kind") == "Service"
-    }
-    outputs = ((schema.get("properties") or {}).get("outputs") or {}).get(
-        "properties"
-    ) or {}
-    for key, out in outputs.items():
-        target = (out.get("source") or {}).get("service")
-        if not isinstance(target, dict):
-            continue
-        name, port = target.get("name"), target.get("port")
-        if not name or not isinstance(port, int):
-            fail(app, f"outputs.{key} needs a service name and a numeric port")
-        elif port not in services.get(name, set()):
-            fail(
-                app,
-                f"outputs.{key} points at Service {name} port {port}, "
-                f"which the chart does not render",
-            )
 
 
 def config_fields(schema, keep):
@@ -1785,7 +1759,6 @@ def check_pack(chart_dir, charts, library_tgz, workdir, fail):
         docs = [d for d in yaml.safe_load_all(rendered) if d]
         check_pack_render(where, docs, members, fail)
         if not extra:
-            check_service_outputs(where, schema, docs, fail)
         for field in folder_fields(schema):
             check_folders(where, field, docs, fail)
     return schema
@@ -1867,7 +1840,6 @@ def main(argv):
                 schema = {}
             check_schema(app, schema, text, fail)
             check(app, docs, fail, text, schema)
-            check_service_outputs(app, schema, docs, fail)
             check_no_links(app, schema, fail)
             check_folder_fields(app, schema, fail)
             if any(

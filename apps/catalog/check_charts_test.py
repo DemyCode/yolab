@@ -137,6 +137,15 @@ class CheckSchema(unittest.TestCase):
             any("unknown source" in f for f in failures(schema(outputs={"x": out})))
         )
 
+    def test_an_address_for_other_apps_is_no_longer_an_output(self):
+        out = {
+            "type": "string",
+            "title": "X",
+            "source": {"service": {"name": "x", "port": 80}},
+        }
+        found = failures(schema(outputs={"x": out}))
+        self.assertTrue(any("address for other apps" in f for f in found), found)
+
     def test_a_logs_pattern_must_compile(self):
         found = failures(schema(outputs={"x": logs("(")}))
         self.assertTrue(any("does not compile" in f for f in found))

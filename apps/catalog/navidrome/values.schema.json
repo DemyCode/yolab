@@ -248,14 +248,6 @@
       "type": "object",
       "readOnly": true,
       "properties": {
-        "internal_url": {
-          "type": "string",
-          "title": "Address inside YoLab",
-          "format": "uri",
-          "source": {
-            "service": { "name": "navidrome", "port": 4533 }
-          }
-        },
         "url": {
           "type": "string",
           "title": "Web URL",
