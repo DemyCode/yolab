@@ -7,6 +7,8 @@ import {
   githubUrl,
   hasCommunity,
   inCollection,
+  matchesSearch,
+  packMemberEntries,
   similarApps,
   SIMILAR_SIZE,
   sortApps,
@@ -202,5 +204,42 @@ describe("similarApps", () => {
     const found = similarApps(immich, many, new Map());
     expect(found).toHaveLength(SIMILAR_SIZE);
     expect(found[0].id).toBe(`x${SIMILAR_SIZE + 2}`);
+  });
+});
+
+describe("the apps a pack is made of", () => {
+  it("are its catalog entries, in the pack's own order, with their stars and links", () => {
+    const catalog = [
+      app("sonarr", { stars: 12000, github: "Sonarr/Sonarr" }),
+      app("jellyfin", { stars: 40000, github: "jellyfin/jellyfin" }),
+      app("movies-tv", { kind: "pack", members: ["jellyfin", "sonarr"] }),
+    ];
+    const members = packMemberEntries(catalog[2], catalog);
+    expect(members.map((m) => m.id)).toEqual(["jellyfin", "sonarr"]);
+    expect(members[0].stars).toBe(40000);
+  });
+
+  it("prefer the pack's own source and skip a member nobody offers", () => {
+    const mine = app("jellyfin", { repo: "mine" });
+    const official = app("jellyfin");
+    const pack = app("watch", { repo: "mine", members: ["jellyfin", "gone"] });
+    expect(packMemberEntries(pack, [official, mine])).toEqual([mine]);
+  });
+
+  it("an app that is not a pack has none", () => {
+    expect(packMemberEntries(app("jellyfin"), [app("jellyfin")])).toEqual([]);
+  });
+});
+
+describe("searching the catalog", () => {
+  it("finds an app when every word appears somewhere, in any order", () => {
+    const text = "Immich immich Photo and video backup";
+    expect(matchesSearch(text, "photo backup")).toBe(true);
+    expect(matchesSearch(text, "backup  PHOTO")).toBe(true);
+    expect(matchesSearch(text, "photo music")).toBe(false);
+  });
+
+  it("an empty search matches everything", () => {
+    expect(matchesSearch("anything", "   ")).toBe(true);
   });
 });

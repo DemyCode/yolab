@@ -78,3 +78,45 @@ export function healedFrom(status: HealStatus): MachineReset | null {
 export function useHealStatus(pollMs: number) {
   return useApi<HealStatus>("heal", "/api/heal", { pollMs });
 }
+
+export const SHOW_FINISHED_FOR_SECS = 24 * 3600;
+
+export function recentlyFinished(heal: Heal | null, nowSecs: number): boolean {
+  return (
+    heal !== null &&
+    !heal.running &&
+    heal.finished_at !== null &&
+    nowSecs - heal.finished_at < SHOW_FINISHED_FOR_SECS
+  );
+}
+
+export type BannerTone = "error" | "warning" | "info" | "success";
+
+export function healBannerTone(
+  status: HealStatus | undefined,
+  nowSecs: number,
+): BannerTone | null {
+  if (!status) return null;
+  if (status.heal?.running || healedFrom(status)) return "info";
+  if (status.problems.length > 0) return "error";
+  if (!recentlyFinished(status.heal, nowSecs)) return null;
+  return status.heal?.failed ? "warning" : "info";
+}
+
+const RANK: Record<BannerTone, number> = {
+  error: 0,
+  warning: 1,
+  info: 2,
+  success: 3,
+};
+
+export function oneBanner<K extends string>(
+  candidates: [K, BannerTone | null][],
+): K | null {
+  let best: [K, BannerTone] | null = null;
+  for (const [key, tone] of candidates) {
+    if (tone === null) continue;
+    if (best === null || RANK[tone] < RANK[best[1]]) best = [key, tone];
+  }
+  return best?.[0] ?? null;
+}

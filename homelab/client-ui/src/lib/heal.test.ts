@@ -2,7 +2,11 @@ import { describe, expect, it } from "vitest";
 import {
   HEAL_PROBLEM_LABELS,
   HEAL_STEP_LABELS,
+  healBannerTone,
   healedFrom,
+  oneBanner,
+  recentlyFinished,
+  type Heal,
   type HealStatus,
   type MachineReset,
 } from "./heal";
@@ -91,5 +95,54 @@ describe("healedFrom", () => {
 
   it("copes with this machine not being in the survey at all", () => {
     expect(healedFrom(status([]))).toBeNull();
+  });
+});
+
+const finishedHeal = (finished_at: number, failed: string | null = null): Heal => ({
+  id: "h1",
+  driver: "node1",
+  running: false,
+  failed,
+  started_at: 0,
+  finished_at,
+  step: "rebuild",
+  steps: ["prepare", "arm", "restart", "rebuild"],
+  members: [],
+  removed_machines: [],
+  waiting: null,
+});
+
+describe("the one banner a screen shows", () => {
+  it("the most serious one wins, and the first listed breaks a tie", () => {
+    expect(
+      oneBanner<"a" | "b" | "c">([
+        ["a", "info"],
+        ["b", "error"],
+        ["c", "error"],
+      ]),
+    ).toBe("b");
+    expect(oneBanner<"a" | "b">([["a", "warning"], ["b", "info"]])).toBe("a");
+  });
+
+  it("nothing to say shows nothing", () => {
+    expect(oneBanner<"a">([["a", null]])).toBeNull();
+  });
+});
+
+describe("the heal banner", () => {
+  it("is red while a machine or disk is lost, and quiet when nothing happened", () => {
+    expect(healBannerTone({ ...status([]), problems: ["machines_gone"] }, 0)).toBe("error");
+    expect(healBannerTone(status([]), 0)).toBeNull();
+    expect(healBannerTone(undefined, 0)).toBeNull();
+  });
+
+  it("reports a finished heal for a day, as a warning if it was stopped", () => {
+    const done = { ...status([]), heal: finishedHeal(1000) };
+    expect(healBannerTone(done, 1000 + 3600)).toBe("info");
+    expect(healBannerTone(done, 1000 + 25 * 3600)).toBeNull();
+    expect(
+      healBannerTone({ ...status([]), heal: finishedHeal(1000, "stopped") }, 1001),
+    ).toBe("warning");
+    expect(recentlyFinished(finishedHeal(1000), 1000 + 25 * 3600)).toBe(false);
   });
 });

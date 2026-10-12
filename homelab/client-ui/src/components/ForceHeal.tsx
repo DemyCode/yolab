@@ -14,22 +14,12 @@ import {
   HEAL_PROBLEM_LABELS,
   HEAL_STEP_LABELS,
   healedFrom,
+  recentlyFinished,
   useHealStatus,
   type Heal,
   type HealStep,
   type HealStatus,
 } from "@/lib/heal";
-
-const SHOW_FINISHED_FOR_SECS = 24 * 3600;
-
-function recentlyFinished(heal: Heal | null): boolean {
-  return (
-    heal !== null &&
-    !heal.running &&
-    heal.finished_at !== null &&
-    Date.now() / 1000 - heal.finished_at < SHOW_FINISHED_FOR_SECS
-  );
-}
 
 export function HealBanner({ className }: { className?: string }) {
   const status = useHealStatus(20_000).data;
@@ -70,7 +60,7 @@ export function HealBanner({ className }: { className?: string }) {
     );
   }
   if (status.problems.length === 0) {
-    return recentlyFinished(heal) ? (
+    return recentlyFinished(heal, Date.now() / 1000) ? (
       <Banner
         tone={heal?.failed ? "warning" : "info"}
         title={
@@ -380,7 +370,7 @@ export function ForceHealCard() {
     );
   }
   if (s.problems.length === 0) {
-    return heal && recentlyFinished(heal) ? <HealProgress heal={heal} /> : null;
+    return heal && recentlyFinished(heal, Date.now() / 1000) ? <HealProgress heal={heal} /> : null;
   }
 
   const gone = s.survey.machines.filter((m) => !m.answers);

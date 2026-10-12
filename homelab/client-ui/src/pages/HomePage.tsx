@@ -7,6 +7,12 @@ import { Banner, EmptyState, ServiceTrouble } from "@/components/ui/feedback";
 import { buttonClass } from "@/components/ui/button-variants";
 import { useApi } from "@/lib/useResource";
 import { HealBanner } from "@/components/ForceHeal";
+import { healBannerTone, oneBanner, useHealStatus } from "@/lib/heal";
+import {
+  movementCopy,
+  needsAttentionEverywhere,
+  useMovement,
+} from "@/lib/movement";
 import { appDisplayName, catalogEntry, homeLayout } from "@/lib/apps";
 import type { AppInfo, CatalogApp } from "@/types/apps";
 import type { ClusterHealth } from "@/types/health";
@@ -61,6 +67,18 @@ export function HomePage() {
   });
 
   const concern = topConcern(health.data);
+  const heal = useHealStatus(20_000).data;
+  const movement = useMovement().data;
+  const shown = oneBanner<"heal" | "movement" | "storage">([
+    ["heal", healBannerTone(heal, Date.now() / 1000)],
+    [
+      "movement",
+      needsAttentionEverywhere(movement) && movement && movementCopy(movement)
+        ? "error"
+        : null,
+    ],
+    ["storage", concern?.tone ?? null],
+  ]);
   const catalogApps = useMemo(() => catalog.data ?? [], [catalog.data]);
   const installed = useMemo(() => apps.data ?? [], [apps.data]);
   const home = useMemo(
@@ -81,11 +99,11 @@ export function HomePage() {
         </div>
       </header>
 
-      <HealBanner className="mb-6" />
+      {shown === "heal" && <HealBanner className="mb-6" />}
 
-      <MovementBanner className="pb-6" />
+      {shown === "movement" && <MovementBanner className="pb-6" />}
 
-      <Collapse open={Boolean(concern)} className="pb-6">
+      <Collapse open={shown === "storage"} className="pb-6">
         {concern && (
           <Banner
             tone={concern.tone}

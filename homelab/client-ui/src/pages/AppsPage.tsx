@@ -1,6 +1,7 @@
 import { useMemo, useState, type ReactNode } from "react";
 import { Package, Search, X } from "lucide-react";
 import { Page } from "@/components/AppShell";
+import { Button } from "@/components/ui/button";
 import { Input, Select } from "@/components/ui/input";
 import { AppCard, FeaturedAppCard } from "@/components/AppCard";
 import { Skeleton, EmptyState } from "@/components/ui/feedback";
@@ -20,6 +21,7 @@ import { AnimatedList, RollingNumber } from "@/components/motion";
 import {
   COLLECTIONS,
   inCollection,
+  matchesSearch,
   sortApps,
   statsById,
   type AppStats,
@@ -116,9 +118,10 @@ export function AppsPage() {
         if (installed === "installed" && n === 0) return false;
         if (installed === "not-installed" && n > 0) return false;
         if (!q) return true;
-        return `${a.name} ${a.id} ${taglineFor(a)} ${a.description}`
-          .toLowerCase()
-          .includes(q);
+        return matchesSearch(
+          `${a.name} ${a.id} ${taglineFor(a)} ${a.description}`,
+          q,
+        );
       }),
     [all, source, installed, installedCounts, q],
   );
@@ -358,6 +361,11 @@ export function AppsPage() {
                   icon={<Package className="h-6 w-6" />}
                   title="Nothing matches that"
                   body="No app matches the search and filters. Try another word, or clear them."
+                  action={
+                    <Button variant="secondary" onClick={clearAll}>
+                      Clear search and filters
+                    </Button>
+                  }
                 />
               ) : grouped.length > 0 ? (
                 <div className="space-y-8">

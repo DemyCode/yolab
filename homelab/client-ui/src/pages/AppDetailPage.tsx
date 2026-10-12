@@ -870,7 +870,7 @@ export function AppDetailPage() {
     if (state === "removing") {
       return (
         <Banner tone="warning" title="Being removed">
-          This app and its files are being deleted.
+          It is being removed. Its own data stays in Your files.
           <WaitNote note={note} />
         </Banner>
       );
@@ -1132,7 +1132,7 @@ export function AppDetailPage() {
         {actions.has("settings") && (
           <Row
             label="Change settings"
-            detail="Point it at another app, change what it was installed with"
+            detail="Change what it was installed with"
             onClick={() =>
               navigate(`/add/${app.app_id}?edit=${app.instance_name}`)
             }
@@ -1159,7 +1159,7 @@ export function AppDetailPage() {
         <Section title="Remove">
           <Row
             label={`Remove ${name}`}
-            detail="Deletes its files and settings. Backups you already have are kept."
+            detail="Its own data stays in Your files, so installing it again picks it back up"
             danger
             onClick={() => setConfirmRemove(true)}
           />
@@ -1192,9 +1192,9 @@ export function AppDetailPage() {
         busy={working === "remove"}
         body={
           <>
-            This deletes {name} and everything stored in it: files, settings and
-            history. Backups you already have are kept, so it can come back from
-            one, but nothing added since the last backup survives.
+            {name} stops and is removed. Its own data stays in Your files, so
+            installing it again picks up where it left off; delete it there to
+            free the space. Backups you already have are kept.
           </>
         }
       />

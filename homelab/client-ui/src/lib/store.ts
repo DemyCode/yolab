@@ -163,3 +163,24 @@ export function similarApps(
     .slice(0, SIMILAR_SIZE)
     .map(({ other }) => other);
 }
+
+export function packMemberEntries(
+  pack: Pick<CatalogApp, "repo" | "members">,
+  catalog: CatalogApp[],
+): CatalogApp[] {
+  return (pack.members ?? []).flatMap((id) => {
+    const found =
+      catalog.find((a) => a.id === id && a.repo === pack.repo) ??
+      catalog.find((a) => a.id === id);
+    return found ? [found] : [];
+  });
+}
+
+export function matchesSearch(text: string, query: string): boolean {
+  const haystack = text.toLowerCase();
+  return query
+    .toLowerCase()
+    .split(/\s+/)
+    .filter(Boolean)
+    .every((word) => haystack.includes(word));
+}

@@ -44,10 +44,12 @@ import { taglineFor } from "@/catalog/meta";
 import { AppComments, HeartButton } from "@/components/StoreCommunity";
 import { AppCard } from "@/components/AppCard";
 import { GitHubMark } from "@/components/GitHubMark";
+import { PackMembers } from "@/components/PackMembers";
 import {
   formatCount,
   githubUrl,
   hasCommunity,
+  packMemberEntries,
   similarApps,
   statsById,
   updatedAgo,
@@ -529,6 +531,8 @@ export function InstallPage() {
               </p>
             </section>
           )}
+
+          <PackMembers members={packMemberEntries(app, catalog.data ?? [])} />
 
           {installedOfThisApp.length > 0 && (
             <Section title="You already run">
