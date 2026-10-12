@@ -33,7 +33,11 @@ stringData:
 {{ include "yolab-stack.member" (list . "qbittorrent" (dict
       "media_folder" $folder
       "yolab_enabled" $cfg.manage_anywhere
-      "webui_password" $qbittorrentPassword)) }}
+      "webui_password" $qbittorrentPassword
+      "vpn_enabled" $cfg.vpn_enabled
+      "vpn_private_key" $cfg.vpn_private_key
+      "vpn_addresses" $cfg.vpn_addresses
+      "vpn_server_countries" $cfg.vpn_server_countries)) }}
 {{- end }}
 ---
 {{ include "yolab-stack.member" (list . "lidarr" (dict

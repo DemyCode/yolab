@@ -2,6 +2,7 @@
 config:
   subdomain: qbittorrent
   storage_size: 200Gi
+  vpn_enabled: false
 
 yolab:
   platformApiUrl: ""

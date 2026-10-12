@@ -12,7 +12,7 @@ dependencies:
     version: "0.2.1"
     repository: "oci://ghcr.io/demycode/charts"
   - name: qbittorrent
-    version: "0.2.1"
+    version: "0.2.2"
     repository: "oci://ghcr.io/demycode/charts"
   - name: prowlarr
     version: "0.2.2"

@@ -1,6 +1,107 @@
+{{- define "qbittorrent.login" -}}
+{{- $cfg := .Values.config -}}
+- name: login
+  image: python:3.14-alpine@sha256:f6a589d43c42b9e7f7dc67a12d37132491f362859a5d750607710cc56da3bc72
+  imagePullPolicy: IfNotPresent
+  env:
+    - name: PASSWORD
+      value: {{ $cfg.webui_password | quote }}
+    - name: SAVE_PATH
+      value: {{ with $cfg.media_folder }}{{ printf "/data/%s/downloads" . | quote }}{{ else }}"/downloads"{{ end }}
+    - name: USERNAME_OUTPUT
+      value: {{ include "yolab-stack.outputKey" (list . "username") | quote }}
+    - name: PASSWORD_OUTPUT
+      value: {{ include "yolab-stack.outputKey" (list . "password") | quote }}
+  command:
+    - python3
+    - -c
+    - |
+      import base64, configparser, hashlib, os
+      path = "/config/qBittorrent/qBittorrent.conf"
+      os.makedirs(os.path.dirname(path), exist_ok=True)
+      conf = configparser.RawConfigParser(strict=False)
+      conf.optionxform = str
+      conf.read(path)
+      for section in ("Preferences", "BitTorrent", "LegalNotice"):
+          if not conf.has_section(section):
+              conf.add_section(section)
+      password = os.environ["PASSWORD"]
+      salt = os.urandom(16)
+      key = hashlib.pbkdf2_hmac("sha512", password.encode(), salt, 100000, 64)
+      hashed = "%s:%s" % (base64.b64encode(salt).decode(), base64.b64encode(key).decode())
+      conf.set("Preferences", "WebUI\\Username", "admin")
+      conf.set("Preferences", "WebUI\\Password_PBKDF2", '"@ByteArray(%s)"' % hashed)
+      conf.set("LegalNotice", "Accepted", "true")
+      save = os.environ["SAVE_PATH"]
+      os.makedirs(save, exist_ok=True)
+      os.chown(save, 1000, 1000)
+      conf.set("BitTorrent", "Session\\DefaultSavePath", save)
+      with open(path, "w") as f:
+          conf.write(f, space_around_delimiters=False)
+      for p in (os.path.dirname(path), path):
+          os.chown(p, 1000, 1000)
+      print("YOLAB_OUTPUT %s admin" % os.environ["USERNAME_OUTPUT"])
+      print("YOLAB_OUTPUT %s %s" % (os.environ["PASSWORD_OUTPUT"], password))
+  volumeMounts:
+    {{- include "qbittorrent.mounts" . | nindent 4 }}
+{{- end -}}
+
+
+{{- define "qbittorrent.mounts" -}}
+- name: data
+  mountPath: /config
+  subPath: {{ .Release.Name }}/config
+- name: data
+  mountPath: /downloads
+  subPath: {{ .Release.Name }}/downloads
+{{- with .Values.config.media_folder }}
+- name: folder
+  mountPath: /data/{{ . }}
+{{- end }}
+{{- end -}}
+
+
+{{- define "qbittorrent.container" -}}
+- name: qbittorrent
+  image: ghcr.io/linuxserver/qbittorrent:latest@sha256:b522f9f4b769f8f36d49d22d5eb6a92e9aa18904c6a1830b1439df511ec21983
+  imagePullPolicy: IfNotPresent
+  env:
+    - name: PUID
+      value: "1000"
+    - name: PGID
+      value: "1000"
+    - name: TZ
+      value: "Etc/UTC"
+    - name: WEBUI_PORT
+      value: "8080"
+  readinessProbe:
+    tcpSocket:
+      port: 8080
+    initialDelaySeconds: 10
+    periodSeconds: 10
+  volumeMounts:
+    {{- include "qbittorrent.mounts" . | nindent 4 }}
+{{- end -}}
+
+
+{{- define "qbittorrent.folderVolume" -}}
+{{- with .Values.config.media_folder }}
+- name: folder
+  persistentVolumeClaim:
+    claimName: folder-{{ . }}
+{{- end }}
+{{- end -}}
+
+
 {{- define "qbittorrent.manifests" -}}
 {{- $prefix := include "yolab-stack.prefix" . -}}
 {{- $cfg := .Values.config -}}
+{{- $vpn := $cfg.vpn_enabled -}}
+{{- if $vpn }}
+{{- $gateway := deepCopy (((.Values.yolab).gateway) | default dict) -}}
+{{- $_ := set $gateway "upstream" "qbittorrent:8080" -}}
+{{- $_ := set .Values.yolab "gateway" $gateway -}}
+{{- end }}
 {{ include "yolab-common.caddyConfigMap" . }}
 ---
 {{ include "yolab-common.fileExplorerSecret" . }}
@@ -31,7 +132,7 @@ metadata:
   namespace: {{ .Release.Namespace }}
 spec:
   selector:
-    app: {{ $prefix }}gateway
+    app: {{ $prefix }}{{ if $vpn }}downloader{{ else }}gateway{{ end }}
   ports:
     - name: http
       port: 8080
@@ -57,98 +158,87 @@ spec:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
       {{- include "yolab-stack.urlOutput" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
-      {{- if $cfg.webui_password }}
-      - name: login
-        image: python:3.14-alpine@sha256:f6a589d43c42b9e7f7dc67a12d37132491f362859a5d750607710cc56da3bc72
-        imagePullPolicy: IfNotPresent
-        env:
-          - name: PASSWORD
-            value: {{ $cfg.webui_password | quote }}
-          - name: SAVE_PATH
-            value: {{ with $cfg.media_folder }}{{ printf "/data/%s/downloads" . | quote }}{{ else }}"/downloads"{{ end }}
-          - name: USERNAME_OUTPUT
-            value: {{ include "yolab-stack.outputKey" (list . "username") | quote }}
-          - name: PASSWORD_OUTPUT
-            value: {{ include "yolab-stack.outputKey" (list . "password") | quote }}
-        command:
-          - python3
-          - -c
-          - |
-            import base64, configparser, hashlib, os
-            path = "/config/qBittorrent/qBittorrent.conf"
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            conf = configparser.RawConfigParser(strict=False)
-            conf.optionxform = str
-            conf.read(path)
-            for section in ("Preferences", "BitTorrent", "LegalNotice"):
-                if not conf.has_section(section):
-                    conf.add_section(section)
-            password = os.environ["PASSWORD"]
-            salt = os.urandom(16)
-            key = hashlib.pbkdf2_hmac("sha512", password.encode(), salt, 100000, 64)
-            hashed = "%s:%s" % (base64.b64encode(salt).decode(), base64.b64encode(key).decode())
-            conf.set("Preferences", "WebUI\\Username", "admin")
-            conf.set("Preferences", "WebUI\\Password_PBKDF2", '"@ByteArray(%s)"' % hashed)
-            conf.set("LegalNotice", "Accepted", "true")
-            save = os.environ["SAVE_PATH"]
-            os.makedirs(save, exist_ok=True)
-            os.chown(save, 1000, 1000)
-            conf.set("BitTorrent", "Session\\DefaultSavePath", save)
-            with open(path, "w") as f:
-                conf.write(f, space_around_delimiters=False)
-            for p in (os.path.dirname(path), path):
-                os.chown(p, 1000, 1000)
-            print("YOLAB_OUTPUT %s admin" % os.environ["USERNAME_OUTPUT"])
-            print("YOLAB_OUTPUT %s %s" % (os.environ["PASSWORD_OUTPUT"], password))
-        volumeMounts:
-          - name: data
-            mountPath: /config
-            subPath: {{ .Release.Name }}/config
-          - name: data
-            mountPath: /downloads
-            subPath: {{ .Release.Name }}/downloads
-          {{- with $cfg.media_folder }}
-          - name: folder
-            mountPath: /data/{{ . }}
-          {{- end }}
+      {{- if and $cfg.webui_password (not $vpn) }}
+      {{- include "qbittorrent.login" . | nindent 6 }}
       {{- end }}
       containers:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
-      - name: qbittorrent
-        image: ghcr.io/linuxserver/qbittorrent:latest@sha256:b522f9f4b769f8f36d49d22d5eb6a92e9aa18904c6a1830b1439df511ec21983
-        imagePullPolicy: IfNotPresent
-        env:
-          - name: PUID
-            value: "1000"
-          - name: PGID
-            value: "1000"
-          - name: TZ
-            value: "Etc/UTC"
-          - name: WEBUI_PORT
-            value: "8080"
-        readinessProbe:
-          tcpSocket:
-            port: 8080
-          initialDelaySeconds: 10
-          periodSeconds: 10
-        volumeMounts:
-          - name: data
-            mountPath: /config
-            subPath: {{ .Release.Name }}/config
-          - name: data
-            mountPath: /downloads
-            subPath: {{ .Release.Name }}/downloads
-          {{- with $cfg.media_folder }}
-          - name: folder
-            mountPath: /data/{{ . }}
-          {{- end }}
+      {{- if not $vpn }}
+      {{- include "qbittorrent.container" . | nindent 6 }}
+      {{- end }}
       volumes:
       {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
-      {{- with $cfg.media_folder }}
-      - name: folder
-        persistentVolumeClaim:
-          claimName: folder-{{ . }}
+      {{- include "qbittorrent.folderVolume" . | nindent 6 }}
+{{- if $vpn }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Release.Name }}-vpn
+  namespace: {{ .Release.Namespace }}
+type: Opaque
+stringData:
+  private-key: {{ required "a Mullvad WireGuard private key is needed to download through the VPN" $cfg.vpn_private_key | quote }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $prefix }}downloader
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: {{ $prefix }}downloader
+  template:
+    metadata:
+      labels:
+        app: {{ $prefix }}downloader
+        {{- with .Member }}
+        yolab.io/member: {{ . }}
+        {{- end }}
+    spec:
+      {{- if $cfg.webui_password }}
+      initContainers:
+      {{- include "qbittorrent.login" . | nindent 6 }}
       {{- end }}
+      containers:
+      - name: gluetun
+        image: qmcgaw/gluetun:v3@sha256:fa19cc76b2af13d57a8d3dc3066f2ada061b1c761b8aecf989b3877c0486e027
+        imagePullPolicy: IfNotPresent
+        securityContext:
+          capabilities:
+            add:
+              - NET_ADMIN
+        env:
+          - name: VPN_SERVICE_PROVIDER
+            value: mullvad
+          - name: VPN_TYPE
+            value: wireguard
+          - name: WIREGUARD_PRIVATE_KEY
+            valueFrom:
+              secretKeyRef:
+                name: {{ .Release.Name }}-vpn
+                key: private-key
+          - name: WIREGUARD_ADDRESSES
+            value: {{ required "the Mullvad WireGuard address is needed to download through the VPN" $cfg.vpn_addresses | quote }}
+          {{- with $cfg.vpn_server_countries }}
+          - name: SERVER_COUNTRIES
+            value: {{ . | quote }}
+          {{- end }}
+          - name: FIREWALL_INPUT_PORTS
+            value: "8080"
+          - name: FIREWALL_OUTBOUND_SUBNETS
+            value: "10.42.0.0/16,10.43.0.0/16,fd00:42::/56,fd00:43::/112"
+      {{- include "qbittorrent.container" . | nindent 6 }}
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: {{ .Release.Name }}-data
+      {{- include "qbittorrent.folderVolume" . | nindent 6 }}
+{{- end }}
 {{- end -}}

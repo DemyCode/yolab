@@ -82,8 +82,17 @@ def linked(field, values):
     return {f"config.{field}.{k}": v for k, v in values.items()}
 
 
+VPN_ON = {
+    "config.vpn_enabled": "true",
+    "config.vpn_private_key": "PlaceholderVpnKey2026",
+    "config.vpn_addresses": "10.64.0.2/32",
+}
+
 VARIANTS = {
-    "qbittorrent": [{"config.webui_password": "PlaceholderPw2026"}],
+    "qbittorrent": [
+        {"config.webui_password": "PlaceholderPw2026"},
+        {"config.webui_password": "PlaceholderPw2026", **VPN_ON},
+    ],
     "radarr": [linked("download_client", QBITTORRENT_LINK)],
     "sonarr": [linked("download_client", QBITTORRENT_LINK)],
     "lidarr": [linked("download_client", QBITTORRENT_LINK)],
@@ -115,6 +124,7 @@ VARIANTS = {
         },
         {"config.watch_anywhere": "false", "config.manage_anywhere": "false"},
         {"config.requests": "false", "config.subtitles": "false"},
+        VPN_ON,
     ],
     "jellyseerr": [
         {
@@ -154,6 +164,7 @@ VARIANTS = {
             **linked("existing_client", QBITTORRENT_LINK),
         },
         {"config.listen_anywhere": "false", "config.manage_anywhere": "false"},
+        VPN_ON,
     ],
     "open-webui": [
         {

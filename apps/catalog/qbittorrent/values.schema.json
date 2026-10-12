@@ -36,6 +36,12 @@
           "generate": true,
           "description": "The password for the user admin, set on every start. Leave it empty to keep the temporary password qBittorrent prints each time it starts."
         },
+        "vpn_enabled": {
+          "type": "boolean",
+          "title": "Download through Mullvad",
+          "default": false,
+          "description": "qBittorrent reaches the internet only through a Mullvad VPN, and stops downloading if the VPN is down. Its web page stays on your YoLab address."
+        },
         "file_explorer_enabled": {
           "type": "boolean",
           "title": "File explorer",
@@ -44,6 +50,47 @@
         }
       },
       "dependencies": {
+        "vpn_enabled": {
+          "oneOf": [
+            {
+              "properties": {
+                "vpn_enabled": {
+                  "const": false
+                }
+              }
+            },
+            {
+              "properties": {
+                "vpn_enabled": {
+                  "const": true
+                },
+                "vpn_private_key": {
+                  "type": "string",
+                  "title": "Mullvad WireGuard private key",
+                  "minLength": 1,
+                  "writeOnly": true,
+                  "description": "From mullvad.net → Account → WireGuard configuration → generate a key, then copy the PrivateKey line."
+                },
+                "vpn_addresses": {
+                  "type": "string",
+                  "title": "Mullvad WireGuard address",
+                  "minLength": 1,
+                  "description": "The Address line from the same Mullvad configuration file, e.g. 10.64.123.45/32."
+                },
+                "vpn_server_countries": {
+                  "type": "string",
+                  "title": "VPN server countries",
+                  "default": "",
+                  "description": "Optional. Comma-separated, e.g. Netherlands,Switzerland. Empty lets the VPN pick."
+                }
+              },
+              "required": [
+                "vpn_private_key",
+                "vpn_addresses"
+              ]
+            }
+          ]
+        },
         "yolab_enabled": {
           "oneOf": [
             {
