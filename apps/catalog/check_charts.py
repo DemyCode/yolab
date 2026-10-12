@@ -1556,7 +1556,7 @@ def check_folders(app, field, docs, fail):
 
 
 LIBRARIES = ("yolab-common", "yolab-stack")
-MEMBERS = "yolab.io/members"
+RETIRED_MEMBERS = "yolab.io/members"
 MEMBER_LABEL = "yolab.io/member"
 KEEP = "helm.sh/resource-policy"
 RELEASE = "release"
@@ -1571,8 +1571,9 @@ def chart_annotations(chart_yaml):
 
 
 def pack_members(chart_yaml):
-    listed = str(chart_annotations(chart_yaml).get(MEMBERS) or "")
-    return [m.strip() for m in listed.split(",") if m.strip()]
+    return [
+        d["name"] for d in chart_dependencies(chart_yaml) if d["name"] not in LIBRARIES
+    ]
 
 
 def catalog_charts(root=HERE):
@@ -1594,14 +1595,14 @@ def check_pack_declaration(app, chart_yaml, charts, fail):
     deps = chart_dependencies(chart_yaml)
     apps = [d for d in deps if d["name"] not in LIBRARIES]
     members = pack_members(chart_yaml)
-    if sorted(members) != sorted(d["name"] for d in apps):
+    if RETIRED_MEMBERS in chart_annotations(chart_yaml):
         fail(
             app,
-            f"{MEMBERS} lists {members}, but the chart is built from "
-            f"{[d['name'] for d in apps]}",
+            f"{RETIRED_MEMBERS} is gone: a pack's apps are its dependencies, "
+            f"so remove the annotation",
         )
     if len(set(members)) != len(members):
-        fail(app, f"{MEMBERS} names an app twice: a pack runs each chart once")
+        fail(app, "depends on an app twice: a pack runs each chart once")
     if not any(d["name"] == "yolab-stack" for d in deps):
         fail(
             app, "a pack renders its apps through yolab-stack, so it must depend on it"

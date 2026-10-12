@@ -2278,8 +2278,6 @@ dependencies:
     version: "0.1.0"
   - name: jellyfin
     version: "{jellyfin}"
-annotations:
-  yolab.io/members: "{members}"
 """
 
 
@@ -2287,7 +2285,7 @@ class PackDeclaration(unittest.TestCase):
     CHARTS: ClassVar[dict] = {"jellyfin": ("0.3.0", {})}
 
     def failures(self, **fill):
-        text = PACK_CHART.format(**{"jellyfin": "0.3.0", "members": "jellyfin", **fill})
+        text = PACK_CHART.format(**{"jellyfin": "0.3.0", **fill})
         return collected(
             check_charts.check_pack_declaration, "watch", text, self.CHARTS
         )
@@ -2299,12 +2297,17 @@ class PackDeclaration(unittest.TestCase):
         found = self.failures(jellyfin="0.2.12")
         self.assertTrue(any("bump the pack" in f for f in found), found)
 
-    def test_the_members_annotation_must_match_what_the_pack_is_built_from(self):
-        found = self.failures(members="jellyfin,sonarr")
-        self.assertTrue(any("is built from" in f for f in found), found)
+    def test_the_retired_members_annotation_is_refused(self):
+        text = PACK_CHART.format(jellyfin="0.3.0") + (
+            'annotations:\n  yolab.io/members: "jellyfin"\n'
+        )
+        found = collected(
+            check_charts.check_pack_declaration, "watch", text, self.CHARTS
+        )
+        self.assertTrue(any("yolab.io/members is gone" in f for f in found), found)
 
     def test_a_pack_without_yolab_stack_is_reported(self):
-        text = PACK_CHART.format(jellyfin="0.3.0", members="jellyfin").replace(
+        text = PACK_CHART.format(jellyfin="0.3.0").replace(
             "yolab-stack", "something-else"
         )
         found = collected(
@@ -2312,13 +2315,17 @@ class PackDeclaration(unittest.TestCase):
         )
         self.assertTrue(any("yolab-stack" in f for f in found), found)
 
-    def test_a_chart_is_a_pack_only_when_it_names_its_members(self):
+    def test_a_pack_s_apps_are_its_dependencies_minus_the_libraries(self):
         self.assertEqual(
-            check_charts.pack_members(
-                PACK_CHART.format(jellyfin="1", members=" a, b ,")
-            ),
-            ["a", "b"],
+            check_charts.pack_members(PACK_CHART.format(jellyfin="1")), ["jellyfin"]
         )
+        app = (
+            "name: notes\n"
+            "dependencies:\n"
+            "  - name: yolab-common\n"
+            '    version: "0.1.15"\n'
+        )
+        self.assertEqual(check_charts.pack_members(app), [])
         self.assertEqual(check_charts.pack_members("name: plain\n"), [])
 
 

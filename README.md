@@ -140,9 +140,9 @@ by the person:
 
 Apps that should always work together belong in one pack, which wires them itself.
 
-**Packs.** A pack is a chart built from other catalog charts (`dependencies`, listed again
-in the `yolab.io/members` annotation, each pinned at its current version) that installs,
-updates and uninstalls as one release. Each app chart keeps its manifests in
+**Packs.** A pack is a chart built from other catalog charts: every dependency that is
+not a library (`yolab-common`, `yolab-stack`) is one of its apps, each pinned at its
+current version. It installs, updates and uninstalls as one release. Each app chart keeps its manifests in
 `define "<chart>.manifests"` and renders nothing itself when `.Values.global.stack` is
 set; the pack renders each one through `yolab-stack.member` with its own settings,
 under its own names (`<release>-<app>`), address (`<subdomain>-<app>`) and outputs

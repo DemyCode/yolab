@@ -306,7 +306,8 @@ jobs:
             if helm show chart "${REGISTRY}/${name}" --version "${base}${SUFFIX}" >/dev/null 2>&1; then
               continue
             fi
-            if grep -q 'yolab.io/members:' "$chart/Chart.yaml"; then
+            apps_inside=$(awk '/^dependencies:/{d=1;next} d && /^[^ ]/{d=0} d && /- name:/{print $3}' "$chart/Chart.yaml" | grep -vx 'yolab-common\|yolab-stack' || true)
+            if [ -n "$apps_inside" ]; then
               packs+=("$(basename "$chart")")
             else
               pending+=("$(basename "$chart")")
@@ -542,7 +543,7 @@ jobs:
           base=$(grep '^version:' "$CHART/Chart.yaml" | head -1 | awk '{print $2}' | tr -d '"')
 
           sed -i "/- name: yolab-stack/{n;s|version: .*|version: \"${STACK_VERSION}\"|}" "$CHART/Chart.yaml"
-          members=$(grep 'yolab.io/members:' "$CHART/Chart.yaml" | sed 's/.*members: *//' | tr -d '"' | tr ',' ' ')
+          members=$(awk '/^dependencies:/{d=1;next} d && /^[^ ]/{d=0} d && /- name:/{print $3}' "$CHART/Chart.yaml" | grep -vx 'yolab-common\|yolab-stack' || true)
           for member in $members; do
             version=$(grep '^version:' "apps/catalog/${member}/Chart.yaml" | head -1 | awk '{print $2}' | tr -d '"')
             sed -i "/- name: ${member}\$/{n;s|version: .*|version: \"${version}${SUFFIX}\"|}" "$CHART/Chart.yaml"
