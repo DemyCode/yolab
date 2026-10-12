@@ -67,7 +67,40 @@ yolab-tunnel-credentials
     - name: data
       mountPath: /state
       subPath: {{ printf "%s/yolab-state" .Release.Name | quote }}
+{{- if $appOn }}
+- name: yolab-host
+  image: {{ include "yolab-common.image.wgRegister" . }}
+  imagePullPolicy: IfNotPresent
+  env:
+    - name: CUSTOM_DOMAIN
+      value: {{ include "yolab-common.customDomain" . | quote }}
+  command:
+    - /bin/sh
+    - -c
+    - |
+      set -eu
+      {{- include "yolab-common.hostExports" . | nindent 6 }}
+  volumeMounts:
+    - name: yolab
+      mountPath: /yolab
 {{- end }}
+{{- end }}
+{{- end -}}
+
+
+{{- define "yolab-common.customDomain" -}}
+{{- if ne (include "yolab-common.auth.enabled" .) "true" -}}
+{{- ((.Values.config).custom_domain) | default "" | lower | trim -}}
+{{- end -}}
+{{- end -}}
+
+
+{{- define "yolab-common.hostExports" -}}
+. /yolab/env
+HOST="${CUSTOM_DOMAIN:-$YOLAB_FQDN}"
+SITES="$YOLAB_FQDN"
+if [ -n "${CUSTOM_DOMAIN:-}" ]; then SITES="$YOLAB_FQDN, $CUSTOM_DOMAIN"; fi
+printf 'export YOLAB_HOST=%s\nexport YOLAB_URL=https://%s\nexport YOLAB_SITES="%s"\n' "$HOST" "$HOST" "$SITES" >> /yolab/env
 {{- end -}}
 
 
@@ -210,7 +243,7 @@ data:
       }
     }
     {{- else }}
-    {$YOLAB_FQDN} {
+    {$YOLAB_SITES} {
       {{- include "yolab-common.apiKey.guard" . | nindent 6 }}
       reverse_proxy {{ required "yolab.gateway.upstream is required when no caddyfile is given" (((.Values.yolab).gateway).upstream) }}
     }
@@ -225,6 +258,9 @@ data:
   
   image: {{ include "yolab-common.image.wgRegister" . }}
   imagePullPolicy: IfNotPresent
+  env:
+    - name: CUSTOM_DOMAIN
+      value: {{ include "yolab-common.customDomain" . | quote }}
   command:
     - /bin/sh
     - -c
@@ -244,6 +280,7 @@ data:
       fi
       printf 'export YOLAB_FQDN=%s\nexport YOLAB_URL=https://%s\n' "$FQDN" "$FQDN" > /yolab/env
       echo "resolved YOLAB_FQDN=$FQDN"
+      {{- include "yolab-common.hostExports" . | nindent 6 }}
   volumeMounts:
     - name: data
       mountPath: /state

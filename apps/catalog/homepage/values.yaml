@@ -10,7 +10,7 @@ yolab:
   gateway:
     upstream: localhost:3000
     caddyfile: |-
-      {$YOLAB_FQDN} {
+      {$YOLAB_SITES} {
         reverse_proxy localhost:3000 {
           header_up Host homepage.yolab.internal
         }

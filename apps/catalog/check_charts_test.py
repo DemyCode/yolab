@@ -2689,3 +2689,57 @@ class JellyfinSetup(RenderedChart):
         self.assertEqual(env["PASSWORD"], "PlaceholderPw2026")
         self.assertEqual(env["USERNAME_OUTPUT"], "username")
         self.assertEqual(env["ROOT"], "/media")
+
+
+def yolab_switch_schema(on_props):
+    return schema(
+        extra={
+            "config": {
+                "type": "object",
+                "properties": {"yolab_enabled": {"type": "boolean"}},
+                "dependencies": {
+                    "yolab_enabled": {
+                        "oneOf": [
+                            {"properties": {"yolab_enabled": {"const": False}}},
+                            {
+                                "properties": {
+                                    "yolab_enabled": {"const": True},
+                                    **on_props,
+                                }
+                            },
+                        ]
+                    }
+                },
+            }
+        }
+    )
+
+
+class CustomDomainOffer(unittest.TestCase):
+    OFFERED = {"custom_domain": {"type": "string"}}
+
+    def found(self, s, values=""):
+        return collected(check_charts.check_custom_domain_offer, "x", s, values)
+
+    def test_an_app_with_a_yolab_address_offers_its_own_address_too(self):
+        self.assertEqual(self.found(yolab_switch_schema(self.OFFERED)), [])
+        missing = self.found(yolab_switch_schema({}))
+        self.assertTrue(any("custom_domain" in f for f in missing), missing)
+
+    def test_an_own_caddyfile_must_serve_the_sites_before_offering_it(self):
+        own = "yolab:\n  gateway:\n    caddyfile: |\n      {$YOLAB_FQDN} {\n"
+        refused = self.found(yolab_switch_schema(self.OFFERED), own)
+        self.assertTrue(any("YOLAB_SITES" in f for f in refused), refused)
+        self.assertEqual(self.found(yolab_switch_schema({}), own), [])
+        serving = own.replace("{$YOLAB_FQDN}", "{$YOLAB_SITES}")
+        self.assertEqual(self.found(yolab_switch_schema(self.OFFERED), serving), [])
+
+    def test_an_app_without_a_yolab_address_is_left_alone(self):
+        self.assertEqual(self.found(schema()), [])
+
+    def test_every_catalog_app_offers_it_where_its_gateway_can_serve_it(self):
+        for app_dir in sorted(Path(check_charts.HERE).glob("*/values.schema.json")):
+            values = app_dir.with_name("values.yaml")
+            text = values.read_text() if values.exists() else ""
+            s = json.loads(app_dir.read_text())
+            self.assertEqual(self.found(s, text), [], app_dir.parent.name)

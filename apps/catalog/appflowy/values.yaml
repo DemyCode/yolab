@@ -13,7 +13,7 @@ yolab:
   serviceName: ''
   gateway:
     caddyfile: |-
-      {$YOLAB_FQDN} {
+      {$YOLAB_SITES} {
         handle /gotrue/* {
           # gotrue serves its API at the root (/token, /signup, …), so the prefix
           # has to come off before forwarding — upstream's nginx does the same with

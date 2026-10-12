@@ -9,25 +9,25 @@ dependencies:
     version: "0.1.0"
     repository: "oci://ghcr.io/demycode/charts"
   - name: jellyfin
-    version: "0.3.2"
+    version: "0.3.3"
     repository: "oci://ghcr.io/demycode/charts"
   - name: qbittorrent
     version: "0.2.2"
     repository: "oci://ghcr.io/demycode/charts"
   - name: prowlarr
-    version: "0.2.2"
+    version: "0.2.3"
     repository: "oci://ghcr.io/demycode/charts"
   - name: sonarr
-    version: "0.2.2"
+    version: "0.2.3"
     repository: "oci://ghcr.io/demycode/charts"
   - name: radarr
-    version: "0.2.2"
+    version: "0.2.3"
     repository: "oci://ghcr.io/demycode/charts"
   - name: jellyseerr
-    version: "0.2.2"
+    version: "0.2.3"
     repository: "oci://ghcr.io/demycode/charts"
   - name: bazarr
-    version: "0.2.2"
+    version: "0.2.3"
     repository: "oci://ghcr.io/demycode/charts"
 
 annotations:

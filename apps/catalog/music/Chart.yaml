@@ -9,16 +9,16 @@ dependencies:
     version: "0.1.0"
     repository: "oci://ghcr.io/demycode/charts"
   - name: navidrome
-    version: "0.2.1"
+    version: "0.2.2"
     repository: "oci://ghcr.io/demycode/charts"
   - name: qbittorrent
     version: "0.2.2"
     repository: "oci://ghcr.io/demycode/charts"
   - name: prowlarr
-    version: "0.2.2"
+    version: "0.2.3"
     repository: "oci://ghcr.io/demycode/charts"
   - name: lidarr
-    version: "0.2.2"
+    version: "0.2.3"
     repository: "oci://ghcr.io/demycode/charts"
 
 annotations:

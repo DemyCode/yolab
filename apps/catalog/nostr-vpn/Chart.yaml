@@ -2,11 +2,11 @@ apiVersion: v2
 name: nostr-vpn
 description: Admin-approved mesh VPN over Nostr
 type: application
-version: 0.1.4
+version: 0.1.5
 appVersion: v4.1.17
 dependencies:
 - name: yolab-common
-  version: "0.1.15"
+  version: "0.1.16"
   repository: oci://ghcr.io/demycode/charts
 annotations:
   yolab.io/disabled: "Remote access is YoLab's own tunnel"

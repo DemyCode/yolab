@@ -11,7 +11,7 @@ yolab:
   gateway:
     upstream: localhost:8443
     caddyfile: |
-      {$YOLAB_FQDN} {
+      {$YOLAB_SITES} {
         reverse_proxy localhost:8443 {
           transport http {
             tls
