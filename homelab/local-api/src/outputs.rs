@@ -74,7 +74,7 @@ pub fn shown(
 ) -> Vec<ShownOutput> {
     specs
         .iter()
-        .filter_map(|spec| {
+        .map(|spec| {
             let (value, found_at, from_config) = match &spec.source {
                 Source::Logs(_) => match remembered.get(&spec.key) {
                     Some(found) => (Some(found.value.clone()), Some(found.found_at), false),
@@ -82,14 +82,14 @@ pub fn shown(
                 },
                 Source::Config(field) => (config_text(config.get(field)), None, true),
             };
-            Some(ShownOutput {
+            ShownOutput {
                 key: spec.key.clone(),
                 title: spec.title.clone(),
                 format: spec.format,
                 value,
                 found_at,
                 from_config,
-            })
+            }
         })
         .collect()
 }
