@@ -8,6 +8,7 @@ import { buttonClass } from "@/components/ui/button-variants";
 import { useApi } from "@/lib/useResource";
 import { HealBanner } from "@/components/ForceHeal";
 import { healBannerTone, oneBanner, useHealStatus } from "@/lib/heal";
+import { useNowSecs } from "@/lib/useNow";
 import {
   movementCopy,
   needsAttentionEverywhere,
@@ -69,8 +70,9 @@ export function HomePage() {
   const concern = topConcern(health.data);
   const heal = useHealStatus(20_000).data;
   const movement = useMovement().data;
+  const now = useNowSecs();
   const shown = oneBanner<"heal" | "movement" | "storage">([
-    ["heal", healBannerTone(heal, Date.now() / 1000)],
+    ["heal", healBannerTone(heal, now)],
     [
       "movement",
       needsAttentionEverywhere(movement) && movement && movementCopy(movement)

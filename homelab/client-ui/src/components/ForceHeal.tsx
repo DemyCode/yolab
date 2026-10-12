@@ -10,6 +10,7 @@ import { Sheet } from "@/components/ui/sheet";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { AnimatedList, Collapse, Swap } from "@/components/motion";
+import { useNowSecs } from "@/lib/useNow";
 import {
   HEAL_PROBLEM_LABELS,
   HEAL_STEP_LABELS,
@@ -23,6 +24,7 @@ import {
 
 export function HealBanner({ className }: { className?: string }) {
   const status = useHealStatus(20_000).data;
+  const now = useNowSecs();
   if (!status) return null;
   const heal = status.heal;
   const link = (label: string) => (
@@ -60,7 +62,7 @@ export function HealBanner({ className }: { className?: string }) {
     );
   }
   if (status.problems.length === 0) {
-    return recentlyFinished(heal, Date.now() / 1000) ? (
+    return recentlyFinished(heal, now) ? (
       <Banner
         tone={heal?.failed ? "warning" : "info"}
         title={
@@ -324,6 +326,7 @@ export function ForceHealCard() {
   const status = useHealStatus(10_000);
   const [confirming, setConfirming] = useState(false);
   const s = status.data;
+  const now = useNowSecs();
   if (!s) return null;
   const heal = s.heal;
 
@@ -370,7 +373,7 @@ export function ForceHealCard() {
     );
   }
   if (s.problems.length === 0) {
-    return heal && recentlyFinished(heal, Date.now() / 1000) ? (
+    return heal && recentlyFinished(heal, now) ? (
       <HealProgress heal={heal} />
     ) : null;
   }
