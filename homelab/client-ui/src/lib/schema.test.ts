@@ -359,7 +359,7 @@ describe("an address of another app", () => {
   });
 });
 
-describe("a folder from Your files", () => {
+describe("a folder field", () => {
   it("gets the folder picker", () => {
     const ui = uiSchemaFor(
       {

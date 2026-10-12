@@ -3,7 +3,7 @@ import type { WidgetProps } from "@rjsf/utils";
 import { Eye, EyeOff, RefreshCw } from "lucide-react";
 import { Input, Select, Toggle } from "@/components/ui/input";
 import { generateSecret } from "@/lib/format";
-import { folderChoice, sharedFolders, type Folder } from "@/lib/folders";
+import { folderChoice, type Folder } from "@/lib/folders";
 import { api } from "@/lib/api";
 import { useApi } from "@/lib/useResource";
 import { cn } from "@/lib/utils";
@@ -166,7 +166,7 @@ const NEW_FOLDER = "__new__";
 export function FolderWidget(props: WidgetProps) {
   const { value, onChange, disabled, readonly, id } = props;
   const folders = useApi<Folder[]>("folders", "/api/folders");
-  const list = sharedFolders(folders.data ?? []);
+  const list = folders.data ?? [];
   const v = typeof value === "string" ? value : "";
   const choice = folderChoice(v, list);
   const [creating, setCreating] = useState(false);
@@ -206,7 +206,9 @@ export function FolderWidget(props: WidgetProps) {
         <option value={INSIDE}>Keep inside this app</option>
         {list.map((f) => (
           <option key={f.name} value={f.name}>
-            {f.ready ? f.title : `${f.title} (being created)`}
+            {f.title}
+            {f.app ? ` — ${f.app}` : ""}
+            {f.ready ? "" : " (being created)"}
           </option>
         ))}
         {choice.kind === "missing" && (

@@ -838,7 +838,8 @@ export function AppDetailPage() {
     if (state === "removing") {
       return (
         <Banner tone="warning" title="Being removed">
-          It is being removed. Its own data stays in Your files.
+          It is being removed. Its spaces go with it unless another app uses
+          them.
           <WaitNote note={note} />
         </Banner>
       );
@@ -1127,7 +1128,7 @@ export function AppDetailPage() {
         <Section title="Remove">
           <Row
             label={`Remove ${name}`}
-            detail="Shared folders no other app uses are deleted; the rest and its own data stay"
+            detail="The spaces it uses are deleted unless another app still needs them"
             danger
             onClick={() => setConfirmRemove(true)}
           />
@@ -1160,10 +1161,9 @@ export function AppDetailPage() {
         busy={working === "remove"}
         body={
           <>
-            {name} stops and is removed. Shared folders no other app uses are
-            deleted with their files; folders that other apps still use are
-            kept. Its own data stays in Your files, so installing it again picks
-            up where it left off. Backups you already have are kept.
+            {name} stops and is removed. The spaces it uses are deleted with
+            their files unless another app still uses them; a space another app
+            needs is kept for it. Backups you already have are kept.
           </>
         }
       />

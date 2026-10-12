@@ -36,6 +36,7 @@ pub struct Folder {
     pub used_by: Vec<String>,
     pub kind: String,
     pub app: Option<String>,
+    pub origin: Option<String>,
 }
 
 fn kind_of(claim: &Value) -> &str {
@@ -694,6 +695,18 @@ fn users(volumes: &[Value], folder: &str) -> Vec<String> {
     users
 }
 
+fn origin_of(volumes: &[Value], folder: &str) -> Option<String> {
+    volumes
+        .iter()
+        .filter(|pv| {
+            let labels = &pv["metadata"]["labels"];
+            labels[LABEL_STATE].as_str() == Some(folder)
+                && labels[LABEL_STATE_ORIGIN].as_str() == Some("true")
+        })
+        .find_map(|pv| pv["metadata"]["labels"][LABEL_STATE_NAMESPACE].as_str())
+        .map(str::to_string)
+}
+
 fn folder_of(claim: &Value, volumes: &[Value]) -> Option<Folder> {
     let name = claim["metadata"]["labels"][LABEL_FOLDER]
         .as_str()?
@@ -713,6 +726,7 @@ fn folder_of(claim: &Value, volumes: &[Value]) -> Option<Folder> {
         app: claim["metadata"]["annotations"][ANN_STATE_APP]
             .as_str()
             .map(str::to_string),
+        origin: origin_of(volumes, &name),
         name,
     })
 }
@@ -742,7 +756,7 @@ pub(crate) fn on_removal(claims: &[Value], volumes: &[Value], namespace: &str) -
     let me = instance_of(namespace);
     let mut plan = OnRemoval::default();
     for folder in claims.iter().filter_map(|c| folder_of(c, volumes)) {
-        if folder.kind != KIND_FILES || !folder.used_by.contains(&me) {
+        if !folder.used_by.contains(&me) {
             continue;
         }
         let mut others = folder.used_by;
@@ -760,11 +774,25 @@ pub(crate) fn on_removal(claims: &[Value], volumes: &[Value], namespace: &str) -
     plan
 }
 
-pub(crate) async fn let_go(client: &Client, namespace: &str) -> anyhow::Result<()> {
+pub(crate) async fn doomed_spaces(client: &Client, namespace: &str) -> anyhow::Result<Vec<String>> {
     let (claims, volumes) = tokio::try_join!(owner_claims(client), folder_volumes(client))?;
-    let doomed = on_removal(&claims, &volumes, namespace).delete;
+    let plan = on_removal(&claims, &volumes, namespace);
+    tracing::info!(
+        "{namespace}: on removal, deleting the spaces {:?} and keeping {:?}",
+        plan.deleted,
+        plan.kept
+    );
+    Ok(plan.delete)
+}
+
+pub(crate) async fn let_go(
+    client: &Client,
+    namespace: &str,
+    doomed: &[String],
+) -> anyhow::Result<()> {
+    let (_claims, volumes) = tokio::try_join!(owner_claims(client), folder_volumes(client))?;
     release_all(client, namespace).await?;
-    for folder in &doomed {
+    for folder in doomed {
         delete_folder(client, folder, &volumes).await?;
     }
     forget_mounts_of(client, namespace).await
@@ -1109,6 +1137,7 @@ mod tests {
                 used_by: vec!["jellyfin".into()],
                 kind: KIND_FILES.into(),
                 app: None,
+                origin: None,
             }
         );
         claim["status"] = json!({ "phase": "Pending" });
@@ -1116,7 +1145,7 @@ mod tests {
     }
 
     #[test]
-    fn a_shared_folder_survives_until_its_last_user_leaves() {
+    fn a_folder_survives_until_its_last_user_leaves() {
         let claims = vec![files_claim("movies", "Movies", NEW_FOLDER_SIZE)];
         let shared = vec![
             app_pv("yolab-sonarr", "movies"),
@@ -1138,13 +1167,29 @@ mod tests {
     }
 
     #[test]
-    fn an_apps_own_data_is_kept_when_the_app_is_removed() {
+    fn an_apps_own_space_goes_when_its_last_user_goes() {
         let claims = vec![kept_claim("jellyfin-data", "jellyfin", "jellyfin-data")];
-        let bound = vec![state_pv("jellyfin-data", "yolab-jellyfin", "Bound")];
-        let plan = on_removal(&claims, &bound, "yolab-jellyfin");
+        let alone = vec![state_pv("jellyfin-data", "yolab-jellyfin", "Bound")];
+        assert_eq!(
+            on_removal(&claims, &alone, "yolab-jellyfin").deleted,
+            vec!["jellyfin-data"]
+        );
+        let watched = vec![
+            state_pv("jellyfin-data", "yolab-jellyfin", "Bound"),
+            app_pv("yolab-filebrowser", "jellyfin-data"),
+        ];
+        let plan = on_removal(&claims, &watched, "yolab-jellyfin");
         assert!(plan.deleted.is_empty());
-        assert!(plan.kept.is_empty());
-        assert!(plan.delete.is_empty());
+        assert_eq!(
+            plan.kept,
+            vec![Kept {
+                title: "jellyfin-data".into(),
+                used_by: vec!["filebrowser".into()],
+            }]
+        );
+        assert!(on_removal(&claims, &watched, "yolab-elsewhere")
+            .delete
+            .is_empty());
     }
 
     fn members(names: &[&str]) -> Vec<String> {
@@ -1565,7 +1610,7 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn removing_an_app_deletes_only_the_shared_folders_it_was_last_to_use() {
+        async fn removing_an_app_deletes_only_the_spaces_it_was_last_to_use() {
             let (server, client) = api_server().await;
             serve_volumes(
                 &server,
@@ -1590,7 +1635,8 @@ mod tests {
             )
             .await;
             accept_deletes(&server).await;
-            let_go(&client, "yolab-sonarr").await.unwrap();
+            let doomed = doomed_spaces(&client, "yolab-sonarr").await.unwrap();
+            let_go(&client, "yolab-sonarr", &doomed).await.unwrap();
             let deleted = deleted(&server).await;
             assert!(
                 deleted.contains(&"/api/v1/persistentvolumes/yolab-sonarr.folder-tv".to_string())

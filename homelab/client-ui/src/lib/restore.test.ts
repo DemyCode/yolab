@@ -124,7 +124,7 @@ describe("the choices sent with a restore", () => {
   });
 });
 
-describe("restoring a shared folder", () => {
+describe("restoring a space", () => {
   it("names the other apps that would see the change", () => {
     expect(sharedWarning(movies, "jellyfin")).toBe(
       "sonarr uses it too, and would see the change.",

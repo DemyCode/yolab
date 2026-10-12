@@ -8,25 +8,7 @@ export interface Folder {
   used_by: string[];
   kind: "files" | "state";
   app: string | null;
-}
-
-export function isDataFolder(folder: Folder): boolean {
-  return folder.kind === "state";
-}
-
-export function sharedFolders(folders: Folder[]): Folder[] {
-  return folders.filter((folder) => !isDataFolder(folder));
-}
-
-export function folderBackupLine(folder: Folder): string {
-  if (folder.used_by.length === 0) {
-    return isDataFolder(folder)
-      ? "Not backed up: the app it belonged to is gone"
-      : "Not backed up: no app uses it";
-  }
-  return folder.used_by.length === 1
-    ? `Saved with ${folder.used_by[0]}'s backups`
-    : "Saved with the backups of every app that uses it";
+  origin: string | null;
 }
 
 export type FolderChoice =
@@ -52,11 +34,4 @@ export function folderSize(size: string): string {
   const m = /^(\d+)(Ki|Mi|Gi|Ti|Pi)$/.exec(size.trim());
   if (!m) return size;
   return formatBytes(Number(m[1]) * UNITS[m[2]], 0);
-}
-
-export function usedByLine(folder: Folder): string {
-  const apps = folder.used_by;
-  if (apps.length === 0) return "No app uses it yet";
-  if (apps.length <= 3) return `Used by ${apps.join(", ")}`;
-  return `Used by ${apps.slice(0, 2).join(", ")} and ${apps.length - 2} more`;
 }

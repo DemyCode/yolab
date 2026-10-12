@@ -616,12 +616,11 @@ pub(crate) fn folders_saved_with<'a>(
 ) -> Vec<&'a crate::folders::Folder> {
     folders
         .iter()
-        .filter(|f| f.kind == crate::folders::KIND_FILES)
         .filter(|f| match target {
-            BackupTarget::Cluster => !f.used_by.is_empty(),
+            BackupTarget::Cluster => f.origin.is_none() && !f.used_by.is_empty(),
             BackupTarget::App(ns) => {
                 let instance = ns.strip_prefix("yolab-").unwrap_or(ns);
-                f.used_by.iter().any(|u| u == instance)
+                f.used_by.iter().any(|u| u == instance) && f.origin.as_deref() != Some(ns.as_str())
             }
         })
         .collect()
@@ -1369,7 +1368,12 @@ mod tests {
         );
     }
 
-    fn folder(name: &str, kind: &str, used_by: &[&str]) -> crate::folders::Folder {
+    fn folder(
+        name: &str,
+        kind: &str,
+        used_by: &[&str],
+        origin: Option<&str>,
+    ) -> crate::folders::Folder {
         crate::folders::Folder {
             name: name.into(),
             title: name.to_uppercase(),
@@ -1378,6 +1382,7 @@ mod tests {
             used_by: used_by.iter().map(|s| s.to_string()).collect(),
             kind: kind.into(),
             app: None,
+            origin: origin.map(str::to_string),
         }
     }
 
@@ -1388,9 +1393,9 @@ mod tests {
     #[test]
     fn an_apps_backup_saves_every_folder_it_uses_and_no_other() {
         let folders = [
-            folder("movies", "files", &["jellyfin", "sonarr"]),
-            folder("photos", "files", &["immich"]),
-            folder("unused", "files", &[]),
+            folder("movies", "files", &["jellyfin", "sonarr"], None),
+            folder("photos", "files", &["immich"], None),
+            folder("unused", "files", &[], None),
         ];
         assert_eq!(
             names(folders_saved_with(
@@ -1411,14 +1416,40 @@ mod tests {
 
     #[test]
     fn a_folder_no_app_uses_is_not_backed_up_at_all() {
-        let folders = [folder("unused", "files", &[])];
+        let folders = [folder("unused", "files", &[], None)];
         assert!(folders_saved_with(&BackupTarget::Cluster, &folders).is_empty());
         assert!(folders_saved_with(&BackupTarget::App("yolab-a".into()), &folders).is_empty());
     }
 
     #[test]
     fn an_apps_own_data_folder_is_saved_through_the_app_not_a_second_time_as_a_folder() {
-        let folders = [folder("jellyfin-data", "state", &["jellyfin"])];
+        let folders = [folder(
+            "jellyfin-data",
+            "state",
+            &["jellyfin"],
+            Some("yolab-jellyfin"),
+        )];
+        assert!(
+            folders_saved_with(&BackupTarget::App("yolab-jellyfin".into()), &folders).is_empty()
+        );
+        assert!(folders_saved_with(&BackupTarget::Cluster, &folders).is_empty());
+    }
+
+    #[test]
+    fn a_space_an_app_picks_from_another_is_saved_with_the_app_that_picks_it() {
+        let folders = [folder(
+            "jellyfin-data",
+            "state",
+            &["filebrowser"],
+            Some("yolab-jellyfin"),
+        )];
+        assert_eq!(
+            names(folders_saved_with(
+                &BackupTarget::App("yolab-filebrowser".into()),
+                &folders
+            )),
+            vec!["jellyfin-data"]
+        );
         assert!(
             folders_saved_with(&BackupTarget::App("yolab-jellyfin".into()), &folders).is_empty()
         );
@@ -1428,8 +1459,8 @@ mod tests {
     #[test]
     fn the_machine_backup_saves_every_folder_some_app_uses() {
         let folders = [
-            folder("movies", "files", &["jellyfin"]),
-            folder("unused", "files", &[]),
+            folder("movies", "files", &["jellyfin"], None),
+            folder("unused", "files", &[], None),
         ];
         assert_eq!(
             names(folders_saved_with(&BackupTarget::Cluster, &folders)),
@@ -1444,12 +1475,12 @@ mod tests {
             time: "2026-10-12T03:00:00Z".into(),
         };
         assert_eq!(
-            catalog_folder(&folder("movies", "files", &["jellyfin"]), Some(&snap)),
+            catalog_folder(&folder("movies", "files", &["jellyfin"], None), Some(&snap)),
             json!({"name": "movies", "title": "MOVIES", "capacity": "500Gi",
                    "snapshot_id": "abc", "snapshot_time": "2026-10-12T03:00:00Z"})
         );
         assert_eq!(
-            catalog_folder(&folder("movies", "files", &["jellyfin"]), None),
+            catalog_folder(&folder("movies", "files", &["jellyfin"], None), None),
             json!({"name": "movies", "title": "MOVIES", "capacity": "500Gi"}),
             "a folder whose upload failed is still listed, with no snapshot to restore"
         );
