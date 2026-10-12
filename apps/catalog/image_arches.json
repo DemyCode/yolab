@@ -51,6 +51,10 @@
     "amd64",
     "arm64"
   ],
+  "apache/tika:3.3.1.0@sha256:90b7fa1dc018434075fce9e1d9b88b1e3d0ea6979d0cf86e116c79a8073ae973": [
+    "amd64",
+    "arm64"
+  ],
   "appflowyinc/appflowy_cloud:latest@sha256:9304b5e31530b7fed47d87e5cdf72ec3f8223d66b1cbf6537ac847d8cbc27e7a": [
     "amd64",
     "arm64"

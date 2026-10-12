@@ -3,6 +3,7 @@ config:
   subdomain: paperless-ngx
   admin_user: "admin"
   ocr_language: "eng"
+  office_documents: true
   admin_password: ""
   app_secret: ""
   storage_size: 50Gi

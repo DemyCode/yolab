@@ -45,6 +45,12 @@
           "default": "eng",
           "description": "Tesseract language code, e.g. eng, fra, deu."
         },
+        "office_documents": {
+          "type": "boolean",
+          "title": "Read Office files and emails",
+          "default": true,
+          "description": "Word, Excel, PowerPoint, OpenDocument and .eml files are converted and made searchable like PDFs. Runs Apache Tika and Gotenberg next to Paperless."
+        },
         "storage_size": {
           "type": "string",
           "title": "Storage size",
