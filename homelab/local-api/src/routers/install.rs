@@ -459,7 +459,10 @@ async fn apply_chart<H: Host + 'static>(
     if let DataFill::Backup(payload) = fill {
         let prepared = payload.prepare_folders(b, &staged.folders).await?;
         if !prepared.is_empty() {
-            log.say(format!("Bringing back its folders ({})", prepared.join(", ")));
+            log.say(format!(
+                "Bringing back its folders ({})",
+                prepared.join(", ")
+            ));
         }
     }
     crate::folders::attach(&b.kube, &staged.ns, &staged.folders).await?;
@@ -604,13 +607,9 @@ async fn install_inner<H: Host + 'static>(
             choices,
         }) => {
             log.say("Reading the backup…");
-            let payload = crate::routers::restore::backup_payload(
-                b,
-                namespace,
-                snapshot_id,
-                choices.clone(),
-            )
-            .await?;
+            let payload =
+                crate::routers::restore::backup_payload(b, namespace, snapshot_id, choices.clone())
+                    .await?;
             same_app(&plan.app_id, payload.app_id(), "that backup")
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
             DataFill::Backup(Box::new(payload))

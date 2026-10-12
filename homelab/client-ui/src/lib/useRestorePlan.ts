@@ -35,4 +35,3 @@ export function useRestorePlan(namespace: string | null, snapshot: string) {
   const current = read && read.key === key ? read : null;
   return { plan: current?.plan ?? null, error: current?.error ?? null };
 }
-
