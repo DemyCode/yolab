@@ -1,36 +1,21 @@
 import { useCallback, useEffect, useState } from "react";
-import {
-  AlertTriangle,
-  ChevronRight,
-  Database,
-  KeyRound,
-  RotateCcw,
-} from "lucide-react";
-import { Card, CardContent } from "@/components/ui/card";
+import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Banner, Skeleton } from "@/components/ui/feedback";
-import { Sheet } from "@/components/ui/sheet";
+import { Row, RowAction, Section } from "@/components/ui/list";
 import { AppIcon } from "@/components/AppIcon";
-import { RestorePointList } from "@/components/RestorePoints";
-import { useRestorePoints } from "@/lib/useRestorePoints";
 import { RecoveryKeyOverlay } from "@/components/RecoveryKeyOverlay";
 import { api } from "@/lib/api";
 import { formatDateTime } from "@/lib/format";
 import { useApi } from "@/lib/useResource";
 import {
-  isBusy,
   needsAttention,
   protectionLabel,
   protectionState,
   protectionTone,
 } from "@/lib/backups";
 import type { ProtectedApp } from "@/lib/backups";
-import {
-  AnimatedList,
-  Collapse,
-  RollingNumber,
-  Swap,
-} from "@/components/motion";
+import { Collapse, RollingNumber, Swap } from "@/components/motion";
 import { cn } from "@/lib/utils";
 
 const STALE_AFTER_HOURS = 36;
@@ -47,149 +32,47 @@ const TONE_CLASS: Record<string, string> = {
   muted: "text-fg-subtle",
 };
 
-function AppRow({
-  app,
-  onOpen,
-  onBackupNow,
-}: {
-  app: ProtectedApp;
-  onOpen: () => void;
-  onBackupNow: () => Promise<void>;
-}) {
-  const [busy, setBusy] = useState(false);
+function AppRow({ app }: { app: ProtectedApp }) {
+  const navigate = useNavigate();
   const state = protectionState(app);
-  const working = isBusy(state);
-
-  async function backupNow(e: React.MouseEvent) {
-    e.stopPropagation();
-    setBusy(true);
-    try {
-      await onBackupNow();
-    } finally {
-      setBusy(false);
-    }
-  }
-
   return (
-    <div>
-      <button
-        onClick={onOpen}
-        className="flex w-full items-center gap-3 px-1 py-3 text-left transition-colors hover:bg-surface-2"
-      >
-        <AppIcon
-          appId={app.app_id}
-          name={app.instance_name}
-          className="h-8 w-8"
-        />
-        <div className="min-w-0 flex-1">
-          <div className="truncate text-sm font-medium text-fg">
-            {app.instance_name}
-          </div>
-          <div className="flex flex-wrap items-center gap-x-2 text-xs">
-            <Swap
-              id={protectionLabel(state)}
-              className={cn(
-                "inline-block transition-colors duration-300",
-                TONE_CLASS[protectionTone(state)],
-              )}
-            >
-              {protectionLabel(state)}
-            </Swap>
-            {app.last_ok_at && (
-              <Swap id={app.last_ok_at} className="inline-block text-fg-muted">
-                · {formatDateTime(app.last_ok_at)}
-              </Swap>
+    <Row
+      onClick={() => navigate(`/app/${app.instance_name}`)}
+      label={
+        <span className="flex items-center gap-2.5">
+          <AppIcon
+            appId={app.app_id}
+            name={app.instance_name}
+            className="h-6 w-6"
+          />
+          <span className="truncate">{app.instance_name}</span>
+        </span>
+      }
+      detail={
+        <>
+          <Swap
+            id={protectionLabel(state)}
+            className={cn(
+              "inline-block transition-colors duration-300",
+              TONE_CLASS[protectionTone(state)],
             )}
-          </div>
-          {app.error && (
-            <p className="mt-1 line-clamp-2 text-xs text-danger">{app.error}</p>
-          )}
-        </div>
-        {app.enabled && (
-          <Button
-            size="sm"
-            variant="ghost"
-            loading={busy || working}
-            disabled={busy || working}
-            onClick={(e) => void backupNow(e)}
           >
-            <RotateCcw className="h-3.5 w-3.5" />
-            Save now
-          </Button>
-        )}
-        <ChevronRight className="h-4 w-4 shrink-0 text-fg-subtle" />
-      </button>
-    </div>
-  );
-}
-
-function AppRestoreSheet({
-  app,
-  onClose,
-}: {
-  app: ProtectedApp | null;
-  onClose: () => void;
-}) {
-  const { points, error } = useRestorePoints(app?.namespace ?? null);
-  if (!app) return null;
-  return (
-    <Sheet
-      open
-      onClose={onClose}
-      title={app.instance_name}
-      subtitle="Pick the moment you want back. You will see the install screen before anything is created, so you can change its name and web address first."
-      wide
-    >
-      <RestorePointList
-        appId={app.app_id}
-        namespace={app.namespace}
-        points={points}
-        error={error}
-        emptyHint="This app has not been backed up yet. Use “Save now” and it will appear here."
-      />
-    </Sheet>
-  );
-}
-
-function EnableCard({ onEnable }: { onEnable: () => Promise<void> }) {
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  async function handle() {
-    setBusy(true);
-    setError(null);
-    try {
-      await onEnable();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "That did not work.");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <Card>
-      <CardContent className="flex items-start gap-3 py-5">
-        <div className="mt-0.5 shrink-0 rounded-control bg-warning-soft p-1.5">
-          <Database className="h-4 w-4 text-warning" strokeWidth={1.75} />
-        </div>
-        <div className="flex-1">
-          <div className="flex flex-wrap items-center justify-between gap-4">
-            <div>
-              <p className="text-sm font-medium text-fg">Backups are off</p>
-              <p className="mt-0.5 text-xs text-fg-muted">
-                Turn them on and every app is copied, encrypted, to storage
-                outside your home.
-              </p>
-            </div>
-            <Button onClick={() => void handle()} loading={busy} size="sm">
-              Turn on backups
-            </Button>
-          </div>
-          {error && <p className="mt-2 text-xs text-danger">{error}</p>}
-        </div>
-      </CardContent>
-    </Card>
+            {protectionLabel(state)}
+          </Swap>
+          {app.last_ok_at && (
+            <span className="font-mono tabular-nums">
+              {" · "}
+              {formatDateTime(app.last_ok_at)}
+            </span>
+          )}
+          {app.error && (
+            <span className="mt-1 line-clamp-2 block text-danger">
+              {app.error}
+            </span>
+          )}
+        </>
+      }
+    />
   );
 }
 
@@ -199,12 +82,13 @@ export function BackupsPage() {
     "/api/backups/protected",
     { pollMs: 10_000 },
   );
-  const [open, setOpen] = useState<ProtectedApp | null>(null);
   const [recoveryKey, setRecoveryKey] = useState<string | null>(null);
   const [recoveryMandatory, setRecoveryMandatory] = useState(false);
-  const [actionError, setActionError] = useState<string | null>(null);
+  const [enabling, setEnabling] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const showRecoveryKey = useCallback(async (mandatory: boolean) => {
+    setError(null);
     try {
       const data = await api.get<{
         configured: boolean;
@@ -214,32 +98,26 @@ export function BackupsPage() {
         setRecoveryKey(data.recovery_key);
         setRecoveryMandatory(mandatory);
       }
-      // eslint-disable-next-line no-empty
-    } catch {}
+    } catch (e) {
+      setError(
+        e instanceof Error ? e.message : "The recovery key could not be read.",
+      );
+    }
   }, []);
 
   async function enable() {
-    await api.post("/api/backups/s3/enable");
-    await protectedApps.refresh();
-    await showRecoveryKey(true);
+    setEnabling(true);
+    setError(null);
+    try {
+      await api.post("/api/backups/s3/enable");
+      await protectedApps.refresh();
+      await showRecoveryKey(true);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Backups could not be turned on.");
+    } finally {
+      setEnabling(false);
+    }
   }
-
-  const backupNow = useCallback(
-    async (namespace: string) => {
-      setActionError(null);
-      try {
-        await api.post(
-          `/api/backups/apps/${encodeURIComponent(namespace)}/run-now`,
-        );
-        await protectedApps.refresh();
-      } catch (e) {
-        setActionError(
-          e instanceof Error ? e.message : "That backup could not be started.",
-        );
-      }
-    },
-    [protectedApps],
-  );
 
   const data = protectedApps.data;
   const apps = data?.apps ?? [];
@@ -251,7 +129,7 @@ export function BackupsPage() {
   const attention = needsAttention(apps, now, STALE_AFTER_HOURS);
 
   return (
-    <div className="max-w-3xl space-y-6">
+    <div className="max-w-3xl">
       {recoveryKey && (
         <RecoveryKeyOverlay
           recoveryKey={recoveryKey}
@@ -260,40 +138,34 @@ export function BackupsPage() {
         />
       )}
 
-      <div className="flex flex-wrap items-start justify-between gap-4">
-        <p className="max-w-lg text-sm text-fg-muted">
-          Every app is copied on its own schedule, encrypted, to storage outside
-          your home. Open one to bring it back as it was at any point in time.
-        </p>
-        {data?.configured && (
-          <Button
-            onClick={() => void showRecoveryKey(false)}
-            variant="ghost"
-            size="sm"
-          >
-            <KeyRound className="h-3.5 w-3.5" />
-            Recovery key
-          </Button>
-        )}
-      </div>
+      <p className="max-w-lg text-sm text-fg-muted">
+        Every app is copied with its folders, encrypted, to storage outside your
+        home. Open one to back it up now or bring it back as it was.
+      </p>
 
-      <Collapse open={Boolean(actionError)}>
-        <Banner tone="error" title="That did not start">
-          {actionError}
+      <Collapse open={Boolean(error)} className="pt-6">
+        <Banner tone="error" title="That did not work">
+          {error}
         </Banner>
       </Collapse>
 
       {protectedApps.loading && !data ? (
-        <Card>
-          <CardContent className="py-5">
-            <Skeleton className="h-14 w-full" />
-          </CardContent>
-        </Card>
+        <Skeleton className="mt-8 h-32 w-full" />
       ) : !data?.configured ? (
-        <EnableCard onEnable={enable} />
+        <Section title="Backups">
+          <Row
+            label="Backups are off"
+            detail="Turn them on and every app is copied, encrypted, to storage outside your home."
+            trailing={
+              <Button onClick={() => void enable()} loading={enabling} size="sm">
+                Turn on backups
+              </Button>
+            }
+          />
+        </Section>
       ) : (
         <>
-          <Collapse open={attention.length > 0}>
+          <Collapse open={!error && attention.length > 0} className="pt-6">
             <Banner
               tone="warning"
               title={
@@ -308,51 +180,36 @@ export function BackupsPage() {
               }
             >
               Anything changed in {attention.length === 1 ? "it" : "them"} since
-              the last good copy is not saved anywhere else yet. Use “Save now”,
-              or open the app to see what went wrong.
+              the last good copy is not saved anywhere else yet. Open{" "}
+              {attention.length === 1 ? "it" : "each one"} to back up now or see
+              what went wrong.
             </Banner>
           </Collapse>
 
-          {apps.length === 0 ? (
-            <Card>
-              <CardContent className="py-5">
-                <p className="text-sm text-fg-muted">
-                  You have no apps installed yet. Once you add one it is backed
-                  up automatically.
-                </p>
-              </CardContent>
-            </Card>
-          ) : (
-            <Card className="animate-fade-in">
-              <CardContent className="py-1">
-                <ul className="divide-y divide-border">
-                  <AnimatedList
-                    as="li"
-                    items={apps}
-                    keyOf={(app) => app.namespace}
-                  >
-                    {(app) => (
-                      <AppRow
-                        app={app}
-                        onOpen={() => setOpen(app)}
-                        onBackupNow={() => backupNow(app.namespace)}
-                      />
-                    )}
-                  </AnimatedList>
-                </ul>
-              </CardContent>
-            </Card>
-          )}
+          <Section title="Apps">
+            {apps.length === 0 ? (
+              <Row
+                label="Nothing to back up yet"
+                detail="Once you add an app, it is backed up automatically."
+              />
+            ) : (
+              apps.map((app) => <AppRow key={app.namespace} app={app} />)
+            )}
+          </Section>
 
-          <p className="flex items-start gap-2 text-xs text-fg-subtle">
-            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-            Your backups can only be read with your recovery key. Keep a copy
-            somewhere other than this machine.
-          </p>
+          <Section title="Recovery key">
+            <Row
+              label="Recovery key"
+              detail="Your backups can only be read with it. Keep a copy somewhere other than this machine."
+              trailing={
+                <RowAction onClick={() => void showRecoveryKey(false)}>
+                  Show
+                </RowAction>
+              }
+            />
+          </Section>
         </>
       )}
-
-      <AppRestoreSheet app={open} onClose={() => setOpen(null)} />
     </div>
   );
 }
