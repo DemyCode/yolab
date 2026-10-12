@@ -5,8 +5,10 @@ import {
   dataOptions,
   folderOptions,
   settingValues,
+  renamedNote,
   sharedWarning,
   shownFolders,
+  usedHere,
   type DataRow,
   type FolderRow,
   type RestorePlan,
@@ -19,13 +21,13 @@ const movies: FolderRow = {
   backed_up: true,
   exists: true,
   used_by: ["sonarr"],
+  becomes: null,
 };
 
 const data: DataRow = {
   claim: "jellyfin-data",
   capacity: "50Gi",
   backed_up: true,
-  kept: null,
 };
 
 const values = (options: { value: string }[]) => options.map((o) => o.value);
@@ -53,13 +55,7 @@ describe("what can happen to a folder the backup used", () => {
 });
 
 describe("what can happen to the app's own data", () => {
-  it("a reinstall uses the data kept after an uninstall unless told to replace it", () => {
-    expect(
-      values(dataOptions({ ...data, kept: "jellyfin-data" }, "reinstall")),
-    ).toEqual(["use", "replace"]);
-  });
-
-  it("a reinstall with nothing kept brings the data back from the backup", () => {
+  it("a reinstall brings the app's own data back from the backup", () => {
     expect(values(dataOptions(data, "reinstall"))).toEqual([
       "restore",
       "empty",
@@ -151,5 +147,30 @@ describe("the folders named in the settings", () => {
         port: 8080,
       }),
     ).toEqual(["movies", "music", "books"]);
+  });
+});
+
+describe("restoring an app that is still installed", () => {
+  it("only offers the spaces the app uses now", () => {
+    const plan: RestorePlan = {
+      folders: [
+        { ...movies, used_by: ["jellyfin", "sonarr"] },
+        { ...movies, name: "old", used_by: ["sonarr"] },
+        { ...movies, name: "gone", exists: false, used_by: [] },
+      ],
+      data: [],
+    };
+    expect(usedHere(plan, "jellyfin")).toEqual(["movies"]);
+  });
+});
+
+describe("a space whose name another space took", () => {
+  it("says the name it comes back under", () => {
+    expect(renamedNote(movies)).toBeNull();
+    expect(
+      renamedNote({ ...movies, exists: false, becomes: "movies-2" }),
+    ).toBe(
+      "Another folder is called movies now, so this one comes back as movies-2.",
+    );
   });
 });

@@ -12,13 +12,13 @@ export interface FolderRow {
   backed_up: boolean;
   exists: boolean;
   used_by: string[];
+  becomes: string | null;
 }
 
 export interface DataRow {
   claim: string;
   capacity: string;
   backed_up: boolean;
-  kept: string | null;
 }
 
 export interface RestorePlan {
@@ -52,23 +52,11 @@ export function folderOptions(row: FolderRow): ChoiceOption[] {
     : [{ value: "empty", label: "Start it empty" }];
 }
 
-export function dataExists(row: DataRow, mode: RestoreMode): boolean {
-  return mode === "in-place" || row.kept !== null;
-}
-
 export function dataOptions(row: DataRow, mode: RestoreMode): ChoiceOption[] {
-  const exists = dataExists(row, mode);
-  if (exists) {
-    const keep: ChoiceOption = {
-      value: "use",
-      label: mode === "in-place" ? "Keep it as it is now" : "Use what was kept",
-    };
+  if (mode === "in-place") {
+    const keep: ChoiceOption = { value: "use", label: "Keep it as it is now" };
     if (!row.backed_up) return [keep];
-    const replace: ChoiceOption = {
-      value: "replace",
-      label: "Replace it with the backup",
-    };
-    return mode === "in-place" ? [replace, keep] : [keep, replace];
+    return [{ value: "replace", label: "Replace it with the backup" }, keep];
   }
   return row.backed_up
     ? [
@@ -123,4 +111,15 @@ export function settingValues(values: unknown): string[] {
     return Object.values(values).flatMap(settingValues);
   }
   return [];
+}
+
+export function usedHere(plan: RestorePlan, app: string): string[] {
+  return plan.folders
+    .filter((f) => f.used_by.includes(app))
+    .map((f) => f.name);
+}
+
+export function renamedNote(row: FolderRow): string | null {
+  if (!row.becomes) return null;
+  return `Another folder is called ${row.name} now, so this one comes back as ${row.becomes}.`;
 }

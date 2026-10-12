@@ -68,6 +68,19 @@ pub async fn remove(State(state): State<AppState>, Path(name): Path<String>) -> 
     }
 }
 
+pub async fn on_removal(
+    State(state): State<AppState>,
+    Path(instance): Path<String>,
+) -> Result<Json<folders::OnRemoval>> {
+    if !crate::routers::install::is_instance_name(&instance) {
+        return Err(anyhow::anyhow!("{instance:?} is not an app").into());
+    }
+    let client = state.kube.client().await?;
+    Ok(Json(
+        folders::on_removal_of(&client, &format!("yolab-{instance}")).await?,
+    ))
+}
+
 fn in_use_message(apps: &[String]) -> String {
     format!(
         "{} still {} this folder — change {} settings or remove {} first",

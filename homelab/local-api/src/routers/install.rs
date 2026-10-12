@@ -429,7 +429,6 @@ struct ChartJob<'a> {
     chart: ChartAt<'a>,
     backup: &'a BackupPolicy,
     verb: &'static str,
-    reuse_kept_data: bool,
 }
 
 enum DataFill<'a> {
@@ -445,7 +444,7 @@ async fn apply_chart<H: Host + 'static>(
     fill: &DataFill<'_>,
     log: &Log,
 ) -> anyhow::Result<String> {
-    let staged = stage_install(
+    let mut staged = stage_install(
         &b.kube,
         cfg,
         job.app_id,
@@ -455,30 +454,51 @@ async fn apply_chart<H: Host + 'static>(
     )
     .await?;
 
-    let members = crate::routers::apps::chart_members(&staged.chart_dir);
+    let mut folders = Vec::new();
     if let DataFill::Backup(payload) = fill {
-        let prepared = payload.prepare_folders(b, &staged.folders).await?;
-        if !prepared.is_empty() {
+        let placed = payload.place_folders(b, &staged.folders).await?;
+        let renames = crate::routers::restore_folders::renames(&placed);
+        if !renames.is_empty() {
             log.say(format!(
-                "Bringing back its folders ({})",
-                prepared.join(", ")
+                "Another folder has taken the name now, so these come back under a new one: {}",
+                renames
+                    .iter()
+                    .map(|(from, to)| format!("{from} → {to}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ));
+            let schema = app_schema(
+                staged
+                    .chart_dir
+                    .parent()
+                    .unwrap_or(cfg.catalog_dir().as_path()),
+                job.app_id,
+            );
+            let config = crate::folders::renamed(&schema, job.config, &renames);
+            staged = stage_install(
+                &b.kube,
+                cfg,
+                job.app_id,
+                job.instance_name,
+                &config,
+                &job.chart,
+            )
+            .await?;
         }
+        folders = payload.prepare_folders(b, placed).await?;
     }
     crate::folders::attach(&b.kube, &staged.ns, &staged.folders).await?;
 
     match fill {
         DataFill::Backup(payload) => {
-            log.say("Copying this app's files…");
-            let reused = payload
-                .fill_volumes(b, &staged.ns, job.release, &members)
-                .await?;
-            if !reused.is_empty() {
-                log.say(format!(
-                    "Pointing this app back at the data it kept ({})",
-                    reused.join(", ")
-                ));
+            if !folders.is_empty() {
+                log.say("Bringing back its folders…");
+                payload
+                    .fill_folders(b, &folders, job.instance_name)
+                    .await?;
             }
+            log.say("Copying this app's files…");
+            payload.fill_volumes(b, &staged.ns, job.release).await?;
         }
         DataFill::Live { source_namespace } => {
             log.say("Copying this app's files…");
@@ -493,21 +513,6 @@ async fn apply_chart<H: Host + 'static>(
         DataFill::None => {}
     }
 
-    if job.reuse_kept_data {
-        match crate::folders::reuse_data_folders(&b.kube, &staged.ns, job.release, &members).await {
-            Ok(reused) if !reused.is_empty() => {
-                log.say(format!(
-                    "Pointing this app back at the data it kept ({})",
-                    reused.join(", ")
-                ));
-            }
-            Ok(_) => {}
-            Err(e) => log.say(format!(
-                "[WARN] could not reuse this app's kept data ({e:#}) — it starts empty"
-            )),
-        }
-    }
-
     log.say(job.verb);
     helm_install(&b.host, &staged, job.release, log).await?;
 
@@ -516,6 +521,7 @@ async fn apply_chart<H: Host + 'static>(
             "[WARN] could not unmount the folders this app no longer uses ({e:#})"
         ));
     }
+    crate::runtime::wake("spaces");
 
     if let DataFill::Backup(payload) = fill {
         log.say("Putting this app's saved settings back…");
@@ -527,20 +533,6 @@ async fn apply_chart<H: Host + 'static>(
         log.say(format!(
             "[WARN] could not keep a copy of this app's chart ({e:#}) — copying this app later will fetch version {} again",
             staged.chart_version
-        ));
-    }
-
-    if let Err(e) = crate::routers::apps::keep_data_as_folders(
-        &b.kube,
-        &staged.ns,
-        job.app_id,
-        job.release,
-        &members,
-    )
-    .await
-    {
-        log.say(format!(
-            "[WARN] this app's data is not kept as a folder yet ({e:#}) — it is retried in the background"
         ));
     }
 
@@ -632,7 +624,6 @@ async fn install_inner<H: Host + 'static>(
         },
         backup: &plan.backup,
         verb: "Installing…",
-        reuse_kept_data: plan.data.is_none(),
     };
     apply_chart(b, cfg, &job, &fill, log).await?;
 
@@ -711,7 +702,6 @@ async fn upgrade_one<H: Host + 'static>(
             .unwrap_or(ChartAt::Catalog { repo: from }),
         backup: &plan.backup,
         verb: "Updating…",
-        reuse_kept_data: false,
     };
     let version = apply_chart(b, cfg, &job, &DataFill::None, log).await?;
     clear_install_failed(&b.kube, &format!("yolab-{}", plan.instance_name)).await;

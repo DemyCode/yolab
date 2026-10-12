@@ -147,6 +147,7 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route("/api/folders", get(folders::list).post(folders::create))
         .route("/api/folders/{name}", delete(folders::remove))
+        .route("/api/apps/{id}/removal", get(folders::on_removal))
         .route("/api/apps", get(apps::list_apps))
         .route(
             "/api/apps/{id}",

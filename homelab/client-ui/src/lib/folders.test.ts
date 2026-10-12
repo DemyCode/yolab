@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { folderChoice, folderSize, type Folder } from "./folders";
+import { folderChoice, folderSize, removalNote, type Folder } from "./folders";
 
 const movies: Folder = {
   name: "movies-tv",
@@ -7,8 +7,6 @@ const movies: Folder = {
   size: "1024Gi",
   ready: true,
   used_by: [],
-  kind: "files",
-  app: null,
 };
 
 describe("choosing a space for an app", () => {
@@ -36,5 +34,29 @@ describe("how a space's size reads", () => {
     expect(folderSize("1024Gi")).toBe("1 TB");
     expect(folderSize("500Gi")).toBe("537 GB");
     expect(folderSize("odd")).toBe("odd");
+  });
+});
+
+describe("what removing an app does to its spaces", () => {
+  it("names the spaces that go and who keeps the others", () => {
+    expect(
+      removalNote({
+        deleted: ["TV"],
+        kept: [{ title: "Movies", used_by: ["jellyfin", "plex"] }],
+      }),
+    ).toBe(
+      "TV is used by no other app, so it is deleted with its files about an hour after it is removed. Movies stays for jellyfin and plex.",
+    );
+    expect(removalNote({ deleted: ["TV", "Music"], kept: [] })).toBe(
+      "TV and Music are used by no other app, so they are deleted with their files about an hour after it is removed.",
+    );
+  });
+
+  it("says nothing about spaces when the app uses none", () => {
+    expect(removalNote({ deleted: [], kept: [] })).toBe("");
+  });
+
+  it("still warns before the list has loaded", () => {
+    expect(removalNote(null)).toContain("deleted with their files");
   });
 });

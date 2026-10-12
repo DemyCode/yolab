@@ -205,6 +205,21 @@ pub async fn delete_if_present(
     delete_with(client, manifest, &Default::default()).await
 }
 
+pub async fn delete_unchanged(
+    client: &Client,
+    manifest: &serde_json::Value,
+    resource_version: &str,
+) -> anyhow::Result<()> {
+    let params = kube::api::DeleteParams {
+        preconditions: Some(kube::api::Preconditions {
+            resource_version: Some(resource_version.to_string()),
+            uid: None,
+        }),
+        ..Default::default()
+    };
+    delete_with(client, manifest, &params).await
+}
+
 async fn delete_with(
     client: &Client,
     manifest: &serde_json::Value,

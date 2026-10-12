@@ -252,14 +252,12 @@ async fn restore_inner<H: Host>(
         }
     }
     let live = crate::folders::list(&b.kube).await?;
-    let folders = plan_folders(
-        b,
-        cfg,
-        rf::saved_folders(&catalog, namespace),
-        &live,
-        &choices.folders,
-    )
-    .await?;
+    let instance = namespace.strip_prefix("yolab-").unwrap_or(namespace);
+    let mine: Vec<rf::Placed> = rf::place(&rf::saved_folders(&catalog, namespace), &live)
+        .into_iter()
+        .filter(|p| p.used_by.iter().any(|u| u == instance))
+        .collect();
+    let folders = plan_folders(b, cfg, mine, &choices.folders).await?;
 
     for (pvc, as_of) in &backed_up {
         restore_volume(
@@ -273,7 +271,7 @@ async fn restore_inner<H: Host>(
         .await?;
     }
     for planned in &folders {
-        apply_folder_step(b, cfg, planned).await?;
+        fill_folder(b, cfg, planned, instance).await?;
     }
 
     if let Some(path) = ns_yaml {
@@ -628,24 +626,37 @@ impl BackupPayload {
         &self.app_id
     }
 
-    pub(crate) async fn prepare_folders<H: Host>(
+    pub(crate) async fn place_folders<H: Host>(
         &self,
         b: &Backend<H>,
         wanted: &std::collections::BTreeSet<String>,
-    ) -> anyhow::Result<Vec<String>> {
+    ) -> anyhow::Result<Vec<rf::Placed>> {
         let live = crate::folders::list(&b.kube).await?;
-        let planned = plan_folders(
-            b,
-            &self.cfg,
-            rf::for_wanted(&self.folders, wanted),
-            &live,
-            &self.choices.folders,
-        )
-        .await?;
+        Ok(rf::place(&rf::for_wanted(&self.folders, wanted), &live))
+    }
+
+    pub(crate) async fn prepare_folders<H: Host>(
+        &self,
+        b: &Backend<H>,
+        placed: Vec<rf::Placed>,
+    ) -> anyhow::Result<Vec<PlannedFolder>> {
+        let planned = plan_folders(b, &self.cfg, placed, &self.choices.folders).await?;
         for p in &planned {
-            apply_folder_step(b, &self.cfg, p).await?;
+            create_missing(b, p).await?;
         }
-        Ok(planned.into_iter().map(|p| p.folder.title).collect())
+        Ok(planned)
+    }
+
+    pub(crate) async fn fill_folders<H: Host>(
+        &self,
+        b: &Backend<H>,
+        planned: &[PlannedFolder],
+        instance: &str,
+    ) -> anyhow::Result<()> {
+        for p in planned {
+            fill_folder(b, &self.cfg, p, instance).await?;
+        }
+        Ok(())
     }
 
     pub(crate) async fn fill_volumes<H: Host>(
@@ -653,12 +664,9 @@ impl BackupPayload {
         b: &Backend<H>,
         dest_namespace: &str,
         release: &str,
-        members: &[String],
-    ) -> anyhow::Result<Vec<String>> {
+    ) -> anyhow::Result<()> {
         let (id, _, _guard) = begin(b, dest_namespace, &self.snapshot_id).await?;
-        let outcome = self
-            .fill_volumes_inner(b, dest_namespace, release, members)
-            .await;
+        let outcome = self.fill_volumes_inner(b, dest_namespace, release).await;
         let recorded = match &outcome {
             Ok(_) => Ok(!self.volumes.is_empty()),
             Err(e) => Err(anyhow::anyhow!("{e}")),
@@ -672,19 +680,10 @@ impl BackupPayload {
         b: &Backend<H>,
         dest_namespace: &str,
         release: &str,
-        members: &[String],
-    ) -> anyhow::Result<Vec<String>> {
-        let kept: std::collections::BTreeSet<String> =
-            crate::folders::kept_data(&b.kube, release, members)
-                .await?
-                .into_iter()
-                .map(|k| k.claim)
-                .collect();
-        let reused =
-            crate::folders::reuse_data_folders(&b.kube, dest_namespace, release, members).await?;
+    ) -> anyhow::Result<()> {
         for (pvc, planned) in &self.volumes {
             let replace = match rf::step(
-                kept.contains(&pvc.name),
+                false,
                 true,
                 self.choices.data.get(&pvc.name).copied(),
                 rf::Choice::Use,
@@ -710,7 +709,7 @@ impl BackupPayload {
             )
             .await?;
         }
-        Ok(reused)
+        Ok(())
     }
 
     pub(crate) async fn reapply(&self, client: &Client) -> anyhow::Result<()> {
@@ -936,7 +935,6 @@ pub(crate) async fn restore_plan<H: Host>(
     b: &Backend<H>,
     namespace: &str,
     snapshot_id: &str,
-    catalog_dir: &std::path::Path,
 ) -> anyhow::Result<rf::RestorePlan> {
     crate::routers::install::check_backup_ref(namespace, snapshot_id)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -957,55 +955,52 @@ pub(crate) async fn restore_plan<H: Host>(
             backed_up: *saved,
         })
         .collect();
-    let release = rf::saved_release(&catalog, namespace)
-        .unwrap_or_else(|| namespace.trim_start_matches("yolab-").to_string());
-    let members = rf::saved_app_id(&catalog, namespace)
-        .map(|id| crate::routers::apps::chart_members(&catalog_dir.join(id)))
-        .unwrap_or_default();
-    let kept: BTreeMap<String, String> = crate::folders::kept_data(&b.kube, &release, &members)
-        .await?
-        .into_iter()
-        .map(|k| (k.claim, k.folder))
-        .collect();
     let live = crate::folders::list(&b.kube).await?;
     Ok(rf::plan(
-        &rf::saved_folders(&catalog, namespace),
+        &rf::place(&rf::saved_folders(&catalog, namespace), &live),
         &data,
-        &live,
-        &kept,
     ))
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct PlannedFolder {
-    folder: rf::SavedFolder,
+    placed: rf::Placed,
+    claim: String,
     step: rf::Step,
     as_of: Option<String>,
+}
+
+fn claim_for(placed: &rf::Placed, step: rf::Step, fresh: impl FnOnce() -> String) -> String {
+    match (&placed.live_claim, step) {
+        (Some(live), _) => live.clone(),
+        (None, rf::Step::Restore) => placed.saved.claim.clone().unwrap_or_else(fresh),
+        (None, _) => fresh(),
+    }
 }
 
 async fn plan_folders<H: Host>(
     b: &Backend<H>,
     cfg: &BackupConfig,
-    saved: Vec<rf::SavedFolder>,
-    live: &[crate::folders::Folder],
+    placed: Vec<rf::Placed>,
     chosen: &BTreeMap<String, rf::Choice>,
 ) -> anyhow::Result<Vec<PlannedFolder>> {
     let mut planned = Vec::new();
-    for folder in saved {
-        let exists = live.iter().any(|l| l.name == folder.name);
+    for p in placed {
         let step = rf::step(
-            exists,
-            folder.snapshot.is_some(),
-            chosen.get(&folder.name).copied(),
+            p.exists(),
+            p.saved.snapshot.is_some(),
+            chosen.get(&p.saved.name).copied(),
             rf::Choice::Use,
         );
         let as_of = match step {
             rf::Step::Keep => continue,
             rf::Step::CreateEmpty => None,
-            rf::Step::Restore | rf::Step::Replace => saved_folder_as_of(b, cfg, &folder).await?,
+            rf::Step::Restore | rf::Step::Replace => saved_folder_as_of(b, cfg, &p.saved).await?,
         };
+        let claim = claim_for(&p, step, crate::folders::new_space_claim);
         planned.push(PlannedFolder {
-            folder,
+            placed: p,
+            claim,
             step,
             as_of,
         });
@@ -1013,15 +1008,53 @@ async fn plan_folders<H: Host>(
     Ok(planned)
 }
 
+fn space_plan(pinned: Option<&VolumeSnapshot>, snaps: &[SnapshotEntry]) -> VolumePlan {
+    if snaps.is_empty() {
+        return VolumePlan::NoBackup;
+    }
+    let Some(p) = pinned else {
+        return VolumePlan::RestoreAsOf(None);
+    };
+    if snaps.iter().any(|s| s.id == p.id) {
+        return VolumePlan::RestoreAsOf(Some(p.time.clone()));
+    }
+    let Ok(at) = chrono::DateTime::parse_from_rfc3339(&p.time).map(|t| t.with_timezone(&Utc))
+    else {
+        return VolumePlan::Refuse(format!(
+            "the backup of this folder was pruned and its time ({}) cannot be read",
+            p.time
+        ));
+    };
+    let before = snaps.iter().filter(|s| s.time <= at).max_by_key(|s| s.time);
+    let after = snaps.iter().filter(|s| s.time > at).min_by_key(|s| s.time);
+    match before.or(after) {
+        Some(s) => VolumePlan::RestoreAsOf(Some(s.time.to_rfc3339())),
+        None => VolumePlan::NoBackup,
+    }
+}
+
 async fn saved_folder_as_of<H: Host>(
     b: &Backend<H>,
     cfg: &BackupConfig,
     folder: &rf::SavedFolder,
 ) -> anyhow::Result<Option<String>> {
-    let claim = crate::folders::claim_name(&folder.name);
-    let snaps = volume_snapshots(&b.host, crate::folders::NAMESPACE, &claim, cfg).await?;
-    match plan_volume(&folder.title, folder.snapshot.as_ref(), &snaps, None) {
-        VolumePlan::RestoreAsOf(as_of) => Ok(as_of),
+    let snaps = volume_snapshots(
+        &b.host,
+        crate::folders::NAMESPACE,
+        &folder.repository(),
+        cfg,
+    )
+    .await?;
+    match space_plan(folder.snapshot.as_ref(), &snaps) {
+        VolumePlan::RestoreAsOf(as_of) => {
+            if as_of.as_ref() != folder.snapshot.as_ref().map(|s| &s.time) {
+                tracing::info!(
+                    "the folder {}: the copy this backup took was pruned by another app's backup — using the nearest one ({as_of:?})",
+                    folder.title
+                );
+            }
+            Ok(as_of)
+        }
         VolumePlan::Refuse(why) => anyhow::bail!("{why}"),
         VolumePlan::NoBackup => anyhow::bail!(
             "the backup of the folder {} is no longer in your storage — start it empty instead",
@@ -1030,34 +1063,92 @@ async fn saved_folder_as_of<H: Host>(
     }
 }
 
-async fn apply_folder_step<H: Host>(
+async fn create_missing<H: Host>(b: &Backend<H>, planned: &PlannedFolder) -> anyhow::Result<()> {
+    if planned.placed.exists()
+        || !matches!(planned.step, rf::Step::Restore | rf::Step::CreateEmpty)
+    {
+        return Ok(());
+    }
+    let p = &planned.placed;
+    crate::folders::create_named(
+        &b.kube,
+        &planned.claim,
+        &p.name,
+        &p.saved.title,
+        &p.saved.capacity,
+    )
+    .await
+}
+
+fn others_using(placed: &rf::Placed, instance: &str) -> Vec<String> {
+    placed
+        .used_by
+        .iter()
+        .filter(|u| u.as_str() != instance)
+        .map(|u| format!("yolab-{u}"))
+        .collect()
+}
+
+async fn pause_all(
+    client: &Client,
+    namespaces: &[String],
+    paused: &mut Vec<(String, Vec<DeploymentScale>)>,
+) -> anyhow::Result<()> {
+    for ns in namespaces {
+        let scales = read_deployment_scales(client, ns).await?;
+        paused.push((ns.clone(), scales.clone()));
+        for d in &scales {
+            scale(client, ns, &d.name, 0).await?;
+        }
+        hold_daemonsets(client, ns, true).await?;
+    }
+    Ok(())
+}
+
+async fn resume_all(client: &Client, paused: &[(String, Vec<DeploymentScale>)]) {
+    for (ns, scales) in paused {
+        for d in scales {
+            scale(client, ns, &d.name, d.replicas)
+                .await
+                .warn_on_err(format!("start {ns}/{} again after a folder restore", d.name));
+        }
+        hold_daemonsets(client, ns, false)
+            .await
+            .warn_on_err(format!("release the DaemonSets of {ns} after a folder restore"));
+    }
+}
+
+async fn fill_folder<H: Host>(
     b: &Backend<H>,
     cfg: &BackupConfig,
     planned: &PlannedFolder,
+    instance: &str,
 ) -> anyhow::Result<()> {
-    let folder = &planned.folder;
-    if matches!(planned.step, rf::Step::Restore | rf::Step::CreateEmpty) {
-        crate::folders::create_named(&b.kube, &folder.name, &folder.title, &folder.capacity)
-            .await?;
-    }
     if !matches!(planned.step, rf::Step::Restore | rf::Step::Replace) {
         return Ok(());
     }
-    crate::folders::wait_until_ready(&b.kube, &folder.name).await?;
-    let claim = crate::folders::claim_name(&folder.name);
-    restore_into(
-        b,
-        cfg,
-        &VolumeRestore {
-            namespace: crate::folders::NAMESPACE,
-            source_namespace: crate::folders::NAMESPACE,
-            source_pvc: &claim,
-            dest_pvc: &claim,
-            as_of: planned.as_of.as_deref(),
-            replace: planned.step == rf::Step::Replace,
-        },
-    )
-    .await
+    let p = &planned.placed;
+    crate::folders::wait_until_ready(&b.kube, &p.name).await?;
+    let repository = p.saved.repository();
+    let restore = VolumeRestore {
+        namespace: crate::folders::NAMESPACE,
+        source_namespace: crate::folders::NAMESPACE,
+        source_pvc: &repository,
+        dest_pvc: &planned.claim,
+        as_of: planned.as_of.as_deref(),
+        replace: planned.step == rf::Step::Replace,
+    };
+    if planned.step != rf::Step::Replace {
+        return restore_into(b, cfg, &restore).await;
+    }
+    let mut paused = Vec::new();
+    let outcome = async {
+        pause_all(&b.kube, &others_using(p, instance), &mut paused).await?;
+        restore_into(b, cfg, &restore).await
+    }
+    .await;
+    resume_all(&b.kube, &paused).await;
+    outcome
 }
 
 fn destination_spec(
@@ -1719,6 +1810,95 @@ mod tests {
             plan_volume("data", Some(&pin("x", "2026-09-14T12:10:05Z")), &[], None),
             VolumePlan::NoBackup
         );
+    }
+
+    #[test]
+    fn a_space_comes_back_at_the_exact_copy_its_backup_took_when_it_is_still_there() {
+        let snaps = [
+            snap("a", "2026-10-12T03:00:00Z"),
+            snap("b", "2026-10-12T04:00:00Z"),
+        ];
+        assert_eq!(
+            space_plan(Some(&pin("a", "2026-10-12T03:00:00Z")), &snaps),
+            VolumePlan::RestoreAsOf(Some("2026-10-12T03:00:00Z".into()))
+        );
+    }
+
+    #[test]
+    fn a_space_whose_copy_another_apps_backup_pruned_comes_back_at_the_nearest_earlier_copy() {
+        let snaps = [
+            snap("old", "2026-10-11T04:00:00Z"),
+            snap("later", "2026-10-12T04:00:00Z"),
+        ];
+        assert_eq!(
+            space_plan(Some(&pin("gone", "2026-10-12T03:00:00Z")), &snaps),
+            VolumePlan::RestoreAsOf(Some(t("2026-10-11T04:00:00Z").to_rfc3339()))
+        );
+    }
+
+    #[test]
+    fn a_space_with_no_earlier_copy_comes_back_at_the_first_later_one() {
+        let snaps = [
+            snap("later", "2026-10-12T04:00:00Z"),
+            snap("latest", "2026-10-13T04:00:00Z"),
+        ];
+        assert_eq!(
+            space_plan(Some(&pin("gone", "2026-10-12T03:00:00Z")), &snaps),
+            VolumePlan::RestoreAsOf(Some(t("2026-10-12T04:00:00Z").to_rfc3339()))
+        );
+        assert_eq!(
+            space_plan(Some(&pin("gone", "2026-10-12T03:00:00Z")), &[]),
+            VolumePlan::NoBackup
+        );
+    }
+
+    fn placed(live_claim: Option<&str>, saved_claim: Option<&str>, used_by: &[&str]) -> rf::Placed {
+        rf::Placed {
+            saved: rf::SavedFolder {
+                name: "movies".into(),
+                title: "Movies".into(),
+                capacity: "1Ti".into(),
+                claim: saved_claim.map(str::to_string),
+                snapshot: None,
+            },
+            name: "movies".into(),
+            title: "Movies".into(),
+            live_claim: live_claim.map(str::to_string),
+            used_by: used_by.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn a_space_brought_back_keeps_its_identity_and_one_started_empty_gets_a_new_one() {
+        let fresh = || "space-new".to_string();
+        assert_eq!(
+            claim_for(&placed(None, Some("space-1"), &[]), rf::Step::Restore, fresh),
+            "space-1"
+        );
+        assert_eq!(
+            claim_for(&placed(None, Some("space-1"), &[]), rf::Step::CreateEmpty, fresh),
+            "space-new"
+        );
+        assert_eq!(
+            claim_for(&placed(None, None, &[]), rf::Step::Restore, fresh),
+            "space-new"
+        );
+        assert_eq!(
+            claim_for(&placed(Some("space-2"), Some("space-1"), &[]), rf::Step::Replace, fresh),
+            "space-2"
+        );
+    }
+
+    #[test]
+    fn replacing_a_space_stops_every_other_app_that_uses_it() {
+        assert_eq!(
+            others_using(
+                &placed(Some("space-1"), None, &["jellyfin", "sonarr", "radarr"]),
+                "sonarr"
+            ),
+            vec!["yolab-jellyfin", "yolab-radarr"]
+        );
+        assert!(others_using(&placed(Some("space-1"), None, &["sonarr"]), "sonarr").is_empty());
     }
 
     #[test]

@@ -304,27 +304,16 @@ fn target_of(set: &BackupSet) -> Option<BackupTarget> {
     }
 }
 
-async fn folder_pvc(client: &Client, folder: &str) -> anyhow::Result<PvcInfo> {
-    let name = crate::folders::claim_name(folder);
-    let claim = crate::k8s::get(
-        client,
-        &crate::k8s::reference(
-            "v1",
-            "PersistentVolumeClaim",
-            crate::folders::NAMESPACE,
-            &name,
-        ),
-    )
-    .await?
-    .ok_or_else(|| anyhow::anyhow!("the folder {folder} no longer exists"))?;
-    Ok(PvcInfo {
+fn folder_pvc(folder: &crate::folders::Folder) -> PvcInfo {
+    PvcInfo {
         namespace: crate::folders::NAMESPACE.to_string(),
-        name,
-        capacity: claim["spec"]["resources"]["requests"]["storage"]
-            .as_str()
-            .unwrap_or("?")
-            .to_string(),
-    })
+        name: folder.claim.clone(),
+        capacity: if folder.size.is_empty() {
+            "?".to_string()
+        } else {
+            folder.size.clone()
+        },
+    }
 }
 
 fn spawn_run<H: Host + 'static>(b: Backend<H>, cfg: BackupConfig, promoted: Promoted) {
@@ -354,12 +343,7 @@ async fn run_set<H: Host>(
     let mut pending = Vec::new();
     let mut failures = Vec::new();
     let folders = crate::folders::list(&b.kube).await?;
-    for folder in folders_saved_with(target, &folders) {
-        match folder_pvc(&b.kube, &folder.name).await {
-            Ok(pvc) => pvcs.push(pvc),
-            Err(e) => failures.push(format!("the folder {}: {e:#}", folder.title)),
-        }
-    }
+    pvcs.extend(folders_saved_with(target, &folders).into_iter().map(folder_pvc));
     for pvc in &pvcs {
         allow_privileged_movers(&b.kube, &pvc.namespace).await;
         if let Err(e) = restic_secret(&b.kube, &pvc.namespace, &pvc.namespace, &pvc.name, cfg).await
@@ -607,6 +591,7 @@ fn catalog_pvc(name: &str, capacity: &str, pinned: Option<&VolumeSnapshot>) -> V
 fn catalog_folder(folder: &crate::folders::Folder, pinned: Option<&VolumeSnapshot>) -> Value {
     let mut v = catalog_pvc(&folder.name, &folder.size, pinned);
     v["title"] = Value::String(folder.title.clone());
+    v["claim"] = Value::String(folder.claim.clone());
     v
 }
 
@@ -893,10 +878,7 @@ async fn snapshot_cluster_inner<H: Host>(
         let saved_folders: Vec<Value> = folders_saved_with(&BackupTarget::App(ns.clone()), folders)
             .into_iter()
             .map(|f| {
-                let snap = pinned.get(&(
-                    crate::folders::NAMESPACE.to_string(),
-                    crate::folders::claim_name(&f.name),
-                ));
+                let snap = pinned.get(&(crate::folders::NAMESPACE.to_string(), f.claim.clone()));
                 catalog_folder(f, snap)
             })
             .collect();
@@ -1368,15 +1350,14 @@ mod tests {
         );
     }
 
-    fn folder(name: &str, kind: &str, used_by: &[&str]) -> crate::folders::Folder {
+    fn folder(name: &str, used_by: &[&str]) -> crate::folders::Folder {
         crate::folders::Folder {
             name: name.into(),
             title: name.to_uppercase(),
             size: "500Gi".into(),
             ready: true,
             used_by: used_by.iter().map(|s| s.to_string()).collect(),
-            kind: kind.into(),
-            app: None,
+            claim: format!("space-{name}"),
         }
     }
 
@@ -1387,9 +1368,9 @@ mod tests {
     #[test]
     fn an_apps_backup_saves_every_space_it_uses_and_no_other() {
         let folders = [
-            folder("movies", "files", &["jellyfin", "sonarr"]),
-            folder("photos", "files", &["immich"]),
-            folder("unused", "files", &[]),
+            folder("movies", &["jellyfin", "sonarr"]),
+            folder("photos", &["immich"]),
+            folder("unused", &[]),
         ];
         assert_eq!(
             names(folders_saved_with(
@@ -1410,56 +1391,22 @@ mod tests {
 
     #[test]
     fn a_space_no_app_uses_is_not_backed_up_at_all() {
-        let folders = [folder("unused", "files", &[])];
+        let folders = [folder("unused", &[])];
         assert!(folders_saved_with(&BackupTarget::Cluster, &folders).is_empty());
         assert!(folders_saved_with(&BackupTarget::App("yolab-a".into()), &folders).is_empty());
     }
 
     #[test]
-    fn an_apps_own_data_is_saved_with_the_app_that_uses_it() {
-        let folders = [folder("jellyfin-data", "state", &["jellyfin"])];
-        assert_eq!(
-            names(folders_saved_with(
-                &BackupTarget::App("yolab-jellyfin".into()),
-                &folders
-            )),
-            vec!["jellyfin-data"]
-        );
-        assert_eq!(
-            names(folders_saved_with(&BackupTarget::Cluster, &folders)),
-            vec!["jellyfin-data"]
-        );
-    }
-
-    #[test]
-    fn a_space_is_saved_with_every_app_that_uses_it() {
-        let folders = [folder(
-            "jellyfin-data",
-            "state",
-            &["filebrowser", "jellyfin"],
-        )];
-        assert_eq!(
-            names(folders_saved_with(
-                &BackupTarget::App("yolab-filebrowser".into()),
-                &folders
-            )),
-            vec!["jellyfin-data"]
-        );
-        assert_eq!(
-            names(folders_saved_with(
-                &BackupTarget::App("yolab-jellyfin".into()),
-                &folders
-            )),
-            vec!["jellyfin-data"]
-        );
+    fn a_space_is_backed_up_into_the_repository_of_its_identity_not_its_name() {
+        let pvc = folder_pvc(&folder("movies", &["jellyfin"]));
+        assert_eq!(pvc.namespace, crate::folders::NAMESPACE);
+        assert_eq!(pvc.name, "space-movies");
+        assert_eq!(pvc.capacity, "500Gi");
     }
 
     #[test]
     fn the_machine_backup_saves_every_space_some_app_uses() {
-        let folders = [
-            folder("movies", "files", &["jellyfin"]),
-            folder("unused", "files", &[]),
-        ];
+        let folders = [folder("movies", &["jellyfin"]), folder("unused", &[])];
         assert_eq!(
             names(folders_saved_with(&BackupTarget::Cluster, &folders)),
             vec!["movies"]
@@ -1473,13 +1420,13 @@ mod tests {
             time: "2026-10-12T03:00:00Z".into(),
         };
         assert_eq!(
-            catalog_folder(&folder("movies", "files", &["jellyfin"]), Some(&snap)),
-            json!({"name": "movies", "title": "MOVIES", "capacity": "500Gi",
+            catalog_folder(&folder("movies", &["jellyfin"]), Some(&snap)),
+            json!({"name": "movies", "title": "MOVIES", "capacity": "500Gi", "claim": "space-movies",
                    "snapshot_id": "abc", "snapshot_time": "2026-10-12T03:00:00Z"})
         );
         assert_eq!(
-            catalog_folder(&folder("movies", "files", &["jellyfin"]), None),
-            json!({"name": "movies", "title": "MOVIES", "capacity": "500Gi"}),
+            catalog_folder(&folder("movies", &["jellyfin"]), None),
+            json!({"name": "movies", "title": "MOVIES", "capacity": "500Gi", "claim": "space-movies"}),
             "a folder whose upload failed is still listed, with no snapshot to restore"
         );
     }

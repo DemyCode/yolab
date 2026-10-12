@@ -207,7 +207,6 @@ export function FolderWidget(props: WidgetProps) {
         {list.map((f) => (
           <option key={f.name} value={f.name}>
             {f.title}
-            {f.app ? ` — ${f.app}` : ""}
             {f.ready ? "" : " (being created)"}
           </option>
         ))}

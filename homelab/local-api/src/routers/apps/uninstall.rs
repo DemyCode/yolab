@@ -135,10 +135,13 @@ pub(crate) async fn wait_for_volumes_deleted(
     .await
 }
 
-async fn release_folders(client: &Client, ns: &str, doomed: &[String]) {
-    if let Err(e) = crate::folders::let_go(client, ns, doomed).await {
-        tracing::warn!("uninstall {ns}: unmount its folders and delete the unused ones: {e:#}");
+async fn release_folders(client: &Client, ns: &str) {
+    if let Err(e) = crate::folders::release_all(client, ns).await {
+        tracing::warn!(
+            "uninstall {ns}: unmount its spaces ({e:#}) — the space sweep forgets them once the namespace is gone"
+        );
     }
+    crate::runtime::wake("spaces");
 }
 
 pub(crate) async fn run_teardown<H: crate::host::Host>(
@@ -146,22 +149,13 @@ pub(crate) async fn run_teardown<H: crate::host::Host>(
     instance_name: &str,
     ns: &str,
 ) -> anyhow::Result<()> {
-    let doomed = crate::folders::doomed_spaces(&b.kube, ns)
-        .await
-        .unwrap_or_else(|e| {
-            tracing::warn!(
-                "uninstall {instance_name}: could not work out which spaces it was the last \
-                 to use: {e:#}"
-            );
-            Vec::new()
-        });
     if namespace_is_terminating(&b.kube, ns).await {
         tracing::info!(
             "uninstall {instance_name}: namespace is already terminating — waiting for it \
              to finish rather than re-running helm"
         );
         delete_namespace_with_retry(&b.kube, ns).await;
-        release_folders(&b.kube, ns, &doomed).await;
+        release_folders(&b.kube, ns).await;
         return wait_for_volumes_deleted(&b.kube, ns, VOLUME_DELETE_WAIT, VOLUME_DELETE_POLL).await;
     }
 
@@ -196,7 +190,7 @@ pub(crate) async fn run_teardown<H: crate::host::Host>(
     }
 
     delete_namespace_with_retry(&b.kube, ns).await;
-    release_folders(&b.kube, ns, &doomed).await;
+    release_folders(&b.kube, ns).await;
     wait_for_volumes_deleted(&b.kube, ns, VOLUME_DELETE_WAIT, VOLUME_DELETE_POLL).await
 }
 

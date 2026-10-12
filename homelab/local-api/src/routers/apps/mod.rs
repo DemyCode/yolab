@@ -15,12 +15,12 @@ use crate::routers::backup_common::Backend;
 use crate::routers::install;
 use crate::{config::Config, error::Result, AppState};
 
-mod data_folders;
+mod spaces;
 mod definition;
 mod links;
 mod uninstall;
 
-pub(crate) use data_folders::*;
+pub(crate) use spaces::*;
 pub(crate) use definition::*;
 pub(crate) use links::*;
 pub(crate) use uninstall::*;

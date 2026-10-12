@@ -6,7 +6,12 @@ import { Page } from "@/components/AppShell";
 import { AppAccess } from "@/components/AppAccess";
 import { AppIconTile } from "@/components/AppIcon";
 import { RestoreFolders } from "@/components/RestoreFolders";
-import { NO_CHOICES, choicesFor, type RestoreChoices } from "@/lib/restore";
+import {
+  NO_CHOICES,
+  choicesFor,
+  usedHere,
+  type RestoreChoices,
+} from "@/lib/restore";
 import { useRestorePlan } from "@/lib/useRestorePlan";
 import { useRestorePoints } from "@/lib/useRestorePoints";
 import { useNow } from "@/lib/useNow";
@@ -30,6 +35,7 @@ import { api, streamEvents } from "@/lib/api";
 import { BACKUP_PRESETS } from "@/lib/backups";
 import { formatDateTime, relativeTime } from "@/lib/format";
 import { useApi } from "@/lib/useResource";
+import { removalNote, type OnRemoval } from "@/lib/folders";
 import {
   appDisplayName,
   appLinks,
@@ -424,7 +430,14 @@ function RestoreSheet({
         namespace: `yolab-${instanceName}`,
         snapshot_id: selected,
         ...(restorePlan.plan
-          ? { choices: choicesFor(restorePlan.plan, "in-place", picked, null) }
+          ? {
+              choices: choicesFor(
+                restorePlan.plan,
+                "in-place",
+                picked,
+                usedHere(restorePlan.plan, instanceName),
+              ),
+            }
           : {}),
       });
       onStarted(
@@ -495,7 +508,9 @@ function RestoreSheet({
             app={instanceName}
             picked={picked}
             onPick={setPicked}
-            inSettings={null}
+            inSettings={
+              restorePlan.plan ? usedHere(restorePlan.plan, instanceName) : null
+            }
           />
         </Section>
       )}
@@ -704,6 +719,11 @@ export function AppDetailPage() {
   const domain = useApi<DomainResponse>("domain", "/api/tunnel/domain");
 
   const [confirmRemove, setConfirmRemove] = useState(false);
+  const removal = useApi<OnRemoval>(
+    confirmRemove && instanceName ? `removal-${instanceName}` : null,
+    `/api/apps/${instanceName}/removal`,
+    { persist: false },
+  );
   const [working, setWorking] = useState<null | "update" | "remove">(null);
   const [notice, setNotice] = useState<Notice | null>(null);
   const [restoreOpen, setRestoreOpen] = useState(false);
@@ -838,8 +858,8 @@ export function AppDetailPage() {
     if (state === "removing") {
       return (
         <Banner tone="warning" title="Being removed">
-          It is being removed. Its spaces go with it unless another app uses
-          them.
+          It is being removed. A space no other app uses is deleted about an
+          hour after it is gone.
           <WaitNote note={note} />
         </Banner>
       );
@@ -1128,7 +1148,7 @@ export function AppDetailPage() {
         <Section title="Remove">
           <Row
             label={`Remove ${name}`}
-            detail="The spaces it uses are deleted unless another app still needs them"
+            detail="A space no other app uses is deleted with it"
             danger
             onClick={() => setConfirmRemove(true)}
           />
@@ -1161,9 +1181,8 @@ export function AppDetailPage() {
         busy={working === "remove"}
         body={
           <>
-            {name} stops and is removed. The spaces it uses are deleted with
-            their files unless another app still uses them; a space another app
-            needs is kept for it. Backups you already have are kept.
+            {name} stops and is removed. {removalNote(removal.data ?? null)}{" "}
+            Backups you already have are kept.
           </>
         }
       />

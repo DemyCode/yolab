@@ -6,6 +6,7 @@ import {
   chosen,
   dataOptions,
   folderOptions,
+  renamedNote,
   sharedWarning,
   shownFolders,
   type ChoiceOption,
@@ -88,13 +89,7 @@ export function RestoreFolders({
           <Row
             key={`data-${row.claim}`}
             label={`${app}'s own data`}
-            detail={
-              row.backed_up
-                ? row.kept && mode === "reinstall"
-                  ? "Kept from when it was removed"
-                  : undefined
-                : "Not in this backup"
-            }
+            detail={row.backed_up ? undefined : "Not in this backup"}
             trailing={
               <ChoiceSelect
                 options={options}
@@ -115,6 +110,7 @@ export function RestoreFolders({
         const options = folderOptions(row);
         const value = chosen(options, picked.folders[row.name]);
         const shared = value === "replace" ? sharedWarning(row, app) : null;
+        const renamed = renamedNote(row);
         const detail = [
           row.exists ? "Still here" : "No longer here",
           row.backed_up ? null : "not in this backup",
@@ -132,6 +128,11 @@ export function RestoreFolders({
                 {!row.exists && mode === "reinstall" && (
                   <span className="block text-xs text-fg-subtle">
                     Or pick another folder in the settings above.
+                  </span>
+                )}
+                {renamed && (
+                  <span className="block text-xs text-fg-subtle">
+                    {renamed}
                   </span>
                 )}
                 {shared && (
