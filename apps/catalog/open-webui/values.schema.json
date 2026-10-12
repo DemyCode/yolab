@@ -18,11 +18,8 @@
         "ollama": {
           "type": "object",
           "title": "Ollama",
-          "format": "yolab-output",
-          "x-yolab-from": ["ollama"],
-          "x-yolab-outputs": ["api"],
           "default": {},
-          "description": "Where models run. Run its own keeps a private Ollama inside Open WebUI; pick an installed Ollama to share its models with your other AI apps, or give the address of one elsewhere.",
+          "description": "Where models run. Leave it empty to keep a private Ollama inside Open WebUI, or give the address of an Ollama to share its models with your other AI apps.",
           "properties": {
             "api": { "type": "string", "title": "Address", "format": "uri" }
           }

@@ -31,9 +31,6 @@
         "sonarr": {
           "type": "object",
           "title": "Sonarr",
-          "format": "yolab-output",
-          "x-yolab-from": ["sonarr"],
-          "x-yolab-outputs": ["internal_url", "api_key"],
           "description": "Prowlarr hands its indexers to this Sonarr and keeps them in sync.",
           "properties": {
             "internal_url": { "type": "string", "title": "Address", "format": "uri" },
@@ -43,9 +40,6 @@
         "radarr": {
           "type": "object",
           "title": "Radarr",
-          "format": "yolab-output",
-          "x-yolab-from": ["radarr"],
-          "x-yolab-outputs": ["internal_url", "api_key"],
           "description": "Prowlarr hands its indexers to this Radarr and keeps them in sync.",
           "properties": {
             "internal_url": { "type": "string", "title": "Address", "format": "uri" },
@@ -55,9 +49,6 @@
         "lidarr": {
           "type": "object",
           "title": "Lidarr",
-          "format": "yolab-output",
-          "x-yolab-from": ["lidarr"],
-          "x-yolab-outputs": ["internal_url", "api_key"],
           "description": "Prowlarr hands its indexers to this Lidarr and keeps them in sync.",
           "properties": {
             "internal_url": { "type": "string", "title": "Address", "format": "uri" },

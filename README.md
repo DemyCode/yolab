@@ -123,16 +123,13 @@ Fields revealed by a toggle (standard `dependencies`/`oneOf`) render under that 
 `when` is a JSON Schema checked against the app's settings (defaults filled in). When it
 does not match, the output is neither shown nor waited for.
 
-**Taking another app's outputs.** A setting with `"format": "yolab-output"` names the
-charts it takes outputs from and which ones, and has one box per output so it can be
-typed by hand for an app outside YoLab:
+**Talking to another app.** There are no links between installed apps. A setting that
+needs another app's address or key is a plain object with one box per value, filled in
+by the person (the other app's page shows them under its outputs):
 
 ```json
 "download_client": {
   "type": "object",
-  "format": "yolab-output",
-  "x-yolab-from": ["qbittorrent"],
-  "x-yolab-outputs": ["internal_url", "username", "password"],
   "properties": {
     "internal_url": { "type": "string", "format": "uri" },
     "username": { "type": "string" },
@@ -141,11 +138,7 @@ typed by hand for an app outside YoLab:
 }
 ```
 
-The form offers every installed app, or app inside a pack, that shows those outputs. It
-saves the choice (`{"$from": "<instance>"}` or `{"$from": "<instance>/<app>"}`), and
-YoLab fills in the values each time this app is installed or its settings are applied.
-Nothing is re-applied behind your back: if the other app's values change, apply this
-one's settings again.
+Apps that should always work together belong in one pack, which wires them itself.
 
 **Packs.** A pack is a chart built from other catalog charts (`dependencies`, listed again
 in the `yolab.io/members` annotation, each pinned at its current version) that installs,

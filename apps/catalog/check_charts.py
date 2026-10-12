@@ -1418,8 +1418,8 @@ def check_schema(app, schema, chart_yaml, fail):
             fail(app, f"{where}: `when` must be a schema")
 
 
-LINK_FORMAT = "yolab-output"
-RETIRED_LINK_FORMATS = ("connection", "service-url", "app")
+RETIRED_LINK_FORMATS = ("yolab-output", "connection", "service-url", "app")
+RETIRED_LINK_KEYS = ("x-yolab-from", "x-yolab-outputs")
 
 
 def check_service_outputs(app, schema, docs, fail):
@@ -1466,79 +1466,24 @@ def config_fields(schema, keep):
     return found
 
 
-def output_links(schema):
-    return config_fields(schema, lambda prop: prop.get("format") == LINK_FORMAT)
-
-
-def strings(value):
-    return (
-        isinstance(value, list)
-        and bool(value)
-        and all(isinstance(v, str) and v for v in value)
-    )
-
-
-def check_output_link_fields(app, schema, fail):
+def check_no_links(app, schema, fail):
     if "x-yolab-provides" in schema:
         fail(
             app,
-            "x-yolab-provides is gone: another app takes this one's outputs "
-            "through a yolab-output field",
+            "x-yolab-provides is gone: an app takes another app's address "
+            "in plain fields the person fills in",
         )
     retired = config_fields(
-        schema, lambda prop: prop.get("format") in RETIRED_LINK_FORMATS
+        schema,
+        lambda prop: prop.get("format") in RETIRED_LINK_FORMATS
+        or any(key in prop for key in RETIRED_LINK_KEYS),
     )
     for name, prop in sorted(retired.items()):
         fail(
             app,
-            f"config.{name} uses the retired {prop.get('format')} format: "
-            f"use {LINK_FORMAT} with x-yolab-from and x-yolab-outputs",
+            f"config.{name} is a link to another app, and links are gone: "
+            f"keep its boxes as plain fields the person fills in",
         )
-    for name, prop in sorted(output_links(schema).items()):
-        where = f"config.{name}"
-        if prop.get("type") != "object":
-            fail(app, f"{where} takes another app's outputs but is not an object")
-        if not strings(prop.get("x-yolab-from")):
-            fail(app, f"{where} needs x-yolab-from: the charts it takes outputs from")
-        keys = prop.get("x-yolab-outputs")
-        if not strings(keys):
-            fail(app, f"{where} needs x-yolab-outputs: the outputs it takes")
-            continue
-        boxes = set(prop.get("properties") or {})
-        if boxes != set(keys):
-            fail(
-                app,
-                f"{where} must offer one box per output it takes, "
-                f"{sorted(keys)}, so they can be typed by hand; it offers "
-                f"{sorted(boxes)}",
-            )
-
-
-def declared_outputs(schema):
-    return set(
-        ((schema.get("properties") or {}).get("outputs") or {}).get("properties") or {}
-    )
-
-
-def check_output_links(links, charts, fail):
-    for app, fields in sorted(links.items()):
-        for name, prop in sorted(fields.items()):
-            wanted = set(prop.get("x-yolab-outputs") or [])
-            for chart in prop.get("x-yolab-from") or []:
-                if chart not in charts:
-                    fail(
-                        app,
-                        f"config.{name} takes outputs from {chart}, which is not "
-                        f"a chart in this catalog",
-                    )
-                    continue
-                missing = sorted(wanted - declared_outputs(charts[chart][1]))
-                if missing:
-                    fail(
-                        app,
-                        f"config.{name} takes {missing} from {chart}, which does "
-                        f"not declare them as outputs",
-                    )
 
 
 FOLDER_LABEL = "yolab.io/folder"
@@ -1822,7 +1767,7 @@ def check_pack(chart_dir, charts, library_tgz, workdir, fail):
     members = pack_members(text)
     check_schema(app, schema, text, fail)
     check_folder_fields(app, schema, fail)
-    check_output_link_fields(app, schema, fail)
+    check_no_links(app, schema, fail)
     check_pack_declaration(app, text, charts, fail)
     check_pack_outputs(app, schema, members, fail)
     for member in members:
@@ -1880,7 +1825,6 @@ def main(argv):
             ),
         }
 
-        links = {}
         packs = []
         for chart_dir in chart_dirs:
             app = os.path.basename(chart_dir.rstrip("/"))
@@ -1920,10 +1864,9 @@ def main(argv):
                 fail(app, f"values.schema.json is not valid JSON: {e}")
                 schema = {}
             check_schema(app, schema, text, fail)
-            links[app] = output_links(schema)
             check(app, docs, fail, text, schema)
             check_service_outputs(app, schema, docs, fail)
-            check_output_link_fields(app, schema, fail)
+            check_no_links(app, schema, fail)
             check_folder_fields(app, schema, fail)
             if any(
                 is_folder_claim(d)
@@ -2066,11 +2009,8 @@ def main(argv):
 
         charts = catalog_charts()
         for chart_dir in packs:
-            schema = check_pack(chart_dir, charts, library_tgz, tmp, fail)
-            links[os.path.basename(chart_dir.rstrip("/"))] = output_links(schema)
+            check_pack(chart_dir, charts, library_tgz, tmp, fail)
 
-    if not argv[1:]:
-        check_output_links(links, catalog_charts(), fail)
     print(f"checked {len(chart_dirs)} charts")
     for f in fail.items:
         print("FAIL " + f)

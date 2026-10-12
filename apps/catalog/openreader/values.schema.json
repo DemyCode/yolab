@@ -37,10 +37,7 @@
         "tts": {
           "type": "object",
           "title": "Speech engine",
-          "format": "yolab-output",
-          "x-yolab-from": ["kokoro"],
-          "x-yolab-outputs": ["api"],
-          "description": "Reads documents aloud through an OpenAI-compatible speech API: pick an installed Kokoro, or give the address of another one.",
+          "description": "Reads documents aloud through an OpenAI-compatible speech API, such as a Kokoro you installed: give its address.",
           "properties": {
             "api": { "type": "string", "title": "Address", "format": "uri" }
           }

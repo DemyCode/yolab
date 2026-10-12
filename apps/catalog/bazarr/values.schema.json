@@ -39,9 +39,6 @@
         "sonarr": {
           "type": "object",
           "title": "Sonarr",
-          "format": "yolab-output",
-          "x-yolab-from": ["sonarr"],
-          "x-yolab-outputs": ["internal_url", "api_key"],
           "description": "Bazarr finds subtitles for the shows this Sonarr manages.",
           "properties": {
             "internal_url": { "type": "string", "title": "Address", "format": "uri" },
@@ -51,9 +48,6 @@
         "radarr": {
           "type": "object",
           "title": "Radarr",
-          "format": "yolab-output",
-          "x-yolab-from": ["radarr"],
-          "x-yolab-outputs": ["internal_url", "api_key"],
           "description": "Bazarr finds subtitles for the films this Radarr manages.",
           "properties": {
             "internal_url": { "type": "string", "title": "Address", "format": "uri" },

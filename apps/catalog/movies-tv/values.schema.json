@@ -104,9 +104,6 @@
                 "existing_client": {
                   "type": "object",
                   "title": "Which qBittorrent",
-                  "format": "yolab-output",
-                  "x-yolab-from": ["qbittorrent"],
-                  "x-yolab-outputs": ["internal_url", "username", "password"],
                   "description": "Sonarr and Radarr send their downloads to it. Point it at the same media folder in its own settings.",
                   "properties": {
                     "internal_url": { "type": "string", "title": "Address", "format": "uri" },

@@ -24,9 +24,6 @@
         "media_server": {
           "type": "object",
           "title": "Jellyfin",
-          "format": "yolab-output",
-          "x-yolab-from": ["jellyfin"],
-          "x-yolab-outputs": ["internal_url", "username", "password"],
           "description": "Seerr signs in to this Jellyfin as its admin the first time it starts, which also makes that the account you sign in to Seerr with. Leave it empty to go through Seerr's own setup.",
           "properties": {
             "internal_url": { "type": "string", "title": "Address", "format": "uri" },
@@ -37,9 +34,6 @@
         "radarr": {
           "type": "object",
           "title": "Radarr",
-          "format": "yolab-output",
-          "x-yolab-from": ["radarr"],
-          "x-yolab-outputs": ["internal_url", "api_key"],
           "description": "Film requests go to this Radarr. Seerr keeps one Radarr called \"Radarr (YoLab)\" set to it.",
           "properties": {
             "internal_url": { "type": "string", "title": "Address", "format": "uri" },
@@ -49,9 +43,6 @@
         "sonarr": {
           "type": "object",
           "title": "Sonarr",
-          "format": "yolab-output",
-          "x-yolab-from": ["sonarr"],
-          "x-yolab-outputs": ["internal_url", "api_key"],
           "description": "Show requests go to this Sonarr. Seerr keeps one Sonarr called \"Sonarr (YoLab)\" set to it.",
           "properties": {
             "internal_url": { "type": "string", "title": "Address", "format": "uri" },

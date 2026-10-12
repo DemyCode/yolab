@@ -40,9 +40,6 @@
         "download_client": {
           "type": "object",
           "title": "Download client",
-          "format": "yolab-output",
-          "x-yolab-from": ["qbittorrent"],
-          "x-yolab-outputs": ["internal_url", "username", "password"],
           "description": "The qBittorrent Lidarr sends albums to. Lidarr keeps one download client called \"qBittorrent (YoLab)\" set to it and leaves the ones you add yourself alone.",
           "properties": {
             "internal_url": { "type": "string", "title": "Address", "format": "uri" },

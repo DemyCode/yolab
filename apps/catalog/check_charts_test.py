@@ -2204,119 +2204,66 @@ class OllamaApiKey(RenderedChart):
         self.assertTrue(mount["subPath"].endswith("/api-key"))
 
 
-def link_field(**overrides):
-    prop = {
-        "type": "object",
-        "format": "yolab-output",
-        "x-yolab-from": ["qbittorrent"],
-        "x-yolab-outputs": ["internal_url", "password"],
-        "properties": {
-            "internal_url": {"type": "string"},
-            "password": {"type": "string"},
-        },
-    }
-    prop.update(overrides)
-    return prop
-
-
 def collected(fn, *args):
     found = []
     fn(*args, lambda app, msg: found.append(msg))
     return found
 
 
-class OutputLinks(unittest.TestCase):
-    def test_a_well_formed_link_passes(self):
-        s = schema(config={"client": link_field()})
-        self.assertEqual(collected(check_charts.check_output_link_fields, "x", s), [])
+class NoLinks(unittest.TestCase):
+    def test_an_address_typed_in_plain_boxes_passes(self):
+        s = schema(
+            config={
+                "client": {
+                    "type": "object",
+                    "properties": {
+                        "internal_url": {"type": "string"},
+                        "password": {"type": "string"},
+                    },
+                }
+            }
+        )
+        self.assertEqual(collected(check_charts.check_no_links, "x", s), [])
 
-    def test_a_link_must_say_whose_outputs_it_takes(self):
-        s = schema(config={"client": link_field(**{"x-yolab-from": []})})
-        found = collected(check_charts.check_output_link_fields, "x", s)
-        self.assertTrue(any("x-yolab-from" in f for f in found), found)
+    def test_every_way_of_linking_to_another_app_is_refused(self):
+        for fmt in ("yolab-output", "connection", "service-url", "app"):
+            s = schema(config={"client": {"type": "object", "format": fmt}})
+            found = collected(check_charts.check_no_links, "x", s)
+            self.assertTrue(any("links are gone" in f for f in found), (fmt, found))
+        for key in ("x-yolab-from", "x-yolab-outputs"):
+            s = schema(config={"client": {"type": "object", key: ["qbittorrent"]}})
+            found = collected(check_charts.check_no_links, "x", s)
+            self.assertTrue(any("links are gone" in f for f in found), (key, found))
+        provides = {**schema(), "x-yolab-provides": {"ollama": ["api"]}}
+        found = collected(check_charts.check_no_links, "x", provides)
+        self.assertTrue(any("x-yolab-provides" in f for f in found), found)
 
-    def test_a_link_must_say_which_outputs_it_takes(self):
-        s = schema(config={"client": link_field(**{"x-yolab-outputs": "password"})})
-        found = collected(check_charts.check_output_link_fields, "x", s)
-        self.assertTrue(any("x-yolab-outputs" in f for f in found), found)
-
-    def test_a_link_offers_one_box_per_output_so_it_can_be_typed_by_hand(self):
-        s = schema(config={"client": link_field(properties={"internal_url": {}})})
-        found = collected(check_charts.check_output_link_fields, "x", s)
-        self.assertTrue(any("one box per output" in f for f in found), found)
-
-    def test_links_are_found_behind_switches(self):
+    def test_a_link_behind_a_switch_is_refused_too(self):
         s = schema(
             extra={
                 "config": {
                     "type": "object",
                     "properties": {"mode": {"type": "string"}},
                     "dependencies": {
-                        "mode": {"oneOf": [{"properties": {"client": link_field()}}]}
+                        "mode": {
+                            "oneOf": [
+                                {
+                                    "properties": {
+                                        "client": {"format": "yolab-output"}
+                                    }
+                                }
+                            ]
+                        }
                     },
                 }
             }
         )
-        self.assertEqual(set(check_charts.output_links(s)), {"client"})
+        found = collected(check_charts.check_no_links, "x", s)
+        self.assertTrue(any("config.client" in f for f in found), found)
 
-    def test_the_retired_ways_of_linking_are_refused(self):
-        for fmt in ("connection", "service-url", "app"):
-            s = schema(config={"client": {"type": "object", "format": fmt}})
-            found = collected(check_charts.check_output_link_fields, "x", s)
-            self.assertTrue(any("retired" in f for f in found), (fmt, found))
-        provides = {**schema(), "x-yolab-provides": {"ollama": ["api"]}}
-        found = collected(check_charts.check_output_link_fields, "x", provides)
-        self.assertTrue(any("x-yolab-provides" in f for f in found), found)
-
-    def test_a_link_to_outputs_the_other_chart_declares_passes(self):
-        charts = {
-            "qbittorrent": (
-                "0.2.0",
-                schema(
-                    outputs={
-                        "internal_url": {
-                            "source": {"service": {"name": "q", "port": 1}}
-                        },
-                        "password": logs(r"YOLAB_OUTPUT password (\S+)"),
-                    }
-                ),
-            )
-        }
-        found = collected(
-            check_charts.check_output_links,
-            {"radarr": {"client": link_field()}},
-            charts,
-        )
-        self.assertEqual(found, [])
-
-    def test_a_link_to_an_output_nobody_declares_is_reported(self):
-        charts = {"qbittorrent": ("0.2.0", schema(outputs={"internal_url": {}}))}
-        found = collected(
-            check_charts.check_output_links,
-            {"radarr": {"client": link_field()}},
-            charts,
-        )
-        self.assertEqual(
-            found,
-            [
-                (
-                    "config.client takes ['password'] from qbittorrent, which "
-                    "does not declare them as outputs"
-                )
-            ],
-        )
-
-    def test_a_link_to_a_chart_the_catalog_lacks_is_reported(self):
-        found = collected(
-            check_charts.check_output_links, {"radarr": {"client": link_field()}}, {}
-        )
-        self.assertTrue(any("not a chart in this catalog" in f for f in found), found)
-
-    def test_every_link_in_the_catalog_reaches_declared_outputs(self):
-        charts = check_charts.catalog_charts()
-        links = {app: check_charts.output_links(s) for app, (_, s) in charts.items()}
-        self.assertTrue(any(links.values()))
-        self.assertEqual(collected(check_charts.check_output_links, links, charts), [])
+    def test_no_chart_in_the_catalog_links_to_another_app(self):
+        for app, (_, s) in check_charts.catalog_charts().items():
+            self.assertEqual(collected(check_charts.check_no_links, app, s), [], app)
 
 
 PACK_CHART = """apiVersion: v2

@@ -65,9 +65,6 @@
                 "existing_client": {
                   "type": "object",
                   "title": "Which qBittorrent",
-                  "format": "yolab-output",
-                  "x-yolab-from": ["qbittorrent"],
-                  "x-yolab-outputs": ["internal_url", "username", "password"],
                   "description": "Lidarr sends its downloads to it. Point it at the same music folder in its own settings.",
                   "properties": {
                     "internal_url": { "type": "string", "title": "Address", "format": "uri" },
