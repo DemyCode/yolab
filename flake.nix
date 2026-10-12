@@ -184,6 +184,8 @@
             pre-commit
             busybox
             jq
+            librsvg
+            imagemagick
             (python3.withPackages (ps: [ps.pyyaml]))
           ])
           ++ [r.rustToolchain]
