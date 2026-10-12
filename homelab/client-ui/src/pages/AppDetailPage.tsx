@@ -8,6 +8,8 @@ import { AppIconTile } from "@/components/AppIcon";
 import { RestoreFolders } from "@/components/RestoreFolders";
 import { NO_CHOICES, choicesFor, type RestoreChoices } from "@/lib/restore";
 import { useRestorePlan } from "@/lib/useRestorePlan";
+import { useRestorePoints } from "@/lib/useRestorePoints";
+import { useNow } from "@/lib/useNow";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog, Sheet } from "@/components/ui/sheet";
 import {
@@ -119,15 +121,6 @@ function WhatHappened({ app, fallback }: { app: AppInfo; fallback: string }) {
 function WaitNote({ note }: { note: string | null }) {
   if (!note) return null;
   return <p className="mt-1 tabular-nums">{note}</p>;
-}
-
-function useNow(everyMs: number): number {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    const id = window.setInterval(() => setNow(Date.now()), everyMs);
-    return () => clearInterval(id);
-  }, [everyMs]);
-  return now;
 }
 
 const POD_REFRESH_MS = 5000;
@@ -390,11 +383,6 @@ function TechnicalDetails({ app }: { app: AppInfo }) {
   );
 }
 
-interface RestoreSnapshot {
-  id: string;
-  time: string;
-}
-
 function RestoreSheet({
   instanceName,
   name,
@@ -408,9 +396,11 @@ function RestoreSheet({
   onClose: () => void;
   onStarted: (snapshotTime: string | null) => void;
 }) {
-  const [snapshots, setSnapshots] = useState<RestoreSnapshot[] | null>(null);
-  const [loadFailed, setLoadFailed] = useState(false);
-  const [selected, setSelected] = useState<string | null>(null);
+  const { points: snapshots, error: loadError } = useRestorePoints(
+    open ? `yolab-${instanceName}` : null,
+  );
+  const [chosen, setSelected] = useState<string | null>(null);
+  const selected = chosen ?? snapshots?.[0]?.snapshot_id ?? null;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [picked, setPicked] = useState<RestoreChoices>(NO_CHOICES);
@@ -419,36 +409,12 @@ function RestoreSheet({
     selected ?? "",
   );
 
-  useEffect(() => {
-    if (!open) return;
-    let cancelled = false;
+  function close() {
     setSelected(null);
     setError(null);
-    setSnapshots(null);
-    setLoadFailed(false);
-    void api
-      .get<{ snapshots?: RestoreSnapshot[] }>(
-        `/api/backups/snapshots?namespace=${encodeURIComponent(`yolab-${instanceName}`)}`,
-      )
-      .then((d) => {
-        if (cancelled) return;
-        const snaps = (d.snapshots ?? [])
-          .slice()
-          .sort(
-            (a, b) => new Date(b.time).getTime() - new Date(a.time).getTime(),
-          );
-        setSnapshots(snaps);
-        if (snaps.length > 0) setSelected(snaps[0].id);
-      })
-      .catch(() => {
-        if (cancelled) return;
-        setLoadFailed(true);
-        setSnapshots([]);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [open, instanceName]);
+    setPicked(NO_CHOICES);
+    onClose();
+  }
 
   async function confirm() {
     setBusy(true);
@@ -461,8 +427,10 @@ function RestoreSheet({
           ? { choices: choicesFor(restorePlan.plan, "in-place", picked, null) }
           : {}),
       });
-      onStarted(snapshots?.find((s) => s.id === selected)?.time ?? null);
-      onClose();
+      onStarted(
+        snapshots?.find((s) => s.snapshot_id === selected)?.time ?? null,
+      );
+      close();
     } catch (e) {
       setError(e instanceof Error ? e.message : "The restore did not start.");
     } finally {
@@ -473,7 +441,7 @@ function RestoreSheet({
   return (
     <Sheet
       open={open}
-      onClose={onClose}
+      onClose={close}
       title={`Restore ${name}`}
       subtitle="Its settings go back to the backup you pick. Choose below what happens to its data and folders; whatever is replaced loses anything newer."
     >
@@ -482,7 +450,7 @@ function RestoreSheet({
           <Spinner className="h-4 w-4" />
           Looking for backups…
         </div>
-      ) : loadFailed ? (
+      ) : loadError ? (
         <p className="py-4 text-sm text-fg-muted">
           The backups could not be listed right now. Close this and try again in
           a moment.
@@ -495,15 +463,15 @@ function RestoreSheet({
         <div className="divide-y divide-border rounded-card border border-border">
           <AnimatedList
             items={snapshots.map((s, i) => ({ s, i }))}
-            keyOf={({ s }) => s.id}
+            keyOf={({ s }) => s.snapshot_id}
           >
             {({ s, i }) => (
               <label className="flex cursor-pointer items-center gap-3 px-4 py-3 hover:bg-surface-2">
                 <input
                   type="radio"
                   name="restore-snapshot"
-                  checked={selected === s.id}
-                  onChange={() => setSelected(s.id)}
+                  checked={selected === s.snapshot_id}
+                  onChange={() => setSelected(s.snapshot_id)}
                   className="accent-primary"
                 />
                 <span className="flex-1 text-sm text-fg">
@@ -535,7 +503,7 @@ function RestoreSheet({
       {error && <p className="mt-3 text-sm text-danger">{error}</p>}
 
       <div className="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
-        <Button variant="secondary" onClick={onClose} disabled={busy}>
+        <Button variant="secondary" onClick={close} disabled={busy}>
           Cancel
         </Button>
         <Button

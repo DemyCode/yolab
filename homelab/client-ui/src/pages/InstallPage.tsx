@@ -39,6 +39,7 @@ import {
   type RestoreChoices,
 } from "@/lib/restore";
 import { useRestorePlan } from "@/lib/useRestorePlan";
+import { useRestorePoints } from "@/lib/useRestorePoints";
 import { configSchemaOf, generatedFields, uiSchemaFor } from "@/lib/schema";
 import { taglineFor } from "@/catalog/meta";
 import { AppComments, HeartButton } from "@/components/StoreCommunity";
@@ -123,10 +124,12 @@ export function InstallPage() {
   }
   const [sourceDef, setSourceDef] = useState<AppDefinition | null>(null);
   const [copyData, setCopyData] = useState(copiesDataByDefault(origin.mode));
-  const [snapshots, setSnapshots] = useState<
-    { id: string; time: string }[] | null
-  >(null);
-  const [snapshot, setSnapshot] = useState(origin.snapshot ?? "");
+  const backupNamespace = snapshotNamespace(origin);
+  const { points: snapshots } = useRestorePoints(
+    backupNamespace && copyData ? backupNamespace : null,
+  );
+  const [pickedSnapshot, setSnapshot] = useState(origin.snapshot ?? "");
+  const snapshot = pickedSnapshot || snapshots?.[0]?.snapshot_id || "";
   const [picked, setPicked] = useState<RestoreChoices>(NO_CHOICES);
   const restorePlan = useRestorePlan(
     origin.mode === "restore" ? origin.namespace : null,
@@ -151,32 +154,6 @@ export function InstallPage() {
       cancelled = true;
     };
   }, [origin]);
-
-  const backupNamespace = snapshotNamespace(origin);
-  useEffect(() => {
-    if (!backupNamespace || !copyData) return;
-    let cancelled = false;
-    void api
-      .get<{ snapshots?: { id: string; time: string }[] }>(
-        `/api/backups/snapshots?namespace=${encodeURIComponent(backupNamespace)}`,
-      )
-      .then((d) => {
-        if (cancelled) return;
-        const list = (d.snapshots ?? [])
-          .slice()
-          .sort(
-            (a, b) => new Date(b.time).getTime() - new Date(a.time).getTime(),
-          );
-        setSnapshots(list);
-        setSnapshot((s) => s || list[0]?.id || "");
-      })
-      .catch(() => {
-        if (!cancelled) setSnapshots([]);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [backupNamespace, copyData]);
 
   const [liveSchema, setLiveSchema] = useState<object | null>(null);
   useEffect(() => {
@@ -687,7 +664,7 @@ export function InstallPage() {
                   className="h-9 w-auto max-w-[14rem]"
                 >
                   {snapshots.map((s, i) => (
-                    <option key={s.id} value={s.id}>
+                    <option key={s.snapshot_id} value={s.snapshot_id}>
                       {i === 0 ? "Latest — " : ""}
                       {formatDateTime(s.time)}
                     </option>

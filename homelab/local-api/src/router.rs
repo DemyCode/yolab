@@ -41,7 +41,6 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/backups/recovery-key", get(backups::get_recovery_key))
         .route("/api/backups/s3", get(backups::get_s3))
         .route("/api/backups/s3/enable", post(backups::enable_s3))
-        .route("/api/backups/snapshots", get(backups::list_snapshots))
         .route("/api/backups/restore", post(backups::restore_app))
         .route("/api/backups/restores", get(backups::list_restores))
         .route("/api/backups/apps", get(backups::list_backed_up_apps))

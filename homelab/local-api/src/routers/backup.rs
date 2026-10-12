@@ -505,6 +505,15 @@ pub(crate) struct VolumeSnapshot {
     pub time: String,
 }
 
+impl VolumeSnapshot {
+    pub(crate) fn recorded_in(entry: &Value) -> Option<VolumeSnapshot> {
+        Some(VolumeSnapshot {
+            id: entry["snapshot_id"].as_str()?.to_string(),
+            time: entry["snapshot_time"].as_str()?.to_string(),
+        })
+    }
+}
+
 fn saved_snapshot_id(logs: &str) -> Option<String> {
     logs.lines().rev().find_map(|l| {
         let rest = l.trim().strip_prefix("snapshot ")?;
@@ -1341,6 +1350,22 @@ mod tests {
         assert_eq!(
             catalog_pvc("data", "5Gi", None),
             json!({"name": "data", "capacity": "5Gi"})
+        );
+    }
+
+    #[test]
+    fn a_restore_reads_back_exactly_the_snapshot_a_backup_recorded() {
+        let snap = VolumeSnapshot {
+            id: "abc".into(),
+            time: "2026-10-12T03:00:00Z".into(),
+        };
+        assert_eq!(
+            VolumeSnapshot::recorded_in(&catalog_pvc("data", "5Gi", Some(&snap))),
+            Some(snap)
+        );
+        assert_eq!(
+            VolumeSnapshot::recorded_in(&catalog_pvc("data", "5Gi", None)),
+            None
         );
     }
 

@@ -3,6 +3,8 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::routers::backup::VolumeSnapshot;
+
 #[derive(Deserialize, Serialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Choice {
@@ -39,17 +41,11 @@ pub(crate) fn step(exists: bool, backed_up: bool, chosen: Option<Choice>, unsaid
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct SavedSnapshot {
-    pub id: String,
-    pub time: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SavedFolder {
     pub name: String,
     pub title: String,
     pub capacity: String,
-    pub snapshot: Option<SavedSnapshot>,
+    pub snapshot: Option<VolumeSnapshot>,
 }
 
 pub(crate) const EMPTY_FOLDER_SIZE: &str = "1024Gi";
@@ -76,13 +72,7 @@ pub(crate) fn saved_folders(catalog: &Value, namespace: &str) -> Vec<SavedFolder
                     .filter(|c| !c.is_empty() && *c != "?")
                     .unwrap_or(EMPTY_FOLDER_SIZE)
                     .to_string(),
-                snapshot: match (f["snapshot_id"].as_str(), f["snapshot_time"].as_str()) {
-                    (Some(id), Some(time)) => Some(SavedSnapshot {
-                        id: id.to_string(),
-                        time: time.to_string(),
-                    }),
-                    _ => None,
-                },
+                snapshot: VolumeSnapshot::recorded_in(f),
             })
         })
         .collect()
@@ -296,7 +286,7 @@ mod tests {
                     name: "movies".into(),
                     title: "Movies".into(),
                     capacity: "500Gi".into(),
-                    snapshot: Some(SavedSnapshot {
+                    snapshot: Some(VolumeSnapshot {
                         id: "abc".into(),
                         time: "2026-10-12T03:00:00Z".into(),
                     }),

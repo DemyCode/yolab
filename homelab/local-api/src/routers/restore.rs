@@ -10,6 +10,7 @@ use crate::host::Host;
 use crate::ops::{self, Claim, Claimed, InFlight, Liveness, FAILED, RUNNING, SUCCEEDED};
 use crate::poll::Step;
 use crate::records::Store;
+use crate::routers::backup::VolumeSnapshot;
 use crate::routers::backup_common::*;
 use crate::routers::restore_folders as rf;
 use crate::runtime::{Controller, Ctx, Requirement, Scope, Tick};
@@ -85,6 +86,19 @@ async fn patch_set(
         })
         .await?;
     Ok(())
+}
+
+fn repo_missing(stderr: &str) -> bool {
+    stderr.contains("unable to open config file") || stderr.contains("does not exist")
+}
+
+async fn open_backups<H: Host>(b: &Backend<H>) -> anyhow::Result<(BackupConfig, String)> {
+    let Some(cfg) = master_config(&b.kube).await? else {
+        anyhow::bail!("backup not configured");
+    };
+    let repo = cfg.restic_repo("cluster-backup");
+    cfg.unlock(&b.host, "cluster-backup").await;
+    Ok((cfg, repo))
 }
 
 pub(crate) async fn start<H: Host + 'static>(
@@ -292,7 +306,7 @@ struct SnapshotEntry {
 
 fn plan_volume(
     pvc: &str,
-    pinned: Option<&VolumeSnapshotRef>,
+    pinned: Option<&VolumeSnapshot>,
     snaps: &[SnapshotEntry],
     cluster_time: Option<&str>,
 ) -> VolumePlan {
@@ -340,7 +354,7 @@ async fn volume_snapshots<H: Host>(
     .await?;
     if !out.success {
         let stderr = &out.stderr;
-        if stderr.contains("unable to open config file") || stderr.contains("does not exist") {
+        if repo_missing(stderr) {
             return Ok(Vec::new());
         }
         anyhow::bail!("{}", stderr.trim());
@@ -430,7 +444,7 @@ async fn restic_json<H: Host>(
     let out = restic_with(host, repo, cfg, args, RESTIC_TIMEOUT).await?;
     if !out.success {
         let stderr = &out.stderr;
-        if stderr.contains("unable to open config file") || stderr.contains("does not exist") {
+        if repo_missing(stderr) {
             return Ok(None);
         }
         anyhow::bail!("restic {}: {}", args.join(" "), stderr.trim());
@@ -557,11 +571,7 @@ pub(crate) async fn backup_payload<H: Host>(
 ) -> anyhow::Result<BackupPayload> {
     crate::routers::install::check_backup_ref(source_namespace, snapshot_id)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
-    let Some(cfg) = master_config(&b.kube).await? else {
-        anyhow::bail!("backup not configured");
-    };
-    let repo = cfg.restic_repo("cluster-backup");
-    cfg.unlock(&b.host, "cluster-backup").await;
+    let (cfg, repo) = open_backups(b).await?;
     let catalog = extract_json_file(&b.host, &repo, &cfg, snapshot_id, "catalog.json").await?;
     let Some(app) = catalog_apps(&catalog)
         .into_iter()
@@ -754,11 +764,7 @@ pub(crate) async fn definition_from_backup<H: Host>(
 ) -> anyhow::Result<crate::routers::apps::AppDefinition> {
     crate::routers::install::check_backup_ref(namespace, snapshot_id)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
-    let Some(cfg) = master_config(&b.kube).await? else {
-        anyhow::bail!("backup not configured");
-    };
-    let repo = cfg.restic_repo("cluster-backup");
-    cfg.unlock(&b.host, "cluster-backup").await;
+    let (cfg, repo) = open_backups(b).await?;
     let catalog = extract_json_file(&b.host, &repo, &cfg, snapshot_id, "catalog.json").await?;
     let Some(service) = catalog["services"]
         .as_array()
@@ -813,11 +819,7 @@ pub(crate) async fn kept_from_backup<H: Host>(
 ) -> anyhow::Result<(Option<Vec<u8>>, Option<Value>)> {
     crate::routers::install::check_backup_ref(namespace, snapshot_id)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
-    let Some(cfg) = master_config(&b.kube).await? else {
-        anyhow::bail!("backup not configured");
-    };
-    let repo = cfg.restic_repo("cluster-backup");
-    cfg.unlock(&b.host, "cluster-backup").await;
+    let (cfg, repo) = open_backups(b).await?;
     let Some(path) = extract_file(
         &b.host,
         &repo,
@@ -938,11 +940,7 @@ pub(crate) async fn restore_plan<H: Host>(
 ) -> anyhow::Result<rf::RestorePlan> {
     crate::routers::install::check_backup_ref(namespace, snapshot_id)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
-    let Some(cfg) = master_config(&b.kube).await? else {
-        anyhow::bail!("backup not configured");
-    };
-    let repo = cfg.restic_repo("cluster-backup");
-    cfg.unlock(&b.host, "cluster-backup").await;
+    let (cfg, repo) = open_backups(b).await?;
     let catalog = extract_json_file(&b.host, &repo, &cfg, snapshot_id, "catalog.json").await?;
     let pvcs = catalog_pvcs(&catalog, namespace);
     let mut backed_up = Vec::new();
@@ -1022,11 +1020,7 @@ async fn saved_folder_as_of<H: Host>(
 ) -> anyhow::Result<Option<String>> {
     let claim = crate::folders::claim_name(&folder.name);
     let snaps = volume_snapshots(&b.host, crate::folders::NAMESPACE, &claim, cfg).await?;
-    let pinned = folder.snapshot.as_ref().map(|s| VolumeSnapshotRef {
-        id: s.id.clone(),
-        time: s.time.clone(),
-    });
-    match plan_volume(&folder.title, pinned.as_ref(), &snaps, None) {
+    match plan_volume(&folder.title, folder.snapshot.as_ref(), &snaps, None) {
         VolumePlan::RestoreAsOf(as_of) => Ok(as_of),
         VolumePlan::Refuse(why) => anyhow::bail!("{why}"),
         VolumePlan::NoBackup => anyhow::bail!(
@@ -1338,16 +1332,10 @@ async fn extract_json_file<H: Host>(
 }
 
 #[derive(Debug, Clone, PartialEq)]
-struct VolumeSnapshotRef {
-    id: String,
-    time: String,
-}
-
-#[derive(Debug, Clone, PartialEq)]
 struct CatalogPvc {
     name: String,
     capacity: String,
-    snapshot: Option<VolumeSnapshotRef>,
+    snapshot: Option<VolumeSnapshot>,
 }
 
 fn catalog_pvcs(catalog: &Value, namespace: &str) -> Vec<CatalogPvc> {
@@ -1364,13 +1352,7 @@ fn catalog_pvcs(catalog: &Value, namespace: &str) -> Vec<CatalogPvc> {
                     Some(CatalogPvc {
                         name: p["name"].as_str()?.to_string(),
                         capacity: p["capacity"].as_str().unwrap_or("10Gi").to_string(),
-                        snapshot: match (p["snapshot_id"].as_str(), p["snapshot_time"].as_str()) {
-                            (Some(id), Some(time)) => Some(VolumeSnapshotRef {
-                                id: id.to_string(),
-                                time: time.to_string(),
-                            }),
-                            _ => None,
-                        },
+                        snapshot: VolumeSnapshot::recorded_in(p),
                     })
                 })
                 .collect()
@@ -1543,6 +1525,15 @@ mod tests {
     }
 
     #[test]
+    fn a_repository_never_written_to_reads_as_no_backups_not_as_a_failure() {
+        assert!(repo_missing(
+            "Fatal: unable to open config file: Stat: The specified key does not exist."
+        ));
+        assert!(repo_missing("repository does not exist"));
+        assert!(!repo_missing("Fatal: wrong password or no key found"));
+    }
+
+    #[test]
     fn replacing_a_volume_deletes_what_the_backup_does_not_have_and_filling_one_keeps_it() {
         let replace = destination_spec("data-restic", "data", Some("2026-10-12T03:00:00Z"), true);
         assert_eq!(replace["enableFileDeletion"], true);
@@ -1646,8 +1637,8 @@ mod tests {
         }
     }
 
-    fn pin(id: &str, time: &str) -> VolumeSnapshotRef {
-        VolumeSnapshotRef {
+    fn pin(id: &str, time: &str) -> VolumeSnapshot {
+        VolumeSnapshot {
             id: id.into(),
             time: time.into(),
         }
