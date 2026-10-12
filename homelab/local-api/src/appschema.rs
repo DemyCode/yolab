@@ -229,7 +229,9 @@ mod tests {
         let service = json!({ "source": { "service": { "name": "x", "port": 80 } } });
         assert!(is_retired_service_output(&service));
         assert!(parse_output("api", &service).is_err());
-        assert!(!is_retired_service_output(&json!({ "source": { "logs": "X (\\S+)" } })));
+        assert!(!is_retired_service_output(
+            &json!({ "source": { "logs": "X (\\S+)" } })
+        ));
     }
 
     #[test]
