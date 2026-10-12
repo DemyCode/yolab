@@ -2247,11 +2247,7 @@ class NoLinks(unittest.TestCase):
                     "dependencies": {
                         "mode": {
                             "oneOf": [
-                                {
-                                    "properties": {
-                                        "client": {"format": "yolab-output"}
-                                    }
-                                }
+                                {"properties": {"client": {"format": "yolab-output"}}}
                             ]
                         }
                     },

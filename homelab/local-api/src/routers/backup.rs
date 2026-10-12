@@ -400,7 +400,8 @@ async fn run_set<H: Host>(
         }
     }
 
-    let (snapshot_id, services) = snapshot_cluster(b, cfg, &pinned, &folders, target, run_id).await?;
+    let (snapshot_id, services) =
+        snapshot_cluster(b, cfg, &pinned, &folders, target, run_id).await?;
 
     let repo = cfg.restic_repo("cluster-backup");
     cfg.unlock(&b.host, "cluster-backup").await;
@@ -1418,11 +1419,9 @@ mod tests {
     #[test]
     fn an_apps_own_data_folder_is_saved_through_the_app_not_a_second_time_as_a_folder() {
         let folders = [folder("jellyfin-data", "state", &["jellyfin"])];
-        assert!(folders_saved_with(
-            &BackupTarget::App("yolab-jellyfin".into()),
-            &folders
-        )
-        .is_empty());
+        assert!(
+            folders_saved_with(&BackupTarget::App("yolab-jellyfin".into()), &folders).is_empty()
+        );
         assert!(folders_saved_with(&BackupTarget::Cluster, &folders).is_empty());
     }
 
@@ -1700,7 +1699,8 @@ mod tests {
     }
 
     #[test]
-    fn a_folder_backup_queued_before_folders_lost_their_own_backups_never_runs_or_blocks_the_queue() {
+    fn a_folder_backup_queued_before_folders_lost_their_own_backups_never_runs_or_blocks_the_queue()
+    {
         let stale = queued_at("f", "folder:movies", "2026-10-01T00:00:00Z");
         assert_eq!(target_of(&stale), None);
         let sets = vec![stale, queued_at("a", "yolab-a", "2026-10-02T00:00:00Z")];

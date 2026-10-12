@@ -1475,8 +1475,10 @@ def check_no_links(app, schema, fail):
         )
     retired = config_fields(
         schema,
-        lambda prop: prop.get("format") in RETIRED_LINK_FORMATS
-        or any(key in prop for key in RETIRED_LINK_KEYS),
+        lambda prop: (
+            prop.get("format") in RETIRED_LINK_FORMATS
+            or any(key in prop for key in RETIRED_LINK_KEYS)
+        ),
     )
     for name, prop in sorted(retired.items()):
         fail(

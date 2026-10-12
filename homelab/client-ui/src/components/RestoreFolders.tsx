@@ -101,7 +101,10 @@ export function RestoreFolders({
                 value={chosen(options, picked.data[row.claim])}
                 label={`${app}'s own data`}
                 onChange={(v) =>
-                  onPick({ ...picked, data: { ...picked.data, [row.claim]: v } })
+                  onPick({
+                    ...picked,
+                    data: { ...picked.data, [row.claim]: v },
+                  })
                 }
               />
             }

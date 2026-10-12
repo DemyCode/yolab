@@ -71,9 +71,9 @@ describe("what can happen to the app's own data", () => {
   });
 
   it("data that was never saved is left as it is", () => {
-    expect(values(dataOptions({ ...data, backed_up: false }, "in-place"))).toEqual(
-      ["use"],
-    );
+    expect(
+      values(dataOptions({ ...data, backed_up: false }, "in-place")),
+    ).toEqual(["use"]);
   });
 });
 
@@ -113,11 +113,13 @@ describe("the choices sent with a restore", () => {
   });
 
   it("a folder swapped for another one in the settings is left out", () => {
-    expect(shownFolders(plan, ["movies", "films"]).map((f) => f.name)).toEqual(
-      ["movies"],
-    );
+    expect(shownFolders(plan, ["movies", "films"]).map((f) => f.name)).toEqual([
+      "movies",
+    ]);
     expect(
-      Object.keys(choicesFor(plan, "reinstall", NO_CHOICES, ["movies"]).folders),
+      Object.keys(
+        choicesFor(plan, "reinstall", NO_CHOICES, ["movies"]).folders,
+      ),
     ).toEqual(["movies"]);
   });
 });
@@ -128,9 +130,14 @@ describe("restoring a shared folder", () => {
       "sonarr uses it too, and would see the change.",
     );
     expect(
-      sharedWarning({ ...movies, used_by: ["jellyfin", "sonarr", "radarr"] }, "jellyfin"),
+      sharedWarning(
+        { ...movies, used_by: ["jellyfin", "sonarr", "radarr"] },
+        "jellyfin",
+      ),
     ).toBe("sonarr, radarr use it too, and would see the change.");
-    expect(sharedWarning({ ...movies, used_by: ["jellyfin"] }, "jellyfin")).toBeNull();
+    expect(
+      sharedWarning({ ...movies, used_by: ["jellyfin"] }, "jellyfin"),
+    ).toBeNull();
   });
 });
 

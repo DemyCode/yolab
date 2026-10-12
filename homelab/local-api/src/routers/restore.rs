@@ -1004,9 +1004,7 @@ async fn plan_folders<H: Host>(
         let as_of = match step {
             rf::Step::Keep => continue,
             rf::Step::CreateEmpty => None,
-            rf::Step::Restore | rf::Step::Replace => {
-                saved_folder_as_of(b, cfg, &folder).await?
-            }
+            rf::Step::Restore | rf::Step::Replace => saved_folder_as_of(b, cfg, &folder).await?,
         };
         planned.push(PlannedFolder {
             folder,
@@ -1975,9 +1973,11 @@ mod tests {
                 host: FakeHost::new().fail("restic restore", "repository is locked"),
             };
 
-            assert!(restore_inner(&b, "yolab-notes", "snap-1", &cfg(), &rf::Choices::default())
-                .await
-                .is_err());
+            assert!(
+                restore_inner(&b, "yolab-notes", "snap-1", &cfg(), &rf::Choices::default())
+                    .await
+                    .is_err()
+            );
             assert!(b.host.ran("restic restore snap-1"));
             let deleted = server
                 .received_requests()
@@ -2006,9 +2006,11 @@ mod tests {
                 host: FakeHost::new(),
             };
 
-            assert!(restore_inner(&b, "yolab-notes", "snap-1", &cfg(), &rf::Choices::default())
-                .await
-                .is_err());
+            assert!(
+                restore_inner(&b, "yolab-notes", "snap-1", &cfg(), &rf::Choices::default())
+                    .await
+                    .is_err()
+            );
             assert!(b.host.calls().is_empty(), "{:?}", b.host.calls());
         }
 

@@ -156,9 +156,9 @@ pub(crate) async fn resolve_links(
             continue;
         };
         let link = choice.map_err(|why| anyhow::anyhow!("{name}: {why}"))?;
-        let outputs = boxes.get(name).ok_or_else(|| {
-            anyhow::anyhow!("{name}: fill it in by hand in this app's settings")
-        })?;
+        let outputs = boxes
+            .get(name)
+            .ok_or_else(|| anyhow::anyhow!("{name}: fill it in by hand in this app's settings"))?;
         let found = provider_outputs(client, catalog, &link).await?;
         let values = picked(&found, &link, outputs).map_err(|missing| {
             anyhow::anyhow!(
