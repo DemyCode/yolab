@@ -117,15 +117,15 @@ Fields revealed by a toggle (standard `dependencies`/`oneOf`) render under that 
   logs, init containers included. YoLab rescans every minute and keeps the latest value
   found, so a value printed once is not lost when the logs roll over.
 - `{"config": "<field>"}`: a generated setting, such as the admin password.
-- `{"service": {"name": "<service>", "port": <port>}}`: the in-cluster address of a
-  Service the chart renders, for other apps rather than people (`internal_url`).
+
+Outputs are for people. No app reads another app's outputs.
 
 `when` is a JSON Schema checked against the app's settings (defaults filled in). When it
 does not match, the output is neither shown nor waited for.
 
 **Talking to another app.** There are no links between installed apps. A setting that
 needs another app's address or key is a plain object with one box per value, filled in
-by the person (the other app's page shows them under its outputs):
+by the person:
 
 ```json
 "download_client": {

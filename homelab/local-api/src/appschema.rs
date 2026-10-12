@@ -28,38 +28,6 @@ impl Format {
 pub enum Source {
     Logs(Regex),
     Config(String),
-    Service(Address),
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-pub struct Address {
-    scheme: String,
-    service: String,
-    port: u16,
-    path: String,
-}
-
-impl Address {
-    fn parse(spec: &Value) -> Option<Address> {
-        let service = spec["service"]
-            .as_str()
-            .or_else(|| spec["name"].as_str())
-            .filter(|s| !s.is_empty())?;
-        let port = spec["port"].as_u64().and_then(|p| u16::try_from(p).ok())?;
-        Some(Address {
-            scheme: spec["scheme"].as_str().unwrap_or("http").to_string(),
-            service: service.to_string(),
-            port,
-            path: spec["path"].as_str().unwrap_or("").to_string(),
-        })
-    }
-
-    pub fn url(&self, namespace: &str) -> String {
-        format!(
-            "{}://{}.{}.svc.cluster.local:{}{}",
-            self.scheme, self.service, namespace, self.port, self.path
-        )
-    }
 }
 
 #[derive(Clone, Debug)]
@@ -115,6 +83,7 @@ impl AppSchema {
         };
         props
             .iter()
+            .filter(|(_, spec)| !is_retired_service_output(spec))
             .filter_map(|(key, spec)| match parse_output(key, spec) {
                 Ok(output) => Some(output),
                 Err(why) => {
@@ -176,6 +145,10 @@ impl OutputSpec {
     }
 }
 
+pub fn is_retired_service_output(spec: &Value) -> bool {
+    spec["source"].get("service").is_some()
+}
+
 pub fn parse_output(key: &str, spec: &Value) -> Result<OutputSpec, String> {
     let source = match &spec["source"] {
         Value::Object(s) if s.len() == 1 => {
@@ -188,12 +161,8 @@ pub fn parse_output(key: &str, spec: &Value) -> Result<OutputSpec, String> {
                 Source::Logs(re)
             } else if let Some(field) = s.get("config").and_then(Value::as_str) {
                 Source::Config(field.to_string())
-            } else if let Some(service) = s.get("service") {
-                Source::Service(
-                    Address::parse(service).ok_or("its service source needs a name and a port")?,
-                )
             } else {
-                return Err("its source is not logs, config or service".into());
+                return Err("its source is not logs or config".into());
             }
         }
         _ => return Err("it has no source".into()),
@@ -256,25 +225,20 @@ mod tests {
     }
 
     #[test]
-    fn a_service_output_is_reached_by_its_in_cluster_address() {
-        let electrum = json!({ "source": { "service": {
-            "scheme": "tcp", "name": "electrs", "port": 50001
-        }}});
-        let Source::Service(address) = parse_output("electrum", &electrum).unwrap().source else {
-            panic!("a service source");
-        };
-        assert_eq!(
-            address.url("yolab-node"),
-            "tcp://electrs.yolab-node.svc.cluster.local:50001"
-        );
+    fn an_address_for_other_apps_is_no_longer_an_output() {
+        let service = json!({ "source": { "service": { "name": "x", "port": 80 } } });
+        assert!(is_retired_service_output(&service));
+        assert!(parse_output("api", &service).is_err());
+        assert!(!is_retired_service_output(&json!({ "source": { "logs": "X (\\S+)" } })));
     }
 
     #[test]
-    fn a_service_output_is_parsed_and_a_broken_one_refused() {
-        let service = json!({ "source": { "service": { "name": "x", "port": 80 } } });
-        let ok = parse_output("api", &service).unwrap();
-        assert!(matches!(ok.source, Source::Service(_)));
-        assert!(parse_output("api", &json!({ "source": { "service": { "name": "x" } } })).is_err());
+    fn a_chart_still_declaring_one_has_it_skipped_quietly() {
+        let app = AppSchema::new(json!({ "properties": { "outputs": { "properties": {
+            "internal_url": { "source": { "service": { "name": "q", "port": 8080 } } },
+            "password": { "source": { "config": "password" } },
+        }}}}));
+        assert_eq!(keys(&app.outputs()), vec!["password"]);
     }
 
     #[test]

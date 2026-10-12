@@ -81,7 +81,6 @@ pub fn shown(
                     None => (None, None, false),
                 },
                 Source::Config(field) => (config_text(config.get(field)), None, true),
-                Source::Service(_) => return None,
             };
             Some(ShownOutput {
                 key: spec.key.clone(),
@@ -91,25 +90,6 @@ pub fn shown(
                 found_at,
                 from_config,
             })
-        })
-        .collect()
-}
-
-pub fn values(
-    specs: &[OutputSpec],
-    remembered: &Remembered,
-    config: &Map<String, Value>,
-    namespace: &str,
-) -> BTreeMap<String, String> {
-    specs
-        .iter()
-        .filter_map(|spec| {
-            let value = match &spec.source {
-                Source::Logs(_) => remembered.get(&spec.key).map(|f| f.value.clone()),
-                Source::Config(field) => config_text(config.get(field)),
-                Source::Service(address) => Some(address.url(namespace)),
-            }?;
-            Some((spec.key.clone(), value))
         })
         .collect()
 }
@@ -373,56 +353,6 @@ mod tests {
             remembered["password"].found_at,
             at(1),
             "it was found at 12:01, not re-found"
-        );
-    }
-
-    #[test]
-    fn an_address_only_other_apps_use_is_not_listed_for_people() {
-        let service = parse_output(
-            "api",
-            &json!({ "source": { "service": { "name": "ollama", "port": 11434 } } }),
-        )
-        .unwrap();
-        let rows = shown(
-            &[service, logs("onion_address")],
-            &Remembered::new(),
-            &Map::new(),
-        );
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].key, "onion_address");
-    }
-
-    #[test]
-    fn another_app_gets_every_kind_of_output_with_its_value() {
-        let service = parse_output(
-            "internal_url",
-            &json!({ "source": { "service": { "name": "sonarr", "port": 8989 } } }),
-        )
-        .unwrap();
-        let mut remembered = Remembered::new();
-        remember(&mut remembered, fresh(&[("api_key", "k")]), at(1));
-        let config = json!({ "password": "p" }).as_object().cloned().unwrap();
-        let found = values(
-            &[
-                service,
-                logs("api_key"),
-                logs("not_seen_yet"),
-                from_config("password", "password", "secret"),
-            ],
-            &remembered,
-            &config,
-            "yolab-media",
-        );
-        assert_eq!(
-            found,
-            fresh(&[
-                (
-                    "internal_url",
-                    "http://sonarr.yolab-media.svc.cluster.local:8989"
-                ),
-                ("api_key", "k"),
-                ("password", "p"),
-            ])
         );
     }
 
