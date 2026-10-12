@@ -1,0 +1,12 @@
+config:
+  subdomain: dispatcharr
+  storage_size: 20Gi
+yolab:
+  fileExplorer:
+    protect:
+    - data/db
+  platformApiUrl: ''
+  accountToken: ''
+  serviceName: ''
+  gateway:
+    upstream: localhost:9191

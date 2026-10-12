@@ -1,0 +1,182 @@
+{{- $cfg := .Values.config -}}
+{{- $oidc := eq ($cfg.sign_in | default "oidc") "oidc" -}}
+{{ include "yolab-common.caddyConfigMap" . }}
+---
+{{ include "yolab-common.fileExplorerSecret" . }}
+---
+{{ include "yolab-common.fileExplorerConfigMap" . }}
+---
+{{ include "yolab-common.privateAccessResources" . }}
+---
+{{ include "yolab-common.uninstallHook" . }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-data
+  namespace: {{ .Release.Namespace }}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: yolab-cephfs
+  resources:
+    requests:
+      storage: {{ $cfg.storage_size | default "5Gi" | quote }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Release.Name }}-secrets
+  namespace: {{ .Release.Namespace }}
+type: Opaque
+stringData:
+  app_secret: {{ required "config.app_secret is required" $cfg.app_secret | quote }}
+  {{- if $oidc }}
+  OIDC_NAME: {{ $cfg.oidc_name | default "OIDC" | quote }}
+  OIDC_WELL_KNOWN_URL: {{ required "config.oidc_well_known_url is required" $cfg.oidc_well_known_url | quote }}
+  OIDC_CLIENT_ID: {{ required "config.oidc_client_id is required" $cfg.oidc_client_id | quote }}
+  OIDC_CLIENT_SECRET: {{ required "config.oidc_client_secret is required" $cfg.oidc_client_secret | quote }}
+  {{- else }}
+  FROM_EMAIL: {{ required "config.from_email is required" $cfg.from_email | quote }}
+  EMAIL_SERVER_HOST: {{ required "config.email_server_host is required" $cfg.email_server_host | quote }}
+  EMAIL_SERVER_PORT: {{ $cfg.email_server_port | default "587" | quote }}
+  EMAIL_SERVER_USER: {{ $cfg.email_server_user | default "" | quote }}
+  EMAIL_SERVER_PASSWORD: {{ $cfg.email_server_password | default "" | quote }}
+  {{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+      annotations:
+        checksum/secrets: {{ toJson $cfg | sha256sum }}
+    spec:
+      initContainers:
+      {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessInit" . | nindent 6 }}
+      containers:
+      {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
+      - name: splitpro
+        image: ossapps/splitpro:v2.1.5@sha256:efaa52b30d009573c4bf70e5711d6447536914469420db58680e1e6779acde6e
+        imagePullPolicy: IfNotPresent
+        command:
+          - /bin/sh
+          - -c
+          - |
+            . /yolab/env
+            export NEXTAUTH_URL="${YOLAB_URL:-http://localhost:3000}"
+            exec docker-entrypoint.sh sh start.sh
+        envFrom:
+          - secretRef:
+              name: {{ .Release.Name }}-secrets
+        env:
+          - name: DATABASE_URL
+            value: "postgresql://splitpro:splitpro@postgres.{{ .Release.Namespace }}.svc.cluster.local:5432/splitpro"
+          - name: NEXTAUTH_SECRET
+            valueFrom:
+              secretKeyRef:
+                name: {{ .Release.Name }}-secrets
+                key: app_secret
+          - name: NEXTAUTH_URL_INTERNAL
+            value: http://localhost:3000
+          - name: HOSTNAME
+            value: "::"
+          - name: PORT
+            value: "3000"
+          - name: DEFAULT_HOMEPAGE
+            value: /balances
+        readinessProbe:
+          httpGet:
+            path: /api/healthz
+            port: 3000
+          initialDelaySeconds: 15
+          periodSeconds: 10
+        volumeMounts:
+          - name: data
+            mountPath: /app/uploads
+            subPath: {{ .Release.Name }}/uploads
+          - name: yolab
+            mountPath: /yolab
+      volumes:
+      {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+      {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
+      {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: ossapps/postgres:17.7-trixie@sha256:7b28a64dca6bc8a5a9df32b69f413939f93d1b87b169748f3754ef25eaa5b962
+          imagePullPolicy: IfNotPresent
+          args:
+            - postgres
+            - -c
+            - shared_preload_libraries=pg_cron
+            - -c
+            - cron.database_name=splitpro
+            - -c
+            - cron.timezone=UTC
+          env:
+            - name: POSTGRES_USER
+              value: "splitpro"
+            - name: POSTGRES_PASSWORD
+              value: "splitpro"
+            - name: POSTGRES_DB
+              value: "splitpro"
+            - name: PGDATA
+              value: "/var/lib/postgresql/data/pgdata"
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "splitpro", "-d", "splitpro"]
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+              subPath: {{ .Release.Name }}/postgres
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ .Release.Name }}-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    app: postgres
+  ports:
+    - port: 5432
+      targetPort: 5432

@@ -1,0 +1,17 @@
+apiVersion: v2
+name: fmd-server
+description: Locate, ring, lock or wipe your Android phone through your own server, end-to-end encrypted
+type: application
+version: 0.1.0
+appVersion: 0.16.0
+dependencies:
+- name: yolab-common
+  version: "0.1.16"
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: FindMyDevice
+  yolab.io/icon: 📍
+  yolab.io/category: "utilities"
+  yolab.io/tagline: Find, ring and lock your lost phone without Google
+  yolab.io/collections: "replace-google,privacy"
+home: https://gitlab.com/fmd-foss/fmd-server

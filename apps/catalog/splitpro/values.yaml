@@ -1,0 +1,14 @@
+config:
+  subdomain: splitpro
+  app_secret: ""
+  sign_in: oidc
+  storage_size: 5Gi
+yolab:
+  fileExplorer:
+    protect:
+    - postgres
+  platformApiUrl: ''
+  accountToken: ''
+  serviceName: ''
+  gateway:
+    upstream: localhost:3000

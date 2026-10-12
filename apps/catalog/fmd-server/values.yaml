@@ -1,0 +1,9 @@
+config:
+  subdomain: fmd
+  storage_size: 5Gi
+yolab:
+  platformApiUrl: ''
+  accountToken: ''
+  serviceName: ''
+  gateway:
+    upstream: localhost:8080

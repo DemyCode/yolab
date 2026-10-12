@@ -554,6 +554,10 @@
     "amd64",
     "arm64"
   ],
+  "ghcr.io/dispatcharr/dispatcharr:0.32.0@sha256:b7d695c5cc98b9abd64c74a94539c1ebffc23d965021613c820c67e25dea41a3": [
+    "amd64",
+    "arm64"
+  ],
   "ghcr.io/dotcoocoo/hermitstash:1.15.9@sha256:adbe9f7326b9a34de7f351896fb2c61d1897fc05f8fd9cf7b3e48adcde8aaa88": [
     "amd64",
     "arm64"
@@ -1494,6 +1498,14 @@
     "amd64",
     "arm64"
   ],
+  "ossapps/postgres:17.7-trixie@sha256:7b28a64dca6bc8a5a9df32b69f413939f93d1b87b169748f3754ef25eaa5b962": [
+    "amd64",
+    "arm64"
+  ],
+  "ossapps/splitpro:v2.1.5@sha256:efaa52b30d009573c4bf70e5711d6447536914469420db58680e1e6779acde6e": [
+    "amd64",
+    "arm64"
+  ],
   "outlinewiki/outline:1.10.1@sha256:832051f039b446c87aa23929cf92c00980c66aaa2d744d118c48c016ec816ad8": [
     "amd64",
     "arm64"
@@ -1698,6 +1710,10 @@
     "arm64"
   ],
   "redis:8.4.0-bookworm@sha256:c22af04bb576503bf16b3e34a1fd2fd82de0f765afd866d2e380145e0af30d78": [
+    "amd64",
+    "arm64"
+  ],
+  "registry.gitlab.com/fmd-foss/fmd-server:0.16.0@sha256:313241b4ab69966cd139c63152d695909ce645214dcd519e964515354f6acd92": [
     "amd64",
     "arm64"
   ],

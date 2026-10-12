@@ -69,6 +69,10 @@ LINT_VALUES = {
     "config.auth_users[0].password": "PlaceholderPw2026",
     "config.desktop_password": "PlaceholderPw2026",
     "config.sunshine_password": "PlaceholderPw2026",
+    "config.registration_token": "PlaceholderRegistrationToken2026",
+    "config.oidc_well_known_url": "https://auth.example.com/.well-known/openid-configuration",
+    "config.oidc_client_id": "example",
+    "config.oidc_client_secret": "PlaceholderPw2026",
 }
 
 QBITTORRENT_LINK = {
@@ -112,6 +116,13 @@ VARIANTS = {
                     "api_key": "PlaceholderApiKey2026",
                 },
             ),
+        }
+    ],
+    "splitpro": [
+        {
+            "config.sign_in": "email",
+            "config.from_email": "splitpro@example.com",
+            "config.email_server_host": "smtp.example.com",
         }
     ],
     "navidrome": [
