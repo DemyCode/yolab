@@ -31,6 +31,14 @@ import {
   readsLiveApp,
 } from "@/lib/install";
 import { AppIconTile } from "@/components/AppIcon";
+import { RestoreFolders } from "@/components/RestoreFolders";
+import {
+  NO_CHOICES,
+  choicesFor,
+  settingValues,
+  type RestoreChoices,
+} from "@/lib/restore";
+import { useRestorePlan } from "@/lib/useRestorePlan";
 import { configSchemaOf, generatedFields, uiSchemaFor } from "@/lib/schema";
 import { taglineFor } from "@/catalog/meta";
 import { AppComments, HeartButton } from "@/components/StoreCommunity";
@@ -117,6 +125,11 @@ export function InstallPage() {
     { id: string; time: string }[] | null
   >(null);
   const [snapshot, setSnapshot] = useState(origin.snapshot ?? "");
+  const [picked, setPicked] = useState<RestoreChoices>(NO_CHOICES);
+  const restorePlan = useRestorePlan(
+    origin.mode === "restore" ? origin.namespace : null,
+    snapshot,
+  );
 
   useEffect(() => {
     if (origin.mode === "fresh") return;
@@ -275,7 +288,19 @@ export function InstallPage() {
         {
           instance_name: instanceName,
           config: payload,
-          source: installSource(origin, copyData, snapshot),
+          source: installSource(
+            origin,
+            copyData,
+            snapshot,
+            origin.mode === "restore" && restorePlan.plan
+              ? choicesFor(
+                  restorePlan.plan,
+                  "reinstall",
+                  picked,
+                  settingValues(values),
+                )
+              : undefined,
+          ),
         },
       );
       if (generatedSecrets.length > 0) setStarted(begun.instance_name);
@@ -619,60 +644,64 @@ export function InstallPage() {
         </Card>
       </section>
 
-      {(origin.mode === "duplicate" || origin.mode === "restore") && (
+      {origin.mode === "duplicate" && (
         <Section title="Files">
           <Row
-            label={
-              origin.mode === "duplicate"
-                ? "Copy this app’s files too"
-                : "Bring its files back too"
-            }
+            label="Copy this app’s files too"
             detail={
               copyData
-                ? origin.mode === "duplicate"
-                  ? "Copied straight from the app, as they are now."
-                  : "From the backup you pick below."
+                ? "Copied straight from the app, as they are now."
                 : "It starts empty."
             }
             trailing={
               <Switch
                 checked={copyData}
                 onChange={setCopyData}
-                label={
-                  origin.mode === "duplicate"
-                    ? "Copy this app’s files too"
-                    : "Bring its files back too"
-                }
+                label="Copy this app’s files too"
               />
             }
           />
-          {copyData && origin.mode === "restore" && (
-            <Row
-              label="From the backup of"
-              detail={
-                snapshots === null
-                  ? "Looking for backups…"
-                  : snapshots.length === 0
-                    ? "There is no backup yet. Install it empty, or back it up first."
-                    : undefined
-              }
-              trailing={
-                snapshots && snapshots.length > 0 ? (
-                  <Select
-                    value={snapshot}
-                    onChange={(e) => setSnapshot(e.target.value)}
-                    aria-label="Backup to copy from"
-                    className="h-9 w-auto max-w-[14rem]"
-                  >
-                    {snapshots.map((s, i) => (
-                      <option key={s.id} value={s.id}>
-                        {i === 0 ? "Latest — " : ""}
-                        {formatDateTime(s.time)}
-                      </option>
-                    ))}
-                  </Select>
-                ) : null
-              }
+        </Section>
+      )}
+
+      {origin.mode === "restore" && (
+        <Section title="Files">
+          <Row
+            label="From the backup of"
+            detail={
+              snapshots === null
+                ? "Looking for backups…"
+                : snapshots.length === 0
+                  ? "There is no backup yet. Install it empty, or back it up first."
+                  : undefined
+            }
+            trailing={
+              snapshots && snapshots.length > 0 ? (
+                <Select
+                  value={snapshot}
+                  onChange={(e) => setSnapshot(e.target.value)}
+                  aria-label="Backup to copy from"
+                  className="h-9 w-auto max-w-[14rem]"
+                >
+                  {snapshots.map((s, i) => (
+                    <option key={s.id} value={s.id}>
+                      {i === 0 ? "Latest — " : ""}
+                      {formatDateTime(s.time)}
+                    </option>
+                  ))}
+                </Select>
+              ) : null
+            }
+          />
+          {snapshot && (
+            <RestoreFolders
+              plan={restorePlan.plan}
+              error={restorePlan.error}
+              mode="reinstall"
+              app={sourceName ?? app.name}
+              picked={picked}
+              onPick={setPicked}
+              inSettings={settingValues(values)}
             />
           )}
         </Section>

@@ -1,10 +1,5 @@
 import { formatBytes } from "@/lib/format";
 
-export interface FolderBackup {
-  enabled: boolean;
-  schedule: string;
-}
-
 export interface Folder {
   name: string;
   title: string;
@@ -13,12 +8,7 @@ export interface Folder {
   used_by: string[];
   kind: "files" | "state";
   app: string | null;
-  backup: FolderBackup;
-  restoring_from: string | null;
-  restore_error: string | null;
 }
-
-export const DEFAULT_FOLDER_SCHEDULE = "30 3 * * *";
 
 export function isDataFolder(folder: Folder): boolean {
   return folder.kind === "state";
@@ -28,14 +18,15 @@ export function sharedFolders(folders: Folder[]): Folder[] {
   return folders.filter((folder) => !isDataFolder(folder));
 }
 
-export function isRestoring(folder: Folder): boolean {
-  return folder.restoring_from != null;
-}
-
-export function folderBackupLabel(folder: Folder): string | null {
-  if (isRestoring(folder)) return "Restoring";
-  if (isDataFolder(folder) && folder.used_by.length > 0) return null;
-  return folder.backup?.enabled ? "Saved automatically" : "Backups off";
+export function folderBackupLine(folder: Folder): string {
+  if (folder.used_by.length === 0) {
+    return isDataFolder(folder)
+      ? "Not backed up: the app it belonged to is gone"
+      : "Not backed up: no app uses it";
+  }
+  return folder.used_by.length === 1
+    ? `Saved with ${folder.used_by[0]}'s backups`
+    : "Saved with the backups of every app that uses it";
 }
 
 export type FolderChoice =

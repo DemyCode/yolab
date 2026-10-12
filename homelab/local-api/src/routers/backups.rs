@@ -143,13 +143,21 @@ pub struct RestoreRequest {
     pub namespace: String,
     #[serde(default)]
     pub snapshot_id: Option<String>,
+    #[serde(default)]
+    pub choices: crate::routers::restore_folders::Choices,
 }
 
 pub async fn restore_app(
     State(state): State<AppState>,
     Json(body): Json<RestoreRequest>,
 ) -> Result<Json<serde_json::Value>> {
-    let name = restore::start(&state.backend().await?, &body.namespace, body.snapshot_id).await?;
+    let name = restore::start(
+        &state.backend().await?,
+        &body.namespace,
+        body.snapshot_id,
+        body.choices,
+    )
+    .await?;
     Ok(Json(
         serde_json::json!({ "ok": true, "started": true, "name": name }),
     ))
@@ -333,6 +341,17 @@ pub async fn app_definition_from_backup(
     let redacted = crate::routers::apps::redact_definition(&def, &app);
     Ok(Json(
         serde_json::to_value(redacted).unwrap_or(serde_json::Value::Null),
+    ))
+}
+
+pub async fn app_restore_plan(
+    State(state): State<AppState>,
+    Path(namespace): Path<String>,
+    axum::extract::Query(q): axum::extract::Query<DefinitionQuery>,
+) -> Result<Json<crate::routers::restore_folders::RestorePlan>> {
+    let b = state.backend().await?;
+    Ok(Json(
+        restore::restore_plan(&b, &namespace, &q.snapshot_id, &state.config.catalog_dir()).await?,
     ))
 }
 

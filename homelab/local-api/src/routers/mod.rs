@@ -14,6 +14,7 @@ pub mod nodes;
 pub mod reboot;
 pub mod rebuild;
 pub mod restore;
+pub mod restore_folders;
 pub mod status;
 pub mod store;
 pub mod update;

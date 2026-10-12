@@ -1,4 +1,5 @@
 import type { AppDefinition } from "@/types/apps";
+import type { RestoreChoices } from "./restore";
 import {
   addressField,
   chosenBranchDefaults,
@@ -21,6 +22,7 @@ export interface InstallSourcePayload {
   namespace?: string;
   snapshot_id?: string;
   with_data: boolean;
+  choices?: RestoreChoices;
 }
 
 export function installOrigin(params: URLSearchParams): InstallOrigin {
@@ -57,6 +59,7 @@ export function installSource(
   origin: InstallOrigin,
   withData: boolean,
   snapshot: string,
+  choices?: RestoreChoices,
 ): InstallSourcePayload | undefined {
   if (origin.mode === "duplicate") {
     return {
@@ -71,6 +74,7 @@ export function installSource(
       namespace: origin.namespace ?? "",
       snapshot_id: snapshot || (origin.snapshot ?? ""),
       with_data: withData,
+      ...(choices ? { choices } : {}),
     };
   }
   return undefined;

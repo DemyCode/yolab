@@ -1622,7 +1622,6 @@ pub(crate) async fn stage_install(
         .await
         .map_err(|e| anyhow::anyhow!("stage tunnel credentials: {e}"))?;
     let folders = crate::folders::wanted(&meta.app, config);
-    crate::folders::attach(client, &ns, &folders).await?;
     let resolved = resolve_links(client, &cfg.catalog_dir(), &meta.app, config).await?;
     let service_name = resolve_service_name(&meta.app.config(), config);
     let values = tempfile::Builder::new()

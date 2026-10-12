@@ -11,6 +11,7 @@ use crate::ops::{self, Claim, Claimed, InFlight, Liveness, FAILED, RUNNING, SUCC
 use crate::poll::Step;
 use crate::records::Store;
 use crate::routers::backup_common::*;
+use crate::routers::restore_folders as rf;
 use crate::runtime::{Controller, Ctx, Requirement, Scope, Tick};
 use kube::Client;
 
@@ -21,11 +22,9 @@ pub(crate) const RESTORES: Store = Store {
 };
 const MAX_RESTORES: usize = 50;
 
-const PVC_DELETE_TIMEOUT_SECS: u64 = 180;
 const RD_TIMEOUT_SECS: u64 = 3600;
 const WATCHDOG_TICK_SECS: u64 = 30;
 
-const PVC_DELETE_POLL: Duration = Duration::from_secs(5);
 const RD_POLL: Duration = Duration::from_secs(10);
 
 pub(crate) static RESTORE_IN_FLIGHT: InFlight = InFlight::new();
@@ -92,6 +91,7 @@ pub(crate) async fn start<H: Host + 'static>(
     b: &Backend<H>,
     namespace: &str,
     snapshot_id: Option<String>,
+    choices: rf::Choices,
 ) -> anyhow::Result<String> {
     let Some(cfg) = master_config(&b.kube).await? else {
         anyhow::bail!("backup not configured");
@@ -107,7 +107,7 @@ pub(crate) async fn start<H: Host + 'static>(
     let b = b.clone();
     tokio::spawn(async move {
         let _guard = guard;
-        let result = run_restore(&b, &ns, &snapshot_id, &cfg, &original).await;
+        let result = run_restore(&b, &ns, &snapshot_id, &cfg, &choices, &original).await;
         record_done(&b.kube, &task_id, &result).await;
         crate::runtime::wake("restore-watchdog");
     });
@@ -162,9 +162,10 @@ async fn run_restore<H: Host>(
     namespace: &str,
     snapshot_id: &str,
     cfg: &BackupConfig,
+    choices: &rf::Choices,
     original: &[DeploymentScale],
 ) -> anyhow::Result<bool> {
-    let result = restore_inner(b, namespace, snapshot_id, cfg).await;
+    let result = restore_inner(b, namespace, snapshot_id, cfg, choices).await;
     if result.is_err() {
         for d in original {
             scale(&b.kube, namespace, &d.name, d.replicas)
@@ -188,6 +189,7 @@ async fn restore_inner<H: Host>(
     namespace: &str,
     snapshot_id: &str,
     cfg: &BackupConfig,
+    choices: &rf::Choices,
 ) -> anyhow::Result<bool> {
     for d in read_deployment_scales(&b.kube, namespace).await? {
         scale(&b.kube, namespace, &d.name, 0).await?;
@@ -211,6 +213,15 @@ async fn restore_inner<H: Host>(
     let pvcs = catalog_pvcs(&catalog, namespace);
     let mut backed_up = Vec::new();
     for pvc in &pvcs {
+        let wanted = rf::step(
+            true,
+            true,
+            choices.data.get(&pvc.name).copied(),
+            rf::Choice::Replace,
+        );
+        if wanted == rf::Step::Keep {
+            continue;
+        }
         let snaps = volume_snapshots(&b.host, namespace, &pvc.name, cfg).await?;
         match plan_volume(
             &pvc.name,
@@ -226,6 +237,15 @@ async fn restore_inner<H: Host>(
             VolumePlan::RestoreAsOf(as_of) => backed_up.push((pvc, as_of)),
         }
     }
+    let live = crate::folders::list(&b.kube).await?;
+    let folders = plan_folders(
+        b,
+        cfg,
+        rf::saved_folders(&catalog, namespace),
+        &live,
+        &choices.folders,
+    )
+    .await?;
 
     for (pvc, as_of) in &backed_up {
         restore_volume(
@@ -237,6 +257,9 @@ async fn restore_inner<H: Host>(
             as_of.as_deref(),
         )
         .await?;
+    }
+    for planned in &folders {
+        apply_folder_step(b, cfg, planned).await?;
     }
 
     if let Some(path) = ns_yaml {
@@ -251,7 +274,7 @@ async fn restore_inner<H: Host>(
     hold_daemonsets(&b.kube, namespace, false).await?;
 
     tracing::info!("restore: {namespace} restored from {snapshot_id}");
-    Ok(!backed_up.is_empty())
+    Ok(!backed_up.is_empty() || !folders.is_empty())
 }
 
 #[derive(Debug, PartialEq)]
@@ -461,77 +484,6 @@ pub(crate) async fn restore_points<H: Host>(
         .unwrap_or_default())
 }
 
-pub(crate) async fn folder_points<H: Host>(
-    b: &Backend<H>,
-    folder: &str,
-) -> anyhow::Result<Vec<AppVersion>> {
-    let Some(cfg) = master_config(&b.kube).await? else {
-        return Ok(Vec::new());
-    };
-    let name = crate::folders::claim_name(folder);
-    let mut entries = volume_snapshots(&b.host, crate::folders::NAMESPACE, &name, &cfg).await?;
-    entries.sort_by_key(|s| std::cmp::Reverse(s.time));
-    Ok(entries
-        .into_iter()
-        .map(|s| AppVersion {
-            snapshot_id: s.id,
-            time: s.time.to_rfc3339(),
-        })
-        .collect())
-}
-
-pub(crate) async fn restore_folder<H: Host>(
-    b: &Backend<H>,
-    source: &str,
-    dest: &str,
-    snapshot_id: Option<&str>,
-) -> anyhow::Result<()> {
-    let outcome = fill_folder(b, source, dest, snapshot_id).await;
-    let error = outcome.as_ref().err().map(|e| format!("{e:#}"));
-    if let Err(e) = crate::k8s::merge_patch(
-        &b.kube,
-        &crate::folders::restore_finished(dest, error.as_deref()),
-    )
-    .await
-    {
-        tracing::warn!("folder {dest}: could not record the restore outcome: {e:#}");
-    }
-    outcome
-}
-
-async fn fill_folder<H: Host>(
-    b: &Backend<H>,
-    source: &str,
-    dest: &str,
-    snapshot_id: Option<&str>,
-) -> anyhow::Result<()> {
-    let Some(cfg) = master_config(&b.kube).await? else {
-        anyhow::bail!("backups are not enabled");
-    };
-    let as_of = match snapshot_id {
-        Some(id) => Some(
-            folder_points(b, source)
-                .await?
-                .into_iter()
-                .find(|p| p.snapshot_id == id)
-                .map(|p| p.time)
-                .ok_or_else(|| anyhow::anyhow!("that backup of {source} is no longer available"))?,
-        ),
-        None => None,
-    };
-    crate::folders::wait_until_ready(&b.kube, dest).await?;
-    restore_into(
-        b,
-        crate::folders::NAMESPACE,
-        crate::folders::NAMESPACE,
-        &crate::folders::claim_name(source),
-        &crate::folders::claim_name(dest),
-        &cfg,
-        as_of.as_deref(),
-    )
-    .await
-}
-
 fn versions_by_app(snapshots: &Value, found: &Value) -> BTreeMap<String, Vec<AppVersion>> {
     let listed: Vec<(String, chrono::DateTime<Utc>, String)> = snapshots
         .as_array()
@@ -592,13 +544,16 @@ pub(crate) struct BackupPayload {
     source_namespace: String,
     app_id: String,
     objects: Value,
-    volumes: Vec<(CatalogPvc, Option<String>)>,
+    volumes: Vec<(CatalogPvc, Result<Option<String>, String>)>,
+    folders: Vec<rf::SavedFolder>,
+    choices: rf::Choices,
 }
 
 pub(crate) async fn backup_payload<H: Host>(
     b: &Backend<H>,
     source_namespace: &str,
     snapshot_id: &str,
+    choices: rf::Choices,
 ) -> anyhow::Result<BackupPayload> {
     crate::routers::install::check_backup_ref(source_namespace, snapshot_id)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -641,8 +596,8 @@ pub(crate) async fn backup_payload<H: Host>(
                 "{source_namespace}/{} was never backed up — the chart creates it empty",
                 pvc.name
             ),
-            VolumePlan::Refuse(why) => anyhow::bail!("{why}"),
-            VolumePlan::RestoreAsOf(as_of) => volumes.push((pvc, as_of)),
+            VolumePlan::Refuse(why) => volumes.push((pvc, Err(why))),
+            VolumePlan::RestoreAsOf(as_of) => volumes.push((pvc, Ok(as_of))),
         }
     }
 
@@ -653,6 +608,8 @@ pub(crate) async fn backup_payload<H: Host>(
         app_id: app.app_id,
         objects,
         volumes,
+        folders: rf::saved_folders(&catalog, source_namespace),
+        choices,
     })
 }
 
@@ -661,35 +618,89 @@ impl BackupPayload {
         &self.app_id
     }
 
+    pub(crate) async fn prepare_folders<H: Host>(
+        &self,
+        b: &Backend<H>,
+        wanted: &std::collections::BTreeSet<String>,
+    ) -> anyhow::Result<Vec<String>> {
+        let live = crate::folders::list(&b.kube).await?;
+        let planned = plan_folders(
+            b,
+            &self.cfg,
+            rf::for_wanted(&self.folders, wanted),
+            &live,
+            &self.choices.folders,
+        )
+        .await?;
+        for p in &planned {
+            apply_folder_step(b, &self.cfg, p).await?;
+        }
+        Ok(planned.into_iter().map(|p| p.folder.title).collect())
+    }
+
     pub(crate) async fn fill_volumes<H: Host>(
         &self,
         b: &Backend<H>,
         dest_namespace: &str,
         release: &str,
-    ) -> anyhow::Result<()> {
+        members: &[String],
+    ) -> anyhow::Result<Vec<String>> {
         let (id, _, _guard) = begin(b, dest_namespace, &self.snapshot_id).await?;
-        let mut outcome = Ok(());
-        for (pvc, as_of) in &self.volumes {
-            outcome = fill_volume(
-                b,
-                dest_namespace,
-                &self.source_namespace,
-                release,
-                pvc,
-                &self.cfg,
-                as_of.as_deref(),
-            )
+        let outcome = self
+            .fill_volumes_inner(b, dest_namespace, release, members)
             .await;
-            if outcome.is_err() {
-                break;
-            }
-        }
         let recorded = match &outcome {
-            Ok(()) => Ok(!self.volumes.is_empty()),
+            Ok(_) => Ok(!self.volumes.is_empty()),
             Err(e) => Err(anyhow::anyhow!("{e}")),
         };
         record_done(&b.kube, &id, &recorded).await;
         outcome
+    }
+
+    async fn fill_volumes_inner<H: Host>(
+        &self,
+        b: &Backend<H>,
+        dest_namespace: &str,
+        release: &str,
+        members: &[String],
+    ) -> anyhow::Result<Vec<String>> {
+        let kept: std::collections::BTreeSet<String> =
+            crate::folders::kept_data(&b.kube, release, members)
+                .await?
+                .into_iter()
+                .map(|k| k.claim)
+                .collect();
+        let reused =
+            crate::folders::reuse_data_folders(&b.kube, dest_namespace, release, members).await?;
+        for (pvc, planned) in &self.volumes {
+            let replace = match rf::step(
+                kept.contains(&pvc.name),
+                true,
+                self.choices.data.get(&pvc.name).copied(),
+                rf::Choice::Use,
+            ) {
+                rf::Step::Restore => false,
+                rf::Step::Replace => true,
+                rf::Step::Keep | rf::Step::CreateEmpty => continue,
+            };
+            let as_of = planned.clone().map_err(|why| anyhow::anyhow!("{why}"))?;
+            fill_volume(
+                b,
+                &self.cfg,
+                release,
+                pvc,
+                &VolumeRestore {
+                    namespace: dest_namespace,
+                    source_namespace: &self.source_namespace,
+                    source_pvc: &pvc.name,
+                    dest_pvc: &pvc.name,
+                    as_of: as_of.as_deref(),
+                    replace,
+                },
+            )
+            .await?;
+        }
+        Ok(reused)
     }
 
     pub(crate) async fn reapply(&self, client: &Client) -> anyhow::Result<()> {
@@ -860,14 +871,12 @@ fn objects_to_reapply(objects: &Value) -> Option<Value> {
 
 async fn fill_volume<H: Host>(
     b: &Backend<H>,
-    namespace: &str,
-    source_namespace: &str,
+    cfg: &BackupConfig,
     release: &str,
     pvc: &CatalogPvc,
-    cfg: &BackupConfig,
-    restore_as_of: Option<&str>,
+    restore: &VolumeRestore<'_>,
 ) -> anyhow::Result<()> {
-    let dest_name = pvc.name.clone();
+    let (namespace, dest_name) = (restore.namespace, restore.dest_pvc);
     let manifest = json!({
         "apiVersion": "v1",
         "kind": "PersistentVolumeClaim",
@@ -887,16 +896,7 @@ async fn fill_volume<H: Host>(
         }
     });
     crate::k8s::apply(&b.kube, &manifest).await?;
-    restore_into(
-        b,
-        namespace,
-        source_namespace,
-        &pvc.name,
-        &dest_name,
-        cfg,
-        restore_as_of,
-    )
-    .await
+    restore_into(b, cfg, restore).await
 }
 
 async fn restore_volume<H: Host>(
@@ -908,26 +908,203 @@ async fn restore_volume<H: Host>(
     restore_as_of: Option<&str>,
 ) -> anyhow::Result<()> {
     let claim = crate::k8s::reference("v1", "PersistentVolumeClaim", namespace, pvc);
-    crate::k8s::delete_if_present(&b.kube, &claim).await?;
-    wait_for_pvc_deleted(&b.kube, namespace, pvc).await?;
-
-    crate::k8s::apply(
-        &b.kube,
-        &destination_pvc(pvc, namespace, capacity, "yolab-cephfs", "ReadWriteMany"),
+    if !crate::k8s::exists(&b.kube, &claim).await? {
+        crate::k8s::apply(
+            &b.kube,
+            &destination_pvc(pvc, namespace, capacity, "yolab-cephfs", "ReadWriteMany"),
+        )
+        .await?;
+    }
+    restore_into(
+        b,
+        cfg,
+        &VolumeRestore {
+            namespace,
+            source_namespace: namespace,
+            source_pvc: pvc,
+            dest_pvc: pvc,
+            as_of: restore_as_of,
+            replace: true,
+        },
     )
-    .await?;
-    restore_into(b, namespace, namespace, pvc, pvc, cfg, restore_as_of).await
+    .await
+}
+
+pub(crate) async fn restore_plan<H: Host>(
+    b: &Backend<H>,
+    namespace: &str,
+    snapshot_id: &str,
+    catalog_dir: &std::path::Path,
+) -> anyhow::Result<rf::RestorePlan> {
+    crate::routers::install::check_backup_ref(namespace, snapshot_id)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let Some(cfg) = master_config(&b.kube).await? else {
+        anyhow::bail!("backup not configured");
+    };
+    let repo = cfg.restic_repo("cluster-backup");
+    cfg.unlock(&b.host, "cluster-backup").await;
+    let catalog = extract_json_file(&b.host, &repo, &cfg, snapshot_id, "catalog.json").await?;
+    let pvcs = catalog_pvcs(&catalog, namespace);
+    let mut backed_up = Vec::new();
+    for pvc in &pvcs {
+        let snaps = volume_snapshots(&b.host, namespace, &pvc.name, &cfg).await?;
+        backed_up.push(!snaps.is_empty());
+    }
+    let data: Vec<rf::SavedData<'_>> = pvcs
+        .iter()
+        .zip(&backed_up)
+        .map(|(p, saved)| rf::SavedData {
+            claim: &p.name,
+            capacity: &p.capacity,
+            backed_up: *saved,
+        })
+        .collect();
+    let release = rf::saved_release(&catalog, namespace)
+        .unwrap_or_else(|| namespace.trim_start_matches("yolab-").to_string());
+    let members = rf::saved_app_id(&catalog, namespace)
+        .map(|id| crate::routers::apps::chart_members(&catalog_dir.join(id)))
+        .unwrap_or_default();
+    let kept: BTreeMap<String, String> = crate::folders::kept_data(&b.kube, &release, &members)
+        .await?
+        .into_iter()
+        .map(|k| (k.claim, k.folder))
+        .collect();
+    let live = crate::folders::list(&b.kube).await?;
+    Ok(rf::plan(
+        &rf::saved_folders(&catalog, namespace),
+        &data,
+        &live,
+        &kept,
+    ))
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct PlannedFolder {
+    folder: rf::SavedFolder,
+    step: rf::Step,
+    as_of: Option<String>,
+}
+
+async fn plan_folders<H: Host>(
+    b: &Backend<H>,
+    cfg: &BackupConfig,
+    saved: Vec<rf::SavedFolder>,
+    live: &[crate::folders::Folder],
+    chosen: &BTreeMap<String, rf::Choice>,
+) -> anyhow::Result<Vec<PlannedFolder>> {
+    let mut planned = Vec::new();
+    for folder in saved {
+        let exists = live.iter().any(|l| l.name == folder.name);
+        let step = rf::step(
+            exists,
+            folder.snapshot.is_some(),
+            chosen.get(&folder.name).copied(),
+            rf::Choice::Use,
+        );
+        let as_of = match step {
+            rf::Step::Keep => continue,
+            rf::Step::CreateEmpty => None,
+            rf::Step::Restore | rf::Step::Replace => {
+                saved_folder_as_of(b, cfg, &folder).await?
+            }
+        };
+        planned.push(PlannedFolder {
+            folder,
+            step,
+            as_of,
+        });
+    }
+    Ok(planned)
+}
+
+async fn saved_folder_as_of<H: Host>(
+    b: &Backend<H>,
+    cfg: &BackupConfig,
+    folder: &rf::SavedFolder,
+) -> anyhow::Result<Option<String>> {
+    let claim = crate::folders::claim_name(&folder.name);
+    let snaps = volume_snapshots(&b.host, crate::folders::NAMESPACE, &claim, cfg).await?;
+    let pinned = folder.snapshot.as_ref().map(|s| VolumeSnapshotRef {
+        id: s.id.clone(),
+        time: s.time.clone(),
+    });
+    match plan_volume(&folder.title, pinned.as_ref(), &snaps, None) {
+        VolumePlan::RestoreAsOf(as_of) => Ok(as_of),
+        VolumePlan::Refuse(why) => anyhow::bail!("{why}"),
+        VolumePlan::NoBackup => anyhow::bail!(
+            "the backup of the folder {} is no longer in your storage — start it empty instead",
+            folder.title
+        ),
+    }
+}
+
+async fn apply_folder_step<H: Host>(
+    b: &Backend<H>,
+    cfg: &BackupConfig,
+    planned: &PlannedFolder,
+) -> anyhow::Result<()> {
+    let folder = &planned.folder;
+    if matches!(planned.step, rf::Step::Restore | rf::Step::CreateEmpty) {
+        crate::folders::create_named(&b.kube, &folder.name, &folder.title, &folder.capacity)
+            .await?;
+    }
+    if !matches!(planned.step, rf::Step::Restore | rf::Step::Replace) {
+        return Ok(());
+    }
+    crate::folders::wait_until_ready(&b.kube, &folder.name).await?;
+    let claim = crate::folders::claim_name(&folder.name);
+    restore_into(
+        b,
+        cfg,
+        &VolumeRestore {
+            namespace: crate::folders::NAMESPACE,
+            source_namespace: crate::folders::NAMESPACE,
+            source_pvc: &claim,
+            dest_pvc: &claim,
+            as_of: planned.as_of.as_deref(),
+            replace: planned.step == rf::Step::Replace,
+        },
+    )
+    .await
+}
+
+fn destination_spec(
+    secret_name: &str,
+    dest_pvc: &str,
+    restore_as_of: Option<&str>,
+    replace: bool,
+) -> Value {
+    let mut spec = json!({
+        "repository": secret_name,
+        "copyMethod": "Direct",
+        "cacheStorageClassName": "yolab-cephfs",
+        "destinationPVC": dest_pvc,
+        "moverSecurityContext": { "runAsUser": 0, "runAsGroup": 0, "fsGroup": 0 }
+    });
+    if let Some(t) = restore_as_of {
+        spec["restoreAsOf"] = Value::String(t.to_string());
+    }
+    if replace {
+        spec["enableFileDeletion"] = Value::Bool(true);
+    }
+    spec
+}
+
+pub(crate) struct VolumeRestore<'a> {
+    pub namespace: &'a str,
+    pub source_namespace: &'a str,
+    pub source_pvc: &'a str,
+    pub dest_pvc: &'a str,
+    pub as_of: Option<&'a str>,
+    pub replace: bool,
 }
 
 pub(crate) async fn restore_into<H: Host>(
     b: &Backend<H>,
-    namespace: &str,
-    source_namespace: &str,
-    source_pvc: &str,
-    dest_pvc: &str,
     cfg: &BackupConfig,
-    restore_as_of: Option<&str>,
+    r: &VolumeRestore<'_>,
 ) -> anyhow::Result<()> {
+    let (namespace, source_namespace, source_pvc) = (r.namespace, r.source_namespace, r.source_pvc);
     let cid = source_pvc;
     let pvc_repo = cfg.restic_repo(&format!("volsync/{source_namespace}/{cid}"));
     restic_unlock_with(
@@ -943,16 +1120,7 @@ pub(crate) async fn restore_into<H: Host>(
 
     restic_secret(&b.kube, namespace, source_namespace, source_pvc, cfg).await?;
     let secret_name = format!("{cid}{RESTIC_SECRET_SUFFIX}");
-    let mut restic_spec = json!({
-        "repository": secret_name,
-        "copyMethod": "Direct",
-        "cacheStorageClassName": "yolab-cephfs",
-        "destinationPVC": dest_pvc,
-        "moverSecurityContext": { "runAsUser": 0, "runAsGroup": 0, "fsGroup": 0 }
-    });
-    if let Some(t) = restore_as_of {
-        restic_spec["restoreAsOf"] = Value::String(t.to_string());
-    }
+    let restic_spec = destination_spec(&secret_name, r.dest_pvc, r.as_of, r.replace);
     let dest_name = format!("restore-{cid}");
     let manifest = json!({
         "apiVersion": "volsync.backube/v1alpha1",
@@ -972,33 +1140,6 @@ pub(crate) async fn restore_into<H: Host>(
     wait_for_rd(&b.kube, namespace, &dest_name).await?;
     drop_replication_destination(&b.kube, &dest_name, namespace).await;
     Ok(())
-}
-
-async fn wait_for_pvc_deleted(client: &Client, namespace: &str, pvc: &str) -> anyhow::Result<()> {
-    let claim = crate::k8s::reference("v1", "PersistentVolumeClaim", namespace, pvc);
-    let claim = &claim;
-    crate::poll::until(
-        Duration::from_secs(PVC_DELETE_TIMEOUT_SECS),
-        PVC_DELETE_POLL,
-        move || async move {
-            let still = || {
-                anyhow::anyhow!(
-                    "PVC still present after {PVC_DELETE_TIMEOUT_SECS}s — a pod may still be mounting it"
-                )
-            };
-            match crate::k8s::exists(client, claim).await {
-                Ok(false) => Step::Done(()),
-                Ok(true) => Step::Pending(still()),
-                Err(e) => {
-                    tracing::debug!(
-                        "restore: cannot tell yet whether {namespace}/{pvc} is gone ({e})"
-                    );
-                    Step::Pending(still())
-                }
-            }
-        },
-    )
-    .await
 }
 
 async fn wait_for_rd(client: &Client, namespace: &str, dest_name: &str) -> anyhow::Result<()> {
@@ -1404,6 +1545,17 @@ mod tests {
     }
 
     #[test]
+    fn replacing_a_volume_deletes_what_the_backup_does_not_have_and_filling_one_keeps_it() {
+        let replace = destination_spec("data-restic", "data", Some("2026-10-12T03:00:00Z"), true);
+        assert_eq!(replace["enableFileDeletion"], true);
+        assert_eq!(replace["restoreAsOf"], "2026-10-12T03:00:00Z");
+        assert_eq!(replace["destinationPVC"], "data");
+        let fill = destination_spec("data-restic", "data", None, false);
+        assert!(fill.get("enableFileDeletion").is_none());
+        assert!(fill.get("restoreAsOf").is_none());
+    }
+
+    #[test]
     fn nothing_worth_reapplying_applies_nothing() {
         let only_chart_owned = json!({"items": [
             {"kind": "Deployment", "metadata": {"name": "gateway"}},
@@ -1750,8 +1902,6 @@ mod tests {
         use wiremock::matchers::{body_partial_json, method, path};
         use wiremock::{Mock, ResponseTemplate};
 
-        const CLAIM_PATH: &str = "/api/v1/namespaces/yolab-notes/persistentvolumeclaims/data";
-
         fn cfg() -> BackupConfig {
             BackupConfig {
                 access_key_id: "AKID".into(),
@@ -1825,7 +1975,7 @@ mod tests {
                 host: FakeHost::new().fail("restic restore", "repository is locked"),
             };
 
-            assert!(restore_inner(&b, "yolab-notes", "snap-1", &cfg())
+            assert!(restore_inner(&b, "yolab-notes", "snap-1", &cfg(), &rf::Choices::default())
                 .await
                 .is_err());
             assert!(b.host.ran("restic restore snap-1"));
@@ -1856,41 +2006,10 @@ mod tests {
                 host: FakeHost::new(),
             };
 
-            assert!(restore_inner(&b, "yolab-notes", "snap-1", &cfg())
+            assert!(restore_inner(&b, "yolab-notes", "snap-1", &cfg(), &rf::Choices::default())
                 .await
                 .is_err());
             assert!(b.host.calls().is_empty(), "{:?}", b.host.calls());
-        }
-
-        #[tokio::test]
-        async fn a_claim_is_gone_only_once_the_cluster_says_so() {
-            let (server, kube) = api_server().await;
-            Mock::given(method("GET"))
-                .and(path(CLAIM_PATH))
-                .respond_with(ResponseTemplate::new(404).set_body_json(status(404, "NotFound")))
-                .mount(&server)
-                .await;
-            wait_for_pvc_deleted(&kube, "yolab-notes", "data")
-                .await
-                .unwrap();
-        }
-
-        #[tokio::test]
-        async fn an_unreachable_cluster_never_counts_as_the_claim_being_gone() {
-            let (server, kube) = api_server().await;
-            Mock::given(method("GET"))
-                .and(path(CLAIM_PATH))
-                .respond_with(
-                    ResponseTemplate::new(503).set_body_json(status(503, "ServiceUnavailable")),
-                )
-                .mount(&server)
-                .await;
-            let waited = tokio::time::timeout(
-                Duration::from_millis(300),
-                wait_for_pvc_deleted(&kube, "yolab-notes", "data"),
-            )
-            .await;
-            assert!(waited.is_err(), "still waiting, not done: {waited:?}");
         }
 
         #[tokio::test]
@@ -1918,6 +2037,8 @@ mod tests {
                 cfg: cfg(),
                 volumes: vec![],
                 objects: json!({ "items": [] }),
+                folders: vec![],
+                choices: rf::Choices::default(),
             };
             payload.reapply(&kube).await.unwrap();
             assert!(server.received_requests().await.unwrap().is_empty());

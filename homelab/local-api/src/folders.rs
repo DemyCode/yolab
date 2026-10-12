@@ -21,9 +21,6 @@ const ANN_TITLE: &str = "yolab.io/folder-title";
 pub(crate) const ANN_STATE_APP: &str = "yolab.io/state-app";
 pub(crate) const ANN_STATE_RELEASE: &str = "yolab.io/state-release";
 pub(crate) const ANN_STATE_CLAIM: &str = "yolab.io/state-claim";
-pub(crate) const ANN_BACKUP: &str = "yolab.io/folder-backup";
-pub(crate) const ANN_RESTORING: &str = "yolab.io/folder-restoring";
-pub(crate) const ANN_RESTORE_FAILED: &str = "yolab.io/folder-restore-failed";
 const FORMAT: &str = "folder";
 const DRIVER: &str = "rook-ceph.cephfs.csi.ceph.com";
 const CSI_NAMESPACE: &str = "rook-ceph";
@@ -39,39 +36,6 @@ pub struct Folder {
     pub used_by: Vec<String>,
     pub kind: String,
     pub app: Option<String>,
-    pub backup: FolderBackup,
-    pub restoring_from: Option<String>,
-    pub restore_error: Option<String>,
-}
-
-#[derive(serde::Deserialize, Serialize, Debug, Clone, PartialEq, Eq)]
-pub struct FolderBackup {
-    pub enabled: bool,
-    pub schedule: String,
-}
-
-pub(crate) const DEFAULT_FOLDER_SCHEDULE: &str = "30 3 * * *";
-
-impl Folder {
-    pub(crate) fn backed_up_on_its_own(&self) -> bool {
-        self.backup.enabled && self.ready && !(self.kind == KIND_STATE && !self.used_by.is_empty())
-    }
-}
-
-impl FolderBackup {
-    pub(crate) fn default_for(kind: &str) -> FolderBackup {
-        FolderBackup {
-            enabled: kind == KIND_STATE,
-            schedule: DEFAULT_FOLDER_SCHEDULE.to_string(),
-        }
-    }
-
-    pub(crate) fn of(claim: &Value) -> FolderBackup {
-        claim["metadata"]["annotations"][ANN_BACKUP]
-            .as_str()
-            .and_then(|s| serde_json::from_str(s).ok())
-            .unwrap_or_else(|| FolderBackup::default_for(kind_of(claim)))
-    }
 }
 
 fn kind_of(claim: &Value) -> &str {
@@ -136,6 +100,10 @@ pub(crate) fn is_mount(
 }
 
 pub(crate) fn owner_claim(folder: &str, title: &str, size_gib: u64) -> Value {
+    files_claim(folder, title, &format!("{size_gib}Gi"))
+}
+
+pub(crate) fn files_claim(folder: &str, title: &str, storage: &str) -> Value {
     json!({
         "apiVersion": "v1",
         "kind": "PersistentVolumeClaim",
@@ -148,7 +116,7 @@ pub(crate) fn owner_claim(folder: &str, title: &str, size_gib: u64) -> Value {
         "spec": {
             "accessModes": ["ReadWriteMany"],
             "storageClassName": crate::routers::copy::CEPHFS_STORAGE_CLASS,
-            "resources": { "requests": { "storage": format!("{size_gib}Gi") } },
+            "resources": { "requests": { "storage": storage } },
         },
     })
 }
@@ -384,36 +352,69 @@ pub(crate) fn reuse_volume(
     })
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct KeptData {
+    pub folder: String,
+    pub claim: String,
+    pub volume: String,
+}
+
+pub(crate) fn kept_data_of(
+    claims: &[Value],
+    volumes: &[Value],
+    release: &str,
+    members: &[String],
+) -> Vec<KeptData> {
+    let mut releases: BTreeSet<String> = members.iter().map(|m| format!("{release}-{m}")).collect();
+    releases.insert(release.to_string());
+    claims
+        .iter()
+        .filter_map(|claim| {
+            let labels = &claim["metadata"]["labels"];
+            if labels[LABEL_KIND].as_str() != Some(KIND_STATE) {
+                return None;
+            }
+            let ann = &claim["metadata"]["annotations"];
+            if !ann[ANN_STATE_RELEASE]
+                .as_str()
+                .is_some_and(|r| releases.contains(r))
+            {
+                return None;
+            }
+            let folder = labels[LABEL_FOLDER].as_str()?;
+            if !users(volumes, folder).is_empty() {
+                return None;
+            }
+            Some(KeptData {
+                folder: folder.to_string(),
+                claim: ann[ANN_STATE_CLAIM]
+                    .as_str()
+                    .filter(|c| !c.is_empty())?
+                    .to_string(),
+                volume: claim["spec"]["volumeName"].as_str()?.to_string(),
+            })
+        })
+        .collect()
+}
+
+pub(crate) async fn kept_data(
+    client: &Client,
+    release: &str,
+    members: &[String],
+) -> anyhow::Result<Vec<KeptData>> {
+    let (claims, volumes) = tokio::try_join!(owner_claims(client), folder_volumes(client))?;
+    Ok(kept_data_of(&claims, &volumes, release, members))
+}
+
 pub(crate) async fn reuse_data_folders(
     client: &Client,
     app_ns: &str,
     release: &str,
     members: &[String],
 ) -> anyhow::Result<Vec<String>> {
-    let mut releases: BTreeSet<String> = members.iter().map(|m| format!("{release}-{m}")).collect();
-    releases.insert(release.to_string());
     let mut reused = Vec::new();
-    for claim in owner_claims(client).await? {
-        let labels = &claim["metadata"]["labels"];
-        if labels[LABEL_KIND].as_str() != Some(KIND_STATE) {
-            continue;
-        }
-        let Some(folder) = labels[LABEL_FOLDER].as_str() else {
-            continue;
-        };
-        let ann = &claim["metadata"]["annotations"];
-        if !ann[ANN_STATE_RELEASE]
-            .as_str()
-            .is_some_and(|r| releases.contains(r))
-        {
-            continue;
-        }
-        let Some(pvc) = ann[ANN_STATE_CLAIM].as_str().filter(|c| !c.is_empty()) else {
-            continue;
-        };
-        let Some(volume_name) = claim["spec"]["volumeName"].as_str() else {
-            continue;
-        };
+    for kept in kept_data(client, release, members).await? {
+        let (folder, pvc, volume_name) = (&kept.folder, &kept.claim, &kept.volume);
         let Some(volume) = crate::k8s::get(
             client,
             &crate::k8s::cluster_reference("v1", "PersistentVolume", volume_name),
@@ -716,59 +717,7 @@ fn folder_of(claim: &Value, volumes: &[Value]) -> Option<Folder> {
         app: claim["metadata"]["annotations"][ANN_STATE_APP]
             .as_str()
             .map(str::to_string),
-        backup: FolderBackup::of(claim),
-        restoring_from: annotation(claim, ANN_RESTORING),
-        restore_error: annotation(claim, ANN_RESTORE_FAILED),
         name,
-    })
-}
-
-fn annotation(claim: &Value, key: &str) -> Option<String> {
-    claim["metadata"]["annotations"][key]
-        .as_str()
-        .filter(|v| !v.is_empty())
-        .map(str::to_string)
-}
-
-pub(crate) fn restored_claim(folder: &str, source: &Value, when: &str) -> Value {
-    let source_name = source["metadata"]["labels"][LABEL_FOLDER]
-        .as_str()
-        .unwrap_or_default();
-    let title = annotation(source, ANN_TITLE).unwrap_or_else(|| source_name.to_string());
-    json!({
-        "apiVersion": "v1",
-        "kind": "PersistentVolumeClaim",
-        "metadata": {
-            "name": claim_name(folder),
-            "namespace": NAMESPACE,
-            "labels": { LABEL_FOLDER: folder, LABEL_KIND: KIND_FILES },
-            "annotations": {
-                ANN_TITLE: format!("{title} ({when})"),
-                ANN_RESTORING: format!("{source_name}@{when}"),
-            },
-        },
-        "spec": {
-            "accessModes": ["ReadWriteMany"],
-            "storageClassName": crate::routers::copy::CEPHFS_STORAGE_CLASS,
-            "resources": { "requests": {
-                "storage": source["spec"]["resources"]["requests"]["storage"].clone()
-            }},
-        },
-    })
-}
-
-pub(crate) fn restore_finished(folder: &str, error: Option<&str>) -> Value {
-    json!({
-        "apiVersion": "v1",
-        "kind": "PersistentVolumeClaim",
-        "metadata": {
-            "name": claim_name(folder),
-            "namespace": NAMESPACE,
-            "annotations": {
-                ANN_RESTORING: Value::Null,
-                ANN_RESTORE_FAILED: error.map(|e| Value::String(e.to_string())).unwrap_or(Value::Null),
-            },
-        },
     })
 }
 
@@ -787,42 +736,16 @@ pub(crate) async fn owner_claim_of(client: &Client, folder: &str) -> anyhow::Res
     .ok_or_else(|| anyhow::anyhow!("the folder {folder} does not exist"))
 }
 
-pub(crate) fn backup_patch(folder: &str, backup: &FolderBackup) -> Value {
-    json!({
-        "apiVersion": "v1",
-        "kind": "PersistentVolumeClaim",
-        "metadata": {
-            "name": claim_name(folder),
-            "namespace": NAMESPACE,
-            "annotations": {
-                ANN_BACKUP: serde_json::to_string(backup).unwrap_or_default(),
-            },
-        },
-    })
-}
-
-pub(crate) async fn set_backup(
+pub(crate) async fn create_named(
     client: &Client,
     folder: &str,
-    backup: &FolderBackup,
+    title: &str,
+    storage: &str,
 ) -> anyhow::Result<()> {
     anyhow::ensure!(is_name(folder), "{folder:?} is not a folder name");
-    crate::k8s::merge_patch(client, &backup_patch(folder, backup)).await?;
+    ensure_namespace(client).await?;
+    crate::k8s::create(client, &files_claim(folder, title, storage)).await?;
     Ok(())
-}
-
-pub(crate) async fn create_restored(
-    client: &Client,
-    source: &str,
-    when: &str,
-) -> anyhow::Result<String> {
-    let claim = owner_claim_of(client, source).await?;
-    let taken: BTreeSet<String> = list(client).await?.into_iter().map(|f| f.name).collect();
-    let wanted =
-        name_from_title(&format!("{source} restored")).unwrap_or_else(|| source.to_string());
-    let name = free_name(&wanted, &taken);
-    crate::k8s::create(client, &restored_claim(&name, &claim, when)).await?;
-    Ok(name)
 }
 
 pub(crate) async fn wait_until_ready(client: &Client, folder: &str) -> anyhow::Result<()> {
@@ -865,6 +788,15 @@ pub(crate) async fn list(client: &Client) -> anyhow::Result<Vec<Folder>> {
     Ok(folders)
 }
 
+async fn ensure_namespace(client: &Client) -> anyhow::Result<()> {
+    crate::k8s::apply(
+        client,
+        &json!({ "apiVersion": "v1", "kind": "Namespace", "metadata": { "name": NAMESPACE } }),
+    )
+    .await?;
+    Ok(())
+}
+
 pub(crate) async fn create(client: &Client, title: &str, size_gib: u64) -> anyhow::Result<String> {
     let title = title.trim();
     let wanted = name_from_title(title).ok_or_else(|| {
@@ -874,15 +806,7 @@ pub(crate) async fn create(client: &Client, title: &str, size_gib: u64) -> anyho
         (1..=MAX_SIZE_GIB).contains(&size_gib),
         "a folder holds between 1 and {MAX_SIZE_GIB} GiB"
     );
-    crate::k8s::apply(
-        client,
-        &json!({
-            "apiVersion": "v1",
-            "kind": "Namespace",
-            "metadata": { "name": NAMESPACE },
-        }),
-    )
-    .await?;
+    ensure_namespace(client).await?;
     let taken: BTreeSet<String> = list(client).await?.into_iter().map(|f| f.name).collect();
     let name = free_name(&wanted, &taken);
     crate::k8s::create(client, &owner_claim(&name, title, size_gib)).await?;
@@ -1132,12 +1056,6 @@ mod tests {
                 used_by: vec!["jellyfin".into()],
                 kind: KIND_FILES.into(),
                 app: None,
-                backup: FolderBackup {
-                    enabled: false,
-                    schedule: DEFAULT_FOLDER_SCHEDULE.into(),
-                },
-                restoring_from: None,
-                restore_error: None,
             }
         );
         claim["status"] = json!({ "phase": "Pending" });
@@ -1308,6 +1226,48 @@ mod tests {
         assert!(users(&gone, "jellyfin-data").is_empty());
     }
 
+    fn kept_claim(folder: &str, release: &str, claim: &str) -> Value {
+        let owner = StateOwner {
+            app: "a".into(),
+            release: release.into(),
+            claim: claim.into(),
+        };
+        let mut c = state_owner_claim(folder, folder, &owner, "50Gi");
+        c["spec"]["volumeName"] = json!(owner_volume_name(folder));
+        c
+    }
+
+    #[test]
+    fn data_kept_after_an_uninstall_is_found_by_the_release_that_made_it() {
+        let claims = vec![
+            kept_claim("jellyfin-data", "jellyfin", "jellyfin-data"),
+            kept_claim("media-sonarr-config", "media-sonarr", "media-sonarr-config"),
+            kept_claim("other-data", "other", "other-data"),
+            owner_claim("movies", "Movies", 10),
+        ];
+        let found = kept_data_of(&claims, &[], "jellyfin", &[]);
+        assert_eq!(
+            found,
+            vec![KeptData {
+                folder: "jellyfin-data".into(),
+                claim: "jellyfin-data".into(),
+                volume: owner_volume_name("jellyfin-data"),
+            }]
+        );
+        let pack = kept_data_of(&claims, &[], "media", &["sonarr".to_string()]);
+        assert_eq!(pack.len(), 1);
+        assert_eq!(pack[0].claim, "media-sonarr-config");
+    }
+
+    #[test]
+    fn data_an_installed_app_still_uses_is_never_handed_to_a_second_app() {
+        let claims = vec![kept_claim("jellyfin-data", "jellyfin", "jellyfin-data")];
+        let in_use = vec![state_pv("jellyfin-data", "yolab-jellyfin", "Bound")];
+        assert!(kept_data_of(&claims, &in_use, "jellyfin", &[]).is_empty());
+        let released = vec![state_pv("jellyfin-data", "yolab-jellyfin", "Released")];
+        assert_eq!(kept_data_of(&claims, &released, "jellyfin", &[]).len(), 1);
+    }
+
     #[test]
     fn removing_a_data_folder_lets_its_original_volume_delete_the_files() {
         let volumes = vec![
@@ -1354,86 +1314,13 @@ mod tests {
     }
 
     #[test]
-    fn a_restored_copy_is_a_plain_folder_not_the_apps_data() {
-        let mut source = owner_claim("jellyfin-data", "Jellyfin", 50);
-        source["metadata"]["labels"][LABEL_KIND] = json!(KIND_STATE);
-        source["metadata"]["annotations"][ANN_STATE_RELEASE] = json!("jellyfin");
-        source["metadata"]["annotations"][ANN_STATE_CLAIM] = json!("jellyfin-data");
-        let copy = restored_claim("jellyfin-data-restored", &source, "2026-10-11");
-        assert_eq!(copy["metadata"]["labels"][LABEL_KIND], KIND_FILES);
-        assert_eq!(
-            copy["metadata"]["annotations"][ANN_RESTORING],
-            "jellyfin-data@2026-10-11"
-        );
-        assert!(
-            copy["metadata"]["annotations"][ANN_STATE_RELEASE].is_null(),
-            "a copy must never look like the app's own data folder"
-        );
-        assert!(copy["metadata"]["annotations"][ANN_STATE_CLAIM].is_null());
-        assert_eq!(copy["spec"]["storageClassName"], "yolab-cephfs");
-    }
-
-    #[test]
-    fn a_files_folder_is_not_backed_up_unless_asked_and_a_data_folder_is() {
-        let files = owner_claim("movies", "Movies", 10);
-        assert_eq!(
-            FolderBackup::of(&files),
-            FolderBackup::default_for(KIND_FILES)
-        );
-        assert!(!FolderBackup::of(&files).enabled);
-        let owner = StateOwner {
-            app: "a".into(),
-            release: "a".into(),
-            claim: "a-data".into(),
-        };
-        assert!(FolderBackup::of(&state_owner_claim("a-data", "a-data", &owner, "1Gi")).enabled);
-        let mut chosen = files.clone();
-        chosen["metadata"]["annotations"][ANN_BACKUP] =
-            json!(r#"{"enabled":true,"schedule":"0 1 * * *"}"#);
-        assert_eq!(
-            FolderBackup::of(&chosen),
-            FolderBackup {
-                enabled: true,
-                schedule: "0 1 * * *".into()
-            }
-        );
-    }
-
-    fn folder(kind: &str, enabled: bool, used_by: &[&str]) -> Folder {
-        Folder {
-            name: "f".into(),
-            title: "f".into(),
-            size: "1Gi".into(),
-            ready: true,
-            used_by: used_by.iter().map(|s| s.to_string()).collect(),
-            kind: kind.into(),
-            app: None,
-            backup: FolderBackup {
-                enabled,
-                schedule: DEFAULT_FOLDER_SCHEDULE.into(),
-            },
-            restoring_from: None,
-            restore_error: None,
-        }
-    }
-
-    #[test]
-    fn a_files_folder_is_backed_up_on_its_own_when_asked_whoever_uses_it() {
-        assert!(folder(KIND_FILES, true, &["jellyfin"]).backed_up_on_its_own());
-        assert!(!folder(KIND_FILES, false, &[]).backed_up_on_its_own());
-    }
-
-    #[test]
-    fn a_data_folder_is_backed_up_with_its_app_and_on_its_own_once_the_app_is_gone() {
-        assert!(!folder(KIND_STATE, true, &["jellyfin"]).backed_up_on_its_own());
-        assert!(folder(KIND_STATE, true, &[]).backed_up_on_its_own());
-    }
-
-    #[test]
-    fn a_folder_still_being_made_is_not_backed_up() {
-        let mut new = folder(KIND_FILES, true, &[]);
-        new.ready = false;
-        assert!(!new.backed_up_on_its_own());
+    fn a_folder_restored_under_its_own_name_is_a_plain_files_folder_of_the_backed_up_size() {
+        let claim = files_claim("movies", "Movies", "500Gi");
+        assert_eq!(claim["metadata"]["name"], "folder-movies");
+        assert_eq!(claim["metadata"]["labels"][LABEL_KIND], KIND_FILES);
+        assert_eq!(claim["metadata"]["annotations"][ANN_TITLE], "Movies");
+        assert_eq!(claim["spec"]["resources"]["requests"]["storage"], "500Gi");
+        assert_eq!(owner_claim("movies", "Movies", 500), claim);
     }
 
     mod against_kubernetes {
@@ -1795,6 +1682,7 @@ mod tests {
                 volume,
             )
             .await;
+            serve_volumes(&server, vec![]).await;
             accept_patches(&server).await;
 
             let reused = reuse_data_folders(&client, "yolab-jellyfin", "jellyfin", &[])
@@ -1828,6 +1716,7 @@ mod tests {
             )
             .await;
             accept_patches(&server).await;
+            serve_volumes(&server, vec![]).await;
             assert!(
                 reuse_data_folders(&client, "yolab-jellyfin", "jellyfin", &[])
                     .await

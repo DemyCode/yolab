@@ -5,6 +5,9 @@ import { ArrowLeft, RefreshCw } from "lucide-react";
 import { Page } from "@/components/AppShell";
 import { AppAccess } from "@/components/AppAccess";
 import { AppIconTile } from "@/components/AppIcon";
+import { RestoreFolders } from "@/components/RestoreFolders";
+import { NO_CHOICES, choicesFor, type RestoreChoices } from "@/lib/restore";
+import { useRestorePlan } from "@/lib/useRestorePlan";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog, Sheet } from "@/components/ui/sheet";
 import {
@@ -411,6 +414,11 @@ function RestoreSheet({
   const [selected, setSelected] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [picked, setPicked] = useState<RestoreChoices>(NO_CHOICES);
+  const restorePlan = useRestorePlan(
+    open && selected ? `yolab-${instanceName}` : null,
+    selected ?? "",
+  );
 
   useEffect(() => {
     if (!open) return;
@@ -450,6 +458,9 @@ function RestoreSheet({
       await api.post("/api/backups/restore", {
         namespace: `yolab-${instanceName}`,
         snapshot_id: selected,
+        ...(restorePlan.plan
+          ? { choices: choicesFor(restorePlan.plan, "in-place", picked, null) }
+          : {}),
       });
       onStarted(snapshots?.find((s) => s.id === selected)?.time ?? null);
       onClose();
@@ -465,7 +476,7 @@ function RestoreSheet({
       open={open}
       onClose={onClose}
       title={`Restore ${name}`}
-      subtitle="Its files and settings go back to the backup you pick. Anything newer is lost."
+      subtitle="Its settings go back to the backup you pick. Choose below what happens to its data and folders; whatever is replaced loses anything newer."
     >
       {snapshots === null ? (
         <div className="flex items-center gap-2 py-4 text-sm text-fg-muted">
@@ -506,6 +517,20 @@ function RestoreSheet({
             )}
           </AnimatedList>
         </div>
+      )}
+
+      {selected && snapshots && snapshots.length > 0 && (
+        <Section title="What comes back">
+          <RestoreFolders
+            plan={restorePlan.plan}
+            error={restorePlan.error}
+            mode="in-place"
+            app={instanceName}
+            picked={picked}
+            onPick={setPicked}
+            inSettings={null}
+          />
+        </Section>
       )}
 
       {error && <p className="mt-3 text-sm text-danger">{error}</p>}

@@ -59,6 +59,10 @@ pub fn build_router(state: AppState) -> Router {
             "/api/backups/apps/{namespace}/definition",
             get(backups::app_definition_from_backup),
         )
+        .route(
+            "/api/backups/apps/{namespace}/folders",
+            get(backups::app_restore_plan),
+        )
         .route("/api/backups/protected", get(backups::list_protected_apps))
         .route(
             "/api/backups/apps/{namespace}/points",
@@ -153,10 +157,6 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/links", get(apps::list_links))
         .route("/api/folders", get(folders::list).post(folders::create))
         .route("/api/folders/{name}", delete(folders::remove))
-        .route("/api/folders/{name}/backup", put(folders::set_backup))
-        .route("/api/folders/{name}/run-now", post(folders::run_now))
-        .route("/api/folders/{name}/points", get(folders::points))
-        .route("/api/folders/{name}/restore", post(folders::restore))
         .route("/api/apps", get(apps::list_apps))
         .route(
             "/api/apps/{id}",

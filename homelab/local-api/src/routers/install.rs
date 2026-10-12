@@ -31,6 +31,8 @@ pub struct InstallSource {
     pub snapshot_id: Option<String>,
     #[serde(default)]
     pub with_data: bool,
+    #[serde(default)]
+    pub choices: crate::routers::restore_folders::Choices,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,6 +59,7 @@ pub(crate) enum DataOrigin {
     Backup {
         namespace: String,
         snapshot_id: String,
+        choices: crate::routers::restore_folders::Choices,
     },
     Live {
         namespace: String,
@@ -170,6 +173,7 @@ fn data_origin(
     with_data: bool,
     namespace: &str,
     snapshot_id: Option<String>,
+    choices: &crate::routers::restore_folders::Choices,
 ) -> Result<Option<DataOrigin>, String> {
     if !with_data {
         return Ok(None);
@@ -179,6 +183,7 @@ fn data_origin(
     Ok(Some(DataOrigin::Backup {
         namespace: namespace.to_string(),
         snapshot_id,
+        choices: choices.clone(),
     }))
 }
 
@@ -220,7 +225,12 @@ pub(crate) fn resolve_sources(source: Option<&InstallSource>) -> Result<Sources,
             let snapshot_id = given(&source.snapshot_id)
                 .ok_or_else(|| "which backup should this app be restored from?".to_string())?;
             check_backup_ref(&namespace, &snapshot_id)?;
-            let data = data_origin(source.with_data, &namespace, Some(snapshot_id.clone()))?;
+            let data = data_origin(
+                source.with_data,
+                &namespace,
+                Some(snapshot_id.clone()),
+                &source.choices,
+            )?;
             Ok(Sources {
                 config: ConfigOrigin::Backup {
                     namespace,
@@ -445,10 +455,27 @@ async fn apply_chart<H: Host + 'static>(
     )
     .await?;
 
+    let members = crate::routers::apps::chart_members(&staged.chart_dir);
+    if let DataFill::Backup(payload) = fill {
+        let prepared = payload.prepare_folders(b, &staged.folders).await?;
+        if !prepared.is_empty() {
+            log.say(format!("Bringing back its folders ({})", prepared.join(", ")));
+        }
+    }
+    crate::folders::attach(&b.kube, &staged.ns, &staged.folders).await?;
+
     match fill {
         DataFill::Backup(payload) => {
             log.say("Copying this app's files…");
-            payload.fill_volumes(b, &staged.ns, job.release).await?;
+            let reused = payload
+                .fill_volumes(b, &staged.ns, job.release, &members)
+                .await?;
+            if !reused.is_empty() {
+                log.say(format!(
+                    "Pointing this app back at the data it kept ({})",
+                    reused.join(", ")
+                ));
+            }
         }
         DataFill::Live { source_namespace } => {
             log.say("Copying this app's files…");
@@ -463,7 +490,6 @@ async fn apply_chart<H: Host + 'static>(
         DataFill::None => {}
     }
 
-    let members = crate::routers::apps::chart_members(&staged.chart_dir);
     if job.reuse_kept_data {
         match crate::folders::reuse_data_folders(&b.kube, &staged.ns, job.release, &members).await {
             Ok(reused) if !reused.is_empty() => {
@@ -575,10 +601,16 @@ async fn install_inner<H: Host + 'static>(
         Some(DataOrigin::Backup {
             namespace,
             snapshot_id,
+            choices,
         }) => {
             log.say("Reading the backup…");
-            let payload =
-                crate::routers::restore::backup_payload(b, namespace, snapshot_id).await?;
+            let payload = crate::routers::restore::backup_payload(
+                b,
+                namespace,
+                snapshot_id,
+                choices.clone(),
+            )
+            .await?;
             same_app(&plan.app_id, payload.app_id(), "that backup")
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
             DataFill::Backup(Box::new(payload))
@@ -1132,6 +1164,7 @@ mod tests {
             Some(DataOrigin::Backup {
                 namespace: "yolab-gitea-ab12".into(),
                 snapshot_id: "deadbeef".into(),
+                choices: Default::default(),
             })
         );
     }

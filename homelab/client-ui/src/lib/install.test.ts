@@ -154,6 +154,27 @@ describe("installSource", () => {
     });
   });
 
+  it("restores with what to do with each folder", () => {
+    const choices = {
+      folders: { movies: "replace" as const },
+      data: { "gitea-data": "use" as const },
+    };
+    expect(
+      installSource(
+        installOrigin(params("restore=yolab-gitea-ab12&snapshot=d1")),
+        true,
+        "d1",
+        choices,
+      ),
+    ).toEqual({
+      kind: "backup",
+      namespace: "yolab-gitea-ab12",
+      snapshot_id: "d1",
+      with_data: true,
+      choices,
+    });
+  });
+
   it("falls back to the backup the restore was started from", () => {
     const source = installSource(
       installOrigin(params("restore=yolab-gitea-ab12&snapshot=d1")),
