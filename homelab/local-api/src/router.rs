@@ -154,7 +154,6 @@ pub fn build_router(state: AppState) -> Router {
             "/api/apps/catalog/{id}/refresh",
             post(apps::refresh_catalog_app),
         )
-        .route("/api/links", get(apps::list_links))
         .route("/api/folders", get(folders::list).post(folders::create))
         .route("/api/folders/{name}", delete(folders::remove))
         .route("/api/apps", get(apps::list_apps))

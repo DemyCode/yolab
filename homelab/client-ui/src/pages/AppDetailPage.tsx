@@ -28,7 +28,6 @@ import { api, streamEvents } from "@/lib/api";
 import { BACKUP_PRESETS } from "@/lib/backups";
 import { formatDateTime, relativeTime } from "@/lib/format";
 import { useApi } from "@/lib/useResource";
-import { usedBy, usesOf } from "@/lib/links";
 import {
   appDisplayName,
   appLinks,
@@ -1118,32 +1117,6 @@ export function AppDetailPage() {
           <Row
             label="Comes from"
             detail={`"${entry.repo}", a source you added yourself`}
-          />
-        )}
-        {usesOf(app).length > 0 && (
-          <Row
-            label="Uses"
-            detail={usesOf(app).map((name, i) => (
-              <span key={name}>
-                {i > 0 && ", "}
-                <Link to={`/app/${name}`} className="text-primary">
-                  {name}
-                </Link>
-              </span>
-            ))}
-          />
-        )}
-        {usedBy(app, apps.data ?? []).length > 0 && (
-          <Row
-            label="Used by"
-            detail={usedBy(app, apps.data ?? []).map((name, i) => (
-              <span key={name}>
-                {i > 0 && ", "}
-                <Link to={`/app/${name}`} className="text-primary">
-                  {name}
-                </Link>
-              </span>
-            ))}
           />
         )}
         {members.length > 0 && (

@@ -10,15 +10,7 @@ export interface SchemaProp {
   maxLength?: number;
   writeOnly?: boolean;
   generate?: boolean;
-  "x-yolab-from"?: string[];
-  "x-yolab-outputs"?: string[];
   properties?: Record<string, SchemaProp>;
-}
-
-const LINK_FORMATS = ["yolab-output", "connection"];
-
-export function isLink(prop: SchemaProp): boolean {
-  return LINK_FORMATS.includes(prop.format ?? "");
 }
 
 interface Branch {
@@ -83,9 +75,6 @@ function fieldUi(prop: SchemaProp, domain: string): UiSchema | undefined {
   if (prop.format === "folder") {
     return { "ui:widget": "FolderWidget" };
   }
-  if (isLink(prop)) {
-    return { "ui:field": "LinkField" };
-  }
   if (prop.format === "yolab-token") {
     return { "ui:widget": "YolabTokenWidget" };
   }
@@ -99,7 +88,7 @@ function fieldUi(prop: SchemaProp, domain: string): UiSchema | undefined {
 }
 
 function nestedUi(prop: SchemaProp, domain: string): UiSchema {
-  if (prop.type === "object" && !isLink(prop) && prop.properties) {
+  if (prop.type === "object" && prop.properties) {
     return uiSchemaFor(prop as ConfigSchema, domain);
   }
   const ui: UiSchema = {};

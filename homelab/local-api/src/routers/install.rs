@@ -550,7 +550,7 @@ async fn apply_chart<H: Host + 'static>(
         instance_name: job.instance_name.to_string(),
         release: job.release.to_string(),
         service_name: staged.service_name.clone(),
-        config: job.config.clone(),
+        config: staged.config.clone(),
         volumes,
         resources,
         backup: job.backup.clone(),

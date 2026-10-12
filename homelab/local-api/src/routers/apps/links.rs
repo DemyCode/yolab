@@ -1,61 +1,31 @@
 use super::*;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use serde_json::Map;
 
 use crate::appschema::AppSchema;
 
-const FORMAT: &str = "yolab-output";
-const LEGACY_FORMAT: &str = "connection";
 pub(crate) const FROM: &str = "$from";
 const LEGACY_FROM: &str = "from";
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct LinkField {
-    pub charts: Vec<String>,
-    pub outputs: Vec<String>,
-}
-
-fn strings(value: &Value) -> Vec<String> {
-    value
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(Value::as_str)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-        .collect()
-}
-
-impl LinkField {
-    fn of(spec: &Value) -> Option<LinkField> {
-        let field = match spec["format"].as_str()? {
-            FORMAT => LinkField {
-                charts: strings(&spec["x-yolab-from"]),
-                outputs: strings(&spec["x-yolab-outputs"]),
-            },
-            LEGACY_FORMAT => LinkField {
-                charts: Vec::new(),
-                outputs: spec["properties"]
-                    .as_object()
-                    .map(|p| p.keys().filter(|k| *k != LEGACY_FROM).cloned().collect())
-                    .unwrap_or_default(),
-            },
-            _ => return None,
-        };
-        (!field.outputs.is_empty()).then_some(field)
-    }
-}
-
-pub(crate) fn link_fields(config_schema: &Value) -> BTreeMap<String, LinkField> {
-    fn walk(node: &Value, found: &mut BTreeMap<String, LinkField>) {
+pub(crate) fn field_outputs(config_schema: &Value) -> BTreeMap<String, Vec<String>> {
+    fn walk(node: &Value, found: &mut BTreeMap<String, Vec<String>>) {
         match node {
             Value::Object(map) => {
                 if let Some(props) = map.get("properties").and_then(Value::as_object) {
                     for (name, spec) in props {
-                        if let Some(field) = LinkField::of(spec) {
-                            found.insert(name.clone(), field);
+                        let boxes: Vec<String> = spec["properties"]
+                            .as_object()
+                            .map(|p| {
+                                p.keys()
+                                    .filter(|k| *k != FROM && *k != LEGACY_FROM)
+                                    .cloned()
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        if !boxes.is_empty() {
+                            found.insert(name.clone(), boxes);
                         }
                     }
                 }
@@ -118,13 +88,9 @@ pub(crate) fn chosen(value: Option<&Value>) -> Option<std::result::Result<LinkRe
             LinkRef::parse(text).ok_or_else(|| format!("{text:?} is not an installed app")),
         );
     }
-    let legacy = value[LEGACY_FROM].as_str().filter(|s| !s.is_empty())?;
-    Some(
-        legacy
-            .strip_prefix("yolab-")
-            .and_then(LinkRef::parse)
-            .ok_or_else(|| format!("{legacy:?} is not an installed app")),
-    )
+    let legacy = value[LEGACY_FROM].as_str()?;
+    let instance = legacy.strip_prefix("yolab-")?;
+    Some(LinkRef::parse(instance).ok_or_else(|| format!("{legacy:?} is not an installed app")))
 }
 
 pub(crate) fn picked(
@@ -149,30 +115,18 @@ pub(crate) fn picked(
     }
 }
 
-pub(crate) fn may_link(field: &LinkField, link: &LinkRef, app_id: &str) -> bool {
-    field.charts.is_empty()
-        || match &link.member {
-            Some(member) => field.charts.contains(member),
-            None => field.charts.iter().any(|c| c == app_id),
-        }
-}
-
 async fn provider_outputs(
     client: &Client,
     catalog: &std::path::Path,
     link: &LinkRef,
-) -> anyhow::Result<(String, BTreeMap<String, String>)> {
+) -> anyhow::Result<BTreeMap<String, String>> {
     let ns = link.namespace();
-    let found = namespace(client, &ns).await?.ok_or_else(|| {
-        anyhow::anyhow!(
-            "{} is no longer installed — pick another one in this app's settings",
+    if namespace(client, &ns).await?.is_none() {
+        anyhow::bail!(
+            "{} is no longer installed — type its address in this app's settings instead",
             link.describe()
-        )
-    })?;
-    let app_id = found["metadata"]["annotations"][ANN_APP_ID]
-        .as_str()
-        .unwrap_or_default()
-        .to_string();
+        );
+    }
     let known = match known_outputs(client, catalog, &ns, true).await {
         Ok(known) => known,
         Err(_) => known_outputs(client, catalog, &ns, false).await?,
@@ -181,9 +135,11 @@ async fn provider_outputs(
         Ok(definition) => definition.config,
         Err(_) => known.settings.clone(),
     };
-    Ok((
-        app_id,
-        crate::outputs::values(&known.specs, &known.remembered, &config, &ns),
+    Ok(crate::outputs::values(
+        &known.specs,
+        &known.remembered,
+        &config,
+        &ns,
     ))
 }
 
@@ -194,123 +150,26 @@ pub(crate) async fn resolve_links(
     config: &Map<String, Value>,
 ) -> anyhow::Result<Map<String, Value>> {
     let mut resolved = config.clone();
-    for (name, field) in link_fields(&app.config()) {
-        let Some(choice) = chosen(config.get(&name)) else {
+    let boxes = field_outputs(&app.config());
+    for (name, value) in config {
+        let Some(choice) = chosen(Some(value)) else {
             continue;
         };
         let link = choice.map_err(|why| anyhow::anyhow!("{name}: {why}"))?;
-        let (app_id, found) = provider_outputs(client, catalog, &link).await?;
-        anyhow::ensure!(
-            may_link(&field, &link, &app_id),
-            "{name}: {} is not one of {} — pick another one in this app's settings",
-            link.describe(),
-            field.charts.join(", ")
-        );
-        let values = picked(&found, &link, &field.outputs).map_err(|missing| {
+        let outputs = boxes.get(name).ok_or_else(|| {
+            anyhow::anyhow!("{name}: fill it in by hand in this app's settings")
+        })?;
+        let found = provider_outputs(client, catalog, &link).await?;
+        let values = picked(&found, &link, outputs).map_err(|missing| {
             anyhow::anyhow!(
                 "{} has not shown its {} yet — open it once it is running, then apply this app's settings again",
                 link.describe(),
                 missing.join(", ")
             )
         })?;
-        resolved.insert(name, Value::Object(values));
+        resolved.insert(name.clone(), Value::Object(values));
     }
     Ok(resolved)
-}
-
-#[derive(Serialize, Debug, PartialEq, Eq)]
-pub struct LinkCandidate {
-    pub reference: String,
-    pub instance: String,
-    pub member: Option<String>,
-    pub app_id: String,
-}
-
-pub(crate) struct OfferedOutputs {
-    pub namespace: String,
-    pub app_id: String,
-    pub keys: BTreeSet<String>,
-}
-
-pub(crate) fn candidates(
-    apps: &[OfferedOutputs],
-    charts: &[String],
-    outputs: &[String],
-) -> Vec<LinkCandidate> {
-    let mut found = Vec::new();
-    for app in apps {
-        let Some(instance) = app.namespace.strip_prefix("yolab-") else {
-            continue;
-        };
-        let offers = |prefix: &str| {
-            !outputs.is_empty()
-                && outputs
-                    .iter()
-                    .all(|o| app.keys.contains(&format!("{prefix}{o}")))
-        };
-        if (charts.is_empty() || charts.contains(&app.app_id)) && offers("") {
-            found.push(LinkCandidate {
-                reference: instance.to_string(),
-                instance: instance.to_string(),
-                member: None,
-                app_id: app.app_id.clone(),
-            });
-        }
-        for member in charts {
-            if offers(&format!("{member}_")) {
-                found.push(LinkCandidate {
-                    reference: format!("{instance}/{member}"),
-                    instance: instance.to_string(),
-                    member: Some(member.clone()),
-                    app_id: app.app_id.clone(),
-                });
-            }
-        }
-    }
-    found.sort_by(|a, b| a.reference.cmp(&b.reference));
-    found
-}
-
-fn listed(text: &str) -> Vec<String> {
-    text.split(',')
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-        .collect()
-}
-
-#[derive(Deserialize)]
-pub struct LinkQuery {
-    #[serde(default)]
-    pub from: String,
-    #[serde(default)]
-    pub outputs: String,
-}
-
-pub async fn list_links(
-    State(state): State<AppState>,
-    axum::extract::Query(query): axum::extract::Query<LinkQuery>,
-) -> Result<Json<Vec<LinkCandidate>>> {
-    let client = state.kube.client().await?;
-    let catalog = state.config.catalog_dir();
-    let mut apps = Vec::new();
-    for app in installed_apps(&client).await? {
-        let schema = installed_schema(&client, &app.namespace, &app.app_id, &catalog).await;
-        apps.push(OfferedOutputs {
-            keys: schema
-                .applicable_outputs(&app.settings)
-                .into_iter()
-                .map(|o| o.key)
-                .collect(),
-            namespace: app.namespace,
-            app_id: app.app_id,
-        });
-    }
-    Ok(Json(candidates(
-        &apps,
-        &listed(&query.from),
-        &listed(&query.outputs),
-    )))
 }
 
 #[cfg(test)]
@@ -323,9 +182,10 @@ mod tests {
             "properties": { "config": { "type": "object", "properties": {
                 "download_client": {
                     "type": "object",
-                    "format": "yolab-output",
-                    "x-yolab-from": ["qbittorrent"],
-                    "x-yolab-outputs": ["internal_url", "password"],
+                    "properties": {
+                        "internal_url": { "type": "string" },
+                        "password": { "type": "string" },
+                    },
                 },
                 "subdomain": { "type": "string" },
             }}}
@@ -348,57 +208,45 @@ mod tests {
     }
 
     #[test]
-    fn a_link_field_names_the_charts_and_outputs_it_takes() {
+    fn a_link_saved_before_links_were_removed_takes_the_boxes_its_field_has() {
         assert_eq!(
-            link_fields(&radarr().config())
+            field_outputs(&radarr().config())
                 .into_iter()
                 .collect::<Vec<_>>(),
             vec![(
                 "download_client".to_string(),
-                LinkField {
-                    charts: strings(&["qbittorrent"]),
-                    outputs: strings(&["internal_url", "password"]),
-                }
+                strings(&["internal_url", "password"])
             )]
         );
     }
 
     #[test]
-    fn a_link_that_takes_no_outputs_is_no_link() {
-        let empty = json!({ "properties": { "x": { "format": "yolab-output" } } });
-        assert!(link_fields(&empty).is_empty());
-    }
-
-    #[test]
-    fn a_link_behind_a_switch_is_found() {
+    fn a_field_behind_a_switch_is_found() {
         let schema = json!({
             "properties": { "mode": { "type": "string" } },
             "dependencies": { "mode": { "oneOf": [{ "properties": {
-                "existing_client": {
-                    "format": "yolab-output",
-                    "x-yolab-from": ["qbittorrent"],
-                    "x-yolab-outputs": ["internal_url"],
-                }
+                "existing_client": { "properties": { "internal_url": {} } }
             }}]}}
         });
-        assert!(link_fields(&schema).contains_key("existing_client"));
+        assert_eq!(
+            field_outputs(&schema)["existing_client"],
+            strings(&["internal_url"])
+        );
     }
 
     #[test]
-    fn an_old_connection_field_takes_the_outputs_it_has_boxes_for_from_any_app() {
+    fn an_old_connection_field_never_counts_its_from_box_as_an_output() {
         let schema = json!({ "properties": { "ollama": {
             "type": "object",
-            "format": "connection",
-            "x-yolab-requires": "ollama",
             "properties": { "from": {}, "api": {} },
         }}});
-        assert_eq!(
-            link_fields(&schema)["ollama"],
-            LinkField {
-                charts: vec![],
-                outputs: strings(&["api"])
-            }
-        );
+        assert_eq!(field_outputs(&schema)["ollama"], strings(&["api"]));
+    }
+
+    #[test]
+    fn a_plain_field_has_no_boxes() {
+        let schema = json!({ "properties": { "subdomain": { "type": "string" } } });
+        assert!(field_outputs(&schema).is_empty());
     }
 
     #[test]
@@ -450,10 +298,15 @@ mod tests {
             Some(Ok("ollama".into()))
         );
         assert!(matches!(
-            pick(json!({ "from": "kube-system" })),
+            pick(json!({ "from": "yolab-Kube System" })),
             Some(Err(_))
         ));
         assert_eq!(pick(json!({ "from": "", "api": "http://x" })), None);
+        assert_eq!(
+            pick(json!({ "from": "me@example.com", "host": "smtp.example.com" })),
+            None,
+            "a mail sender is a setting, not a link"
+        );
     }
 
     #[test]
@@ -497,79 +350,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_link_only_reaches_the_charts_it_names() {
-        let field = LinkField {
-            charts: strings(&["qbittorrent"]),
-            outputs: strings(&["password"]),
-        };
-        assert!(may_link(&field, &reference("q"), "qbittorrent"));
-        assert!(!may_link(&field, &reference("t"), "transmission"));
-        assert!(may_link(
-            &field,
-            &reference("media/qbittorrent"),
-            "movies-tv"
-        ));
-        assert!(!may_link(&field, &reference("media/sonarr"), "movies-tv"));
-        let any = LinkField {
-            charts: vec![],
-            outputs: strings(&["api"]),
-        };
-        assert!(may_link(&any, &reference("x"), "whatever"));
-    }
-
-    fn offered(namespace: &str, app_id: &str, keys: &[&str]) -> OfferedOutputs {
-        OfferedOutputs {
-            namespace: namespace.into(),
-            app_id: app_id.into(),
-            keys: keys.iter().map(|k| k.to_string()).collect(),
-        }
-    }
-
-    #[test]
-    fn standalone_apps_and_apps_inside_packs_are_both_offered() {
-        let apps = vec![
-            offered("yolab-q", "qbittorrent", &["internal_url", "password"]),
-            offered(
-                "yolab-media",
-                "movies-tv",
-                &[
-                    "qbittorrent_internal_url",
-                    "qbittorrent_password",
-                    "sonarr_api_key",
-                ],
-            ),
-            offered("yolab-t", "transmission", &["internal_url", "password"]),
-            offered("yolab-half", "qbittorrent", &["internal_url"]),
-        ];
-        let found = candidates(
-            &apps,
-            &strings(&["qbittorrent"]),
-            &strings(&["internal_url", "password"]),
-        );
-        assert_eq!(
-            found
-                .iter()
-                .map(|c| c.reference.as_str())
-                .collect::<Vec<_>>(),
-            vec!["media/qbittorrent", "q"]
-        );
-        assert_eq!(found[0].app_id, "movies-tv");
-        assert_eq!(found[0].member.as_deref(), Some("qbittorrent"));
-    }
-
-    #[test]
-    fn asking_for_no_outputs_offers_nothing() {
-        let apps = vec![offered("yolab-q", "qbittorrent", &["internal_url"])];
-        assert!(candidates(&apps, &strings(&["qbittorrent"]), &[]).is_empty());
-    }
-
-    #[test]
-    fn a_query_lists_its_names_without_blanks() {
-        assert_eq!(listed(" a, b ,,"), strings(&["a", "b"]));
-        assert!(listed("").is_empty());
-    }
-
     mod against_kubernetes {
         use super::*;
         use crate::k8s::testing::{api_server, serve, status};
@@ -611,6 +391,7 @@ mod tests {
             .await
             .unwrap_err();
             assert!(format!("{e:#}").contains("no longer installed"), "{e:#}");
+            assert!(format!("{e:#}").contains("type its address"), "{e:#}");
         }
 
         #[tokio::test]

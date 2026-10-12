@@ -19,7 +19,7 @@ import { formatDateTime, generateSecret } from "@/lib/format";
 import Form from "@rjsf/core";
 import type { RJSFSchema } from "@rjsf/utils";
 import validator from "@rjsf/validator-ajv8";
-import { fields, templates, widgets } from "@/components/form/registry";
+import { templates, widgets } from "@/components/form/registry";
 import {
   copiesDataByDefault,
   installBlocker,
@@ -633,7 +633,6 @@ export function InstallPage() {
             formContext={{ formData }}
             validator={validator}
             widgets={widgets}
-            fields={fields}
             templates={templates}
             liveValidate={false}
             showErrorList={false}

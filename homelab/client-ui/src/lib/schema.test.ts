@@ -338,16 +338,13 @@ describe("the file explorer's own ways in", () => {
   });
 });
 
-describe("another app's outputs", () => {
-  it("gets the link picker as a whole field, not one box per output", () => {
+describe("an address of another app", () => {
+  it("is typed in its own boxes, with the password hidden", () => {
     const ui = uiSchemaFor(
       {
         properties: {
           download_client: {
             type: "object",
-            format: "yolab-output",
-            "x-yolab-from": ["qbittorrent"],
-            "x-yolab-outputs": ["internal_url", "password"],
             properties: {
               internal_url: { type: "string" },
               password: { type: "string", writeOnly: true },
@@ -356,45 +353,9 @@ describe("another app's outputs", () => {
         },
       },
       "6.yolab.io",
-    ) as Record<string, Record<string, unknown>>;
-    expect(ui.download_client).toEqual({ "ui:field": "LinkField" });
-  });
-
-  it("an app saved with the old connection format gets the same picker", () => {
-    const ui = uiSchemaFor(
-      {
-        properties: {
-          ollama: { type: "object", format: "connection" },
-        },
-      },
-      "6.yolab.io",
-    ) as Record<string, Record<string, unknown>>;
-    expect(ui.ollama["ui:field"]).toBe("LinkField");
-  });
-
-  it("a link inside a pack's switch gets the picker too", () => {
-    const ui = uiSchemaFor(
-      {
-        properties: {
-          download_client: { type: "string", default: "new" },
-        },
-        dependencies: {
-          download_client: {
-            oneOf: [
-              { properties: { download_client: { const: "new" } } },
-              {
-                properties: {
-                  download_client: { const: "existing" },
-                  existing_client: { type: "object", format: "yolab-output" },
-                },
-              },
-            ],
-          },
-        },
-      },
-      "6.yolab.io",
-    ) as Record<string, Record<string, unknown>>;
-    expect(ui.existing_client["ui:field"]).toBe("LinkField");
+    ) as Record<string, Record<string, Record<string, unknown>>>;
+    expect(ui.download_client["ui:field"]).toBeUndefined();
+    expect(ui.download_client.password["ui:widget"]).toBe("PasswordWidget");
   });
 });
 

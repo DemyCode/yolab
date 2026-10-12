@@ -74,7 +74,6 @@ pub(crate) const ROUTE_TABLE: &[(&str, &[&str])] = &[
     ("/api/store/comments/{id}", &["DELETE"]),
     ("/api/store/comments/{id}/report", &["POST"]),
     ("/api/apps/catalog/{id}/refresh", &["POST"]),
-    ("/api/links", &["GET"]),
     ("/api/folders", &["GET", "POST"]),
     ("/api/folders/{name}", &["DELETE"]),
     ("/api/apps", &["GET"]),

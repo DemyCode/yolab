@@ -1,4 +1,3 @@
-import { LinkField } from "./fields";
 import {
   ArrayFieldTemplate,
   FieldTemplate,
@@ -17,10 +16,6 @@ export const templates = {
   FieldTemplate,
   ObjectFieldTemplate,
   ArrayFieldTemplate,
-};
-
-export const fields = {
-  LinkField,
 };
 
 export const widgets = {

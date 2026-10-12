@@ -1573,6 +1573,7 @@ pub(crate) struct StagedInstall {
     pub(crate) chart_dir: std::path::PathBuf,
     pub(crate) values: tempfile::NamedTempFile,
     pub(crate) folders: std::collections::BTreeSet<String>,
+    pub(crate) config: serde_json::Map<String, Value>,
 }
 
 pub(crate) enum ChartAt<'a> {
@@ -1641,6 +1642,7 @@ pub(crate) async fn stage_install(
         chart_dir,
         values,
         folders,
+        config: resolved,
     })
 }
 
