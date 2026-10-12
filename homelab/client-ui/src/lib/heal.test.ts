@@ -98,7 +98,10 @@ describe("healedFrom", () => {
   });
 });
 
-const finishedHeal = (finished_at: number, failed: string | null = null): Heal => ({
+const finishedHeal = (
+  finished_at: number,
+  failed: string | null = null,
+): Heal => ({
   id: "h1",
   driver: "node1",
   running: false,
@@ -121,7 +124,12 @@ describe("the one banner a screen shows", () => {
         ["c", "error"],
       ]),
     ).toBe("b");
-    expect(oneBanner<"a" | "b">([["a", "warning"], ["b", "info"]])).toBe("a");
+    expect(
+      oneBanner<"a" | "b">([
+        ["a", "warning"],
+        ["b", "info"],
+      ]),
+    ).toBe("a");
   });
 
   it("nothing to say shows nothing", () => {
@@ -131,7 +139,9 @@ describe("the one banner a screen shows", () => {
 
 describe("the heal banner", () => {
   it("is red while a machine or disk is lost, and quiet when nothing happened", () => {
-    expect(healBannerTone({ ...status([]), problems: ["machines_gone"] }, 0)).toBe("error");
+    expect(
+      healBannerTone({ ...status([]), problems: ["machines_gone"] }, 0),
+    ).toBe("error");
     expect(healBannerTone(status([]), 0)).toBeNull();
     expect(healBannerTone(undefined, 0)).toBeNull();
   });
@@ -141,7 +151,10 @@ describe("the heal banner", () => {
     expect(healBannerTone(done, 1000 + 3600)).toBe("info");
     expect(healBannerTone(done, 1000 + 25 * 3600)).toBeNull();
     expect(
-      healBannerTone({ ...status([]), heal: finishedHeal(1000, "stopped") }, 1001),
+      healBannerTone(
+        { ...status([]), heal: finishedHeal(1000, "stopped") },
+        1001,
+      ),
     ).toBe("warning");
     expect(recentlyFinished(finishedHeal(1000), 1000 + 25 * 3600)).toBe(false);
   });

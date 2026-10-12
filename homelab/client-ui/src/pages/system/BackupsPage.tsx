@@ -113,7 +113,9 @@ export function BackupsPage() {
       await protectedApps.refresh();
       await showRecoveryKey(true);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Backups could not be turned on.");
+      setError(
+        e instanceof Error ? e.message : "Backups could not be turned on.",
+      );
     } finally {
       setEnabling(false);
     }
@@ -157,7 +159,11 @@ export function BackupsPage() {
             label="Backups are off"
             detail="Turn them on and every app is copied, encrypted, to storage outside your home."
             trailing={
-              <Button onClick={() => void enable()} loading={enabling} size="sm">
+              <Button
+                onClick={() => void enable()}
+                loading={enabling}
+                size="sm"
+              >
                 Turn on backups
               </Button>
             }

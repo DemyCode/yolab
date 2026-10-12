@@ -370,7 +370,9 @@ export function ForceHealCard() {
     );
   }
   if (s.problems.length === 0) {
-    return heal && recentlyFinished(heal, Date.now() / 1000) ? <HealProgress heal={heal} /> : null;
+    return heal && recentlyFinished(heal, Date.now() / 1000) ? (
+      <HealProgress heal={heal} />
+    ) : null;
   }
 
   const gone = s.survey.machines.filter((m) => !m.answers);
