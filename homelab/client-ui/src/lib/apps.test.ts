@@ -100,6 +100,50 @@ describe("appLinks", () => {
     ).toEqual([{ label: "Open", url: "https://git.box.yolab.io" }]);
   });
 
+  it("offers the person's own address next to the YoLab one", () => {
+    expect(
+      appLinks(
+        app({
+          config: { subdomain: "photos", custom_domain: "Photos.Example.com " },
+        }),
+        "box.yolab.io",
+      ),
+    ).toEqual([
+      { label: "Open", url: "https://photos.box.yolab.io" },
+      { label: "Your own address", url: "https://photos.example.com" },
+    ]);
+  });
+
+  it("never offers an own address the gateway does not serve", () => {
+    const off = {
+      subdomain: "p",
+      custom_domain: "p.example.com",
+      yolab_enabled: false,
+    };
+    expect(appLinks(app({ config: off }), "box.yolab.io")).toEqual([]);
+    const signIn = {
+      subdomain: "p",
+      custom_domain: "p.example.com",
+      auth_enabled: true,
+    };
+    expect(
+      appLinks(app({ config: signIn }), "box.yolab.io").map((l) => l.label),
+    ).toEqual(["Open"]);
+  });
+
+  it("lists the own address once when the app already prints it", () => {
+    const links = appLinks(
+      app({
+        config: { subdomain: "p", custom_domain: "p.example.com" },
+        outputs: [out("url", "https://p.example.com", "uri", "Web URL")],
+      }),
+      "box.yolab.io",
+    );
+    expect(
+      links.filter((l) => l.url === "https://p.example.com"),
+    ).toHaveLength(1);
+  });
+
   it("offers no YoLab address when the app has it switched off", () => {
     expect(
       appLinks(
