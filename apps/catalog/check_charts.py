@@ -1758,7 +1758,6 @@ def check_pack(chart_dir, charts, library_tgz, workdir, fail):
             continue
         docs = [d for d in yaml.safe_load_all(rendered) if d]
         check_pack_render(where, docs, members, fail)
-        if not extra:
         for field in folder_fields(schema):
             check_folders(where, field, docs, fail)
     return schema
