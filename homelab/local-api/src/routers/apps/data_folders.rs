@@ -96,7 +96,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("Chart.yaml"),
-            "apiVersion: v2\nname: movies-tv\nversion: 0.2.0\nannotations:\n  yolab.io/members: \"jellyfin,sonarr\"\n",
+            "apiVersion: v2\nname: movies-tv\nversion: 0.2.0\ndependencies:\n  - name: yolab-stack\n    version: \"0.1.0\"\n  - name: jellyfin\n    version: \"0.3.2\"\n  - name: sonarr\n    version: \"0.2.2\"\n",
         )
         .unwrap();
         assert_eq!(chart_members(dir.path()), vec!["jellyfin", "sonarr"]);

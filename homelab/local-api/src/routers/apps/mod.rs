@@ -27,7 +27,6 @@ pub(crate) use uninstall::*;
 
 const LABEL_MANAGED: &str = "yolab.io/managed";
 const LABEL_MEMBER: &str = "yolab.io/member";
-const ANN_MEMBERS: &str = "yolab.io/members";
 pub(crate) const ANN_APP_ID: &str = "yolab.io/app-id";
 pub(crate) const ANN_CHART_VERSION: &str = "yolab.io/chart-version";
 pub(crate) const ANN_CHART_REPO: &str = "yolab.io/chart-repo";
@@ -412,7 +411,16 @@ struct ChartYaml {
     type_: String,
     #[serde(default)]
     annotations: std::collections::HashMap<String, String>,
+    #[serde(default)]
+    dependencies: Vec<ChartDependency>,
 }
+
+#[derive(Deserialize)]
+struct ChartDependency {
+    name: String,
+}
+
+const LIBRARIES: [&str; 2] = ["yolab-common", "yolab-stack"];
 
 struct ChartMeta {
     chart: ChartYaml,
@@ -431,11 +439,11 @@ impl ChartMeta {
         self.ann(ANN_DISABLED).trim().is_empty()
     }
     fn members(&self) -> Vec<String> {
-        self.ann(ANN_MEMBERS)
-            .split(',')
-            .map(str::trim)
-            .filter(|m| !m.is_empty())
-            .map(str::to_string)
+        self.chart
+            .dependencies
+            .iter()
+            .map(|d| d.name.clone())
+            .filter(|name| !LIBRARIES.contains(&name.as_str()))
             .collect()
     }
     fn display_name(&self) -> String {
@@ -2136,10 +2144,10 @@ mod tests {
     #[test]
     fn a_pack_is_listed_with_the_apps_it_installs() {
         let dir = tempfile::tempdir().unwrap();
-        let entry = |ann: &str| {
+        let entry = |deps: &str| {
             std::fs::write(
                 dir.path().join("Chart.yaml"),
-                format!("apiVersion: v2\nname: movies-tv\nversion: 0.2.0\nannotations:\n{ann}"),
+                format!("apiVersion: v2\nname: movies-tv\nversion: 0.2.0\ndependencies:\n{deps}"),
             )
             .unwrap();
             super::catalog_entry_from(
@@ -2148,10 +2156,16 @@ mod tests {
                 &Default::default(),
             )
         };
-        let pack = entry("  yolab.io/members: \"jellyfin, sonarr,radarr\"\n");
+        let pack = entry(
+            "  - name: yolab-stack\n    version: \"0.1.0\"\n  - name: jellyfin\n    version: \"0.3.2\"\n  - name: sonarr\n    version: \"0.2.2\"\n",
+        );
         assert_eq!(pack.kind, "pack");
-        assert_eq!(pack.members, vec!["jellyfin", "sonarr", "radarr"]);
-        let app = entry("  yolab.io/tagline: Films\n");
+        assert_eq!(
+            pack.members,
+            vec!["jellyfin", "sonarr"],
+            "its apps are what it is built from, minus the libraries"
+        );
+        let app = entry("  - name: yolab-common\n    version: \"0.1.15\"\n");
         assert_eq!(app.kind, "app");
         assert!(app.members.is_empty());
     }
