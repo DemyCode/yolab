@@ -60,7 +60,7 @@ charts:
   - name: bark-wallet
     version: "0.1.3"
   - name: bazarr
-    version: "0.2.0"
+    version: "0.2.2"
   - name: bentopdf
     version: "0.1.2"
   - name: bffless
@@ -170,9 +170,9 @@ charts:
   - name: filebrowser
     version: "0.1.20"
   - name: firefly-iii-importer
-    version: "0.1.6"
+    version: "0.1.7"
   - name: firefly-iii
-    version: "0.1.20"
+    version: "0.1.21"
   - name: firefox
     version: "0.1.3"
   - name: fizzy
@@ -262,9 +262,9 @@ charts:
   - name: jackett
     version: "0.1.3"
   - name: jellyfin
-    version: "0.3.1"
+    version: "0.3.2"
   - name: jellyseerr
-    version: "0.2.0"
+    version: "0.2.2"
   - name: jotty
     version: "0.1.3"
   - name: jupyterlab
@@ -284,7 +284,7 @@ charts:
   - name: kiwix
     version: "0.1.2"
   - name: kokoro
-    version: "0.1.5"
+    version: "0.1.6"
   - name: komodo
     version: "0.1.4"
   - name: l-town
@@ -306,7 +306,7 @@ charts:
   - name: libretranslate
     version: "0.1.3"
   - name: lidarr
-    version: "0.2.0"
+    version: "0.2.2"
   - name: linkstack
     version: "0.1.2"
   - name: linkwarden
@@ -366,7 +366,7 @@ charts:
   - name: mosquitto
     version: "0.1.2"
   - name: movies-tv
-    version: "0.2.1"
+    version: "0.2.3"
   - name: mqttx-web
     version: "0.1.2"
   - name: mstream
@@ -374,13 +374,13 @@ charts:
   - name: music-assistant
     version: "0.1.3"
   - name: music
-    version: "0.2.0"
+    version: "0.2.2"
   - name: myspeed
     version: "0.1.2"
   - name: n8n
     version: "0.1.17"
   - name: navidrome
-    version: "0.2.0"
+    version: "0.2.1"
   - name: neko
     version: "0.1.3"
   - name: netbird
@@ -414,7 +414,7 @@ charts:
   - name: octoprint
     version: "0.1.3"
   - name: ollama
-    version: "0.2.4"
+    version: "0.2.5"
   - name: omnitools
     version: "0.1.2"
   - name: onedev
@@ -424,7 +424,7 @@ charts:
   - name: onlyoffice
     version: "0.1.18"
   - name: open-webui
-    version: "0.2.15"
+    version: "0.2.16"
   - name: openclaw
     version: "0.1.17"
   - name: opencode
@@ -434,7 +434,7 @@ charts:
   - name: openhands
     version: "0.1.4"
   - name: openreader
-    version: "0.1.6"
+    version: "0.1.7"
   - name: openresty-manager
     version: "0.1.4"
   - name: openthread-border-router
@@ -498,15 +498,15 @@ charts:
   - name: privatebin
     version: "0.1.2"
   - name: prowlarr
-    version: "0.2.0"
+    version: "0.2.2"
   - name: public-pool-web
     version: "0.1.3"
   - name: pyload-ng
     version: "0.1.3"
   - name: qbittorrent
-    version: "0.2.0"
+    version: "0.2.1"
   - name: radarr
-    version: "0.2.0"
+    version: "0.2.2"
   - name: reactive-resume
     version: "0.1.19"
   - name: readarr
@@ -566,7 +566,7 @@ charts:
   - name: solidtime
     version: "0.1.3"
   - name: sonarr
-    version: "0.2.0"
+    version: "0.2.2"
   - name: spacebot
     version: "0.1.3"
   - name: speedtest-tracker
