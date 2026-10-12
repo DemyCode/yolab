@@ -911,12 +911,9 @@ def offered_private_access(schema):
 
 def yolab_on_branch(schema):
     config_obj = (schema.get("properties") or {}).get("config") or {}
-    branches = (
-        ((config_obj.get("dependencies") or {}).get("yolab_enabled") or {}).get(
-            "oneOf"
-        )
-        or []
-    )
+    branches = ((config_obj.get("dependencies") or {}).get("yolab_enabled") or {}).get(
+        "oneOf"
+    ) or []
     for b in branches:
         if (b.get("properties") or {}).get("yolab_enabled") == {"const": True}:
             return b.get("properties") or {}

@@ -139,9 +139,9 @@ describe("appLinks", () => {
       }),
       "box.yolab.io",
     );
-    expect(
-      links.filter((l) => l.url === "https://p.example.com"),
-    ).toHaveLength(1);
+    expect(links.filter((l) => l.url === "https://p.example.com")).toHaveLength(
+      1,
+    );
   });
 
   it("offers no YoLab address when the app has it switched off", () => {
