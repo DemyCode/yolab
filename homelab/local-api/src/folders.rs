@@ -957,7 +957,9 @@ mod tests {
         config.insert("media".into(), json!("movies-tv"));
         config.insert("music".into(), json!("  "));
         assert_eq!(
-            wanted(&media_app(), &config).into_iter().collect::<Vec<_>>(),
+            wanted(&media_app(), &config)
+                .into_iter()
+                .collect::<Vec<_>>(),
             vec!["movies-tv", "photos"]
         );
         assert!(wanted(&AppSchema::new(Value::Null), &config).is_empty());
@@ -1200,9 +1202,7 @@ mod tests {
         let volumes = vec![origin("jellyfin-data", "yolab-jellyfin", "Bound"), owner];
         let steps = sweep(&[], &volumes, &all(&["yolab-jellyfin"]), t(NOW));
         assert!(steps.contains(&Sweep::LetGo("pvc-123".into())));
-        assert!(steps.contains(&Sweep::Forget(format!(
-            "{NAMESPACE}.state-jellyfin-data"
-        ))));
+        assert!(steps.contains(&Sweep::Forget(format!("{NAMESPACE}.state-jellyfin-data"))));
     }
 
     #[test]
@@ -1331,11 +1331,18 @@ mod tests {
             let (server, client) = api_server().await;
             serve_spaces(
                 &server,
-                vec![space_claim_manifest("space-1", "new", "New", NEW_FOLDER_SIZE)],
+                vec![space_claim_manifest(
+                    "space-1",
+                    "new",
+                    "New",
+                    NEW_FOLDER_SIZE,
+                )],
             )
             .await;
             accept_patches(&server).await;
-            let e = attach(&client, "yolab-x", &all(&["new"])).await.unwrap_err();
+            let e = attach(&client, "yolab-x", &all(&["new"]))
+                .await
+                .unwrap_err();
             assert!(format!("{e:#}").contains("still being created"), "{e:#}");
         }
 

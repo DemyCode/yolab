@@ -462,7 +462,10 @@ mod tests {
     #[test]
     fn each_folder_says_whether_it_is_still_there_who_uses_it_and_its_new_name() {
         let placed = place(
-            &[saved("movies", Some("space-1")), saved("tv", Some("space-9"))],
+            &[
+                saved("movies", Some("space-1")),
+                saved("tv", Some("space-9")),
+            ],
             &[
                 live("movies", "space-1", &["sonarr"]),
                 live("tv", "space-2", &[]),

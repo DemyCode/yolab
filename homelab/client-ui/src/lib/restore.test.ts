@@ -167,9 +167,7 @@ describe("restoring an app that is still installed", () => {
 describe("a space whose name another space took", () => {
   it("says the name it comes back under", () => {
     expect(renamedNote(movies)).toBeNull();
-    expect(
-      renamedNote({ ...movies, exists: false, becomes: "movies-2" }),
-    ).toBe(
+    expect(renamedNote({ ...movies, exists: false, becomes: "movies-2" })).toBe(
       "Another folder is called movies now, so this one comes back as movies-2.",
     );
   });

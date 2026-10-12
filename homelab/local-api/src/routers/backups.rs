@@ -205,7 +205,9 @@ pub async fn app_restore_plan(
     axum::extract::Query(q): axum::extract::Query<DefinitionQuery>,
 ) -> Result<Json<crate::routers::restore_folders::RestorePlan>> {
     let b = state.backend().await?;
-    Ok(Json(restore::restore_plan(&b, &namespace, &q.snapshot_id).await?))
+    Ok(Json(
+        restore::restore_plan(&b, &namespace, &q.snapshot_id).await?,
+    ))
 }
 
 pub(crate) async fn setup_namespace_backup<H: Host>(

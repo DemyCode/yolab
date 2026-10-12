@@ -1064,8 +1064,7 @@ async fn saved_folder_as_of<H: Host>(
 }
 
 async fn create_missing<H: Host>(b: &Backend<H>, planned: &PlannedFolder) -> anyhow::Result<()> {
-    if planned.placed.exists()
-        || !matches!(planned.step, rf::Step::Restore | rf::Step::CreateEmpty)
+    if planned.placed.exists() || !matches!(planned.step, rf::Step::Restore | rf::Step::CreateEmpty)
     {
         return Ok(());
     }
@@ -1110,11 +1109,16 @@ async fn resume_all(client: &Client, paused: &[(String, Vec<DeploymentScale>)]) 
         for d in scales {
             scale(client, ns, &d.name, d.replicas)
                 .await
-                .warn_on_err(format!("start {ns}/{} again after a folder restore", d.name));
+                .warn_on_err(format!(
+                    "start {ns}/{} again after a folder restore",
+                    d.name
+                ));
         }
         hold_daemonsets(client, ns, false)
             .await
-            .warn_on_err(format!("release the DaemonSets of {ns} after a folder restore"));
+            .warn_on_err(format!(
+                "release the DaemonSets of {ns} after a folder restore"
+            ));
     }
 }
 
@@ -1872,11 +1876,19 @@ mod tests {
     fn a_space_brought_back_keeps_its_identity_and_one_started_empty_gets_a_new_one() {
         let fresh = || "space-new".to_string();
         assert_eq!(
-            claim_for(&placed(None, Some("space-1"), &[]), rf::Step::Restore, fresh),
+            claim_for(
+                &placed(None, Some("space-1"), &[]),
+                rf::Step::Restore,
+                fresh
+            ),
             "space-1"
         );
         assert_eq!(
-            claim_for(&placed(None, Some("space-1"), &[]), rf::Step::CreateEmpty, fresh),
+            claim_for(
+                &placed(None, Some("space-1"), &[]),
+                rf::Step::CreateEmpty,
+                fresh
+            ),
             "space-new"
         );
         assert_eq!(
@@ -1884,7 +1896,11 @@ mod tests {
             "space-new"
         );
         assert_eq!(
-            claim_for(&placed(Some("space-2"), Some("space-1"), &[]), rf::Step::Replace, fresh),
+            claim_for(
+                &placed(Some("space-2"), Some("space-1"), &[]),
+                rf::Step::Replace,
+                fresh
+            ),
             "space-2"
         );
     }

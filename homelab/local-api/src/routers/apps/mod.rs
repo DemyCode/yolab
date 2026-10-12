@@ -15,14 +15,14 @@ use crate::routers::backup_common::Backend;
 use crate::routers::install;
 use crate::{config::Config, error::Result, AppState};
 
-mod spaces;
 mod definition;
 mod links;
+mod spaces;
 mod uninstall;
 
-pub(crate) use spaces::*;
 pub(crate) use definition::*;
 pub(crate) use links::*;
+pub(crate) use spaces::*;
 pub(crate) use uninstall::*;
 
 const LABEL_MANAGED: &str = "yolab.io/managed";

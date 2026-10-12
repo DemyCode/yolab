@@ -114,9 +114,7 @@ export function settingValues(values: unknown): string[] {
 }
 
 export function usedHere(plan: RestorePlan, app: string): string[] {
-  return plan.folders
-    .filter((f) => f.used_by.includes(app))
-    .map((f) => f.name);
+  return plan.folders.filter((f) => f.used_by.includes(app)).map((f) => f.name);
 }
 
 export function renamedNote(row: FolderRow): string | null {

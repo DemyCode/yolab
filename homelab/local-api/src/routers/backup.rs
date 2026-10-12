@@ -343,7 +343,11 @@ async fn run_set<H: Host>(
     let mut pending = Vec::new();
     let mut failures = Vec::new();
     let folders = crate::folders::list(&b.kube).await?;
-    pvcs.extend(folders_saved_with(target, &folders).into_iter().map(folder_pvc));
+    pvcs.extend(
+        folders_saved_with(target, &folders)
+            .into_iter()
+            .map(folder_pvc),
+    );
     for pvc in &pvcs {
         allow_privileged_movers(&b.kube, &pvc.namespace).await;
         if let Err(e) = restic_secret(&b.kube, &pvc.namespace, &pvc.namespace, &pvc.name, cfg).await

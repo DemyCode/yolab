@@ -493,9 +493,7 @@ async fn apply_chart<H: Host + 'static>(
         DataFill::Backup(payload) => {
             if !folders.is_empty() {
                 log.say("Bringing back its folders…");
-                payload
-                    .fill_folders(b, &folders, job.instance_name)
-                    .await?;
+                payload.fill_folders(b, &folders, job.instance_name).await?;
             }
             log.say("Copying this app's files…");
             payload.fill_volumes(b, &staged.ns, job.release).await?;
