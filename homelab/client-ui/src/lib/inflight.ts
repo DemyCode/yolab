@@ -13,7 +13,3 @@ export function joinOrStart<T>(key: string, run: () => Promise<T>): Promise<T> {
   if (existing) return existing as Promise<T>;
   return startFresh(key, run);
 }
-
-export function isPending(key: string): boolean {
-  return pending.has(key);
-}

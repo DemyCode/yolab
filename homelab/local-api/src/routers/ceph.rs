@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Path, State},
+    extract::State,
     http::StatusCode,
     response::{IntoResponse, Response},
     Json,
@@ -634,83 +634,6 @@ async fn ceph_health_and_details<H: Host>(host: &H) -> anyhow::Result<String> {
     let status = h["status"].as_str().unwrap_or("");
     let checks = h.get("checks").cloned().unwrap_or(serde_json::json!({}));
     Ok(format!("{status}\n{checks}"))
-}
-
-pub async fn osd_mark_in(Path(id): Path<i64>) -> (StatusCode, Json<serde_json::Value>) {
-    set_desired_by_osd(id, "ON").await
-}
-
-pub async fn osd_mark_out(Path(id): Path<i64>) -> (StatusCode, Json<serde_json::Value>) {
-    set_desired_by_osd(id, "OFF").await
-}
-
-fn disk_of_osd(
-    published: &std::collections::BTreeMap<String, String>,
-    osd_id: i64,
-) -> Option<(String, String)> {
-    published.iter().find_map(|(node, raw)| {
-        let payload: Value = serde_json::from_str(raw).ok()?;
-        payload["disks"]
-            .as_object()?
-            .iter()
-            .find(|(_, meta)| meta["osd_id"].as_i64() == Some(osd_id))
-            .map(|(disk_id, _)| (node.clone(), disk_id.clone()))
-    })
-}
-
-async fn set_desired_by_osd(id: i64, desired: &str) -> (StatusCode, Json<serde_json::Value>) {
-    use crate::storage::settings;
-    let published = match settings::dump(&crate::host::RealHost, settings::DISK_STATUS).await {
-        Ok(p) => p,
-        Err(e) => {
-            return (
-                StatusCode::SERVICE_UNAVAILABLE,
-                Json(
-                    serde_json::json!({"ok": false, "error": format!("cannot read the disk inventory: {e}")}),
-                ),
-            )
-        }
-    };
-    let Some((node, disk_id)) = disk_of_osd(&published, id) else {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(
-                serde_json::json!({"ok": false, "error": format!("osd.{id} is not in any node's disk inventory")}),
-            ),
-        );
-    };
-    match crate::routers::disks::record_switch(&node, &disk_id, desired).await {
-        Ok(()) => (StatusCode::OK, Json(serde_json::json!({"ok": true}))),
-        Err(error) => (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"ok": false, "error": error})),
-        ),
-    }
-}
-
-#[cfg(test)]
-mod osd_switch_tests {
-    use super::*;
-
-    #[test]
-    fn an_osd_is_found_in_whichever_node_publishes_it() {
-        let published = std::collections::BTreeMap::from([
-            (
-                "node1".to_string(),
-                r#"{"disks":{"dev-sda":{"osd_id":0}}}"#.to_string(),
-            ),
-            (
-                "node2".to_string(),
-                r#"{"disks":{"serial-wwn-0x1":{"osd_id":3}}}"#.to_string(),
-            ),
-            ("node3".to_string(), "not json".to_string()),
-        ]);
-        assert_eq!(
-            disk_of_osd(&published, 3),
-            Some(("node2".to_string(), "serial-wwn-0x1".to_string()))
-        );
-        assert_eq!(disk_of_osd(&published, 9), None);
-    }
 }
 
 const DASHBOARD_PASSWORD_FILE: &str = "/var/lib/ceph/dashboard-password";

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isPending, joinOrStart, startFresh } from "./inflight";
+import { joinOrStart, startFresh } from "./inflight";
 
 function deferred<T>() {
   let resolve!: (v: T) => void;
@@ -31,7 +31,6 @@ describe("in-flight requests", () => {
     let calls = 0;
     const run = async () => ++calls;
     expect(await joinOrStart("health", run)).toBe(1);
-    expect(isPending("health")).toBe(false);
     expect(await joinOrStart("health", run)).toBe(2);
   });
 
@@ -39,7 +38,6 @@ describe("in-flight requests", () => {
     await expect(
       joinOrStart("ceph", () => Promise.reject(new Error("down"))),
     ).rejects.toThrow("down");
-    expect(isPending("ceph")).toBe(false);
     expect(await joinOrStart("ceph", async () => "up")).toBe("up");
   });
 

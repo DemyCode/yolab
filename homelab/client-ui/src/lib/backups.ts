@@ -62,10 +62,6 @@ export function protectionTone(
   }
 }
 
-export function isBusy(state: ProtectionState): boolean {
-  return state === "running" || state === "queued";
-}
-
 export function hoursSince(iso: string, now: number): number {
   return (now - new Date(iso).getTime()) / 3_600_000;
 }
@@ -101,8 +97,4 @@ export function sortRestorePoints(points: RestorePoint[]): RestorePoint[] {
   return points
     .slice()
     .sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime());
-}
-
-export function restorePointLabel(index: number): string {
-  return index === 0 ? "Most recent" : "";
 }

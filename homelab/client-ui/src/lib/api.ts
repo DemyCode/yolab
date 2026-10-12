@@ -1,14 +1,3 @@
-let baseUrl = "";
-let authToken: string | null = null;
-
-export function configureApi(opts: {
-  baseUrl?: string;
-  token?: string | null;
-}) {
-  if (opts.baseUrl !== undefined) baseUrl = opts.baseUrl.replace(/\/$/, "");
-  if (opts.token !== undefined) authToken = opts.token;
-}
-
 export class ApiError extends Error {
   readonly status: number;
 
@@ -39,18 +28,16 @@ function errorMessageFrom(body: string, status: number): string {
   return message;
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+function send(path: string, init?: RequestInit): Promise<Response> {
   const headers = new Headers(init?.headers);
-  if (authToken) headers.set("Authorization", `Bearer ${authToken}`);
   if (init?.body && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
   }
+  return fetch(path, { ...init, headers, credentials: "include" });
+}
 
-  const res = await fetch(`${baseUrl}${path}`, {
-    ...init,
-    headers,
-    credentials: "include",
-  });
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await send(path, init);
 
   if (res.status === 401) {
     onUnauthorized?.();
@@ -98,19 +85,9 @@ export async function streamEvents(
   init: RequestInit,
   onLine: (line: string) => void,
 ): Promise<StreamResult> {
-  const headers = new Headers(init.headers);
-  if (authToken) headers.set("Authorization", `Bearer ${authToken}`);
-  if (init.body && !headers.has("Content-Type")) {
-    headers.set("Content-Type", "application/json");
-  }
-
   let res: Response;
   try {
-    res = await fetch(`${baseUrl}${path}`, {
-      ...init,
-      headers,
-      credentials: "include",
-    });
+    res = await send(path, init);
   } catch {
     return DROPPED;
   }

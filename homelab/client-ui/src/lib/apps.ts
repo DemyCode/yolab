@@ -59,16 +59,6 @@ export function stillWaiting(outputs: AppOutput[]): boolean {
   return outputs.some((o) => outputState(o) === "waiting");
 }
 
-export function nextInstanceName(appId: string, installed: AppInfo[]): string {
-  const taken = new Set(installed.map((a) => a.instance_name));
-  if (!taken.has(appId)) return appId;
-  for (let n = 2; n < 100; n++) {
-    const candidate = `${appId}-${n}`;
-    if (!taken.has(candidate)) return candidate;
-  }
-  return `${appId}-${Date.now()}`;
-}
-
 export type AppState =
   "ready" | "starting" | "removing" | "copying" | "failed" | "stopped";
 

@@ -432,12 +432,6 @@ pub(crate) async fn replication_source(
     Ok(Some(manual))
 }
 
-pub(crate) fn hours_since(timestamp: &str) -> Option<i64> {
-    chrono::DateTime::parse_from_rfc3339(timestamp)
-        .ok()
-        .map(|t| (chrono::Utc::now() - t.with_timezone(&chrono::Utc)).num_hours())
-}
-
 pub(crate) fn sanitize_k8s_items_for_backup(items: &[serde_json::Value]) -> Vec<serde_json::Value> {
     const META_DROP: &[&str] = &[
         "resourceVersion",
@@ -671,36 +665,6 @@ mod tests {
             c.restic_repo("p"),
             "s3:https://s3.example.com/yolab-backups/p"
         );
-    }
-
-    #[test]
-    fn hours_since_measures_elapsed_time() {
-        let t = (chrono::Utc::now() - chrono::Duration::hours(30)).to_rfc3339();
-        assert_eq!(hours_since(&t), Some(30));
-    }
-
-    #[test]
-    fn hours_since_truncates_toward_zero() {
-        let t = (chrono::Utc::now() - chrono::Duration::minutes(119)).to_rfc3339();
-        assert_eq!(hours_since(&t), Some(1));
-    }
-
-    #[test]
-    fn hours_since_goes_negative_for_a_future_timestamp() {
-        let t = (chrono::Utc::now() + chrono::Duration::hours(5)).to_rfc3339();
-        assert!(hours_since(&t).is_some_and(|h| h < 0));
-    }
-
-    #[test]
-    fn hours_since_returns_none_for_unparseable_input() {
-        assert_eq!(hours_since(""), None);
-        assert_eq!(hours_since("never"), None);
-        assert_eq!(hours_since("2026-01-01"), None);
-    }
-
-    #[test]
-    fn hours_since_accepts_the_z_suffix_kubernetes_emits() {
-        assert!(hours_since("2020-01-01T00:00:00Z").is_some());
     }
 
     #[test]

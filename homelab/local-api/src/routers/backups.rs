@@ -107,37 +107,6 @@ pub async fn get_recovery_key(State(state): State<AppState>) -> Result<Json<serd
     })))
 }
 
-pub async fn operation_state(State(state): State<AppState>) -> Result<Json<serde_json::Value>> {
-    Ok(Json(operation(&state.backend().await?).await?))
-}
-
-pub(crate) async fn operation<H: Host>(b: &Backend<H>) -> anyhow::Result<serde_json::Value> {
-    let restores = restore::list(&b.kube).await?;
-    let sets = backup::list(&b.kube).await?;
-    let active: Vec<serde_json::Value> = sets
-        .iter()
-        .filter(|s| s["state"] == "running")
-        .cloned()
-        .collect();
-    let last = sets.iter().find(|s| s["state"] != "running").cloned();
-    let active_restore = restores.iter().find(|s| s["state"] == "running").cloned();
-    Ok(serde_json::json!({
-        "backing_up": !active.is_empty() || backup::volsync_mover_running(&b.kube).await,
-        "restoring": active_restore.is_some(),
-        "backup_run": active.first().cloned(),
-        "restore_run": active_restore,
-        "last_backup": last,
-        "last_ok_age_hours": backup::last_ok_age_hours(&b.kube).await,
-        "stale_after_hours": 24,
-    }))
-}
-
-pub async fn list_runs(State(state): State<AppState>) -> Result<Json<serde_json::Value>> {
-    Ok(Json(serde_json::Value::Array(
-        backup::list(&state.kube.client().await?).await?,
-    )))
-}
-
 #[derive(Deserialize)]
 pub struct RestoreRequest {
     pub namespace: String,
@@ -300,13 +269,6 @@ pub(crate) async fn snapshots<H: Host>(
     }
 
     Ok(serde_json::json!({ "snapshots": snapshots, "configured": true }))
-}
-
-pub async fn run_backup_now(State(state): State<AppState>) -> Result<Json<serde_json::Value>> {
-    let name = backup::start(&state.backend().await?, "manual").await?;
-    Ok(Json(
-        serde_json::json!({ "ok": true, "started": true, "name": name }),
-    ))
 }
 
 pub async fn run_app_backup_now(
@@ -763,36 +725,6 @@ mod tests {
                 host: FakeHost::new(),
             };
             assert!(protected_apps(&b).await.is_err());
-        }
-
-        #[tokio::test]
-        async fn a_restore_driven_by_another_node_shows_as_restoring() {
-            let (server, kube) = api_server().await;
-            Mock::given(method("GET"))
-                .and(path("/api/v1/pods"))
-                .respond_with(ResponseTemplate::new(200).set_body_json(list("Pod", vec![])))
-                .mount(&server)
-                .await;
-            crate::records::testing::records(
-                &server,
-                "yolab-restores",
-                json!([{
-                    "id": "rs-remote", "namespace": "yolab-notes",
-                    "started_at": "2026-09-28T00:00:00Z", "state": "running",
-                    "owner": "some-other-node", "heartbeat": "2026-09-28T00:00:00Z"
-                }]),
-            )
-            .await;
-            crate::records::testing::no_records(&server, "yolab-backups").await;
-            let b = Backend {
-                kube,
-                host: FakeHost::new(),
-            };
-
-            let op = operation(&b).await.unwrap();
-            assert_eq!(op["restoring"], true);
-            assert_eq!(op["restore_run"]["id"], "rs-remote");
-            assert_eq!(op["backing_up"], false);
         }
     }
 

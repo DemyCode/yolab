@@ -1145,31 +1145,6 @@ pub(crate) async fn app_backup_status(client: &Client) -> HashMap<String, (Optio
     map
 }
 
-pub(crate) async fn last_ok_age_hours(client: &Client) -> Option<i64> {
-    let sets = read_sets(client).await.ok()?;
-    sets.iter()
-        .find(|s| s.state == SUCCEEDED)
-        .and_then(|s| s.finished_at.as_deref())
-        .and_then(hours_since)
-}
-
-pub(crate) async fn volsync_mover_running(client: &Client) -> bool {
-    use k8s_openapi::api::core::v1::Pod;
-    let params = kube::api::ListParams::default()
-        .labels("app.kubernetes.io/created-by=volsync")
-        .fields("status.phase=Running");
-    kube::Api::<Pod>::all(client.clone())
-        .list(&params)
-        .await
-        .map(|pods| {
-            pods.items
-                .iter()
-                .filter_map(|p| p.metadata.name.as_deref())
-                .any(|name| name.contains("volsync-src-"))
-        })
-        .unwrap_or(false)
-}
-
 pub struct BackupSchedulerController;
 
 impl Controller for BackupSchedulerController {
@@ -1745,7 +1720,7 @@ mod tests {
         use super::*;
         use crate::host::fake::FakeHost;
         use crate::k8s::testing::{api_server, list, status};
-        use wiremock::matchers::{method, path, query_param};
+        use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
         const CONFIG_PATH: &str = "/api/v1/namespaces/kube-system/secrets/yolab-backup-config";
@@ -1948,51 +1923,6 @@ mod tests {
             assert!(b.host.ran("k3s etcd-snapshot save --name=yolab-bk-1"));
             assert!(server.received_requests().await.unwrap().is_empty());
             assert!(!dir.path().join("etcd.db").exists());
-        }
-
-        #[tokio::test]
-        async fn only_a_running_source_mover_counts_as_a_backup_in_progress() {
-            let pods = |names: &[&str]| {
-                list(
-                    "Pod",
-                    names
-                        .iter()
-                        .map(|n| json!({ "metadata": { "name": n } }))
-                        .collect(),
-                )
-            };
-            let (server, kube) = api_server().await;
-            Mock::given(method("GET"))
-                .and(path("/api/v1/pods"))
-                .and(query_param("fieldSelector", "status.phase=Running"))
-                .respond_with(
-                    ResponseTemplate::new(200).set_body_json(pods(&["volsync-dst-notes-x"])),
-                )
-                .up_to_n_times(1)
-                .mount(&server)
-                .await;
-            Mock::given(method("GET"))
-                .and(path("/api/v1/pods"))
-                .respond_with(
-                    ResponseTemplate::new(200).set_body_json(pods(&["volsync-src-notes-y"])),
-                )
-                .mount(&server)
-                .await;
-
-            assert!(!volsync_mover_running(&kube).await);
-            assert!(volsync_mover_running(&kube).await);
-        }
-
-        #[tokio::test]
-        async fn an_unreachable_cluster_does_not_claim_a_mover_is_running() {
-            let (server, kube) = api_server().await;
-            Mock::given(method("GET"))
-                .respond_with(
-                    ResponseTemplate::new(503).set_body_json(status(503, "ServiceUnavailable")),
-                )
-                .mount(&server)
-                .await;
-            assert!(!volsync_mover_running(&kube).await);
         }
 
         #[tokio::test]

@@ -8,7 +8,6 @@ import {
   appLabel,
   appDisplayName,
   installedByChart,
-  nextInstanceName,
   newerVersion,
   availableActions,
   appStatus,
@@ -188,38 +187,6 @@ describe("stillWaiting", () => {
     expect(
       stillWaiting([out("a", "1"), { ...out("pin", ""), from_config: true }]),
     ).toBe(false);
-  });
-});
-
-describe("nextInstanceName", () => {
-  it("uses the plain name when nothing has taken it", () => {
-    expect(nextInstanceName("gitea", [])).toBe("gitea");
-  });
-
-  it("numbers the second copy rather than colliding", () => {
-    expect(nextInstanceName("gitea", [app({ instance_name: "gitea" })])).toBe(
-      "gitea-2",
-    );
-  });
-
-  it("skips over names already taken further up the run", () => {
-    const installed = [
-      app({ instance_name: "gitea" }),
-      app({ instance_name: "gitea-2" }),
-      app({ instance_name: "gitea-3" }),
-    ];
-    expect(nextInstanceName("gitea", installed)).toBe("gitea-4");
-  });
-
-  it("still returns something unique when the run is exhausted", () => {
-    const installed = [
-      app({ instance_name: "gitea" }),
-      ...Array.from({ length: 98 }, (_, i) =>
-        app({ instance_name: `gitea-${i + 2}` }),
-      ),
-    ];
-    const name = nextInstanceName("gitea", installed);
-    expect(installed.some((a) => a.instance_name === name)).toBe(false);
   });
 });
 

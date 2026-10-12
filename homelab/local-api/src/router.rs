@@ -41,16 +41,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/backups/recovery-key", get(backups::get_recovery_key))
         .route("/api/backups/s3", get(backups::get_s3))
         .route("/api/backups/s3/enable", post(backups::enable_s3))
-        .route("/api/backups/state", get(backups::operation_state))
         .route("/api/backups/snapshots", get(backups::list_snapshots))
-        .route("/api/backups/runs", get(backups::list_runs))
         .route("/api/backups/restore", post(backups::restore_app))
         .route("/api/backups/restores", get(backups::list_restores))
         .route("/api/backups/apps", get(backups::list_backed_up_apps))
-        .route(
-            "/api/backups/cluster/run-now",
-            post(backups::run_backup_now),
-        )
         .route(
             "/api/backups/apps/{namespace}/run-now",
             post(backups::run_app_backup_now),
@@ -106,8 +100,6 @@ pub fn build_router(state: AppState) -> Router {
         .route("/ceph-dashboard/", any(ceph_api::dashboard_proxy))
         .route("/ceph-dashboard/{*rest}", any(ceph_api::dashboard_proxy))
         .route("/api/cluster/health", get(ceph_api::cluster_health))
-        .route("/api/ceph/osd/{id}/mark-in", post(ceph_api::osd_mark_in))
-        .route("/api/ceph/osd/{id}/mark-out", post(ceph_api::osd_mark_out))
         .route("/api/nodes", get(nodes::nodes))
         .route("/api/nodes/links", get(nodes::node_links))
         .route("/api/cluster/join-info", get(nodes::join_info))

@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-  isBusy,
   isStale,
   needsAttention,
   protectionLabel,
@@ -75,14 +74,6 @@ describe("protectionTone", () => {
     expect(protectionTone("running")).toBe("info");
     expect(protectionTone("off")).toBe("muted");
     expect(protectionTone("never")).toBe("muted");
-  });
-});
-
-describe("isBusy", () => {
-  it("covers both the running and the waiting case", () => {
-    expect(isBusy("running")).toBe(true);
-    expect(isBusy("queued")).toBe(true);
-    expect(isBusy("ok")).toBe(false);
   });
 });
 
