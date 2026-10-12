@@ -15,7 +15,7 @@
           "format": "folder",
           "default": "",
           "pattern": "^([a-z0-9]([a-z0-9-]*[a-z0-9])?)?$",
-          "description": "The folder from Your files that holds your movies and shows, at /data/<folder>. Bazarr saves subtitles next to the videos. Leave it empty to keep everything inside Bazarr."
+          "description": "A shared space that holds your movies and shows, at /data/<folder>. Bazarr saves subtitles next to the videos. Leave it empty to keep everything inside Bazarr."
         },
         "yolab_enabled": {
           "type": "boolean",

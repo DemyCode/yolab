@@ -9,7 +9,6 @@ const movies: Folder = {
   used_by: [],
   kind: "files",
   app: null,
-  origin: null,
 };
 
 describe("choosing a space for an app", () => {

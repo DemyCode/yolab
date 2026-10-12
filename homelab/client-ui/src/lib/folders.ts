@@ -8,7 +8,6 @@ export interface Folder {
   used_by: string[];
   kind: "files" | "state";
   app: string | null;
-  origin: string | null;
 }
 
 export type FolderChoice =

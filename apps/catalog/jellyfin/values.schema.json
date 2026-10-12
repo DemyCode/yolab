@@ -15,7 +15,7 @@
           "format": "folder",
           "default": "",
           "pattern": "^([a-z0-9]([a-z0-9-]*[a-z0-9])?)?$",
-          "description": "A folder from Your files that Jellyfin shows, at /data/<folder>. Jellyfin only reads it. Leave it empty to keep your media inside Jellyfin."
+          "description": "A shared space that Jellyfin shows, at /data/<folder>. Jellyfin only reads it. Leave it empty to keep your media inside Jellyfin."
         },
         "yolab_enabled": {
           "type": "boolean",

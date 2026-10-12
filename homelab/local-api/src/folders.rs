@@ -36,7 +36,6 @@ pub struct Folder {
     pub used_by: Vec<String>,
     pub kind: String,
     pub app: Option<String>,
-    pub origin: Option<String>,
 }
 
 fn kind_of(claim: &Value) -> &str {
@@ -695,18 +694,6 @@ fn users(volumes: &[Value], folder: &str) -> Vec<String> {
     users
 }
 
-fn origin_of(volumes: &[Value], folder: &str) -> Option<String> {
-    volumes
-        .iter()
-        .filter(|pv| {
-            let labels = &pv["metadata"]["labels"];
-            labels[LABEL_STATE].as_str() == Some(folder)
-                && labels[LABEL_STATE_ORIGIN].as_str() == Some("true")
-        })
-        .find_map(|pv| pv["metadata"]["labels"][LABEL_STATE_NAMESPACE].as_str())
-        .map(str::to_string)
-}
-
 fn folder_of(claim: &Value, volumes: &[Value]) -> Option<Folder> {
     let name = claim["metadata"]["labels"][LABEL_FOLDER]
         .as_str()?
@@ -726,7 +713,6 @@ fn folder_of(claim: &Value, volumes: &[Value]) -> Option<Folder> {
         app: claim["metadata"]["annotations"][ANN_STATE_APP]
             .as_str()
             .map(str::to_string),
-        origin: origin_of(volumes, &name),
         name,
     })
 }
@@ -1137,7 +1123,6 @@ mod tests {
                 used_by: vec!["jellyfin".into()],
                 kind: KIND_FILES.into(),
                 app: None,
-                origin: None,
             }
         );
         claim["status"] = json!({ "phase": "Pending" });

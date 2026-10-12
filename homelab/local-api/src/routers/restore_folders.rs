@@ -345,7 +345,6 @@ mod tests {
             used_by: used_by.iter().map(|s| s.to_string()).collect(),
             kind: crate::folders::KIND_FILES.into(),
             app: None,
-            origin: None,
         }
     }
 

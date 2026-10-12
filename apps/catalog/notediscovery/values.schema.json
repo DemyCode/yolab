@@ -23,7 +23,7 @@
           "format": "folder",
           "default": "",
           "pattern": "^([a-z0-9]([a-z0-9-]*[a-z0-9])?)?$",
-          "description": "A folder from Your files that holds your notes, at /data/<folder>. Other apps that use the same folder see the same Markdown files. Leave it empty to keep your notes inside NoteDiscovery."
+          "description": "A shared space that holds your notes, at /data/<folder>. Other apps that use the same space see the same Markdown files. Leave it empty to keep your notes inside NoteDiscovery."
         },
         "notes_path": {
           "type": "string",
