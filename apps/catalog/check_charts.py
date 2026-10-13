@@ -123,6 +123,7 @@ VARIANTS = {
             "config.sign_in": "email",
             "config.from_email": "splitpro@example.com",
             "config.email_server_host": "smtp.example.com",
+            "config.email_server_port": "587",
         }
     ],
     "navidrome": [
