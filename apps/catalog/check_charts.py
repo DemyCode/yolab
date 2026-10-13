@@ -51,7 +51,7 @@ LINT_VALUES = {
     "config.password": "PlaceholderPw2026",
     "config.admin_password": "PlaceholderPw2026",
     "config.admin_email": "admin@example.com",
-    "config.app_secret": "PlaceholderPw2026",
+    "config.app_secret": "PlaceholderAppSecret2026Placeholder",
     "config.rpc_password": "PlaceholderPw2026",
     "config.explorer_password": "PlaceholderPw2026",
     "config.app_key": "PlaceholderAppKey2026Placeholder",
