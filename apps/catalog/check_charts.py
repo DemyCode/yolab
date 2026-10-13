@@ -300,7 +300,8 @@ def render(chart_dir, library_tgz, workdir, extra=None):
 
     cmd = ["helm", "template", "release", staged]
     for k, v in {**LINT_VALUES, **(extra or {})}.items():
-        cmd += ["--set", f"{k}={v}"]
+        flag = "--set-string" if isinstance(v, str) and v.isdigit() else "--set"
+        cmd += [flag, f"{k}={v}"]
     out = subprocess.run(cmd, capture_output=True, text=True, check=False)
     shutil.rmtree(staged, ignore_errors=True)
     if out.returncode != 0:
