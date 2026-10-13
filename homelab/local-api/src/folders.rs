@@ -77,10 +77,19 @@ pub(crate) fn free_name(wanted: &str, taken: &BTreeSet<String>) -> String {
     if !taken.contains(wanted) {
         return wanted.to_string();
     }
-    (2..)
+    let (stem, first) = match wanted.rsplit_once('-') {
+        Some((stem, n)) if !stem.is_empty() && n.chars().all(|c| c.is_ascii_digit()) => {
+            match n.parse::<u64>() {
+                Ok(n) => (stem.to_string(), n + 1),
+                Err(_) => (wanted.to_string(), 2),
+            }
+        }
+        _ => (wanted.to_string(), 2),
+    };
+    (first..)
         .map(|n| {
             let suffix = format!("-{n}");
-            let stem: String = wanted.chars().take(MAX_NAME - suffix.len()).collect();
+            let stem: String = stem.chars().take(MAX_NAME - suffix.len()).collect();
             format!("{}{suffix}", stem.trim_end_matches('-'))
         })
         .find(|candidate| !taken.contains(candidate))
