@@ -1,4 +1,14 @@
-pub struct SpacesController;
+pub struct SpacesController {
+    pub kube: crate::k8s::Kube,
+}
+
+impl SpacesController {
+    pub fn real() -> Self {
+        Self {
+            kube: crate::k8s::Kube::from_environment(),
+        }
+    }
+}
 
 impl crate::runtime::Controller for SpacesController {
     fn name(&self) -> &'static str {
@@ -14,7 +24,7 @@ impl crate::runtime::Controller for SpacesController {
         &[crate::runtime::Requirement::KubeApi]
     }
     async fn reconcile(&self, _ctx: &crate::runtime::Ctx) -> anyhow::Result<crate::runtime::Tick> {
-        let client = crate::k8s::client().await?;
+        let client = self.kube.client().await?;
         let deleted = crate::folders::sweep_unlinked(&client).await?;
         if deleted.is_empty() {
             Ok(crate::runtime::Tick::Idle(
@@ -33,14 +43,12 @@ mod tests {
 
     #[test]
     fn the_sweep_runs_once_for_the_whole_cluster_and_is_listed() {
-        assert_eq!(SpacesController.name(), "spaces");
-        assert!(matches!(
-            SpacesController.scope(),
-            crate::runtime::Scope::Cluster
-        ));
+        let controller = SpacesController::real();
+        assert_eq!(controller.name(), "spaces");
+        assert!(matches!(controller.scope(), crate::runtime::Scope::Cluster));
         assert!(crate::controllers::NAMES.contains(&"spaces"));
         assert!(
-            SpacesController.interval().as_secs() * 4 <= crate::folders::GRACE_SECS as u64,
+            controller.interval().as_secs() * 4 <= crate::folders::GRACE_SECS as u64,
             "a space is looked at several times within its hour of grace"
         );
     }

@@ -2691,7 +2691,7 @@ class JellyfinSetup(RenderedChart):
         self.assertEqual(env["ROOT"], "/media")
 
 
-def yolab_switch_schema(on_props):
+def yolab_switch_schema_with(on_props):
     return schema(
         extra={
             "config": {
@@ -2716,23 +2716,25 @@ def yolab_switch_schema(on_props):
 
 
 class CustomDomainOffer(unittest.TestCase):
-    OFFERED = {"custom_domain": {"type": "string"}}
+    OFFERED: ClassVar = {"custom_domain": {"type": "string"}}
 
     def found(self, s, values=""):
         return collected(check_charts.check_custom_domain_offer, "x", s, values)
 
     def test_an_app_with_a_yolab_address_offers_its_own_address_too(self):
-        self.assertEqual(self.found(yolab_switch_schema(self.OFFERED)), [])
-        missing = self.found(yolab_switch_schema({}))
+        self.assertEqual(self.found(yolab_switch_schema_with(self.OFFERED)), [])
+        missing = self.found(yolab_switch_schema_with({}))
         self.assertTrue(any("custom_domain" in f for f in missing), missing)
 
     def test_an_own_caddyfile_must_serve_the_sites_before_offering_it(self):
         own = "yolab:\n  gateway:\n    caddyfile: |\n      {$YOLAB_FQDN} {\n"
-        refused = self.found(yolab_switch_schema(self.OFFERED), own)
+        refused = self.found(yolab_switch_schema_with(self.OFFERED), own)
         self.assertTrue(any("YOLAB_SITES" in f for f in refused), refused)
-        self.assertEqual(self.found(yolab_switch_schema({}), own), [])
+        self.assertEqual(self.found(yolab_switch_schema_with({}), own), [])
         serving = own.replace("{$YOLAB_FQDN}", "{$YOLAB_SITES}")
-        self.assertEqual(self.found(yolab_switch_schema(self.OFFERED), serving), [])
+        self.assertEqual(
+            self.found(yolab_switch_schema_with(self.OFFERED), serving), []
+        )
 
     def test_an_app_without_a_yolab_address_is_left_alone(self):
         self.assertEqual(self.found(schema()), [])
