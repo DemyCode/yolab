@@ -183,6 +183,8 @@ charts:
     version: "0.1.4"
   - name: flatnotes
     version: "0.1.4"
+  - name: fmd-server
+    version: "0.1.0"
   - name: foldergram
     version: "0.1.4"
   - name: forgejo
@@ -367,12 +369,16 @@ charts:
     version: "0.1.4"
   - name: mosquitto
     version: "0.1.3"
+  - name: movies-tv
+    version: "0.2.5"
   - name: mqttx-web
     version: "0.1.3"
   - name: mstream
     version: "0.1.4"
   - name: music-assistant
     version: "0.1.4"
+  - name: music
+    version: "0.2.4"
   - name: myspeed
     version: "0.1.3"
   - name: n8n
@@ -569,6 +575,8 @@ charts:
     version: "0.1.4"
   - name: speedtest-tracker
     version: "0.1.18"
+  - name: splitpro
+    version: "0.1.0"
   - name: sqlitebrowser
     version: "0.1.4"
   - name: stalwart
