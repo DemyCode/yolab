@@ -215,13 +215,6 @@
       "type": "object",
       "readOnly": true,
       "properties": {
-        "admin_email": {
-          "type": "string",
-          "title": "Admin email",
-          "source": {
-            "config": "admin_email"
-          }
-        },
         "admin_password": {
           "type": "string",
           "title": "Admin password",
