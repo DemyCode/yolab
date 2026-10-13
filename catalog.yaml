@@ -306,7 +306,7 @@ charts:
   - name: librespeed
     version: "0.1.18"
   - name: libretranslate
-    version: "0.1.4"
+    version: "0.1.5"
   - name: lidarr
     version: "0.2.4"
   - name: linkstack
@@ -572,7 +572,7 @@ charts:
   - name: spacebot
     version: "0.1.4"
   - name: speedtest-tracker
-    version: "0.1.18"
+    version: "0.1.19"
   - name: splitpro
     version: "0.1.0"
   - name: sqlitebrowser
