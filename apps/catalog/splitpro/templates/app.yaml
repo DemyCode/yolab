@@ -40,8 +40,12 @@ stringData:
   FROM_EMAIL: {{ required "config.from_email is required" $cfg.from_email | quote }}
   EMAIL_SERVER_HOST: {{ required "config.email_server_host is required" $cfg.email_server_host | quote }}
   EMAIL_SERVER_PORT: {{ $cfg.email_server_port | default "587" | quote }}
-  EMAIL_SERVER_USER: {{ $cfg.email_server_user | default "" | quote }}
-  EMAIL_SERVER_PASSWORD: {{ $cfg.email_server_password | default "" | quote }}
+  {{- with $cfg.email_server_user }}
+  EMAIL_SERVER_USER: {{ . | quote }}
+  {{- end }}
+  {{- with $cfg.email_server_password }}
+  EMAIL_SERVER_PASSWORD: {{ . | quote }}
+  {{- end }}
   {{- end }}
 ---
 apiVersion: apps/v1
