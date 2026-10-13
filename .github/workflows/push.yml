@@ -383,11 +383,13 @@ jobs:
             --set config.password=PlaceholderPw2026 \
             --set config.admin_password=PlaceholderPw2026 \
             --set config.admin_email=admin@example.com \
-            --set config.app_secret=PlaceholderPw2026 \
+            --set config.app_secret=PlaceholderAppSecret2026Placeholder \
             --set config.app_key=PlaceholderAppKey2026Placeholder \
             --set config.api_key=PlaceholderApiKey2026 \
             --set config.auth_secret_key=PlaceholderAuthSecretKey2026Placeholder \
             --set config.gateway_token=PlaceholderGatewayToken2026Placeholder \
+            --set config.rpc_password=PlaceholderPw2026 \
+            --set config.explorer_password=PlaceholderPw2026 \
             --set config.server_name=example \
             --set config.server_pass=PlaceholderPw2026 \
             --set config.vpn_private_key=PlaceholderVpnKey2026= \
@@ -396,6 +398,12 @@ jobs:
             --set 'config.auth_users[0].password=PlaceholderPw2026' \
             --set config.desktop_password=PlaceholderPw2026 \
             --set config.sunshine_password=PlaceholderPw2026 \
+            --set config.registration_token=PlaceholderRegistrationToken2026 \
+            --set config.oidc_well_known_url=https://auth.example.com/.well-known/openid-configuration \
+            --set config.oidc_client_id=example \
+            --set config.oidc_client_secret=PlaceholderPw2026 \
+            --set config.firefly.api=http://firefly-iii.yolab-firefly-iii.svc.cluster.local:8080 \
+            --set config.tts.api=http://kokoro.yolab-kokoro.svc.cluster.local:8880/v1 \
             --set config.subdomain=example
 
           helm package "$CHART" --version "${base}${SUFFIX}" --destination /tmp/pkg
@@ -475,11 +483,13 @@ jobs:
             --set config.password=PlaceholderPw2026 \
             --set config.admin_password=PlaceholderPw2026 \
             --set config.admin_email=admin@example.com \
-            --set config.app_secret=PlaceholderPw2026 \
+            --set config.app_secret=PlaceholderAppSecret2026Placeholder \
             --set config.app_key=PlaceholderAppKey2026Placeholder \
             --set config.api_key=PlaceholderApiKey2026 \
             --set config.auth_secret_key=PlaceholderAuthSecretKey2026Placeholder \
             --set config.gateway_token=PlaceholderGatewayToken2026Placeholder \
+            --set config.rpc_password=PlaceholderPw2026 \
+            --set config.explorer_password=PlaceholderPw2026 \
             --set config.server_name=example \
             --set config.server_pass=PlaceholderPw2026 \
             --set config.vpn_private_key=PlaceholderVpnKey2026= \
@@ -488,6 +498,12 @@ jobs:
             --set 'config.auth_users[0].password=PlaceholderPw2026' \
             --set config.desktop_password=PlaceholderPw2026 \
             --set config.sunshine_password=PlaceholderPw2026 \
+            --set config.registration_token=PlaceholderRegistrationToken2026 \
+            --set config.oidc_well_known_url=https://auth.example.com/.well-known/openid-configuration \
+            --set config.oidc_client_id=example \
+            --set config.oidc_client_secret=PlaceholderPw2026 \
+            --set config.firefly.api=http://firefly-iii.yolab-firefly-iii.svc.cluster.local:8080 \
+            --set config.tts.api=http://kokoro.yolab-kokoro.svc.cluster.local:8880/v1 \
             --set config.subdomain=example
 
           helm package "$CHART" --version "${base}${SUFFIX}" --destination /tmp/pkg
