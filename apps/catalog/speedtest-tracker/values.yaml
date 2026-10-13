@@ -1,5 +1,7 @@
 config:
   subdomain: speedtest
+  admin_email: "admin@example.com"
+  admin_password: ""
   schedule: "0 * * * *"
   storage_size: 2Gi
 yolab:

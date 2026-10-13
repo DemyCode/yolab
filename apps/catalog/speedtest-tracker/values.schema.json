@@ -8,6 +8,9 @@
     "config": {
       "title": "Speedtest Tracker",
       "type": "object",
+      "required": [
+        "admin_password"
+      ],
       "properties": {
         "yolab_enabled": {
           "type": "boolean",
@@ -20,6 +23,19 @@
           "title": "How often to test",
           "default": "0 * * * *",
           "description": "Cron format. \"0 * * * *\" is every hour; \"0 */6 * * *\" is every six."
+        },
+        "admin_email": {
+          "type": "string",
+          "title": "Admin email",
+          "format": "email",
+          "default": "admin@example.com"
+        },
+        "admin_password": {
+          "type": "string",
+          "title": "Admin password",
+          "minLength": 10,
+          "writeOnly": true,
+          "generate": true
         },
         "storage_size": {
           "type": "string",
@@ -199,6 +215,21 @@
       "type": "object",
       "readOnly": true,
       "properties": {
+        "admin_email": {
+          "type": "string",
+          "title": "Admin email",
+          "source": {
+            "config": "admin_email"
+          }
+        },
+        "admin_password": {
+          "type": "string",
+          "title": "Admin password",
+          "format": "secret",
+          "source": {
+            "config": "admin_password"
+          }
+        },
         "file_explorer_url": {
           "type": "string",
           "title": "File explorer",
