@@ -349,8 +349,16 @@ mod tests {
     #[test]
     fn none_forgets_a_remembered_value() {
         let mut remembered = Remembered::new();
-        remember(&mut remembered, fresh(&[("tor_url", "http://x.onion/")]), at(1));
-        assert!(remember(&mut remembered, fresh(&[("tor_url", NONE)]), at(2)));
+        remember(
+            &mut remembered,
+            fresh(&[("tor_url", "http://x.onion/")]),
+            at(1),
+        );
+        assert!(remember(
+            &mut remembered,
+            fresh(&[("tor_url", NONE)]),
+            at(2)
+        ));
         assert!(remembered.is_empty());
         assert!(shown(&[logs("tor_url")], &remembered).is_empty());
     }
@@ -358,7 +366,11 @@ mod tests {
     #[test]
     fn none_for_a_value_never_seen_changes_nothing() {
         let mut remembered = Remembered::new();
-        assert!(!remember(&mut remembered, fresh(&[("tor_url", NONE)]), at(1)));
+        assert!(!remember(
+            &mut remembered,
+            fresh(&[("tor_url", NONE)]),
+            at(1)
+        ));
     }
 
     #[test]
@@ -374,7 +386,10 @@ mod tests {
         assert_eq!(found["tor_url"], "http://new.onion/");
         let hidden = latest_matches(
             &[logs("tor_url")],
-            ["YOLAB_OUTPUT tor_url http://old.onion/", "YOLAB_OUTPUT tor_url NONE"],
+            [
+                "YOLAB_OUTPUT tor_url http://old.onion/",
+                "YOLAB_OUTPUT tor_url NONE",
+            ],
         );
         assert_eq!(hidden["tor_url"], NONE);
     }

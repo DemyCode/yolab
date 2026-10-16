@@ -9,6 +9,7 @@ from typing import ClassVar
 import check_charts
 import yaml
 
+
 def schema(config=None, outputs=None, extra=None):
     props = {"config": {"type": "object", "properties": config or {}}}
     if outputs is not None:

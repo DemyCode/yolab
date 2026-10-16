@@ -199,7 +199,10 @@ mod tests {
     #[test]
     fn another_keys_line_is_not_this_outputs_value() {
         let url = parse_output("url", &json!({}));
-        assert_eq!(url.find_in("YOLAB_OUTPUT file_explorer_url https://f"), None);
+        assert_eq!(
+            url.find_in("YOLAB_OUTPUT file_explorer_url https://f"),
+            None
+        );
         assert_eq!(url.find_in("YOLAB_OUTPUT url_extra https://f"), None);
         assert_eq!(url.find_in("YOLAB_OUTPUT url "), None);
         assert_eq!(url.find_in("YOLAB_OUTPUT url"), None);
@@ -211,7 +214,10 @@ mod tests {
         let saved = json!({ "file_explorer_enabled": false });
         let filled = app.with_defaults(saved.as_object().unwrap());
         assert_eq!(filled["file_explorer_enabled"], json!(false));
-        assert_eq!(app.with_defaults(&Map::new())["file_explorer_enabled"], json!(true));
+        assert_eq!(
+            app.with_defaults(&Map::new())["file_explorer_enabled"],
+            json!(true)
+        );
     }
 
     #[test]
