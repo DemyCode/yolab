@@ -3,7 +3,7 @@ name: copyparty
 description: "Fast file server for your browser: upload, download, search and share files and folders"
 home: https://github.com/9001/copyparty
 type: application
-version: 0.1.4
+version: 0.1.5
 appVersion: "1.20.25"
 
 dependencies:

@@ -2,7 +2,7 @@ apiVersion: v2
 name: nostr-relay
 description: Backup all your Nostr activity with your private relay
 type: application
-version: 0.1.6
+version: 0.1.7
 appVersion: 1.2.0
 dependencies:
 - name: yolab-common

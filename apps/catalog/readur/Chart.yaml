@@ -2,7 +2,7 @@ apiVersion: v2
 name: readur
 description: An intuitive OCR platform for documents
 type: application
-version: 0.1.5
+version: 0.1.6
 appVersion: 3.0.0
 dependencies:
 - name: yolab-common

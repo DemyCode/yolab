@@ -2,7 +2,7 @@ apiVersion: v2
 name: foldergram
 description: A private Instagram-style feed for your memories
 type: application
-version: 0.1.5
+version: 0.1.6
 appVersion: 1.2.2-patch.1
 dependencies:
 - name: yolab-common

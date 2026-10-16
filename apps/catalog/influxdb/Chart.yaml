@@ -2,7 +2,7 @@ apiVersion: v2
 name: influxdb
 description: High performance time series database
 type: application
-version: 0.1.6
+version: 0.1.7
 appVersion: 1.13.1
 dependencies:
 - name: yolab-common

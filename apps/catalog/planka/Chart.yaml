@@ -3,7 +3,7 @@ name: planka
 description: "Kanban boards for projects and teams"
 home: https://planka.app
 type: application
-version: 0.1.19
+version: 0.1.20
 appVersion: "1"
 
 dependencies:

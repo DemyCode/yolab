@@ -3,7 +3,7 @@ name: librespeed
 description: "Self-hosted internet speed test"
 home: https://librespeed.org
 type: application
-version: 0.1.19
+version: 0.1.20
 
 dependencies:
   - name: yolab-common

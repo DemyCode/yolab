@@ -2,7 +2,7 @@ apiVersion: v2
 name: baikal
 description: A lightweight calendar and contacts server
 type: application
-version: 0.1.4
+version: 0.1.5
 appVersion: 0.11.1
 dependencies:
 - name: yolab-common

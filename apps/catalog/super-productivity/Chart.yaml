@@ -2,7 +2,7 @@ apiVersion: v2
 name: super-productivity
 description: An efficient way to manage tasks, time, and projects all in one place
 type: application
-version: 0.1.4
+version: 0.1.5
 appVersion: 19.1.0
 dependencies:
 - name: yolab-common

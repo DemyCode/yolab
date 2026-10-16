@@ -2,7 +2,7 @@ apiVersion: v2
 name: fmd-server
 description: Locate, ring, lock or wipe your Android phone through your own server, end-to-end encrypted
 type: application
-version: 0.1.1
+version: 0.1.2
 appVersion: 0.16.0
 dependencies:
 - name: yolab-common

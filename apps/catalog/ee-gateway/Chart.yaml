@@ -2,7 +2,7 @@ apiVersion: v2
 name: ee-gateway
 description: Self-hosted Bluetooth gateway for open BLE networks
 type: application
-version: 0.1.6
+version: 0.1.7
 appVersion: 0.10.8-patch.1
 dependencies:
 - name: yolab-common

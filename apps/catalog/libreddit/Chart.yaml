@@ -2,7 +2,7 @@ apiVersion: v2
 name: libreddit
 description: An alternative private front-end to Reddit
 type: application
-version: 0.1.6
+version: 0.1.7
 appVersion: 0.22.9
 dependencies:
 - name: yolab-common

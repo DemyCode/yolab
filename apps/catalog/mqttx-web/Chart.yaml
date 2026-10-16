@@ -2,7 +2,7 @@ apiVersion: v2
 name: mqttx-web
 description: Your All-in-One MQTT Client Toolbox
 type: application
-version: 0.1.4
+version: 0.1.5
 appVersion: 1.13.1
 dependencies:
 - name: yolab-common

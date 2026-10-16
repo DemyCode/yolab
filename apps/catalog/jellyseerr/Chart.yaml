@@ -3,7 +3,7 @@ name: jellyseerr
 description: "Request manager for Jellyfin, Plex and Emby libraries"
 home: https://github.com/seerr-team/seerr
 type: application
-version: 0.2.4
+version: 0.2.5
 appVersion: "3.5.0"
 
 dependencies:

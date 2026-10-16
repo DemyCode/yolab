@@ -2,7 +2,7 @@ apiVersion: v2
 name: simple-torrent
 description: Download torrents with your Umbrel
 type: application
-version: 0.1.5
+version: 0.1.6
 appVersion: 1.3.9-hotfix-1
 dependencies:
 - name: yolab-common

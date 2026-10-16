@@ -3,7 +3,7 @@ name: 2fauth
 description: "Web app for managing two-factor authentication codes"
 home: https://docs.2fauth.app
 type: application
-version: 0.1.19
+version: 0.1.20
 
 dependencies:
   - name: yolab-common

@@ -2,7 +2,7 @@ apiVersion: v2
 name: morphos
 description: Self-hosted file converter
 type: application
-version: 0.1.5
+version: 0.1.6
 appVersion: 0.6.0
 dependencies:
 - name: yolab-common

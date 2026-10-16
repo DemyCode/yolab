@@ -2,7 +2,7 @@ apiVersion: v2
 name: dcrdex
 description: Multi-asset cryptocurrency wallet with integrated DEX
 type: application
-version: 0.1.4
+version: 0.1.5
 appVersion: 1.0.5-patch.1
 dependencies:
 - name: yolab-common

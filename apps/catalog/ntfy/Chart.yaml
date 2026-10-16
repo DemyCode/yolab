@@ -3,7 +3,7 @@ name: ntfy
 description: "Self-hosted push notification service"
 home: https://ntfy.sh
 type: application
-version: 0.1.19
+version: 0.1.20
 
 dependencies:
   - name: yolab-common

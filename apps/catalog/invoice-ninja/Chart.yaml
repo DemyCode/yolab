@@ -2,7 +2,7 @@ apiVersion: v2
 name: invoice-ninja
 description: We'll help with the invoicing
 type: application
-version: 0.1.5
+version: 0.1.6
 appVersion: 5.13.43
 dependencies:
 - name: yolab-common

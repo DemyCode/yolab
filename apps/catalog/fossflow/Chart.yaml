@@ -2,7 +2,7 @@ apiVersion: v2
 name: fossflow
 description: Make beautiful isometric infrastructure diagrams
 type: application
-version: 0.1.5
+version: 0.1.6
 appVersion: b69fc2e-patch.1
 dependencies:
 - name: yolab-common

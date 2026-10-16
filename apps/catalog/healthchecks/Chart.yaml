@@ -3,7 +3,7 @@ name: healthchecks
 description: "Watches the jobs that are supposed to run, and tells you when one silently stops"
 home: https://healthchecks.io
 type: application
-version: 0.1.19
+version: 0.1.20
 
 dependencies:
   - name: yolab-common

@@ -2,7 +2,7 @@ apiVersion: v2
 name: wordpress
 description: The open source publishing platform of choice for millions of websites worldwide
 type: application
-version: 0.1.5
+version: 0.1.6
 appVersion: 7.1.2
 dependencies:
 - name: yolab-common

@@ -2,7 +2,7 @@ apiVersion: v2
 name: gupt
 description: Encrypted chat, passwords, notes, bookmarks, and ephemeral sharing
 type: application
-version: 0.1.4
+version: 0.1.5
 appVersion: 5.0.26
 dependencies:
 - name: yolab-common

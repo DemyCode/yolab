@@ -2,7 +2,7 @@ apiVersion: v2
 name: meshchatx
 description: The future of off-grid communication. Secure, decentralized, and unstoppable
 type: application
-version: 0.1.5
+version: 0.1.6
 appVersion: 4.10.1
 dependencies:
 - name: yolab-common

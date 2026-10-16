@@ -3,7 +3,7 @@ name: audiobookshelf
 description: "Audiobook and podcast server with progress sync"
 home: https://www.audiobookshelf.org
 type: application
-version: 0.1.19
+version: 0.1.20
 appVersion: "2"
 
 dependencies:

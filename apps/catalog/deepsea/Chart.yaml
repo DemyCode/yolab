@@ -2,7 +2,7 @@ apiVersion: v2
 name: deepsea
 description: Retro style Ocean dashboard
 type: application
-version: 0.1.4
+version: 0.1.5
 appVersion: 2.0.4-patch.1
 dependencies:
 - name: yolab-common

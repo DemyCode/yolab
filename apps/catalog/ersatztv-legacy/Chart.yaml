@@ -2,7 +2,7 @@ apiVersion: v2
 name: ersatztv-legacy
 description: Build your own live TV channels
 type: application
-version: 0.1.5
+version: 0.1.6
 appVersion: 26.10.0
 dependencies:
 - name: yolab-common

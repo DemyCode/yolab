@@ -3,7 +3,7 @@ name: docmost
 description: "Collaborative wiki and documentation workspace"
 home: https://docmost.com
 type: application
-version: 0.1.19
+version: 0.1.20
 appVersion: "0.10"
 
 dependencies:

@@ -2,7 +2,7 @@ apiVersion: v2
 name: nitter
 description: Browse Twitter without tracking or ads
 type: application
-version: 0.1.5
+version: 0.1.6
 appVersion: 38985af
 dependencies:
 - name: yolab-common

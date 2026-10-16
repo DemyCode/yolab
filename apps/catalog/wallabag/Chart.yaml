@@ -3,7 +3,7 @@ name: wallabag
 description: "Save articles to read later, stripped of ads and clutter"
 home: https://wallabag.org
 type: application
-version: 0.1.19
+version: 0.1.20
 appVersion: "2"
 
 dependencies:

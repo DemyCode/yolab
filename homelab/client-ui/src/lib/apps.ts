@@ -41,13 +41,6 @@ export function appLinks(
     if (!already) links.push({ label: "Open", url: derived });
   }
 
-  const own = app.config?.custom_domain;
-  const signIn = app.config?.auth_enabled === true;
-  if (yolabOn && !signIn && typeof own === "string" && own.trim()) {
-    const url = `https://${own.trim().toLowerCase()}`;
-    if (!seen.has(url)) links.push({ label: "Your own address", url });
-  }
-
   return links;
 }
 

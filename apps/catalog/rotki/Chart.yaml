@@ -2,7 +2,7 @@ apiVersion: v2
 name: rotki
 description: Portfolio tracking, analytics, accounting and tax reporting
 type: application
-version: 0.1.4
+version: 0.1.5
 appVersion: 1.44.1
 dependencies:
 - name: yolab-common

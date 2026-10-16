@@ -2,7 +2,7 @@ apiVersion: v2
 name: samba
 description: Make your storage accessible using Samba
 type: application
-version: 0.1.6
+version: 0.1.7
 appVersion: 4.23.5-r1
 dependencies:
 - name: yolab-common

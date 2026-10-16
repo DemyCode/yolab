@@ -2,7 +2,7 @@ apiVersion: v2
 name: cashu-me
 description: An open-source Bitcoin ecash wallet
 type: application
-version: 0.1.4
+version: 0.1.5
 appVersion: 0.1.1
 dependencies:
 - name: yolab-common

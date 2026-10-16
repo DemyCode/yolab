@@ -2,7 +2,7 @@ apiVersion: v2
 name: chantools
 description: lnd and cln channel rescue utility
 type: application
-version: 0.1.5
+version: 0.1.6
 appVersion: v1.14.1-patch.1
 dependencies:
 - name: yolab-common

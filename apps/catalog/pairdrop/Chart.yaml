@@ -3,7 +3,7 @@ name: pairdrop
 description: "Send files between your phone and computer, straight across the network"
 home: https://pairdrop.net
 type: application
-version: 0.1.19
+version: 0.1.20
 
 dependencies:
   - name: yolab-common

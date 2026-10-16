@@ -2,7 +2,7 @@ apiVersion: v2
 name: skybro
 description: Live aircraft, satellite, weather & astronomy tracker
 type: application
-version: 0.1.4
+version: 0.1.5
 appVersion: 1.6.2-patch.1
 dependencies:
 - name: yolab-common

@@ -2,7 +2,7 @@ apiVersion: v2
 name: notediscovery
 description: A lightweight, privacy-focused note-taking application
 type: application
-version: 0.2.3
+version: 0.2.4
 appVersion: 0.31.7
 dependencies:
 - name: yolab-common

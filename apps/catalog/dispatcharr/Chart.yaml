@@ -2,7 +2,7 @@ apiVersion: v2
 name: dispatcharr
 description: Manage IPTV streams and EPG guides, then hand them to Plex, Jellyfin or Emby as a live TV tuner
 type: application
-version: 0.1.1
+version: 0.1.2
 appVersion: 0.32.0
 dependencies:
 - name: yolab-common

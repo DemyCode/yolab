@@ -3,7 +3,7 @@ name: karakeep
 description: "Bookmark and read-later app with automatic tagging"
 home: https://karakeep.app
 type: application
-version: 0.1.19
+version: 0.1.20
 appVersion: "0.23"
 
 dependencies:

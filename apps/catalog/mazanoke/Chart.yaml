@@ -2,7 +2,7 @@ apiVersion: v2
 name: mazanoke
 description: A self-hosted local image optimizer
 type: application
-version: 0.1.4
+version: 0.1.5
 appVersion: 1.1.7
 dependencies:
 - name: yolab-common

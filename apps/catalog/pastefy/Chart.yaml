@@ -2,7 +2,7 @@ apiVersion: v2
 name: pastefy
 description: An easy paste for seamless sharing
 type: application
-version: 0.1.6
+version: 0.1.7
 appVersion: 7.1.6-patch.1
 dependencies:
 - name: yolab-common

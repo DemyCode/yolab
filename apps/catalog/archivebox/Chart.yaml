@@ -2,7 +2,7 @@ apiVersion: v2
 name: archivebox
 description: Open-source self-hosted web archiving
 type: application
-version: 0.1.5
+version: 0.1.6
 appVersion: 0.9.71
 dependencies:
 - name: yolab-common

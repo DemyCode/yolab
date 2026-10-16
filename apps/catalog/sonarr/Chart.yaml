@@ -3,7 +3,7 @@ name: sonarr
 description: "Follows your TV shows and fetches new episodes as they appear"
 home: https://sonarr.tv
 type: application
-version: 0.2.5
+version: 0.2.6
 
 dependencies:
   - name: yolab-common

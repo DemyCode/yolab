@@ -2,7 +2,7 @@ apiVersion: v2
 name: element
 description: A glossy Matrix client compatible with Synapse
 type: application
-version: 0.1.5
+version: 0.1.6
 appVersion: 1.12.30
 dependencies:
 - name: yolab-common

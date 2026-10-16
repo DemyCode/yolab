@@ -2,7 +2,7 @@ apiVersion: v2
 name: passky-client
 description: Simple, modern, lightweight, open source and secure password manager
 type: application
-version: 0.1.4
+version: 0.1.5
 appVersion: 8.1.1
 dependencies:
 - name: yolab-common

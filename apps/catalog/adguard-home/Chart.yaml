@@ -2,7 +2,7 @@ apiVersion: v2
 name: adguard-home
 description: Network-wide software for blocking ads and tracking
 type: application
-version: 0.1.5
+version: 0.1.6
 appVersion: 1.0.0-b.1
 dependencies:
 - name: yolab-common

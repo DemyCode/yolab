@@ -3,7 +3,7 @@ name: openclaw
 description: "Personal AI assistant that connects to WhatsApp, Telegram, Discord, and more"
 home: https://github.com/openclaw/openclaw
 type: application
-version: 0.1.19
+version: 0.1.20
 appVersion: "latest"
 
 dependencies:

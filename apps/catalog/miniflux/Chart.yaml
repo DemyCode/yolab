@@ -3,7 +3,7 @@ name: miniflux
 description: "Minimalist, opinionated feed reader"
 home: https://miniflux.app
 type: application
-version: 0.1.19
+version: 0.1.20
 appVersion: "2"
 
 dependencies:

@@ -3,7 +3,7 @@ name: nextcloud
 description: "Files, calendar, contacts and photos, self-hosted"
 home: https://nextcloud.com
 type: application
-version: 0.1.19
+version: 0.1.20
 appVersion: "31"
 
 dependencies:

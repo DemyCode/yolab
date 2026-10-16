@@ -3,7 +3,7 @@ name: bookstack
 description: "Organise documentation into books, chapters and pages"
 home: https://www.bookstackapp.com
 type: application
-version: 0.1.19
+version: 0.1.20
 appVersion: "24"
 
 dependencies:

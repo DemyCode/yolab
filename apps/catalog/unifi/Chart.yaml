@@ -3,7 +3,7 @@ name: unifi
 description: "The controller for UniFi access points and switches"
 home: https://ui.com
 type: application
-version: 0.1.19
+version: 0.1.20
 dependencies:
   - name: yolab-common
     version: "0.1.18"

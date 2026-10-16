@@ -2,7 +2,7 @@ apiVersion: v2
 name: netbird
 description: An adaptive client for Zero Trust Networking
 type: application
-version: 0.1.5
+version: 0.1.6
 appVersion: 0.80.0
 dependencies:
 - name: yolab-common

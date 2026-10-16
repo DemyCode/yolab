@@ -85,13 +85,6 @@
                   "format": "yolab-token",
                   "writeOnly": true,
                   "description": "Leave it as it is to use this box's YoLab account."
-                },
-                "custom_domain": {
-                  "type": "string",
-                  "title": "Your own address",
-                  "default": "",
-                  "pattern": "^([a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+)?$",
-                  "description": "Optional, e.g. photos.example.com. At your domain's DNS provider, add a CNAME record from it to this app's YoLab address. The app then answers on both, each with its own certificate."
                 }
               },
               "required": [

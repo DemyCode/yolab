@@ -2,7 +2,7 @@ apiVersion: v2
 name: trip
 description: Minimalist Map Tracker and Trip Planner
 type: application
-version: 0.1.4
+version: 0.1.5
 appVersion: 1.50.1
 dependencies:
 - name: yolab-common

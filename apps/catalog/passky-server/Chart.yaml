@@ -2,7 +2,7 @@ apiVersion: v2
 name: passky-server
 description: Simple, modern, lightweight, open source and secure password manager
 type: application
-version: 0.1.5
+version: 0.1.6
 appVersion: 8.1.8-patch.1
 dependencies:
 - name: yolab-common

@@ -2,7 +2,7 @@ apiVersion: v2
 name: threema
 description: An intuitive and secure web client for Threema users
 type: application
-version: 0.1.4
+version: 0.1.5
 appVersion: 2.6.5
 dependencies:
 - name: yolab-common

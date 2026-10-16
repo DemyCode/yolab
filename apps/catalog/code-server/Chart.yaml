@@ -3,7 +3,7 @@ name: code-server
 description: "VS Code in the browser, running on your own hardware"
 home: https://coder.com/docs/code-server
 type: application
-version: 0.1.19
+version: 0.1.20
 appVersion: "4"
 
 dependencies:

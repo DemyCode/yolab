@@ -3,7 +3,7 @@ name: stirling-pdf
 description: "Local web toolkit for splitting, merging, and converting PDFs"
 home: https://www.stirlingpdf.com
 type: application
-version: 0.1.19
+version: 0.1.20
 appVersion: "0"
 
 dependencies:

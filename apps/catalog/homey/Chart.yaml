@@ -2,7 +2,7 @@ apiVersion: v2
 name: homey
 description: Run Homey Self-Hosted Server on your Umbrel
 type: application
-version: 0.1.4
+version: 0.1.5
 appVersion: 13.5.1
 dependencies:
 - name: yolab-common

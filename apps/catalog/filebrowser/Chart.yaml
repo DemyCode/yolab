@@ -3,7 +3,7 @@ name: filebrowser
 description: Web-based file manager for your storage (FileBrowser Quantum)
 home: https://github.com/gtsteffaniak/filebrowser
 type: application
-version: 0.1.22
+version: 0.1.23
 appVersion: "2.1.0-beta"
 
 dependencies:

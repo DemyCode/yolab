@@ -2,7 +2,7 @@ apiVersion: v2
 name: bitwatch
 description: Monitor Bitcoin addresses in real-time
 type: application
-version: 0.1.4
+version: 0.1.5
 appVersion: 1.8.0
 dependencies:
 - name: yolab-common

@@ -3,7 +3,7 @@ name: mastodon
 description: "Your own corner of the fediverse — a social server you run"
 home: https://joinmastodon.org
 type: application
-version: 0.1.19
+version: 0.1.20
 
 dependencies:
   - name: yolab-common

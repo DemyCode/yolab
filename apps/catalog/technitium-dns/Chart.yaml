@@ -2,7 +2,7 @@ apiVersion: v2
 name: technitium-dns
 description: Block ads & malware at the DNS level for your entire network
 type: application
-version: 0.1.6
+version: 0.1.7
 appVersion: 15.6.0
 dependencies:
 - name: yolab-common

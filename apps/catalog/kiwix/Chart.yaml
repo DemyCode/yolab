@@ -2,7 +2,7 @@ apiVersion: v2
 name: kiwix
 description: Access knowledge anytime, anywhere without an internet connection
 type: application
-version: 0.1.4
+version: 0.1.5
 appVersion: 3.8.2-patch.1
 dependencies:
 - name: yolab-common

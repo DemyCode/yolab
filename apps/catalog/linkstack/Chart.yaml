@@ -2,7 +2,7 @@ apiVersion: v2
 name: linkstack
 description: A highly customizable link sharing platform
 type: application
-version: 0.1.4
+version: 0.1.5
 appVersion: 4.8.6
 dependencies:
 - name: yolab-common

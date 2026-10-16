@@ -2,7 +2,7 @@ apiVersion: v2
 name: l-town
 description: Open source multiplayer FPS browser game
 type: application
-version: 0.1.5
+version: 0.1.6
 appVersion: '20260621'
 dependencies:
 - name: yolab-common

@@ -3,7 +3,7 @@ name: umami
 description: "Privacy-focused, cookie-free website analytics"
 home: https://github.com/umami-software/umami
 type: application
-version: 0.1.19
+version: 0.1.20
 appVersion: "2"
 
 dependencies:

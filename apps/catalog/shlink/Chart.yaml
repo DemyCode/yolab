@@ -3,7 +3,7 @@ name: shlink
 description: "URL shortener with click statistics and a REST API"
 home: https://shlink.io
 type: application
-version: 0.1.20
+version: 0.1.21
 appVersion: "4"
 
 dependencies:

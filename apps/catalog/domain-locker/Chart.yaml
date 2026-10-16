@@ -2,7 +2,7 @@ apiVersion: v2
 name: domain-locker
 description: An all-in-one tool for keeping track of your domain name portfolio
 type: application
-version: 0.1.5
+version: 0.1.6
 appVersion: 0.3.0
 dependencies:
 - name: yolab-common

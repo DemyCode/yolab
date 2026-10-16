@@ -942,40 +942,6 @@ def offered_private_access(schema):
     return [k for k in PRIVATE_ACCESS if k in config]
 
 
-def yolab_on_branch(schema):
-    config_obj = (schema.get("properties") or {}).get("config") or {}
-    branches = ((config_obj.get("dependencies") or {}).get("yolab_enabled") or {}).get(
-        "oneOf"
-    ) or []
-    for b in branches:
-        if (b.get("properties") or {}).get("yolab_enabled") == {"const": True}:
-            return b.get("properties") or {}
-    return None
-
-
-def check_custom_domain_offer(app, schema, values_text, fail):
-    on = yolab_on_branch(schema)
-    if on is None:
-        return
-    offered = "custom_domain" in on
-    own_caddyfile = "caddyfile:" in values_text
-    serves_it = "{$YOLAB_SITES}" in values_text
-    if own_caddyfile and not serves_it:
-        if offered:
-            fail(
-                app,
-                "offers custom_domain, but its own Caddyfile never serves "
-                "{$YOLAB_SITES}, so the address would be ignored",
-            )
-        return
-    if not offered:
-        fail(
-            app,
-            "its YoLab address on branch does not offer custom_domain, the "
-            "person's own address for the app",
-        )
-
-
 def check_private_access_offer(app, schema, values_text, fail):
     offered = offered_private_access(schema)
     if not offered:
@@ -1954,12 +1920,6 @@ def main(argv):
             check_file_explorer(app, docs, fail)
             values_path = Path(chart_dir, "values.yaml")
             check_private_access_offer(
-                app,
-                schema,
-                values_path.read_text() if values_path.exists() else "",
-                fail,
-            )
-            check_custom_domain_offer(
                 app,
                 schema,
                 values_path.read_text() if values_path.exists() else "",

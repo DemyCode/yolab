@@ -2,7 +2,7 @@ apiVersion: v2
 name: zen
 description: A simple app for focused and private note-taking
 type: application
-version: 0.1.4
+version: 0.1.5
 appVersion: 1.5.0-patch.1
 dependencies:
 - name: yolab-common

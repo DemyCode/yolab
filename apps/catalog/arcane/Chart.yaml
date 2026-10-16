@@ -2,7 +2,7 @@ apiVersion: v2
 name: arcane
 description: An easy and modern Docker management platform
 type: application
-version: 0.1.6
+version: 0.1.7
 appVersion: 2.15.0
 dependencies:
 - name: yolab-common

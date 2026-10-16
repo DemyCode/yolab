@@ -3,7 +3,7 @@ name: calibre-web
 description: "Web interface for browsing and reading a Calibre ebook library"
 home: https://github.com/janeczku/calibre-web
 type: application
-version: 0.1.19
+version: 0.1.20
 appVersion: "0"
 
 dependencies:

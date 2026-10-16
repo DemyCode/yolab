@@ -3,7 +3,7 @@ name: vikunja
 description: "Tasks, projects and kanban boards"
 home: https://vikunja.io
 type: application
-version: 0.1.19
+version: 0.1.20
 appVersion: "0.24"
 
 dependencies:

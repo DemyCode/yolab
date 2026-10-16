@@ -2,7 +2,7 @@ apiVersion: v2
 name: perplexica
 description: An AI-powered answering engine
 type: application
-version: 0.1.4
+version: 0.1.5
 appVersion: 1.12.2-patch.1
 dependencies:
 - name: yolab-common

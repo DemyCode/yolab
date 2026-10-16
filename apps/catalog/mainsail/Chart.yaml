@@ -2,7 +2,7 @@ apiVersion: v2
 name: mainsail
 description: Control and monitor your printer from everywhere, from any device
 type: application
-version: 0.1.4
+version: 0.1.5
 appVersion: 2.19.0
 dependencies:
 - name: yolab-common

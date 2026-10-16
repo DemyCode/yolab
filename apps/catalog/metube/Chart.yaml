@@ -3,7 +3,7 @@ name: metube
 description: "Web front-end for yt-dlp video downloads"
 home: https://github.com/alexta69/metube
 type: application
-version: 0.1.19
+version: 0.1.20
 appVersion: "2024"
 
 dependencies:

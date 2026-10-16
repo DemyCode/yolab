@@ -2,7 +2,7 @@ apiVersion: v2
 name: matter-server
 description: A Matter Controller Server over WebSockets
 type: application
-version: 0.1.5
+version: 0.1.6
 appVersion: 8.1.2-patch.1
 dependencies:
 - name: yolab-common

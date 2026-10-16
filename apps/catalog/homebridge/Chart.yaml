@@ -2,7 +2,7 @@ apiVersion: v2
 name: homebridge
 description: HomeKit support for the impatient
 type: application
-version: 0.1.5
+version: 0.1.6
 appVersion: 2.4.0-2026-09-25
 dependencies:
 - name: yolab-common

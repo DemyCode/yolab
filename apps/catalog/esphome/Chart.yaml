@@ -2,7 +2,7 @@ apiVersion: v2
 name: esphome
 description: Intelligently manage all your ESP8266/ESP32 devices
 type: application
-version: 0.1.5
+version: 0.1.6
 appVersion: 2026.9.1
 dependencies:
 - name: yolab-common

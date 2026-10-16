@@ -2,7 +2,7 @@ apiVersion: v2
 name: webcheck
 description: An all-in-one Open Source Intelligence tool for analyzing any website
 type: application
-version: 0.1.4
+version: 0.1.5
 appVersion: 2.3.0
 dependencies:
 - name: yolab-common

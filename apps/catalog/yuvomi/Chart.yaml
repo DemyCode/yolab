@@ -2,7 +2,7 @@ apiVersion: v2
 name: yuvomi
 description: Self-hosted family planner — calendar, tasks, shopping, meals & budget
 type: application
-version: 0.1.5
+version: 0.1.6
 appVersion: 2.71.0
 dependencies:
 - name: yolab-common

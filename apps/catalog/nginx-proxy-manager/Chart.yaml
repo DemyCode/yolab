@@ -2,7 +2,7 @@ apiVersion: v2
 name: nginx-proxy-manager
 description: Expose your services easily and securely
 type: application
-version: 0.1.5
+version: 0.1.6
 appVersion: 2.16.0
 dependencies:
 - name: yolab-common

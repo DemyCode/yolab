@@ -2,7 +2,7 @@ apiVersion: v2
 name: onlyoffice-nextcloud
 description: Online office for Nextcloud
 type: application
-version: 0.1.6
+version: 0.1.7
 appVersion: 9.4.0-1-patch.1
 dependencies:
 - name: yolab-common
