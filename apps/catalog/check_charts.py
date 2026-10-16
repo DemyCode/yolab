@@ -705,7 +705,7 @@ def check_tunnel_readiness(app, container, fail):
         if needle not in script:
             fail(app, f"wireguard readinessProbe: {why} (missing {needle!r})")
     if len(command) == 3 and command[1] == "-c":
-        run = subprocess.run(["sh", "-n", "-c", command[2]], capture_output=True)
+        run = subprocess.run(["sh", "-n", "-c", command[2]], capture_output=True, check=False)
         if run.returncode != 0:
             fail(
                 app,
