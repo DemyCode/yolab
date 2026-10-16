@@ -159,6 +159,41 @@ printf 'export YOLAB_HOST=%s\nexport YOLAB_URL=https://%s\nexport YOLAB_SITES="%
   imagePullPolicy: IfNotPresent
   securityContext:
     privileged: true
+  livenessProbe:
+    exec:
+      command:
+        - /bin/sh
+        - -c
+        - |
+          set -eu
+          LAST=$(wg show wg0 latest-handshakes | awk 'NR==1{print $2}')
+          if [ -z "$LAST" ] || [ "$LAST" -eq 0 ]; then
+            echo "no WireGuard handshake with the platform yet"
+            exit 1
+          fi
+          AGE=$(( $(date +%s) - LAST ))
+          if [ "$AGE" -gt 300 ]; then
+            echo "last WireGuard handshake was ${AGE}s ago"
+            exit 1
+          fi
+          ENDPOINT=$(wg show wg0 endpoints | awk 'NR==1{print $2}')
+          case "$ENDPOINT" in
+            \[*\]:*) HOST=${ENDPOINT#\[}; HOST=${HOST%\]:*} ;;
+            *) exit 0 ;;
+          esac
+          SRC=$(ip -6 -o addr show dev wg0 scope global | awk 'NR==1{print $4}' | cut -d/ -f1)
+          if [ -z "$SRC" ]; then
+            echo "wg0 carries no tunnel address"
+            exit 1
+          fi
+          if ! ping -6 -c 2 -W 5 -I "$SRC" "$HOST" >/dev/null 2>&1; then
+            echo "no answer from $HOST through the tunnel (source $SRC)"
+            exit 1
+          fi
+    initialDelaySeconds: 60
+    periodSeconds: 30
+    timeoutSeconds: 20
+    failureThreshold: 4
   volumeMounts:
     - name: wireguard
       mountPath: /etc/wireguard
