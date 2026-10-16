@@ -11,7 +11,7 @@ So the question here is not "does it render" but "does the rendered thing
 describe a workload that can actually run":
 
   - the gateway wiring is intact (wg-register + wireguard + caddy, in one pod)
-  - only the tunnel sidecar is privileged, and it alone has a livenessProbe
+  - only the tunnel sidecar is privileged, and it alone has a readinessProbe
   - no two containers in a pod claim the same port
   - every volumeMount resolves to a declared volume
   - every reverse_proxy upstream resolves to a local container or a real Service
@@ -632,8 +632,8 @@ def check(app, docs, fail, chart_yaml="", schema=None, arches=None):
         spec = (d.get("spec", {}).get("template", {}) or {}).get("spec", {})
         for c in spec.get("containers") or []:
             if c["name"] == "wireguard":
-                check_tunnel_liveness(app, c, fail)
-            elif "livenessProbe" in c:
+                check_tunnel_readiness(app, c, fail)
+            if "livenessProbe" in c:
                 fail(app, f"container {c['name']} has a livenessProbe — none by design")
             if "startupProbe" in c:
                 fail(app, f"container {c['name']} has a startupProbe — none by design")
@@ -686,30 +686,31 @@ ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]*$")
 PORT_NAME = re.compile(r"^(?=.{1,15}$)(?=.*[a-z])[a-z0-9]+(-[a-z0-9]+)*$")
 
 
-def check_tunnel_liveness(app, container, fail):
-    probe = container.get("livenessProbe")
+def check_tunnel_readiness(app, container, fail):
+    probe = container.get("readinessProbe")
     if not probe:
         fail(
             app,
-            "wireguard sidecar has no livenessProbe — a wedged tunnel would "
-            "stay 'Ready' and never be restarted",
+            "wireguard sidecar has no readinessProbe — a wedged tunnel would "
+            "still show the pod as Ready",
         )
         return
-    script = " ".join((probe.get("exec") or {}).get("command") or [])
+    command = (probe.get("exec") or {}).get("command") or []
+    script = " ".join(command)
     for needle, why in (
         ("latest-handshakes", "a stale WireGuard session is not detected"),
         ("ping -6", "the tunnel's data path is not exercised"),
         ("-I \"$SRC\"", "the ping would not be sourced from the tunnel address"),
     ):
         if needle not in script:
-            fail(app, f"wireguard livenessProbe: {why} (missing {needle!r})")
-    shell = (probe.get("exec") or {}).get("command") or []
-    if len(shell) == 3 and shell[1] == "-c":
-        run = subprocess.run(["sh", "-n", "-c", shell[2]], capture_output=True)
+            fail(app, f"wireguard readinessProbe: {why} (missing {needle!r})")
+    if len(command) == 3 and command[1] == "-c":
+        run = subprocess.run(["sh", "-n", "-c", command[2]], capture_output=True)
         if run.returncode != 0:
-            fail(app, f"wireguard livenessProbe is not valid shell: {run.stderr.decode()}")
-    if (probe.get("periodSeconds") or 10) * (probe.get("failureThreshold") or 3) < 60:
-        fail(app, "wireguard livenessProbe restarts the tunnel in under a minute")
+            fail(
+                app,
+                f"wireguard readinessProbe is not valid shell: {run.stderr.decode()}",
+            )
 
 
 def check_containers(app, docs, fail):

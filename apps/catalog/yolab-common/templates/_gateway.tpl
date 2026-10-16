@@ -159,7 +159,7 @@ printf 'export YOLAB_HOST=%s\nexport YOLAB_URL=https://%s\nexport YOLAB_SITES="%
   imagePullPolicy: IfNotPresent
   securityContext:
     privileged: true
-  livenessProbe:
+  readinessProbe:
     exec:
       command:
         - /bin/sh
@@ -190,10 +190,10 @@ printf 'export YOLAB_HOST=%s\nexport YOLAB_URL=https://%s\nexport YOLAB_SITES="%
             echo "no answer from $HOST through the tunnel (source $SRC)"
             exit 1
           fi
-    initialDelaySeconds: 60
-    periodSeconds: 30
-    timeoutSeconds: 20
-    failureThreshold: 4
+    initialDelaySeconds: 30
+    periodSeconds: 20
+    timeoutSeconds: 15
+    failureThreshold: 3
   volumeMounts:
     - name: wireguard
       mountPath: /etc/wireguard
