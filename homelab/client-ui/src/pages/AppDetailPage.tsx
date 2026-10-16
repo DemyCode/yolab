@@ -1049,12 +1049,7 @@ export function AppDetailPage() {
         {shown}
       </Collapse>
 
-      {!quiet && (
-        <AppAccess
-          instanceName={app.instance_name}
-          links={links}
-        />
-      )}
+      {!quiet && <AppAccess instanceName={app.instance_name} links={links} />}
 
       {!quiet && (
         <BackupsSection

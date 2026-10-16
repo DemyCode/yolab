@@ -9,6 +9,7 @@ from typing import ClassVar
 import check_charts
 import yaml
 
+
 def schema(config=None, outputs=None, extra=None):
     props = {"config": {"type": "object", "properties": config or {}}}
     if outputs is not None:
@@ -758,9 +759,7 @@ class SteamHeadless(RenderedChart):
         )
 
     def mounts(self):
-        return {
-            m["mountPath"]: m for m in self.game()["containers"][0]["volumeMounts"]
-        }
+        return {m["mountPath"]: m for m in self.game()["containers"][0]["volumeMounts"]}
 
     def volumes(self):
         return {v["name"]: v for v in self.game()["volumes"]}
