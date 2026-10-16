@@ -700,7 +700,7 @@ def check_tunnel_readiness(app, container, fail):
     for needle, why in (
         ("latest-handshakes", "a stale WireGuard session is not detected"),
         ("ping -6", "the tunnel's data path is not exercised"),
-        ("-I \"$SRC\"", "the ping would not be sourced from the tunnel address"),
+        ('-I "$SRC"', "the ping would not be sourced from the tunnel address"),
     ):
         if needle not in script:
             fail(app, f"wireguard readinessProbe: {why} (missing {needle!r})")
