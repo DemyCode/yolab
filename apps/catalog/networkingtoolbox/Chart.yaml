@@ -2,11 +2,11 @@ apiVersion: v2
 name: networkingtoolbox
 description: The all-in-one offline-first networking toolbox for sysadmins
 type: application
-version: 0.1.7
+version: 0.1.8
 appVersion: 1.6.0
 dependencies:
 - name: yolab-common
-  version: "0.1.19"
+  version: "0.1.20"
   repository: oci://ghcr.io/demycode/charts
 annotations:
   yolab.io/display-name: Networking Toolbox

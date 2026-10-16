@@ -329,13 +329,13 @@ data:
           # app that ignores them, and the only way one can personalise.
           copy_headers Remote-User Remote-Groups Remote-Email Remote-Name
         }
-        reverse_proxy {{ required "yolab.gateway.upstream is required when no caddyfile is given" (((.Values.yolab).gateway).upstream) }}
+        {{- include "yolab-common.reverseProxy" (list . (list)) | nindent 8 }}
       }
     }
     {{- else }}
     {$YOLAB_SITES} {
       {{- include "yolab-common.apiKey.guard" . | nindent 6 }}
-      reverse_proxy {{ required "yolab.gateway.upstream is required when no caddyfile is given" (((.Values.yolab).gateway).upstream) }}
+      {{- include "yolab-common.reverseProxy" (list . (list)) | nindent 6 }}
     }
     {{- end }}
     {{- include "yolab-common.fileExplorer.caddySite" . | nindent 4 }}
@@ -414,4 +414,24 @@ data:
       {{- range $output, $_ := $outputs }}
       echo "YOLAB_OUTPUT {{ $output }} ${{ printf "{OUTPUT_%s:-NONE}" (upper $output) }}"
       {{- end }}
+{{- end -}}
+
+
+{{- define "yolab-common.reverseProxy" -}}
+{{- $ctx := index . 0 -}}
+{{- $extra := index . 1 -}}
+{{- $upstream := required "yolab.gateway.upstream is required when no caddyfile is given" ((($ctx.Values.yolab).gateway).upstream) -}}
+{{- $tls := ((($ctx.Values.yolab).gateway).upstreamTls) -}}
+reverse_proxy {{ $upstream }}
+{{- if or $tls $extra }} {
+{{- range $extra }}
+  {{ . }}
+{{- end }}
+{{- if $tls }}
+  transport http {
+    tls_insecure_skip_verify
+  }
+{{- end }}
+}
+{{- end }}
 {{- end -}}

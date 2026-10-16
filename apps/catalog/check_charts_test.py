@@ -746,14 +746,62 @@ class SteamHeadless(RenderedChart):
             for p in spec["containers"][0]["ports"]
             if "hostPort" in p
         }
-        self.assertNotIn(8083, published)
+        self.assertNotIn(8483, published)
         self.assertEqual(published, {47984, 47989, 47990, 48010, 47998, 47999, 48000})
+        self.assertIn("forward_auth", self.caddyfile())
+
+    def caddyfile(self, extra=None):
+        return next(
+            d["data"]["Caddyfile"]
+            for d in self.docs(extra)
+            if d["kind"] == "ConfigMap" and "Caddyfile" in (d.get("data") or {})
+        )
+
+    def mounts(self):
+        return {
+            m["mountPath"]: m for m in self.game()["containers"][0]["volumeMounts"]
+        }
+
+    def volumes(self):
+        return {v["name"]: v for v in self.game()["volumes"]}
+
+    def test_its_page_is_reached_over_the_https_it_serves(self):
+        caddy = self.caddyfile()
+        self.assertIn("reverse_proxy steam-headless:8483 {", caddy)
+        self.assertIn("tls_insecure_skip_verify", caddy)
+        probe = self.game()["containers"][0]["readinessProbe"]["tcpSocket"]
+        self.assertEqual(probe["port"], 8483)
+
+    def test_systemd_keeps_what_the_image_prepares_in_run(self):
+        self.assertEqual(self.mounts()["/run"]["name"], "run")
+        self.assertEqual(self.volumes()["run"]["emptyDir"]["medium"], "Memory")
+
+    def test_its_home_and_state_live_on_the_apps_volume(self):
+        mounts = self.mounts()
+        self.assertEqual(mounts["/home/steamheadless"]["subPath"], "release/home")
+        self.assertEqual(mounts["/var/lib/steam-headless"]["subPath"], "release/state")
+        self.assertEqual(mounts["/mnt/games"]["subPath"], "release/games")
+
+    def test_the_desktop_password_is_a_root_only_file_the_image_reads(self):
+        mount = self.mounts()["/steam-headless-provisioning-password"]
+        self.assertEqual(mount["subPath"], "password")
+        secret = self.volumes()[mount["name"]]["secret"]
+        self.assertEqual(
+            secret["items"], [{"key": "desktop", "path": "password", "mode": 0o400}]
+        )
+
+
+class GatewayUpstream(RenderedChart):
+    CHART = "vaultwarden"
+
+    def test_a_plain_http_app_is_proxied_without_tls(self):
         caddy = next(
             d["data"]["Caddyfile"]
             for d in self.docs()
             if d["kind"] == "ConfigMap" and "Caddyfile" in (d.get("data") or {})
         )
-        self.assertIn("forward_auth", caddy)
+        self.assertNotIn("transport http", caddy)
+        self.assertRegex(caddy, r"reverse_proxy \S+\n")
 
 
 class JellyfinTranscoding(RenderedChart):

@@ -2,11 +2,11 @@ apiVersion: v2
 name: mstream
 description: A private music server
 type: application
-version: 0.1.7
+version: 0.1.8
 appVersion: 6.31.1
 dependencies:
 - name: yolab-common
-  version: "0.1.19"
+  version: "0.1.20"
   repository: oci://ghcr.io/demycode/charts
 annotations:
   yolab.io/display-name: mStream

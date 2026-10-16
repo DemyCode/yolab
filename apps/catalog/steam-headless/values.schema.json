@@ -11,8 +11,7 @@
       "type": "object",
       "required": [
         "auth_users",
-        "desktop_password",
-        "sunshine_password"
+        "desktop_password"
       ],
       "properties": {
         "yolab_enabled": {
@@ -62,21 +61,7 @@
         "desktop_password": {
           "type": "string",
           "title": "Desktop password",
-          "description": "The password of the account inside the desktop, asked when something needs administrator rights.",
-          "minLength": 8,
-          "writeOnly": true,
-          "generate": true
-        },
-        "sunshine_username": {
-          "type": "string",
-          "title": "Moonlight pairing username",
-          "default": "admin",
-          "pattern": "^[A-Za-z0-9._-]+$"
-        },
-        "sunshine_password": {
-          "type": "string",
-          "title": "Moonlight pairing password",
-          "description": "Opens the pairing page at https://<this machine's home address>:47990, where you type the PIN Moonlight shows you.",
+          "description": "The password YoLab gives Steam Headless for its account steamheadless, used to sign in to the Steam Headless page the first time.",
           "minLength": 8,
           "writeOnly": true,
           "generate": true
@@ -131,14 +116,13 @@
           "title": "Web URL",
           "format": "uri"
         },
+        "desktop_username": {
+          "type": "string",
+          "title": "Desktop username"
+        },
         "desktop_password": {
           "type": "string",
           "title": "Desktop password",
-          "format": "secret"
-        },
-        "sunshine_password": {
-          "type": "string",
-          "title": "Moonlight pairing password",
           "format": "secret"
         }
       }

@@ -3,7 +3,6 @@ config:
   storage_size: 200Gi
   auth_enabled: true
   auth_users: []
-  sunshine_username: admin
 machine: {}
 yolab:
   platformApiUrl: ''
@@ -12,4 +11,5 @@ yolab:
   images:
     authelia: docker.io/authelia/authelia:4.39.28@sha256:bd97cff4fcbf715b5ff1f9ae286afbe6033afce385302520b0368122d43a6f54
   gateway:
-    upstream: steam-headless:8083
+    upstream: steam-headless:8483
+    upstreamTls: true

@@ -14,7 +14,6 @@ metadata:
 type: Opaque
 stringData:
   desktop: {{ required "config.desktop_password is required" .Values.config.desktop_password | quote }}
-  sunshine: {{ required "config.sunshine_password is required" .Values.config.sunshine_password | quote }}
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -48,7 +47,7 @@ spec:
     spec:
       initContainers:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
-      {{- include "yolab-common.printOutputs" (list . (dict "desktop_password" (dict "secret" (printf "%s-passwords" .Release.Name) "key" "desktop") "sunshine_password" (dict "secret" (printf "%s-passwords" .Release.Name) "key" "sunshine"))) | nindent 6 }}
+      {{- include "yolab-common.printOutputs" (list . (dict "desktop_username" (dict "value" "steamheadless") "desktop_password" (dict "secret" (printf "%s-passwords" .Release.Name) "key" "desktop"))) | nindent 6 }}
       {{- include "yolab-common.autheliaInit" . | nindent 6 }}
       containers:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
@@ -116,58 +115,22 @@ spec:
           hostPort: 48000
           protocol: UDP
         - name: desktop
-          containerPort: 8083
+          containerPort: 8483
           protocol: TCP
         readinessProbe:
           tcpSocket:
-            port: 8083
+            port: 8483
           initialDelaySeconds: 60
           periodSeconds: 15
         env:
-        - name: NAME
-          value: {{ .Release.Name | quote }}
         - name: TZ
           value: Etc/UTC
-        - name: USER_LOCALES
-          value: en_US.UTF-8 UTF-8
-        - name: DISPLAY
-          value: ":55"
         - name: PUID
           value: "1000"
         - name: PGID
           value: "1000"
-        - name: UMASK
-          value: "000"
-        - name: USER_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: {{ .Release.Name }}-passwords
-              key: desktop
-        - name: MODE
-          value: primary
-        - name: WEB_UI_MODE
-          value: vnc
-        - name: ENABLE_VNC_AUDIO
-          value: "true"
-        - name: PORT_NOVNC_WEB
-          value: "8083"
-        - name: ENABLE_STEAM
-          value: "true"
-        - name: STEAM_ARGS
-          value: -silent
-        - name: ENABLE_SUNSHINE
-          value: "true"
-        - name: SUNSHINE_USER
-          value: {{ .Values.config.sunshine_username | default "admin" | quote }}
-        - name: SUNSHINE_PASS
-          valueFrom:
-            secretKeyRef:
-              name: {{ .Release.Name }}-passwords
-              key: sunshine
-        - name: ENABLE_EVDEV_INPUTS
-          value: "true"
-        - name: FORCE_X11_DUMMY_CONFIG
-          value: "false"
+        - name: SUNSHINE_NAME
+          value: {{ .Release.Name | quote }}
         - name: NVIDIA_DRIVER_CAPABILITIES
           value: all
         - name: NVIDIA_VISIBLE_DEVICES
@@ -182,12 +145,21 @@ spec:
             {{ $device }}: "1"
             {{- end }}
         volumeMounts:
+        - name: run
+          mountPath: /run
         - name: data
-          mountPath: /home/default
+          mountPath: /home/steamheadless
           subPath: {{ .Release.Name }}/home
+        - name: data
+          mountPath: /var/lib/steam-headless
+          subPath: {{ .Release.Name }}/state
         - name: data
           mountPath: /mnt/games
           subPath: {{ .Release.Name }}/games
+        - name: password
+          mountPath: /steam-headless-provisioning-password
+          subPath: password
+          readOnly: true
         - name: input
           mountPath: /dev/input
         - name: shm
@@ -204,6 +176,17 @@ spec:
         emptyDir:
           medium: Memory
           sizeLimit: 2Gi
+      - name: run
+        emptyDir:
+          medium: Memory
+          sizeLimit: 1Gi
+      - name: password
+        secret:
+          secretName: {{ .Release.Name }}-passwords
+          items:
+          - key: desktop
+            path: password
+            mode: 0400
 ---
 apiVersion: v1
 kind: Service
@@ -215,5 +198,5 @@ spec:
     app: steam-headless
   ports:
   - name: desktop
-    port: 8083
-    targetPort: 8083
+    port: 8483
+    targetPort: 8483

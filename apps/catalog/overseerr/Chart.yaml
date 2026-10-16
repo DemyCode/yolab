@@ -2,11 +2,11 @@ apiVersion: v2
 name: overseerr
 description: Beautiful media discovery
 type: application
-version: 0.1.8
+version: 0.1.9
 appVersion: 1.35.0
 dependencies:
 - name: yolab-common
-  version: "0.1.19"
+  version: "0.1.20"
   repository: oci://ghcr.io/demycode/charts
 annotations:
   yolab.io/disabled: "Upstream archived; jellyseerr does the same job"
