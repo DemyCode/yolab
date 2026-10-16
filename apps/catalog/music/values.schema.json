@@ -34,8 +34,14 @@
           "title": "Download client",
           "default": "new",
           "oneOf": [
-            { "const": "new", "title": "Install qBittorrent" },
-            { "const": "existing", "title": "Use a qBittorrent I already have" }
+            {
+              "const": "new",
+              "title": "Install qBittorrent"
+            },
+            {
+              "const": "existing",
+              "title": "Use a qBittorrent I already have"
+            }
           ]
         },
         "listen_anywhere": {
@@ -56,7 +62,9 @@
           "oneOf": [
             {
               "properties": {
-                "download_client": { "const": "new" },
+                "download_client": {
+                  "const": "new"
+                },
                 "vpn_enabled": {
                   "type": "boolean",
                   "title": "Download through Mullvad",
@@ -69,12 +77,16 @@
                   "oneOf": [
                     {
                       "properties": {
-                        "vpn_enabled": { "const": false }
+                        "vpn_enabled": {
+                          "const": false
+                        }
                       }
                     },
                     {
                       "properties": {
-                        "vpn_enabled": { "const": true },
+                        "vpn_enabled": {
+                          "const": true
+                        },
                         "vpn_private_key": {
                           "type": "string",
                           "title": "Mullvad WireGuard private key",
@@ -95,7 +107,10 @@
                           "description": "Optional. Comma-separated, e.g. Netherlands,Switzerland. Empty lets the VPN pick."
                         }
                       },
-                      "required": ["vpn_private_key", "vpn_addresses"]
+                      "required": [
+                        "vpn_private_key",
+                        "vpn_addresses"
+                      ]
                     }
                   ]
                 }
@@ -103,15 +118,27 @@
             },
             {
               "properties": {
-                "download_client": { "const": "existing" },
+                "download_client": {
+                  "const": "existing"
+                },
                 "existing_client": {
                   "type": "object",
                   "title": "Which qBittorrent",
                   "description": "Lidarr sends its downloads to it. Point it at the same music folder in its own settings.",
                   "properties": {
-                    "internal_url": { "type": "string", "title": "Address", "format": "uri" },
-                    "username": { "type": "string", "title": "Username" },
-                    "password": { "type": "string", "title": "Password" }
+                    "internal_url": {
+                      "type": "string",
+                      "title": "Address",
+                      "format": "uri"
+                    },
+                    "username": {
+                      "type": "string",
+                      "title": "Username"
+                    },
+                    "password": {
+                      "type": "string",
+                      "title": "Password"
+                    }
                   }
                 }
               },
@@ -130,61 +157,42 @@
         "navidrome_url": {
           "type": "string",
           "title": "Navidrome",
-          "format": "uri",
-          "source": { "logs": "YOLAB_OUTPUT navidrome_url (\\S+)" },
-          "when": { "properties": { "listen_anywhere": { "const": true } } }
+          "format": "uri"
         },
         "lidarr_url": {
           "type": "string",
           "title": "Lidarr",
-          "format": "uri",
-          "source": { "logs": "YOLAB_OUTPUT lidarr_url (\\S+)" },
-          "when": { "properties": { "manage_anywhere": { "const": true } } }
+          "format": "uri"
         },
         "prowlarr_url": {
           "type": "string",
           "title": "Prowlarr",
-          "format": "uri",
-          "source": { "logs": "YOLAB_OUTPUT prowlarr_url (\\S+)" },
-          "when": { "properties": { "manage_anywhere": { "const": true } } }
+          "format": "uri"
         },
         "qbittorrent_url": {
           "type": "string",
           "title": "qBittorrent",
-          "format": "uri",
-          "source": { "logs": "YOLAB_OUTPUT qbittorrent_url (\\S+)" },
-          "when": {
-            "properties": {
-              "manage_anywhere": { "const": true },
-              "download_client": { "const": "new" }
-            }
-          }
+          "format": "uri"
         },
         "qbittorrent_username": {
           "type": "string",
           "title": "qBittorrent username",
-          "format": "text",
-          "source": { "logs": "YOLAB_OUTPUT qbittorrent_username (\\S+)" },
-          "when": { "properties": { "download_client": { "const": "new" } } }
+          "format": "text"
         },
         "qbittorrent_password": {
           "type": "string",
           "title": "qBittorrent password",
-          "format": "secret",
-          "source": { "logs": "YOLAB_OUTPUT qbittorrent_password (\\S+)" },
-          "when": { "properties": { "download_client": { "const": "new" } } }
+          "format": "secret"
         },
         "lidarr_api_key": {
           "type": "string",
           "title": "Lidarr API key",
-          "format": "secret",
-          "source": { "logs": "YOLAB_OUTPUT lidarr_api_key (\\S+)" }
+          "format": "secret"
         },
         "prowlarr_api_key": {
           "type": "string",
           "title": "Prowlarr API key",
-          "format": "secret",
-          "source": { "logs": "YOLAB_OUTPUT prowlarr_api_key (\\S+)" }
+          "format": "secret"
         }
       }
     }

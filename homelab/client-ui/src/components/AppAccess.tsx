@@ -8,18 +8,13 @@ import {
   Section,
 } from "@/components/ui/list";
 import { api } from "@/lib/api";
-import {
-  accessRows,
-  outputState,
-  stillWaiting,
-  type AppLink,
-} from "@/lib/apps";
+import { accessRows, type AppLink } from "@/lib/apps";
 import { relativeTime } from "@/lib/format";
 import { cn } from "@/lib/utils";
-import { AnimatedList, Collapse } from "@/components/motion";
+import { AnimatedList } from "@/components/motion";
 import type { AppOutput, OutputsResponse } from "@/types/apps";
 
-const WAITING_POLL_MS = 15_000;
+const POLL_MS = 15_000;
 
 function LinkRow({ link }: { link: AppLink }) {
   return (
@@ -43,7 +38,7 @@ function LinkRow({ link }: { link: AppLink }) {
 
 function OutputValue({ output }: { output: AppOutput }) {
   const [revealed, setRevealed] = useState(false);
-  const value = output.value ?? "";
+  const value = output.value;
 
   if (output.format === "multiline") {
     return (
@@ -88,41 +83,24 @@ function OutputValue({ output }: { output: AppOutput }) {
 }
 
 function OutputRow({ output }: { output: AppOutput }) {
-  const state = outputState(output);
   return (
     <div className="px-5 py-4">
       <div className="flex items-baseline justify-between gap-3">
         <span className="text-sm font-medium text-fg">{output.title}</span>
         <span className="shrink-0 text-xs text-fg-subtle">
-          {state === "ready" &&
-            !output.from_config &&
-            output.found_at &&
-            `Reported ${relativeTime(output.found_at)}`}
+          Reported {relativeTime(output.found_at)}
         </span>
       </div>
-      <Collapse open={state === "ready"}>
-        <OutputValue output={output} />
-      </Collapse>
-      <Collapse open={state === "waiting"}>
-        <p className="mt-1.5 flex items-center gap-2 text-sm text-fg-muted">
-          <Spinner className="h-3 w-3" />
-          Waiting for the app to report this
-        </p>
-      </Collapse>
-      <Collapse open={state === "unset"}>
-        <p className="mt-1 text-sm text-fg-subtle">Not set</p>
-      </Collapse>
+      <OutputValue output={output} />
     </div>
   );
 }
 
 export function AppAccess({
   instanceName,
-  appReady,
   links,
 }: {
   instanceName: string;
-  appReady: boolean;
   links: AppLink[];
 }) {
   const [outputs, setOutputs] = useState<AppOutput[] | null>(null);
@@ -160,12 +138,10 @@ export function AppAccess({
     void load();
   }, [load]);
 
-  const waiting = outputs !== null && stillWaiting(outputs);
   useEffect(() => {
-    if (!waiting || !appReady) return;
-    const id = window.setInterval(() => void load(), WAITING_POLL_MS);
+    const id = window.setInterval(() => void load(), POLL_MS);
     return () => clearInterval(id);
-  }, [waiting, appReady, load]);
+  }, [load]);
 
   const rows = accessRows(outputs ?? []);
   const unreadable = failed && outputs === null;
@@ -178,14 +154,12 @@ export function AppAccess({
     <Section
       title="Access"
       action={
-        (waiting || unreadable) && (
-          <RowAction onClick={() => void checkNow()} disabled={checking}>
-            <RefreshCw
-              className={cn("h-3.5 w-3.5", checking && "animate-spin")}
-            />
-            {checking ? "Checking…" : "Check again"}
-          </RowAction>
-        )
+        <RowAction onClick={() => void checkNow()} disabled={checking}>
+          <RefreshCw
+            className={cn("h-3.5 w-3.5", checking && "animate-spin")}
+          />
+          {checking ? "Checking…" : "Check again"}
+        </RowAction>
       }
     >
       <AnimatedList items={links} keyOf={(link) => link.url}>
@@ -202,12 +176,6 @@ export function AppAccess({
       {unreadable && (
         <p className="px-5 py-4 text-sm text-fg-muted">
           Passwords and other details could not be loaded right now.
-        </p>
-      )}
-      {waiting && (
-        <p className="px-5 py-3 text-xs text-fg-subtle">
-          YoLab reads the app&rsquo;s logs every minute and keeps the last value
-          it finds, so these appear on their own once the app prints them.
         </p>
       )}
     </Section>

@@ -74,6 +74,7 @@ spec:
     spec:
       initContainers:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      {{- include "yolab-common.printOutputs" (list . (dict "password" (dict "secret" (printf "%s-secrets" .Release.Name) "key" "password"))) | nindent 6 }}
       {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
       {{- include "yolab-common.privateAccessInit" . | nindent 6 }}
       {{- with $cfg.notes_folder }}

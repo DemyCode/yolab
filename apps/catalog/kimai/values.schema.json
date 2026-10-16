@@ -208,108 +208,26 @@
         "file_explorer_url": {
           "type": "string",
           "title": "File explorer",
-          "format": "uri",
-          "source": {
-            "logs": "YOLAB_OUTPUT file_explorer_url (\\S+)"
-          },
-          "when": {
-            "properties": {
-              "file_explorer_enabled": {
-                "const": true
-              }
-            },
-            "anyOf": [
-              {
-                "properties": {
-                  "file_explorer_yolab_enabled": {
-                    "const": true
-                  }
-                },
-                "required": [
-                  "file_explorer_yolab_enabled"
-                ]
-              },
-              {
-                "not": {
-                  "required": [
-                    "file_explorer_yolab_enabled"
-                  ]
-                },
-                "properties": {
-                  "yolab_enabled": {
-                    "not": {
-                      "const": false
-                    }
-                  }
-                }
-              }
-            ]
-          }
+          "format": "uri"
         },
         "file_explorer_username": {
           "type": "string",
-          "title": "File explorer username",
-          "source": {
-            "logs": "YOLAB_OUTPUT file_explorer_username (\\S+)"
-          },
-          "when": {
-            "properties": {
-              "file_explorer_enabled": {
-                "const": true
-              }
-            }
-          }
+          "title": "File explorer username"
         },
         "file_explorer_password": {
           "type": "string",
           "title": "File explorer password",
-          "format": "secret",
-          "source": {
-            "logs": "YOLAB_OUTPUT file_explorer_password (\\S+)"
-          },
-          "when": {
-            "properties": {
-              "file_explorer_enabled": {
-                "const": true
-              }
-            }
-          }
+          "format": "secret"
         },
         "file_explorer_tor_url": {
           "type": "string",
           "title": "File explorer Tor address",
-          "format": "uri",
-          "source": {
-            "logs": "YOLAB_OUTPUT file_explorer_tor_url (\\S+)"
-          },
-          "when": {
-            "properties": {
-              "file_explorer_enabled": {
-                "const": true
-              },
-              "file_explorer_tor_enabled": {
-                "const": true
-              }
-            }
-          }
+          "format": "uri"
         },
         "file_explorer_tailscale_url": {
           "type": "string",
           "title": "File explorer Tailscale address",
-          "format": "uri",
-          "source": {
-            "logs": "YOLAB_OUTPUT file_explorer_tailscale_url (\\S+)"
-          },
-          "when": {
-            "properties": {
-              "file_explorer_enabled": {
-                "const": true
-              },
-              "file_explorer_tailscale_enabled": {
-                "const": true
-              }
-            }
-          }
+          "format": "uri"
         }
       }
     }

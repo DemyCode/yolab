@@ -649,18 +649,12 @@ def check(app, docs, fail, chart_yaml="", schema=None, arches=None):
     if renders_file_explorer:
         outputs = ((schema or {}).get("properties") or {}).get("outputs") or {}
         declared = outputs.get("properties") or {}
-        for key, when in EXPLORER_OUTPUTS.items():
+        for key in EXPLORER_OUTPUTS:
             if key not in declared:
                 fail(
                     app,
                     f"renders the file explorer but its schema's outputs "
                     f"do not declare {key}",
-                )
-            elif declared[key].get("when") != when:
-                fail(
-                    app,
-                    f"output {key} is not conditioned on the file explorer being "
-                    f"on, so an app installed without it waits for it forever",
                 )
 
 
@@ -966,19 +960,11 @@ def check_private_access_offer(app, schema, values_text, fail):
         fail(app, "offers Tor or Tailscale but declares no yolab.gateway.upstream")
     outputs = (props.get("outputs") or {}).get("properties") or {}
     for key in offered:
-        out = outputs.get(PRIVATE_ACCESS[key]["output"])
-        when = (((out or {}).get("when") or {}).get("properties") or {}).get(key)
-        if out is None:
+        if PRIVATE_ACCESS[key]["output"] not in outputs:
             fail(
                 app,
                 f"offers {key} but has no {PRIVATE_ACCESS[key]['output']} output, "
                 f"so its address is never shown",
-            )
-        elif when != {"const": True}:
-            fail(
-                app,
-                f"outputs.{PRIVATE_ACCESS[key]['output']} must only show when "
-                f"{key} is on",
             )
 
 
@@ -1102,9 +1088,6 @@ def check_api_key_offer(app, schema, fail):
         return
     if out.get("format") != "secret":
         fail(app, "outputs.api_key must be shown as a secret")
-    when = ((out.get("when") or {}).get("properties") or {}).get("api_key_enabled")
-    if when != {"const": True}:
-        fail(app, "outputs.api_key must only show when api_key_enabled is on")
 
 
 def check_api_key(app, docs, upstream, fail):
@@ -1253,42 +1236,16 @@ def check_sourced_secrets_reach_the_program(app, docs, fail):
                 )
 
 
-EXPLORER_ON = {"properties": {"file_explorer_enabled": {"const": True}}}
-EXPLORER_PUBLIC = {
-    "properties": {"file_explorer_enabled": {"const": True}},
-    "anyOf": [
-        {
-            "properties": {"file_explorer_yolab_enabled": {"const": True}},
-            "required": ["file_explorer_yolab_enabled"],
-        },
-        {
-            "not": {"required": ["file_explorer_yolab_enabled"]},
-            "properties": {"yolab_enabled": {"not": {"const": False}}},
-        },
-    ],
-}
-
-
-def explorer_way_on(switch):
-    return {
-        "properties": {
-            "file_explorer_enabled": {"const": True},
-            switch: {"const": True},
-        }
-    }
-
-
-EXPLORER_OUTPUTS = {
-    "file_explorer_url": EXPLORER_PUBLIC,
-    "file_explorer_password": EXPLORER_ON,
-    "file_explorer_tor_url": explorer_way_on("file_explorer_tor_enabled"),
-    "file_explorer_tailscale_url": explorer_way_on("file_explorer_tailscale_enabled"),
-}
+EXPLORER_OUTPUTS = (
+    "file_explorer_url",
+    "file_explorer_username",
+    "file_explorer_password",
+    "file_explorer_tor_url",
+    "file_explorer_tailscale_url",
+)
 OUTPUT_FORMATS = {"text", "uri", "secret", "multiline"}
+OUTPUT_FIELDS = {"type", "title", "format"}
 LEGACY_ANNOTATIONS = ("yolab.io/uischema", "yolab.io/outputs")
-
-
-YOLAB_ON = {"properties": {"yolab_enabled": {"const": True}}}
 
 
 def check_yolab_switch(app, config_obj, props, fail):
@@ -1339,15 +1296,6 @@ def check_yolab_switch(app, config_obj, props, fail):
             "the off branch must require yolab_enabled, or an install from before "
             "the switch matches both branches and its upgrade is refused",
         )
-    outputs = (props.get("outputs") or {}).get("properties") or {}
-    for key, out in outputs.items():
-        logs = (out.get("source") or {}).get("logs") or ""
-        if logs.startswith("YOLAB_OUTPUT url ") and out.get("when") != YOLAB_ON:
-            fail(
-                app,
-                f"outputs.{key} is the YoLab address and must only show when "
-                f"yolab_enabled is on",
-            )
 
 
 COLLECTIONS = {
@@ -1439,38 +1387,14 @@ def check_schema(app, schema, chart_yaml, fail):
                 f"{where} has format {out.get('format')!r}, not one of "
                 f"{sorted(OUTPUT_FORMATS)}",
             )
-        source = out.get("source")
-        if not isinstance(source, dict) or len(source) != 1:
+        extra = sorted(set(out) - OUTPUT_FIELDS)
+        if extra:
             fail(
                 app,
-                f'{where} needs exactly one source: {{"logs": ...}} or {{"config": ...}}',
+                f"{where} declares {', '.join(extra)}: an output is only a type, "
+                f"title and format, and its value is the app's own "
+                f"YOLAB_OUTPUT {key} <value> log line",
             )
-        elif "logs" in source:
-            try:
-                if re.compile(source["logs"]).groups < 1:
-                    fail(app, f"{where}: its logs pattern has no capture group")
-            except (re.error, TypeError) as e:
-                fail(app, f"{where}: its logs pattern does not compile ({e})")
-        elif "service" in source:
-            fail(
-                app,
-                f"{where} is an address for other apps, and no app reads "
-                f"another app's outputs any more: remove it",
-            )
-        elif "config" in source:
-            field = source["config"]
-            if field not in config:
-                fail(app, f"{where} shows config.{field}, which does not exist")
-            elif not config[field].get("generate"):
-                fail(
-                    app,
-                    f"{where} shows config.{field}, which the person typed "
-                    f"themselves — only generated values need showing",
-                )
-        else:
-            fail(app, f"{where} has an unknown source {sorted(source)}")
-        if "when" in out and not isinstance(out["when"], (dict, bool)):
-            fail(app, f"{where}: `when` must be a schema")
 
 
 RETIRED_LINK_FORMATS = ("yolab-output", "connection", "service-url", "app")
@@ -1771,18 +1695,13 @@ def check_pack_outputs(app, schema, members, fail):
     outputs = ((schema.get("properties") or {}).get("outputs") or {}).get(
         "properties"
     ) or {}
-    for key, out in outputs.items():
+    for key in outputs:
         if not any(key.startswith(f"{m}_") for m in members):
             fail(
                 app,
                 f"outputs.{key} does not start with one of its apps' names, so "
                 f"nobody can tell which app it comes from",
             )
-        logs = (out.get("source") or {}).get("logs") or ""
-        if logs.startswith("YOLAB_OUTPUT ") and not logs.startswith(
-            f"YOLAB_OUTPUT {key} "
-        ):
-            fail(app, f"outputs.{key} reads another key's line: {logs!r}")
 
 
 def check_pack(chart_dir, charts, library_tgz, workdir, fail):

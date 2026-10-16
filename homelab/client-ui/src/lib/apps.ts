@@ -44,19 +44,8 @@ export function appLinks(
   return links;
 }
 
-export type OutputState = "ready" | "waiting" | "unset";
-
-export function outputState(output: AppOutput): OutputState {
-  if (output.value) return "ready";
-  return output.from_config ? "unset" : "waiting";
-}
-
 export function accessRows(outputs: AppOutput[]): AppOutput[] {
-  return outputs.filter((o) => !(o.format === "uri" && o.value));
-}
-
-export function stillWaiting(outputs: AppOutput[]): boolean {
-  return outputs.some((o) => outputState(o) === "waiting");
+  return outputs.filter((o) => o.format !== "uri");
 }
 
 export type AppState =

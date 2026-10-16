@@ -13,6 +13,16 @@
 {{- end }}
 {{- $sonarr := dict "internal_url" "http://sonarr:8989" "api_key" $sonarrKey -}}
 {{- $radarr := dict "internal_url" "http://radarr:7878" "api_key" $radarrKey -}}
+{{- $off := list -}}
+{{- if not $newClient }}
+{{- $off = concat $off (list "qbittorrent_url" "qbittorrent_username" "qbittorrent_password") -}}
+{{- end }}
+{{- if not $cfg.requests }}
+{{- $off = concat $off (list "jellyseerr_url" "jellyseerr_api_key") -}}
+{{- end }}
+{{- if not $cfg.subtitles }}
+{{- $off = concat $off (list "bazarr_url" "bazarr_api_key") -}}
+{{- end }}
 apiVersion: v1
 kind: Secret
 metadata:
@@ -37,7 +47,8 @@ stringData:
       "admin_password" $jellyfinPassword
       "libraries" (list
         (dict "name" "Films" "kind" "movies" "path" "movies")
-        (dict "name" "Shows" "kind" "tvshows" "path" "tv")))) }}
+        (dict "name" "Shows" "kind" "tvshows" "path" "tv"))
+      "stack_outputs_off" $off)) }}
 {{- if $newClient }}
 ---
 {{ include "yolab-stack.member" (list . "qbittorrent" (dict

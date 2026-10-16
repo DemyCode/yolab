@@ -91,13 +91,9 @@ Schema, `values.schema.json`, with two sections:
       "type": "object",
       "readOnly": true,
       "properties": {
-        "url":      { "type": "string", "title": "Web URL", "format": "uri",
-                      "source": { "logs": "YOLAB_OUTPUT url (\\S+)" } },
-        "password": { "type": "string", "title": "Admin password", "format": "secret",
-                      "source": { "config": "password" } },
-        "onion":    { "type": "string", "title": "Tor address", "format": "uri",
-                      "source": { "logs": "YOLAB_OUTPUT onion (\\S+)" },
-                      "when": { "properties": { "tor_enabled": { "const": true } } } }
+        "url":      { "type": "string", "title": "Web URL", "format": "uri" },
+        "password": { "type": "string", "title": "Admin password", "format": "secret" },
+        "onion":    { "type": "string", "title": "Tor address", "format": "uri" }
       }
     }
   }
@@ -110,18 +106,22 @@ marks a credential: masked in the form, never written to non-secret places, kept
 the app is duplicated. Add `generate: true` and YoLab fills it with a random value.
 Fields revealed by a toggle (standard `dependencies`/`oneOf`) render under that toggle.
 
-**`outputs`** is what the app page shows once it runs. Each output has a `title`, a
-`format` (`text`, `uri`, `secret` or `multiline`), and one `source`:
+**`outputs`** is what the app page shows once it runs. Each output has only a `title`
+and a `format` (`text`, `uri`, `secret` or `multiline`). Its value is whatever the app
+prints, in any container's logs, init containers included, as one line:
 
-- `{"logs": "<regex>"}`: the first capture group of a matching line in any container's
-  logs, init containers included. YoLab rescans every minute and keeps the latest value
-  found, so a value printed once is not lost when the logs roll over.
-- `{"config": "<field>"}`: a generated setting, such as the admin password.
+```
+YOLAB_OUTPUT <key> <value>
+```
+
+The value is the rest of the line. YoLab rescans every minute and keeps the latest value
+found, so a value printed once is not lost when the logs roll over. An output appears on
+the page once it has been printed, and not before. To take one away, for example the Tor
+address after Tor is switched off, the chart prints `YOLAB_OUTPUT <key> NONE`. A
+generated setting such as the admin password is printed the same way, from the Secret
+that holds it (`yolab-common.printOutputs`).
 
 Outputs are for people. No app reads another app's outputs.
-
-`when` is a JSON Schema checked against the app's settings (defaults filled in). When it
-does not match, the output is neither shown nor waited for.
 
 **Talking to another app.** There are no links between installed apps. A setting that
 needs another app's address or key is a plain object with one box per value, filled in

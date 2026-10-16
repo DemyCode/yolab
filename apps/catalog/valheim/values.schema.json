@@ -44,18 +44,12 @@
         "server_pass": {
           "type": "string",
           "title": "Server password",
-          "format": "secret",
-          "source": {
-            "config": "server_pass"
-          }
+          "format": "secret"
         },
         "ipv6": {
           "type": "string",
           "title": "IPv6 Address",
-          "format": "text",
-          "source": {
-            "logs": "YOLAB_OUTPUT ipv6 (\\S+)"
-          }
+          "format": "text"
         }
       }
     }

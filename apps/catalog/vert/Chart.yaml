@@ -2,11 +2,11 @@ apiVersion: v2
 name: vert
 description: A file conversion utility
 type: application
-version: 0.1.6
+version: 0.1.7
 appVersion: e1c83ba
 dependencies:
 - name: yolab-common
-  version: "0.1.18"
+  version: "0.1.19"
   repository: oci://ghcr.io/demycode/charts
 annotations:
   yolab.io/display-name: VERT

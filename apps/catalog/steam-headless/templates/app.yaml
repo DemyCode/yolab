@@ -48,6 +48,7 @@ spec:
     spec:
       initContainers:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      {{- include "yolab-common.printOutputs" (list . (dict "desktop_password" (dict "secret" (printf "%s-passwords" .Release.Name) "key" "desktop") "sunshine_password" (dict "secret" (printf "%s-passwords" .Release.Name) "key" "sunshine"))) | nindent 6 }}
       {{- include "yolab-common.autheliaInit" . | nindent 6 }}
       containers:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}

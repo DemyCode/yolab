@@ -154,89 +154,27 @@
         "url": {
           "type": "string",
           "title": "Node dashboard",
-          "format": "uri",
-          "source": {
-            "logs": "YOLAB_OUTPUT url (\\S+)"
-          },
-          "when": {
-            "properties": {
-              "yolab_enabled": {
-                "const": true
-              }
-            }
-          }
+          "format": "uri"
         },
         "mempool_url": {
           "type": "string",
           "title": "Block explorer",
-          "format": "uri",
-          "source": {
-            "logs": "YOLAB_OUTPUT mempool_url (\\S+)"
-          },
-          "when": {
-            "properties": {
-              "yolab_enabled": {
-                "const": true
-              },
-              "mempool_enabled": {
-                "const": true
-              }
-            }
-          }
+          "format": "uri"
         },
         "explorer_url": {
           "type": "string",
           "title": "BTC RPC Explorer",
-          "format": "uri",
-          "source": {
-            "logs": "YOLAB_OUTPUT explorer_url (\\S+)"
-          },
-          "when": {
-            "properties": {
-              "yolab_enabled": {
-                "const": true
-              },
-              "explorer_enabled": {
-                "const": true
-              }
-            }
-          }
+          "format": "uri"
         },
         "specter_url": {
           "type": "string",
           "title": "Specter wallet",
-          "format": "uri",
-          "source": {
-            "logs": "YOLAB_OUTPUT specter_url (\\S+)"
-          },
-          "when": {
-            "properties": {
-              "yolab_enabled": {
-                "const": true
-              },
-              "specter_enabled": {
-                "const": true
-              }
-            }
-          }
+          "format": "uri"
         },
         "ordinals_url": {
           "type": "string",
           "title": "Ordinals and runes",
-          "format": "uri",
-          "source": {
-            "logs": "YOLAB_OUTPUT ordinals_url (\\S+)"
-          },
-          "when": {
-            "properties": {
-              "yolab_enabled": {
-                "const": true
-              },
-              "ordinals_enabled": {
-                "const": true
-              }
-            }
-          }
+          "format": "uri"
         }
       }
     }

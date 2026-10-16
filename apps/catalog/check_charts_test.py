@@ -9,9 +9,6 @@ from typing import ClassVar
 import check_charts
 import yaml
 
-EXPLORER_ON = {"properties": {"file_explorer_enabled": {"const": True}}}
-
-
 def schema(config=None, outputs=None, extra=None):
     props = {"config": {"type": "object", "properties": config or {}}}
     if outputs is not None:
@@ -31,8 +28,8 @@ def failures(s, chart_yaml=DEMO_CHART):
     return found
 
 
-def logs(pattern, **more):
-    return {"type": "string", "title": "Shown", "source": {"logs": pattern}, **more}
+def output(**more):
+    return {"type": "string", "title": "Shown", **more}
 
 
 GOOD = schema(
@@ -43,18 +40,9 @@ GOOD = schema(
         "file_explorer_enabled": {"type": "boolean", "default": True},
     },
     outputs={
-        "url": logs(r"YOLAB_OUTPUT url (\S+)", format="uri"),
-        "password": {
-            "type": "string",
-            "title": "Admin password",
-            "format": "secret",
-            "source": {"config": "password"},
-        },
-        "file_explorer_password": logs(
-            r"YOLAB_OUTPUT file_explorer_password (\S+)",
-            format="secret",
-            when=EXPLORER_ON,
-        ),
+        "url": output(format="uri"),
+        "password": output(title="Admin password", format="secret"),
+        "file_explorer_password": output(format="secret"),
     },
 )
 
@@ -116,58 +104,31 @@ class CheckSchema(unittest.TestCase):
         self.assertTrue(any("not marked writeOnly" in f for f in found))
 
     def test_an_output_needs_a_title(self):
-        found = failures(schema(outputs={"x": logs(r"x (\S+)", title="  ")}))
+        found = failures(schema(outputs={"x": output(title="  ")}))
         self.assertTrue(any("no title" in f for f in found))
 
     def test_an_unknown_format_is_refused(self):
-        found = failures(schema(outputs={"x": logs(r"x (\S+)", format="hologram")}))
+        found = failures(schema(outputs={"x": output(format="hologram")}))
         self.assertTrue(any("hologram" in f for f in found))
 
-    def test_an_output_needs_exactly_one_source(self):
-        for source in (None, {}, {"logs": r"x (\S+)", "config": "a"}):
-            out = {"type": "string", "title": "X"}
-            if source is not None:
-                out["source"] = source
-            found = failures(schema(outputs={"x": out}))
-            self.assertTrue(any("exactly one source" in f for f in found), source)
+    def test_an_output_is_only_a_type_title_and_format(self):
+        for extra in (
+            {"source": {"logs": r"YOLAB_OUTPUT x (\S+)"}},
+            {"source": {"config": "password"}},
+            {"when": {"properties": {"tor_enabled": {"const": True}}}},
+        ):
+            found = failures(schema(outputs={"x": output(**extra)}))
+            self.assertEqual(len(found), 1, extra)
+            self.assertIn("YOLAB_OUTPUT x <value>", found[0])
 
-    def test_an_unknown_source_is_refused(self):
-        out = {"type": "string", "title": "X", "source": {"env": "X"}}
-        self.assertTrue(
-            any("unknown source" in f for f in failures(schema(outputs={"x": out})))
-        )
-
-    def test_an_address_for_other_apps_is_no_longer_an_output(self):
-        out = {
-            "type": "string",
-            "title": "X",
-            "source": {"service": {"name": "x", "port": 80}},
-        }
-        found = failures(schema(outputs={"x": out}))
-        self.assertTrue(any("address for other apps" in f for f in found), found)
-
-    def test_a_logs_pattern_must_compile(self):
-        found = failures(schema(outputs={"x": logs("(")}))
-        self.assertTrue(any("does not compile" in f for f in found))
-
-    def test_a_logs_pattern_must_capture_the_value(self):
-        found = failures(schema(outputs={"x": logs(r"YOLAB_OUTPUT x \S+")}))
-        self.assertTrue(any("capture group" in f for f in found))
-
-    def test_a_config_output_must_name_a_real_setting(self):
-        out = {"type": "string", "title": "X", "source": {"config": "nope"}}
-        found = failures(schema(outputs={"x": out}))
-        self.assertTrue(any("does not exist" in f for f in found))
-
-    def test_a_config_output_must_be_a_generated_value(self):
-        config = {"pin": {"type": "string", "writeOnly": True}}
-        out = {"type": "string", "title": "PIN", "source": {"config": "pin"}}
-        found = failures(schema(config=config, outputs={"pin": out}))
-        self.assertTrue(any("typed themselves" in f for f in found))
-
-    def test_when_must_be_a_schema(self):
-        found = failures(schema(outputs={"x": logs(r"x (\S+)", when="yes")}))
-        self.assertTrue(any("must be a schema" in f for f in found))
+    def test_every_catalog_output_is_only_a_type_title_and_format(self):
+        for path in sorted(Path(check_charts.HERE).glob("*/values.schema.json")):
+            s = json.loads(path.read_text())
+            outputs = (s.get("properties") or {}).get("outputs") or {}
+            for key, out in (outputs.get("properties") or {}).items():
+                self.assertLessEqual(
+                    set(out), check_charts.OUTPUT_FIELDS, f"{path.parent.name} {key}"
+                )
 
 
 def rendered_explorer():
@@ -198,25 +159,9 @@ def rendered_explorer():
     ]
 
 
-EXPLORER_URL = logs(
-    r"YOLAB_OUTPUT file_explorer_url (\S+)",
-    format="uri",
-    when=check_charts.EXPLORER_PUBLIC,
-)
-EXPLORER_PASSWORD = logs(
-    r"YOLAB_OUTPUT file_explorer_password (\S+)", format="secret", when=EXPLORER_ON
-)
-EXPLORER_PRIVATE = {
-    "file_explorer_tor_url": logs(
-        r"YOLAB_OUTPUT file_explorer_tor_url (\S+)",
-        format="uri",
-        when=check_charts.explorer_way_on("file_explorer_tor_enabled"),
-    ),
-    "file_explorer_tailscale_url": logs(
-        r"YOLAB_OUTPUT file_explorer_tailscale_url (\S+)",
-        format="uri",
-        when=check_charts.explorer_way_on("file_explorer_tailscale_enabled"),
-    ),
+EXPLORER_OUTPUTS = {
+    key: output(format="secret" if key.endswith("password") else "uri")
+    for key in check_charts.EXPLORER_OUTPUTS
 }
 
 
@@ -228,63 +173,16 @@ class FileExplorerOutputs(unittest.TestCase):
         )
         return [f for f in found if "file explorer" in f or "file_explorer" in f]
 
-    def test_every_explorer_output_with_its_condition_passes(self):
-        s = schema(
-            outputs={
-                "file_explorer_url": EXPLORER_URL,
-                "file_explorer_password": EXPLORER_PASSWORD,
-                **EXPLORER_PRIVATE,
-            }
-        )
+    def test_every_explorer_output_declared_passes(self):
+        s = schema(outputs=EXPLORER_OUTPUTS)
         self.assertEqual(self.explorer_failures(s), [])
 
-    def test_an_explorer_address_shown_while_its_yolab_address_is_off_is_reported(self):
-        s = schema(
-            outputs={
-                "file_explorer_url": {**EXPLORER_URL, "when": EXPLORER_ON},
-                "file_explorer_password": EXPLORER_PASSWORD,
-                **EXPLORER_PRIVATE,
-            }
-        )
-        found = self.explorer_failures(s)
-        self.assertEqual(len(found), 1)
-        self.assertIn("file_explorer_url", found[0])
-
-    def test_a_missing_explorer_tor_address_is_reported(self):
-        s = schema(
-            outputs={
-                "file_explorer_url": EXPLORER_URL,
-                "file_explorer_password": EXPLORER_PASSWORD,
-                "file_explorer_tailscale_url": EXPLORER_PRIVATE[
-                    "file_explorer_tailscale_url"
-                ],
-            }
-        )
-        found = self.explorer_failures(s)
-        self.assertEqual(len(found), 1)
-        self.assertIn("do not declare file_explorer_tor_url", found[0])
-
     def test_a_missing_explorer_output_is_reported(self):
-        s = schema(
-            outputs={"file_explorer_password": EXPLORER_PASSWORD, **EXPLORER_PRIVATE}
-        )
-        found = self.explorer_failures(s)
-        self.assertEqual(len(found), 1)
-        self.assertIn("do not declare file_explorer_url", found[0])
-
-    def test_an_explorer_output_without_its_condition_is_reported(self):
-        unconditioned = logs(r"YOLAB_OUTPUT file_explorer_url (\S+)", format="uri")
-        s = schema(
-            outputs={
-                "file_explorer_url": unconditioned,
-                "file_explorer_password": EXPLORER_PASSWORD,
-                **EXPLORER_PRIVATE,
-            }
-        )
-        found = self.explorer_failures(s)
-        self.assertEqual(len(found), 1)
-        self.assertIn("file_explorer_url", found[0])
-        self.assertIn("waits for it forever", found[0])
+        for key in check_charts.EXPLORER_OUTPUTS:
+            outputs = {k: v for k, v in EXPLORER_OUTPUTS.items() if k != key}
+            found = self.explorer_failures(schema(outputs=outputs))
+            self.assertEqual(len(found), 1, key)
+            self.assertIn(f"do not declare {key}", found[0])
 
 
 def explorer_chart(
@@ -1062,12 +960,8 @@ TOR_SWITCH = {"type": "boolean", "default": False}
 TS_SWITCH = {"type": "boolean", "default": False}
 
 
-def pa_output(key):
-    return logs(
-        rf"YOLAB_OUTPUT {key}_url (\S+)",
-        format="uri",
-        when={"properties": {f"{key}_enabled": {"const": True}}},
-    )
+def pa_output():
+    return output(format="uri")
 
 
 def offer_failures(s, values=PA_VALUES):
@@ -1088,7 +982,7 @@ class PrivateAccessOffer(unittest.TestCase):
             },
             outputs=outputs
             if outputs is not None
-            else {"tor_url": pa_output("tor"), "tailscale_url": pa_output("tailscale")},
+            else {"tor_url": pa_output(), "tailscale_url": pa_output()},
         )
 
     def test_an_app_offering_both_with_their_addresses_passes(self):
@@ -1110,19 +1004,9 @@ class PrivateAccessOffer(unittest.TestCase):
         self.assertTrue(any("own Caddyfile" in f for f in found), found)
 
     def test_an_address_never_shown_is_reported(self):
-        found = offer_failures(self.offered(outputs={"tor_url": pa_output("tor")}))
+        found = offer_failures(self.offered(outputs={"tor_url": pa_output()}))
         self.assertEqual(len(found), 1)
         self.assertIn("tailscale_url", found[0])
-
-    def test_an_address_shown_while_switched_off_is_reported(self):
-        always = logs(r"YOLAB_OUTPUT tor_url (\S+)", format="uri")
-        found = offer_failures(
-            self.offered(
-                outputs={"tor_url": always, "tailscale_url": pa_output("tailscale")}
-            )
-        )
-        self.assertEqual(len(found), 1)
-        self.assertIn("only show when tor_enabled is on", found[0])
 
 
 PRIVATE_BOTH = frozenset(
@@ -1330,9 +1214,7 @@ YOLAB_TUNNEL = {"type": "string", "title": "Subdomain", "format": "tunnel"}
 YOLAB_TOKEN = {"type": "string", "format": "yolab-token", "writeOnly": True}
 
 
-def yolab_switch_schema(
-    top_tunnel=False, off_required=True, token=YOLAB_TOKEN, url_when=True
-):
+def yolab_switch_schema(top_tunnel=False, off_required=True, token=YOLAB_TOKEN):
     off = {"properties": {"yolab_enabled": {"const": False}}}
     if off_required:
         off["required"] = ["yolab_enabled"]
@@ -1344,13 +1226,7 @@ def yolab_switch_schema(
         config["subdomain"] = YOLAB_TUNNEL
     s = schema(
         config=config,
-        outputs={
-            "url": logs(
-                r"YOLAB_OUTPUT url (\S+)",
-                format="uri",
-                **({"when": check_charts.YOLAB_ON} if url_when else {}),
-            )
-        },
+        outputs={"url": output(format="uri")},
     )
     s["properties"]["config"]["dependencies"] = {
         "yolab_enabled": {
@@ -1377,12 +1253,6 @@ class YolabSwitch(unittest.TestCase):
     def test_the_token_field_the_box_fills_in_is_required(self):
         found = failures(yolab_switch_schema(token=None))
         self.assertTrue(any("yolab_token" in f for f in found), found)
-
-    def test_the_address_is_not_shown_while_switched_off(self):
-        found = failures(yolab_switch_schema(url_when=False))
-        self.assertTrue(
-            any("only show when yolab_enabled is on" in f for f in found), found
-        )
 
     def test_every_app_with_a_subdomain_has_the_switch(self):
 
@@ -1437,6 +1307,63 @@ class YolabOffRendered(RenderedChart):
             "vaultwarden", docs, lambda app, msg: found.append(msg)
         )
         self.assertEqual(len(found), 1)
+
+
+class OutputsRendered(RenderedChart):
+    CHART = "grafana"
+
+    def inits(self, extra=None):
+        spec = self.deployments(self.docs(extra))["gateway"]
+        return {c["name"]: c for c in spec["initContainers"]}
+
+    def off(self, extra=None):
+        return self.inits(extra)["outputs-off"]["command"][2]
+
+    def test_a_way_in_switched_off_prints_none_so_its_old_address_goes(self):
+        script = self.off()
+        self.assertIn("YOLAB_OUTPUT tor_url NONE", script)
+        self.assertIn("YOLAB_OUTPUT tailscale_url NONE", script)
+        self.assertNotIn("YOLAB_OUTPUT url NONE", script)
+        self.assertNotIn("YOLAB_OUTPUT ipv6 NONE", script)
+
+    def test_the_yolab_address_switched_off_prints_none(self):
+        script = self.off(YOLAB_OFF)
+        self.assertIn("YOLAB_OUTPUT url NONE", script)
+        self.assertIn("YOLAB_OUTPUT ipv6 NONE", script)
+
+    def test_a_way_in_switched_on_is_never_printed_none(self):
+        script = self.off(PRIVATE_ON)
+        self.assertNotIn("YOLAB_OUTPUT tor_url NONE", script)
+        self.assertNotIn("YOLAB_OUTPUT tailscale_url NONE", script)
+
+    def test_an_api_key_the_chart_does_not_offer_is_never_printed_none(self):
+        self.assertNotIn("api_key", self.off())
+
+    def test_a_generated_password_is_printed_from_its_secret(self):
+        outputs = self.inits()["outputs"]
+        env = {e["name"]: e for e in outputs["env"]}
+        ref = env["OUTPUT_ADMIN_PASSWORD"]["valueFrom"]["secretKeyRef"]
+        self.assertEqual(ref, {"name": "release-secrets", "key": "admin_password"})
+        self.assertIn(
+            "YOLAB_OUTPUT admin_password ${OUTPUT_ADMIN_PASSWORD:-NONE}",
+            outputs["command"][2],
+        )
+
+
+class ValheimPasswordOutput(RenderedChart):
+    CHART = "valheim"
+
+    def test_a_server_without_a_password_prints_none_for_it(self):
+        docs = self.docs({"config.server_pass": ""})
+        outputs = next(
+            c
+            for spec in self.deployments(docs).values()
+            for c in spec.get("initContainers") or []
+            if c["name"] == "outputs"
+        )
+        env = {e["name"]: e.get("value") for e in outputs["env"]}
+        self.assertEqual(env["OUTPUT_SERVER_PASS"], "")
+        self.assertIn("${OUTPUT_SERVER_PASS:-NONE}", outputs["command"][2])
 
 
 EXPLORER_ENABLED = check_charts.EXPLORER_ENABLED
@@ -2142,15 +2069,11 @@ def api_key_failures(s):
     return found
 
 
-API_KEY_OUTPUT = logs(
-    r"YOLAB_OUTPUT api_key (\S+)",
-    format="secret",
-    when={"properties": {"api_key_enabled": {"const": True}}},
-)
+API_KEY_OUTPUT = output(format="secret")
 
 
 class ApiKeyOffer(unittest.TestCase):
-    def test_an_offered_key_must_be_readable_as_a_secret_only_while_on(self):
+    def test_an_offered_key_must_be_readable_as_a_secret(self):
         on = {"api_key_enabled": {"type": "boolean", "default": True}}
         self.assertEqual(
             api_key_failures(schema(config=on, outputs={"api_key": API_KEY_OUTPUT})), []
@@ -2204,6 +2127,14 @@ class OllamaApiKey(RenderedChart):
             for c in spec.get("initContainers") or []
         ]
         self.assertNotIn("api-key-init", inits)
+        off = next(
+            c["command"][2]
+            for spec in self.deployments(docs).values()
+            for c in spec.get("initContainers") or []
+            if c["name"] == "outputs-off"
+        )
+        self.assertIn("YOLAB_OUTPUT api_key NONE", off)
+        self.assertIn("YOLAB_OUTPUT api_url NONE", off)
 
     def test_the_key_is_kept_on_the_apps_volume_so_restarts_keep_it(self):
         gateway = self.deployments(self.docs())["gateway"]
@@ -2376,15 +2307,14 @@ class PackMembers(unittest.TestCase):
     def test_pack_outputs_carry_their_apps_name(self):
         s = schema(
             outputs={
-                "sonarr_url": logs(r"YOLAB_OUTPUT sonarr_url (\S+)"),
-                "url": logs(r"YOLAB_OUTPUT url (\S+)"),
-                "radarr_api_key": logs(r"YOLAB_OUTPUT sonarr_api_key (\S+)"),
+                "sonarr_url": output(format="uri"),
+                "url": output(format="uri"),
+                "radarr_api_key": output(format="secret"),
             }
         )
         found = collected(check_charts.check_pack_outputs, "p", s, self.MEMBERS)
-        self.assertEqual(len(found), 2, found)
-        self.assertTrue(any("outputs.url does not start" in f for f in found), found)
-        self.assertTrue(any("reads another key's line" in f for f in found), found)
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("outputs.url does not start", found[0])
 
 
 class Composable(unittest.TestCase):
@@ -2543,6 +2473,31 @@ class PackRendered(RenderedChart):
         configure = self.env(pods["sonarr-gateway"], "configure")
         self.assertEqual(configure["API_KEY_OUTPUT"], "sonarr_api_key")
 
+    def stack_output(self, extra=None):
+        pods = self.deployments(self.docs(extra))
+        return next(
+            c["command"][2]
+            for c in pods["jellyfin-gateway"]["initContainers"]
+            if c["name"] == "stack-output"
+        )
+
+    def test_an_app_switched_off_in_the_pack_prints_none_for_its_outputs(self):
+        script = self.stack_output(
+            {"config.requests": "false", "config.subtitles": "false"}
+        )
+        for key in (
+            "jellyseerr_url",
+            "jellyseerr_api_key",
+            "bazarr_url",
+            "bazarr_api_key",
+        ):
+            self.assertIn(f"YOLAB_OUTPUT {key} NONE", script)
+
+    def test_apps_that_are_on_are_never_printed_none(self):
+        script = self.stack_output()
+        self.assertNotIn("jellyseerr", script)
+        self.assertNotIn("bazarr", script)
+
 
 class ServarrRendered(RenderedChart):
     CHART = "radarr"
@@ -2598,17 +2553,12 @@ class QbittorrentLogin(RenderedChart):
         self.assertEqual(env["SAVE_PATH"], "/downloads")
         self.assertEqual(env["PASSWORD_OUTPUT"], "password")
 
-    def test_both_password_lines_fill_the_same_output(self):
-        s = json.loads(Path(self.chart, "values.schema.json").read_text())
-        spec = s["properties"]["outputs"]["properties"]["password"]["source"]["logs"]
-        import re
-
-        pattern = re.compile(spec)
-        for line in (
-            "YOLAB_OUTPUT password hunter2",
-            "A temporary password is provided for this session: hunter2",
-        ):
-            self.assertEqual(pattern.search(line).group(1), "hunter2", line)
+    def test_without_a_password_nothing_is_shown_for_it(self):
+        off = self.inits()["login-off"]
+        self.assertIn("YOLAB_OUTPUT username NONE", off["command"][2])
+        self.assertIn("YOLAB_OUTPUT password NONE", off["command"][2])
+        chosen = self.inits(check_charts.VARIANTS["qbittorrent"][0])
+        self.assertNotIn("login-off", chosen)
 
 
 class NavidromeFolder(RenderedChart):
@@ -2682,6 +2632,13 @@ class JellyfinSetup(RenderedChart):
     def test_an_install_from_before_is_left_to_its_own_setup(self):
         spec = self.deployments(self.docs({"config.admin_password": ""}))["gateway"]
         self.assertNotIn("setup", {c["name"] for c in spec["containers"]})
+        off = next(c for c in spec["initContainers"] if c["name"] == "setup-off")
+        for key in ("username", "password", "api_key"):
+            self.assertIn(f"YOLAB_OUTPUT {key} NONE", off["command"][2])
+
+    def test_a_chosen_password_prints_no_none_for_its_sign_in(self):
+        spec = self.deployments(self.docs())["gateway"]
+        self.assertNotIn("setup-off", {c["name"] for c in spec["initContainers"]})
 
     def test_a_chosen_password_sets_jellyfin_up_and_reports_how_to_sign_in(self):
         spec = self.deployments(self.docs())["gateway"]

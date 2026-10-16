@@ -6,4 +6,4 @@ description: >-
   they are, and inside a pack the pack renders them under a scoped release name,
   so every app keeps its own names, tunnel, data and outputs.
 type: library
-version: 0.1.0
+version: 0.1.1

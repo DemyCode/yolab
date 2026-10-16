@@ -1,6 +1,5 @@
 use std::collections::HashSet;
 
-use regex::Regex;
 use serde::Serialize;
 use serde_json::{json, Map, Value};
 
@@ -24,19 +23,13 @@ impl Format {
     }
 }
 
-#[derive(Clone, Debug)]
-pub enum Source {
-    Logs(Regex),
-    Config(String),
-}
+pub const OUTPUT_MARK: &str = "YOLAB_OUTPUT ";
 
 #[derive(Clone, Debug)]
 pub struct OutputSpec {
     pub key: String,
     pub title: String,
     pub format: Format,
-    pub source: Source,
-    when: Option<Value>,
 }
 
 #[derive(Clone, Debug)]
@@ -84,13 +77,7 @@ impl AppSchema {
         props
             .iter()
             .filter(|(_, spec)| !is_retired_service_output(spec))
-            .filter_map(|(key, spec)| match parse_output(key, spec) {
-                Ok(output) => Some(output),
-                Err(why) => {
-                    tracing::warn!("output {key} is ignored: {why}");
-                    None
-                }
-            })
+            .map(|(key, spec)| parse_output(key, spec))
             .collect()
     }
 
@@ -107,41 +94,14 @@ impl AppSchema {
         }
         filled
     }
-
-    pub fn applicable_outputs(&self, config: &Map<String, Value>) -> Vec<OutputSpec> {
-        let settings = Value::Object(self.with_defaults(config));
-        self.outputs()
-            .into_iter()
-            .filter(|output| output.applies_to(&settings))
-            .collect()
-    }
 }
 
 impl OutputSpec {
-    fn applies_to(&self, settings: &Value) -> bool {
-        let Some(when) = &self.when else {
-            return true;
-        };
-        match jsonschema::validator_for(when) {
-            Ok(validator) => validator.is_valid(settings),
-            Err(e) => {
-                tracing::warn!(
-                    "output {}: its `when` is not a valid schema ({e})",
-                    self.key
-                );
-                false
-            }
-        }
-    }
-
     pub fn find_in(&self, line: &str) -> Option<String> {
-        let Source::Logs(re) = &self.source else {
-            return None;
-        };
-        re.captures(line)
-            .and_then(|c| c.get(1))
-            .map(|m| m.as_str().trim().to_string())
-            .filter(|v| !v.is_empty())
+        let (_, printed) = line.split_once(OUTPUT_MARK)?;
+        let (key, value) = printed.split_once(' ')?;
+        let value = value.trim();
+        (key == self.key && !value.is_empty()).then(|| value.to_string())
     }
 }
 
@@ -149,36 +109,12 @@ pub fn is_retired_service_output(spec: &Value) -> bool {
     spec["source"].get("service").is_some()
 }
 
-pub fn parse_output(key: &str, spec: &Value) -> Result<OutputSpec, String> {
-    let source = match &spec["source"] {
-        Value::Object(s) if s.len() == 1 => {
-            if let Some(pattern) = s.get("logs").and_then(Value::as_str) {
-                let re =
-                    Regex::new(pattern).map_err(|e| format!("its logs pattern is invalid: {e}"))?;
-                if re.captures_len() < 2 {
-                    return Err("its logs pattern has no capture group for the value".into());
-                }
-                Source::Logs(re)
-            } else if let Some(field) = s.get("config").and_then(Value::as_str) {
-                Source::Config(field.to_string())
-            } else {
-                return Err("its source is not logs or config".into());
-            }
-        }
-        _ => return Err("it has no source".into()),
-    };
-    let when = match spec.get("when") {
-        None => None,
-        Some(w) if w.is_object() || w.is_boolean() => Some(w.clone()),
-        Some(_) => return Err("its `when` is not a schema".into()),
-    };
-    Ok(OutputSpec {
+pub fn parse_output(key: &str, spec: &Value) -> OutputSpec {
+    OutputSpec {
         key: key.to_string(),
         title: spec["title"].as_str().unwrap_or(key).to_string(),
         format: Format::parse(spec["format"].as_str()),
-        source,
-        when,
-    })
+    }
 }
 
 #[cfg(test)]
@@ -196,10 +132,6 @@ mod tests {
         }))
     }
 
-    fn settings(v: Value) -> Map<String, Value> {
-        v.as_object().cloned().unwrap()
-    }
-
     fn keys(outputs: &[OutputSpec]) -> Vec<&str> {
         outputs.iter().map(|o| o.key.as_str()).collect()
     }
@@ -211,14 +143,10 @@ mod tests {
                 "file_explorer_enabled": { "type": "boolean", "default": true }
             }),
             json!({
-                "url": { "type": "string", "title": "Web URL", "format": "uri",
-                         "source": { "logs": "YOLAB_OUTPUT url (\\S+)" } },
-                "password": { "type": "string", "title": "Admin password", "format": "secret",
-                              "source": { "config": "password" } },
+                "url": { "type": "string", "title": "Web URL", "format": "uri" },
+                "password": { "type": "string", "title": "Admin password", "format": "secret" },
                 "file_explorer_password": {
-                    "type": "string", "title": "File explorer password", "format": "secret",
-                    "source": { "logs": "YOLAB_OUTPUT file_explorer_password (\\S+)" },
-                    "when": { "properties": { "file_explorer_enabled": { "const": true } } }
+                    "type": "string", "title": "File explorer password", "format": "secret"
                 }
             }),
         )
@@ -228,17 +156,14 @@ mod tests {
     fn an_address_for_other_apps_is_no_longer_an_output() {
         let service = json!({ "source": { "service": { "name": "x", "port": 80 } } });
         assert!(is_retired_service_output(&service));
-        assert!(parse_output("api", &service).is_err());
-        assert!(!is_retired_service_output(
-            &json!({ "source": { "logs": "X (\\S+)" } })
-        ));
+        assert!(!is_retired_service_output(&json!({ "title": "Web URL" })));
     }
 
     #[test]
     fn a_chart_still_declaring_one_has_it_skipped_quietly() {
         let app = AppSchema::new(json!({ "properties": { "outputs": { "properties": {
             "internal_url": { "source": { "service": { "name": "q", "port": 8080 } } },
-            "password": { "source": { "config": "password" } },
+            "password": { "title": "Password" },
         }}}}));
         assert_eq!(keys(&app.outputs()), vec!["password"]);
     }
@@ -252,44 +177,48 @@ mod tests {
     }
 
     #[test]
-    fn an_output_whose_condition_fails_is_not_expected() {
-        let off = settings(json!({ "file_explorer_enabled": false }));
-        assert_eq!(
-            keys(&explorer_app().applicable_outputs(&off)),
-            vec!["url", "password"]
-        );
-    }
-
-    #[test]
-    fn a_condition_is_checked_against_the_defaults_for_settings_never_saved() {
-        assert_eq!(
-            keys(&explorer_app().applicable_outputs(&Map::new())),
-            vec!["url", "password", "file_explorer_password"]
-        );
-    }
-
-    #[test]
-    fn a_saved_setting_wins_over_its_default() {
-        let on = settings(json!({ "file_explorer_enabled": true }));
-        assert_eq!(explorer_app().applicable_outputs(&on).len(), 3);
-    }
-
-    #[test]
-    fn a_logs_output_takes_the_first_capture_group_of_a_matching_line() {
+    fn an_output_is_the_rest_of_the_line_printed_after_its_key() {
         let outputs = explorer_app().outputs();
         let url = &outputs[0];
         assert_eq!(
-            url.find_in("2026-09-28 YOLAB_OUTPUT url https://files.x.yolab.io"),
+            url.find_in("2026-09-28T12:00:00Z YOLAB_OUTPUT url https://files.x.yolab.io"),
             Some("https://files.x.yolab.io".to_string())
         );
         assert_eq!(url.find_in("nothing to see"), None);
     }
 
     #[test]
-    fn a_config_output_is_never_looked_for_in_logs() {
-        let outputs = explorer_app().outputs();
-        assert!(matches!(&outputs[1].source, Source::Config(f) if f == "password"));
-        assert_eq!(outputs[1].find_in("YOLAB_OUTPUT password hunter2"), None);
+    fn a_value_may_hold_spaces() {
+        let wiring = parse_output("wiring", &json!({}));
+        assert_eq!(
+            wiring.find_in("YOLAB_OUTPUT wiring Sonarr and Radarr are connected \r"),
+            Some("Sonarr and Radarr are connected".to_string())
+        );
+    }
+
+    #[test]
+    fn another_keys_line_is_not_this_outputs_value() {
+        let url = parse_output("url", &json!({}));
+        assert_eq!(url.find_in("YOLAB_OUTPUT file_explorer_url https://f"), None);
+        assert_eq!(url.find_in("YOLAB_OUTPUT url_extra https://f"), None);
+        assert_eq!(url.find_in("YOLAB_OUTPUT url "), None);
+        assert_eq!(url.find_in("YOLAB_OUTPUT url"), None);
+    }
+
+    #[test]
+    fn a_saved_setting_wins_over_its_default() {
+        let app = explorer_app();
+        let saved = json!({ "file_explorer_enabled": false });
+        let filled = app.with_defaults(saved.as_object().unwrap());
+        assert_eq!(filled["file_explorer_enabled"], json!(false));
+        assert_eq!(app.with_defaults(&Map::new())["file_explorer_enabled"], json!(true));
+    }
+
+    #[test]
+    fn an_output_declares_only_its_title_and_format() {
+        let bare = parse_output("pin", &json!({}));
+        assert_eq!(bare.title, "pin");
+        assert_eq!(bare.format, Format::Text);
     }
 
     #[test]
@@ -303,35 +232,6 @@ mod tests {
     #[test]
     fn the_platform_section_is_not_part_of_what_a_developer_describes() {
         assert!(explorer_app().document["properties"]["yolab"].is_null());
-    }
-
-    #[test]
-    fn a_broken_output_is_left_out_rather_than_breaking_the_others() {
-        let app = schema(
-            json!({}),
-            json!({
-                "no_source": { "type": "string" },
-                "no_group": { "type": "string", "source": { "logs": "YOLAB_OUTPUT x \\S+" } },
-                "bad_regex": { "type": "string", "source": { "logs": "(" } },
-                "fine": { "type": "string", "source": { "logs": "x=(\\S+)" } }
-            }),
-        );
-        assert_eq!(keys(&app.outputs()), vec!["fine"]);
-    }
-
-    #[test]
-    fn parse_output_explains_what_is_wrong() {
-        assert!(parse_output("a", &json!({}))
-            .unwrap_err()
-            .contains("no source"));
-        assert!(parse_output("a", &json!({ "source": { "logs": "x" } }))
-            .unwrap_err()
-            .contains("capture group"));
-        assert!(
-            parse_output("a", &json!({ "source": { "config": "p" }, "when": 3 }))
-                .unwrap_err()
-                .contains("when")
-        );
     }
 
     #[test]

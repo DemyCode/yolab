@@ -9,6 +9,10 @@
 {{- if not $newClient }}
 {{- $client = $cfg.existing_client | default dict -}}
 {{- end }}
+{{- $off := list -}}
+{{- if not $newClient }}
+{{- $off = concat $off (list "qbittorrent_url" "qbittorrent_username" "qbittorrent_password") -}}
+{{- end }}
 apiVersion: v1
 kind: Secret
 metadata:
@@ -27,7 +31,8 @@ stringData:
 {{ include "yolab-stack.member" (list . "navidrome" (dict
       "music_folder" $folder
       "music_path" "music"
-      "yolab_enabled" $cfg.listen_anywhere)) }}
+      "yolab_enabled" $cfg.listen_anywhere
+      "stack_outputs_off" $off)) }}
 {{- if $newClient }}
 ---
 {{ include "yolab-stack.member" (list . "qbittorrent" (dict

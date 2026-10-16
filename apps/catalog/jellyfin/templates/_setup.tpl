@@ -95,3 +95,19 @@
     {{- end }}
 {{- end }}
 {{- end -}}
+
+
+{{- define "jellyfin.setupOff" -}}
+{{- if not .Values.config.admin_password }}
+- name: setup-off
+  image: {{ include "yolab-common.image.wgRegister" . }}
+  imagePullPolicy: IfNotPresent
+  command:
+    - /bin/sh
+    - -c
+    - |
+      {{- range list "username" "password" "api_key" }}
+      echo "YOLAB_OUTPUT {{ include "yolab-stack.outputKey" (list $ .) }} NONE"
+      {{- end }}
+{{- end }}
+{{- end -}}

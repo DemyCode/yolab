@@ -129,33 +129,17 @@
         "url": {
           "type": "string",
           "title": "Web URL",
-          "format": "uri",
-          "source": {
-            "logs": "YOLAB_OUTPUT url (\\S+)"
-          },
-          "when": {
-            "properties": {
-              "yolab_enabled": {
-                "const": true
-              }
-            }
-          }
+          "format": "uri"
         },
         "desktop_password": {
           "type": "string",
           "title": "Desktop password",
-          "format": "secret",
-          "source": {
-            "config": "desktop_password"
-          }
+          "format": "secret"
         },
         "sunshine_password": {
           "type": "string",
           "title": "Moonlight pairing password",
-          "format": "secret",
-          "source": {
-            "config": "sunshine_password"
-          }
+          "format": "secret"
         }
       }
     }

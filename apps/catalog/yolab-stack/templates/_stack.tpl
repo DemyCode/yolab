@@ -229,7 +229,8 @@ upsert() {
 
 
 {{- define "yolab-stack.urlOutput" -}}
-{{- if and .Member (eq (include "yolab-common.yolab.enabled" .) "true") }}
+{{- if .Member }}
+{{- $url := include "yolab-stack.outputKey" (list . "url") }}
 - name: stack-output
   image: {{ include "yolab-common.image.wgRegister" . }}
   imagePullPolicy: IfNotPresent
@@ -237,10 +238,19 @@ upsert() {
     - /bin/sh
     - -c
     - |
+      {{- if eq (include "yolab-common.yolab.enabled" .) "true" }}
       . /yolab/env
       if [ -n "${YOLAB_FQDN:-}" ]; then
-        echo "YOLAB_OUTPUT {{ include "yolab-stack.outputKey" (list . "url") }} https://$YOLAB_FQDN"
+        echo "YOLAB_OUTPUT {{ $url }} https://$YOLAB_FQDN"
+      else
+        echo "YOLAB_OUTPUT {{ $url }} NONE"
       fi
+      {{- else }}
+      echo "YOLAB_OUTPUT {{ $url }} NONE"
+      {{- end }}
+      {{- range ((.Values.config).stack_outputs_off) }}
+      echo "YOLAB_OUTPUT {{ . }} NONE"
+      {{- end }}
   volumeMounts:
     - name: yolab
       mountPath: /yolab

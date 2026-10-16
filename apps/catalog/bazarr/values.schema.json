@@ -32,17 +32,29 @@
         "subtitle_languages": {
           "type": "array",
           "title": "Subtitle languages",
-          "default": ["en"],
+          "default": [
+            "en"
+          ],
           "description": "Two-letter codes, e.g. en, fr, de. Bazarr starts with a profile looking for these on every show and film; once it has profiles, change them in Bazarr itself.",
-          "items": { "type": "string", "pattern": "^[a-z]{2}$" }
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z]{2}$"
+          }
         },
         "sonarr": {
           "type": "object",
           "title": "Sonarr",
           "description": "Bazarr finds subtitles for the shows this Sonarr manages.",
           "properties": {
-            "internal_url": { "type": "string", "title": "Address", "format": "uri" },
-            "api_key": { "type": "string", "title": "API key" }
+            "internal_url": {
+              "type": "string",
+              "title": "Address",
+              "format": "uri"
+            },
+            "api_key": {
+              "type": "string",
+              "title": "API key"
+            }
           }
         },
         "radarr": {
@@ -50,8 +62,15 @@
           "title": "Radarr",
           "description": "Bazarr finds subtitles for the films this Radarr manages.",
           "properties": {
-            "internal_url": { "type": "string", "title": "Address", "format": "uri" },
-            "api_key": { "type": "string", "title": "API key" }
+            "internal_url": {
+              "type": "string",
+              "title": "Address",
+              "format": "uri"
+            },
+            "api_key": {
+              "type": "string",
+              "title": "API key"
+            }
           }
         },
         "file_explorer_enabled": {
@@ -223,129 +242,36 @@
         "api_key": {
           "type": "string",
           "title": "API key",
-          "format": "secret",
-          "source": { "logs": "YOLAB_OUTPUT api_key (\\S+)" }
+          "format": "secret"
         },
         "url": {
           "type": "string",
           "title": "Web URL",
-          "format": "uri",
-          "source": {
-            "logs": "YOLAB_OUTPUT url (\\S+)"
-          },
-          "when": {
-            "properties": {
-              "yolab_enabled": {
-                "const": true
-              }
-            }
-          }
+          "format": "uri"
         },
         "file_explorer_url": {
           "type": "string",
           "title": "File explorer",
-          "format": "uri",
-          "source": {
-            "logs": "YOLAB_OUTPUT file_explorer_url (\\S+)"
-          },
-          "when": {
-            "properties": {
-              "file_explorer_enabled": {
-                "const": true
-              }
-            },
-            "anyOf": [
-              {
-                "properties": {
-                  "file_explorer_yolab_enabled": {
-                    "const": true
-                  }
-                },
-                "required": [
-                  "file_explorer_yolab_enabled"
-                ]
-              },
-              {
-                "not": {
-                  "required": [
-                    "file_explorer_yolab_enabled"
-                  ]
-                },
-                "properties": {
-                  "yolab_enabled": {
-                    "not": {
-                      "const": false
-                    }
-                  }
-                }
-              }
-            ]
-          }
+          "format": "uri"
         },
         "file_explorer_username": {
           "type": "string",
-          "title": "File explorer username",
-          "source": {
-            "logs": "YOLAB_OUTPUT file_explorer_username (\\S+)"
-          },
-          "when": {
-            "properties": {
-              "file_explorer_enabled": {
-                "const": true
-              }
-            }
-          }
+          "title": "File explorer username"
         },
         "file_explorer_password": {
           "type": "string",
           "title": "File explorer password",
-          "format": "secret",
-          "source": {
-            "logs": "YOLAB_OUTPUT file_explorer_password (\\S+)"
-          },
-          "when": {
-            "properties": {
-              "file_explorer_enabled": {
-                "const": true
-              }
-            }
-          }
+          "format": "secret"
         },
         "file_explorer_tor_url": {
           "type": "string",
           "title": "File explorer Tor address",
-          "format": "uri",
-          "source": {
-            "logs": "YOLAB_OUTPUT file_explorer_tor_url (\\S+)"
-          },
-          "when": {
-            "properties": {
-              "file_explorer_enabled": {
-                "const": true
-              },
-              "file_explorer_tor_enabled": {
-                "const": true
-              }
-            }
-          }
+          "format": "uri"
         },
         "file_explorer_tailscale_url": {
           "type": "string",
           "title": "File explorer Tailscale address",
-          "format": "uri",
-          "source": {
-            "logs": "YOLAB_OUTPUT file_explorer_tailscale_url (\\S+)"
-          },
-          "when": {
-            "properties": {
-              "file_explorer_enabled": {
-                "const": true
-              },
-              "file_explorer_tailscale_enabled": {
-                "const": true
-              }
-            }
-          }
+          "format": "uri"
         }
       }
     }

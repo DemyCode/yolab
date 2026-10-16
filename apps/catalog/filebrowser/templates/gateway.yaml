@@ -18,6 +18,7 @@ spec:
     spec:
       initContainers:
         {{- include "yolab-common.wgRegisterInit" . | nindent 8 }}
+        {{- include "yolab-common.printOutputs" (list . (dict "password" (dict "secret" (printf "%s-admin" .Release.Name) "key" "password"))) | nindent 8 }}
         {{- include "yolab-common.privateAccessInit" . | nindent 8 }}
       containers:
         {{- include "yolab-common.gatewayContainers" . | nindent 8 }}

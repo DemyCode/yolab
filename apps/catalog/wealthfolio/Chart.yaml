@@ -2,11 +2,11 @@ apiVersion: v2
 name: wealthfolio
 description: Private investment portfolio tracking
 type: application
-version: 0.1.6
+version: 0.1.7
 appVersion: 3.9.1
 dependencies:
 - name: yolab-common
-  version: "0.1.18"
+  version: "0.1.19"
   repository: oci://ghcr.io/demycode/charts
 annotations:
   yolab.io/display-name: Wealthfolio

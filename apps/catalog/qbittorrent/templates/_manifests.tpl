@@ -47,6 +47,19 @@
 {{- end -}}
 
 
+{{- define "qbittorrent.loginOff" -}}
+- name: login-off
+  image: {{ include "yolab-common.image.wgRegister" . }}
+  imagePullPolicy: IfNotPresent
+  command:
+    - /bin/sh
+    - -c
+    - |
+      echo "YOLAB_OUTPUT {{ include "yolab-stack.outputKey" (list . "username") }} NONE"
+      echo "YOLAB_OUTPUT {{ include "yolab-stack.outputKey" (list . "password") }} NONE"
+{{- end -}}
+
+
 {{- define "qbittorrent.mounts" -}}
 - name: data
   mountPath: /config
@@ -160,6 +173,9 @@ spec:
       {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
       {{- if and $cfg.webui_password (not $vpn) }}
       {{- include "qbittorrent.login" . | nindent 6 }}
+      {{- end }}
+      {{- if not $cfg.webui_password }}
+      {{- include "qbittorrent.loginOff" . | nindent 6 }}
       {{- end }}
       containers:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}

@@ -43,19 +43,42 @@
           "description": "Libraries Jellyfin adds once it is set up, each a part of the media folder. The ones you add in Jellyfin yourself are left alone.",
           "items": {
             "type": "object",
-            "required": ["name", "kind", "path"],
+            "required": [
+              "name",
+              "kind",
+              "path"
+            ],
             "properties": {
-              "name": { "type": "string", "title": "Name", "pattern": "^[A-Za-z0-9 ]+$" },
+              "name": {
+                "type": "string",
+                "title": "Name",
+                "pattern": "^[A-Za-z0-9 ]+$"
+              },
               "kind": {
                 "type": "string",
                 "title": "Kind",
                 "default": "movies",
                 "oneOf": [
-                  { "const": "movies", "title": "Films" },
-                  { "const": "tvshows", "title": "Shows" },
-                  { "const": "music", "title": "Music" },
-                  { "const": "books", "title": "Books" },
-                  { "const": "homevideos", "title": "Home videos and photos" }
+                  {
+                    "const": "movies",
+                    "title": "Films"
+                  },
+                  {
+                    "const": "tvshows",
+                    "title": "Shows"
+                  },
+                  {
+                    "const": "music",
+                    "title": "Music"
+                  },
+                  {
+                    "const": "books",
+                    "title": "Books"
+                  },
+                  {
+                    "const": "homevideos",
+                    "title": "Home videos and photos"
+                  }
                 ]
               },
               "path": {
@@ -281,174 +304,56 @@
         "username": {
           "type": "string",
           "title": "Username",
-          "format": "text",
-          "source": { "logs": "YOLAB_OUTPUT username (\\S+)" },
-          "when": { "required": ["admin_password"], "properties": { "admin_password": { "minLength": 1 } } }
+          "format": "text"
         },
         "password": {
           "type": "string",
           "title": "Password",
-          "format": "secret",
-          "source": { "logs": "YOLAB_OUTPUT password (\\S+)" },
-          "when": { "required": ["admin_password"], "properties": { "admin_password": { "minLength": 1 } } }
+          "format": "secret"
         },
         "api_key": {
           "type": "string",
           "title": "API key",
-          "format": "secret",
-          "source": { "logs": "YOLAB_OUTPUT api_key (\\S+)" },
-          "when": { "required": ["admin_password"], "properties": { "admin_password": { "minLength": 1 } } }
+          "format": "secret"
         },
         "url": {
           "type": "string",
           "title": "Web URL",
-          "format": "uri",
-          "source": {
-            "logs": "YOLAB_OUTPUT url (\\S+)"
-          },
-          "when": {
-            "properties": {
-              "yolab_enabled": {
-                "const": true
-              }
-            }
-          }
+          "format": "uri"
         },
         "file_explorer_url": {
           "type": "string",
           "title": "File explorer",
-          "format": "uri",
-          "source": {
-            "logs": "YOLAB_OUTPUT file_explorer_url (\\S+)"
-          },
-          "when": {
-            "properties": {
-              "file_explorer_enabled": {
-                "const": true
-              }
-            },
-            "anyOf": [
-              {
-                "properties": {
-                  "file_explorer_yolab_enabled": {
-                    "const": true
-                  }
-                },
-                "required": [
-                  "file_explorer_yolab_enabled"
-                ]
-              },
-              {
-                "not": {
-                  "required": [
-                    "file_explorer_yolab_enabled"
-                  ]
-                },
-                "properties": {
-                  "yolab_enabled": {
-                    "not": {
-                      "const": false
-                    }
-                  }
-                }
-              }
-            ]
-          }
+          "format": "uri"
         },
         "file_explorer_username": {
           "type": "string",
-          "title": "File explorer username",
-          "source": {
-            "logs": "YOLAB_OUTPUT file_explorer_username (\\S+)"
-          },
-          "when": {
-            "properties": {
-              "file_explorer_enabled": {
-                "const": true
-              }
-            }
-          }
+          "title": "File explorer username"
         },
         "file_explorer_password": {
           "type": "string",
           "title": "File explorer password",
-          "format": "secret",
-          "source": {
-            "logs": "YOLAB_OUTPUT file_explorer_password (\\S+)"
-          },
-          "when": {
-            "properties": {
-              "file_explorer_enabled": {
-                "const": true
-              }
-            }
-          }
+          "format": "secret"
         },
         "file_explorer_tor_url": {
           "type": "string",
           "title": "File explorer Tor address",
-          "format": "uri",
-          "source": {
-            "logs": "YOLAB_OUTPUT file_explorer_tor_url (\\S+)"
-          },
-          "when": {
-            "properties": {
-              "file_explorer_enabled": {
-                "const": true
-              },
-              "file_explorer_tor_enabled": {
-                "const": true
-              }
-            }
-          }
+          "format": "uri"
         },
         "file_explorer_tailscale_url": {
           "type": "string",
           "title": "File explorer Tailscale address",
-          "format": "uri",
-          "source": {
-            "logs": "YOLAB_OUTPUT file_explorer_tailscale_url (\\S+)"
-          },
-          "when": {
-            "properties": {
-              "file_explorer_enabled": {
-                "const": true
-              },
-              "file_explorer_tailscale_enabled": {
-                "const": true
-              }
-            }
-          }
+          "format": "uri"
         },
         "tor_url": {
           "type": "string",
           "title": "Tor address",
-          "format": "uri",
-          "source": {
-            "logs": "YOLAB_OUTPUT tor_url (\\S+)"
-          },
-          "when": {
-            "properties": {
-              "tor_enabled": {
-                "const": true
-              }
-            }
-          }
+          "format": "uri"
         },
         "tailscale_url": {
           "type": "string",
           "title": "Tailscale address",
-          "format": "uri",
-          "source": {
-            "logs": "YOLAB_OUTPUT tailscale_url (\\S+)"
-          },
-          "when": {
-            "properties": {
-              "tailscale_enabled": {
-                "const": true
-              }
-            }
-          }
+          "format": "uri"
         }
       }
     }

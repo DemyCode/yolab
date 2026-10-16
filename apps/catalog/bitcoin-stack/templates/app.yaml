@@ -775,15 +775,23 @@ spec:
             . /yolab/env
             if [ "{{ $df }}MEMPOOL_ENABLED" = "true" ] && [ -n "{{ $df }}{MEMPOOL_FQDN:-}" ]; then
               echo "YOLAB_OUTPUT mempool_url https://{{ $df }}MEMPOOL_FQDN"
+            else
+              echo "YOLAB_OUTPUT mempool_url NONE"
             fi
             if [ "{{ $df }}EXPLORER_ENABLED" = "true" ] && [ -n "{{ $df }}{EXPLORER_FQDN:-}" ]; then
               echo "YOLAB_OUTPUT explorer_url https://{{ $df }}EXPLORER_FQDN"
+            else
+              echo "YOLAB_OUTPUT explorer_url NONE"
             fi
             if [ "{{ $df }}SPECTER_ENABLED" = "true" ] && [ -n "{{ $df }}{SPECTER_FQDN:-}" ]; then
               echo "YOLAB_OUTPUT specter_url https://{{ $df }}SPECTER_FQDN"
+            else
+              echo "YOLAB_OUTPUT specter_url NONE"
             fi
             if [ "{{ $df }}ORDINALS_ENABLED" = "true" ] && [ -n "{{ $df }}{ORDINALS_FQDN:-}" ]; then
               echo "YOLAB_OUTPUT ordinals_url https://{{ $df }}ORDINALS_FQDN"
+            else
+              echo "YOLAB_OUTPUT ordinals_url NONE"
             fi
         volumeMounts:
           - name: yolab

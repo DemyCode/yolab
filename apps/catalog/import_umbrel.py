@@ -38,7 +38,7 @@ import yaml
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_SRC = "/tmp/opencode/umbrel-apps"
-LIB_VERSION = "0.1.18"
+LIB_VERSION = "0.1.19"
 
 # Which processors each pinned image is published for, recorded by
 # image_arches.py. Read when present so a workload running an x86-only image is
@@ -870,71 +870,31 @@ def build_schema(name, display, has_app_secret, has_admin_password, offer_node=F
         },
     }
 
-    on = {"properties": {"yolab_enabled": {"const": True}}}
-    on_explorer = {"properties": {"file_explorer_enabled": {"const": True}}}
     outputs = {
-        "url": {
-            "type": "string",
-            "title": "Web URL",
-            "format": "uri",
-            "source": {"logs": "YOLAB_OUTPUT url (\\S+)"},
-            "when": on,
-        },
+        "url": {"type": "string", "title": "Web URL", "format": "uri"},
         "file_explorer_url": {
             "type": "string",
             "title": "File explorer",
             "format": "uri",
-            "source": {"logs": "YOLAB_OUTPUT file_explorer_url (\\S+)"},
-            "when": {
-                "properties": {"file_explorer_enabled": {"const": True}},
-                "anyOf": [
-                    {
-                        "properties": {"file_explorer_yolab_enabled": {"const": True}},
-                        "required": ["file_explorer_yolab_enabled"],
-                    },
-                    {
-                        "not": {"required": ["file_explorer_yolab_enabled"]},
-                        "properties": {"yolab_enabled": {"not": {"const": False}}},
-                    },
-                ],
-            },
         },
         "file_explorer_username": {
             "type": "string",
             "title": "File explorer username",
-            "source": {"logs": "YOLAB_OUTPUT file_explorer_username (\\S+)"},
-            "when": on_explorer,
         },
         "file_explorer_password": {
             "type": "string",
             "title": "File explorer password",
             "format": "secret",
-            "source": {"logs": "YOLAB_OUTPUT file_explorer_password (\\S+)"},
-            "when": on_explorer,
         },
         "file_explorer_tor_url": {
             "type": "string",
             "title": "File explorer Tor address",
             "format": "uri",
-            "source": {"logs": "YOLAB_OUTPUT file_explorer_tor_url (\\S+)"},
-            "when": {
-                "properties": {
-                    "file_explorer_enabled": {"const": True},
-                    "file_explorer_tor_enabled": {"const": True},
-                }
-            },
         },
         "file_explorer_tailscale_url": {
             "type": "string",
             "title": "File explorer Tailscale address",
             "format": "uri",
-            "source": {"logs": "YOLAB_OUTPUT file_explorer_tailscale_url (\\S+)"},
-            "when": {
-                "properties": {
-                    "file_explorer_enabled": {"const": True},
-                    "file_explorer_tailscale_enabled": {"const": True},
-                }
-            },
         },
     }
 

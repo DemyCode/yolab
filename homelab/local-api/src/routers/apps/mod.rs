@@ -58,7 +58,6 @@ pub struct AppInfo {
 pub(crate) struct InstalledApp {
     pub namespace: String,
     pub app_id: String,
-    pub settings: serde_json::Map<String, Value>,
 }
 
 #[derive(Serialize)]
@@ -1360,12 +1359,11 @@ pub async fn list_apps(State(state): State<AppState>) -> Result<Json<Vec<AppInfo
             .cloned()
             .map(crate::appschema::AppSchema::new)
             .unwrap_or_else(|| app_schema(&catalog_dir, &id));
-        let outputs = listed_outputs(
-            &schema,
-            remembered
+        let outputs = crate::outputs::shown(
+            &schema.outputs(),
+            &remembered
                 .remove(&format!("yolab-{name}"))
                 .unwrap_or_default(),
-            &config,
         );
 
         let policy: BackupPolicy = ann
@@ -1810,26 +1808,6 @@ fn saved_settings(ann: &serde_json::Map<String, Value>) -> serde_json::Map<Strin
         .unwrap_or_default()
 }
 
-fn without_redacted(config: &serde_json::Map<String, Value>) -> serde_json::Map<String, Value> {
-    config
-        .iter()
-        .filter(|(_, v)| v.as_str() != Some(REDACTED))
-        .map(|(k, v)| (k.clone(), v.clone()))
-        .collect()
-}
-
-fn listed_outputs(
-    app: &crate::appschema::AppSchema,
-    remembered: crate::outputs::Remembered,
-    settings: &serde_json::Map<String, Value>,
-) -> Vec<crate::outputs::ShownOutput> {
-    crate::outputs::shown(
-        &app.applicable_outputs(settings),
-        &remembered,
-        &without_redacted(settings),
-    )
-}
-
 pub(crate) async fn installed_apps(client: &Client) -> anyhow::Result<Vec<InstalledApp>> {
     let managed = kube::api::ListParams::default().labels(&format!("{LABEL_MANAGED}=true"));
     let listed = crate::k8s::list(client, "v1", "Namespace", None, &managed).await?;
@@ -1844,7 +1822,6 @@ pub(crate) async fn installed_apps(client: &Client) -> anyhow::Result<Vec<Instal
             Some(InstalledApp {
                 namespace: ns["metadata"]["name"].as_str()?.to_string(),
                 app_id: annotations.get(ANN_APP_ID)?.as_str()?.to_string(),
-                settings: saved_settings(&annotations),
             })
         })
         .collect())
@@ -1853,7 +1830,6 @@ pub(crate) async fn installed_apps(client: &Client) -> anyhow::Result<Vec<Instal
 pub(crate) struct KnownOutputs {
     pub specs: Vec<crate::appschema::OutputSpec>,
     pub remembered: crate::outputs::Remembered,
-    pub settings: serde_json::Map<String, Value>,
 }
 
 pub(crate) async fn known_outputs(
@@ -1871,10 +1847,9 @@ pub(crate) async fn known_outputs(
         .unwrap_or_default();
     let id = ann.get(ANN_APP_ID).and_then(|v| v.as_str()).unwrap_or("");
     let app = installed_schema(client, ns, id, catalog_dir).await;
-    let settings = saved_settings(&ann);
 
     let remembered = if rescan_first {
-        crate::outputs::rescan(client, ns, &app, &settings).await?
+        crate::outputs::rescan(client, ns, &app).await?
     } else {
         crate::outputs::read_remembered(client, ns)
             .await?
@@ -1882,9 +1857,8 @@ pub(crate) async fn known_outputs(
     };
 
     Ok(KnownOutputs {
-        specs: app.applicable_outputs(&settings),
+        specs: app.outputs(),
         remembered,
-        settings,
     })
 }
 
@@ -1896,17 +1870,8 @@ async fn outputs_of(
     let ns = format!("yolab-{instance_name}");
     let client = state.kube.client().await?;
     let known = known_outputs(&client, &state.config.catalog_dir(), &ns, rescan_first).await?;
-    let full_config = match read_definition(&client, &ns).await {
-        Ok(def) => def.config,
-        Err(e) => {
-            tracing::warn!(
-                "{ns}: settings unreadable, outputs taken from settings are hidden ({e})"
-            );
-            without_redacted(&known.settings)
-        }
-    };
     Ok(Json(OutputsResponse {
-        outputs: crate::outputs::shown(&known.specs, &known.remembered, &full_config),
+        outputs: crate::outputs::shown(&known.specs, &known.remembered),
     }))
 }
 
@@ -3069,20 +3034,12 @@ mod tests {
                     "file_explorer_enabled": { "type": "boolean", "default": true }
                 }},
                 "outputs": { "type": "object", "readOnly": true, "properties": {
-                    "url": { "type": "string", "format": "uri",
-                             "source": { "logs": "YOLAB_OUTPUT url (\\S+)" } },
-                    "password": { "type": "string", "format": "secret",
-                                  "source": { "config": "password" } },
-                    "file_explorer_password": { "type": "string", "format": "secret",
-                        "source": { "logs": "YOLAB_OUTPUT file_explorer_password (\\S+)" },
-                        "when": { "properties": { "file_explorer_enabled": { "const": true } } } }
+                    "url": { "type": "string", "format": "uri" },
+                    "password": { "type": "string", "format": "secret" },
+                    "file_explorer_password": { "type": "string", "format": "secret" }
                 }}
             }
         })
-    }
-
-    fn keys_of(outputs: &[crate::outputs::ShownOutput]) -> Vec<&str> {
-        outputs.iter().map(|o| o.key.as_str()).collect()
     }
 
     #[test]
@@ -3100,31 +3057,6 @@ mod tests {
             .outputs()
             .is_empty());
         assert!(app_schema(dir.path(), "").outputs().is_empty());
-    }
-
-    #[test]
-    fn the_listing_never_shows_a_redacted_credential_as_its_value() {
-        let dir = chart_dir_with(filebrowser_schema());
-        let settings = map(json!({ "password": REDACTED, "file_explorer_enabled": true }));
-        let rows = listed_outputs(
-            &app_schema(dir.path(), "filebrowser"),
-            Default::default(),
-            &settings,
-        );
-        let password = rows.iter().find(|o| o.key == "password").unwrap();
-        assert_eq!(password.value, None);
-    }
-
-    #[test]
-    fn the_listing_leaves_out_outputs_of_a_feature_that_is_off() {
-        let dir = chart_dir_with(filebrowser_schema());
-        let settings = map(json!({ "file_explorer_enabled": false }));
-        let rows = listed_outputs(
-            &app_schema(dir.path(), "filebrowser"),
-            Default::default(),
-            &settings,
-        );
-        assert_eq!(keys_of(&rows), vec!["url", "password"]);
     }
 
     #[test]
@@ -3149,11 +3081,8 @@ mod tests {
             json!({ "apiVersion": "v1", "kind": "Namespace", "metadata": { "name": NS, "annotations": annotations } })
         }
 
-        fn filebrowser_ns(explorer: bool) -> Value {
-            namespace_with(json!({
-                ANN_APP_ID: "filebrowser",
-                ANN_CONFIG: format!(r#"{{"password":"{REDACTED}","file_explorer_enabled":{explorer}}}"#)
-            }))
+        fn filebrowser_ns() -> Value {
+            namespace_with(json!({ ANN_APP_ID: "filebrowser" }))
         }
 
         fn stored_secret(key: &str, value: &str) -> Value {
@@ -3171,7 +3100,7 @@ mod tests {
         async fn showing_the_page_reads_what_is_remembered_without_touching_the_logs() {
             let catalog = chart_dir_with(filebrowser_schema());
             let (server, kube) = api_server().await;
-            serve(&server, NS_PATH, 200, filebrowser_ns(true)).await;
+            serve(&server, NS_PATH, 200, filebrowser_ns()).await;
             serve(
                 &server,
                 SECRET_PATH,
@@ -3192,7 +3121,7 @@ mod tests {
         async fn check_again_reads_the_logs_now() {
             let catalog = chart_dir_with(filebrowser_schema());
             let (server, kube) = api_server().await;
-            serve(&server, NS_PATH, 200, filebrowser_ns(true)).await;
+            serve(&server, NS_PATH, 200, filebrowser_ns()).await;
             serve(&server, SECRET_PATH, 404, gone()).await;
             serve(
                 &server,
@@ -3217,21 +3146,6 @@ mod tests {
 
             assert_eq!(known.remembered["file_explorer_password"].value, "pw123");
             assert_eq!(patched(&server).await.len(), 1);
-        }
-
-        #[tokio::test]
-        async fn the_page_only_expects_outputs_that_apply_to_this_install() {
-            let catalog = chart_dir_with(filebrowser_schema());
-            let (server, kube) = api_server().await;
-            serve(&server, NS_PATH, 200, filebrowser_ns(false)).await;
-            serve(&server, SECRET_PATH, 404, gone()).await;
-
-            let known = known_outputs(&kube, catalog.path(), NS, false)
-                .await
-                .unwrap();
-
-            let keys: Vec<&str> = known.specs.iter().map(|s| s.key.as_str()).collect();
-            assert_eq!(keys, vec!["url", "password"]);
         }
 
         #[tokio::test]

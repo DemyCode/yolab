@@ -1052,7 +1052,6 @@ export function AppDetailPage() {
       {!quiet && (
         <AppAccess
           instanceName={app.instance_name}
-          appReady={state === "ready"}
           links={links}
         />
       )}

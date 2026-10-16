@@ -3,14 +3,15 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value};
+use serde_json::Value;
 
-use crate::appschema::{AppSchema, Format, OutputSpec, Source};
+use crate::appschema::{AppSchema, Format, OutputSpec};
 use kube::Client;
 
 const SECRET: &str = "yolab-outputs";
 const SECRET_KEY: &str = "outputs.json";
 const LOGS_TAIL: i64 = 2000;
+pub const NONE: &str = "NONE";
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct Found {
@@ -25,9 +26,8 @@ pub struct ShownOutput {
     pub key: String,
     pub title: String,
     pub format: Format,
-    pub value: Option<String>,
-    pub found_at: Option<DateTime<Utc>>,
-    pub from_config: bool,
+    pub value: String,
+    pub found_at: DateTime<Utc>,
 }
 
 pub fn latest_matches<'a>(
@@ -52,6 +52,10 @@ pub fn remember(
 ) -> bool {
     let mut changed = false;
     for (key, value) in fresh {
+        if value == NONE {
+            changed |= remembered.remove(&key).is_some();
+            continue;
+        }
         if remembered.get(&key).is_some_and(|f| f.value == value) {
             continue;
         }
@@ -67,40 +71,20 @@ pub fn remember(
     changed
 }
 
-pub fn shown(
-    specs: &[OutputSpec],
-    remembered: &Remembered,
-    config: &Map<String, Value>,
-) -> Vec<ShownOutput> {
+pub fn shown(specs: &[OutputSpec], remembered: &Remembered) -> Vec<ShownOutput> {
     specs
         .iter()
-        .map(|spec| {
-            let (value, found_at, from_config) = match &spec.source {
-                Source::Logs(_) => match remembered.get(&spec.key) {
-                    Some(found) => (Some(found.value.clone()), Some(found.found_at), false),
-                    None => (None, None, false),
-                },
-                Source::Config(field) => (config_text(config.get(field)), None, true),
-            };
-            ShownOutput {
+        .filter_map(|spec| {
+            let found = remembered.get(&spec.key)?;
+            Some(ShownOutput {
                 key: spec.key.clone(),
                 title: spec.title.clone(),
                 format: spec.format,
-                value,
-                found_at,
-                from_config,
-            }
+                value: found.value.clone(),
+                found_at: found.found_at,
+            })
         })
         .collect()
-}
-
-fn config_text(value: Option<&Value>) -> Option<String> {
-    match value? {
-        Value::String(s) if !s.is_empty() => Some(s.clone()),
-        Value::Number(n) => Some(n.to_string()),
-        Value::Bool(b) => Some(b.to_string()),
-        _ => None,
-    }
 }
 
 pub fn parse_remembered(raw: Option<&str>) -> Remembered {
@@ -187,17 +171,8 @@ fn in_time_order(mut lines: Vec<String>) -> Vec<String> {
     lines
 }
 
-pub async fn rescan(
-    client: &Client,
-    ns: &str,
-    app: &AppSchema,
-    settings: &Map<String, Value>,
-) -> anyhow::Result<Remembered> {
-    let looked_for: Vec<OutputSpec> = app
-        .applicable_outputs(settings)
-        .into_iter()
-        .filter(|o| matches!(o.source, Source::Logs(_)))
-        .collect();
+pub async fn rescan(client: &Client, ns: &str, app: &AppSchema) -> anyhow::Result<Remembered> {
+    let looked_for = app.outputs();
 
     let stored = read_remembered(client, ns).await?;
     let existed = stored.is_some();
@@ -229,7 +204,7 @@ pub async fn rescan_all(
             catalog_dir,
         )
         .await;
-        if let Err(e) = rescan(client, &app.namespace, &schema, &app.settings).await {
+        if let Err(e) = rescan(client, &app.namespace, &schema).await {
             tracing::debug!("{}: outputs could not be rescanned ({e})", app.namespace);
             failed.push(app.namespace.clone());
         }
@@ -278,19 +253,7 @@ mod tests {
     }
 
     fn logs(key: &str) -> OutputSpec {
-        parse_output(
-            key,
-            &json!({ "source": { "logs": format!("YOLAB_OUTPUT {key} (\\S+)") } }),
-        )
-        .unwrap()
-    }
-
-    fn from_config(key: &str, field: &str, format: &str) -> OutputSpec {
-        parse_output(
-            key,
-            &json!({ "format": format, "source": { "config": field } }),
-        )
-        .unwrap()
+        parse_output(key, &json!({}))
     }
 
     fn fresh(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
@@ -357,32 +320,63 @@ mod tests {
     }
 
     #[test]
-    fn a_logs_output_not_seen_yet_is_shown_as_waiting() {
-        let rows = shown(&[logs("onion_address")], &Remembered::new(), &Map::new());
-        assert_eq!(rows[0].value, None);
-        assert!(!rows[0].from_config);
+    fn an_output_never_printed_is_not_shown() {
+        assert!(shown(&[logs("onion_address")], &Remembered::new()).is_empty());
     }
 
     #[test]
-    fn a_config_output_shows_the_saved_setting() {
-        let config = json!({ "password": "correct horse", "port": 25565 })
-            .as_object()
-            .cloned()
-            .unwrap();
-        let rows = shown(
-            &[
-                from_config("password", "password", "secret"),
-                from_config("port", "port", "text"),
-                from_config("missing", "nope", "text"),
-            ],
-            &Remembered::new(),
-            &config,
+    fn a_printed_output_is_shown_with_its_declared_title_and_format() {
+        let mut remembered = Remembered::new();
+        remember(&mut remembered, fresh(&[("password", "abc")]), at(1));
+        let spec = parse_output(
+            "password",
+            &json!({ "title": "Admin password", "format": "secret" }),
         );
-        assert_eq!(rows[0].value.as_deref(), Some("correct horse"));
+        let rows = shown(&[spec], &remembered);
+        assert_eq!(rows[0].title, "Admin password");
         assert_eq!(rows[0].format, Format::Secret);
-        assert!(rows[0].from_config);
-        assert_eq!(rows[1].value.as_deref(), Some("25565"));
-        assert_eq!(rows[2].value, None);
+        assert_eq!(rows[0].value, "abc");
+        assert_eq!(rows[0].found_at, at(1));
+    }
+
+    #[test]
+    fn a_printed_line_the_chart_does_not_declare_is_not_shown() {
+        let mut remembered = Remembered::new();
+        remember(&mut remembered, fresh(&[("tunnel_id", "t1")]), at(1));
+        assert!(shown(&[logs("url")], &remembered).is_empty());
+    }
+
+    #[test]
+    fn none_forgets_a_remembered_value() {
+        let mut remembered = Remembered::new();
+        remember(&mut remembered, fresh(&[("tor_url", "http://x.onion/")]), at(1));
+        assert!(remember(&mut remembered, fresh(&[("tor_url", NONE)]), at(2)));
+        assert!(remembered.is_empty());
+        assert!(shown(&[logs("tor_url")], &remembered).is_empty());
+    }
+
+    #[test]
+    fn none_for_a_value_never_seen_changes_nothing() {
+        let mut remembered = Remembered::new();
+        assert!(!remember(&mut remembered, fresh(&[("tor_url", NONE)]), at(1)));
+    }
+
+    #[test]
+    fn a_value_printed_after_none_shows_again() {
+        let found = latest_matches(
+            &[logs("tor_url")],
+            [
+                "YOLAB_OUTPUT tor_url http://old.onion/",
+                "YOLAB_OUTPUT tor_url NONE",
+                "YOLAB_OUTPUT tor_url http://new.onion/",
+            ],
+        );
+        assert_eq!(found["tor_url"], "http://new.onion/");
+        let hidden = latest_matches(
+            &[logs("tor_url")],
+            ["YOLAB_OUTPUT tor_url http://old.onion/", "YOLAB_OUTPUT tor_url NONE"],
+        );
+        assert_eq!(hidden["tor_url"], NONE);
     }
 
     #[test]
@@ -414,19 +408,12 @@ mod tests {
         const SECRET_PATH: &str = "/api/v1/namespaces/yolab-files-ab12/secrets/yolab-outputs";
         const POD_PATH: &str = "/api/v1/namespaces/yolab-files-ab12/pods/gateway-7f";
 
-        fn app(explorer_default: bool) -> AppSchema {
+        fn app() -> AppSchema {
             AppSchema::new(json!({ "properties": {
-                "config": { "properties": {
-                    "password": { "type": "string", "writeOnly": true, "generate": true },
-                    "file_explorer_enabled": { "type": "boolean", "default": explorer_default }
-                }},
                 "outputs": { "properties": {
-                    "password": { "title": "Admin password", "format": "secret",
-                                  "source": { "config": "password" } },
+                    "password": { "title": "Admin password", "format": "secret" },
                     "file_explorer_password": {
-                        "title": "File explorer password", "format": "secret",
-                        "source": { "logs": "YOLAB_OUTPUT file_explorer_password (\\S+)" },
-                        "when": { "properties": { "file_explorer_enabled": { "const": true } } }
+                        "title": "File explorer password", "format": "secret"
                     }
                 }}
             }}))
@@ -486,7 +473,7 @@ mod tests {
             serve_logs(&server, POD_PATH, "caddy", "").await;
             accept_patches(&server).await;
 
-            let found = rescan(&kube, NS, &app(true), &Map::new()).await.unwrap();
+            let found = rescan(&kube, NS, &app()).await.unwrap();
 
             assert_eq!(found["file_explorer_password"].value, "s3cret");
             let writes = patched(&server).await;
@@ -509,7 +496,7 @@ mod tests {
             serve_logs(&server, POD_PATH, "file-explorer-init", &printed("s3cret")).await;
             serve_logs(&server, POD_PATH, "caddy", "").await;
 
-            rescan(&kube, NS, &app(true), &Map::new()).await.unwrap();
+            rescan(&kube, NS, &app()).await.unwrap();
 
             assert!(patched(&server).await.is_empty());
         }
@@ -528,7 +515,7 @@ mod tests {
             serve_logs(&server, POD_PATH, "file-explorer-init", "").await;
             serve_logs(&server, POD_PATH, "caddy", "").await;
 
-            let found = rescan(&kube, NS, &app(true), &Map::new()).await.unwrap();
+            let found = rescan(&kube, NS, &app()).await.unwrap();
 
             assert_eq!(found["file_explorer_password"].value, "s3cret");
             assert!(patched(&server).await.is_empty());
@@ -549,7 +536,7 @@ mod tests {
             serve_logs(&server, POD_PATH, "caddy", "").await;
             accept_patches(&server).await;
 
-            let found = rescan(&kube, NS, &app(true), &Map::new()).await.unwrap();
+            let found = rescan(&kube, NS, &app()).await.unwrap();
 
             assert_eq!(found["file_explorer_password"].value, "new");
             assert_eq!(
@@ -559,12 +546,33 @@ mod tests {
         }
 
         #[tokio::test]
+        async fn none_in_the_logs_forgets_the_remembered_value() {
+            let (server, kube) = api_server().await;
+            serve(
+                &server,
+                SECRET_PATH,
+                200,
+                stored(&remembered("file_explorer_password", "s3cret")),
+            )
+            .await;
+            pods(&server).await;
+            serve_logs(&server, POD_PATH, "file-explorer-init", &printed(NONE)).await;
+            serve_logs(&server, POD_PATH, "caddy", "").await;
+            accept_patches(&server).await;
+
+            let found = rescan(&kube, NS, &app()).await.unwrap();
+
+            assert!(found.is_empty());
+            assert!(saved(&patched(&server).await[0]).is_empty());
+        }
+
+        #[tokio::test]
         async fn logs_are_not_read_when_nothing_is_expected_from_them() {
             let (server, kube) = api_server().await;
             nothing_stored(&server).await;
-            let explorer_off = Map::from_iter([("file_explorer_enabled".into(), json!(false))]);
+            let nothing_declared = AppSchema::new(json!({}));
 
-            rescan(&kube, NS, &app(true), &explorer_off).await.unwrap();
+            rescan(&kube, NS, &nothing_declared).await.unwrap();
 
             assert!(!asked(&server, "/pods").await);
             assert!(
@@ -581,7 +589,7 @@ mod tests {
             serve_logs(&server, POD_PATH, "file-explorer-init", &printed("s3cret")).await;
             accept_patches(&server).await;
 
-            let found = rescan(&kube, NS, &app(true), &Map::new()).await.unwrap();
+            let found = rescan(&kube, NS, &app()).await.unwrap();
 
             assert_eq!(found["file_explorer_password"].value, "s3cret");
         }
@@ -591,7 +599,7 @@ mod tests {
             let (server, kube) = api_server().await;
             serve(&server, SECRET_PATH, 503, status(503, "ServiceUnavailable")).await;
 
-            let result = rescan(&kube, NS, &app(true), &Map::new()).await;
+            let result = rescan(&kube, NS, &app()).await;
 
             assert!(result.is_err());
             assert!(
@@ -654,7 +662,7 @@ mod tests {
             std::fs::write(
                 chart.join("values.schema.json"),
                 json!({ "properties": { "outputs": { "properties": {
-                    "token": { "title": "Token", "source": { "logs": "YOLAB_OUTPUT token (\\S+)" } }
+                    "token": { "title": "Token" }
                 }}}})
                 .to_string(),
             )

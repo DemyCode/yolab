@@ -2,11 +2,11 @@ apiVersion: v2
 name: databag
 description: A tiny self-hosted federated messenger for the decentralized web
 type: application
-version: 0.1.6
+version: 0.1.7
 appVersion: 0.1.18-patch.1
 dependencies:
 - name: yolab-common
-  version: "0.1.18"
+  version: "0.1.19"
   repository: oci://ghcr.io/demycode/charts
 annotations:
   yolab.io/display-name: Databag

@@ -126,55 +126,22 @@
         "url": {
           "type": "string",
           "title": "Web URL",
-          "format": "uri",
-          "source": {
-            "logs": "YOLAB_OUTPUT url (\\S+)"
-          },
-          "when": {
-            "properties": {
-              "yolab_enabled": {
-                "const": true
-              }
-            }
-          }
+          "format": "uri"
         },
         "password": {
           "type": "string",
           "title": "Admin password",
-          "format": "secret",
-          "source": {
-            "config": "password"
-          }
+          "format": "secret"
         },
         "tor_url": {
           "type": "string",
           "title": "Tor address",
-          "format": "uri",
-          "source": {
-            "logs": "YOLAB_OUTPUT tor_url (\\S+)"
-          },
-          "when": {
-            "properties": {
-              "tor_enabled": {
-                "const": true
-              }
-            }
-          }
+          "format": "uri"
         },
         "tailscale_url": {
           "type": "string",
           "title": "Tailscale address",
-          "format": "uri",
-          "source": {
-            "logs": "YOLAB_OUTPUT tailscale_url (\\S+)"
-          },
-          "when": {
-            "properties": {
-              "tailscale_enabled": {
-                "const": true
-              }
-            }
-          }
+          "format": "uri"
         }
       }
     }

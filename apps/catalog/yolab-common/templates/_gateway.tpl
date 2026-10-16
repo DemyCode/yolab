@@ -85,6 +85,61 @@ yolab-tunnel-credentials
       mountPath: /yolab
 {{- end }}
 {{- end }}
+{{- include "yolab-common.outputsOff" . }}
+{{- end -}}
+
+
+{{- define "yolab-common.offOutputs" -}}
+{{- $off := list -}}
+{{- if ne (include "yolab-common.yolab.enabled" .) "true" -}}
+{{- $off = append $off "url" -}}
+{{- end -}}
+{{- if ne (include "yolab-common.tunnel.enabled" .) "true" -}}
+{{- $off = append $off "ipv6" -}}
+{{- end -}}
+{{- if ne (include "yolab-common.fileExplorer.yolab" .) "true" -}}
+{{- $off = append $off "file_explorer_url" -}}
+{{- end -}}
+{{- if ne (include "yolab-common.fileExplorer.enabled" .) "true" -}}
+{{- $off = concat $off (list "file_explorer_username" "file_explorer_password") -}}
+{{- end -}}
+{{- if ne (include "yolab-common.fileExplorer.tor" .) "true" -}}
+{{- $off = append $off "file_explorer_tor_url" -}}
+{{- end -}}
+{{- if ne (include "yolab-common.fileExplorer.tailscale" .) "true" -}}
+{{- $off = append $off "file_explorer_tailscale_url" -}}
+{{- end -}}
+{{- if ne (include "yolab-common.tor.enabled" .) "true" -}}
+{{- $off = append $off "tor_url" -}}
+{{- end -}}
+{{- if ne (include "yolab-common.tailscale.enabled" .) "true" -}}
+{{- $off = append $off "tailscale_url" -}}
+{{- end -}}
+{{- if ((.Values.yolab).apiKey).offered -}}
+{{- if ne (include "yolab-common.apiKey.enabled" .) "true" -}}
+{{- $off = concat $off (list "api_key" "api_url") -}}
+{{- else if ne (include "yolab-common.yolab.enabled" .) "true" -}}
+{{- $off = append $off "api_url" -}}
+{{- end -}}
+{{- end -}}
+{{- toJson $off -}}
+{{- end -}}
+
+
+{{- define "yolab-common.outputsOff" -}}
+{{- $off := include "yolab-common.offOutputs" . | fromJsonArray -}}
+{{- if $off }}
+- name: outputs-off
+  image: {{ include "yolab-common.image.caddy" . }}
+  imagePullPolicy: IfNotPresent
+  command:
+    - /bin/sh
+    - -c
+    - |
+      {{- range $off }}
+      echo "YOLAB_OUTPUT {{ . }} NONE"
+      {{- end }}
+{{- end }}
 {{- end -}}
 
 
@@ -331,4 +386,32 @@ data:
 - name: data
   persistentVolumeClaim:
     claimName: {{ include "yolab-common.gateway.pvcName" . }}
+{{- end -}}
+
+
+{{- define "yolab-common.printOutputs" -}}
+{{- $ctx := index . 0 -}}
+{{- $outputs := index . 1 -}}
+- name: outputs
+  image: {{ include "yolab-common.image.caddy" $ctx }}
+  imagePullPolicy: IfNotPresent
+  env:
+    {{- range $output, $from := $outputs }}
+    - name: {{ printf "OUTPUT_%s" (upper $output) }}
+      {{- if hasKey $from "secret" }}
+      valueFrom:
+        secretKeyRef:
+          name: {{ $from.secret }}
+          key: {{ $from.key }}
+      {{- else }}
+      value: {{ $from.value | quote }}
+      {{- end }}
+    {{- end }}
+  command:
+    - /bin/sh
+    - -c
+    - |
+      {{- range $output, $_ := $outputs }}
+      echo "YOLAB_OUTPUT {{ $output }} ${{ printf "{OUTPUT_%s:-NONE}" (upper $output) }}"
+      {{- end }}
 {{- end -}}

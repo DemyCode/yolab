@@ -2,8 +2,6 @@ import { describe, expect, it } from "vitest";
 import {
   accessRows,
   appLinks,
-  outputState,
-  stillWaiting,
   appState,
   appLabel,
   appDisplayName,
@@ -47,9 +45,8 @@ const out = (
   key,
   title,
   format,
-  value: value || null,
-  found_at: null,
-  from_config: false,
+  value,
+  found_at: "2026-10-16T12:00:00Z",
 });
 
 describe("installedByChart", () => {
@@ -149,44 +146,18 @@ describe("accessRows", () => {
     const rows = accessRows([
       out("web", "https://a.example", "uri"),
       out("password", "hunter2", "secret"),
-      out("onion", "", "uri"),
+      out("onion", "http://x.onion/", "uri"),
     ]);
-    expect(rows.map((r) => r.key)).toEqual(["password", "onion"]);
+    expect(rows.map((r) => r.key)).toEqual(["password"]);
   });
 
   it("keeps the order the chart declared", () => {
     const rows = accessRows([
       out("b", "2"),
       out("a", "1"),
-      out("c", "", "multiline"),
+      out("c", "line one\nline two", "multiline"),
     ]);
     expect(rows.map((r) => r.key)).toEqual(["b", "a", "c"]);
-  });
-});
-
-describe("outputState", () => {
-  it("is ready once a value is known", () => {
-    expect(outputState(out("password", "hunter2", "secret"))).toBe("ready");
-  });
-
-  it("is waiting while the app has not printed it yet", () => {
-    expect(outputState(out("onion", ""))).toBe("waiting");
-  });
-
-  it("is unset, not waiting, when it comes from a setting left empty", () => {
-    expect(outputState({ ...out("pin", ""), from_config: true })).toBe("unset");
-  });
-});
-
-describe("stillWaiting", () => {
-  it("is true while any output is still expected from the app", () => {
-    expect(stillWaiting([out("a", "1"), out("b", "")])).toBe(true);
-  });
-
-  it("is false once everything is known or comes from settings", () => {
-    expect(
-      stillWaiting([out("a", "1"), { ...out("pin", ""), from_config: true }]),
-    ).toBe(false);
   });
 });
 
