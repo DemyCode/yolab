@@ -95,7 +95,7 @@
     pkgs.cargo-tauri
     androidSdk.androidsdk
     pkgs.jdk17
-    pkgs.gradle
+    pkgs.gradle_9
     pkgs.pkg-config
     pkgs.nodejs
   ];
@@ -140,7 +140,7 @@
 
       outputHashMode = "recursive";
       outputHashAlgo = "sha256";
-      outputHash = "sha256-RnwTLn7qe7wnCf5JNDEguxMtbBzzoDAJSP6XxV/gM6I=";
+      outputHash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
     }
     // commonEnv
   );
