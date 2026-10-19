@@ -1,5 +1,6 @@
 use serde_json::Value;
 
+use crate::error::Outcome;
 use crate::host::Host;
 
 pub struct SizingPolicy {
@@ -48,26 +49,35 @@ fn want_mb(total_mb: u64, replicas: u64, hosts: u64, share_of_pool: f64, min_siz
 }
 
 pub async fn compute<H: Host>(host: &H, policy: &SizingPolicy) -> anyhow::Result<Option<u64>> {
-    let hosts = host
+    let Some(hosts) = host
         .ceph_json(&["osd", "tree"])
         .await
+        .ok_or_warn("images: read the osd tree to size the images disk")
         .map(|v| host_count(&v))
-        .unwrap_or(1);
+    else {
+        return Ok(None);
+    };
 
     let Some(t_mb) = host
         .ceph_json(&["df"])
         .await
-        .ok()
+        .ok_or_warn("images: read ceph df to size the images disk")
         .and_then(|v| total_mb(&v))
     else {
         return Ok(None);
     };
 
-    let replicas = host
+    let Some(replicas) = host
         .ceph_json(&["osd", "pool", "get", &policy.pool_name, "size"])
         .await
+        .ok_or_warn(format!(
+            "images: read the replica count of {} to size the images disk",
+            policy.pool_name
+        ))
         .map(|v| replica_count(&v))
-        .unwrap_or(1);
+    else {
+        return Ok(None);
+    };
 
     Ok(Some(want_mb(
         t_mb,
@@ -166,5 +176,36 @@ mod tests {
             min_size_gb: 40,
         };
         assert_eq!(compute(&host, &policy).await.unwrap(), Some(250_000));
+    }
+
+    #[tokio::test]
+    async fn an_unreadable_replica_count_leaves_the_size_unknown_instead_of_assuming_one() {
+        let host = crate::host::fake::FakeHost::new()
+            .ok("ceph osd tree", &tree(3).to_string())
+            .ok("ceph df", r#"{"stats":{"total_bytes":1048576000000}}"#)
+            .fail(
+                "ceph osd pool get images size",
+                "error connecting to the cluster",
+            );
+        let policy = SizingPolicy {
+            pool_name: "images".into(),
+            share_of_pool: 0.25,
+            min_size_gb: 40,
+        };
+        assert_eq!(compute(&host, &policy).await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn an_unreadable_osd_tree_leaves_the_size_unknown_instead_of_assuming_one_host() {
+        let host = crate::host::fake::FakeHost::new()
+            .fail("ceph osd tree", "error connecting to the cluster")
+            .ok("ceph df", r#"{"stats":{"total_bytes":1048576000000}}"#)
+            .ok("ceph osd pool get images size", r#"{"size":2}"#);
+        let policy = SizingPolicy {
+            pool_name: "images".into(),
+            share_of_pool: 0.25,
+            min_size_gb: 40,
+        };
+        assert_eq!(compute(&host, &policy).await.unwrap(), None);
     }
 }

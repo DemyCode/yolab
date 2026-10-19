@@ -14,6 +14,7 @@ use tokio_stream::StreamExt;
 
 use crate::{
     config::{Channel, Config},
+    error::Outcome,
     host::Host,
     AppState,
 };
@@ -73,7 +74,9 @@ async fn run_update<H: Host>(
     )
     .await;
 
-    let _ = host.systemctl(&["reset-failed", SWITCH_UNIT]).await;
+    host.systemctl(&["reset-failed", SWITCH_UNIT])
+        .await
+        .debug_on_err(format!("reset-failed {SWITCH_UNIT}"));
 
     let args = rebuild_args(cfg, &ch);
     emit(out, format!("$ nixos-rebuild {}", args.join(" "))).await;
@@ -144,16 +147,19 @@ pub async fn trigger_update(State(state): State<AppState>) -> Json<serde_json::V
 
     let log_path = cfg.rebuild_log.clone();
     tokio::spawn(async move {
-        let _ = std::fs::create_dir_all(log_path.parent().unwrap_or(std::path::Path::new("/")));
+        if let Some(parent) = log_path.parent() {
+            std::fs::create_dir_all(parent).warn_on_err(format!("create {}", parent.display()));
+        }
         while let Some(line) = rx.recv().await {
-            if let Ok(mut f) = std::fs::OpenOptions::new()
+            std::fs::OpenOptions::new()
                 .create(true)
                 .append(true)
                 .open(&log_path)
-            {
-                use std::io::Write;
-                let _ = writeln!(f, "[trigger] {line}");
-            }
+                .and_then(|mut f| {
+                    use std::io::Write;
+                    writeln!(f, "[trigger] {line}")
+                })
+                .warn_on_err(format!("append to {}", log_path.display()));
         }
     });
 

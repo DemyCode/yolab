@@ -358,7 +358,9 @@ async fn swap<H: Host>(
         .await
         .is_ok_and(|o| o.success)
     {
-        let _ = host.systemctl(&["reset-failed", k3s_unit]).await;
+        host.systemctl(&["reset-failed", k3s_unit])
+            .await
+            .debug_on_err(format!("reset-failed {k3s_unit}"));
         host.systemctl(&["start", "--no-block", k3s_unit])
             .await
             .warn_on_err(format!("start {k3s_unit} after swapping the image store"));
@@ -386,7 +388,13 @@ async fn quiesce<H: Host>(host: &H, root: &Path) -> Option<String> {
     host.systemctl(&["stop", PODS_SLICE])
         .await
         .warn_on_err(format!("stop {PODS_SLICE}"));
-    let _ = host.run_cmd("pkill", &["-KILL", "-f", SHIM]).await;
+    match host.run_cmd("pkill", &["-KILL", "-f", SHIM]).await {
+        Ok(o) if !o.success && !o.stderr.trim().is_empty() => {
+            tracing::warn!("kill the containerd shims: {}", o.stderr.trim())
+        }
+        Ok(_) => {}
+        Err(e) => tracing::warn!("kill the containerd shims: {e}"),
+    }
     let data_root = containerd_root(root);
     for target in mounts_resting_on(root, &data_root) {
         let target_s = target.to_string_lossy().into_owned();

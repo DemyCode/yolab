@@ -91,12 +91,10 @@ pub async fn uninstall_app(
     Ok(Json(serde_json::json!({"ok": true})))
 }
 
-pub(crate) async fn namespace_is_terminating(client: &Client, ns: &str) -> bool {
-    namespace(client, ns)
-        .await
-        .ok()
-        .flatten()
-        .is_some_and(|v| v["status"]["phase"] == "Terminating")
+pub(crate) async fn namespace_is_terminating(client: &Client, ns: &str) -> anyhow::Result<bool> {
+    Ok(namespace(client, ns)
+        .await?
+        .is_some_and(|v| v["status"]["phase"] == "Terminating"))
 }
 
 pub(crate) const HELM_UNINSTALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
@@ -149,7 +147,7 @@ pub(crate) async fn run_teardown<H: crate::host::Host>(
     instance_name: &str,
     ns: &str,
 ) -> anyhow::Result<()> {
-    if namespace_is_terminating(&b.kube, ns).await {
+    if namespace_is_terminating(&b.kube, ns).await? {
         tracing::info!(
             "uninstall {instance_name}: namespace is already terminating — waiting for it \
              to finish rather than re-running helm"
@@ -160,7 +158,7 @@ pub(crate) async fn run_teardown<H: crate::host::Host>(
     }
 
     let release = read_definition_opt(&b.kube, ns)
-        .await
+        .await?
         .map(|d| d.release().to_string())
         .unwrap_or_else(|| instance_name.to_string());
     let out = b

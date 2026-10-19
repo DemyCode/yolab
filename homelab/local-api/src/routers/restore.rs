@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
+use anyhow::Context;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -222,7 +223,7 @@ async fn restore_inner<H: Host>(
         &format!("**/{namespace}.yaml"),
     )
     .await?;
-    let restore_as_of = snapshot_time(&b.host, &repo, cfg, snapshot_id).await;
+    let restore_as_of = Some(snapshot_time(&b.host, &repo, cfg, snapshot_id).await?);
 
     let pvcs = catalog_pvcs(&catalog, namespace);
     let mut backed_up = Vec::new();
@@ -589,7 +590,7 @@ pub(crate) async fn backup_payload<H: Host>(
         anyhow::bail!("backup {snapshot_id} has no saved settings for {source_namespace}");
     };
     let objects: Value = serde_json::from_slice(&tokio::fs::read(&path).await?)?;
-    let restore_as_of = snapshot_time(&b.host, &repo, &cfg, snapshot_id).await;
+    let restore_as_of = Some(snapshot_time(&b.host, &repo, &cfg, snapshot_id).await?);
 
     let mut volumes = Vec::new();
     for pvc in catalog_pvcs(&catalog, source_namespace) {
@@ -1344,7 +1345,7 @@ async fn snapshot_time<H: Host>(
     repo: &str,
     cfg: &BackupConfig,
     id: &str,
-) -> Option<String> {
+) -> anyhow::Result<String> {
     let out = restic_with(
         host,
         repo,
@@ -1352,13 +1353,20 @@ async fn snapshot_time<H: Host>(
         &["snapshots", "--no-lock", id, "--json"],
         RESTIC_TIMEOUT,
     )
-    .await
-    .ok()?;
+    .await?;
     if !out.success {
-        return None;
+        anyhow::bail!(
+            "restic could not look up snapshot {id}: {}",
+            out.stderr.trim()
+        );
     }
-    let v: Value = serde_json::from_str(&out.stdout).ok()?;
-    v.as_array()?.first()?["time"].as_str().map(String::from)
+    let v: Value = serde_json::from_str(&out.stdout)
+        .with_context(|| format!("restic's answer about snapshot {id}"))?;
+    v.as_array()
+        .and_then(|a| a.first())
+        .and_then(|s| s["time"].as_str())
+        .map(String::from)
+        .ok_or_else(|| anyhow::anyhow!("restic has no time for snapshot {id}"))
 }
 
 async fn extract_file<H: Host>(
@@ -2199,6 +2207,19 @@ mod tests {
                     .is_err()
             );
             assert!(b.host.calls().is_empty(), "{:?}", b.host.calls());
+        }
+
+        #[tokio::test]
+        async fn a_snapshot_whose_time_cannot_be_read_is_an_error_not_the_newest_snapshot() {
+            let host = FakeHost::new().fail("restic snapshots", "repository is locked");
+            assert!(snapshot_time(&host, "repo", &cfg(), "snap-1")
+                .await
+                .is_err());
+
+            let empty = FakeHost::new().ok("restic snapshots", "[]");
+            assert!(snapshot_time(&empty, "repo", &cfg(), "snap-1")
+                .await
+                .is_err());
         }
 
         #[tokio::test]

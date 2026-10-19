@@ -632,3 +632,21 @@ async fn a_refused_admin_key_is_taken_from_the_first_peer_that_hands_it_over_and
         std::fs::read_to_string(root.path().join("etc/ceph/ceph.client.admin.keyring")).unwrap();
     assert_eq!(keyring_key(&text, "client.admin"), Some(fresh));
 }
+
+#[tokio::test]
+async fn a_machine_that_never_stored_its_facts_has_not_reported_yet() {
+    let host = FakeHost::new().fail(
+        "ceph config-key get",
+        "Error ENOENT: error obtaining 'yolab/cephx/node/node1': (2) No such file or directory",
+    );
+    assert_eq!(facts_of(&host, "node1").await.unwrap(), None);
+}
+
+#[tokio::test]
+async fn facts_that_cannot_be_read_are_an_error_not_a_silent_machine() {
+    let down = FakeHost::new().fail("ceph config-key get", "error connecting to the cluster");
+    assert!(facts_of(&down, "node1").await.is_err());
+
+    let garbled = FakeHost::new().ok("ceph config-key get", "not json");
+    assert!(facts_of(&garbled, "node1").await.is_err());
+}

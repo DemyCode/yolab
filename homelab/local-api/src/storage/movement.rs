@@ -4,6 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::error::Outcome;
 use crate::host::Host;
 use crate::storage::settings;
 
@@ -540,13 +541,11 @@ async fn read<H: Host>(host: &H) -> Option<Reading> {
     })
 }
 
-async fn read_record<H: Host>(host: &H) -> Record {
-    settings::get(host, RECORD_KEY)
-        .await
-        .ok()
-        .flatten()
-        .and_then(|raw| serde_json::from_str(&raw).ok())
-        .unwrap_or_default()
+async fn read_record<H: Host>(host: &H) -> anyhow::Result<Record> {
+    match settings::get(host, RECORD_KEY).await? {
+        None => Ok(Record::default()),
+        Some(raw) => Ok(serde_json::from_str(&raw)?),
+    }
 }
 
 pub async fn sample<H: Host>(host: &H) {
@@ -555,7 +554,15 @@ pub async fn sample<H: Host>(host: &H) {
     };
     let remaining = remaining_by_job(&r.snap, r.clones);
     let inactive = r.snap.inactive_pgs > 0;
-    let mut record = read_record(host).await;
+    let mut record = match read_record(host).await {
+        Ok(record) => record,
+        Err(e) => {
+            tracing::warn!(
+                "movement: could not read the progress record, so it is left as it is ({e:#})"
+            );
+            return;
+        }
+    };
     if remaining.is_empty() && !inactive && record == Record::default() {
         return;
     }
@@ -577,7 +584,10 @@ pub async fn assess_via<H: Host>(host: &H) -> Movement {
     let snap = r.snap;
     let now = now_ms();
     let remaining = remaining_by_job(&snap, r.clones);
-    let record = read_record(host).await;
+    let record = read_record(host)
+        .await
+        .ok_or_warn("movement: read the progress record")
+        .unwrap_or_default();
     let jobs = record.jobs(now, &remaining);
     let waiting_for = if snap.osds_down {
         host.ceph_json(&["osd", "tree"])

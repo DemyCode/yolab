@@ -6,14 +6,31 @@ const STORE_FILE: &str = "server.txt";
 
 struct Stored(Mutex<Option<String>>);
 
-fn store_path(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
-    let dir = app.path().app_config_dir().ok()?;
-    std::fs::create_dir_all(&dir).ok()?;
-    Some(dir.join(STORE_FILE))
+fn store_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    Ok(dir.join(STORE_FILE))
 }
 
 fn read_stored(app: &tauri::AppHandle) -> Option<String> {
-    let text = std::fs::read_to_string(store_path(app)?).ok()?;
+    let path = match store_path(app) {
+        Ok(path) => path,
+        Err(e) => {
+            eprintln!("could not find where the address is remembered: {e}");
+            return None;
+        }
+    };
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(e) => {
+            eprintln!(
+                "could not read the remembered address from {}: {e}",
+                path.display()
+            );
+            return None;
+        }
+    };
     let trimmed = text.trim();
     if trimmed.is_empty() {
         None
@@ -63,10 +80,13 @@ fn stored_url(app: tauri::AppHandle) -> Option<String> {
 async fn connect(app: tauri::AppHandle, url: String) -> Result<(), String> {
     let normalised = normalise_url(&url)?;
 
-    if let Some(path) = store_path(&app) {
-        if let Err(e) = std::fs::write(&path, &normalised) {
-            eprintln!("could not remember the address: {e}");
+    match store_path(&app) {
+        Ok(path) => {
+            if let Err(e) = std::fs::write(&path, &normalised) {
+                eprintln!("could not remember the address: {e}");
+            }
         }
+        Err(e) => eprintln!("could not remember the address: {e}"),
     }
     *app.state::<Stored>().0.lock().unwrap() = Some(normalised.clone());
 
@@ -76,7 +96,9 @@ async fn connect(app: tauri::AppHandle, url: String) -> Result<(), String> {
 #[tauri::command]
 fn change_server(app: tauri::AppHandle) -> Result<(), String> {
     if let Some(w) = app.get_webview_window("main") {
-        let _ = w.close();
+        if let Err(e) = w.close() {
+            eprintln!("could not close the box window: {e}");
+        }
     }
     open_setup_window(&app)
 }
@@ -101,7 +123,9 @@ fn open_box_window(app: &tauri::AppHandle, url: &str) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
 
     if let Some(setup) = app.get_webview_window("setup") {
-        let _ = setup.close();
+        if let Err(e) = setup.close() {
+            eprintln!("could not close the setup window: {e}");
+        }
     }
     Ok(())
 }

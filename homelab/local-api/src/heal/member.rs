@@ -7,6 +7,7 @@ use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::config::write_private_file;
+use crate::error::Outcome;
 use crate::host::Host;
 use crate::storage::reset_wipe;
 
@@ -341,7 +342,7 @@ async fn rebuild<H: Host>(host: &H, layout: &Layout) -> Result<()> {
         "nixos-rebuild-switch-to-configuration.service",
     ])
     .await
-    .ok();
+    .debug_on_err("reset-failed nixos-rebuild-switch-to-configuration.service");
     let flake = format!("{}#{}", layout.flake, layout.flake_target);
     let input = format!("path:{}", layout.machine_dir.display());
     let out = host

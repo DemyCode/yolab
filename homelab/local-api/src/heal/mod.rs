@@ -203,8 +203,12 @@ pub(crate) struct RealNetwork {
 impl RealNetwork {
     fn from_config(cfg: &crate::config::Config) -> Self {
         let platform_url = std::fs::read_to_string(&cfg.config_path)
-            .ok()
-            .and_then(|text| toml::from_str::<toml::Table>(&text).ok())
+            .map_err(anyhow::Error::from)
+            .and_then(|text| Ok(toml::from_str::<toml::Table>(&text)?))
+            .ok_or_warn(format!(
+                "heal: read the platform address from {}",
+                cfg.config_path
+            ))
             .and_then(|t| {
                 t.get("tunnel")?
                     .get("platform_api_url")?
@@ -1081,7 +1085,7 @@ fn error(status: StatusCode, e: impl std::fmt::Display) -> (StatusCode, Json<Val
 async fn uptime_secs() -> u64 {
     tokio::fs::read_to_string("/proc/uptime")
         .await
-        .ok()
+        .ok_or_warn("read /proc/uptime")
         .and_then(|s| s.split_whitespace().next()?.parse::<f64>().ok())
         .map(|f| f as u64)
         .unwrap_or(0)

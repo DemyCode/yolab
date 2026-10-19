@@ -134,8 +134,12 @@ async fn peer_addresses_from(
         }
         None => {
             let cached: Vec<String> = std::fs::read_to_string(cache)
-                .ok()
-                .and_then(|t| serde_json::from_str(&t).ok())
+                .map_err(anyhow::Error::from)
+                .and_then(|t| Ok(serde_json::from_str(&t)?))
+                .ok_or_warn(format!(
+                    "mesh: read the cached peer list {}",
+                    cache.display()
+                ))
                 .unwrap_or_default();
             if !cached.is_empty() {
                 tracing::debug!(

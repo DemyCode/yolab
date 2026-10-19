@@ -63,9 +63,11 @@ fn adopt_local_password(existing_file_contents: Option<&str>) -> Option<String> 
         .filter(|s| !s.is_empty())
 }
 
-async fn cluster_password<H: Host>(host: &H) -> Option<String> {
-    let stored = host.ceph(&["config-key", "get", PW_KEY]).await.ok();
-    adopt_local_password(stored.as_deref())
+async fn cluster_password<H: Host>(host: &H) -> Result<Option<String>> {
+    let stored = crate::storage::settings::get(host, PW_KEY)
+        .await
+        .context("dashboard: read the cluster-wide password")?;
+    Ok(adopt_local_password(stored.as_deref()))
 }
 
 fn generate_password() -> String {
@@ -81,12 +83,14 @@ fn trimmed(s: &str) -> String {
     s.chars().filter(|c| !c.is_whitespace()).collect()
 }
 
-async fn dashboard_url<H: Host>(host: &H) -> String {
-    host.ceph_json(&["mgr", "services"])
+async fn dashboard_url<H: Host>(host: &H) -> Result<String> {
+    Ok(host
+        .ceph_json(&["mgr", "services"])
         .await
-        .ok()
-        .and_then(|v| v["dashboard"].as_str().map(str::to_string))
+        .context("dashboard: ask the mgr where it serves")?["dashboard"]
+        .as_str()
         .unwrap_or_default()
+        .to_string())
 }
 
 async fn verify_login(dash_url: &str, password: &str) -> u16 {
@@ -118,21 +122,13 @@ pub async fn run<H: Host>(host: &H, node: &str, policy: &DashboardPolicy) -> Res
     let enabled = host
         .ceph_json(&["mgr", "module", "ls"])
         .await
-        .ok()
-        .and_then(|v| {
-            v["enabled_modules"]
-                .as_array()
-                .map(|a| a.iter().any(|m| m == "dashboard"))
-        })
-        .unwrap_or(false);
+        .context("dashboard: list the mgr modules")?["enabled_modules"]
+        .as_array()
+        .is_some_and(|a| a.iter().any(|m| m == "dashboard"));
     if !enabled {
         tracing::info!("dashboard: enabling the dashboard module");
-        if host
-            .ceph(&["mgr", "module", "enable", "dashboard"])
-            .await
-            .is_err()
-        {
-            tracing::warn!("dashboard: could not enable the dashboard module — will retry");
+        if let Err(e) = host.ceph(&["mgr", "module", "enable", "dashboard"]).await {
+            tracing::warn!("dashboard: could not enable the dashboard module ({e}) — will retry");
             return Ok(());
         }
     }
@@ -154,10 +150,11 @@ pub async fn run<H: Host>(host: &H, node: &str, policy: &DashboardPolicy) -> Res
     let active = host
         .ceph_json(&["mgr", "stat"])
         .await
-        .ok()
-        .and_then(|v| v["active_name"].as_str().map(str::to_string))
-        .unwrap_or_default();
-    let mut served = dashboard_url(host).await;
+        .context("dashboard: ask which mgr is active")?["active_name"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    let mut served = dashboard_url(host).await?;
 
     if !served.is_empty()
         && active == node
@@ -178,7 +175,7 @@ pub async fn run<H: Host>(host: &H, node: &str, policy: &DashboardPolicy) -> Res
                 .is_ok()
         {
             for _ in 0..30 {
-                served = dashboard_url(host).await;
+                served = dashboard_url(host).await.unwrap_or_default();
                 if served.trim_end_matches('/').ends_with(&policy.url_prefix) {
                     break;
                 }
@@ -202,10 +199,16 @@ pub async fn run<H: Host>(host: &H, node: &str, policy: &DashboardPolicy) -> Res
     if let Some(parent) = Path::new(&policy.password_file).parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let mut pw = cluster_password(host).await;
+    let mut pw = cluster_password(host).await?;
 
     if pw.is_none() {
-        let local = std::fs::read_to_string(&policy.password_file).ok();
+        let local = match std::fs::read_to_string(&policy.password_file) {
+            Ok(text) => Some(text),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => {
+                return Err(e).with_context(|| format!("dashboard: read {}", policy.password_file))
+            }
+        };
         let candidate = match adopt_local_password(local.as_deref()) {
             Some(p) => {
                 tracing::info!("dashboard: promoting this node's password to the cluster-wide one");
@@ -216,17 +219,13 @@ pub async fn run<H: Host>(host: &H, node: &str, policy: &DashboardPolicy) -> Res
                 generate_password()
             }
         };
-        if host
-            .ceph(&["config-key", "set", PW_KEY, &candidate])
-            .await
-            .is_err()
-        {
+        if let Err(e) = host.ceph(&["config-key", "set", PW_KEY, &candidate]).await {
             tracing::warn!(
-                "dashboard: could not store the dashboard password in the cluster — will retry"
+                "dashboard: could not store the dashboard password in the cluster ({e}) — will retry"
             );
             return Ok(());
         }
-        pw = cluster_password(host).await;
+        pw = cluster_password(host).await?;
     }
 
     let Some(pw) = pw else {
@@ -244,10 +243,11 @@ pub async fn run<H: Host>(host: &H, node: &str, policy: &DashboardPolicy) -> Res
         )?;
     }
 
-    let user_exists = host
-        .ceph(&["dashboard", "ac-user-show", "admin"])
-        .await
-        .is_ok();
+    let user_exists = match host.ceph(&["dashboard", "ac-user-show", "admin"]).await {
+        Ok(_) => true,
+        Err(e) if e.is_not_found() => false,
+        Err(e) => return Err(e).context("dashboard: look up the admin user"),
+    };
     if !user_exists {
         match host
             .ceph(&[
@@ -269,7 +269,7 @@ pub async fn run<H: Host>(host: &H, node: &str, policy: &DashboardPolicy) -> Res
         }
     }
 
-    let dash_url = dashboard_url(host).await;
+    let dash_url = dashboard_url(host).await?;
     if dash_url.is_empty() {
         tracing::info!(
             "dashboard: no active mgr is serving the dashboard yet — cannot verify the login"
@@ -435,8 +435,7 @@ mod tests {
                 "ceph config-key get yolab/dashboard/admin-password",
                 "clusterpw123",
             )
-            .ok("ceph dashboard ac-user-show admin", "")
-            .fail("ceph mgr services", "unreachable");
+            .ok("ceph dashboard ac-user-show admin", "");
 
         let dir = tempfile::tempdir().unwrap();
         let mut p = policy();
@@ -461,14 +460,17 @@ mod tests {
             .ok("ceph mgr services", r#"{"dashboard":""}"#)
             .fail(
                 "ceph config-key get yolab/dashboard/admin-password",
-                "not found",
+                "Error ENOENT: error obtaining 'yolab/dashboard/admin-password': (2) No such file or directory",
             )
             .ok(
                 "ceph config-key get yolab/dashboard/admin-password",
                 "generated-value-abc",
             )
             .ok("ceph config-key set yolab/dashboard/admin-password", "")
-            .fail("ceph dashboard ac-user-show admin", "no such user")
+            .fail(
+                "ceph dashboard ac-user-show admin",
+                "Error ENOENT: User 'admin' does not exist",
+            )
             .ok("ceph dashboard ac-user-create", "");
 
         let dir = tempfile::tempdir().unwrap();
@@ -486,6 +488,32 @@ mod tests {
             std::fs::read_to_string(&p.password_file).unwrap(),
             "generated-value-abc"
         );
+    }
+
+    #[tokio::test]
+    async fn a_password_that_cannot_be_read_is_never_replaced_with_a_new_one() {
+        let host = FakeHost::new()
+            .ok("ceph -s", "")
+            .ok("ceph mgr module ls", r#"{"enabled_modules":["dashboard"]}"#)
+            .ok("ceph config set", "")
+            .ok("ceph mgr stat", r#"{"active_name":"yolab-n2"}"#)
+            .ok("ceph mgr services", r#"{"dashboard":""}"#)
+            .fail(
+                "ceph config-key get yolab/dashboard/admin-password",
+                "error connecting to the cluster",
+            )
+            .ok("ceph config-key set yolab/dashboard/admin-password", "");
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut p = policy();
+        p.password_file = dir
+            .path()
+            .join("dashboard-password")
+            .to_string_lossy()
+            .into_owned();
+
+        assert!(run(&host, "yolab-n1", &p).await.is_err());
+        assert!(!host.ran("config-key set"));
     }
 
     use wiremock::{matchers, Mock, ResponseTemplate};

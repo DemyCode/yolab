@@ -97,22 +97,27 @@ pub(crate) async fn write_definition(
 }
 
 pub(crate) async fn read_definition(client: &Client, ns: &str) -> anyhow::Result<AppDefinition> {
-    let data = crate::k8s::secret_data(client, ns, CONFIG_SECRET)
+    read_definition_opt(client, ns)
         .await?
-        .ok_or_else(|| anyhow::anyhow!("{ns} has no saved settings (no {CONFIG_SECRET} Secret)"))?;
+        .ok_or_else(|| anyhow::anyhow!("{ns} has no saved settings (no {CONFIG_SECRET} Secret)"))
+}
+
+pub(crate) async fn read_definition_opt(
+    client: &Client,
+    ns: &str,
+) -> anyhow::Result<Option<AppDefinition>> {
+    let Some(data) = crate::k8s::secret_data(client, ns, CONFIG_SECRET).await? else {
+        return Ok(None);
+    };
     if let Some(raw) = data.get(DEFINITION_SECRET_KEY) {
         if let Ok(def) = serde_json::from_str::<AppDefinition>(raw) {
-            return Ok(def);
+            return Ok(Some(def));
         }
         tracing::warn!("{ns}: {DEFINITION_SECRET_KEY} is unreadable — falling back to annotations");
     }
     let config = parse_saved_config(ns, &data)?;
     let ns_v = namespace(client, ns).await?.unwrap_or(Value::Null);
-    Ok(definition_from_annotations(&ns_v, config))
-}
-
-pub(crate) async fn read_definition_opt(client: &Client, ns: &str) -> Option<AppDefinition> {
-    read_definition(client, ns).await.ok()
+    Ok(Some(definition_from_annotations(&ns_v, config)))
 }
 
 pub(crate) fn redact_definition(

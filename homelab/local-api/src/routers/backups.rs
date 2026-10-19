@@ -281,7 +281,8 @@ pub(crate) async fn protected_apps<H: Host>(b: &Backend<H>) -> anyhow::Result<se
     let sets = backup::list(&b.kube).await.unwrap_or_default();
     let mut apps = Vec::new();
     for namespace in managed_namespaces(&b.kube).await? {
-        let Some(def) = crate::routers::apps::read_definition_opt(&b.kube, &namespace).await else {
+        let Some(def) = crate::routers::apps::read_definition_opt(&b.kube, &namespace).await?
+        else {
             continue;
         };
         let newest = sets

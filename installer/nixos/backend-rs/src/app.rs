@@ -737,15 +737,19 @@ impl App {
     }
 
     fn do_reboot(&self) {
-        let _ = std::process::Command::new("systemctl")
-            .arg("reboot")
-            .spawn();
+        self.run_power("reboot");
     }
 
     fn do_poweroff(&self) {
-        let _ = std::process::Command::new("systemctl")
-            .arg("poweroff")
-            .spawn();
+        self.run_power("poweroff");
+    }
+
+    fn run_power(&self, action: &str) {
+        if let Err(e) = std::process::Command::new("systemctl").arg(action).spawn() {
+            let _ = self
+                .tx
+                .send(AppEvent::Failed(format!("could not {action}: {e}")));
+        }
     }
 }
 

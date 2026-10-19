@@ -355,13 +355,20 @@ pub fn spawn_detached(
     }
     let pid_file = pid_file.to_path_buf();
     std::thread::spawn(move || {
-        let _ = child.wait();
+        if let Err(e) = child.wait() {
+            tracing::warn!("pid {pid}: could not wait for it to exit: {e}");
+        }
         if std::fs::read_to_string(&pid_file)
             .ok()
             .and_then(|s| s.trim().parse::<u32>().ok())
             == Some(pid)
         {
-            let _ = std::fs::remove_file(&pid_file);
+            if let Err(e) = std::fs::remove_file(&pid_file) {
+                tracing::warn!(
+                    "pid {pid} exited, but {} is left behind: {e}",
+                    pid_file.display()
+                );
+            }
         }
     });
     Ok(pid)

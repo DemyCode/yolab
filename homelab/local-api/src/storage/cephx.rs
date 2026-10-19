@@ -299,9 +299,14 @@ async fn local_key<H: Host>(
                 .with_context(|| format!("parse the label of {dev_s}"))?;
             Ok(label_osd_key(&label))
         }
-        _ => Ok(std::fs::read_to_string(d.keyring(root, node))
-            .ok()
-            .and_then(|text| keyring_key(&text, &d.entity(node)))),
+        _ => {
+            let path = d.keyring(root, node);
+            match std::fs::read_to_string(&path) {
+                Ok(text) => Ok(keyring_key(&text, &d.entity(node))),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+                Err(e) => Err(anyhow!("read {}: {e}", path.display())),
+            }
+        }
     }
 }
 
@@ -311,10 +316,15 @@ fn stopped_marker(root: &Path, n: u32) -> PathBuf {
 
 async fn resume_stopped<H: Host>(host: &H, root: &Path) -> Result<()> {
     let dir = root.join("var/lib/yolab/cephx");
-    let markers: Vec<u32> = std::fs::read_dir(&dir)
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(anyhow!("read {}: {e}", dir.display())),
+    };
+    let markers: Vec<u32> = entries
+        .collect::<std::io::Result<Vec<_>>>()
+        .with_context(|| format!("read {}", dir.display()))?
         .into_iter()
-        .flatten()
-        .flatten()
         .filter_map(|e| {
             e.file_name()
                 .to_str()?
@@ -665,9 +675,17 @@ pub async fn images_identity<H: Host>(host: &H, root: &Path, pool: &str) -> Opti
         return None;
     }
     let path = root.join(format!("etc/ceph/ceph.{IMAGES_ENTITY}.keyring"));
-    let have = std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|text| keyring_key(&text, IMAGES_ENTITY));
+    let have = match std::fs::read_to_string(&path) {
+        Ok(text) => keyring_key(&text, IMAGES_ENTITY),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => {
+            tracing::warn!(
+                "cephx: could not read {} ({e}); fetching the key again",
+                path.display()
+            );
+            None
+        }
+    };
     if have
         .as_deref()
         .is_some_and(|k| key_type(k) == KeyType::Aes256k)
@@ -777,10 +795,16 @@ async fn full_quorum<H: Host>(host: &H) -> Result<bool> {
     Ok(quorum == mons)
 }
 
-async fn facts_of<H: Host>(host: &H, node: &str) -> Option<Value> {
+async fn facts_of<H: Host>(host: &H, node: &str) -> Result<Option<Value>> {
     let key = format!("{FACTS_PREFIX}{node}");
-    let raw = host.ceph(&["config-key", "get", key.as_str()]).await.ok()?;
-    serde_json::from_str(raw.trim()).ok()
+    let raw = match host.ceph(&["config-key", "get", key.as_str()]).await {
+        Ok(raw) => raw,
+        Err(e) if e.failure() == Some(crate::exec::Failure::NotFound) => return Ok(None),
+        Err(e) => return Err(e.into()),
+    };
+    let facts =
+        serde_json::from_str(raw.trim()).with_context(|| format!("{key} does not hold JSON"))?;
+    Ok(Some(facts))
 }
 
 async fn sessions_per_active_mds<H: Host>(host: &H) -> Result<Vec<Value>> {
@@ -977,7 +1001,7 @@ pub async fn rotation_step<H: Host>(b: &Backend<H>, root: &Path) -> Result<Tick>
     if aes(ADMIN) {
         for n in &nodes {
             let name = n["metadata"]["name"].as_str().unwrap_or_default();
-            match facts_of(host, name).await {
+            match facts_of(host, name).await? {
                 Some(f) if f["admin_kernel_mapped"] == false => {}
                 Some(_) => {
                     return Ok(Tick::Idle(format!(

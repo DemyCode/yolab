@@ -145,7 +145,13 @@ fn spawn_clone_cleanup(
     name: String,
 ) {
     tokio::spawn(async move {
-        let _ = wait_for_pvc_bound(&client, &dest_namespace, &dest_pvc, CLONE_WAIT_SECS).await;
+        if let Err(e) =
+            wait_for_pvc_bound(&client, &dest_namespace, &dest_pvc, CLONE_WAIT_SECS).await
+        {
+            tracing::warn!(
+                "copy {name}: {dest_namespace}/{dest_pvc} did not bind ({e:#}); removing its snapshot anyway"
+            );
+        }
         cleanup(&client, &name, &source_namespace, &dest_namespace).await;
     });
 }

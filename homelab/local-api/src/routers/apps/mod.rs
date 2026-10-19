@@ -1734,7 +1734,10 @@ pub async fn update_app(
         }
     }
 
-    let stored = read_definition_opt(&client, &ns).await;
+    let stored = match read_definition_opt(&client, &ns).await {
+        Ok(stored) => stored,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")).into_response(),
+    };
     let plan = install::UpgradePlan {
         app_id: id,
         release: stored

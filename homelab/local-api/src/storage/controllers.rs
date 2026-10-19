@@ -3,6 +3,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 
+use crate::error::Outcome;
 use crate::host::{Host, HOST};
 use crate::runtime::{lock, Controller, Ctx, Requirement, Scope, Tick};
 
@@ -265,7 +266,9 @@ async fn ensure_started<H: Host>(host: &H, unit: &str) {
     if host.unit_is_active(unit).await {
         return;
     }
-    let _ = host.systemctl(&["reset-failed", unit]).await;
+    host.systemctl(&["reset-failed", unit])
+        .await
+        .debug_on_err(format!("reset-failed {unit}"));
     match host.systemctl(&["start", "--no-block", unit]).await {
         Ok(o) if o.success => tracing::info!("started {unit}"),
         Ok(o) => tracing::warn!("could not start {unit}: {}", o.stderr.trim()),

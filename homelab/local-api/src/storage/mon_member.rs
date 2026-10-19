@@ -25,7 +25,7 @@ async fn reachable_fast<H: Host>(host: &H) -> bool {
 async fn mon_dump_fast<H: Host>(host: &H) -> Option<Value> {
     host.ceph_json(&["--connect-timeout", "10", "mon", "dump"])
         .await
-        .ok()
+        .ok_or_warn("read the monmap")
 }
 
 pub async fn run<H: Host>(host: &H, root: &Path, node: &str, args: &MonMemberArgs) -> Result<()> {

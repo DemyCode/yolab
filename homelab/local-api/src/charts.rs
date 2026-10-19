@@ -43,9 +43,14 @@ pub async fn list_repos(client: &Client) -> Vec<ChartRepo> {
     }];
     let stored: std::collections::BTreeMap<String, String> =
         match crate::k8s::get(client, &repos_ref()).await {
-            Ok(found) => found
-                .and_then(|cm| serde_json::from_value(cm["data"].clone()).ok())
-                .unwrap_or_default(),
+            Ok(None) => Default::default(),
+            Ok(Some(cm)) => match serde_json::from_value(cm["data"].clone()) {
+                Ok(stored) => stored,
+                Err(e) => {
+                    tracing::warn!("the added chart repositories are not a name-to-url map: {e}");
+                    Default::default()
+                }
+            },
             Err(e) => {
                 tracing::warn!("the added chart repositories are unreadable right now: {e:#}");
                 Default::default()
@@ -106,7 +111,7 @@ pub async fn remove_repo(client: &Client, name: &str) -> anyhow::Result<()> {
         other => other?,
     }
     let dir = cache_dir_for(name);
-    let _ = tokio::fs::remove_dir_all(&dir).await;
+    crate::error::remove_dir_if_present(&dir).await?;
     Ok(())
 }
 
@@ -191,7 +196,7 @@ async fn pull_into<H: Host>(
     }
     let pulled = staging.path().join(&entry.name);
     if pulled.join("Chart.yaml").is_file() {
-        let _ = tokio::fs::remove_dir_all(dir.join(&entry.name)).await;
+        crate::error::remove_dir_if_present(&dir.join(&entry.name)).await?;
         tokio::fs::rename(&pulled, dir.join(&entry.name)).await?;
     }
     Ok(())

@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use anyhow::Context;
 use base64::Engine as _;
 use kube::Client;
 use serde_json::{json, Value};
@@ -97,11 +98,13 @@ pub(crate) async fn save<H: Host>(
 ) -> anyhow::Result<()> {
     let tgz = package(host, chart_dir).await?;
     crate::k8s::apply(client, &manifest(namespace, &tgz)).await?;
-    let schema = tokio::fs::read_to_string(chart_dir.join("values.schema.json"))
-        .await
-        .ok()
-        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
-        .unwrap_or(Value::Null);
+    let schema_path = chart_dir.join("values.schema.json");
+    let schema = match tokio::fs::read_to_string(&schema_path).await {
+        Ok(text) => serde_json::from_str::<Value>(&text)
+            .with_context(|| format!("{} is not valid JSON", schema_path.display()))?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Value::Null,
+        Err(e) => return Err(e).with_context(|| format!("read {}", schema_path.display())),
+    };
     crate::k8s::apply(client, &schema_manifest(namespace, &schema)).await
 }
 

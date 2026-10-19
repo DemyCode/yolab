@@ -236,22 +236,36 @@ async fn stream_command(
     let tx2 = tx.clone();
 
     let t1 = tokio::spawn(async move {
-        let mut lines = BufReader::new(stdout).lines();
-        while let Ok(Some(line)) = lines.next_line().await {
-            let _ = tx1.send(AppEvent::Log(line));
-        }
+        forward_lines(BufReader::new(stdout).lines(), &tx1).await;
     });
     let t2 = tokio::spawn(async move {
-        let mut lines = BufReader::new(stderr).lines();
-        while let Ok(Some(line)) = lines.next_line().await {
-            let _ = tx2.send(AppEvent::Log(line));
-        }
+        forward_lines(BufReader::new(stderr).lines(), &tx2).await;
     });
 
-    let _ = tokio::join!(t1, t2);
+    let (out, err) = tokio::join!(t1, t2);
+    out.context("read the command's output")?;
+    err.context("read the command's errors")?;
     let status = child.wait().await?;
     anyhow::ensure!(status.success(), "{program} failed with {status}");
     Ok(())
+}
+
+async fn forward_lines<R: tokio::io::AsyncBufRead + Unpin>(
+    mut lines: tokio::io::Lines<R>,
+    tx: &mpsc::UnboundedSender<AppEvent>,
+) {
+    loop {
+        match lines.next_line().await {
+            Ok(Some(line)) => {
+                let _ = tx.send(AppEvent::Log(line));
+            }
+            Ok(None) => return,
+            Err(e) => {
+                let _ = tx.send(AppEvent::Log(format!("(could not read more output: {e})")));
+                return;
+            }
+        }
+    }
 }
 
 async fn capture_command(
@@ -273,15 +287,12 @@ async fn capture_command(
     let tx2 = tx.clone();
 
     let t_stderr = tokio::spawn(async move {
-        let mut lines = BufReader::new(stderr).lines();
-        while let Ok(Some(line)) = lines.next_line().await {
-            let _ = tx2.send(AppEvent::Log(line));
-        }
+        forward_lines(BufReader::new(stderr).lines(), &tx2).await;
     });
 
     let mut stdout_bytes = Vec::new();
     stdout_handle.read_to_end(&mut stdout_bytes).await?;
-    let _ = t_stderr.await;
+    t_stderr.await.context("read the command's errors")?;
 
     let status = child.wait().await?;
     anyhow::ensure!(status.success(), "{program} failed with {status}");
@@ -409,7 +420,12 @@ async fn partition_and_install(
             log!("✓ Hardware recorded");
         }
         Err(e) => {
-            let _ = tokio::fs::remove_file(&report).await;
+            match tokio::fs::remove_file(&report).await {
+                Err(rm) if rm.kind() != std::io::ErrorKind::NotFound => {
+                    log!("Could not remove the partial hardware report {report}: {rm}");
+                }
+                _ => {}
+            }
             log!("Could not record the hardware ({e:#}); graphics cards stay unused until the machine records it itself");
         }
     }

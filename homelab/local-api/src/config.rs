@@ -3,18 +3,32 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 pub fn read_account_token(config_path: &str) -> String {
-    let Ok(text) = std::fs::read_to_string(config_path) else {
-        return String::new();
+    read_config_table(config_path)
+        .and_then(|table| {
+            table
+                .get("tunnel")?
+                .get("account_token")?
+                .as_str()
+                .map(str::to_string)
+        })
+        .unwrap_or_default()
+}
+
+fn read_config_table(config_path: &str) -> Option<toml::Table> {
+    let text = match std::fs::read_to_string(config_path) {
+        Ok(text) => text,
+        Err(e) => {
+            tracing::warn!("could not read {config_path}: {e}");
+            return None;
+        }
     };
-    let Ok(table) = toml::from_str::<toml::Table>(&text) else {
-        return String::new();
-    };
-    table
-        .get("tunnel")
-        .and_then(|t| t.get("account_token"))
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string()
+    match toml::from_str(&text) {
+        Ok(table) => Some(table),
+        Err(e) => {
+            tracing::warn!("{config_path} is not valid TOML: {e}");
+            None
+        }
+    }
 }
 
 pub fn machine_dir() -> PathBuf {
@@ -119,8 +133,10 @@ impl Config {
             flake_target: std::env::var("YOLAB_FLAKE_TARGET").unwrap_or_else(|_| "yolab".into()),
             node_ipv6: std::env::var("YOLAB_NODE_IPV6").unwrap_or_else(|_| "::1".into()),
             port: std::env::var("YOLAB_PORT")
-                .ok()
-                .and_then(|v| v.parse().ok())
+                .map(|v| {
+                    v.parse()
+                        .unwrap_or_else(|e| panic!("YOLAB_PORT={v:?} is not a port number: {e}"))
+                })
                 .unwrap_or(3001),
             rebuild_log: PathBuf::from("/var/log/yolab-rebuild.log"),
             rebuild_pid: PathBuf::from("/run/yolab-rebuild.pid"),
@@ -134,11 +150,26 @@ impl Config {
     }
 
     pub fn channel(&self) -> Channel {
-        let Some(v) = std::fs::read_to_string(&self.channel_file)
-            .ok()
-            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-        else {
-            return Channel::default();
+        let text = match std::fs::read_to_string(&self.channel_file) {
+            Ok(text) => text,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Channel::default(),
+            Err(e) => {
+                tracing::warn!(
+                    "could not read {}, so updates follow the default channel: {e}",
+                    self.channel_file.display()
+                );
+                return Channel::default();
+            }
+        };
+        let v = match serde_json::from_str::<serde_json::Value>(&text) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!(
+                    "{} is not valid JSON, so updates follow the default channel: {e}",
+                    self.channel_file.display()
+                );
+                return Channel::default();
+            }
         };
         let Some(ref_) = v.get("ref").and_then(|r| r.as_str()) else {
             return Channel::default();
@@ -175,8 +206,7 @@ impl Config {
     }
 
     pub fn toml(&self) -> Option<toml::Table> {
-        let text = std::fs::read_to_string(&self.config_path).ok()?;
-        toml::from_str(&text).ok()
+        read_config_table(&self.config_path)
     }
 
     pub fn tunnel_table(&self) -> Option<toml::Table> {

@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
+use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -358,7 +359,16 @@ async fn run_set<H: Host>(
             ));
             continue;
         }
-        let before = replication_source_status(&b.kube, &pvc.namespace, &pvc.name).await;
+        let before = match replication_source_status(&b.kube, &pvc.namespace, &pvc.name).await {
+            Ok(before) => before,
+            Err(e) => {
+                failures.push(format!(
+                    "{}/{}: could not read its previous upload, so a new one cannot be told apart from it: {e:#}",
+                    pvc.namespace, pvc.name
+                ));
+                continue;
+            }
+        };
         match replication_source(&b.kube, pvc, true).await {
             Ok(Some(trigger)) => pending.push(PendingSync {
                 pvc: pvc.clone(),
@@ -442,8 +452,12 @@ enum SyncOutcome {
     Pending,
 }
 
-async fn replication_source_status(client: &Client, namespace: &str, pvc: &str) -> Value {
-    crate::k8s::get(
+async fn replication_source_status(
+    client: &Client,
+    namespace: &str,
+    pvc: &str,
+) -> anyhow::Result<Value> {
+    Ok(crate::k8s::get(
         client,
         &crate::k8s::reference(
             "volsync.backube/v1alpha1",
@@ -452,10 +466,8 @@ async fn replication_source_status(client: &Client, namespace: &str, pvc: &str) 
             &replication_source_name(pvc),
         ),
     )
-    .await
-    .ok()
-    .flatten()
-    .unwrap_or(Value::Null)
+    .await?
+    .unwrap_or(Value::Null))
 }
 
 fn mover_logs(rs: &Value) -> Option<String> {
@@ -552,7 +564,18 @@ async fn wait_for_volume_syncs(
     while !waiting.is_empty() {
         let mut still = Vec::new();
         for p in waiting {
-            let rs = replication_source_status(client, &p.pvc.namespace, &p.pvc.name).await;
+            let rs = match replication_source_status(client, &p.pvc.namespace, &p.pvc.name).await {
+                Ok(rs) => rs,
+                Err(e) => {
+                    tracing::warn!(
+                        "{}/{}: could not read the upload's progress this time: {e:#}",
+                        p.pvc.namespace,
+                        p.pvc.name
+                    );
+                    still.push(p);
+                    continue;
+                }
+            };
             match sync_outcome(&rs, &p.trigger, p.logs_before.as_deref()) {
                 SyncOutcome::Done => synced.push((p.pvc.clone(), rs)),
                 SyncOutcome::Failed(why) => {
@@ -889,7 +912,9 @@ async fn snapshot_cluster_inner<H: Host>(
 
         let images = collect_images(&workloads);
 
-        let definition = crate::routers::apps::read_definition_opt(&b.kube, ns).await;
+        let definition = crate::routers::apps::read_definition_opt(&b.kube, ns)
+            .await
+            .with_context(|| format!("{ns}: read its settings to back them up"))?;
         let (service_name, resources, volumes, backup_policy) = match &definition {
             Some(d) => (
                 d.service_name.clone(),
@@ -1177,8 +1202,15 @@ async fn schedule<H: Host + Clone + 'static>(b: &Backend<H>) -> anyhow::Result<T
         if running_for(&sets, &ns) || queued_for(&sets, &ns).is_some() {
             continue;
         }
-        let Some(def) = crate::routers::apps::read_definition_opt(&b.kube, &ns).await else {
-            continue;
+        let def = match crate::routers::apps::read_definition_opt(&b.kube, &ns).await {
+            Ok(Some(def)) => def,
+            Ok(None) => continue,
+            Err(e) => {
+                tracing::warn!(
+                    "{ns}: its settings cannot be read, so its scheduled backup is skipped: {e:#}"
+                );
+                continue;
+            }
         };
         if !def.backup.enabled {
             continue;
@@ -1938,9 +1970,25 @@ mod tests {
                 .mount(&server)
                 .await;
             assert_eq!(
-                replication_source_status(&kube, "yolab-notes", "data").await,
+                replication_source_status(&kube, "yolab-notes", "data")
+                    .await
+                    .unwrap(),
                 Value::Null
             );
+        }
+
+        #[tokio::test]
+        async fn an_unreadable_replication_source_is_an_error_not_a_volume_never_backed_up() {
+            let (server, kube) = api_server().await;
+            Mock::given(method("GET"))
+                .respond_with(
+                    ResponseTemplate::new(500).set_body_json(status(500, "InternalError")),
+                )
+                .mount(&server)
+                .await;
+            assert!(replication_source_status(&kube, "yolab-notes", "data")
+                .await
+                .is_err());
         }
     }
 }

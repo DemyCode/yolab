@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::PathBuf;
 
+use crate::error::{discard_dir, remove_dir_if_present};
 use crate::host::Host;
 use crate::AppState;
 
@@ -243,7 +244,7 @@ const USER_TEMPLATE: &str = "{{ .Files.Get \"user-manifest.yaml\" }}\n";
 
 async fn write_chart_at(root: &std::path::Path, app: &CustomApp, yaml: &str) -> anyhow::Result<()> {
     let dir = root.join(&app.id);
-    let _ = tokio::fs::remove_dir_all(&dir).await;
+    remove_dir_if_present(&dir).await?;
     tokio::fs::create_dir_all(dir.join("templates")).await?;
 
     let upstream = match (app.port, app.service.as_str()) {
@@ -543,6 +544,12 @@ async fn upload<H: Host>(
             Json(serde_json::json!({ "error": msg })),
         )
     };
+    let internal = |msg: String| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": msg })),
+        )
+    };
 
     let Some(kind) = sniff(body) else {
         return bad("that file is not a .zip or a .tgz — package a chart with `helm package`, or zip the chart folder".into());
@@ -553,7 +560,7 @@ async fn upload<H: Host>(
         std::process::id(),
         chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
     ));
-    let _ = tokio::fs::remove_dir_all(&tmp).await;
+    discard_dir(&tmp).await;
     if let Err(e) = tokio::fs::create_dir_all(&tmp).await {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -569,7 +576,10 @@ async fn upload<H: Host>(
     }
 
     let dest = tmp.join("x");
-    let _ = tokio::fs::create_dir_all(&dest).await;
+    if let Err(e) = tokio::fs::create_dir_all(&dest).await {
+        discard_dir(&tmp).await;
+        return internal(format!("could not make a folder to unpack into: {e}"));
+    }
     let extracted = match kind {
         Archive::TarGz => {
             run(
@@ -601,31 +611,31 @@ async fn upload<H: Host>(
         }
     };
     if let Err(r) = extracted {
-        let _ = tokio::fs::remove_dir_all(&tmp).await;
+        discard_dir(&tmp).await;
         return bad(format!("could not unpack that archive: {}", r.reason));
     }
 
     let Some(root) = find_chart_root(&dest, 3) else {
-        let _ = tokio::fs::remove_dir_all(&tmp).await;
+        discard_dir(&tmp).await;
         return bad("no Chart.yaml in there — this needs to be a Helm chart. If the archive holds two charts, upload them separately.".into());
     };
 
     let chart_text = match tokio::fs::read_to_string(root.join("Chart.yaml")).await {
         Ok(t) => t,
         Err(e) => {
-            let _ = tokio::fs::remove_dir_all(&tmp).await;
+            discard_dir(&tmp).await;
             return bad(format!("Chart.yaml could not be read: {e}"));
         }
     };
     let meta: ChartYaml = match serde_norway::from_str(&chart_text) {
         Ok(m) => m,
         Err(e) => {
-            let _ = tokio::fs::remove_dir_all(&tmp).await;
+            discard_dir(&tmp).await;
             return bad(format!("Chart.yaml is not valid: {e}"));
         }
     };
     if !valid_id(&meta.name) {
-        let _ = tokio::fs::remove_dir_all(&tmp).await;
+        discard_dir(&tmp).await;
         return bad(format!(
             "\"{}\" cannot be used as an app id — lowercase letters, digits and hyphens only",
             meta.name
@@ -634,8 +644,11 @@ async fn upload<H: Host>(
 
     for lib in vendored(&meta, catalog_dir, &root) {
         let charts_dir = root.join("charts");
-        let _ = tokio::fs::create_dir_all(&charts_dir).await;
-        let _ = run(
+        if let Err(e) = tokio::fs::create_dir_all(&charts_dir).await {
+            discard_dir(&tmp).await;
+            return internal(format!("could not make the chart's charts folder: {e}"));
+        }
+        if let Err(r) = run(
             host,
             "cp",
             &[
@@ -644,7 +657,15 @@ async fn upload<H: Host>(
                 charts_dir.to_str().unwrap_or(""),
             ],
         )
-        .await;
+        .await
+        {
+            discard_dir(&tmp).await;
+            return internal(format!(
+                "could not add {} to the chart: {}",
+                lib.display(),
+                r.reason
+            ));
+        }
     }
 
     let release_ns = format!("yolab-{}", meta.name);
@@ -663,24 +684,29 @@ async fn upload<H: Host>(
     {
         Ok(r) => r,
         Err(r) => {
-            let _ = tokio::fs::remove_dir_all(&tmp).await;
+            discard_dir(&tmp).await;
             return bad(format!("this chart does not render: {}", r.reason));
         }
     };
     if let Err(r) = validate_rendered(&rendered, &release_ns) {
-        let _ = tokio::fs::remove_dir_all(&tmp).await;
+        discard_dir(&tmp).await;
         return bad(r.reason);
     }
 
     let final_dir = custom_root.join(&meta.name);
     if let Err(e) = tokio::fs::create_dir_all(custom_root).await {
-        let _ = tokio::fs::remove_dir_all(&tmp).await;
+        discard_dir(&tmp).await;
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({ "error": e.to_string() })),
         );
     }
-    let _ = tokio::fs::remove_dir_all(&final_dir).await;
+    if let Err(e) = remove_dir_if_present(&final_dir).await {
+        discard_dir(&tmp).await;
+        return internal(format!(
+            "could not remove the previous copy of this chart: {e}"
+        ));
+    }
     if let Err(r) = run(
         host,
         "cp",
@@ -692,7 +718,7 @@ async fn upload<H: Host>(
     )
     .await
     {
-        let _ = tokio::fs::remove_dir_all(&tmp).await;
+        discard_dir(&tmp).await;
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({ "error": r.reason })),
@@ -715,12 +741,17 @@ async fn upload<H: Host>(
         port: None,
         service: String::new(),
     };
-    let _ = tokio::fs::write(
-        final_dir.join("yolab-custom.json"),
-        serde_json::to_string(&app).unwrap_or_default(),
-    )
-    .await;
-    let _ = tokio::fs::remove_dir_all(&tmp).await;
+    let saved = match serde_json::to_string(&app) {
+        Ok(text) => tokio::fs::write(final_dir.join("yolab-custom.json"), text)
+            .await
+            .map_err(|e| e.to_string()),
+        Err(e) => Err(e.to_string()),
+    };
+    if let Err(e) = saved {
+        discard_dir(&tmp).await;
+        return internal(format!("could not save this app's details: {e}"));
+    }
+    discard_dir(&tmp).await;
 
     (
         StatusCode::OK,

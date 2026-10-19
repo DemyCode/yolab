@@ -81,6 +81,19 @@ impl<T, E: Display> Outcome<T> for std::result::Result<T, E> {
     }
 }
 
+pub async fn remove_dir_if_present(dir: &std::path::Path) -> std::io::Result<()> {
+    match tokio::fs::remove_dir_all(dir).await {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        r => r,
+    }
+}
+
+pub async fn discard_dir(dir: &std::path::Path) {
+    remove_dir_if_present(dir)
+        .await
+        .warn_on_err(format!("remove {}", dir.display()));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -146,5 +159,20 @@ mod tests {
             "Error from server (Conflict): the object has been modified",
         ));
         assert_eq!(status_for(&c), StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn removing_a_folder_that_is_already_gone_succeeds() {
+        let dir = tempfile::tempdir().unwrap();
+        let gone = dir.path().join("never-made");
+        remove_dir_if_present(&gone).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_folder_that_cannot_be_removed_is_an_error_not_a_success() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("a-file-not-a-folder");
+        std::fs::write(&file, "x").unwrap();
+        assert!(remove_dir_if_present(&file).await.is_err());
     }
 }
