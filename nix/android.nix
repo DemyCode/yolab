@@ -118,7 +118,7 @@
         cargo tauri android init --ci
         ${gradlewShim}
 
-        cargo tauri android build --apk || true
+        cargo tauri android build --apk
         runHook postBuild
       '';
 
@@ -126,7 +126,7 @@
         runHook preInstall
         mkdir -p $out
 
-        cp -r "$GRADLE_USER_HOME"/caches/modules-2 $out/ 2>/dev/null || true
+        cp -r "$GRADLE_USER_HOME"/caches/modules-2 $out/
 
         find $out -name '*.lock' -delete
         find $out -name 'gc.properties' -delete
@@ -141,7 +141,7 @@
 
       outputHashMode = "recursive";
       outputHashAlgo = "sha256";
-      outputHash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+      outputHash = "sha256-svTas9d1mrHvGmCeR8NIJcd10kcf0w4YMLK8XBCDeGo=";
     }
     // commonEnv
   );

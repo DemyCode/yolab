@@ -149,7 +149,7 @@ in {
         YOLAB_CONFIG = "${config.yolab.machineDir}/config.toml";
       };
       postStart = ''
-        ${pkgs.systemd}/bin/systemctl start --no-block ceph-mon-${host}.service || true
+        ${pkgs.systemd}/bin/systemctl start --no-block ceph-mon-${host}.service
       '';
     };
 

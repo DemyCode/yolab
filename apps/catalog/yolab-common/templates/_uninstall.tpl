@@ -31,7 +31,10 @@ spec:
           command: ["/bin/sh", "-c"]
           args:
             - |
-              TUNNEL_ID=$(jq -r '.tunnel_id // empty' /state/wg-state.json 2>/dev/null || true)
+              TUNNEL_ID=""
+              if [ -f /state/wg-state.json ]; then
+                TUNNEL_ID=$(jq -r '.tunnel_id // empty' /state/wg-state.json)
+              fi
               if [ -z "$TUNNEL_ID" ]; then
                 echo "No tunnel state found, nothing to clean up"
               else

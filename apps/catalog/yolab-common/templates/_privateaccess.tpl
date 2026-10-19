@@ -18,7 +18,10 @@
 {{- define "yolab-common.claimState" -}}
 claim_state() {
   dir=$1
-  owner=$(cat "$dir/.yolab-owner" 2>/dev/null || true)
+  owner=""
+  if [ -f "$dir/.yolab-owner" ]; then
+    owner=$(cat "$dir/.yolab-owner")
+  fi
   if [ -n "$owner" ] && [ "$owner" != "$POD_NAMESPACE" ]; then
     echo "$dir was copied from $owner, which may still be running with it; starting with a fresh identity"
     rm -rf "$dir"/* "$dir"/.[!.]*

@@ -13,12 +13,12 @@ TERMINATION_LOG="${TERMINATION_LOG:-/dev/termination-log}"
 
 fail() {
     echo "ERROR: $1" >&2
-    printf '%s\n' "${2:-$1}" >"$TERMINATION_LOG" 2>/dev/null || true
+    printf '%s\n' "${2:-$1}" >"$TERMINATION_LOG"
     exit 1
 }
 
 platform_said() {
-    printf '%s' "$1" | jq -r '.detail // empty' 2>/dev/null || true
+    printf '%s' "$1" | jq -Rrs 'fromjson? | .detail? // empty'
 }
 
 mkdir -p "$WG_DIR" "$YOLAB_DIR" "$(dirname "$STATE_FILE")"
@@ -58,7 +58,7 @@ fetch_tunnel() {
 }
 
 tunnel_field() {
-    printf '%s' "$VERIFY_BODY" | jq -r ".$1 // empty" 2>/dev/null || true
+    printf '%s' "$VERIFY_BODY" | jq -r ".$1 // empty"
 }
 
 copied_from_another_instance() {
@@ -202,9 +202,10 @@ if [ "$REUSE" = "0" ]; then
         RECORD_HTTP=$(printf '%s' "$RECORD_RESP" | tail -1)
         RECORD_BODY=$(printf '%s' "$RECORD_RESP" | head -n -1)
         if [ "$RECORD_HTTP" -lt 200 ] || [ "$RECORD_HTTP" -ge 300 ]; then
-            curl -s -o /dev/null --max-time 10 -X DELETE \
+            curl -sf -o /dev/null --max-time 10 -X DELETE \
                 -H "Authorization: Bearer $ACCOUNT_TOKEN" \
-                "$PLATFORM_API_URL/tunnels/$TUNNEL_ID" || true
+                "$PLATFORM_API_URL/tunnels/$TUNNEL_ID" ||
+                echo "WARNING: could not delete the half-registered tunnel $TUNNEL_ID; it is left on the platform" >&2
             SAID=$(platform_said "$RECORD_BODY")
             OURS="could not claim the web address '$SERVICE_NAME' (HTTP $RECORD_HTTP)"
             fail "POST /tunnels/$TUNNEL_ID/records returned HTTP $RECORD_HTTP: $RECORD_BODY" \
@@ -276,8 +277,8 @@ cat >"$WG_DIR/wg0.conf" <<EOF
 [Interface]
 PrivateKey = $PRIVATE_KEY
 Table = off
-PostUp = ip -6 address add $SUB_IPV6/128 dev wg0 || true; ip -6 rule add from $SUB_IPV6 lookup 51820 priority 100 || true; ip -6 route add ::/0 dev wg0 table 51820 || true
-PreDown = ip -6 rule del from $SUB_IPV6 lookup 51820 priority 100 || true; ip -6 route del ::/0 dev wg0 table 51820 || true; ip -6 address del $SUB_IPV6/128 dev wg0 || true
+PostUp = ip -6 address add $SUB_IPV6/128 dev wg0; ip -6 rule add from $SUB_IPV6 lookup 51820 priority 100; ip -6 route add ::/0 dev wg0 table 51820
+PreDown = ip -6 rule del from $SUB_IPV6 lookup 51820 priority 100
 
 [Peer]
 PublicKey = $WG_SERVER_PUBLIC_KEY

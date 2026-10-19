@@ -52,7 +52,7 @@
       };
       script = ''
         if [ -e /dev/mapper/pool-ceph ]; then exit 0; fi
-        wipefs -a ${systemDisk} || true
+        wipefs -a ${systemDisk}
         pvcreate -ff -y ${systemDisk}
         vgcreate pool ${systemDisk}
         lvcreate -y -l 100%FREE -n ceph pool

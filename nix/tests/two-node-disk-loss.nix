@@ -143,13 +143,6 @@ in
         #    to catch anything that quietly assumed "the affected machine is
         #    always node1" ───────────────────────────────────────────────
         with step(node2, "node2's spare disk is pulled"):
-            osd_meta = node2.succeed(
-                "ceph osd metadata $(ceph osd tree -f json | "
-                "jq -r '[.nodes[] | select(.type==\"host\" and .name==\"yolab-n2\") | .children[]] "
-                "| map(select(. != (\"ceph osd tree -f json\" | \"\") | .)) | .[0]' 2>/dev/null || true)"
-            )
-            # Simpler and robust: ask Ceph directly which OSD lives on node2
-            # and is backed by a real block device (not the loopback system LV).
             osd_id = node2.succeed(
                 "ceph osd tree -f json | jq -r "
                 "'[.nodes[] | select(.type==\"host\" and .name==\"yolab-n2\")][0].children[0]'"

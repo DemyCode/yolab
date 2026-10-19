@@ -127,7 +127,7 @@ spec:
           \ \u2014 starting border router\"\n# Record the settings we are launching\
           \ with so the wizard can tell when\n# the live border router matches the\
           \ saved config (vs. a pending restart).\ncat \"$$SETTINGS\" > /data/.applied\
-          \ 2>/dev/null || true\nfind / -type f -name app.js -path '*frontend/res/js/*'\
+          \ || exit 1\nfind / -type f -name app.js -path '*frontend/res/js/*'\
           \ 2>/dev/null \\\n  | xargs -r sed -i \"s/restServerPort = '8081'/restServerPort\
           \ = '$${OTBR_REST_PORT:-8081}'/\"\n# s6-overlay must run as PID 1, so exec\
           \ it. A background watcher restarts\n# the container when settings change:\
@@ -137,8 +137,8 @@ spec:
           (\n  ref=\"$$(cat \"$$SETTINGS\" 2>/dev/null)\"\n  while sleep 5; do\n \
           \   if [ \"$$(cat \"$$SETTINGS\" 2>/dev/null)\" != \"$$ref\" ]; then\n \
           \     echo \"[otbr] settings changed \u2014 restarting to apply\"\n    \
-          \  echo 1 > /run/s6-linux-init-container-results/exitcode 2>/dev/null ||\
-          \ true\n      kill -TERM 1 2>/dev/null || true\n      exit 0\n    fi\n \
+          \  echo 1 > /run/s6-linux-init-container-results/exitcode\n\
+          \      kill -TERM 1\n      exit 0\n    fi\n \
           \ done\n) &\nexec /init\n"
         env:
         - name: OTBR_WEB_PORT

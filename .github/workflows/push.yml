@@ -58,7 +58,7 @@ jobs:
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
             /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" \
             /usr/local/share/powershell /usr/share/swift
-          sudo docker image prune --all --force || true
+          sudo docker image prune --all --force
           df -h /
 
       - name: Grant KVM if available
@@ -306,7 +306,7 @@ jobs:
             if helm show chart "${REGISTRY}/${name}" --version "${base}${SUFFIX}" >/dev/null 2>&1; then
               continue
             fi
-            apps_inside=$(awk '/^dependencies:/{d=1;next} d && /^[^ ]/{d=0} d && /- name:/{print $3}' "$chart/Chart.yaml" | grep -vx 'yolab-common\|yolab-stack' || true)
+            apps_inside=$(awk '/^dependencies:/{d=1;next} d && /^[^ ]/{d=0} d && /- name:/ && $3 != "yolab-common" && $3 != "yolab-stack" {print $3}' "$chart/Chart.yaml")
             if [ -n "$apps_inside" ]; then
               packs+=("$(basename "$chart")")
             else
@@ -559,7 +559,7 @@ jobs:
           base=$(grep '^version:' "$CHART/Chart.yaml" | head -1 | awk '{print $2}' | tr -d '"')
 
           sed -i "/- name: yolab-stack/{n;s|version: .*|version: \"${STACK_VERSION}\"|}" "$CHART/Chart.yaml"
-          members=$(awk '/^dependencies:/{d=1;next} d && /^[^ ]/{d=0} d && /- name:/{print $3}' "$CHART/Chart.yaml" | grep -vx 'yolab-common\|yolab-stack' || true)
+          members=$(awk '/^dependencies:/{d=1;next} d && /^[^ ]/{d=0} d && /- name:/ && $3 != "yolab-common" && $3 != "yolab-stack" {print $3}' "$CHART/Chart.yaml")
           for member in $members; do
             version=$(grep '^version:' "apps/catalog/${member}/Chart.yaml" | head -1 | awk '{print $2}' | tr -d '"')
             sed -i "/- name: ${member}\$/{n;s|version: .*|version: \"${version}${SUFFIX}\"|}" "$CHART/Chart.yaml"

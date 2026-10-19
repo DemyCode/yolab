@@ -141,19 +141,19 @@ in {
 
         postSetup = ''
           # B. Source policy: public address always exits wg0.
-          ip -6 rule add from ${s.tunnelCfg.sub_ipv6} lookup 51820 priority 100 2>/dev/null || true
-          ip -6 route replace ::/0 dev wg0 table 51820 2>/dev/null || true
+          if [ -z "$(ip -6 rule show from ${s.tunnelCfg.sub_ipv6} lookup 51820 priority 100)" ]; then
+            ip -6 rule add from ${s.tunnelCfg.sub_ipv6} lookup 51820 priority 100
+          fi
+          ip -6 route replace ::/0 dev wg0 table 51820
           ${lib.optionalString (
             yolabRange != null
-          ) "ip -6 route replace ${yolabRange} dev wg0 2>/dev/null || true"}
+          ) "ip -6 route replace ${yolabRange} dev wg0"}
         '';
 
         preShutdown = ''
-          ip -6 rule del from ${s.tunnelCfg.sub_ipv6} lookup 51820 priority 100 2>/dev/null || true
-          ip -6 route del ::/0 dev wg0 table 51820 2>/dev/null || true
-          ${lib.optionalString (
-            yolabRange != null
-          ) "ip -6 route del ${yolabRange} dev wg0 2>/dev/null || true"}
+          if [ -n "$(ip -6 rule show from ${s.tunnelCfg.sub_ipv6} lookup 51820 priority 100)" ]; then
+            ip -6 rule del from ${s.tunnelCfg.sub_ipv6} lookup 51820 priority 100
+          fi
         '';
 
         peers = [
@@ -174,11 +174,7 @@ in {
 
         postSetup = ''
           # A. Destination route: all cluster-node IPs go through wg1.
-          ip -6 route replace ${s.privateSubnet} dev wg1 2>/dev/null || true
-        '';
-
-        preShutdown = ''
-          ip -6 route del ${s.privateSubnet} dev wg1 2>/dev/null || true
+          ip -6 route replace ${s.privateSubnet} dev wg1
         '';
 
         peers = [

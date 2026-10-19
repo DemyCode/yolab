@@ -176,8 +176,11 @@ printf 'export YOLAB_HOST=%s\nexport YOLAB_URL=https://%s\nexport YOLAB_SITES="%
     - /bin/sh
     - -c
     - |
-      set -u
-      TUNNEL_ID=$(jq -r '.tunnel_id // empty' /state/wg-state.json 2>/dev/null || true)
+      set -eu
+      TUNNEL_ID=""
+      if [ -f /state/wg-state.json ]; then
+        TUNNEL_ID=$(jq -r '.tunnel_id // empty' /state/wg-state.json)
+      fi
       if [ -n "$TUNNEL_ID" ]; then
         STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE \
           -H "Authorization: Bearer ${ACCOUNT_TOKEN:-}" \
