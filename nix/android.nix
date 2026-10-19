@@ -16,6 +16,7 @@
       "34"
       "35"
       "36"
+      "37.0"
     ];
     buildToolsVersions = [
       "34.0.0"
@@ -141,7 +142,7 @@
 
       outputHashMode = "recursive";
       outputHashAlgo = "sha256";
-      outputHash = "sha256-svTas9d1mrHvGmCeR8NIJcd10kcf0w4YMLK8XBCDeGo=";
+      outputHash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
     }
     // commonEnv
   );

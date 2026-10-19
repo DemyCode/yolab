@@ -211,7 +211,7 @@ fn lv_osd_meta(dev: &str, our_fsid: &str) -> Disk {
         model: "System disk".to_string(),
         size_bytes: lv_size_bytes(dev),
         is_loop: true,
-        ownership: Ownership::read(bluestore_fsid(dev).as_deref(), our_fsid),
+        ownership: device_ownership(dev, our_fsid),
         has_partitions: false,
         mounted: false,
         osd_id: None,
@@ -419,15 +419,19 @@ async fn local_osds<H: Host>(host: &H) -> Result<Vec<(String, i64)>> {
     let raw = host
         .ceph_volume(&["lvm", "list", "--format", "json"])
         .await?;
-    let our_fsid = host.cluster_fsid().await.unwrap_or_default();
+    let our_fsid = host.cluster_fsid().await?;
     parse_lvm_list(&raw, &our_fsid)
 }
 
 async fn publish_local<H: Host + 'static>(host: &H, node: &str) -> Result<()> {
-    let Some(scanned) = scan_devices(host).await else {
-        anyhow::bail!("could not read the disk list from lsblk — skipping this tick");
-    };
-    let our_fsid = host.cluster_fsid().await.unwrap_or_default();
+    let scanned = scan_devices(host)
+        .await
+        .context("could not read the disk list from lsblk — skipping this tick")?;
+    let our_fsid = host
+        .cluster_fsid()
+        .await
+        .ok_or_warn("publish: read the cluster fsid, so labelled disks are marked unknown")
+        .unwrap_or_default();
 
     let mut meta: HashMap<String, Disk> = scanned
         .iter()
@@ -730,7 +734,9 @@ async fn reconcile_local_osds<H: Host + 'static>(
         }
     }
 
-    stop_foreign_osd_units(host).await;
+    stop_foreign_osd_units(host)
+        .await
+        .warn_on_err("reconcile: stop OSD units that belong to another cluster");
 
     let crush_nodes: Vec<Value> = match host.ceph_json(&["osd", "df", "tree"]).await {
         Ok(v) => v["nodes"].as_array().cloned().unwrap_or_default(),
@@ -994,21 +1000,38 @@ fn spawn_create<H: Host + 'static>(host: H, disk_id: String, dev_path: String) {
     });
 }
 
-async fn foreign_osd_on<H: Host>(host: &H, dev_path: &str) -> Option<i64> {
+async fn foreign_osd_on<H: Host>(host: &H, dev_path: &str) -> Result<Option<i64>> {
     let raw = host
         .ceph_volume(&["lvm", "list", "--format", "json"])
-        .await
-        .ok()?;
-    let our_fsid = host.cluster_fsid().await.ok().filter(|f| !f.is_empty())?;
+        .await?;
+    let our_fsid = host.cluster_fsid().await?;
     foreign_osd_in_list(&raw, &our_fsid, dev_path)
 }
 
 async fn create_osd<H: Host>(host: &H, disk_id: &str, dev_path: &str) {
     reclaim_orphan(host, disk_id).await;
 
-    let before = host.osd_ids().await.ok();
+    let before = host
+        .osd_ids()
+        .await
+        .ok_or_warn(format!("{disk_id}: list OSDs before creating one"));
 
-    if let Some(id) = foreign_osd_on(host, dev_path).await {
+    let foreign = match foreign_osd_on(host, dev_path).await {
+        Ok(foreign) => foreign,
+        Err(e) => {
+            tracing::warn!(
+                "{disk_id}: could not tell whether {dev_path} holds another cluster's OSD, leaving it alone: {e:#}"
+            );
+            set_phase(
+                disk_id,
+                Phase::Retrying,
+                "Could not check this disk yet. YoLab will keep trying.",
+            );
+            return;
+        }
+    };
+
+    if let Some(id) = foreign {
         tracing::warn!(
             "{disk_id}: {dev_path} still holds osd.{id} from another cluster — erasing it first"
         );
@@ -1031,13 +1054,15 @@ async fn create_osd<H: Host>(host: &H, disk_id: &str, dev_path: &str) {
 
     let is_dm = dev_path.starts_with("/dev/mapper/") || dev_path.starts_with("/dev/dm-");
     if !is_dm {
-        if let Ok(out) = host.run_cmd("wipefs", &["--all", dev_path]).await {
-            if !out.success {
-                tracing::warn!(
-                    "{disk_id}: wipefs failed on {dev_path}: {} — ceph-volume may retry it",
-                    out.stderr.trim()
-                );
-            }
+        match host.run_cmd("wipefs", &["--all", dev_path]).await {
+            Ok(out) if !out.success => tracing::warn!(
+                "{disk_id}: wipefs failed on {dev_path}: {} — ceph-volume may retry it",
+                out.stderr.trim()
+            ),
+            Ok(_) => {}
+            Err(e) => tracing::warn!(
+                "{disk_id}: wipefs could not run on {dev_path}: {e} — ceph-volume may retry it"
+            ),
         }
     }
 
@@ -1104,7 +1129,10 @@ async fn create_osd<H: Host>(host: &H, disk_id: &str, dev_path: &str) {
             }
         },
         Err(e) => {
-            let leaked: Vec<i64> = match (&before, host.osd_ids().await.ok()) {
+            let after = host.osd_ids().await.ok_or_warn(format!(
+                "{disk_id}: list OSDs to find one the failed create left behind"
+            ));
+            let leaked: Vec<i64> = match (&before, after) {
                 (Some(before), Some(after)) => after
                     .iter()
                     .copied()
@@ -1140,7 +1168,11 @@ async fn reclaim_orphan<H: Host>(host: &H, disk_id: &str) {
         return;
     };
 
-    let Ok(existing) = host.osd_ids().await else {
+    let Some(existing) = host
+        .osd_ids()
+        .await
+        .ok_or_warn(format!("{disk_id}: list OSDs to reclaim osd.{id}"))
+    else {
         return;
     };
     if !existing.contains(&id) {
@@ -1353,27 +1385,26 @@ pub(crate) fn parse_lvm_list(raw: &str, our_fsid: &str) -> Result<Vec<(String, i
     Ok(out)
 }
 
-fn foreign_osd_ids(raw: &str, our_fsid: &str) -> Vec<i64> {
-    let (Ok(all), Ok(ours)) = (parse_lvm_list(raw, ""), parse_lvm_list(raw, our_fsid)) else {
-        return Vec::new();
-    };
+fn foreign_osd_ids(raw: &str, our_fsid: &str) -> Result<Vec<i64>> {
+    let all = parse_lvm_list(raw, "")?;
+    let ours = parse_lvm_list(raw, our_fsid)?;
     let our_ids: Vec<i64> = ours.iter().map(|(_, id)| *id).collect();
-    all.iter()
+    Ok(all
+        .iter()
         .map(|(_, id)| *id)
         .filter(|id| !our_ids.contains(id))
         .collect::<std::collections::BTreeSet<_>>()
         .into_iter()
-        .collect()
+        .collect())
 }
 
-fn foreign_osd_in_list(raw: &str, our_fsid: &str, dev_path: &str) -> Option<i64> {
-    let foreign = foreign_osd_ids(raw, our_fsid);
+fn foreign_osd_in_list(raw: &str, our_fsid: &str, dev_path: &str) -> Result<Option<i64>> {
+    let foreign = foreign_osd_ids(raw, our_fsid)?;
     let want = canonical_device(dev_path);
-    parse_lvm_list(raw, "")
-        .ok()?
+    Ok(parse_lvm_list(raw, "")?
         .into_iter()
         .find(|(d, id)| foreign.contains(id) && canonical_device(d) == want)
-        .map(|(_, id)| id)
+        .map(|(_, id)| id))
 }
 
 fn is_running(state: Option<&str>) -> bool {
@@ -1393,21 +1424,19 @@ async fn osd_unit_state<H: Host>(host: &H, osd_id: i64) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-async fn stop_foreign_osd_units<H: Host>(host: &H) {
-    let Ok(raw) = host.ceph_volume(&["lvm", "list", "--format", "json"]).await else {
-        return;
-    };
-    let Some(our_fsid) = host.cluster_fsid().await.ok().filter(|f| !f.is_empty()) else {
-        return;
-    };
-    for id in foreign_osd_ids(&raw, &our_fsid) {
+async fn stop_foreign_osd_units<H: Host>(host: &H) -> Result<()> {
+    let raw = host
+        .ceph_volume(&["lvm", "list", "--format", "json"])
+        .await?;
+    let our_fsid = host.cluster_fsid().await?;
+    for id in foreign_osd_ids(&raw, &our_fsid)? {
         let unit = format!("yolab-ceph-osd@{id}.service");
         let state = host
             .systemctl(&["show", "-p", "ActiveState", "--value", &unit])
-            .await
-            .ok()
-            .map(|o| o.stdout.trim().to_string())
-            .unwrap_or_default();
+            .await?
+            .stdout
+            .trim()
+            .to_string();
         if state.is_empty() || state == "inactive" {
             continue;
         }
@@ -1416,6 +1445,7 @@ async fn stop_foreign_osd_units<H: Host>(host: &H) {
             .await
             .warn_on_err(format!("stop {unit}"));
     }
+    Ok(())
 }
 
 async fn erase_forgotten_osds<H: Host>(
@@ -1426,7 +1456,11 @@ async fn erase_forgotten_osds<H: Host>(
     disk_to_osd: &HashMap<String, i64>,
 ) -> std::collections::HashSet<String> {
     let mut forgotten = std::collections::HashSet::new();
-    let Ok(ids) = host.osd_ids().await else {
+    let Some(ids) = host
+        .osd_ids()
+        .await
+        .ok_or_warn("reconcile: list OSDs to find forgotten ones")
+    else {
         return forgotten;
     };
     for (disk_id, &osd_id) in disk_to_osd {
@@ -1678,53 +1712,66 @@ pub(crate) fn parse_disk_flags(dev: &Value) -> DiskFlags {
     }
 }
 
-async fn scan_devices<H: Host>(host: &H) -> Option<Vec<(String, DiskFlags)>> {
+async fn scan_devices<H: Host>(host: &H) -> Result<Vec<(String, DiskFlags)>> {
     let out = host
         .run_cmd("lsblk", &["-J", "-o", "NAME,TYPE,MOUNTPOINTS"])
-        .await
-        .ok()?;
+        .await?;
     if !out.success {
-        return None;
+        anyhow::bail!("lsblk failed: {}", out.stderr.trim());
     }
-    let json = serde_json::from_slice::<Value>(out.stdout.as_bytes()).ok()?;
+    let json = serde_json::from_slice::<Value>(out.stdout.as_bytes()).context("parse lsblk -J")?;
+    let devs = json["blockdevices"]
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("lsblk -J has no blockdevices list"))?;
     let mut devices = Vec::new();
-    if let Some(devs) = json["blockdevices"].as_array() {
-        for dev in devs {
-            if dev["type"].as_str() != Some("disk") {
-                continue;
-            }
-            let name = dev["name"].as_str().unwrap_or("").to_string();
-            if name.is_empty() {
-                continue;
-            }
-            if !is_user_disk(&name) {
-                continue;
-            }
-            let flags = parse_disk_flags(dev);
-            if flags.mounted {
-                continue;
-            }
-            devices.push((name, flags));
+    for dev in devs {
+        if dev["type"].as_str() != Some("disk") {
+            continue;
         }
+        let name = dev["name"].as_str().unwrap_or("").to_string();
+        if name.is_empty() {
+            continue;
+        }
+        if !is_user_disk(&name) {
+            continue;
+        }
+        let flags = parse_disk_flags(dev);
+        if flags.mounted {
+            continue;
+        }
+        devices.push((name, flags));
     }
     devices.sort_by(|a, b| a.0.cmp(&b.0));
-    Some(devices)
+    Ok(devices)
 }
 
-fn read_bluestore_header(device: &str) -> Option<[u8; 4096]> {
+fn read_bluestore_header(device: &str) -> std::io::Result<[u8; 4096]> {
     let path = if device.starts_with('/') {
         device.to_string()
     } else {
         format!("/dev/{device}")
     };
     let mut buf = [0u8; 4096];
-    let mut f = std::fs::File::open(path).ok()?;
-    f.read_exact(&mut buf).ok()?;
-    Some(buf)
+    let mut f = std::fs::File::open(path)?;
+    f.read_exact(&mut buf)?;
+    Ok(buf)
 }
 
-fn bluestore_fsid(device: &str) -> Option<String> {
-    let buf = read_bluestore_header(device)?;
+fn bluestore_fsid(device: &str) -> std::io::Result<Option<String>> {
+    Ok(fsid_in_label(&read_bluestore_header(device)?))
+}
+
+fn device_ownership(device: &str, our_fsid: &str) -> Ownership {
+    match bluestore_fsid(device) {
+        Ok(fsid) => Ownership::read(fsid.as_deref(), our_fsid),
+        Err(e) => {
+            tracing::warn!("{device}: could not read its label, so it is left alone: {e}");
+            Ownership::Unknown
+        }
+    }
+}
+
+fn fsid_in_label(buf: &[u8; 4096]) -> Option<String> {
     if !buf.starts_with(BLUESTORE_MAGIC) {
         return None;
     }
@@ -1820,7 +1867,7 @@ fn disk_meta(device: &str, our_fsid: &str, flags: DiskFlags) -> Disk {
         model,
         size_bytes,
         is_loop: false,
-        ownership: Ownership::read(bluestore_fsid(device).as_deref(), our_fsid),
+        ownership: device_ownership(device, our_fsid),
         has_partitions: flags.has_partitions,
         mounted: flags.mounted,
         osd_id: None,
@@ -2110,6 +2157,26 @@ mod tests {
             "a foreign stack is a volume group and must be removed, not just its contents: {:?}",
             host.calls()
         );
+    }
+
+    #[tokio::test]
+    async fn create_osd_never_touches_a_disk_it_could_not_check_for_another_clusters_osd() {
+        let host = FakeHost::new()
+            .ok(
+                "ceph fsid",
+                r#"{"fsid":"11111111-2222-3333-4444-555555555555"}"#,
+            )
+            .ok("ceph osd ls", "[]")
+            .fail("ceph-volume lvm list", "timed out");
+
+        create_osd(&host, "disk-unchecked", "/dev/sdd").await;
+
+        assert!(
+            !host.ran("wipefs") && !host.ran("lvm zap") && !host.ran("lvm create"),
+            "an unanswered check is not a blank disk: {:?}",
+            host.calls()
+        );
+        assert_eq!(progress_of("disk-unchecked").phase, Phase::Retrying);
     }
 
     #[tokio::test]
@@ -2478,26 +2545,37 @@ mod tests {
     fn bluestore_fsid_reads_a_well_formed_label() {
         let dir = tempfile::tempdir().unwrap();
         let dev = fake_device(&dir, "sda", &bluestore_label(OURS));
-        assert_eq!(bluestore_fsid(&dev).as_deref(), Some(OURS));
+        assert_eq!(bluestore_fsid(&dev).unwrap().as_deref(), Some(OURS));
     }
 
     #[test]
     fn bluestore_fsid_returns_none_without_the_magic() {
         let dir = tempfile::tempdir().unwrap();
         let dev = fake_device(&dir, "sdb", &vec![0u8; 4096]);
-        assert_eq!(bluestore_fsid(&dev), None);
+        assert_eq!(bluestore_fsid(&dev).unwrap(), None);
     }
 
     #[test]
-    fn bluestore_fsid_returns_none_for_a_device_shorter_than_the_header() {
+    fn bluestore_fsid_fails_for_a_device_shorter_than_the_header() {
         let dir = tempfile::tempdir().unwrap();
         let dev = fake_device(&dir, "sdc", b"bluestore block device\n");
-        assert_eq!(bluestore_fsid(&dev), None);
+        assert!(bluestore_fsid(&dev).is_err());
     }
 
     #[test]
-    fn bluestore_fsid_returns_none_when_the_device_does_not_exist() {
-        assert_eq!(bluestore_fsid("/nonexistent/definitely-not-a-device"), None);
+    fn bluestore_fsid_fails_when_the_device_does_not_exist() {
+        assert!(bluestore_fsid("/nonexistent/definitely-not-a-device").is_err());
+    }
+
+    #[test]
+    fn a_disk_whose_label_cannot_be_read_is_unknown_and_never_gets_an_osd() {
+        let meta = disk_meta(
+            "/nonexistent/definitely-not-a-device",
+            OURS,
+            DiskFlags::default(),
+        );
+        assert_eq!(meta.ownership, Ownership::Unknown);
+        assert!(refuse_osd_creation(&meta).is_some());
     }
 
     #[test]
@@ -2507,7 +2585,7 @@ mod tests {
         let vs = 512 + CEPH_FSID_KEY.len();
         buf[vs..vs + 4].copy_from_slice(&16u32.to_le_bytes());
         let dev = fake_device(&dir, "sdd", &buf);
-        assert_eq!(bluestore_fsid(&dev), None);
+        assert_eq!(bluestore_fsid(&dev).unwrap(), None);
     }
 
     #[test]
@@ -2517,7 +2595,7 @@ mod tests {
         let vs = 512 + CEPH_FSID_KEY.len();
         buf[vs + 4..vs + 40].fill(b' ');
         let dev = fake_device(&dir, "sde", &buf);
-        assert_eq!(bluestore_fsid(&dev), None);
+        assert_eq!(bluestore_fsid(&dev).unwrap(), None);
     }
 
     #[test]

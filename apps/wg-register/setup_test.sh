@@ -161,6 +161,23 @@ assert_contains "$(wg_conf)" 'ip -6 rule add from 2001:db8::99 lookup 51820' "on
 assert_missing "$(wg_conf | grep -o 'route add ::/0 dev wg0[^;]*' | grep -v 'table 51820')" '::/0' "a default route through the tunnel outside table 51820"
 case_end
 
+case_start "a tunnel route or rule that cannot be set up stops wg-quick instead of being swallowed"
+respond create 200 "$TUNNEL_BODY"
+respond records 200 "$RECORD_BODY"
+run_setup
+assert_missing "$(wg_conf)" '|| true' "wg0.conf hooks"
+case_end
+
+case_start "a tunnel answer that is not JSON stops setup instead of reading as a tunnel with no key"
+write_state <<EOF
+$CACHED_STATE
+EOF
+respond verify 200 '<html>bad gateway</html>'
+run_setup
+if [ "$RC" -ne 0 ]; then ok; else bad "expected a non-zero exit, got $RC"; fi
+assert_missing "$(cat "$OUT")" 'verified on platform' "the unreadable answer was trusted"
+case_end
+
 case_start "the env file exports what the app containers source"
 respond create 200 "$TUNNEL_BODY"
 respond records 200 "$RECORD_BODY"
