@@ -47,7 +47,7 @@ spec:
       {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
       {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
       - name: web
-        image: anirdev/slink:v1.14.0@sha256:fff70ce3cee309377424466565810d500ae4df0d1b918ee47b5126807621841d
+        image: anirdev/slink:v1.14.2@sha256:2cc66542a4be2b08a13e1215fd58064179331eaa5fdeef36edc66b2f43313de8
         imagePullPolicy: IfNotPresent
         env:
         - name: TZ

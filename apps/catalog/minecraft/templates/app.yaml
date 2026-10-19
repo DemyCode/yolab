@@ -36,7 +36,7 @@ spec:
         
         {{- include "yolab-common.wireguardContainer" . | nindent 8 }}
         - name: minecraft
-          image: itzg/minecraft-server:latest@sha256:7b728e72b26bdc82cab5b84352c1eda061f120c08bec558c9664bb358221d919
+          image: itzg/minecraft-server:latest@sha256:e02138323fb1bd9bac652db8add563deb109cfb36c363cdbc948bdaf0a33df00
           imagePullPolicy: IfNotPresent
           stdin: true
           tty: true

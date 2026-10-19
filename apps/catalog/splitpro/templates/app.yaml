@@ -76,7 +76,7 @@ spec:
       {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
       {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
       - name: splitpro
-        image: ossapps/splitpro:v2.1.5@sha256:efaa52b30d009573c4bf70e5711d6447536914469420db58680e1e6779acde6e
+        image: ossapps/splitpro:v2.1.6@sha256:dc6914ed24a7d595dfc74eaecc649f24336856ae517deca2f10f35da6faa5ac6
         imagePullPolicy: IfNotPresent
         command:
           - /bin/sh

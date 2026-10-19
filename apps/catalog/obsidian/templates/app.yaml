@@ -47,7 +47,7 @@ spec:
       {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
       {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
       - name: server
-        image: linuxserver/obsidian:1.13.7@sha256:a3324c3380f40a70d98058636a47db4afaca261907751a720afa4132c7f4c14e
+        image: linuxserver/obsidian:1.14.4@sha256:ca9c7878429b70d61129a614e95418fd930d5dcb5dc1c1f6ec2c132f0e6122a2
         imagePullPolicy: IfNotPresent
         env:
         - name: PUID

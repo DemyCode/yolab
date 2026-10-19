@@ -56,7 +56,7 @@ spec:
       {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
       {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
       - name: romm
-        image: rommapp/romm:latest@sha256:0d66b4ea152a237c7f24b95e87459f46d3c596a7c0b35a82f26bc971487278b3
+        image: rommapp/romm:latest@sha256:03295f95a6290e752641f9553ac4198b0e5b71b879d57f7b2371b98f608feb54
         imagePullPolicy: IfNotPresent
         env:
           - name: DB_HOST
@@ -119,7 +119,7 @@ spec:
     spec:
       containers:
         - name: mariadb
-          image: mariadb:11@sha256:6422478cb8e159f080fb1d8ccf65101e26fe51385787fde7d16c3b165a331f15
+          image: mariadb:11@sha256:f16d7a344413e519dff518f27bdb221388f84b0d274c97c4fb5f2cb0dc1b34fa
           imagePullPolicy: IfNotPresent
           env:
             - name: MARIADB_USER

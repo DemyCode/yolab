@@ -2,11 +2,11 @@ apiVersion: v2
 name: originless
 description: Private, decentralized file sharing for Nostr and the web
 type: application
-version: 0.1.8
+version: 0.1.9
 appVersion: 0.1.0-patch.1
 dependencies:
 - name: yolab-common
-  version: "0.1.20"
+  version: "0.1.21"
   repository: oci://ghcr.io/demycode/charts
 annotations:
   yolab.io/display-name: Originless

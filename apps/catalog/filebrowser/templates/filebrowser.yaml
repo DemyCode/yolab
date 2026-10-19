@@ -62,7 +62,7 @@ spec:
               subPath: {{ printf "%s/files" .Release.Name | quote }}
       containers:
         - name: filebrowser
-          image: gtstef/filebrowser:2.1.0-beta@sha256:329dfca21dcd04d1430f9f190a719d9e9ecb0fb9a916d26a56cd631876aebaf1
+          image: gtstef/filebrowser:2.1.2-beta@sha256:0ff80341ce8a9c1e3c5ac8ca319bdf9675092028b04ed97607bbfebc10810fff
           imagePullPolicy: IfNotPresent
           readinessProbe:
             httpGet:

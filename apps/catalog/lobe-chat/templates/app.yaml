@@ -86,7 +86,7 @@ spec:
       {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
       {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
       - name: app
-        image: lobehub/lobehub:2.2.19@sha256:56a21005ba1148ad45310e57e09f88ce25006cd6492b5b585e90cf92f4d1826f
+        image: lobehub/lobehub:2.2.20@sha256:8a46ff8c76aef731b6d228d92edfc384aa77335593187b670be23ce78a690716
         imagePullPolicy: IfNotPresent
         env:
         - name: APP_PASSWORD
@@ -432,7 +432,7 @@ spec:
     spec:
       containers:
       - name: rustfs-init
-        image: cgr.dev/chainguard/minio-client:latest-dev@sha256:603a402c2cd1543109c39eb5d1f731bd83b3c8f6ee8299b3785c8519fad0f5b5
+        image: cgr.dev/chainguard/minio-client:latest-dev@sha256:0f20f9b9a9a06e2ada88afda965b824fd2d77793083b3b2b10186a9502c836f4
         imagePullPolicy: IfNotPresent
         command:
         - /bin/sh

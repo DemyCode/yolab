@@ -47,7 +47,7 @@ spec:
       {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
       {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
       - name: web
-        image: linuxserver/pyload-ng:0.5.0@sha256:bb7a6536d6c8be04f38ce77bdd3f2e2d6b54a49bd680fd904e932767871e558a
+        image: linuxserver/pyload-ng:0.5.0@sha256:9bc594e9c80f3faa0906cb2e65bfab0989e3330332b3c1441cb7a7226ba02b9e
         imagePullPolicy: IfNotPresent
         env:
         - name: PUID

@@ -88,7 +88,7 @@ spec:
       {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
       {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
       - name: web
-        image: 1dev/server:16.8.6@sha256:3ffe2d80286038533f3f46c2fdcc1cb6a1486aad91fff604288d4567bba169a5
+        image: 1dev/server:16.9.3@sha256:bd6762b583433957277fa5ac24d5ab0f483fc723c49bd157af73ddc2317763d7
         imagePullPolicy: IfNotPresent
         env:
         - name: APP_SEED

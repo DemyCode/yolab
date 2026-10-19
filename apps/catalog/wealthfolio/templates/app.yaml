@@ -58,7 +58,7 @@ spec:
       {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
       {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
       - name: server
-        image: wealthfolio/wealthfolio:3.9.1@sha256:0ebd0147463f3637afce8cf33e0601a7c5c060e70f15c19d5762435f5819234a
+        image: wealthfolio/wealthfolio:3.10.0@sha256:6dcf9019aee7ba0747344087365ea57846107943ff0e2718a9bee72a98e20f85
         imagePullPolicy: IfNotPresent
         env:
         - name: APP_SEED

@@ -70,7 +70,7 @@ spec:
     spec:
       containers:
       - name: web
-        image: vectorim/element-web:v1.12.30@sha256:3e7dbd4424de9e11c812bc740acf2725b2abe66ea0d0802023b56fd85d3fa09a
+        image: vectorim/element-web:v1.12.32@sha256:f8700633d4336258af7a05b53865a4f479e0d628cf2d9ca83d28b5939314d4ce
         imagePullPolicy: IfNotPresent
         ports:
         - containerPort: 80

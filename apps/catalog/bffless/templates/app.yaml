@@ -235,7 +235,7 @@ spec:
     spec:
       containers:
       - name: supertokens
-        image: supertokens/supertokens-postgresql:9.3@sha256:9c36100c23db838933525394325e971e6dedba062d79f3ad56fc6567df9b55d6
+        image: supertokens/supertokens-postgresql:9.3@sha256:020798a29cba5ec400ae704a70360e053d0b940173f8640c66f99798c67e35c0
         imagePullPolicy: IfNotPresent
         env:
         - name: POSTGRESQL_HOST

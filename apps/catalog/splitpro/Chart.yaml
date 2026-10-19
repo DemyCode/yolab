@@ -2,11 +2,11 @@ apiVersion: v2
 name: splitpro
 description: Share expenses with friends and family, an open-source Splitwise alternative
 type: application
-version: 0.1.4
+version: 0.1.5
 appVersion: 2.1.5
 dependencies:
 - name: yolab-common
-  version: "0.1.20"
+  version: "0.1.21"
   repository: oci://ghcr.io/demycode/charts
 annotations:
   yolab.io/display-name: SplitPro

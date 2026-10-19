@@ -56,7 +56,7 @@ spec:
       {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
       {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
       - name: web
-        image: ghcr.io/homarr-labs/homarr:v2.3.0@sha256:3853aa5c5018f5a78b4fb3bb46eff067edb19dd67f2b7e8b0dc8c8febaa1bca9
+        image: ghcr.io/homarr-labs/homarr:v2.6.0@sha256:1e077fc77d3ad7482376bab964b89cfc8c1f31fe2ddeb5154cf2a1058d40b32d
         imagePullPolicy: IfNotPresent
         env:
         - name: APP_SEED

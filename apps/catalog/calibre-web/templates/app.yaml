@@ -47,7 +47,7 @@ spec:
       {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
       {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
       - name: calibre-web
-        image: ghcr.io/linuxserver/calibre-web:latest@sha256:80b2a77b5925441c76607619fd406694570a50a0e32c229198dbb39e72da6fed
+        image: ghcr.io/linuxserver/calibre-web:latest@sha256:b206b791d77b731203fb47b5733d055c8d4ebd7c9fa59a4569a5d6a2b3ebda54
         imagePullPolicy: IfNotPresent
         env:
           - name: PUID

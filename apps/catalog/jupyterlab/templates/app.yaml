@@ -47,7 +47,7 @@ spec:
       {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
       {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
       - name: server
-        image: quay.io/jupyter/base-notebook:lab-4.6.4@sha256:cde41a345c3758f660527c856a47ff87bc681247d44d4bf4155c2eb151d3658e
+        image: quay.io/jupyter/base-notebook:lab-4.6.4@sha256:051915e06265cf8415b749dbb655b82611d76e0189ec85501a81fa2f52f481b9
         imagePullPolicy: IfNotPresent
         args:
         - /bin/sh

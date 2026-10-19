@@ -109,7 +109,7 @@ spec:
     spec:
       containers:
       - name: syslog
-        image: linuxserver/syslog-ng:4.11.0@sha256:3ad97ed09bcacddf09520a566c06437dd42951604fe0197aeae7f2e4330ac93d
+        image: linuxserver/syslog-ng:4.11.0@sha256:131b5b5d5e5e002afbacf54acae70cfeec49a69e8c04dd2be3252ec0237b7177
         imagePullPolicy: IfNotPresent
         env:
         - name: PUID

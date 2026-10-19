@@ -66,7 +66,7 @@ spec:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
       - name: onlyoffice
-        image: linuxserver/onlyoffice:version-v9.4.0@sha256:09fb44964c66bd8f0beb80dc60a3e5a2f20ea35e9243e1e4c95ee2b288f966db
+        image: linuxserver/onlyoffice:version-v9.4.0@sha256:3ed1abd99c17a8263bc83edc8eaab42460d9fdf6b60b9b32dd9631659f22cb20
         imagePullPolicy: IfNotPresent
         command: ["/bin/sh", "-c"]
         args:

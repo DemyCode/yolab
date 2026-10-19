@@ -140,7 +140,7 @@ spec:
         - name: yolab
           mountPath: /yolab
       - name: anubis
-        image: ghcr.io/techarohq/anubis:latest@sha256:8828275668b7bc675679f100970f9714f731388fbbf66ae94de8aca952e3fc4a
+        image: ghcr.io/techarohq/anubis:latest@sha256:1744c03a918160a28b0d2e8c1656de6585f4071b30b4c3b0d51d02282c9b7c25
         imagePullPolicy: IfNotPresent
         env:
         - name: BIND

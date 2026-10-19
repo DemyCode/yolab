@@ -49,7 +49,7 @@ spec:
       {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
       {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
       - name: n8n
-        image: n8nio/n8n:latest@sha256:f6dc0d15bc9620baf5ba1df834ef81ae4e969f778c09300e567217be88f04a96
+        image: n8nio/n8n:latest@sha256:a18edcf018198b33b5488fb47ededafe11e0b10d28f65b9535b7c447c9ce3b2c
         imagePullPolicy: IfNotPresent
         env:
           - name: N8N_PORT

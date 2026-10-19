@@ -56,7 +56,7 @@ spec:
       {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
       {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
       - name: app
-        image: etherpad/etherpad:3.3.7@sha256:6f87beef31d91e4a44c7e3fe64043dd294f70443a80267a77267bdac704819a1
+        image: etherpad/etherpad:3.3.9@sha256:3d59d633d285de17cb5d4a479b1f27b90e3194a09d5030c498de98a04f47cf77
         imagePullPolicy: IfNotPresent
         env:
         - name: APP_PASSWORD

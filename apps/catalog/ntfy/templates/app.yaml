@@ -43,7 +43,7 @@ spec:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
       - name: ntfy
-        image: binwiederhier/ntfy:latest@sha256:4c599cf0818965782f93f652bd843e92714992e84d6b88ad17713dc0951cda1f
+        image: binwiederhier/ntfy:latest@sha256:59250e1d8be2ee2186c4560322f625faef22ace380331f05b63f8842dbd62602
         imagePullPolicy: IfNotPresent
         readinessProbe:
           httpGet:

@@ -111,7 +111,7 @@ spec:
     spec:
       containers:
       - name: nginx
-        image: nginx:1.31-alpine@sha256:df221db836e1754089190208cee7eeda94f233197056426eda74a43ab1abeac2
+        image: nginx:1.31-alpine@sha256:892bb2152464f0c5d8972593a5f5afaf8054552580b699d95f8ff4af08c2d33d
         imagePullPolicy: IfNotPresent
         ports:
         - containerPort: 80
@@ -192,7 +192,7 @@ spec:
     spec:
       containers:
       - name: app
-        image: invoiceninja/invoiceninja-debian:5.13.44@sha256:7af1f80f2647a7da7f80167dd681e301d42724280b253a1ddc9e5d6e07f17e57
+        image: invoiceninja/invoiceninja-debian:5.13.49@sha256:2a20a8a526bdf9be602c1f5f1a66206ad80914972a62bd9d683f7cecfd4f34db
         imagePullPolicy: IfNotPresent
         env:
         - name: APP_PASSWORD
@@ -294,7 +294,7 @@ spec:
     spec:
       containers:
       - name: db
-        image: mariadb:11.8.9@sha256:6422478cb8e159f080fb1d8ccf65101e26fe51385787fde7d16c3b165a331f15
+        image: mariadb:11.8.9@sha256:f16d7a344413e519dff518f27bdb221388f84b0d274c97c4fb5f2cb0dc1b34fa
         imagePullPolicy: IfNotPresent
         env:
         - name: APP_PASSWORD

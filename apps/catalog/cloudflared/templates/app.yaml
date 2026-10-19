@@ -47,7 +47,7 @@ spec:
       {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
       {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
       - name: web
-        image: ghcr.io/radiokot/umbrel-cloudflared:1.0.3@sha256:8acd17fcf7b9b9902fb12855f4667daf32c47a225ead6603b59bab9ae962b072
+        image: ghcr.io/radiokot/umbrel-cloudflared:1.1.0@sha256:91157b02db64eacbc68d9ff099a4ba04f6327b011a9204fe9e7a37170f726b9a
         imagePullPolicy: IfNotPresent
         env:
         - name: CLOUDFLARED_HOSTNAME

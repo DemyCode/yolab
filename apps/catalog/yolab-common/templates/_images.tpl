@@ -9,9 +9,9 @@
 {{- end -}}
 
 {{- define "yolab-common.image.caddy" -}}
-{{- (((.Values.yolab).images).caddy) | default "caddy:2@sha256:f2a1290d0463aad60660d4ec134943f183ee2a5f6c3eb7bf32dd984f2f020772" -}}
+{{- (((.Values.yolab).images).caddy) | default "caddy:2@sha256:685ae3d7c34d9b5f8caeddc5d14051db7bbd88ff1f5a2fa0c16bd8ca328fb7af" -}}
 {{- end -}}
 
 {{- define "yolab-common.image.fileExplorer" -}}
-{{- (((.Values.yolab).images).fileExplorer) | default "gtstef/filebrowser:2.1.0-beta@sha256:329dfca21dcd04d1430f9f190a719d9e9ecb0fb9a916d26a56cd631876aebaf1" -}}
+{{- (((.Values.yolab).images).fileExplorer) | default "gtstef/filebrowser:2.1.2-beta@sha256:0ff80341ce8a9c1e3c5ac8ca319bdf9675092028b04ed97607bbfebc10810fff" -}}
 {{- end -}}

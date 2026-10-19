@@ -70,7 +70,7 @@ spec:
     spec:
       containers:
       - name: app
-        image: ghcr.io/timothepoznanski/poznote:6.111.1@sha256:484ad814a08eae295f249b0f1f36895b54463b9b74c93748827778ed565ff371
+        image: ghcr.io/timothepoznanski/poznote:6.121.0@sha256:c98d753c27c64d5b0bd0c34049bb3d4a0e343c34e3e77e0de6f8d634445a1e53
         imagePullPolicy: IfNotPresent
         env:
         - name: SQLITE_DATABASE
@@ -135,7 +135,7 @@ spec:
     spec:
       containers:
       - name: mcp
-        image: ghcr.io/timothepoznanski/poznote-mcp:6.111.1@sha256:cbc05af4b89f131fd0c801f966b3839b5bab2e909179b773851407a98135d8c6
+        image: ghcr.io/timothepoznanski/poznote-mcp:6.121.0@sha256:dbba5922238bff59c54795b9f20c18d2acabd973eb61e9058e68d90e9a3df024
         imagePullPolicy: IfNotPresent
         env:
         - name: POZNOTE_API_URL

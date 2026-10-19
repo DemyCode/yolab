@@ -56,7 +56,7 @@ spec:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
       - name: app
-        image: amruthpillai/reactive-resume:latest@sha256:20d73d848c6c7e48d8dc273b542bfd2cb47ad6ea3cf5a5cab8fa37de820e9c89
+        image: amruthpillai/reactive-resume:latest@sha256:42c9ce52943b360f463be95f08a6e900c264bda5847d03f14a910254ca8cd2cd
         imagePullPolicy: IfNotPresent
         readinessProbe:
           httpGet:
@@ -186,7 +186,7 @@ spec:
     spec:
       containers:
       - name: minio
-        image: cgr.dev/chainguard/minio:latest@sha256:59667194421209c2c1eacbe761e24787e047985c5dfa96b15da9b59fe9b55cd0
+        image: cgr.dev/chainguard/minio:latest@sha256:709099319add48dfb44aa596a7070d3ddd8dd04d7ae881765719aec29df9e510
         imagePullPolicy: IfNotPresent
         securityContext:
           runAsUser: 0
@@ -246,7 +246,7 @@ spec:
     spec:
       containers:
       - name: chrome
-        image: ghcr.io/browserless/chromium:v2.57.0@sha256:6bac628b3d8293f8fb251d3a6b63030dfc5a1cb0c7e5c39abe5efd8f4b25360b
+        image: ghcr.io/browserless/chromium:v2.57.1@sha256:93dc614e2532ee66bac78f68b6229c33392309293c626d2a0899ccdf0c8aac67
         imagePullPolicy: IfNotPresent
         env:
         - name: TIMEOUT

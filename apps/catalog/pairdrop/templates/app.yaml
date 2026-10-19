@@ -43,7 +43,7 @@ spec:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
       - name: pairdrop
-        image: linuxserver/pairdrop:version-v1.11.2@sha256:c9fdb5defc4c155bdbd852c6e918064750cdace6ed768e6c61ebbb39d1f80a9f
+        image: linuxserver/pairdrop:version-v1.11.2@sha256:2e673eebd640beea33f131f4426b90548354e620ae593336a73be9374bb70bc2
         imagePullPolicy: IfNotPresent
         env:
           - name: PUID

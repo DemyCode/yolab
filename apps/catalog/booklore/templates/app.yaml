@@ -95,7 +95,7 @@ spec:
     spec:
       containers:
       - name: db
-        image: mariadb:12.3.3@sha256:2bdff1534a7e569fecaf4b10b66ad0d410806e382d9db29ba305448addda97c4
+        image: mariadb:12.3.3@sha256:99c125f103f5d081ebbc9ffe064e63daf7f688ac33a5f7f29af2d7260a96debf
         imagePullPolicy: IfNotPresent
         env:
         - name: MARIADB_DATABASE

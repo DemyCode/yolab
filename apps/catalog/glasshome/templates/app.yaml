@@ -47,7 +47,7 @@ spec:
       {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
       {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
       - name: server
-        image: ghcr.io/glasshome/dash:1.3.1@sha256:8f4b914905da99580e108c235b2d45df4cd1e66c7118eabb3c8e440d3fcc00b7
+        image: ghcr.io/glasshome/dash:1.4.5@sha256:173777a0d0f575907486448f339e33c8268ff8497d8292c59989bb8294540307
         imagePullPolicy: IfNotPresent
         env:
         - name: PORT

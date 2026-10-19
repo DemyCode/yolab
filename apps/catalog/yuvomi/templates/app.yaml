@@ -56,7 +56,7 @@ spec:
       {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
       {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
       - name: web
-        image: ghcr.io/ulsklyc/yuvomi:2.75.0@sha256:eafdf115a14529f42baa7ec722795cb631a156dadc8605c839ec93d783f73afa
+        image: ghcr.io/ulsklyc/yuvomi:2.78.0@sha256:5bfdc1a481a1a259376c91fe334fd945a1eda19735c69ed313c702ab40da81b0
         imagePullPolicy: IfNotPresent
         env:
         - name: APP_SEED

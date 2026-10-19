@@ -110,7 +110,7 @@ spec:
     spec:
       containers:
       - name: db
-        image: pgautoupgrade/pgautoupgrade:18.6-trixie@sha256:4c0354c65d4926734458029f99f57e6c383b7e1885e46a8ab88a73edd8ed46df
+        image: pgautoupgrade/pgautoupgrade:18.6-trixie@sha256:9caad5cc9b8b2a6c54093de44e1c3ccbf94b05a6a4dbdd33686fc63ea774ccd5
         imagePullPolicy: IfNotPresent
         env:
         - name: APP_SEED

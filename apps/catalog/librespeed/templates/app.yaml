@@ -66,7 +66,7 @@ spec:
     spec:
       containers:
       - name: librespeed
-        image: lscr.io/linuxserver/librespeed:latest@sha256:cebf3af16a406cbdaa49a27266371fa21228901c3d5e5efad54bbd56350335f6
+        image: lscr.io/linuxserver/librespeed:latest@sha256:05c1ca8215f958b674e8fa1c2ea43483efa54dae8f1dbe40c907af66821fdcae
         imagePullPolicy: IfNotPresent
         readinessProbe:
           httpGet:

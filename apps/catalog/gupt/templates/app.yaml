@@ -47,7 +47,7 @@ spec:
       {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
       {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
       - name: web
-        image: ghcr.io/besoeasy/gupt:5.0.26@sha256:3949e0583877e32be838f94adf635619a0c90a2948d8d0594d656481ba6caab4
+        image: ghcr.io/besoeasy/gupt:5.1.5@sha256:549b3554048c14c24a2fd726a0b2e3f396c8e66b543fd8858df95987dae2341d
         imagePullPolicy: IfNotPresent
         securityContext:
           runAsUser: 1000

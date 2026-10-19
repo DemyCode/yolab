@@ -47,7 +47,7 @@ spec:
       {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
       {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
       - name: app
-        image: lissy93/domain-locker:0.3.1@sha256:58a903b2cdd9dd7fd6602b74c462812df3f3014be83f7dafc772d545b8d7f3aa
+        image: lissy93/domain-locker:0.3.4@sha256:e35fc631f57dfe96dee3993dd7ea0ac538192c44147edd4748e8914090372b04
         imagePullPolicy: IfNotPresent
         env:
         - name: DL_ENV_TYPE

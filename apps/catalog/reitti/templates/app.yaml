@@ -47,7 +47,7 @@ spec:
       {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
       {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
       - name: app
-        image: dedicatedcode/reitti:5.6.1@sha256:b0ede09fe0b0350b15e779be98b59acc3644abfd7f6e673606e92f6199eda328
+        image: dedicatedcode/reitti:5.7.0@sha256:4bf33e3d4997a898111e2f545c469f50d0d12c3cb7b7b0bd62f05dee0a13de90
         imagePullPolicy: IfNotPresent
         env:
         - name: POSTGIS_USER
@@ -91,7 +91,7 @@ spec:
     spec:
       containers:
       - name: postgis
-        image: imresamu/postgis:17-3.5-alpine@sha256:2490d4b7b2ac8ee0da57637e1d6fb4caf28c9f367049e2b266b8fc12acb51f4c
+        image: imresamu/postgis:17-3.5-alpine@sha256:cf89f438fa040a1eaa5822010ec08f5004f63148e9424e19e0a80a056625e8a3
         imagePullPolicy: IfNotPresent
         env:
         - name: POSTGRES_USER
@@ -207,7 +207,7 @@ spec:
     spec:
       containers:
       - name: tile-cache
-        image: dedicatedcode/reitti-tile-cache:5.6.1@sha256:153250a1eb71c7ace545eebac93d758b2864f93a950d9fe305a03935e91fd8cc
+        image: dedicatedcode/reitti-tile-cache:5.7.0@sha256:4e5719256f120e8ce5dd217508c6b7a35e33a06c481cd7261089139010396d13
         imagePullPolicy: IfNotPresent
         readinessProbe:
           exec:

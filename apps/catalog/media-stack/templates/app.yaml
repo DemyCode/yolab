@@ -117,7 +117,7 @@ spec:
       {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
       {{- include "yolab-common.autheliaContainer" . | nindent 6 }}
       - name: jellyfin
-        image: lscr.io/linuxserver/jellyfin:latest@sha256:1bb4f88d822a0510bb3604b68aacb80d77c1d2a30181e500090c65111b98723b
+        image: lscr.io/linuxserver/jellyfin:latest@sha256:799509f8ef3be7037478699cc6fd14d19dd75faac5e474ed219e98ae78a5b3e4
         imagePullPolicy: IfNotPresent
         command:
           - /bin/sh
@@ -187,7 +187,7 @@ spec:
             mountPath: /data
             subPath: {{ .Release.Name }}/data
       - name: cleanuparr
-        image: ghcr.io/cleanuparr/cleanuparr:2.10.9@sha256:cfada3e5721451403a878ef67afb317692bb3afe277328b28ce4470bfba915d0
+        image: ghcr.io/cleanuparr/cleanuparr:2.10.12@sha256:d0212e4c66bd0522e23c5e5da5d3006bd5ff0e0de1e3ecfcf892e039d55721e2
         imagePullPolicy: IfNotPresent
         env:
           - name: PUID
@@ -261,7 +261,7 @@ spec:
             mountPath: /data
             subPath: {{ .Release.Name }}/data
       - name: torrents-login
-        image: python:3.14-alpine@sha256:f6a589d43c42b9e7f7dc67a12d37132491f362859a5d750607710cc56da3bc72
+        image: python:3.15-alpine@sha256:2699b90f4d562a22e2dd076c82f964032f64814204bff36d271a54ba4cc2c7e2
         imagePullPolicy: IfNotPresent
         command:
           - python3
@@ -333,7 +333,7 @@ spec:
           - name: TZ
             value: {{ .Values.config.timezone | default "Etc/UTC" | quote }}
       - name: qbittorrent
-        image: ghcr.io/linuxserver/qbittorrent:latest@sha256:b522f9f4b769f8f36d49d22d5eb6a92e9aa18904c6a1830b1439df511ec21983
+        image: ghcr.io/linuxserver/qbittorrent:latest@sha256:1ea873647c43d566f251a7122aee330b184509c57ee3257ed19f62dac0f8f24b
         imagePullPolicy: IfNotPresent
         env:
           - name: PUID

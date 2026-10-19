@@ -78,7 +78,7 @@ spec:
       {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
       {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
       - name: web
-        image: sorenisanerd/gotty:v1.9.0@sha256:882021766630a216ca606dd08a30b6108acdc9563cc57d5e6467aef60d9a54b3
+        image: sorenisanerd/gotty:v1.10.0@sha256:4d8f45263010491719678ebe9497d0943e57cdd2cc762b78a63abc4d09610c97
         imagePullPolicy: IfNotPresent
         args:
         - /bin/sh

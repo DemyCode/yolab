@@ -49,7 +49,7 @@ spec:
       {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
       {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
       - name: server
-        image: twentycrm/twenty:v2.45.8@sha256:7ea7839b894594e5df73af38a6aca56692ee32ba245a8d9f64c78c13b8857f08
+        image: twentycrm/twenty:v2.49.0@sha256:80e1b33b0b4b9dc292e776c64c320be2ae9467677ce639ba9bde1cffca68a3b0
         imagePullPolicy: IfNotPresent
         env:
         - name: NODE_PORT
@@ -108,7 +108,7 @@ spec:
     spec:
       containers:
       - name: worker
-        image: twentycrm/twenty:v2.45.8@sha256:7ea7839b894594e5df73af38a6aca56692ee32ba245a8d9f64c78c13b8857f08
+        image: twentycrm/twenty:v2.49.0@sha256:80e1b33b0b4b9dc292e776c64c320be2ae9467677ce639ba9bde1cffca68a3b0
         imagePullPolicy: IfNotPresent
         args:
         - yarn

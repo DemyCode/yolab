@@ -56,7 +56,7 @@ spec:
       {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
       {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
       - name: server
-        image: ghcr.io/getalby/hub:v1.24.1@sha256:ca9da58cafd68e91358820a20d83d328a333a8f699007a70d9aa50538da7c129
+        image: ghcr.io/getalby/hub:v1.24.3@sha256:906e54e4c14b1508d5566271331135fcd1fe9b86ea3bf6e42502f2de6c3c2b41
         imagePullPolicy: IfNotPresent
         env:
         - name: APP_SEED
