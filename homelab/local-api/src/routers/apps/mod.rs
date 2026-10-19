@@ -3270,6 +3270,14 @@ mod tests {
             status(404, "NotFound")
         }
 
+        async fn no_saved_settings(server: &MockServer) {
+            Mock::given(method("GET"))
+                .and(path("/api/v1/namespaces/yolab-notes/secrets/yolab-config"))
+                .respond_with(ResponseTemplate::new(404).set_body_json(gone()))
+                .mount(server)
+                .await;
+        }
+
         #[tokio::test]
         async fn an_installed_app_is_read_with_the_schema_it_was_installed_with() {
             let (server, kube) = api_server().await;
@@ -3470,6 +3478,7 @@ mod tests {
                 .mount(&server)
                 .await;
             volumes_are(&server, vec![]).await;
+            no_saved_settings(&server).await;
             let b = Backend {
                 kube,
                 host: FakeHost::new().ok("helm uninstall", ""),
@@ -3512,6 +3521,7 @@ mod tests {
                 .mount(&server)
                 .await;
             volumes_are(&server, vec![]).await;
+            no_saved_settings(&server).await;
             let b = Backend {
                 kube,
                 host: FakeHost::new().fail("helm uninstall", "timed out"),
