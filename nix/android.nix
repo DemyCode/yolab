@@ -109,6 +109,7 @@
       buildPhase = ''
         runHook preBuild
         export HOME=$TMPDIR
+        export ANDROID_USER_HOME=$TMPDIR/.android
         export GRADLE_USER_HOME=$TMPDIR/gradle
         ${cargoOffline}
         mkdir -p "$GRADLE_USER_HOME"
@@ -154,6 +155,7 @@ in
       buildPhase = ''
         runHook preBuild
         export HOME=$TMPDIR
+        export ANDROID_USER_HOME=$TMPDIR/.android
         export GRADLE_USER_HOME=$TMPDIR/gradle
         ${cargoOffline}
         mkdir -p "$GRADLE_USER_HOME/caches"
