@@ -2,11 +2,11 @@ apiVersion: v2
 name: ollama
 description: Self-host open source AI models like DeepSeek-R1, Llama, and more
 type: application
-version: 0.2.11
+version: 0.2.12
 appVersion: 0.35.1
 dependencies:
 - name: yolab-common
-  version: "0.1.21"
+  version: "0.1.22"
   repository: oci://ghcr.io/demycode/charts
 annotations:
   yolab.io/display-name: Ollama

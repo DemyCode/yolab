@@ -3,11 +3,11 @@ name: sonarr
 description: "Follows your TV shows and fetches new episodes as they appear"
 home: https://sonarr.tv
 type: application
-version: 0.2.9
+version: 0.2.10
 
 dependencies:
   - name: yolab-common
-    version: "0.1.21"
+    version: "0.1.22"
     repository: "oci://ghcr.io/demycode/charts"
   - name: yolab-stack
     version: "0.1.1"

@@ -2,11 +2,11 @@ apiVersion: v2
 name: bffless
 description: Self-hosted static site hosting platform
 type: application
-version: 0.1.9
+version: 0.1.10
 appVersion: 0.4.15
 dependencies:
 - name: yolab-common
-  version: "0.1.21"
+  version: "0.1.22"
   repository: oci://ghcr.io/demycode/charts
 annotations:
   yolab.io/display-name: BFFless
