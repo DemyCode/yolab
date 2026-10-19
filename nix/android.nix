@@ -142,7 +142,7 @@
 
       outputHashMode = "recursive";
       outputHashAlgo = "sha256";
-      outputHash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+      outputHash = "sha256-FxG6bejaRXijiyQ/cT1P/mCbuhSUlzet+sCklBmuBUs=";
     }
     // commonEnv
   );
