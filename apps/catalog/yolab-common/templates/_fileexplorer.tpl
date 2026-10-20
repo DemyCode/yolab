@@ -136,8 +136,7 @@ stringData:
         tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 24 > "$PWFILE"
       fi
       HASH=$(caddy hash-password --plaintext "$(cat "$PWFILE")")
-      printf "export FILE_EXPLORER_USER='%s'\n" "$EXPLORER_USER" >> /yolab/env
-      printf "export FILE_EXPLORER_AUTH_HASH='%s'\n" "$HASH" >> /yolab/env
+      printf "export FILE_EXPLORER_USER='%s'\nexport FILE_EXPLORER_AUTH_HASH='%s'\n" "$EXPLORER_USER" "$HASH" > /yolab/env.d/explorer
       {{- if $public }}
       echo "YOLAB_OUTPUT file_explorer_url https://$FILE_EXPLORER_FQDN/"
       {{- end }}

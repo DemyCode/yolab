@@ -2,11 +2,11 @@ apiVersion: v2
 name: autobrr
 description: Modern, easy to use download automation for torrents and usenet
 type: application
-version: 0.1.9
+version: 0.1.10
 appVersion: 1.87.0
 dependencies:
 - name: yolab-common
-  version: "0.1.22"
+  version: "0.1.23"
   repository: oci://ghcr.io/demycode/charts
 annotations:
   yolab.io/display-name: autobrr

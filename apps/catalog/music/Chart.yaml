@@ -2,23 +2,23 @@ apiVersion: v2
 name: music
 description: Navidrome to listen, Lidarr to find albums, Prowlarr to search and qBittorrent to download, sharing one music space and set up to work together.
 type: application
-version: 0.2.10
+version: 0.2.11
 
 dependencies:
   - name: yolab-stack
     version: "0.1.1"
     repository: "oci://ghcr.io/demycode/charts"
   - name: navidrome
-    version: "0.2.9"
+    version: "0.2.10"
     repository: "oci://ghcr.io/demycode/charts"
   - name: qbittorrent
-    version: "0.2.9"
+    version: "0.2.10"
     repository: "oci://ghcr.io/demycode/charts"
   - name: prowlarr
-    version: "0.2.9"
+    version: "0.2.10"
     repository: "oci://ghcr.io/demycode/charts"
   - name: lidarr
-    version: "0.2.10"
+    version: "0.2.11"
     repository: "oci://ghcr.io/demycode/charts"
 
 annotations:

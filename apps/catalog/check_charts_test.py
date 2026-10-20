@@ -803,6 +803,97 @@ class GatewayUpstream(RenderedChart):
         self.assertRegex(caddy, r"reverse_proxy \S+\n")
 
 
+def env_part_failures(*containers):
+    found = []
+    check_charts.check_env_parts(
+        "demo", [pod(*containers)], lambda app, msg: found.append(msg)
+    )
+    return found
+
+
+class EnvParts(unittest.TestCase):
+    def test_appending_to_the_shared_env_file_is_reported(self):
+        found = env_part_failures(
+            shell("host", "printf 'export YOLAB_SITES=x\\n' >> /yolab/env\n")
+        )
+        self.assertEqual(len(found), 1)
+
+    def test_overwriting_the_shared_env_file_is_reported(self):
+        found = env_part_failures(
+            shell("tunnel", "printf 'export YOLAB_FQDN=x\\n' > /yolab/env\n")
+        )
+        self.assertEqual(len(found), 1)
+
+    def test_writing_the_loader_is_allowed(self):
+        script = "cat > /yolab/env <<'YOLAB_ENV'\n. /yolab/env.d/env\nYOLAB_ENV\n"
+        self.assertEqual(env_part_failures(shell("tunnel", script)), [])
+
+    def test_a_part_the_loader_never_sources_is_reported(self):
+        found = env_part_failures(
+            shell("extra", "printf 'export X=1\\n' > /yolab/env.d/extra\n")
+        )
+        self.assertEqual(len(found), 1)
+        self.assertIn("extra", found[0])
+
+    def test_appending_to_a_part_is_reported(self):
+        found = env_part_failures(
+            shell("host", "printf 'export X=1\\n' >> /yolab/env.d/host\n")
+        )
+        self.assertEqual(len(found), 1)
+
+    def test_rewriting_an_own_part_passes(self):
+        script = "printf 'export X=1\\n' > /yolab/env.d/host\n"
+        self.assertEqual(env_part_failures(shell("host", script)), [])
+
+
+class EnvSurvivesALoneInitRerun(RenderedChart):
+    CHART = "vaultwarden"
+
+    def run_init(self, root, script, **env):
+        fake_setup = (
+            "printf 'export YOLAB_FQDN=app.example.test\\n"
+            "export YOLAB_URL=https://app.example.test\\n' > \"$YOLAB_DIR/env\""
+        )
+        script = script.replace("exec /bin/sh /setup.sh", fake_setup)
+        script = script.replace("/yolab", root)
+        subprocess.run(
+            ["sh", "-c", script],
+            env={"PATH": os.environ["PATH"], "YOLAB_DIR": f"{root}/env.d", **env},
+            check=True,
+            capture_output=True,
+        )
+
+    def sourced(self, root, var):
+        out = subprocess.run(
+            ["sh", "-c", f'. "{root}/env"; printf %s "${var}"'],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return out.stdout
+
+    def test_rerunning_only_wg_register_keeps_the_host_lines(self):
+        spec = self.deployments(self.docs())["gateway"]
+        inits = {c["name"]: c["command"][2] for c in spec["initContainers"]}
+        with tempfile.TemporaryDirectory() as root:
+            self.run_init(root, inits["wg-register"])
+            self.run_init(root, inits["yolab-host"], CUSTOM_DOMAIN="example.org")
+            self.run_init(root, inits["wg-register"])
+            self.assertEqual(
+                self.sourced(root, "YOLAB_SITES"), "app.example.test, example.org"
+            )
+            self.assertEqual(self.sourced(root, "YOLAB_URL"), "https://example.org")
+
+    def test_the_loader_sources_every_part_the_check_allows(self):
+        spec = self.deployments(self.docs())["gateway"]
+        script = next(
+            c["command"][2] for c in spec["initContainers"] if c["name"] == "wg-register"
+        )
+        self.assertIn(
+            f"for yolab_env_part in {' '.join(check_charts.ENV_PARTS)}; do", script
+        )
+
+
 class JellyfinTranscoding(RenderedChart):
     CHART = "jellyfin"
 
@@ -1343,7 +1434,7 @@ class YolabOffRendered(RenderedChart):
         script = init["command"][2]
         self.assertIn("-X DELETE", script)
         self.assertIn("rm -f /state/wg-state.json", script)
-        self.assertIn("> /yolab/env", script)
+        self.assertIn("> /yolab/env.d/env", script)
 
     def test_a_tunnel_left_running_while_off_is_reported(self):
         docs = self.docs(YOLAB_OFF)

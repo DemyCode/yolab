@@ -59,6 +59,15 @@ yolab-tunnel-credentials
       valueFrom:
         fieldRef:
           fieldPath: metadata.namespace
+    - name: YOLAB_DIR
+      value: /yolab/env.d
+  command:
+    - /bin/sh
+    - -c
+    - |
+      set -eu
+      {{- include "yolab-common.envLoader" . | nindent 6 }}
+      exec /bin/sh /setup.sh
   volumeMounts:
     - name: wireguard
       mountPath: /wireguard
@@ -150,12 +159,22 @@ yolab-tunnel-credentials
 {{- end -}}
 
 
+{{- define "yolab-common.envLoader" -}}
+mkdir -p /yolab/env.d
+cat > /yolab/env <<'YOLAB_ENV'
+for yolab_env_part in env host explorer apikey; do
+  if [ -f "/yolab/env.d/$yolab_env_part" ]; then . "/yolab/env.d/$yolab_env_part"; fi
+done
+YOLAB_ENV
+{{- end -}}
+
+
 {{- define "yolab-common.hostExports" -}}
 . /yolab/env
 HOST="${CUSTOM_DOMAIN:-$YOLAB_FQDN}"
 SITES="$YOLAB_FQDN"
 if [ -n "${CUSTOM_DOMAIN:-}" ]; then SITES="$YOLAB_FQDN, $CUSTOM_DOMAIN"; fi
-printf 'export YOLAB_HOST=%s\nexport YOLAB_URL=https://%s\nexport YOLAB_SITES="%s"\n' "$HOST" "$HOST" "$SITES" >> /yolab/env
+printf 'export YOLAB_HOST=%s\nexport YOLAB_URL=https://%s\nexport YOLAB_SITES="%s"\n' "$HOST" "$HOST" "$SITES" > /yolab/env.d/host
 {{- end -}}
 
 
@@ -193,7 +212,8 @@ printf 'export YOLAB_HOST=%s\nexport YOLAB_URL=https://%s\nexport YOLAB_SITES="%
             echo "YoLab address switched off, but removing tunnel $TUNNEL_ID returned HTTP $STATUS; will retry on the next start" ;;
         esac
       fi
-      printf 'export YOLAB_FQDN=\nexport YOLAB_URL=\n' > /yolab/env
+      {{- include "yolab-common.envLoader" . | nindent 6 }}
+      printf 'export YOLAB_FQDN=\nexport YOLAB_URL=\n' > /yolab/env.d/env
   volumeMounts:
     - name: yolab
       mountPath: /yolab
@@ -358,8 +378,9 @@ data:
     - /bin/sh
     - -c
     - |
+      {{- include "yolab-common.envLoader" . | nindent 6 }}
       {{- if ne (include "yolab-common.yolab.enabled" .) "true" }}
-      printf 'export YOLAB_FQDN=\nexport YOLAB_URL=\n' > /yolab/env
+      printf 'export YOLAB_FQDN=\nexport YOLAB_URL=\n' > /yolab/env.d/env
       exit 0
       {{- end }}
       until [ -s /state/wg-state.json ]; do
@@ -371,7 +392,7 @@ data:
         echo "wg-state.json carries no fqdn — refusing to start with a blank URL" >&2
         exit 1
       fi
-      printf 'export YOLAB_FQDN=%s\nexport YOLAB_URL=https://%s\n' "$FQDN" "$FQDN" > /yolab/env
+      printf 'export YOLAB_FQDN=%s\nexport YOLAB_URL=https://%s\n' "$FQDN" "$FQDN" > /yolab/env.d/env
       echo "resolved YOLAB_FQDN=$FQDN"
       {{- include "yolab-common.hostExports" . | nindent 6 }}
   volumeMounts:

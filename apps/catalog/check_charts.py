@@ -626,6 +626,7 @@ def check(app, docs, fail, chart_yaml="", schema=None, arches=None):
                 fail(app, f"Secret key {k} rendered empty")
 
     check_sourced_secrets_reach_the_program(app, docs, fail)
+    check_env_parts(app, docs, fail)
 
     for d in docs:
         spec = (d.get("spec", {}).get("template", {}) or {}).get("spec", {})
@@ -1196,6 +1197,46 @@ def check_file_explorer_ways(app, docs, fail):
             app,
             "the explorer's Tailscale would keep its identity in a Kubernetes Secret",
         )
+
+
+ENV_PARTS = ("env", "host", "explorer", "apikey")
+ENV_LOADER_WRITE = "cat > /yolab/env <<'YOLAB_ENV'"
+WRITES_ENV = re.compile(r"(?m)^.*>>?\s*/yolab/env(?![.\w/]).*$")
+WRITES_ENV_PART = re.compile(r">>?\s*/yolab/env\.d/([\w.-]+)")
+APPENDS_ENV_PART = re.compile(r">>\s*/yolab/env\.d/")
+
+
+def container_scripts(docs):
+    for name, spec in pod_specs(docs):
+        for c in (spec.get("initContainers") or []) + (spec.get("containers") or []):
+            yield name, c["name"], "\n".join(
+                (c.get("command") or [])[2:] + (c.get("args") or [])
+            )
+
+
+def check_env_parts(app, docs, fail):
+    for pod_name, container, script in container_scripts(docs):
+        for line in WRITES_ENV.findall(script):
+            if line.strip() != ENV_LOADER_WRITE:
+                fail(
+                    app,
+                    f"pod {pod_name}: {container} writes /yolab/env itself — write "
+                    f"its own /yolab/env.d/<part>, or a lone re-run of another init "
+                    f"container erases the line",
+                )
+        if APPENDS_ENV_PART.search(script):
+            fail(
+                app,
+                f"pod {pod_name}: {container} appends to a /yolab/env.d part — "
+                f"rewrite the whole part so a re-run never duplicates or keeps stale lines",
+            )
+        for part in WRITES_ENV_PART.findall(script):
+            if part not in ENV_PARTS:
+                fail(
+                    app,
+                    f"pod {pod_name}: {container} writes /yolab/env.d/{part}, which "
+                    f"/yolab/env never sources (it reads {', '.join(ENV_PARTS)})",
+                )
 
 
 def check_yolab_off(app, docs, fail):

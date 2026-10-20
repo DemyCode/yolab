@@ -21,7 +21,7 @@
         chmod 600 "$KEYFILE"
       fi
       KEY=$(cat "$KEYFILE")
-      printf "export YOLAB_API_KEY='%s'\n" "$KEY" >> /yolab/env
+      printf "export YOLAB_API_KEY='%s'\n" "$KEY" > /yolab/env.d/apikey
       echo "YOLAB_OUTPUT api_key $KEY"
       . /yolab/env
       if [ -n "${YOLAB_FQDN:-}" ]; then
