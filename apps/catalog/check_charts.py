@@ -1209,8 +1209,10 @@ APPENDS_ENV_PART = re.compile(r">>\s*/yolab/env\.d/")
 def container_scripts(docs):
     for name, spec in pod_specs(docs):
         for c in (spec.get("initContainers") or []) + (spec.get("containers") or []):
-            yield name, c["name"], "\n".join(
-                (c.get("command") or [])[2:] + (c.get("args") or [])
+            yield (
+                name,
+                c["name"],
+                "\n".join((c.get("command") or [])[2:] + (c.get("args") or [])),
             )
 
 

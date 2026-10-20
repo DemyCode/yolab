@@ -150,7 +150,13 @@ pub async fn run(args: &[String]) -> i32 {
     let env = StorageEnv::from_env();
     let node = crate::system::hostname();
 
-    let known = ["noout-clear", "noout-set", "bootstrap", "reset-wipe", "release"];
+    let known = [
+        "noout-clear",
+        "noout-set",
+        "bootstrap",
+        "reset-wipe",
+        "release",
+    ];
     if !known.contains(&sub) {
         eprintln!("storage: unknown subcommand '{sub}'");
         return 2;

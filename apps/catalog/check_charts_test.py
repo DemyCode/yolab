@@ -852,7 +852,7 @@ class EnvSurvivesALoneInitRerun(RenderedChart):
     def run_init(self, root, script, **env):
         fake_setup = (
             "printf 'export YOLAB_FQDN=app.example.test\\n"
-            "export YOLAB_URL=https://app.example.test\\n' > \"$YOLAB_DIR/env\""
+            'export YOLAB_URL=https://app.example.test\\n\' > "$YOLAB_DIR/env"'
         )
         script = script.replace("exec /bin/sh /setup.sh", fake_setup)
         script = script.replace("/yolab", root)
@@ -887,7 +887,9 @@ class EnvSurvivesALoneInitRerun(RenderedChart):
     def test_the_loader_sources_every_part_the_check_allows(self):
         spec = self.deployments(self.docs())["gateway"]
         script = next(
-            c["command"][2] for c in spec["initContainers"] if c["name"] == "wg-register"
+            c["command"][2]
+            for c in spec["initContainers"]
+            if c["name"] == "wg-register"
         )
         self.assertIn(
             f"for yolab_env_part in {' '.join(check_charts.ENV_PARTS)}; do", script

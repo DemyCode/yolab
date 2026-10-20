@@ -87,7 +87,11 @@ async fn stop_pods<H: Host>(host: &H, root: &Path, waits: Waits) {
         return;
     }
     signal_pods(host, "--signal=SIGTERM").await;
-    if wait_until(waits.pods, waits.poll, move || async move { !pods_running(root) }).await {
+    if wait_until(waits.pods, waits.poll, move || async move {
+        !pods_running(root)
+    })
+    .await
+    {
         return;
     }
     tracing::warn!(
@@ -95,7 +99,11 @@ async fn stop_pods<H: Host>(host: &H, root: &Path, waits: Waits) {
         waits.pods.as_secs()
     );
     signal_pods(host, "--signal=SIGKILL").await;
-    if !wait_until(waits.pods, waits.poll, move || async move { !pods_running(root) }).await {
+    if !wait_until(waits.pods, waits.poll, move || async move {
+        !pods_running(root)
+    })
+    .await
+    {
         tracing::warn!("pods still running after SIGKILL — unmounting under them");
     }
 }
@@ -108,7 +116,10 @@ async fn signal_pods<H: Host>(host: &H, signal: &str) {
 }
 
 fn pods_running(root: &Path) -> bool {
-    let events = root.join("sys/fs/cgroup").join(PODS_SLICE).join("cgroup.events");
+    let events = root
+        .join("sys/fs/cgroup")
+        .join(PODS_SLICE)
+        .join("cgroup.events");
     std::fs::read_to_string(events)
         .map(|text| text.lines().any(|l| l.trim() == "populated 1"))
         .unwrap_or(false)
@@ -126,7 +137,9 @@ fn process_named(root: &Path, name: &str) -> bool {
 }
 
 async fn kill<H: Host>(host: &H, signal: &str, matching: &[&str]) {
-    let args: Vec<&str> = std::iter::once(signal).chain(matching.iter().copied()).collect();
+    let args: Vec<&str> = std::iter::once(signal)
+        .chain(matching.iter().copied())
+        .collect();
     match host.run_cmd("pkill", &args).await {
         Ok(o) if !o.success && !o.stderr.trim().is_empty() => {
             tracing::warn!("pkill {}: {}", args.join(" "), o.stderr.trim())
@@ -138,12 +151,19 @@ async fn kill<H: Host>(host: &H, signal: &str, matching: &[&str]) {
 
 async fn unmount<H: Host>(host: &H, target: &Path) -> bool {
     let target_s = target.to_string_lossy().into_owned();
-    let out = host.run_cmd_bounded("umount", &[target_s.as_str()], UMOUNT_TIMEOUT).await;
+    let out = host
+        .run_cmd_bounded("umount", &[target_s.as_str()], UMOUNT_TIMEOUT)
+        .await;
     if out.as_ref().is_ok_and(|o| o.success) {
         return true;
     }
-    tracing::warn!("unmount {target_s} failed ({}) — detaching it lazily", reason(&out));
-    let lazy = host.run_cmd_bounded("umount", &["-l", target_s.as_str()], UMOUNT_TIMEOUT).await;
+    tracing::warn!(
+        "unmount {target_s} failed ({}) — detaching it lazily",
+        reason(&out)
+    );
+    let lazy = host
+        .run_cmd_bounded("umount", &["-l", target_s.as_str()], UMOUNT_TIMEOUT)
+        .await;
     if lazy.as_ref().is_ok_and(|o| o.success) {
         return true;
     }
@@ -256,7 +276,10 @@ mod tests {
     fn overlays_on_the_image_store_come_off_before_the_store_itself() {
         let root = machine(MOUNTINFO, "populated 0\n");
         let found = ceph_backed_mounts(root.path());
-        let overlay = found.iter().position(|p| p.ends_with("abc/rootfs")).unwrap();
+        let overlay = found
+            .iter()
+            .position(|p| p.ends_with("abc/rootfs"))
+            .unwrap();
         let store = found
             .iter()
             .position(|p| p == Path::new("/var/lib/rancher/k3s/agent/containerd"))
@@ -272,14 +295,19 @@ mod tests {
 ";
         let root = machine(mountinfo, "populated 0\n");
         let found = ceph_backed_mounts(root.path());
-        assert_eq!(found[0], Path::new("/var/lib/kubelet/pods/u/volumes/pvc-1/mount/app"));
+        assert_eq!(
+            found[0],
+            Path::new("/var/lib/kubelet/pods/u/volumes/pvc-1/mount/app")
+        );
     }
 
     #[tokio::test]
     async fn nothing_is_killed_while_k3s_is_still_running() {
         let root = machine(MOUNTINFO, "populated 1\n");
         let host = FakeHost::new().ok("systemctl is-active --quiet k3s.service", "");
-        let err = run(&host, root.path(), "k3s.service", NO_WAIT).await.unwrap_err();
+        let err = run(&host, root.path(), "k3s.service", NO_WAIT)
+            .await
+            .unwrap_err();
         assert!(err.to_string().contains("still running"));
         assert!(!host.ran("systemctl kill"));
         assert!(!host.ran("pkill"));
@@ -289,12 +317,20 @@ mod tests {
     #[tokio::test]
     async fn running_pods_are_asked_to_stop_before_anything_is_unmounted() {
         let root = machine(MOUNTINFO, "populated 1\n");
-        let events = root.path().join("sys/fs/cgroup").join(PODS_SLICE).join("cgroup.events");
+        let events = root
+            .path()
+            .join("sys/fs/cgroup")
+            .join(PODS_SLICE)
+            .join("cgroup.events");
         let host = stopped_k3s().effect("systemctl kill --signal=SIGTERM", move |_, _| {
             std::fs::write(&events, "populated 0\n").unwrap();
         });
-        run(&host, root.path(), "k3s.service", NO_WAIT).await.unwrap();
-        let term = host.position("systemctl kill --signal=SIGTERM kubepods.slice").unwrap();
+        run(&host, root.path(), "k3s.service", NO_WAIT)
+            .await
+            .unwrap();
+        let term = host
+            .position("systemctl kill --signal=SIGTERM kubepods.slice")
+            .unwrap();
         let first_umount = host.position("umount").unwrap();
         assert!(term < first_umount);
         assert!(!host.ran("--signal=SIGKILL"));
@@ -304,7 +340,9 @@ mod tests {
     async fn pods_that_ignore_sigterm_are_killed() {
         let root = machine(MOUNTINFO, "populated 1\n");
         let host = stopped_k3s();
-        run(&host, root.path(), "k3s.service", NO_WAIT).await.unwrap();
+        run(&host, root.path(), "k3s.service", NO_WAIT)
+            .await
+            .unwrap();
         assert!(host.ran("systemctl kill --signal=SIGKILL kubepods.slice"));
     }
 
@@ -312,10 +350,16 @@ mod tests {
     async fn containerd_and_the_shims_go_before_the_image_store_is_unmounted() {
         let root = machine(MOUNTINFO, "populated 0\n");
         let host = stopped_k3s();
-        run(&host, root.path(), "k3s.service", NO_WAIT).await.unwrap();
+        run(&host, root.path(), "k3s.service", NO_WAIT)
+            .await
+            .unwrap();
         let containerd = host.position("pkill -TERM -x containerd").unwrap();
-        let shims = host.position("pkill -KILL -f containerd-shim-runc-v2").unwrap();
-        let store = host.position("umount /var/lib/rancher/k3s/agent/containerd").unwrap();
+        let shims = host
+            .position("pkill -KILL -f containerd-shim-runc-v2")
+            .unwrap();
+        let store = host
+            .position("umount /var/lib/rancher/k3s/agent/containerd")
+            .unwrap();
         assert!(containerd < store && shims < store);
     }
 
@@ -323,7 +367,9 @@ mod tests {
     async fn everything_is_flushed_after_the_unmounts() {
         let root = machine(MOUNTINFO, "populated 0\n");
         let host = stopped_k3s();
-        run(&host, root.path(), "k3s.service", NO_WAIT).await.unwrap();
+        run(&host, root.path(), "k3s.service", NO_WAIT)
+            .await
+            .unwrap();
         let calls = host.calls();
         let last_umount = calls.iter().rposition(|c| c.starts_with("umount")).unwrap();
         let sync = calls.iter().rposition(|c| c.starts_with("sync")).unwrap();
@@ -337,7 +383,9 @@ mod tests {
         let host = stopped_k3s()
             .fail("umount /mnt/vol", "target is busy")
             .ok("umount -l /mnt/vol", "");
-        run(&host, root.path(), "k3s.service", NO_WAIT).await.unwrap();
+        run(&host, root.path(), "k3s.service", NO_WAIT)
+            .await
+            .unwrap();
         assert!(host.ran("umount -l /mnt/vol"));
     }
 
@@ -348,7 +396,9 @@ mod tests {
         let host = stopped_k3s()
             .fail("umount /mnt/vol", "target is busy")
             .fail("umount -l /mnt/vol", "invalid argument");
-        let err = run(&host, root.path(), "k3s.service", NO_WAIT).await.unwrap_err();
+        let err = run(&host, root.path(), "k3s.service", NO_WAIT)
+            .await
+            .unwrap_err();
         assert!(err.to_string().contains("/mnt/vol"));
         assert!(host.ran("sync"));
     }
