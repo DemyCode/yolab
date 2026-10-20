@@ -33,6 +33,10 @@
 
   cephCfg = s.homelabConfig.ceph or {};
 
+  flannelVxlanPort = 8472;
+  lanSet4 = "yolab-lan4";
+  lanSet6 = "yolab-lan6";
+
   cephSeedAddr =
     if isFirstNode
     then ""
@@ -132,6 +136,13 @@ in {
           "flannel-v6.1"
         ];
         checkReversePath = false;
+        extraPackages = [pkgs.ipset];
+        extraCommands = ''
+          ipset create ${lanSet4} hash:net family inet -exist
+          ipset create ${lanSet6} hash:net family inet6 -exist
+          iptables -A nixos-fw -p udp --dport ${toString flannelVxlanPort} -m set --match-set ${lanSet4} src -j nixos-fw-accept
+          ip6tables -A nixos-fw -p udp --dport ${toString flannelVxlanPort} -m set --match-set ${lanSet6} src -j nixos-fw-accept
+        '';
       };
 
       wireguard.interfaces.wg0 = {
@@ -259,6 +270,26 @@ in {
       };
       path = [pkgs.iproute2];
       environment.YOLAB_NODE_IPV6 = s.nodeCfg.sub_ipv6_private;
+    };
+
+    systemd.services.yolab-lan-subnets = {
+      description = "Keep the firewall's LAN subnets (allowed to send flannel VXLAN) current";
+      after = ["firewall.service"];
+      wantedBy = ["multi-user.target"];
+      startLimitIntervalSec = 0;
+      serviceConfig = {
+        Restart = "always";
+        RestartSec = "5";
+        ExecStart = "${localApiEnv}/bin/local-api boot lan-subnets";
+      };
+      path = [
+        pkgs.iproute2
+        pkgs.ipset
+      ];
+      environment = {
+        YOLAB_LAN_SET4 = lanSet4;
+        YOLAB_LAN_SET6 = lanSet6;
+      };
     };
 
     systemd.services.k3s = {

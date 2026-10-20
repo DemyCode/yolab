@@ -17,7 +17,7 @@ const VIRTUAL_PREFIXES: &[&str] = &[
     "zt",
 ];
 
-fn is_physical(iface: &str) -> bool {
+pub(crate) fn is_physical(iface: &str) -> bool {
     !VIRTUAL_PREFIXES.iter().any(|p| iface.starts_with(p))
 }
 

@@ -1,5 +1,6 @@
 mod banner;
 mod csi_recovery;
+mod lan_subnets;
 mod node_ip;
 
 use anyhow::Result;
@@ -17,6 +18,9 @@ pub async fn run(args: &[String]) -> i32 {
 
     let result: Result<()> = match sub {
         "node-ip" => node_ip::run(&host, &env("YOLAB_NODE_IPV6"), std::path::Path::new("/")).await,
+        "lan-subnets" => {
+            lan_subnets::run(&host, &env("YOLAB_LAN_SET4"), &env("YOLAB_LAN_SET6")).await
+        }
         "csi-recovery" => match crate::k8s::client().await {
             Ok(client) => csi_recovery::run(&client).await,
             Err(e) => Err(e),
