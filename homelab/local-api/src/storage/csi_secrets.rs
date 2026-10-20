@@ -9,6 +9,8 @@ use crate::routers::backup_common::Backend;
 
 const NS: &str = "rook-ceph";
 
+const KERNEL_MOUNT_OPTIONS: &str = "ms_mode=secure";
+
 pub const PROVISIONER_ENTITY: &str = "client.csi-cephfs-provisioner";
 pub const NODE_ENTITY: &str = "client.csi-cephfs-node";
 pub const NODE_ENTITY_AES256K: &str = "client.csi-cephfs-node-aes256k";
@@ -45,7 +47,7 @@ pub const ROOK_ONLY_LEFTOVERS: &[(&str, &str)] = &[
     ("ConfigMap", "rook-ceph-csi-mapping-config"),
 ];
 
-fn mon_v1_addrs(dump: &Value) -> Vec<String> {
+fn mon_v2_addrs(dump: &Value) -> Vec<String> {
     let Some(mons) = dump["mons"].as_array() else {
         return Vec::new();
     };
@@ -54,7 +56,7 @@ fn mon_v1_addrs(dump: &Value) -> Vec<String> {
             m["public_addrs"]["addrvec"]
                 .as_array()?
                 .iter()
-                .find(|a| a["type"] == "v1")?["addr"]
+                .find(|a| a["type"] == "v2")?["addr"]
                 .as_str()
                 .map(str::to_string)
         })
@@ -65,7 +67,7 @@ fn csi_cluster_config_json(mon_addrs: &[String]) -> String {
     json!([{
         "clusterID": NS,
         "monitors": mon_addrs,
-        "cephFS": {"subvolumeGroup": ""},
+        "cephFS": {"subvolumeGroup": "", "kernelMountOptions": KERNEL_MOUNT_OPTIONS},
         "rbd": {},
     }])
     .to_string()
@@ -173,14 +175,14 @@ pub async fn run<H: Host>(b: &Backend<H>) -> Result<()> {
         .ceph_json(&["mon", "dump"])
         .await
         .unwrap_or(Value::Null);
-    let v1_addrs = mon_v1_addrs(&dump);
-    if v1_addrs.is_empty() {
+    let v2_addrs = mon_v2_addrs(&dump);
+    if v2_addrs.is_empty() {
         tracing::warn!(
             "csi-secrets: no mon address in ceph mon dump — not publishing a broken CSI config"
         );
         return Ok(());
     }
-    let csi_cfg = csi_cluster_config_json(&v1_addrs);
+    let csi_cfg = csi_cluster_config_json(&v2_addrs);
 
     let cephfs_prov = ensure_key(host, PROVISIONER_ENTITY, PROVISIONER_CAPS).await?;
     let (node_entity, cephfs_node) = node_credential(host).await?;
@@ -219,7 +221,7 @@ pub async fn run<H: Host>(b: &Backend<H>) -> Result<()> {
 
     tracing::info!(
         "csi-secrets: published Ceph credentials ({node_entity}) for mons {}",
-        v1_addrs.join(",")
+        v2_addrs.join(",")
     );
     Ok(())
 }
@@ -241,29 +243,36 @@ mod tests {
     }
 
     #[test]
-    fn mon_v1_addrs_picks_only_the_v1_endpoint() {
+    fn mon_v2_addrs_picks_only_the_v2_endpoint_because_msgr1_cannot_encrypt() {
         let d = dump_with(&[("yolab-n1", "fd00:cafe::1")]);
-        assert_eq!(mon_v1_addrs(&d), vec!["[fd00:cafe::1]:6789"]);
+        assert_eq!(mon_v2_addrs(&d), vec!["[fd00:cafe::1]:3300"]);
     }
 
     #[test]
-    fn mon_v1_addrs_covers_every_mon() {
+    fn every_cephfs_mount_asks_for_an_encrypted_connection() {
+        let cfg: Value =
+            serde_json::from_str(&csi_cluster_config_json(&["[fd00::1]:3300".into()])).unwrap();
+        assert_eq!(cfg[0]["cephFS"]["kernelMountOptions"], "ms_mode=secure");
+    }
+
+    #[test]
+    fn mon_v2_addrs_covers_every_mon() {
         let d = dump_with(&[("yolab-n1", "fd00:cafe::1"), ("yolab-n2", "fd00:cafe::2")]);
-        assert_eq!(mon_v1_addrs(&d).len(), 2);
+        assert_eq!(mon_v2_addrs(&d).len(), 2);
     }
 
     #[test]
-    fn mon_v1_addrs_is_empty_on_an_unreadable_dump() {
-        assert!(mon_v1_addrs(&Value::Null).is_empty());
-        assert!(mon_v1_addrs(&json!({"mons": []})).is_empty());
+    fn mon_v2_addrs_is_empty_on_an_unreadable_dump() {
+        assert!(mon_v2_addrs(&Value::Null).is_empty());
+        assert!(mon_v2_addrs(&json!({"mons": []})).is_empty());
     }
 
     #[test]
     fn csi_cluster_config_names_the_cluster_id_and_carries_the_monitors() {
         let cfg: Value =
-            serde_json::from_str(&csi_cluster_config_json(&["[fd00::1]:6789".into()])).unwrap();
+            serde_json::from_str(&csi_cluster_config_json(&["[fd00::1]:3300".into()])).unwrap();
         assert_eq!(cfg[0]["clusterID"], "rook-ceph");
-        assert_eq!(cfg[0]["monitors"][0], "[fd00::1]:6789");
+        assert_eq!(cfg[0]["monitors"][0], "[fd00::1]:3300");
     }
 
     #[test]

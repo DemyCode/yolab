@@ -198,7 +198,7 @@ async fn mapped_device<H: Host>(
         return Ok(dev);
     }
     let image = format!("{pool}/{name}");
-    let options = format!("osd_request_timeout={OSD_REQUEST_TIMEOUT_SECS}");
+    let options = format!("osd_request_timeout={OSD_REQUEST_TIMEOUT_SECS},ms_mode=secure");
     let keyring = super::cephx::images_identity(host, root, pool).await;
     let keyring_s = keyring.as_ref().map(|k| k.to_string_lossy().into_owned());
     let mut args = vec!["map", image.as_str(), "-o", options.as_str()];
@@ -517,6 +517,19 @@ mod tests {
             .ok("rbd ls images", "yolab-n1\n")
             .ok("rbd showmapped --format json", "[]")
             .ok("rbd map images/yolab-n1", "/dev/rbd0\n")
+    }
+
+    #[tokio::test]
+    async fn the_images_disk_is_mapped_with_an_encrypted_connection() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = mapped();
+
+        let dev = mapped_device(&host, dir.path(), "images", "yolab-n1")
+            .await
+            .unwrap();
+
+        assert_eq!(dev, "/dev/rbd0");
+        assert!(host.ran("rbd map images/yolab-n1 -o osd_request_timeout=300,ms_mode=secure"));
     }
 
     fn snapshotter_at(store: &Path, db_bytes: usize, snapshot_dirs: usize) {

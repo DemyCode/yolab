@@ -88,6 +88,13 @@ in {
         ms_bind_ipv6 = "true";
         ms_bind_ipv4 = "false";
 
+        ms_cluster_mode = "secure";
+        ms_service_mode = "secure";
+        ms_client_mode = "secure";
+        ms_mon_cluster_mode = "secure";
+        ms_mon_service_mode = "secure";
+        ms_mon_client_mode = "secure";
+
         osd_pool_default_size = "1";
         osd_pool_default_min_size = "1";
         mon_allow_pool_size_one = "true";
