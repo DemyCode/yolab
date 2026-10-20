@@ -38,7 +38,10 @@ fn is_lan_destination(dst: &str) -> bool {
         || d.starts_with("169.254.")
         || d.starts_with("127.")
         || d.starts_with("::1")
-        || d.split('.').next().and_then(|o| o.parse::<u8>().ok()).is_some_and(|o| o >= 224))
+        || d.split('.')
+            .next()
+            .and_then(|o| o.parse::<u8>().ok())
+            .is_some_and(|o| o >= 224))
 }
 
 fn parse_on_link_subnets(json: &str) -> Result<BTreeSet<String>> {
@@ -61,7 +64,10 @@ fn parse_on_link_subnets(json: &str) -> Result<BTreeSet<String>> {
 
 async fn on_link_subnets<H: Host>(host: &H, family: Family) -> Result<BTreeSet<String>> {
     let out = host
-        .run_checked("ip", &["-j", family.ip_flag(), "route", "show", "table", "main"])
+        .run_checked(
+            "ip",
+            &["-j", family.ip_flag(), "route", "show", "table", "main"],
+        )
         .await
         .context("read the routing table")?;
     parse_on_link_subnets(&out)
@@ -75,10 +81,16 @@ async fn replace_set<H: Host>(
 ) -> Result<()> {
     let next = format!("{name}-next");
     let fam = family.ipset_family();
-    host.run_checked("ipset", &["create", name, "hash:net", "family", fam, "-exist"])
-        .await?;
-    host.run_checked("ipset", &["create", &next, "hash:net", "family", fam, "-exist"])
-        .await?;
+    host.run_checked(
+        "ipset",
+        &["create", name, "hash:net", "family", fam, "-exist"],
+    )
+    .await?;
+    host.run_checked(
+        "ipset",
+        &["create", &next, "hash:net", "family", fam, "-exist"],
+    )
+    .await?;
     host.run_checked("ipset", &["flush", &next]).await?;
     for subnet in subnets {
         host.run_checked("ipset", &["add", &next, subnet, "-exist"])
@@ -169,7 +181,10 @@ mod tests {
 
     #[test]
     fn a_wifi_lan_is_trusted_the_same_as_a_wired_one() {
-        assert_eq!(parse_on_link_subnets(WIFI_V4).unwrap(), set(&["10.0.0.0/24"]));
+        assert_eq!(
+            parse_on_link_subnets(WIFI_V4).unwrap(),
+            set(&["10.0.0.0/24"])
+        );
     }
 
     #[test]
@@ -204,7 +219,9 @@ mod tests {
         let host = scripted(WIRED_V4, WIRED_V6);
         let mut last = None;
 
-        sync_family(&host, "yolab-lan6", Family::V6, &mut last).await.unwrap();
+        sync_family(&host, "yolab-lan6", Family::V6, &mut last)
+            .await
+            .unwrap();
 
         let calls = host.calls();
         let ipset: Vec<&str> = calls
@@ -231,7 +248,9 @@ mod tests {
         let host = scripted(WIRED_V4, WIRED_V6);
         let mut last = Some(set(&["192.168.1.0/24"]));
 
-        sync_family(&host, "yolab-lan4", Family::V4, &mut last).await.unwrap();
+        sync_family(&host, "yolab-lan4", Family::V4, &mut last)
+            .await
+            .unwrap();
 
         assert!(!host.ran("ipset"));
     }
@@ -241,7 +260,9 @@ mod tests {
         let host = scripted(WIFI_V4, WIRED_V6);
         let mut last = Some(set(&["192.168.1.0/24"]));
 
-        sync_family(&host, "yolab-lan4", Family::V4, &mut last).await.unwrap();
+        sync_family(&host, "yolab-lan4", Family::V4, &mut last)
+            .await
+            .unwrap();
 
         assert!(host.ran("ipset add yolab-lan4-next 10.0.0.0/24"));
         assert!(!host.ran("ipset add yolab-lan4-next 192.168.1.0/24"));
