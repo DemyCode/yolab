@@ -380,6 +380,7 @@ class FileExplorerReadOnly(unittest.TestCase):
 def pod(*containers):
     return {
         "kind": "Deployment",
+        "metadata": {"name": "demo"},
         "spec": {"template": {"spec": {"containers": list(containers)}}},
     }
 
