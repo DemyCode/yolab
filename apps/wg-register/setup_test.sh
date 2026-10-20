@@ -642,5 +642,45 @@ assert_eq "$RC" "1" "exit code"
 assert_eq "$(grep -c '^POST records' "$SANDBOX/calls.log")" "1" "only the app's own record"
 case_end
 
+state_inode() { stat -c %i "$SANDBOX/state/wg-state.json"; }
+
+case_start "a changed state replaces the file whole, never rewrites it in place"
+write_state <<EOF
+$CACHED_STATE
+EOF
+BEFORE=$(state_inode)
+respond verify 200 '{}'
+respond records 200 "$RECORD_BODY"
+run_setup
+assert_eq "$RC" "0" "exit code"
+assert_contains "$(state)" 'myapp.example.test' "the new FQDN is persisted"
+if [ "$(state_inode)" = "$BEFORE" ]; then
+    bad "the state was rewritten in place, so a crash mid-write could leave it empty"
+else
+    ok
+fi
+case_end
+
+case_start "a restart with nothing new leaves the state file untouched"
+write_state <<EOF
+$CACHED_STATE
+EOF
+respond verify 200 '{}'
+respond records 200 "$RECORD_BODY"
+run_setup
+BEFORE=$(state_inode)
+run_setup
+assert_eq "$RC" "0" "exit code"
+assert_eq "$(state_inode)" "$BEFORE" "an identical state must not be written again"
+case_end
+
+case_start "no temporary state file is left behind"
+respond create 200 "$TUNNEL_BODY"
+respond records 200 "$RECORD_BODY"
+run_setup
+assert_eq "$RC" "0" "exit code"
+assert_eq "$(ls "$SANDBOX/state")" "wg-state.json" "state dir contents"
+case_end
+
 echo "wg-register: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

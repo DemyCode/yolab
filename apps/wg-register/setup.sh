@@ -21,6 +21,19 @@ platform_said() {
     printf '%s' "$1" | jq -Rrs 'fromjson? | .detail? // empty'
 }
 
+save_state() {
+    [ -n "$1" ] || fail "refusing to write an empty tunnel state to $STATE_FILE"
+    if [ -f "$STATE_FILE" ] && [ "$(cat "$STATE_FILE")" = "$1" ]; then
+        return 0
+    fi
+    TMP_STATE=$(mktemp "$STATE_FILE.XXXXXX")
+    printf '%s\n' "$1" >"$TMP_STATE"
+    chmod 600 "$TMP_STATE"
+    sync "$TMP_STATE"
+    mv "$TMP_STATE" "$STATE_FILE"
+    sync "$(dirname "$STATE_FILE")"
+}
+
 mkdir -p "$WG_DIR" "$YOLAB_DIR" "$(dirname "$STATE_FILE")"
 
 OWNER="${POD_NAMESPACE:-}"
@@ -144,10 +157,9 @@ if [ "$REUSE" = "1" ]; then
 fi
 
 if [ "$REUSE" = "1" ]; then
-    TMP_STATE=$(mktemp)
-    jq --arg owner "$OWNER" --arg key "$PRIVATE_KEY" \
-        '.owner = $owner | .wg_private_key = $key' "$STATE_FILE" >"$TMP_STATE" && mv "$TMP_STATE" "$STATE_FILE"
-    chmod 600 "$STATE_FILE"
+    NEW_STATE=$(jq --arg owner "$OWNER" --arg key "$PRIVATE_KEY" \
+        '.owner = $owner | .wg_private_key = $key' "$STATE_FILE")
+    save_state "$NEW_STATE"
 fi
 
 if [ "$REUSE" = "1" ] && [ -n "$SERVICE_NAME" ]; then
@@ -161,8 +173,8 @@ if [ "$REUSE" = "1" ] && [ -n "$SERVICE_NAME" ]; then
     REASSERT_BODY=$(printf '%s' "$REASSERT_RESP" | head -n -1)
     if [ "$REASSERT_HTTP" -ge 200 ] && [ "$REASSERT_HTTP" -lt 300 ]; then
         FQDN=$(printf '%s' "$REASSERT_BODY" | jq -r .fqdn)
-        TMP_STATE=$(mktemp)
-        jq --arg fqdn "$FQDN" '.fqdn = $fqdn' "$STATE_FILE" >"$TMP_STATE" && mv "$TMP_STATE" "$STATE_FILE"
+        NEW_STATE=$(jq --arg fqdn "$FQDN" '.fqdn = $fqdn' "$STATE_FILE")
+        save_state "$NEW_STATE"
         echo "DNS record re-asserted: $FQDN -> $SUB_IPV6"
     else
         echo "WARNING: DNS re-assert returned HTTP $REASSERT_HTTP: $REASSERT_BODY (continuing with cached state)"
@@ -214,7 +226,7 @@ if [ "$REUSE" = "0" ]; then
         FQDN=$(printf '%s' "$RECORD_BODY" | jq -r .fqdn)
     fi
 
-    jq -n \
+    NEW_STATE=$(jq -n \
         --argjson tunnel_id "$TUNNEL_ID" \
         --arg sub_ipv6 "$SUB_IPV6" \
         --arg wg_private_key "$PRIVATE_KEY" \
@@ -224,8 +236,8 @@ if [ "$REUSE" = "0" ]; then
         --arg owner "$OWNER" \
         '{tunnel_id: $tunnel_id, sub_ipv6: $sub_ipv6, wg_private_key: $wg_private_key,
           wg_server_endpoint: $wg_server_endpoint, wg_server_public_key: $wg_server_public_key,
-          fqdn: $fqdn, owner: $owner}' >"$STATE_FILE"
-    chmod 600 "$STATE_FILE"
+          fqdn: $fqdn, owner: $owner}')
+    save_state "$NEW_STATE"
 fi
 
 ALIAS_EXPORTS=""
@@ -249,10 +261,9 @@ for ALIAS in $ALIASES; do
     ALIAS_BODY=$(printf '%s' "$ALIAS_RESP" | head -n -1)
     if [ "$ALIAS_HTTP" -ge 200 ] 2>/dev/null && [ "$ALIAS_HTTP" -lt 300 ]; then
         ALIAS_FQDN=$(printf '%s' "$ALIAS_BODY" | jq -r .fqdn)
-        TMP_STATE=$(mktemp)
-        jq --arg var "$ALIAS_VAR" --arg fqdn "$ALIAS_FQDN" '.aliases[$var] = $fqdn' \
-            "$STATE_FILE" >"$TMP_STATE" && mv "$TMP_STATE" "$STATE_FILE"
-        chmod 600 "$STATE_FILE"
+        NEW_STATE=$(jq --arg var "$ALIAS_VAR" --arg fqdn "$ALIAS_FQDN" '.aliases[$var] = $fqdn' \
+            "$STATE_FILE")
+        save_state "$NEW_STATE"
         echo "DNS alias claimed: $ALIAS_FQDN -> $SUB_IPV6"
     elif [ "$ALIAS_HTTP" -ge 400 ] 2>/dev/null && [ "$ALIAS_HTTP" -lt 500 ]; then
         SAID=$(platform_said "$ALIAS_BODY")
