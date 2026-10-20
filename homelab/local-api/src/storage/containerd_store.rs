@@ -451,7 +451,7 @@ fn holders_of(root: &Path, data_root: &Path) -> Vec<String> {
     out
 }
 
-fn mount_resting_on(line: &str, data_root: &Path) -> Option<PathBuf> {
+pub(crate) fn mount_resting_on(line: &str, data_root: &Path) -> Option<PathBuf> {
     let target = Path::new(line.split(' ').nth(4)?);
     let inside = target != data_root && target.starts_with(data_root);
     let layer = format!("{}/", data_root.display());

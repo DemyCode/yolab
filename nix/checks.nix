@@ -152,6 +152,44 @@ in let
         ''}
         touch $out
       '';
+    ceph-is-released-before-it-stops = let
+      config = nixosSystems.yolab-ci.config;
+      svcs = config.systemd.services;
+      host = config.networking.hostName;
+      release = svcs.yolab-ceph-release or {};
+      unit = "yolab-ceph-release.service";
+      mustFollow = [
+        "wireguard-wg1.service"
+        "ceph-mon-${host}.service"
+        "ceph-mds-${host}.service"
+      ];
+      k3s = svcs.k3s;
+      problems =
+        pkgs.lib.optional (release == {}) "yolab-ceph-release is not a unit"
+        ++ map (u: "yolab-ceph-release is not After=${u}, so ${u} can stop while pods still write through it") (
+          builtins.filter (u: !(builtins.elem u (release.after or []))) mustFollow
+        )
+        ++ pkgs.lib.optional (!(builtins.elem unit (svcs."yolab-ceph-osd@".before or [])))
+        "yolab-ceph-osd@ is not Before=${unit}, so OSDs can stop while pods still write through them"
+        ++ pkgs.lib.optional (!(pkgs.lib.hasInfix "storage release" (release.serviceConfig.ExecStop or "")))
+        "yolab-ceph-release's ExecStop does not run `local-api storage release`"
+        ++ pkgs.lib.optional ((release.stopIfChanged or true) != false)
+        "yolab-ceph-release does not set stopIfChanged = false, so a switch would kill every pod"
+        ++ pkgs.lib.optional (builtins.elem unit ((k3s.after or []) ++ (k3s.requires or []) ++ (k3s.wants or [])))
+        "k3s waits for yolab-ceph-release, which waits for the OSDs";
+    in
+      pkgs.runCommand "ceph-is-released-before-it-stops" {} ''
+        ${pkgs.lib.concatMapStrings (p: "echo ${pkgs.lib.escapeShellArg p} >&2\n") problems}
+        ${pkgs.lib.optionalString (problems != []) ''
+          echo "" >&2
+          echo "On 2026-10-20 node3 stopped its MDS, its OSD and k3s in the same" >&2
+          echo "second. Pods kept their CephFS mounts, their writes could not be" >&2
+          echo "flushed, and files came back 0 bytes." >&2
+          exit 1
+        ''}
+        touch $out
+      '';
+
     wireguard-carries-only-exposure-and-mesh = let
       inherit (pkgs) lib;
       interfaces = nixosSystems.yolab-ci.config.networking.wireguard.interfaces;
@@ -461,6 +499,7 @@ in let
         "yolab-reset-wipe"
         "yolab-ceph-osd@"
         "yolab-ceph-bootstrap"
+        "yolab-ceph-release"
       ];
       missing = builtins.filter (n: !(svcs ? ${n})) mustNotRestart;
       restarted = builtins.filter (n: (svcs.${n}.restartIfChanged or true) != false) (

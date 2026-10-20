@@ -16,6 +16,7 @@ pub mod noout;
 pub mod osd;
 pub mod overview;
 pub mod pivot_lock;
+pub mod release;
 pub mod reset_wipe;
 pub mod settings;
 pub mod wait;
@@ -149,13 +150,13 @@ pub async fn run(args: &[String]) -> i32 {
     let env = StorageEnv::from_env();
     let node = crate::system::hostname();
 
-    let known = ["noout-clear", "noout-set", "bootstrap", "reset-wipe"];
+    let known = ["noout-clear", "noout-set", "bootstrap", "reset-wipe", "release"];
     if !known.contains(&sub) {
         eprintln!("storage: unknown subcommand '{sub}'");
         return 2;
     }
 
-    let _guard = if sub == "noout-set" {
+    let _guard = if sub == "noout-set" || sub == "release" {
         None
     } else {
         match crate::runtime::lock::acquire(&lock_name(sub), BOOT_LOCK_WAIT).await {
@@ -176,6 +177,7 @@ pub async fn run(args: &[String]) -> i32 {
     let result: Result<()> = match sub {
         "noout-clear" => noout::clear(&host, root()).await,
         "noout-set" => noout::set(&host, root()).await,
+        "release" => release::run(&host, root(), controllers::K3S_UNIT, release::WAITS).await,
         "bootstrap" => bootstrap::run(&host, root(), &node, &env.bootstrap_args()).await,
         "reset-wipe" => {
             let config = crate::config::machine_dir().join("config.toml");

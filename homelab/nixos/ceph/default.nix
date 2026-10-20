@@ -160,8 +160,32 @@ in {
       '';
     };
 
+    systemd.services.yolab-ceph-release = {
+      description = "Stop the pods and unmount everything Ceph backs before Ceph stops";
+      wantedBy = ["multi-user.target"];
+      after = [
+        "network-online.target"
+        "wireguard-wg0.service"
+        "wireguard-wg1.service"
+        "ceph-mon-${host}.service"
+        "ceph-mgr-${host}.service"
+        "ceph-mds-${host}.service"
+      ];
+      restartIfChanged = false;
+      stopIfChanged = false;
+      path = with pkgs; [procps util-linux coreutils systemd];
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        ExecStart = "${pkgs.coreutils}/bin/true";
+        ExecStop = "${localApiEnv}/bin/local-api storage release";
+        TimeoutStopSec = "300s";
+      };
+    };
+
     systemd.services."yolab-ceph-osd@" = {
       description = "Ceph OSD %i";
+      before = ["yolab-ceph-release.service"];
       after = ["network-online.target" "ceph-mon-${host}.service"];
       wants = ["network-online.target" "ceph-mon-${host}.service"];
       restartIfChanged = false;
