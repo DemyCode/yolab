@@ -416,7 +416,7 @@ in let
 
     host-seam-ratchet = let
       budget = {
-        "boot/mod.rs" = 3;
+        "boot/mod.rs" = 2;
         "cephfs.rs" = 1;
         "charts.rs" = 1;
         "disks_reconciler.rs" = 2;
