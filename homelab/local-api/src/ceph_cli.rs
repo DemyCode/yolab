@@ -4,8 +4,8 @@ use serde_json::Value;
 use tokio::sync::Mutex;
 
 use crate::ceph::destructive::{self, Door};
-use crate::rados;
 use crate::exec::{self, CmdError};
+use crate::rados;
 
 static CEPH_VOLUME_LOCK: Mutex<()> = Mutex::const_new(());
 

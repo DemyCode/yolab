@@ -336,8 +336,8 @@ fn slot() -> std::sync::MutexGuard<'static, Slot> {
 }
 
 fn cluster() -> Result<Arc<Cluster>, String> {
-    let conf = conf_digest(Path::new(CONF_DIR))
-        .map_err(|e| format!("cannot read {CONF_DIR}: {e}"))?;
+    let conf =
+        conf_digest(Path::new(CONF_DIR)).map_err(|e| format!("cannot read {CONF_DIR}: {e}"))?;
     let mut s = slot();
     if s.conf != conf {
         s.conf = conf.clone();
@@ -552,7 +552,9 @@ mod tests {
 
     #[test]
     fn the_json_format_flag_follows_the_format_argument() {
-        assert!(mon_command(&["df", "-f", "json-pretty"]).unwrap().json_format());
+        assert!(mon_command(&["df", "-f", "json-pretty"])
+            .unwrap()
+            .json_format());
         assert!(!mon_command(&["df", "-f", "plain"]).unwrap().json_format());
         assert!(!mon_command(&["fsid"]).unwrap().json_format());
     }
