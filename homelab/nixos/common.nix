@@ -5,8 +5,8 @@
   yolabConfigPath,
   rust,
   localApiEnv,
-  yolabRev ? "",
-  yolabLastModified ? null,
+  yolabRev,
+  yolabLastModified,
   ...
 }: let
   s = import ../shared.nix {
@@ -33,6 +33,13 @@
 
   cephCfg = s.homelabConfig.ceph or {};
 
+  nameservers = [
+    "2606:4700:4700::1111"
+    "2001:4860:4860::8888"
+  ];
+
+  localApi = "[::1]:3001";
+
   flannelVxlanPort = 8472;
   lanSet4 = "yolab-lan4";
   lanSet6 = "yolab-lan6";
@@ -58,16 +65,6 @@ in {
   ];
 
   options.yolab = {
-    platform = lib.mkOption {
-      type = lib.types.str;
-      default = "nixos";
-      description = "Platform identifier forwarded to local-api (nixos, wsl, …).";
-    };
-    flakeTarget = lib.mkOption {
-      type = lib.types.str;
-      default = "yolab";
-      description = "Flake output name used by nixos-rebuild switch.";
-    };
     machineDir = lib.mkOption {
       type = lib.types.str;
       default = "/var/lib/yolab/machine";
@@ -93,30 +90,19 @@ in {
     ];
 
     yolab.ceph = {
-      enable = true;
       fsid = cephCfg.fsid or (throw "[ceph] fsid is required in config.toml");
       monAddr = s.nodeCfg.sub_ipv6_private;
       clusterSubnet = s.privateSubnet;
       joinSeedAddr = cephSeedAddr;
-      imagesStore.enable = true;
-      filesystem.enable = true;
-      maintenance.enable = true;
     };
 
     time.timeZone = s.timezone;
     i18n.defaultLocale = s.locale;
 
-    networking.nameservers = [
-      "2606:4700:4700::1111"
-      "2001:4860:4860::8888"
-    ];
+    networking.nameservers = nameservers;
 
-    environment.etc."k3s-resolv.conf".text = ''
-      nameserver 1.1.1.1
-      nameserver 8.8.8.8
-      nameserver 2606:4700:4700::1111
-      nameserver 2001:4860:4860::8888
-    '';
+    environment.etc."k3s-resolv.conf".text =
+      lib.concatMapStrings (n: "nameserver ${n}\n") (["1.1.1.1" "8.8.8.8"] ++ nameservers);
 
     networking = {
       hostName = s.hostname;
@@ -151,7 +137,6 @@ in {
         allowedIPsAsRoutes = false;
 
         postSetup = ''
-          # B. Source policy: public address always exits wg0.
           if [ -z "$(ip -6 rule show from ${s.tunnelCfg.sub_ipv6} lookup 51820 priority 100)" ]; then
             ip -6 rule add from ${s.tunnelCfg.sub_ipv6} lookup 51820 priority 100
           fi
@@ -184,7 +169,6 @@ in {
         listenPort = 51821;
 
         postSetup = ''
-          # A. Destination route: all cluster-node IPs go through wg1.
           ip -6 route replace ${s.privateSubnet} dev wg1
         '';
 
@@ -315,9 +299,6 @@ in {
         hash = "sha256-hlu5ryAU9eUGVQmDrAF6tWKQ6wbJTwkVg8crx4497kU=";
       };
       configFile = pkgs.writeText "Caddyfile" ''
-        # A certificate for a shared name: `import shared_tls <name>`. The key is
-        # the account token, from the environment file yolab-caddy-credentials
-        # writes — never in the Nix store.
         (shared_tls) {
           tls {
             dns acmedns {
@@ -329,17 +310,15 @@ in {
           }
         }
 
-        # The interface, served identically under this machine's own name and
-        # under the name every machine shares.
         (yolab_ui) {
           handle /api/* {
-            reverse_proxy [::1]:3001
+            reverse_proxy ${localApi}
           }
-          handle /ceph-dashboard* {
-            forward_auth [::1]:3001 {
+          handle ${config.yolab.ceph.dashboard.urlPrefix}* {
+            forward_auth ${localApi} {
               uri /api/auth/check
             }
-            reverse_proxy [::1]:3001
+            reverse_proxy ${localApi}
           }
           handle {
             root * ${s.clientUi}
@@ -356,16 +335,11 @@ in {
           import yolab_ui
         }
 
-        # Whichever machine is up: the platform's DNS answers with every machine
-        # whose tunnel is (see homelab/local-api/src/shared_names.rs).
         cluster.${userDomain} {
           import shared_tls cluster
           import yolab_ui
         }
 
-        # Phone notifications (ntfy, below), from whichever machine is up. A site
-        # of its own: ntfy only serves from the root of a host. Subscriptions are
-        # long-lived streams, so every event is passed straight through.
         notify.${userDomain} {
           import shared_tls notify
           reverse_proxy [::1]:2586 {
@@ -396,7 +370,7 @@ in {
         Type = "oneshot";
         RemainAfterExit = true;
         TimeoutStartSec = "60s";
-        ExecStart = "${s.localApiEnv}/bin/local-api shared-names credentials";
+        ExecStart = "${localApiEnv}/bin/local-api shared-names credentials";
       };
     };
 
@@ -422,7 +396,7 @@ in {
         Type = "oneshot";
         RemainAfterExit = true;
         TimeoutStartSec = "60s";
-        ExecStart = "${s.localApiEnv}/bin/local-api notify credentials";
+        ExecStart = "${localApiEnv}/bin/local-api notify credentials";
       };
     };
 
@@ -430,100 +404,76 @@ in {
       after = ["network.target"];
       wants = ["k3s.service"];
       wantedBy = ["multi-user.target"];
-      environment =
-        {
-          PATH = lib.mkForce (
-            lib.optionalString config.yolab.ceph.enable "${
-              lib.makeBinPath (
-                with pkgs; [
-                  ceph
-                  ceph-client
-                  lvm2
-                  util-linux
-                  xfsprogs
-                  e2fsprogs
-                  coreutils
-                  systemd
-                ]
-              )
-            }:"
-            + "/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin:/run/wrappers/bin"
-          );
-          YOLAB_MACHINE_DIR = config.yolab.machineDir;
-          YOLAB_CONFIG = "${config.yolab.machineDir}/config.toml";
-          YOLAB_PLATFORM = config.yolab.platform;
-          YOLAB_FLAKE_TARGET = config.yolab.flakeTarget;
-          YOLAB_NODE_IPV6 = s.nodeCfg.sub_ipv6_private;
-          KUBECONFIG = "/etc/rancher/k3s/k3s.yaml";
-          NIX_SSL_CERT_FILE = "/etc/static/ssl/certs/ca-bundle.crt";
-          SSL_CERT_FILE = "/etc/static/ssl/certs/ca-bundle.crt";
-        }
-        // lib.optionalAttrs config.yolab.ceph.enable {
-          YOLAB_LIBRADOS = "${pkgs.ceph.lib}/lib/librados.so.2";
-          YOLAB_CEPH_FSID = config.yolab.ceph.fsid;
-          YOLAB_CEPH_MON_ADDR = config.yolab.ceph.monAddr;
-          YOLAB_CEPH_JOIN_SEED_ADDR = config.yolab.ceph.joinSeedAddr;
-          YOLAB_CEPH_IMAGES_POOL = config.yolab.ceph.imagesStore.poolName;
-          YOLAB_CEPH_IMAGES_SHARE = toString config.yolab.ceph.imagesStore.shareOfPool;
-          YOLAB_CEPH_IMAGES_MIN_GB = toString config.yolab.ceph.imagesStore.minSizeGb;
-          YOLAB_CEPH_IMAGES_FS = config.yolab.ceph.imagesStore.filesystem;
-          YOLAB_CEPH_CSI_MANIFESTS = "${./ceph-csi/cephfs.yaml}";
-          YOLAB_CEPH_DASHBOARD_PORT = toString config.yolab.ceph.dashboard.port;
-          YOLAB_CEPH_DASHBOARD_PREFIX = config.yolab.ceph.dashboard.urlPrefix;
-          YOLAB_CEPH_DASHBOARD_PASSWORD_FILE = config.yolab.ceph.dashboard.passwordFile;
-          YOLAB_CEPH_MDS =
-            if config.yolab.ceph.filesystem.enable
-            then "1"
-            else "0";
-        };
+      environment = {
+        PATH = lib.mkForce (
+          lib.makeBinPath (with pkgs; [ceph ceph-client lvm2 util-linux xfsprogs e2fsprogs coreutils systemd])
+          + ":/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin:/run/wrappers/bin"
+        );
+        YOLAB_MACHINE_DIR = config.yolab.machineDir;
+        YOLAB_CONFIG = "${config.yolab.machineDir}/config.toml";
+        YOLAB_NODE_IPV6 = s.nodeCfg.sub_ipv6_private;
+        KUBECONFIG = "/etc/rancher/k3s/k3s.yaml";
+        NIX_SSL_CERT_FILE = "/etc/static/ssl/certs/ca-bundle.crt";
+        SSL_CERT_FILE = "/etc/static/ssl/certs/ca-bundle.crt";
+        YOLAB_LIBRADOS = "${pkgs.ceph.lib}/lib/librados.so.2";
+        YOLAB_CEPH_FSID = config.yolab.ceph.fsid;
+        YOLAB_CEPH_MON_ADDR = config.yolab.ceph.monAddr;
+        YOLAB_CEPH_JOIN_SEED_ADDR = config.yolab.ceph.joinSeedAddr;
+        YOLAB_CEPH_IMAGES_POOL = config.yolab.ceph.imagesStore.poolName;
+        YOLAB_CEPH_IMAGES_SHARE = toString config.yolab.ceph.imagesStore.shareOfPool;
+        YOLAB_CEPH_IMAGES_MIN_GB = toString config.yolab.ceph.imagesStore.minSizeGb;
+        YOLAB_CEPH_IMAGES_FS = config.yolab.ceph.imagesStore.filesystem;
+        YOLAB_CEPH_CSI_MANIFESTS = "${./ceph-csi/cephfs.yaml}";
+        YOLAB_CEPH_DASHBOARD_PORT = toString config.yolab.ceph.dashboard.port;
+        YOLAB_CEPH_DASHBOARD_PREFIX = config.yolab.ceph.dashboard.urlPrefix;
+        YOLAB_CEPH_DASHBOARD_PASSWORD_FILE = config.yolab.ceph.dashboard.passwordFile;
+      };
       serviceConfig = {
         Type = "simple";
         User = "root";
         Restart = "always";
         RestartSec = "5s";
-        ExecStart = "${s.localApiEnv}/bin/local-api";
+        ExecStart = "${localApiEnv}/bin/local-api";
       };
     };
 
-    systemd.services.yolab-reset-wipe = lib.mkIf config.yolab.ceph.enable (
-      let
-        host = config.networking.hostName;
-      in {
-        description = "Wipe this machine's cluster state for a FORCE HEAL";
-        wantedBy = ["multi-user.target"];
-        after = [
-          "local-fs.target"
-          "systemd-tmpfiles-setup.service"
-        ];
-        before = [
-          "yolab-ceph-bootstrap.service"
-          "ceph-mon-${host}.service"
-          "ceph-mgr-${host}.service"
-          "ceph-mds-${host}.service"
-          "k3s-node-ip.service"
-          "k3s.service"
-          "yolab-local-api.service"
-        ];
-        requiredBy = [
-          "yolab-ceph-bootstrap.service"
-          "k3s.service"
-        ];
-        restartIfChanged = false;
-        path = with pkgs; [
-          ceph
-          lvm2
-          util-linux
-          coreutils
-        ];
-        environment.YOLAB_MACHINE_DIR = config.yolab.machineDir;
-        serviceConfig = {
-          Type = "oneshot";
-          RemainAfterExit = true;
-          TimeoutStartSec = "1800s";
-          ExecStart = "${s.localApiEnv}/bin/local-api storage reset-wipe";
-        };
-      }
-    );
+    systemd.services.yolab-reset-wipe = let
+      host = config.networking.hostName;
+    in {
+      description = "Wipe this machine's cluster state for a FORCE HEAL";
+      wantedBy = ["multi-user.target"];
+      after = [
+        "local-fs.target"
+        "systemd-tmpfiles-setup.service"
+      ];
+      before = [
+        "yolab-ceph-bootstrap.service"
+        "ceph-mon-${host}.service"
+        "ceph-mgr-${host}.service"
+        "ceph-mds-${host}.service"
+        "k3s-node-ip.service"
+        "k3s.service"
+        "yolab-local-api.service"
+      ];
+      requiredBy = [
+        "yolab-ceph-bootstrap.service"
+        "k3s.service"
+      ];
+      restartIfChanged = false;
+      path = with pkgs; [
+        ceph
+        lvm2
+        util-linux
+        coreutils
+      ];
+      environment.YOLAB_MACHINE_DIR = config.yolab.machineDir;
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        TimeoutStartSec = "1800s";
+        ExecStart = "${localApiEnv}/bin/local-api storage reset-wipe";
+      };
+    };
 
     users.users.root.openssh.authorizedKeys.keys =
       lib.optional (s.rootSshKey != "") s.rootSshKey
@@ -600,10 +550,7 @@ in {
     system.activationScripts.yolabVersion = ''
       mkdir -p /var/lib/yolab
       printf '%s' ${lib.escapeShellArg yolabRev} > /var/lib/yolab/built-hash
-      ${lib.optionalString (yolabLastModified != null) ''
-        ${pkgs.coreutils}/bin/date -u -d @${toString yolabLastModified} +%Y-%m-%dT%H:%M:%SZ > /var/lib/yolab/built-date
-      ''}
-      : > /var/lib/yolab/built-message
+      ${pkgs.coreutils}/bin/date -u -d @${toString yolabLastModified} +%Y-%m-%dT%H:%M:%SZ > /var/lib/yolab/built-date
     '';
 
     nix.settings.experimental-features = [

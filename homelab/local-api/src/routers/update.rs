@@ -70,7 +70,7 @@ async fn run_update<H: Host>(
 
     emit(
         out,
-        format!("[INFO] building {}#{}", ch.flake(), cfg.flake_target),
+        format!("[INFO] building {}#{}", ch.flake(), crate::config::FLAKE_TARGET),
     )
     .await;
 
@@ -175,7 +175,7 @@ fn rebuild_args(cfg: &Config, ch: &Channel) -> Vec<String> {
     vec![
         "switch".into(),
         "--flake".into(),
-        format!("{}#{}", ch.flake(), cfg.flake_target),
+        format!("{}#{}", ch.flake(), crate::config::FLAKE_TARGET),
         "--override-input".into(),
         "yolab-machine".into(),
         format!("path:{}", cfg.machine_dir),

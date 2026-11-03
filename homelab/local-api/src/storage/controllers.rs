@@ -184,9 +184,7 @@ impl Controller for CsiSecretsController {
     }
 }
 
-pub struct CephKeysController {
-    pub env: StorageEnv,
-}
+pub struct CephKeysController;
 
 impl Controller for CephKeysController {
     fn name(&self) -> &'static str {
@@ -202,10 +200,7 @@ impl Controller for CephKeysController {
         &[Requirement::Ceph]
     }
     async fn reconcile(&self, ctx: &Ctx) -> Result<Tick> {
-        let mut daemons = vec!["mgr"];
-        if self.env.mds {
-            daemons.push("mds");
-        }
+        let daemons = ["mgr", "mds"];
         let mut problems = Vec::new();
         for daemon in daemons {
             let job = format!("{daemon}-key");

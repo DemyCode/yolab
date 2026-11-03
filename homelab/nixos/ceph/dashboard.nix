@@ -1,8 +1,6 @@
 {lib, ...}:
 with lib; {
   options.yolab.ceph.dashboard = {
-    enable = mkEnableOption "the Ceph dashboard on this node's mgr" // {default = true;};
-
     port = mkOption {
       type = types.port;
       default = 7000;

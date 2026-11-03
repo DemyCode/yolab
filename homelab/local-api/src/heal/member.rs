@@ -18,7 +18,6 @@ pub(crate) struct Layout {
     pub root: PathBuf,
     pub machine_dir: PathBuf,
     pub flake: String,
-    pub flake_target: String,
 }
 
 impl Layout {
@@ -27,7 +26,6 @@ impl Layout {
             root: PathBuf::from("/"),
             machine_dir: PathBuf::from(&cfg.machine_dir),
             flake: cfg.flake_ref(),
-            flake_target: cfg.flake_target.clone(),
         }
     }
 
@@ -343,7 +341,7 @@ async fn rebuild<H: Host>(host: &H, layout: &Layout) -> Result<()> {
     ])
     .await
     .debug_on_err("reset-failed nixos-rebuild-switch-to-configuration.service");
-    let flake = format!("{}#{}", layout.flake, layout.flake_target);
+    let flake = format!("{}#{}", layout.flake, crate::config::FLAKE_TARGET);
     let input = format!("path:{}", layout.machine_dir.display());
     let out = host
         .run_cmd_bounded(
@@ -481,7 +479,6 @@ mod tests {
                 root,
                 machine_dir,
                 flake: "github:DemyCode/yolab/main".into(),
-                flake_target: "yolab".into(),
             },
             _dir: dir,
         }

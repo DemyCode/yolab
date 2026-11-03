@@ -1,18 +1,7 @@
-{
-  config,
-  lib,
-  ...
-}:
-with lib; let
-  cfg = config.yolab.ceph.filesystem;
-  cephCfg = config.yolab.ceph;
+{config, ...}: let
   host = config.networking.hostName;
 in {
-  options.yolab.ceph.filesystem = {
-    enable = mkEnableOption "CephFS for PVC storage";
-  };
-
-  config = mkIf (cephCfg.enable && cfg.enable) {
+  config = {
     services.ceph.mds = {
       enable = true;
       daemons = [host];

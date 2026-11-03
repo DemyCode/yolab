@@ -46,7 +46,6 @@ pub struct StorageEnv {
     pub dashboard_port: u16,
     pub dashboard_prefix: String,
     pub dashboard_password_file: String,
-    pub mds: bool,
 }
 
 impl StorageEnv {
@@ -77,7 +76,6 @@ impl StorageEnv {
                 "YOLAB_CEPH_DASHBOARD_PASSWORD_FILE",
                 "/var/lib/ceph/dashboard-password",
             ),
-            mds: s("YOLAB_CEPH_MDS") == "1",
         }
     }
 
@@ -214,7 +212,6 @@ mod tests {
         assert_eq!(env.dashboard_prefix, "/ceph-dashboard");
         assert_eq!(env.api_port, 3001);
         assert_eq!(env.bootstrap_args().api_port, 3001);
-        assert!(!env.mds);
         assert!(!env.is_configured());
     }
 
@@ -225,13 +222,11 @@ mod tests {
             ("YOLAB_CEPH_MON_ADDR", "fd00:cafe::5"),
             ("YOLAB_CEPH_IMAGES_POOL", "imgs"),
             ("YOLAB_CEPH_IMAGES_FS", "ext4"),
-            ("YOLAB_CEPH_MDS", "1"),
         ]);
         let env = StorageEnv::from_lookup(|k| vars.get(k).map(|v| v.to_string()));
         assert!(env.is_configured());
         assert_eq!(env.images_pool, "imgs");
         assert_eq!(env.images_fs, containerd_store::Filesystem::Ext4);
-        assert!(env.mds);
         assert_eq!(env.images_rbd_policy().pool_name, "imgs");
         assert_eq!(env.dashboard_policy().mon_addr, "fd00:cafe::5");
     }

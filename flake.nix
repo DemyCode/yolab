@@ -73,7 +73,7 @@
       nixosHardware = inputs.nixos-hardware;
       localApiEnv = rustFor.${system}.crates.local-api.package;
       yolabRev = self.rev or self.dirtyRev or "";
-      yolabLastModified = self.lastModified or null;
+      yolabLastModified = self.lastModified;
     };
 
     mkYolabSystem = {

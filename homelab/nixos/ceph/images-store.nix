@@ -1,15 +1,9 @@
 {
-  config,
   lib,
   ...
 }:
-with lib; let
-  cfg = config.yolab.ceph.imagesStore;
-  cephCfg = config.yolab.ceph;
-in {
+with lib; {
   options.yolab.ceph.imagesStore = {
-    enable = mkEnableOption "back containerd's image store with a Ceph RBD";
-
     poolName = mkOption {
       type = types.str;
       default = "images";
@@ -34,7 +28,7 @@ in {
     };
   };
 
-  config = mkIf (cephCfg.enable && cfg.enable) {
+  config = {
     environment.etc."lvm/lvm.conf".text = lib.mkAfter ''
       devices/global_filter = [ "r|^/dev/rbd|", "r|^/dev/block/|", "r|^/dev/disk/|", "a|.*|" ]
     '';

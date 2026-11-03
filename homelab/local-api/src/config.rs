@@ -95,12 +95,12 @@ impl Channel {
     }
 }
 
+pub const FLAKE_TARGET: &str = "yolab";
+
 #[derive(Clone, Debug)]
 pub struct Config {
     pub machine_dir: String,
     pub config_path: String,
-    pub platform: String,
-    pub flake_target: String,
     pub node_ipv6: String,
     pub port: u16,
     pub rebuild_log: PathBuf,
@@ -129,8 +129,6 @@ impl Config {
             config_path: std::env::var("YOLAB_CONFIG")
                 .unwrap_or_else(|_| format!("{machine_dir}/config.toml")),
             machine_dir,
-            platform: std::env::var("YOLAB_PLATFORM").unwrap_or_else(|_| "nixos".into()),
-            flake_target: std::env::var("YOLAB_FLAKE_TARGET").unwrap_or_else(|_| "yolab".into()),
             node_ipv6: std::env::var("YOLAB_NODE_IPV6").unwrap_or_else(|_| "::1".into()),
             port: std::env::var("YOLAB_PORT")
                 .map(|v| {
@@ -218,8 +216,6 @@ impl Config {
         Self {
             machine_dir: "/nonexistent-machine".into(),
             config_path: config_path.to_string_lossy().into_owned(),
-            platform: "test".into(),
-            flake_target: "yolab".into(),
             node_ipv6: "::1".into(),
             port: 3001,
             rebuild_log: PathBuf::from("/nonexistent/rebuild.log"),

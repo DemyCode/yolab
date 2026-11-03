@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from "react";
 import {
   RefreshCw,
   GitCommit,
-  Cpu,
   Calendar,
   AlertCircle,
   ChevronDown,
@@ -204,23 +203,7 @@ export function UpdatesPage() {
 
   return (
     <div className="space-y-6 max-w-3xl">
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-        <Card>
-          <CardContent className="flex items-start gap-3 pt-5">
-            <div className="mt-0.5 rounded-control bg-surface-2 p-1.5">
-              <Cpu className="h-4 w-4 text-fg-muted" strokeWidth={1.75} />
-            </div>
-            <div className="min-w-0">
-              <p className="text-xs text-fg-muted">Platform</p>
-              <p className="text-sm font-medium text-fg truncate mt-0.5">
-                <SwapText text={status?.platform ?? "—"} />
-              </p>
-              <p className="text-xs text-fg-subtle truncate">
-                <SwapText text={status?.flake_target ?? "—"} />
-              </p>
-            </div>
-          </CardContent>
-        </Card>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <Card>
           <CardContent className="flex items-start gap-3 pt-5">
             <div className="mt-0.5 rounded-control bg-surface-2 p-1.5">
@@ -230,9 +213,6 @@ export function UpdatesPage() {
               <p className="text-xs text-fg-muted">Commit</p>
               <p className="text-sm font-medium text-fg font-mono mt-0.5">
                 <SwapText text={shortHash} />
-              </p>
-              <p className="text-xs text-fg-subtle truncate">
-                <SwapText text={status?.commit_message || "—"} />
               </p>
             </div>
           </CardContent>

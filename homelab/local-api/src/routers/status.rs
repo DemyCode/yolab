@@ -8,10 +8,7 @@ use crate::{config::Config, error::Result, AppState};
 #[derive(Serialize)]
 pub struct StatusInfo {
     pub commit_hash: String,
-    pub commit_message: String,
     pub commit_date: String,
-    pub platform: String,
-    pub flake_target: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub console_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -41,10 +38,7 @@ fn built(state: &AppState, filename: &str) -> String {
 pub async fn handler(State(state): State<AppState>) -> Result<Json<StatusInfo>> {
     Ok(Json(StatusInfo {
         commit_hash: built(&state, "built-hash"),
-        commit_message: built(&state, "built-message"),
         commit_date: built(&state, "built-date"),
-        platform: state.config.platform.clone(),
-        flake_target: state.config.flake_target.clone(),
         console_url: platform_api_url(&state.config)
             .as_deref()
             .and_then(console_url_from_api),

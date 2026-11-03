@@ -114,7 +114,7 @@ pub fn spawn_all(leader: Leadership) {
         spawn(storage::ImagesGrowController { env: env.clone() }, &leader);
         spawn(storage::DashboardController { env: env.clone() }, &leader);
         spawn(storage::MonMemberController { env: env.clone() }, &leader);
-        spawn(storage::CephKeysController { env: env.clone() }, &leader);
+        spawn(storage::CephKeysController, &leader);
         spawn(storage::CephJoinController { env: env.clone() }, &leader);
         spawn(storage::CsiSecretsController, &leader);
         spawn(storage::CsiRecoveryController, &leader);
@@ -189,7 +189,7 @@ pub async fn run_named(name: &str) -> anyhow::Result<runtime::Tick> {
         "ceph-dashboard" => runtime::run_once(&storage::DashboardController { env }).await,
         "mon-member" => runtime::run_once(&storage::MonMemberController { env }).await,
         "csi-secrets" => runtime::run_once(&storage::CsiSecretsController).await,
-        "ceph-keys" => runtime::run_once(&storage::CephKeysController { env }).await,
+        "ceph-keys" => runtime::run_once(&storage::CephKeysController).await,
         "ceph-join" => runtime::run_once(&storage::CephJoinController { env }).await,
         "csi-recovery" => runtime::run_once(&storage::CsiRecoveryController).await,
         "ceph-csi" => runtime::run_once(&crate::storage::ceph_csi::CephCsiController).await,

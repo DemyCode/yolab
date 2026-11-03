@@ -1,19 +1,13 @@
 {
   config,
-  lib,
   pkgs,
   localApiEnv,
   ...
 }:
-with lib; let
-  cfg = config.yolab.ceph.maintenance;
-  cephCfg = config.yolab.ceph;
+let
   host = config.networking.hostName;
 in {
-  options.yolab.ceph.maintenance.enable =
-    mkEnableOption "noout on reboot and health-gated Ceph restarts";
-
-  config = mkIf (cephCfg.enable && cfg.enable) {
+  config = {
     systemd.services.yolab-ceph-noout = {
       description = "Hold Ceph's noout flag across a reboot";
       wantedBy = ["multi-user.target"];

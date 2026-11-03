@@ -13,7 +13,7 @@
   privateSubnet = nodeCfg.sub_ipv6_private_subnet or "fd00:cafe::/112";
 
   builds = import ./builds.nix {inherit pkgs rust;};
-  inherit (builds) clientUi localApiEnv;
+  inherit (builds) clientUi;
 in {
   inherit (cfg) hostname;
   inherit (cfg) timezone;
@@ -29,6 +29,5 @@ in {
     nodeCfg
     privateSubnet
     clientUi
-    localApiEnv
     ;
 }

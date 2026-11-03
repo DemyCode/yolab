@@ -16,8 +16,6 @@ with lib; let
   monSeeds = [cfg.monAddr] ++ optional (!isBootstrap) cfg.joinSeedAddr;
 in {
   options.yolab.ceph = {
-    enable = mkEnableOption "host-level Ceph (outside Kubernetes)";
-
     fsid = mkOption {
       type = types.str;
       description = "Cluster fsid. Generated once at install time, stored in config.toml.";
@@ -70,7 +68,7 @@ in {
     };
   };
 
-  config = mkIf cfg.enable {
+  config = {
     services.ceph = {
       enable = true;
       global = {

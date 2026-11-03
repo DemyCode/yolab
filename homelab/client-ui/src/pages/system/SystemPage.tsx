@@ -226,7 +226,6 @@ export function SystemPage() {
           to="/system/updates"
           icon={Wrench}
           label="Updates"
-          detail={status.data?.platform}
         />
         {status.data?.console_url && (
           <NavRow
