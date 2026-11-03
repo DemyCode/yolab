@@ -5,6 +5,7 @@ use tokio::sync::Mutex;
 
 use crate::ceph::commands;
 use crate::ceph::destructive::{self, Door};
+use crate::ceph::lvm_list;
 use crate::exec::{self, CmdError};
 use crate::rados;
 
@@ -17,6 +18,8 @@ fn is_read_only(args: &[&str]) -> bool {
 const TIMEOUT: Duration = Duration::from_secs(30);
 
 const CEPH_VOLUME_TIMEOUT: Duration = Duration::from_secs(600);
+
+const LVS_TIMEOUT: Duration = Duration::from_secs(60);
 
 async fn run_bin(bin: &str, args: &[&str]) -> Result<String, CmdError> {
     let out = exec::output(bin, args, TIMEOUT).await?;
@@ -111,13 +114,35 @@ async fn ceph_volume_inner(args: &[&str]) -> Result<String, CmdError> {
     } else {
         CEPH_VOLUME_LOCK.lock().await
     };
+    if is_full_listing(args) {
+        let out = exec::output("lvs", lvm_list::LVS_ARGS, LVS_TIMEOUT).await?;
+        let raw = exec::into_checked("lvs", lvm_list::LVS_ARGS, out)?;
+        return lvm_list::from_lvs(&raw);
+    }
     let out = exec::output("ceph-volume", args, CEPH_VOLUME_TIMEOUT).await?;
     exec::into_checked("ceph-volume", args, out)
+}
+
+fn is_full_listing(args: &[&str]) -> bool {
+    args == ["lvm", "list", "--format", "json"]
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_the_full_osd_listing_is_read_from_lvs() {
+        assert!(is_full_listing(&["lvm", "list", "--format", "json"]));
+        for other in [
+            vec!["lvm", "list", "3", "--format", "json"],
+            vec!["lvm", "list"],
+            vec!["inventory", "--format", "json"],
+            vec!["lvm", "zap", "--destroy", "/dev/vdb"],
+        ] {
+            assert!(!is_full_listing(&other), "{other:?}");
+        }
+    }
 
     #[test]
     fn only_inspection_may_be_skipped() {
