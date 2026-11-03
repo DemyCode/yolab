@@ -48,7 +48,7 @@ def signatures(cluster, target, timeout, refresh):
                 timeout=timeout,
             )
             if ret:
-                where = "{0}.{1}".format(*target)
+                where = f"{target[0]}.{target[1]}"
                 raise RuntimeError(
                     f"problem getting command descriptions from {where}: {outs}"
                 )
@@ -86,6 +86,7 @@ def run(cluster, request):
         reply(rid, ret, out, outs)
     except Exception as e:
         reply(rid, -errno.EIO, "", f"ceph worker: {e!r}")
+        raise
 
 
 def main():
