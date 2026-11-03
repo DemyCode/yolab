@@ -305,18 +305,6 @@ fn target_of(set: &BackupSet) -> Option<BackupTarget> {
     }
 }
 
-fn folder_pvc(folder: &crate::folders::Folder) -> PvcInfo {
-    PvcInfo {
-        namespace: crate::folders::NAMESPACE.to_string(),
-        name: folder.claim.clone(),
-        capacity: if folder.size.is_empty() {
-            "?".to_string()
-        } else {
-            folder.size.clone()
-        },
-    }
-}
-
 fn spawn_run<H: Host + 'static>(b: Backend<H>, cfg: BackupConfig, promoted: Promoted) {
     let Promoted { id, target, guard } = promoted;
     tokio::spawn(async move {
@@ -333,7 +321,7 @@ async fn run_set<H: Host>(
     target: &BackupTarget,
     run_id: &str,
 ) -> anyhow::Result<(String, Vec<ServiceSummary>)> {
-    let mut pvcs: Vec<PvcInfo> = user_pvcs(&b.kube)
+    let pvcs: Vec<PvcInfo> = user_pvcs(&b.kube)
         .await?
         .into_iter()
         .filter(|p| match target {
@@ -343,12 +331,6 @@ async fn run_set<H: Host>(
         .collect();
     let mut pending = Vec::new();
     let mut failures = Vec::new();
-    let folders = crate::folders::list(&b.kube).await?;
-    pvcs.extend(
-        folders_saved_with(target, &folders)
-            .into_iter()
-            .map(folder_pvc),
-    );
     for pvc in &pvcs {
         allow_privileged_movers(&b.kube, &pvc.namespace).await;
         if let Err(e) = restic_secret(&b.kube, &pvc.namespace, &pvc.namespace, &pvc.name, cfg).await
@@ -399,7 +381,7 @@ async fn run_set<H: Host>(
     }
 
     let (snapshot_id, services) =
-        snapshot_cluster(b, cfg, &pinned, &folders, target, run_id).await?;
+        snapshot_cluster(b, cfg, &pinned, target, run_id).await?;
 
     let repo = cfg.restic_repo("cluster-backup");
     cfg.unlock(&b.host, "cluster-backup").await;
@@ -615,29 +597,6 @@ fn catalog_pvc(name: &str, capacity: &str, pinned: Option<&VolumeSnapshot>) -> V
     v
 }
 
-fn catalog_folder(folder: &crate::folders::Folder, pinned: Option<&VolumeSnapshot>) -> Value {
-    let mut v = catalog_pvc(&folder.name, &folder.size, pinned);
-    v["title"] = Value::String(folder.title.clone());
-    v["claim"] = Value::String(folder.claim.clone());
-    v
-}
-
-pub(crate) fn folders_saved_with<'a>(
-    target: &BackupTarget,
-    folders: &'a [crate::folders::Folder],
-) -> Vec<&'a crate::folders::Folder> {
-    folders
-        .iter()
-        .filter(|f| match target {
-            BackupTarget::Cluster => !f.used_by.is_empty(),
-            BackupTarget::App(ns) => {
-                let instance = ns.strip_prefix("yolab-").unwrap_or(ns);
-                f.used_by.iter().any(|u| u == instance)
-            }
-        })
-        .collect()
-}
-
 pub(crate) const STAGING_ROOT: &str = "/var/lib/yolab/backup-staging";
 
 pub(crate) fn staging_dir(root: &str, run_id: &str) -> String {
@@ -675,7 +634,6 @@ async fn snapshot_cluster<H: Host>(
     b: &Backend<H>,
     cfg: &BackupConfig,
     pinned: &PinnedVolumes,
-    folders: &[crate::folders::Folder],
     target: &BackupTarget,
     run_id: &str,
 ) -> anyhow::Result<(String, Vec<ServiceSummary>)> {
@@ -691,7 +649,7 @@ async fn snapshot_cluster<H: Host>(
         tokio::fs::set_permissions(&tmp_dir, std::fs::Permissions::from_mode(0o700)).await?;
     }
 
-    let result = snapshot_cluster_inner(b, cfg, &tmp_dir, pinned, folders, target).await;
+    let result = snapshot_cluster_inner(b, cfg, &tmp_dir, pinned, target).await;
     tokio::fs::remove_dir_all(&tmp_dir)
         .await
         .debug_on_err("backup: clear the staging directory");
@@ -817,7 +775,6 @@ async fn snapshot_cluster_inner<H: Host>(
     cfg: &BackupConfig,
     tmp_dir: &str,
     pinned: &PinnedVolumes,
-    folders: &[crate::folders::Folder],
     target: &BackupTarget,
 ) -> anyhow::Result<(String, Vec<ServiceSummary>)> {
     let date = Utc::now().format("%Y-%m-%d-%H%M%S").to_string();
@@ -902,14 +859,6 @@ async fn snapshot_cluster_inner<H: Host>(
             })
             .unwrap_or_default();
 
-        let saved_folders: Vec<Value> = folders_saved_with(&BackupTarget::App(ns.clone()), folders)
-            .into_iter()
-            .map(|f| {
-                let snap = pinned.get(&(crate::folders::NAMESPACE.to_string(), f.claim.clone()));
-                catalog_folder(f, snap)
-            })
-            .collect();
-
         let images = collect_images(&workloads);
 
         let definition = crate::routers::apps::read_definition_opt(&b.kube, ns)
@@ -937,7 +886,6 @@ async fn snapshot_cluster_inner<H: Host>(
             "backup": backup_policy,
             "definition": definition,
             "pvcs": pvcs,
-            "folders": saved_folders,
             "images": images,
         }));
     }
@@ -1383,87 +1331,6 @@ mod tests {
         assert_eq!(
             VolumeSnapshot::recorded_in(&catalog_pvc("data", "5Gi", None)),
             None
-        );
-    }
-
-    fn folder(name: &str, used_by: &[&str]) -> crate::folders::Folder {
-        crate::folders::Folder {
-            name: name.into(),
-            title: name.to_uppercase(),
-            size: "500Gi".into(),
-            ready: true,
-            used_by: used_by.iter().map(|s| s.to_string()).collect(),
-            claim: format!("space-{name}"),
-        }
-    }
-
-    fn names(folders: Vec<&crate::folders::Folder>) -> Vec<&str> {
-        folders.into_iter().map(|f| f.name.as_str()).collect()
-    }
-
-    #[test]
-    fn an_apps_backup_saves_every_space_it_uses_and_no_other() {
-        let folders = [
-            folder("movies", &["jellyfin", "sonarr"]),
-            folder("photos", &["immich"]),
-            folder("unused", &[]),
-        ];
-        assert_eq!(
-            names(folders_saved_with(
-                &BackupTarget::App("yolab-jellyfin".into()),
-                &folders
-            )),
-            vec!["movies"]
-        );
-        assert_eq!(
-            names(folders_saved_with(
-                &BackupTarget::App("yolab-sonarr".into()),
-                &folders
-            )),
-            vec!["movies"],
-            "a space two apps share is saved with each of them"
-        );
-    }
-
-    #[test]
-    fn a_space_no_app_uses_is_not_backed_up_at_all() {
-        let folders = [folder("unused", &[])];
-        assert!(folders_saved_with(&BackupTarget::Cluster, &folders).is_empty());
-        assert!(folders_saved_with(&BackupTarget::App("yolab-a".into()), &folders).is_empty());
-    }
-
-    #[test]
-    fn a_space_is_backed_up_into_the_repository_of_its_identity_not_its_name() {
-        let pvc = folder_pvc(&folder("movies", &["jellyfin"]));
-        assert_eq!(pvc.namespace, crate::folders::NAMESPACE);
-        assert_eq!(pvc.name, "space-movies");
-        assert_eq!(pvc.capacity, "500Gi");
-    }
-
-    #[test]
-    fn the_machine_backup_saves_every_space_some_app_uses() {
-        let folders = [folder("movies", &["jellyfin"]), folder("unused", &[])];
-        assert_eq!(
-            names(folders_saved_with(&BackupTarget::Cluster, &folders)),
-            vec!["movies"]
-        );
-    }
-
-    #[test]
-    fn a_backed_up_folder_records_its_name_title_size_and_snapshot() {
-        let snap = VolumeSnapshot {
-            id: "abc".into(),
-            time: "2026-10-12T03:00:00Z".into(),
-        };
-        assert_eq!(
-            catalog_folder(&folder("movies", &["jellyfin"]), Some(&snap)),
-            json!({"name": "movies", "title": "MOVIES", "capacity": "500Gi", "claim": "space-movies",
-                   "snapshot_id": "abc", "snapshot_time": "2026-10-12T03:00:00Z"})
-        );
-        assert_eq!(
-            catalog_folder(&folder("movies", &["jellyfin"]), None),
-            json!({"name": "movies", "title": "MOVIES", "capacity": "500Gi", "claim": "space-movies"}),
-            "a folder whose upload failed is still listed, with no snapshot to restore"
         );
     }
 

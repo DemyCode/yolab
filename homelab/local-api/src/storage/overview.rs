@@ -604,6 +604,16 @@ mod tests {
     }
 
     #[test]
+    fn the_shared_files_mount_is_never_counted_as_an_apps_own_data() {
+        let files = json!({"spec": {
+            "csi": {"driver": "cephfs.csi.ceph.com",
+                "volumeAttributes": {"staticVolume": "true", "rootPath": "/volumes/files"}},
+            "claimRef": {"namespace": "yolab-jellyfin"}
+        }});
+        assert!(app_volumes(&[files]).is_empty());
+    }
+
+    #[test]
     fn usage_sums_an_apps_volumes_and_sorts_largest_first() {
         let u = tally(vec![
             ("yolab-gitea".into(), Some(10)),

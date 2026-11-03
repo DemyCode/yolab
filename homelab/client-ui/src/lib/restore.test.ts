@@ -3,26 +3,9 @@ import {
   NO_CHOICES,
   choicesFor,
   dataOptions,
-  folderOptions,
-  settingValues,
-  renamedNote,
-  sharedWarning,
-  shownFolders,
-  usedHere,
   type DataRow,
-  type FolderRow,
   type RestorePlan,
 } from "./restore";
-
-const movies: FolderRow = {
-  name: "movies",
-  title: "Movies",
-  capacity: "500Gi",
-  backed_up: true,
-  exists: true,
-  used_by: ["sonarr"],
-  becomes: null,
-};
 
 const data: DataRow = {
   claim: "jellyfin-data",
@@ -31,28 +14,6 @@ const data: DataRow = {
 };
 
 const values = (options: { value: string }[]) => options.map((o) => o.value);
-
-describe("what can happen to a folder the backup used", () => {
-  it("a folder that is still there is used as it is, or replaced", () => {
-    expect(values(folderOptions(movies))).toEqual(["use", "replace"]);
-  });
-
-  it("a missing folder comes back from the backup, or starts empty", () => {
-    expect(values(folderOptions({ ...movies, exists: false }))).toEqual([
-      "restore",
-      "empty",
-    ]);
-  });
-
-  it("a folder that was not saved can only be used or started empty", () => {
-    expect(values(folderOptions({ ...movies, backed_up: false }))).toEqual([
-      "use",
-    ]);
-    expect(
-      values(folderOptions({ ...movies, backed_up: false, exists: false })),
-    ).toEqual(["empty"]);
-  });
-});
 
 describe("what can happen to the app's own data", () => {
   it("a reinstall brings the app's own data back from the backup", () => {
@@ -71,104 +32,34 @@ describe("what can happen to the app's own data", () => {
       values(dataOptions({ ...data, backed_up: false }, "in-place")),
     ).toEqual(["use"]);
   });
+
+  it("a reinstall of data that was never saved starts it empty", () => {
+    expect(
+      values(dataOptions({ ...data, backed_up: false }, "reinstall")),
+    ).toEqual(["empty"]);
+  });
 });
 
 describe("the choices sent with a restore", () => {
   const plan: RestorePlan = {
-    folders: [movies, { ...movies, name: "downloads", exists: false }],
-    data: [data],
+    data: [data, { ...data, claim: "jellyfin-cache", backed_up: false }],
   };
 
-  it("every row gets its first option unless the person picked another", () => {
-    expect(choicesFor(plan, "reinstall", NO_CHOICES, null)).toEqual({
-      folders: { movies: "use", downloads: "restore" },
-      data: { "jellyfin-data": "restore" },
+  it("every volume gets its first option unless the person picked another", () => {
+    expect(choicesFor(plan, "reinstall", NO_CHOICES)).toEqual({
+      data: { "jellyfin-data": "restore", "jellyfin-cache": "empty" },
     });
     expect(
-      choicesFor(
-        plan,
-        "reinstall",
-        { folders: { movies: "replace" }, data: { "jellyfin-data": "empty" } },
-        null,
-      ),
+      choicesFor(plan, "reinstall", { data: { "jellyfin-data": "empty" } }),
     ).toEqual({
-      folders: { movies: "replace", downloads: "restore" },
-      data: { "jellyfin-data": "empty" },
+      data: { "jellyfin-data": "empty", "jellyfin-cache": "empty" },
     });
   });
 
-  it("a pick that no longer fits the folder falls back to its first option", () => {
+  it("a pick that no longer fits the volume falls back to its first option", () => {
     expect(
-      choicesFor(
-        plan,
-        "reinstall",
-        { folders: { downloads: "replace" }, data: {} },
-        null,
-      ).folders.downloads,
-    ).toBe("restore");
-  });
-
-  it("a folder swapped for another one in the settings is left out", () => {
-    expect(shownFolders(plan, ["movies", "films"]).map((f) => f.name)).toEqual([
-      "movies",
-    ]);
-    expect(
-      Object.keys(
-        choicesFor(plan, "reinstall", NO_CHOICES, ["movies"]).folders,
-      ),
-    ).toEqual(["movies"]);
-  });
-});
-
-describe("restoring a space", () => {
-  it("names the other apps that would see the change", () => {
-    expect(sharedWarning(movies, "jellyfin")).toBe(
-      "sonarr uses it too, and would see the change.",
-    );
-    expect(
-      sharedWarning(
-        { ...movies, used_by: ["jellyfin", "sonarr", "radarr"] },
-        "jellyfin",
-      ),
-    ).toBe("sonarr, radarr use it too, and would see the change.");
-    expect(
-      sharedWarning({ ...movies, used_by: ["jellyfin"] }, "jellyfin"),
-    ).toBeNull();
-  });
-});
-
-describe("the folders named in the settings", () => {
-  it("are every text the settings hold, however deep", () => {
-    expect(
-      settingValues({
-        media_folder: "movies",
-        photos: "",
-        nested: { library: "music", list: ["books"] },
-        port: 8080,
-      }),
-    ).toEqual(["movies", "music", "books"]);
-  });
-});
-
-describe("restoring an app that is still installed", () => {
-  it("only offers the spaces the app uses now", () => {
-    const plan: RestorePlan = {
-      folders: [
-        { ...movies, used_by: ["jellyfin", "sonarr"] },
-        { ...movies, name: "old", used_by: ["sonarr"] },
-        { ...movies, name: "gone", exists: false, used_by: [] },
-      ],
-      data: [],
-    };
-    expect(usedHere(plan, "jellyfin")).toEqual(["movies"]);
-  });
-});
-
-describe("a space whose name another space took", () => {
-  it("says the name it comes back under", () => {
-    expect(renamedNote(movies)).toBeNull();
-    expect(renamedNote({ ...movies, exists: false, becomes: "movies-2" })).toBe(
-      "Another folder is called movies now, so this one comes back as movies-2.",
-    );
+      choicesFor(plan, "in-place", { data: { "jellyfin-data": "restore" } })
+        .data["jellyfin-data"],
+    ).toBe("replace");
   });
 });

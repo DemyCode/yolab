@@ -16,11 +16,9 @@ use crate::routers::install;
 use crate::{config::Config, error::Result, AppState};
 
 mod definition;
-mod spaces;
 mod uninstall;
 
 pub(crate) use definition::*;
-pub(crate) use spaces::*;
 pub(crate) use uninstall::*;
 
 const LABEL_MANAGED: &str = "yolab.io/managed";
@@ -1576,7 +1574,6 @@ pub(crate) struct StagedInstall {
     pub(crate) service_name: String,
     pub(crate) chart_dir: std::path::PathBuf,
     pub(crate) values: tempfile::NamedTempFile,
-    pub(crate) folders: std::collections::BTreeSet<String>,
     pub(crate) config: serde_json::Map<String, Value>,
 }
 
@@ -1626,7 +1623,6 @@ pub(crate) async fn stage_install(
     ensure_tunnel_credentials(client, &ns, &tunnel_cfg)
         .await
         .map_err(|e| anyhow::anyhow!("stage tunnel credentials: {e}"))?;
-    let folders = crate::folders::wanted(&meta.app, config);
     let service_name = resolve_service_name(&meta.app.config(), config);
     let values = tempfile::Builder::new()
         .suffix(".json")
@@ -1644,7 +1640,6 @@ pub(crate) async fn stage_install(
         service_name,
         chart_dir,
         values,
-        folders,
         config: config.clone(),
     })
 }
@@ -3335,6 +3330,19 @@ mod tests {
                 .await;
         }
 
+        async fn files_volume_is(server: &MockServer, code: u16) {
+            Mock::given(method("DELETE"))
+                .and(path("/api/v1/persistentvolumes/yolab-notes.files"))
+                .respond_with(ResponseTemplate::new(code).set_body_json(if code == 404 {
+                    gone()
+                } else {
+                    json!({ "metadata": { "name": "yolab-notes.files" } })
+                }))
+                .expect(1)
+                .mount(server)
+                .await;
+        }
+
         fn pv(name: &str, claim_namespace: &str) -> Value {
             json!({
                 "metadata": { "name": name },
@@ -3351,6 +3359,18 @@ mod tests {
                 json!({ "metadata": { "name": "pvc-unbound" }, "spec": {} }),
             ];
             assert_eq!(volumes_of(&pvs, "yolab-notes"), vec!["pvc-notes"]);
+        }
+
+        #[test]
+        fn the_files_mount_is_never_taken_for_data_the_uninstall_left_behind() {
+            let mut files = pv("yolab-notes.files", "yolab-notes");
+            files["metadata"]["labels"] = json!({ "yolab.io/files": "true" });
+            let pvs = vec![pv("pvc-notes", "yolab-notes"), files];
+            assert_eq!(volumes_of(&pvs, "yolab-notes"), vec!["pvc-notes"]);
+            assert_eq!(
+                files_volume("yolab-notes")["metadata"]["name"],
+                "yolab-notes.files"
+            );
         }
 
         #[tokio::test]
@@ -3466,6 +3486,7 @@ mod tests {
                 .expect(1)
                 .mount(&server)
                 .await;
+            files_volume_is(&server, 404).await;
             volumes_are(&server, vec![]).await;
             no_saved_settings(&server).await;
             let b = Backend {
@@ -3509,6 +3530,7 @@ mod tests {
                 .expect(1)
                 .mount(&server)
                 .await;
+            files_volume_is(&server, 200).await;
             volumes_are(&server, vec![]).await;
             no_saved_settings(&server).await;
             let b = Backend {

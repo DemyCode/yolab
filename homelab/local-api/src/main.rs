@@ -12,7 +12,6 @@ mod csi;
 mod disks_reconciler;
 mod error;
 mod exec;
-mod folders;
 mod github;
 mod hardware;
 mod heal;

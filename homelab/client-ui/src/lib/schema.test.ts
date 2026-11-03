@@ -359,17 +359,17 @@ describe("an address of another app", () => {
   });
 });
 
-describe("a folder field", () => {
-  it("gets the folder picker", () => {
+describe("a path in Files", () => {
+  it("gets the field that shows it is inside Files", () => {
     const ui = uiSchemaFor(
       {
         properties: {
-          media_folder: { type: "string", format: "folder" },
+          downloads_path: { type: "string", format: "files-path" },
         },
       },
       "6.yolab.io",
     ) as Record<string, Record<string, unknown>>;
-    expect(ui.media_folder["ui:widget"]).toBe("FolderWidget");
+    expect(ui.downloads_path["ui:widget"]).toBe("FilesPathWidget");
   });
 });
 

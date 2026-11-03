@@ -14,7 +14,7 @@ export function useRestorePlan(namespace: string | null, snapshot: string) {
     let cancelled = false;
     void api
       .get<RestorePlan>(
-        `/api/backups/apps/${encodeURIComponent(namespace)}/folders?snapshot_id=${encodeURIComponent(snapshot)}`,
+        `/api/backups/apps/${encodeURIComponent(namespace)}/plan?snapshot_id=${encodeURIComponent(snapshot)}`,
       )
       .then((plan) => {
         if (!cancelled) setRead({ key, plan, error: null });

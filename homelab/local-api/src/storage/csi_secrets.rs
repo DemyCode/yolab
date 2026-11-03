@@ -129,7 +129,7 @@ pub async fn run<H: Host>(b: &Backend<H>) -> Result<()> {
     .await?;
     apply_secret(
         client,
-        crate::folders::STATIC_SECRET,
+        crate::csi::STATIC_SECRET,
         json!({"userID": user_id(NODE_ENTITY), "userKey": node}),
     )
     .await?;
@@ -267,7 +267,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn publishes_both_credentials_the_folder_secret_and_the_csi_config() {
+    async fn publishes_both_credentials_the_files_secret_and_the_csi_config() {
         let (server, kube) = cluster_up().await;
         let b = Backend {
             kube,
@@ -283,10 +283,10 @@ mod tests {
         let node = named(&patches, "csi-cephfs-node");
         assert_eq!(node["stringData"]["adminID"], "csi-cephfs-node");
         assert_eq!(node["stringData"]["adminKey"], "nodekey");
-        let folder = named(&patches, crate::folders::STATIC_SECRET);
-        assert_eq!(folder["metadata"]["namespace"], "ceph-csi");
-        assert_eq!(folder["stringData"]["userID"], "csi-cephfs-node");
-        assert_eq!(folder["stringData"]["userKey"], "nodekey");
+        let files = named(&patches, crate::csi::STATIC_SECRET);
+        assert_eq!(files["metadata"]["namespace"], "ceph-csi");
+        assert_eq!(files["stringData"]["userID"], "csi-cephfs-node");
+        assert_eq!(files["stringData"]["userKey"], "nodekey");
         let config = named(&patches, "ceph-csi-config");
         let parsed: Value =
             serde_json::from_str(config["data"]["config.json"].as_str().unwrap()).unwrap();

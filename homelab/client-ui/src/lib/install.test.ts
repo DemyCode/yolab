@@ -154,9 +154,8 @@ describe("installSource", () => {
     });
   });
 
-  it("restores with what to do with each folder", () => {
+  it("restores with what to do with each volume", () => {
     const choices = {
-      folders: { movies: "replace" as const },
       data: { "gitea-data": "use" as const },
     };
     expect(

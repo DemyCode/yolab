@@ -31,11 +31,10 @@ import {
   readsLiveApp,
 } from "@/lib/install";
 import { AppIconTile } from "@/components/AppIcon";
-import { RestoreFolders } from "@/components/RestoreFolders";
+import { RestoreData } from "@/components/RestoreData";
 import {
   NO_CHOICES,
   choicesFor,
-  settingValues,
   type RestoreChoices,
 } from "@/lib/restore";
 import { useRestorePlan } from "@/lib/useRestorePlan";
@@ -272,12 +271,7 @@ export function InstallPage() {
             copyData,
             snapshot,
             origin.mode === "restore" && restorePlan.plan
-              ? choicesFor(
-                  restorePlan.plan,
-                  "reinstall",
-                  picked,
-                  settingValues(values),
-                )
+              ? choicesFor(restorePlan.plan, "reinstall", picked)
               : undefined,
           ),
         },
@@ -674,14 +668,13 @@ export function InstallPage() {
             }
           />
           {snapshot && (
-            <RestoreFolders
+            <RestoreData
               plan={restorePlan.plan}
               error={restorePlan.error}
               mode="reinstall"
               app={sourceName ?? app.name}
               picked={picked}
               onPick={setPicked}
-              inSettings={settingValues(values)}
             />
           )}
         </Section>

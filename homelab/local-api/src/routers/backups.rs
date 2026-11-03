@@ -113,7 +113,7 @@ pub struct RestoreRequest {
     #[serde(default)]
     pub snapshot_id: Option<String>,
     #[serde(default)]
-    pub choices: crate::routers::restore_folders::Choices,
+    pub choices: crate::routers::restore_plan::Choices,
 }
 
 pub async fn restore_app(
@@ -203,7 +203,7 @@ pub async fn app_restore_plan(
     State(state): State<AppState>,
     Path(namespace): Path<String>,
     axum::extract::Query(q): axum::extract::Query<DefinitionQuery>,
-) -> Result<Json<crate::routers::restore_folders::RestorePlan>> {
+) -> Result<Json<crate::routers::restore_plan::RestorePlan>> {
     let b = state.backend().await?;
     Ok(Json(
         restore::restore_plan(&b, &namespace, &q.snapshot_id).await?,

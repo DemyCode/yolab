@@ -32,7 +32,7 @@ pub struct InstallSource {
     #[serde(default)]
     pub with_data: bool,
     #[serde(default)]
-    pub choices: crate::routers::restore_folders::Choices,
+    pub choices: crate::routers::restore_plan::Choices,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,7 +59,7 @@ pub(crate) enum DataOrigin {
     Backup {
         namespace: String,
         snapshot_id: String,
-        choices: crate::routers::restore_folders::Choices,
+        choices: crate::routers::restore_plan::Choices,
     },
     Live {
         namespace: String,
@@ -173,7 +173,7 @@ fn data_origin(
     with_data: bool,
     namespace: &str,
     snapshot_id: Option<String>,
-    choices: &crate::routers::restore_folders::Choices,
+    choices: &crate::routers::restore_plan::Choices,
 ) -> Result<Option<DataOrigin>, String> {
     if !with_data {
         return Ok(None);
@@ -444,7 +444,7 @@ async fn apply_chart<H: Host + 'static>(
     fill: &DataFill<'_>,
     log: &Log,
 ) -> anyhow::Result<String> {
-    let mut staged = stage_install(
+    let staged = stage_install(
         &b.kube,
         cfg,
         job.app_id,
@@ -454,47 +454,8 @@ async fn apply_chart<H: Host + 'static>(
     )
     .await?;
 
-    let mut folders = Vec::new();
-    if let DataFill::Backup(payload) = fill {
-        let placed = payload.place_folders(b, &staged.folders).await?;
-        let renames = crate::routers::restore_folders::renames(&placed);
-        if !renames.is_empty() {
-            log.say(format!(
-                "Another folder has taken the name now, so these come back under a new one: {}",
-                renames
-                    .iter()
-                    .map(|(from, to)| format!("{from} → {to}"))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ));
-            let schema = app_schema(
-                staged
-                    .chart_dir
-                    .parent()
-                    .unwrap_or(cfg.catalog_dir().as_path()),
-                job.app_id,
-            );
-            let config = crate::folders::renamed(&schema, job.config, &renames);
-            staged = stage_install(
-                &b.kube,
-                cfg,
-                job.app_id,
-                job.instance_name,
-                &config,
-                &job.chart,
-            )
-            .await?;
-        }
-        folders = payload.prepare_folders(b, placed).await?;
-    }
-    crate::folders::attach(&b.kube, &staged.ns, &staged.folders).await?;
-
     match fill {
         DataFill::Backup(payload) => {
-            if !folders.is_empty() {
-                log.say("Bringing back its folders…");
-                payload.fill_folders(b, &folders, job.instance_name).await?;
-            }
             log.say("Copying this app's files…");
             payload.fill_volumes(b, &staged.ns, job.release).await?;
         }
@@ -513,13 +474,6 @@ async fn apply_chart<H: Host + 'static>(
 
     log.say(job.verb);
     helm_install(&b.host, &staged, job.release, log).await?;
-
-    if let Err(e) = crate::folders::release_unused(&b.kube, &staged.ns, &staged.folders).await {
-        log.say(format!(
-            "[WARN] could not unmount the folders this app no longer uses ({e:#})"
-        ));
-    }
-    crate::runtime::wake("spaces");
 
     if let DataFill::Backup(payload) = fill {
         log.say("Putting this app's saved settings back…");

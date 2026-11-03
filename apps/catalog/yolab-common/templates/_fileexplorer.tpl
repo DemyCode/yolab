@@ -214,6 +214,23 @@ data:
             rules:
               - folderPath: "/"
                 viewable: true
+        {{- if eq (include "yolab-common.files.enabled" .) "true" }}
+        - path: /srv/files
+          name: "Files"
+          config:
+            defaultEnabled: true
+            private: true
+            readOnly: {{ not $writable }}
+            defaultPermissions:
+              view: true
+              download: true
+              modify: {{ $writable }}
+              create: {{ $writable }}
+              delete: {{ $writable }}
+            rules:
+              - folderPath: "/"
+                viewable: true
+        {{- end }}
     auth:
       methods:
         password:
@@ -274,6 +291,11 @@ data:
       mountPath: {{ printf "/srv/data/%s" . | quote }}
       subPath: {{ printf "%s/%s" $.Release.Name . | quote }}
       readOnly: true
+    {{- end }}
+    {{- if eq (include "yolab-common.files.enabled" .) "true" }}
+    - name: files
+      mountPath: /srv/files
+      readOnly: {{ eq (include "yolab-common.fileExplorer.readOnly" .) "true" }}
     {{- end }}
 {{- if eq (include "yolab-common.fileExplorer.tor" .) "true" }}
 - name: file-explorer-tor

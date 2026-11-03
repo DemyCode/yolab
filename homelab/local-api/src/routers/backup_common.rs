@@ -330,10 +330,12 @@ pub(crate) async fn user_pvcs(client: &Client) -> anyhow::Result<Vec<PvcInfo>> {
             if EXCLUDED_NS.contains(&ns.as_str()) || !managed.contains(&ns) {
                 return None;
             }
-            let volume = claim.spec.as_ref().and_then(|s| s.volume_name.as_deref());
-            if name.starts_with("volsync-")
-                || crate::folders::is_mount(&ns, claim.metadata.labels.as_ref(), volume)
-            {
+            let is_files = claim
+                .metadata
+                .labels
+                .as_ref()
+                .is_some_and(|l| l.contains_key(crate::routers::apps::FILES_LABEL));
+            if name.starts_with("volsync-") || is_files {
                 return None;
             }
             let capacity = claim
@@ -1224,7 +1226,7 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn a_shared_folder_is_never_backed_up_or_copied_as_part_of_an_app() {
+        async fn the_shared_files_are_never_backed_up_or_copied_as_part_of_an_app() {
             let (server, client) = api_server().await;
             Mock::given(method("GET"))
                 .and(path("/api/v1/namespaces"))
@@ -1234,13 +1236,13 @@ mod tests {
                 )))
                 .mount(&server)
                 .await;
-            let mut folder = claim("yolab-a", "folder-movies", Some("1Gi"));
-            folder["spec"]["volumeName"] = json!("yolab-a.folder-movies");
+            let mut files = claim("yolab-a", "files", Some("1Ti"));
+            files["metadata"]["labels"] = json!({ "yolab.io/files": "true" });
             Mock::given(method("GET"))
                 .and(path("/api/v1/persistentvolumeclaims"))
                 .respond_with(ResponseTemplate::new(200).set_body_json(list(
                     "PersistentVolumeClaim",
-                    vec![claim("yolab-a", "data", Some("5Gi")), folder],
+                    vec![claim("yolab-a", "data", Some("5Gi")), files],
                 )))
                 .mount(&server)
                 .await;

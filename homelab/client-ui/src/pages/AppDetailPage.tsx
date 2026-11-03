@@ -5,11 +5,10 @@ import { ArrowLeft, RefreshCw } from "lucide-react";
 import { Page } from "@/components/AppShell";
 import { AppAccess } from "@/components/AppAccess";
 import { AppIconTile } from "@/components/AppIcon";
-import { RestoreFolders } from "@/components/RestoreFolders";
+import { RestoreData } from "@/components/RestoreData";
 import {
   NO_CHOICES,
   choicesFor,
-  usedHere,
   type RestoreChoices,
 } from "@/lib/restore";
 import { useRestorePlan } from "@/lib/useRestorePlan";
@@ -35,7 +34,6 @@ import { api, streamEvents } from "@/lib/api";
 import { BACKUP_PRESETS } from "@/lib/backups";
 import { formatDateTime, relativeTime } from "@/lib/format";
 import { useApi } from "@/lib/useResource";
-import { removalNote, type OnRemoval } from "@/lib/folders";
 import {
   appDisplayName,
   appLinks,
@@ -431,12 +429,7 @@ function RestoreSheet({
         snapshot_id: selected,
         ...(restorePlan.plan
           ? {
-              choices: choicesFor(
-                restorePlan.plan,
-                "in-place",
-                picked,
-                usedHere(restorePlan.plan, instanceName),
-              ),
+              choices: choicesFor(restorePlan.plan, "in-place", picked),
             }
           : {}),
       });
@@ -456,7 +449,7 @@ function RestoreSheet({
       open={open}
       onClose={close}
       title={`Restore ${name}`}
-      subtitle="Its settings go back to the backup you pick. Choose below what happens to its data and folders; whatever is replaced loses anything newer."
+      subtitle="Its settings go back to the backup you pick. Choose below what happens to its data; whatever is replaced loses anything newer. Files is not touched."
     >
       {snapshots === null ? (
         <div className="flex items-center gap-2 py-4 text-sm text-fg-muted">
@@ -501,16 +494,13 @@ function RestoreSheet({
 
       {selected && snapshots && snapshots.length > 0 && (
         <Section title="What comes back">
-          <RestoreFolders
+          <RestoreData
             plan={restorePlan.plan}
             error={restorePlan.error}
             mode="in-place"
             app={instanceName}
             picked={picked}
             onPick={setPicked}
-            inSettings={
-              restorePlan.plan ? usedHere(restorePlan.plan, instanceName) : null
-            }
           />
         </Section>
       )}
@@ -719,11 +709,6 @@ export function AppDetailPage() {
   const domain = useApi<DomainResponse>("domain", "/api/tunnel/domain");
 
   const [confirmRemove, setConfirmRemove] = useState(false);
-  const removal = useApi<OnRemoval>(
-    confirmRemove && instanceName ? `removal-${instanceName}` : null,
-    `/api/apps/${instanceName}/removal`,
-    { persist: false },
-  );
   const [working, setWorking] = useState<null | "update" | "remove">(null);
   const [notice, setNotice] = useState<Notice | null>(null);
   const [restoreOpen, setRestoreOpen] = useState(false);
@@ -1175,8 +1160,8 @@ export function AppDetailPage() {
         busy={working === "remove"}
         body={
           <>
-            {name} stops and is removed. {removalNote(removal.data ?? null)}{" "}
-            Backups you already have are kept.
+            {name} stops and is removed with its own data. What it put in Files
+            stays. Backups you already have are kept.
           </>
         }
       />

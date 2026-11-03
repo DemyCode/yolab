@@ -102,9 +102,24 @@ pub(crate) const HELM_UNINSTALL_TIMEOUT: std::time::Duration = std::time::Durati
 pub(crate) const VOLUME_DELETE_WAIT: std::time::Duration = std::time::Duration::from_secs(600);
 pub(crate) const VOLUME_DELETE_POLL: std::time::Duration = std::time::Duration::from_secs(5);
 
+pub(crate) const FILES_LABEL: &str = "yolab.io/files";
+
+fn holds_app_data(pv: &Value) -> bool {
+    pv["metadata"]["labels"][FILES_LABEL].is_null()
+}
+
+pub(crate) fn files_volume(ns: &str) -> Value {
+    serde_json::json!({
+        "apiVersion": "v1",
+        "kind": "PersistentVolume",
+        "metadata": { "name": format!("{ns}.files") },
+    })
+}
+
 pub(crate) fn volumes_of(pvs: &[Value], ns: &str) -> Vec<String> {
     pvs.iter()
         .filter(|pv| pv["spec"]["claimRef"]["namespace"].as_str() == Some(ns))
+        .filter(|pv| holds_app_data(pv))
         .filter_map(|pv| pv["metadata"]["name"].as_str().map(str::to_string))
         .collect()
 }
@@ -132,15 +147,6 @@ pub(crate) async fn wait_for_volumes_deleted(
     .await
 }
 
-async fn release_folders(client: &Client, ns: &str) {
-    if let Err(e) = crate::folders::release_all(client, ns).await {
-        tracing::warn!(
-            "uninstall {ns}: unmount its spaces ({e:#}) — the space sweep forgets them once the namespace is gone"
-        );
-    }
-    crate::runtime::wake("spaces");
-}
-
 pub(crate) async fn run_teardown<H: crate::host::Host>(
     b: &Backend<H>,
     instance_name: &str,
@@ -152,7 +158,7 @@ pub(crate) async fn run_teardown<H: crate::host::Host>(
              to finish rather than re-running helm"
         );
         delete_namespace_with_retry(&b.kube, ns).await;
-        release_folders(&b.kube, ns).await;
+        crate::k8s::delete_if_present(&b.kube, &files_volume(ns)).await?;
         return wait_for_volumes_deleted(&b.kube, ns, VOLUME_DELETE_WAIT, VOLUME_DELETE_POLL).await;
     }
 
@@ -187,7 +193,7 @@ pub(crate) async fn run_teardown<H: crate::host::Host>(
     }
 
     delete_namespace_with_retry(&b.kube, ns).await;
-    release_folders(&b.kube, ns).await;
+    crate::k8s::delete_if_present(&b.kube, &files_volume(ns)).await?;
     wait_for_volumes_deleted(&b.kube, ns, VOLUME_DELETE_WAIT, VOLUME_DELETE_POLL).await
 }
 
