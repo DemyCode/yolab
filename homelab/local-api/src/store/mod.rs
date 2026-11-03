@@ -398,7 +398,7 @@ pub fn locked() -> std::sync::MutexGuard<'static, Store> {
 pub fn default_path() -> PathBuf {
     std::env::var("YOLAB_STORE_FILE")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("/var/lib/yolab/store-v2.automerge"))
+        .unwrap_or_else(|_| PathBuf::from("/var/lib/yolab/store.automerge"))
 }
 
 fn debug_path(path: &Path) -> PathBuf {
@@ -761,7 +761,7 @@ mod tests {
     #[test]
     fn a_node_with_no_file_at_all_starts_empty() {
         let dir = tempfile::tempdir().unwrap();
-        let opened = Store::open("node1", &dir.path().join("store-v2.automerge")).unwrap();
+        let opened = Store::open("node1", &dir.path().join("store.automerge")).unwrap();
         assert!(opened.disk_claims().unwrap().is_empty());
     }
 

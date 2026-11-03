@@ -1039,13 +1039,13 @@ async fn saved_folder_as_of<H: Host>(
     cfg: &BackupConfig,
     folder: &rf::SavedFolder,
 ) -> anyhow::Result<Option<String>> {
-    let snaps = volume_snapshots(
-        &b.host,
-        crate::folders::NAMESPACE,
-        &folder.repository(),
-        cfg,
-    )
-    .await?;
+    let repository = folder.repository().ok_or_else(|| {
+        anyhow::anyhow!(
+            "the backup of the folder {} does not say which folder it was — start it empty instead",
+            folder.title
+        )
+    })?;
+    let snaps = volume_snapshots(&b.host, crate::folders::NAMESPACE, repository, cfg).await?;
     match space_plan(folder.snapshot.as_ref(), &snaps) {
         VolumePlan::RestoreAsOf(as_of) => {
             if as_of.as_ref() != folder.snapshot.as_ref().map(|s| &s.time) {
@@ -1134,11 +1134,14 @@ async fn fill_folder<H: Host>(
     }
     let p = &planned.placed;
     crate::folders::wait_until_ready(&b.kube, &p.name).await?;
-    let repository = p.saved.repository();
+    let repository = p
+        .saved
+        .repository()
+        .ok_or_else(|| anyhow::anyhow!("the folder {} was saved without its identity", p.name))?;
     let restore = VolumeRestore {
         namespace: crate::folders::NAMESPACE,
         source_namespace: crate::folders::NAMESPACE,
-        source_pvc: &repository,
+        source_pvc: repository,
         dest_pvc: &planned.claim,
         as_of: planned.as_of.as_deref(),
         replace: planned.step == rf::Step::Replace,

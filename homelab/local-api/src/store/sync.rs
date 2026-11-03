@@ -12,7 +12,7 @@ use super::{default_path, locked, Store};
 
 const INTERVAL: Duration = Duration::from_secs(30);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
-pub const SYNC_PATH: &str = "/api/store/v2/sync";
+pub const SYNC_PATH: &str = "/api/store/sync";
 
 fn readable(body: &[u8]) -> Result<Store, (StatusCode, String)> {
     readable_as(&crate::system::hostname(), body)

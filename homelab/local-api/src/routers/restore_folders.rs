@@ -50,10 +50,8 @@ pub(crate) struct SavedFolder {
 }
 
 impl SavedFolder {
-    pub(crate) fn repository(&self) -> String {
-        self.claim
-            .clone()
-            .unwrap_or_else(|| crate::folders::claim_name(&self.name))
+    pub(crate) fn repository(&self) -> Option<&str> {
+        self.claim.as_deref()
     }
 }
 
@@ -130,10 +128,9 @@ pub(crate) fn place(saved: &[SavedFolder], live: &[crate::folders::Folder]) -> V
     saved
         .iter()
         .map(|s| {
-            let same = live.iter().find(|l| match &s.claim {
-                Some(claim) => &l.claim == claim,
-                None => l.name == s.name,
-            });
+            let same = live
+                .iter()
+                .find(|l| s.claim.as_deref() == Some(l.claim.as_str()));
             match same {
                 Some(l) => Placed {
                     saved: s.clone(),
@@ -204,7 +201,7 @@ pub(crate) fn plan(placed: &[Placed], data: &[SavedData<'_>]) -> RestorePlan {
                 name: p.saved.name.clone(),
                 title: p.title.clone(),
                 capacity: p.saved.capacity.clone(),
-                backed_up: p.saved.snapshot.is_some(),
+                backed_up: p.saved.snapshot.is_some() && p.saved.claim.is_some(),
                 exists: p.exists(),
                 used_by: p.used_by.clone(),
                 becomes: (p.name != p.saved.name).then(|| p.name.clone()),
@@ -360,15 +357,6 @@ mod tests {
     }
 
     #[test]
-    fn a_backup_from_before_spaces_had_an_identity_reads_from_the_old_repository() {
-        assert_eq!(saved("movies", None).repository(), "folder-movies");
-        assert_eq!(
-            saved("movies", Some("space-0a1b2c")).repository(),
-            "space-0a1b2c"
-        );
-    }
-
-    #[test]
     fn only_the_folders_the_settings_still_name_are_prepared_and_a_new_one_starts_unsaved() {
         let saved = saved_folders(&catalog(), "yolab-jellyfin");
         let wanted: BTreeSet<String> = ["movies".to_string(), "films-2026".to_string()].into();
@@ -437,13 +425,10 @@ mod tests {
     }
 
     #[test]
-    fn a_space_saved_without_an_identity_is_matched_by_name() {
-        let placed = place(
-            &[saved("movies", None)],
-            &[live("movies", "folder-movies", &[])],
-        );
-        assert!(placed[0].exists());
-        assert_eq!(placed[0].live_claim.as_deref(), Some("folder-movies"));
+    fn a_folder_saved_without_an_identity_never_takes_over_a_live_one_by_name() {
+        let placed = place(&[saved("movies", None)], &[live("movies", "space-1", &[])]);
+        assert!(!placed[0].exists());
+        assert_eq!(placed[0].name, "movies-2");
     }
 
     #[test]
