@@ -4,9 +4,9 @@ use std::ptr;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
+use crate::ceph::commands::MonCommand;
 use crate::exec::{self, CmdError, CommandOutput};
 
 pub const ENV: &str = "YOLAB_LIBRADOS";
@@ -158,7 +158,7 @@ impl Cluster {
         bytes
     }
 
-    fn mon_command(&self, cmd: &CStr) -> Answer {
+    fn mon_command(&self, cmd: &CStr, input: &[u8]) -> Answer {
         let mut cmds = [cmd.as_ptr()];
         let (mut out, mut out_len) = (ptr::null_mut(), 0usize);
         let (mut outs, mut outs_len) = (ptr::null_mut(), 0usize);
@@ -167,8 +167,8 @@ impl Cluster {
                 self.handle,
                 cmds.as_mut_ptr(),
                 1,
-                ptr::null(),
-                0,
+                input.as_ptr().cast(),
+                input.len(),
                 &mut out,
                 &mut out_len,
                 &mut outs,
@@ -181,77 +181,6 @@ impl Cluster {
             outs: String::from_utf8_lossy(&self.take(outs, outs_len)).into_owned(),
         }
     }
-}
-
-#[derive(Debug, PartialEq)]
-pub(crate) struct MonCommand {
-    pub json: Value,
-    pub timeout: Option<Duration>,
-}
-
-impl MonCommand {
-    fn json_format(&self) -> bool {
-        self.json["format"]
-            .as_str()
-            .is_some_and(|f| f.starts_with("json"))
-    }
-}
-
-fn is_option(a: &str) -> bool {
-    a.starts_with('-') && !a[1..].starts_with(|c: char| c.is_ascii_digit())
-}
-
-pub(crate) fn mon_command(args: &[&str]) -> Option<MonCommand> {
-    let mut words = Vec::new();
-    let mut format = None;
-    let mut timeout = None;
-    let mut it = args.iter().copied();
-    while let Some(a) = it.next() {
-        match a {
-            "-f" | "--format" => format = Some(it.next()?),
-            "-s" | "--status" => words.insert(0, "status"),
-            "--connect-timeout" => {
-                timeout = Some(Duration::from_secs(it.next()?.parse().ok()?));
-            }
-            _ => match a.strip_prefix("--format=") {
-                Some(f) => format = Some(f),
-                None if is_option(a) => return None,
-                None => words.push(a),
-            },
-        }
-    }
-    let mut json = match words.as_slice() {
-        ["status"] => json!({"prefix": "status"}),
-        ["health"] => json!({"prefix": "health"}),
-        ["health", "detail"] => json!({"prefix": "health", "detail": "detail"}),
-        ["df"] => json!({"prefix": "df"}),
-        ["df", "detail"] => json!({"prefix": "df", "detail": "detail"}),
-        ["fsid"] => json!({"prefix": "fsid"}),
-        ["quorum_status"] => json!({"prefix": "quorum_status"}),
-        ["mon", "dump"] => json!({"prefix": "mon dump"}),
-        ["osd", "stat"] => json!({"prefix": "osd stat"}),
-        ["osd", "dump"] => json!({"prefix": "osd dump"}),
-        ["osd", "tree"] => json!({"prefix": "osd tree"}),
-        ["osd", "ls"] => json!({"prefix": "osd ls"}),
-        ["osd", "df"] => json!({"prefix": "osd df"}),
-        ["osd", "df", "tree"] => json!({"prefix": "osd df", "output_method": "tree"}),
-        ["osd", "pool", "ls"] => json!({"prefix": "osd pool ls"}),
-        ["osd", "pool", "ls", "detail"] => json!({"prefix": "osd pool ls", "detail": "detail"}),
-        ["osd", "pool", "get", pool, var] => {
-            json!({"prefix": "osd pool get", "pool": pool, "var": var})
-        }
-        ["pg", "stat"] => json!({"prefix": "pg stat"}),
-        ["pg", "dump", "pgs_brief"] => json!({"prefix": "pg dump", "dumpcontents": ["pgs_brief"]}),
-        ["mgr", "stat"] => json!({"prefix": "mgr stat"}),
-        ["mgr", "services"] => json!({"prefix": "mgr services"}),
-        ["progress", "json"] => json!({"prefix": "progress json"}),
-        ["config-key", "get", key] => json!({"prefix": "config-key get", "key": key}),
-        _ => return None,
-    };
-    if let Some(f) = format {
-        json["format"] = json!(f);
-    }
-    Some(MonCommand { json, timeout })
 }
 
 pub(crate) fn errno_name(errno: c_int) -> &'static str {
@@ -406,9 +335,17 @@ pub(crate) async fn run(cmd: &MonCommand, default_timeout: Duration) -> Result<O
         Err(why) => return Ok(Outcome::NotRun(why)),
     };
     let line = CString::new(cmd.json.to_string()).map_err(|e| CmdError::parse(&rendered, e))?;
+    let input = match &cmd.input {
+        None => Vec::new(),
+        Some(path) => tokio::fs::read(path).await.map_err(|e| CmdError::Failed {
+            cmd: rendered.clone(),
+            kind: exec::Failure::Other,
+            stderr: format!("Can't open input file {path}: {e}"),
+        })?,
+    };
     let timeout = cmd.timeout.unwrap_or(default_timeout);
     let worker = c.clone();
-    let work = tokio::task::spawn_blocking(move || worker.mon_command(&line));
+    let work = tokio::task::spawn_blocking(move || worker.mon_command(&line, &input));
     match tokio::time::timeout(timeout, work).await {
         Ok(Ok(answer)) => Ok(Outcome::Answered(into_output(answer, cmd.json_format()))),
         Ok(Err(e)) => Err(CmdError::Failed {
@@ -429,79 +366,6 @@ pub(crate) async fn run(cmd: &MonCommand, default_timeout: Duration) -> Result<O
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn sent(args: &[&str]) -> Value {
-        mon_command(args)
-            .unwrap_or_else(|| panic!("{args:?} should go through librados"))
-            .json
-    }
-
-    #[test]
-    fn the_storage_page_reads_use_the_names_the_monitor_publishes() {
-        assert_eq!(
-            sent(&["osd", "df", "tree", "-f", "json"]),
-            json!({"prefix": "osd df", "output_method": "tree", "format": "json"})
-        );
-        assert_eq!(
-            sent(&["osd", "pool", "ls", "detail", "-f", "json"]),
-            json!({"prefix": "osd pool ls", "detail": "detail", "format": "json"})
-        );
-        assert_eq!(
-            sent(&["df", "-f", "json"]),
-            json!({"prefix": "df", "format": "json"})
-        );
-        assert_eq!(
-            sent(&["status", "-f", "json"]),
-            json!({"prefix": "status", "format": "json"})
-        );
-    }
-
-    #[test]
-    fn arguments_are_passed_by_their_published_names() {
-        assert_eq!(
-            sent(&["osd", "pool", "get", "images", "size", "-f", "json"]),
-            json!({"prefix": "osd pool get", "pool": "images", "var": "size", "format": "json"})
-        );
-        assert_eq!(
-            sent(&["config-key", "get", "yolab/storage-policy"]),
-            json!({"prefix": "config-key get", "key": "yolab/storage-policy"})
-        );
-        assert_eq!(
-            sent(&["pg", "dump", "pgs_brief", "-f", "json"]),
-            json!({"prefix": "pg dump", "dumpcontents": ["pgs_brief"], "format": "json"})
-        );
-    }
-
-    #[test]
-    fn dash_s_is_status_as_the_cli_treats_it() {
-        assert_eq!(sent(&["-s"]), json!({"prefix": "status"}));
-    }
-
-    #[test]
-    fn connect_timeout_becomes_the_request_deadline() {
-        let c = mon_command(&["--connect-timeout", "10", "mon", "dump", "-f", "json"]).unwrap();
-        assert_eq!(c.json, json!({"prefix": "mon dump", "format": "json"}));
-        assert_eq!(c.timeout, Some(Duration::from_secs(10)));
-        assert_eq!(mon_command(&["--connect-timeout", "soon", "health"]), None);
-    }
-
-    #[test]
-    fn writes_and_unlisted_commands_stay_on_the_cli() {
-        for args in [
-            vec!["config-key", "set", "k", "v"],
-            vec!["osd", "pool", "set", "images", "size", "2"],
-            vec!["osd", "purge", "osd.3", "--yes-i-really-mean-it"],
-            vec!["fs", "new", "fs", "meta", "data", "--force"],
-            vec!["auth", "rotate", "mon.", "--key_type", "aes256k"],
-            vec!["tell", "osd.0", "bench"],
-            vec!["fs", "status", "-f", "json"],
-            vec!["status", "-f"],
-            vec!["status", "--watch"],
-            vec![],
-        ] {
-            assert_eq!(mon_command(&args), None, "{args:?}");
-        }
-    }
 
     #[test]
     fn a_json_answer_starts_with_the_blank_line_the_cli_prints() {
@@ -548,15 +412,6 @@ mod tests {
             false,
         );
         assert_eq!(exec::classify("ceph", &busy.stderr), exec::Failure::Busy);
-    }
-
-    #[test]
-    fn the_json_format_flag_follows_the_format_argument() {
-        assert!(mon_command(&["df", "-f", "json-pretty"])
-            .unwrap()
-            .json_format());
-        assert!(!mon_command(&["df", "-f", "plain"]).unwrap().json_format());
-        assert!(!mon_command(&["fsid"]).unwrap().json_format());
     }
 
     #[test]

@@ -3,6 +3,7 @@ use std::time::Duration;
 use serde_json::Value;
 use tokio::sync::Mutex;
 
+use crate::ceph::commands;
 use crate::ceph::destructive::{self, Door};
 use crate::exec::{self, CmdError};
 use crate::rados;
@@ -50,7 +51,11 @@ fn refuse_destructive(bin: &str, args: &[&str]) -> Result<(), CmdError> {
 
 pub async fn ceph(args: &[&str]) -> Result<String, CmdError> {
     refuse_destructive("ceph", args)?;
-    let Some(cmd) = rados::mon_command(args) else {
+    run_ceph(args).await
+}
+
+async fn run_ceph(args: &[&str]) -> Result<String, CmdError> {
+    let Some(cmd) = commands::mon_command(args) else {
         return run_bin("ceph", args).await;
     };
     match rados::run(&cmd, TIMEOUT).await? {
@@ -69,7 +74,7 @@ pub fn ceph_destructive<'a>(
     _door: &Door,
     args: &'a [&str],
 ) -> impl std::future::Future<Output = Result<String, CmdError>> + Send + 'a {
-    async move { run_bin("ceph", args).await }
+    async move { run_ceph(args).await }
 }
 
 fn with_json_format<'a>(args: &[&'a str]) -> Vec<&'a str> {
