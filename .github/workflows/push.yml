@@ -99,6 +99,12 @@ jobs:
           xargs -a /tmp/out.txt nix path-info --recursive \
             | nix run nixpkgs#attic-client -- push yolab --stdin --no-closure
 
+      - name: Check machines can download it from the cache
+        env:
+          ATTIC_AUTH_TOKEN: ${{ secrets.ATTIC_AUTH_TOKEN }}
+        if: ${{ env.ATTIC_AUTH_TOKEN != '' }}
+        run: xargs -a /tmp/out.txt bash scripts/check-cache.sh
+
   build-images:
     runs-on: ubuntu-latest
     permissions:
@@ -772,6 +778,12 @@ jobs:
           nix run nixpkgs#attic-client -- login yolab https://cache.yolab.io "$ATTIC_AUTH_TOKEN"
           nix run nixpkgs#attic-client -- push yolab \
             "${{ steps.build_iso.outputs.store_path }}"
+
+      - name: Check machines can download the ISO from the cache
+        env:
+          ATTIC_AUTH_TOKEN: ${{ secrets.ATTIC_AUTH_TOKEN }}
+        if: ${{ env.ATTIC_AUTH_TOKEN != '' }}
+        run: bash scripts/check-cache.sh "${{ steps.build_iso.outputs.store_path }}"
 
       - name: Get ISO info
         id: iso_info

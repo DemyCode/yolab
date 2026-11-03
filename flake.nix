@@ -3,7 +3,7 @@
 
   nixConfig = {
     extra-substituters = ["https://cache.yolab.io/yolab"];
-    extra-trusted-public-keys = ["yolab:3CIkfuGsBgTSWSAZJ2FCbVXjLG1RwNJvvGS1MAtQCmQ="];
+    extra-trusted-public-keys = ["yolab:LrcqUCJSfUGqbrMyJ8qS8WJdOuDTRlOGOhkhoRALAH8="];
     sandbox = "relaxed";
   };
 

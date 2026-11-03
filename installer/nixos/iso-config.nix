@@ -50,7 +50,7 @@ in {
   ];
   nix.settings.trusted-public-keys = [
     "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY="
-    "yolab:3CIkfuGsBgTSWSAZJ2FCbVXjLG1RwNJvvGS1MAtQCmQ="
+    "yolab:LrcqUCJSfUGqbrMyJ8qS8WJdOuDTRlOGOhkhoRALAH8="
   ];
 
   services.getty.autologinUser = lib.mkForce "root";
