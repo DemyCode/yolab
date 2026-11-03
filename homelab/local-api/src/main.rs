@@ -3,6 +3,7 @@ mod auth;
 mod boot;
 mod ceph;
 mod ceph_cli;
+mod ceph_worker;
 mod cephfs;
 mod charts;
 mod config;

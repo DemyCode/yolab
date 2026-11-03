@@ -4,6 +4,7 @@ use serde_json::Value;
 use tokio::sync::Mutex;
 
 use crate::ceph::destructive::{self, Door};
+use crate::ceph_worker;
 use crate::exec::{self, CmdError};
 
 static CEPH_VOLUME_LOCK: Mutex<()> = Mutex::const_new(());
@@ -18,6 +19,10 @@ const CEPH_VOLUME_TIMEOUT: Duration = Duration::from_secs(600);
 
 async fn run_bin(bin: &str, args: &[&str]) -> Result<String, CmdError> {
     let out = exec::output(bin, args, TIMEOUT).await?;
+    checked(bin, args, out)
+}
+
+fn checked(bin: &str, args: &[&str], out: exec::CommandOutput) -> Result<String, CmdError> {
     if out.success {
         return Ok(out.stdout);
     }
@@ -45,7 +50,19 @@ fn refuse_destructive(bin: &str, args: &[&str]) -> Result<(), CmdError> {
 
 pub async fn ceph(args: &[&str]) -> Result<String, CmdError> {
     refuse_destructive("ceph", args)?;
-    run_bin("ceph", args).await
+    let Some(req) = ceph_worker::request(args) else {
+        return run_bin("ceph", args).await;
+    };
+    match ceph_worker::run(&req, TIMEOUT).await? {
+        ceph_worker::Outcome::Answered(out) => checked("ceph", args, out),
+        ceph_worker::Outcome::NotRun(why) => {
+            tracing::debug!(
+                "`{}` runs through the ceph CLI because the ceph worker is unavailable: {why}",
+                exec::render("ceph", args)
+            );
+            run_bin("ceph", args).await
+        }
+    }
 }
 
 pub fn ceph_destructive<'a>(
