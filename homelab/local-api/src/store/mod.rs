@@ -370,8 +370,6 @@ fn disk_key(node: &str, disk_id: &str) -> String {
     )
 }
 
-
-
 pub fn shared() -> &'static Mutex<Store> {
     static SHARED: OnceLock<Mutex<Store>> = OnceLock::new();
     SHARED.get_or_init(|| {
@@ -783,7 +781,6 @@ mod tests {
         );
         assert_eq!(b.storage_policy().unwrap(), Some(policy(3)));
     }
-
 
     #[test]
     fn a_hardware_disk_choice_is_stored_under_the_key_the_reconciler_reads() {

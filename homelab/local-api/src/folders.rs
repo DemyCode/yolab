@@ -182,7 +182,6 @@ pub(crate) fn app_volume(folder: &str, namespace: &str, source: &Source) -> Valu
     })
 }
 
-
 pub(crate) fn folder_fields(config_schema: &Value) -> BTreeSet<String> {
     fn walk(node: &Value, found: &mut BTreeSet<String>) {
         match node {
@@ -542,7 +541,6 @@ pub(crate) fn sweep(
 fn claim_reference(claim: &str) -> Value {
     crate::k8s::reference("v1", "PersistentVolumeClaim", NAMESPACE, claim)
 }
-
 
 async fn namespaces(client: &Client) -> anyhow::Result<BTreeSet<String>> {
     Ok(

@@ -484,8 +484,8 @@ fn mounts_resting_on(root: &Path, data_root: &Path) -> Vec<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::wait::not_yet;
     use crate::host::fake::FakeHost;
+    use crate::storage::wait::not_yet;
 
     fn policy() -> ContainerdStorePolicy {
         ContainerdStorePolicy {

@@ -122,7 +122,10 @@ mod tests {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, "[client.yolab-images]\n\tkey = K\n").unwrap();
         let host = FakeHost::new();
-        assert_eq!(images_identity(&host, root.path(), "images").await.unwrap(), path);
+        assert_eq!(
+            images_identity(&host, root.path(), "images").await.unwrap(),
+            path
+        );
         assert!(host.calls().is_empty());
     }
 

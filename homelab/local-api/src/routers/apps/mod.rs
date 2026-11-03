@@ -1632,8 +1632,11 @@ pub(crate) async fn stage_install(
         .suffix(".json")
         .tempfile()
         .map_err(|e| anyhow::anyhow!("staging values: {e}"))?;
-    std::fs::write(values.path(), build_values(config, &tunnel_cfg, &service_name))
-        .map_err(|e| anyhow::anyhow!("write values: {e}"))?;
+    std::fs::write(
+        values.path(),
+        build_values(config, &tunnel_cfg, &service_name),
+    )
+    .map_err(|e| anyhow::anyhow!("write values: {e}"))?;
     Ok(StagedInstall {
         ns,
         chart_repo: repo,

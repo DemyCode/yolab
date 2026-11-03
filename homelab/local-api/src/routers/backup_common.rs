@@ -53,12 +53,8 @@ pub(crate) const MASTER_SECRET: &str = "yolab-backup-config";
 pub(crate) const MASTER_NS: &str = "kube-system";
 pub(crate) const RESTIC_SECRET_SUFFIX: &str = "-restic";
 
-pub(crate) const EXCLUDED_NS: &[&str] = &[
-    "kube-system",
-    crate::csi::NS,
-    "volsync-system",
-    "default",
-];
+pub(crate) const EXCLUDED_NS: &[&str] =
+    &["kube-system", crate::csi::NS, "volsync-system", "default"];
 
 #[derive(Clone)]
 pub(crate) struct BackupConfig {

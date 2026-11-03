@@ -79,7 +79,10 @@ mod tests {
             .ok("ceph-volume lvm list", &listing())
             .ok("ceph fsid", OURS)
             .ok("ceph osd ls", "[1,2]")
-            .ok("systemctl show -p ActiveState --value yolab-ceph-osd@1.service", "inactive")
+            .ok(
+                "systemctl show -p ActiveState --value yolab-ceph-osd@1.service",
+                "inactive",
+            )
             .ok("systemctl start", "");
         run(&host).await.unwrap();
         assert!(host.ran("systemctl start yolab-ceph-osd@1.service"));

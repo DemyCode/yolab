@@ -327,7 +327,10 @@ mod tests {
                 "ceph mon dump",
                 &dump_with(&[("yolab-n1", "fd00:cafe::1")]).to_string(),
             )
-            .fail("ceph auth get-key client.csi-cephfs-provisioner", "RADOS timed out");
+            .fail(
+                "ceph auth get-key client.csi-cephfs-provisioner",
+                "RADOS timed out",
+            );
         let b = Backend { kube, host };
         assert!(run(&b).await.is_err());
         assert!(!b.host.ran("auth get-or-create"));

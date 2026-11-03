@@ -69,8 +69,10 @@ mod tests {
     #[tokio::test]
     async fn a_missing_manifest_file_is_an_error() {
         let (_server, client) = api_server().await;
-        assert!(apply_manifests(&client, Path::new("/nonexistent/cephfs.yaml"))
-            .await
-            .is_err());
+        assert!(
+            apply_manifests(&client, Path::new("/nonexistent/cephfs.yaml"))
+                .await
+                .is_err()
+        );
     }
 }

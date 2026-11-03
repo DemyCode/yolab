@@ -46,7 +46,9 @@ class CephfsCsiManifest(unittest.TestCase):
         self.assertEqual(sc["provisioner"], DRIVER)
         p = sc["parameters"]
         self.assertEqual(p["clusterID"], "yolab")
-        self.assertEqual(p["csi.storage.k8s.io/node-stage-secret-name"], "csi-cephfs-node")
+        self.assertEqual(
+            p["csi.storage.k8s.io/node-stage-secret-name"], "csi-cephfs-node"
+        )
         self.assertEqual(
             p["csi.storage.k8s.io/provisioner-secret-name"], "csi-cephfs-provisioner"
         )
