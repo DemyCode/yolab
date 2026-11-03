@@ -4,7 +4,7 @@ use serde_json::Value;
 use tokio::sync::Mutex;
 
 use crate::ceph::destructive::{self, Door};
-use crate::ceph_worker;
+use crate::rados;
 use crate::exec::{self, CmdError};
 
 static CEPH_VOLUME_LOCK: Mutex<()> = Mutex::const_new(());
@@ -50,14 +50,14 @@ fn refuse_destructive(bin: &str, args: &[&str]) -> Result<(), CmdError> {
 
 pub async fn ceph(args: &[&str]) -> Result<String, CmdError> {
     refuse_destructive("ceph", args)?;
-    let Some(req) = ceph_worker::request(args) else {
+    let Some(cmd) = rados::mon_command(args) else {
         return run_bin("ceph", args).await;
     };
-    match ceph_worker::run(&req, TIMEOUT).await? {
-        ceph_worker::Outcome::Answered(out) => checked("ceph", args, out),
-        ceph_worker::Outcome::NotRun(why) => {
+    match rados::run(&cmd, TIMEOUT).await? {
+        rados::Outcome::Answered(out) => checked("ceph", args, out),
+        rados::Outcome::NotRun(why) => {
             tracing::debug!(
-                "`{}` runs through the ceph CLI because the ceph worker is unavailable: {why}",
+                "`{}` runs through the ceph CLI because librados is unavailable: {why}",
                 exec::render("ceph", args)
             );
             run_bin("ceph", args).await

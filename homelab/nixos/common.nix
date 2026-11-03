@@ -458,11 +458,7 @@ in {
           SSL_CERT_FILE = "/etc/static/ssl/certs/ca-bundle.crt";
         }
         // lib.optionalAttrs config.yolab.ceph.enable {
-          YOLAB_CEPH_WORKER = "${pkgs.writeShellScript "yolab-ceph-worker" ''
-            export PYTHONNOUSERSITE=true
-            export PYTHONPATH=${pkgs.ceph}/${pkgs.ceph.sitePackages}
-            exec ${pkgs.ceph.pythonEnv}/bin/python3 ${../local-api/ceph_worker.py} "$@"
-          ''}";
+          YOLAB_LIBRADOS = "${pkgs.ceph.lib}/lib/librados.so.2";
           YOLAB_CEPH_FSID = config.yolab.ceph.fsid;
           YOLAB_CEPH_MON_ADDR = config.yolab.ceph.monAddr;
           YOLAB_CEPH_JOIN_SEED_ADDR = config.yolab.ceph.joinSeedAddr;
