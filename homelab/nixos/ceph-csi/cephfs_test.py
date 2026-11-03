@@ -66,7 +66,8 @@ class CephfsCsiManifest(unittest.TestCase):
             self.assertEqual(maps, ["ceph-csi-config"], name)
 
     def test_every_driver_name_and_socket_path_is_the_same_driver(self):
-        text = open(os.path.join(HERE, "cephfs.yaml")).read()
+        with open(os.path.join(HERE, "cephfs.yaml")) as f:
+            text = f.read()
         for found in re.findall(r"[\w.-]*cephfs\.csi\.ceph\.com", text):
             self.assertEqual(found, DRIVER)
 
