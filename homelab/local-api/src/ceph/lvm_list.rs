@@ -69,11 +69,13 @@ pub fn from_lvs(raw: &str) -> Result<String, CmdError> {
             continue;
         }
         let more: Vec<String> = devices(&row.devices).collect();
-        let v = volumes.entry(row.lv_uuid.clone()).or_insert_with(|| Volume {
-            row,
-            tags,
-            devices: Vec::new(),
-        });
+        let v = volumes
+            .entry(row.lv_uuid.clone())
+            .or_insert_with(|| Volume {
+                row,
+                tags,
+                devices: Vec::new(),
+            });
         for d in more {
             if !v.devices.contains(&d) {
                 v.devices.push(d);
