@@ -28,7 +28,7 @@ pub(crate) struct Source {
 }
 
 fn is_cluster_wide(key: &str) -> bool {
-    key.starts_with("heal:") || key.starts_with("backup:") || key.starts_with("folder:")
+    key.starts_with("heal:") || key.starts_with("backup:")
 }
 
 fn sends_for_cluster(me: &str, answering: &[String]) -> bool {
@@ -244,14 +244,6 @@ async fn backup_source<H: Host>(backend: &anyhow::Result<Backend<H>>, silent: bo
     }
 }
 
-fn retired_source(prefix: &'static str, silent: bool) -> Source {
-    Source {
-        prefix,
-        alerts: Some(Vec::new()),
-        silent,
-    }
-}
-
 fn disk_source() -> Source {
     Source {
         prefix: "disk:",
@@ -302,7 +294,6 @@ impl Controller for NotifierController {
         let sources = [
             heal_source(&view.problems, quiet),
             backup_source(&backend, quiet).await,
-            retired_source("folder:", quiet),
             disk_source(),
         ];
         let mut sent = load(root)?;
@@ -384,17 +375,6 @@ mod tests {
         assert_eq!(
             changes(&sent(&["heal:kubernetes_down"]), &gone),
             vec![Change::Cleared(alert("heal:kubernetes_down"))]
-        );
-    }
-
-    #[test]
-    fn a_folder_backup_alert_sent_before_folders_lost_their_own_backups_is_cleared() {
-        assert_eq!(
-            changes(
-                &sent(&["folder:movies"]),
-                &[retired_source("folder:", false)]
-            ),
-            vec![Change::Cleared(alert("folder:movies"))]
         );
     }
 

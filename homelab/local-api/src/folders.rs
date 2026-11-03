@@ -12,11 +12,6 @@ pub(crate) const NAMESPACE: &str = "yolab-folders";
 pub(crate) const STATIC_SECRET: &str = "yolab-cephfs-static";
 pub(crate) const LABEL_FOLDER: &str = "yolab.io/folder";
 const LABEL_APP_NAMESPACE: &str = "yolab.io/folder-namespace";
-const LABEL_KIND: &str = "yolab.io/folder-kind";
-const KIND_FILES: &str = "files";
-const LABEL_STATE: &str = "yolab.io/state-folder";
-const LABEL_STATE_NAMESPACE: &str = "yolab.io/state-namespace";
-const LABEL_STATE_ORIGIN: &str = "yolab.io/state-origin";
 const ANN_TITLE: &str = "yolab.io/folder-title";
 const ANN_LINKED_AT: &str = "yolab.io/linked-at";
 const ANN_UNLINKED_SINCE: &str = "yolab.io/unlinked-since";
@@ -126,7 +121,7 @@ pub(crate) fn space_claim_manifest(claim: &str, folder: &str, title: &str, stora
         "metadata": {
             "name": claim,
             "namespace": NAMESPACE,
-            "labels": { LABEL_FOLDER: folder, LABEL_KIND: KIND_FILES },
+            "labels": { LABEL_FOLDER: folder },
             "annotations": { ANN_TITLE: title },
         },
         "spec": {
@@ -187,11 +182,6 @@ pub(crate) fn app_volume(folder: &str, namespace: &str, source: &Source) -> Valu
     })
 }
 
-pub(crate) fn state_folder_of(volume: &Value) -> Option<&str> {
-    volume["metadata"]["labels"][LABEL_STATE]
-        .as_str()
-        .filter(|f| !f.is_empty())
-}
 
 pub(crate) fn folder_fields(config_schema: &Value) -> BTreeSet<String> {
     fn walk(node: &Value, found: &mut BTreeSet<String>) {
@@ -374,23 +364,10 @@ pub(crate) async fn release_all(client: &Client, namespace: &str) -> anyhow::Res
 
 fn link_of(pv: &Value) -> Option<(&str, &str)> {
     let labels = &pv["metadata"]["labels"];
-    if let (Some(folder), Some(ns)) = (
-        labels[LABEL_FOLDER].as_str(),
-        labels[LABEL_APP_NAMESPACE].as_str(),
-    ) {
-        return Some((folder, ns));
-    }
-    if labels[LABEL_STATE_ORIGIN].as_str() != Some("true")
-        && pv["status"]["phase"].as_str() == Some("Bound")
-    {
-        if let (Some(folder), Some(ns)) = (
-            labels[LABEL_STATE].as_str(),
-            labels[LABEL_STATE_NAMESPACE].as_str(),
-        ) {
-            return Some((folder, ns));
-        }
-    }
-    None
+    Some((
+        labels[LABEL_FOLDER].as_str()?,
+        labels[LABEL_APP_NAMESPACE].as_str()?,
+    ))
 }
 
 fn instance_of(namespace: &str) -> String {
@@ -510,7 +487,6 @@ pub(crate) enum Sweep {
         folder: String,
         resource_version: String,
     },
-    LetGo(String),
 }
 
 pub(crate) fn sweep(
@@ -523,7 +499,6 @@ pub(crate) fn sweep(
     let mut steps = Vec::new();
     for pv in volumes {
         let name = pv["metadata"]["name"].as_str().unwrap_or_default();
-        let labels = &pv["metadata"]["labels"];
         match link_of(pv) {
             Some((_, ns)) if !namespaces.contains(ns) && is_static(pv) => {
                 steps.push(Sweep::Forget(name.to_string()));
@@ -531,42 +506,7 @@ pub(crate) fn sweep(
             Some((folder, _)) => {
                 linked.insert(folder);
             }
-            None => {
-                let leftover_reuse = labels[LABEL_STATE].is_string()
-                    && labels[LABEL_STATE_ORIGIN].as_str() != Some("true")
-                    && labels[LABEL_STATE_NAMESPACE]
-                        .as_str()
-                        .is_some_and(|ns| !namespaces.contains(ns));
-                if leftover_reuse && is_static(pv) {
-                    steps.push(Sweep::Forget(name.to_string()));
-                }
-            }
-        }
-    }
-    let spaces: BTreeSet<&str> = claims
-        .iter()
-        .filter_map(|c| c["metadata"]["labels"][LABEL_FOLDER].as_str())
-        .collect();
-    for pv in volumes {
-        let name = pv["metadata"]["name"].as_str().unwrap_or_default();
-        let labels = &pv["metadata"]["labels"];
-        let owner_of = labels[LABEL_FOLDER]
-            .as_str()
-            .filter(|_| labels[LABEL_APP_NAMESPACE].is_null());
-        if let Some(folder) = owner_of {
-            if !spaces.contains(folder)
-                && is_static(pv)
-                && pv["status"]["phase"].as_str() != Some("Bound")
-            {
-                steps.push(Sweep::Forget(name.to_string()));
-            }
-        }
-        if labels[LABEL_STATE_ORIGIN].as_str() == Some("true") {
-            if let Some(folder) = labels[LABEL_STATE].as_str() {
-                if !spaces.contains(folder) && !linked.contains(folder) {
-                    steps.push(Sweep::LetGo(name.to_string()));
-                }
-            }
+            None => {}
         }
     }
     for claim in claims {
@@ -603,14 +543,6 @@ fn claim_reference(claim: &str) -> Value {
     crate::k8s::reference("v1", "PersistentVolumeClaim", NAMESPACE, claim)
 }
 
-pub(crate) fn delete_when_released(volume: &str) -> Value {
-    json!({
-        "apiVersion": "v1",
-        "kind": "PersistentVolume",
-        "metadata": { "name": volume },
-        "spec": { "persistentVolumeReclaimPolicy": "Delete" },
-    })
-}
 
 async fn namespaces(client: &Client) -> anyhow::Result<BTreeSet<String>> {
     Ok(
@@ -664,9 +596,6 @@ pub(crate) async fn sweep_unlinked(client: &Client) -> anyhow::Result<Vec<String
                 }
                 Err(e) => return Err(e),
             },
-            Sweep::LetGo(volume) => {
-                crate::k8s::merge_patch(client, &delete_when_released(&volume)).await?
-            }
         }
     }
     Ok(deleted)
@@ -1153,108 +1082,15 @@ mod tests {
         assert!(deletes(&sweep(&[claim], &[], &all(&[]), t(NOW))).is_empty());
     }
 
-    fn provisioned(name: &str) -> Value {
-        json!({
-            "metadata": { "name": name },
-            "spec": {
-                "capacity": { "storage": "50Gi" },
-                "persistentVolumeReclaimPolicy": "Retain",
-                "csi": {
-                    "driver": "cephfs.csi.ceph.com",
-                    "volumeAttributes": { "subvolumePath": "/volumes/csi/csi-vol-1/abc" },
-                },
-            },
-        })
-    }
-
-    fn origin(folder: &str, namespace: &str, phase: &str) -> Value {
-        let mut pv = provisioned("pvc-123");
-        pv["metadata"]["labels"] = json!({
-            LABEL_STATE: folder,
-            LABEL_STATE_NAMESPACE: namespace,
-            LABEL_STATE_ORIGIN: "true",
-        });
-        pv["status"] = json!({ "phase": phase });
-        pv
-    }
-
-    fn reused(folder: &str, namespace: &str, phase: &str) -> Value {
-        let mut pv = provisioned(&format!("{namespace}.{folder}"));
-        pv["metadata"]["labels"] = json!({ LABEL_STATE: folder, LABEL_STATE_NAMESPACE: namespace });
-        pv["spec"]["csi"]["volumeAttributes"]["staticVolume"] = json!("true");
-        pv["status"] = json!({ "phase": phase });
-        pv
-    }
-
-    fn old_state_space(folder: &str) -> Value {
-        let mut c = unlinked_since(space(&claim_name(folder), folder), "2026-10-12T09:00:00Z");
-        c["metadata"]["labels"][LABEL_KIND] = json!("state");
-        c["spec"]["volumeName"] = json!(format!("{NAMESPACE}.state-{folder}"));
-        c
-    }
-
-    #[test]
-    fn an_apps_own_volume_is_not_a_link_to_the_space_it_was_once_turned_into() {
-        let claims = vec![old_state_space("jellyfin-data")];
-        let volumes = vec![origin("jellyfin-data", "yolab-jellyfin", "Bound")];
-        let steps = sweep(&claims, &volumes, &all(&["yolab-jellyfin"]), t(NOW));
-        assert_eq!(deletes(&steps), vec!["jellyfin-data"]);
-    }
-
-    #[test]
-    fn once_such_a_space_is_gone_the_apps_volume_is_deleted_with_the_app_again() {
-        let mut owner = provisioned(&format!("{NAMESPACE}.state-jellyfin-data"));
-        owner["metadata"]["labels"] = json!({ LABEL_FOLDER: "jellyfin-data" });
-        owner["spec"]["csi"]["volumeAttributes"]["staticVolume"] = json!("true");
-        owner["status"] = json!({ "phase": "Released" });
-        let volumes = vec![origin("jellyfin-data", "yolab-jellyfin", "Bound"), owner];
-        let steps = sweep(&[], &volumes, &all(&["yolab-jellyfin"]), t(NOW));
-        assert!(steps.contains(&Sweep::LetGo("pvc-123".into())));
-        assert!(steps.contains(&Sweep::Forget(format!("{NAMESPACE}.state-jellyfin-data"))));
-    }
-
-    #[test]
-    fn data_an_app_was_reinstalled_onto_stays_while_that_app_is_installed() {
-        let claims = vec![old_state_space("jellyfin-data")];
-        let volumes = vec![
-            origin("jellyfin-data", "yolab-jellyfin", "Released"),
-            reused("jellyfin-data", "yolab-jellyfin", "Bound"),
-        ];
-        let steps = sweep(&claims, &volumes, &all(&["yolab-jellyfin"]), t(NOW));
-        assert!(deletes(&steps).is_empty());
-        assert!(!steps.iter().any(|s| matches!(s, Sweep::LetGo(_))));
-        let no_claim = sweep(&[], &volumes, &all(&["yolab-jellyfin"]), t(NOW));
-        assert!(!no_claim.iter().any(|s| matches!(s, Sweep::LetGo(_))));
-    }
-
-    #[test]
-    fn a_space_another_app_mounts_keeps_the_original_volume_alive() {
-        let claims = vec![old_state_space("jellyfin-data")];
-        let volumes = vec![
-            origin("jellyfin-data", "yolab-jellyfin", "Released"),
-            app_pv("yolab-filebrowser", "jellyfin-data"),
-        ];
-        let steps = sweep(&claims, &volumes, &all(&["yolab-filebrowser"]), t(NOW));
-        assert_eq!(steps, vec![Sweep::Linked(claim_name("jellyfin-data"))]);
-    }
-
     #[test]
     fn only_volumes_that_hold_no_data_of_their_own_are_ever_forgotten() {
         let mut dynamic = app_pv("yolab-gone", "movies");
         dynamic["spec"]["persistentVolumeReclaimPolicy"] = json!("Delete");
         assert!(sweep(&[], &[dynamic], &all(&[]), t(NOW)).is_empty());
-        let leftover = reused("jellyfin-data", "yolab-gone", "Released");
+        let leftover = app_pv("yolab-gone", "movies");
         assert_eq!(
             sweep(&[], &[leftover], &all(&[]), t(NOW)),
-            vec![Sweep::Forget("yolab-gone.jellyfin-data".into())]
-        );
-    }
-
-    #[test]
-    fn letting_go_lets_the_volume_delete_its_files_when_released() {
-        assert_eq!(
-            delete_when_released("pvc-123")["spec"]["persistentVolumeReclaimPolicy"],
-            "Delete"
+            vec![Sweep::Forget(app_volume_name("yolab-gone", "movies"))]
         );
     }
 

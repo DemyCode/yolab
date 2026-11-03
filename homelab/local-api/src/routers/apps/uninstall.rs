@@ -105,7 +105,6 @@ pub(crate) const VOLUME_DELETE_POLL: std::time::Duration = std::time::Duration::
 pub(crate) fn volumes_of(pvs: &[Value], ns: &str) -> Vec<String> {
     pvs.iter()
         .filter(|pv| pv["spec"]["claimRef"]["namespace"].as_str() == Some(ns))
-        .filter(|pv| crate::folders::state_folder_of(pv).is_none())
         .filter_map(|pv| pv["metadata"]["name"].as_str().map(str::to_string))
         .collect()
 }

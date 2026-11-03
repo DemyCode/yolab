@@ -297,7 +297,8 @@ impl Store {
     }
 
     pub fn desired_records(&self) -> Result<HashMap<String, String>, StoreError> {
-        Ok(fold_hardware_claims(self.disk_claims()?)
+        Ok(self
+            .disk_claims()?
             .into_iter()
             .map(|(name, entry)| {
                 let setting = if entry.value == DiskIntent::On {
@@ -369,27 +370,7 @@ fn disk_key(node: &str, disk_id: &str) -> String {
     )
 }
 
-fn hardware_id_behind_node(name: &str) -> Option<&str> {
-    if crate::disks_reconciler::is_globally_unique_id(name) {
-        return None;
-    }
-    let (_, id) = name.split_once("--")?;
-    crate::disks_reconciler::is_globally_unique_id(id).then_some(id)
-}
 
-fn fold_hardware_claims<T>(claims: BTreeMap<String, Entry<T>>) -> BTreeMap<String, Entry<T>> {
-    let mut grouped: BTreeMap<String, Vec<Entry<T>>> = BTreeMap::new();
-    for (name, entry) in claims {
-        let key = hardware_id_behind_node(&name)
-            .map(str::to_string)
-            .unwrap_or(name);
-        grouped.entry(key).or_default().push(entry);
-    }
-    grouped
-        .into_iter()
-        .filter_map(|(key, candidates)| resolve(candidates).map(|e| (key, e)))
-        .collect()
-}
 
 pub fn shared() -> &'static Mutex<Store> {
     static SHARED: OnceLock<Mutex<Store>> = OnceLock::new();
@@ -803,11 +784,6 @@ mod tests {
         assert_eq!(b.storage_policy().unwrap(), Some(policy(3)));
     }
 
-    fn legacy_write(store: &mut Store, name: &str, value: DiskIntent) {
-        store
-            .write_at(&format!("{DISK_CLAIM_PREFIX}{name}"), &value, Origin::User)
-            .unwrap();
-    }
 
     #[test]
     fn a_hardware_disk_choice_is_stored_under_the_key_the_reconciler_reads() {
@@ -834,53 +810,6 @@ mod tests {
                 .map(String::as_str),
             Some("OFF")
         );
-    }
-
-    #[test]
-    fn the_newer_node_scoped_off_found_on_node3_beats_the_older_bare_on() {
-        let mut s = Store::new("node3");
-        legacy_write(&mut s, "serial-wwn-0x50014ee214caf529", DiskIntent::On);
-        legacy_write(
-            &mut s,
-            "node2--serial-wwn-0x50014ee214caf529",
-            DiskIntent::Off,
-        );
-        let records = s.desired_records().unwrap();
-        assert_eq!(
-            records
-                .get("serial-wwn-0x50014ee214caf529")
-                .map(String::as_str),
-            Some("OFF")
-        );
-        assert!(
-            !records.contains_key("node2--serial-wwn-0x50014ee214caf529"),
-            "the node-scoped copy is folded in, not reported as a second disk"
-        );
-    }
-
-    #[test]
-    fn a_newer_bare_choice_beats_an_older_node_scoped_one() {
-        let mut s = Store::new("node3");
-        legacy_write(&mut s, "node2--serial-wwn-x", DiskIntent::Off);
-        legacy_write(&mut s, "serial-wwn-x", DiskIntent::On);
-        assert_eq!(
-            s.desired_records()
-                .unwrap()
-                .get("serial-wwn-x")
-                .map(String::as_str),
-            Some("ON")
-        );
-    }
-
-    #[test]
-    fn a_hardware_id_containing_dashes_is_folded_whole() {
-        assert_eq!(
-            hardware_id_behind_node("node2--serial-ata-wdc--wd10"),
-            Some("serial-ata-wdc--wd10")
-        );
-        assert_eq!(hardware_id_behind_node("serial-ata-wdc--wd10"), None);
-        assert_eq!(hardware_id_behind_node("node1--dev-sdb"), None);
-        assert_eq!(hardware_id_behind_node("node1--system"), None);
     }
 
     #[test]

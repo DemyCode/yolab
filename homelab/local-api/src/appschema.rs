@@ -76,7 +76,6 @@ impl AppSchema {
         };
         props
             .iter()
-            .filter(|(_, spec)| !is_retired_service_output(spec))
             .map(|(key, spec)| parse_output(key, spec))
             .collect()
     }
@@ -103,10 +102,6 @@ impl OutputSpec {
         let value = value.trim();
         (key == self.key && !value.is_empty()).then(|| value.to_string())
     }
-}
-
-pub fn is_retired_service_output(spec: &Value) -> bool {
-    spec["source"].get("service").is_some()
 }
 
 pub fn parse_output(key: &str, spec: &Value) -> OutputSpec {
@@ -150,22 +145,6 @@ mod tests {
                 }
             }),
         )
-    }
-
-    #[test]
-    fn an_address_for_other_apps_is_no_longer_an_output() {
-        let service = json!({ "source": { "service": { "name": "x", "port": 80 } } });
-        assert!(is_retired_service_output(&service));
-        assert!(!is_retired_service_output(&json!({ "title": "Web URL" })));
-    }
-
-    #[test]
-    fn a_chart_still_declaring_one_has_it_skipped_quietly() {
-        let app = AppSchema::new(json!({ "properties": { "outputs": { "properties": {
-            "internal_url": { "source": { "service": { "name": "q", "port": 8080 } } },
-            "password": { "title": "Password" },
-        }}}}));
-        assert_eq!(keys(&app.outputs()), vec!["password"]);
     }
 
     #[test]

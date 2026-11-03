@@ -16,12 +16,10 @@ use crate::routers::install;
 use crate::{config::Config, error::Result, AppState};
 
 mod definition;
-mod links;
 mod spaces;
 mod uninstall;
 
 pub(crate) use definition::*;
-pub(crate) use links::*;
 pub(crate) use spaces::*;
 pub(crate) use uninstall::*;
 
@@ -1629,17 +1627,13 @@ pub(crate) async fn stage_install(
         .await
         .map_err(|e| anyhow::anyhow!("stage tunnel credentials: {e}"))?;
     let folders = crate::folders::wanted(&meta.app, config);
-    let resolved = drop_links(config);
     let service_name = resolve_service_name(&meta.app.config(), config);
     let values = tempfile::Builder::new()
         .suffix(".json")
         .tempfile()
         .map_err(|e| anyhow::anyhow!("staging values: {e}"))?;
-    std::fs::write(
-        values.path(),
-        build_values(&resolved, &tunnel_cfg, &service_name),
-    )
-    .map_err(|e| anyhow::anyhow!("write values: {e}"))?;
+    std::fs::write(values.path(), build_values(config, &tunnel_cfg, &service_name))
+        .map_err(|e| anyhow::anyhow!("write values: {e}"))?;
     Ok(StagedInstall {
         ns,
         chart_repo: repo,
@@ -1648,7 +1642,7 @@ pub(crate) async fn stage_install(
         chart_dir,
         values,
         folders,
-        config: resolved,
+        config: config.clone(),
     })
 }
 
@@ -3353,14 +3347,6 @@ mod tests {
                 pv("pvc-notes-2", "yolab-notes-2"),
                 json!({ "metadata": { "name": "pvc-unbound" }, "spec": {} }),
             ];
-            assert_eq!(volumes_of(&pvs, "yolab-notes"), vec!["pvc-notes"]);
-        }
-
-        #[test]
-        fn an_apps_data_folder_is_kept_on_purpose_and_never_waited_for() {
-            let mut kept = pv("pvc-notes-data", "yolab-notes");
-            kept["metadata"]["labels"] = json!({ "yolab.io/state-folder": "notes-data" });
-            let pvs = vec![kept, pv("pvc-notes", "yolab-notes")];
             assert_eq!(volumes_of(&pvs, "yolab-notes"), vec!["pvc-notes"]);
         }
 

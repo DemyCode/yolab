@@ -127,23 +127,9 @@ pub fn official_dir() -> PathBuf {
 pub struct CatalogManifest {
     pub registry: String,
     #[serde(default)]
-    pub library: Option<CatalogEntry>,
-    #[serde(default)]
     pub libraries: Vec<CatalogEntry>,
     #[serde(default)]
     pub charts: Vec<CatalogEntry>,
-}
-
-impl CatalogManifest {
-    pub fn all_libraries(&self) -> Vec<&CatalogEntry> {
-        let mut found: Vec<&CatalogEntry> = self.libraries.iter().collect();
-        if let Some(legacy) = &self.library {
-            if !found.iter().any(|l| l.name == legacy.name) {
-                found.insert(0, legacy);
-            }
-        }
-        found
-    }
 }
 
 #[derive(Deserialize, Debug, PartialEq)]
@@ -339,7 +325,7 @@ pub async fn sync_repo<H: Host>(
         cached_at_version(cache_root, &repo.name, &entry.name, &entry.version).is_none()
     };
 
-    for library in manifest.all_libraries().into_iter().filter(|l| stale(l)) {
+    for library in manifest.libraries.iter().filter(|l| stale(l)) {
         if valid_chart_name(&library.name) {
             if let Err(e) = pull_into(host, &dir, &manifest.registry, library).await {
                 tracing::warn!("{}: library pull: {e}", repo.name);
@@ -565,57 +551,31 @@ mod tests {
         let m: CatalogManifest =
             serde_norway::from_str("registry: oci://ghcr.io/x/charts\n").unwrap();
         assert!(m.charts.is_empty());
-        assert!(m.library.is_none());
+        assert!(m.libraries.is_empty());
     }
 
     #[test]
-    fn manifest_reads_the_library_when_it_declares_one() {
+    fn manifest_reads_every_library_it_lists() {
         let m: CatalogManifest = serde_norway::from_str(
             "registry: oci://ghcr.io/demycode/charts\n\
-             library:\n\
-             \x20 name: yolab-common\n\
-             \x20 version: \"0.1.1\"\n\
+             libraries:\n\
+             \x20 - name: yolab-common\n\
+             \x20   version: \"0.1.15\"\n\
+             \x20 - name: yolab-stack\n\
+             \x20   version: \"0.1.0\"\n\
              charts:\n\
              \x20 - name: gitea\n\
              \x20   version: \"0.1.1\"\n",
         )
         .unwrap();
         assert_eq!(
-            m.library,
-            Some(CatalogEntry {
-                name: "yolab-common".into(),
-                version: "0.1.1".into()
-            })
-        );
-        assert_eq!(m.charts.len(), 1);
-    }
-
-    #[test]
-    fn every_library_is_pulled_once_whether_listed_the_old_way_or_the_new() {
-        let m: CatalogManifest = serde_norway::from_str(
-            "registry: oci://ghcr.io/demycode/charts\n\
-             library:\n\
-             \x20 name: yolab-common\n\
-             \x20 version: \"0.1.15\"\n\
-             libraries:\n\
-             \x20 - name: yolab-common\n\
-             \x20   version: \"0.1.15\"\n\
-             \x20 - name: yolab-stack\n\
-             \x20   version: \"0.1.0\"\n",
-        )
-        .unwrap();
-        assert_eq!(
-            m.all_libraries()
+            m.libraries
                 .iter()
                 .map(|l| l.name.as_str())
                 .collect::<Vec<_>>(),
             vec!["yolab-common", "yolab-stack"]
         );
-        let old: CatalogManifest = serde_norway::from_str(
-            "registry: oci://x\nlibrary:\n  name: yolab-common\n  version: \"0.1.0\"\n",
-        )
-        .unwrap();
-        assert_eq!(old.all_libraries().len(), 1);
+        assert_eq!(m.charts.len(), 1);
     }
 
     mod against_the_world {
@@ -666,7 +626,7 @@ mod tests {
         async fn a_sync_pulls_only_the_charts_whose_version_moved() {
             let (_server, repo) = catalog(
                 "registry: oci://ghcr.io/x/charts\n\
-                 library:\n  name: yolab-common\n  version: \"0.1.0\"\n\
+                 libraries:\n  - name: yolab-common\n    version: \"0.1.0\"\n\
                  charts:\n  - name: notes\n    version: \"1.0.0\"\n  - name: wiki\n    version: \"2.0.0\"\n",
             )
             .await;
@@ -695,7 +655,6 @@ mod tests {
         async fn a_sync_pulls_a_new_library_next_to_the_one_it_has() {
             let (_server, repo) = catalog(
                 "registry: oci://ghcr.io/x/charts\n\
-                 library:\n  name: yolab-common\n  version: \"0.1.0\"\n\
                  libraries:\n  - name: yolab-common\n    version: \"0.1.0\"\n  - name: yolab-stack\n    version: \"0.1.0\"\n\
                  charts: []\n",
             )

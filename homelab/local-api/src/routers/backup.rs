@@ -1711,9 +1711,8 @@ mod tests {
     }
 
     #[test]
-    fn a_folder_backup_queued_before_folders_lost_their_own_backups_never_runs_or_blocks_the_queue()
-    {
-        let stale = queued_at("f", "folder:movies", "2026-10-01T00:00:00Z");
+    fn a_set_for_something_that_is_not_an_app_never_runs_or_blocks_the_queue() {
+        let stale = queued_at("f", "kube-system", "2026-10-01T00:00:00Z");
         assert_eq!(target_of(&stale), None);
         let sets = vec![stale, queued_at("a", "yolab-a", "2026-10-02T00:00:00Z")];
         assert_eq!(next_in_line(&sets).map(|s| s.id.as_str()), Some("a"));
