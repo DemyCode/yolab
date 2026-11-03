@@ -1,5 +1,4 @@
 mod banner;
-mod csi_recovery;
 mod lan_subnets;
 mod node_ip;
 
@@ -21,10 +20,6 @@ pub async fn run(args: &[String]) -> i32 {
         "lan-subnets" => {
             lan_subnets::run(&host, &env("YOLAB_LAN_SET4"), &env("YOLAB_LAN_SET6")).await
         }
-        "csi-recovery" => match crate::k8s::client().await {
-            Ok(client) => csi_recovery::run(&client).await,
-            Err(e) => Err(e),
-        },
         "banner" => {
             let config_path = env("YOLAB_CONFIG");
             banner::run(&host, &config_path, std::path::Path::new("/run/issue")).await

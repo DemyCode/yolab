@@ -258,7 +258,7 @@ async fn lv_osd_attempt<H: Host>(host: &H, dev: &str) -> Result<crate::storage::
                 )))
             }
             Ok(ids) if ids.contains(&id) => {
-                start_osd_unit(host, id).await;
+                ensure_osd_unit_running(host, id).await;
                 return Ok(Attempt::Ready(()));
             }
             Ok(_) => {
@@ -415,7 +415,7 @@ fn canonical_device(dev: &str) -> String {
         .unwrap_or(full)
 }
 
-async fn local_osds<H: Host>(host: &H) -> Result<Vec<(String, i64)>> {
+pub(crate) async fn local_osds<H: Host>(host: &H) -> Result<Vec<(String, i64)>> {
     let raw = host
         .ceph_volume(&["lvm", "list", "--format", "json"])
         .await?;
@@ -1345,41 +1345,19 @@ fn refuse_osd_creation(d: &Disk) -> Option<&'static str> {
 }
 
 pub(crate) fn parse_lvm_list(raw: &str, our_fsid: &str) -> Result<Vec<(String, i64)>> {
-    let json_start = raw
-        .find('{')
-        .ok_or_else(|| anyhow::anyhow!("no JSON object in ceph-volume output"))?;
-    let v: Value =
-        serde_json::from_str(&raw[json_start..]).context("parse ceph-volume lvm list")?;
-
     let mut out = Vec::new();
-    let Some(map) = v.as_object() else {
-        return Ok(out);
-    };
-    for (osd_id, entries) in map {
-        let Ok(id) = osd_id.parse::<i64>() else {
-            continue;
-        };
-        let Some(list) = entries.as_array() else {
-            continue;
-        };
-        for e in list {
-            let tag_fsid = e["tags"]["ceph.cluster_fsid"].as_str().unwrap_or_default();
-            if !tag_fsid.is_empty() && !our_fsid.is_empty() && tag_fsid != our_fsid {
-                tracing::info!(
-                    "parse_lvm_list: skipping osd.{id} — belongs to cluster {tag_fsid}, not {our_fsid}"
-                );
+    for (id, volumes) in crate::ceph::model::parse_lvm_list(raw)? {
+        for v in volumes {
+            let fsid = v.cluster_fsid().unwrap_or_default();
+            if !fsid.is_empty() && !our_fsid.is_empty() && fsid != our_fsid {
                 continue;
             }
-            if let Some(lv) = e["lv_path"].as_str().filter(|p| !p.is_empty()) {
-                out.push((lv.to_string(), id));
-            }
-            if let Some(devs) = e["devices"].as_array() {
-                for d in devs {
-                    if let Some(path) = d.as_str().filter(|p| !p.is_empty()) {
-                        out.push((path.to_string(), id));
-                    }
-                }
-            }
+            out.extend(
+                std::iter::once(v.lv_path)
+                    .chain(v.devices)
+                    .filter(|p| !p.is_empty())
+                    .map(|p| (p, id)),
+            );
         }
     }
     Ok(out)
@@ -1513,7 +1491,7 @@ async fn erase_forgotten_osds<H: Host>(
     forgotten
 }
 
-async fn ensure_osd_unit_running<H: Host>(host: &H, osd_id: i64) {
+pub(crate) async fn ensure_osd_unit_running<H: Host>(host: &H, osd_id: i64) {
     let unit = format!("yolab-ceph-osd@{osd_id}.service");
     if is_running(osd_unit_state(host, osd_id).await.as_deref()) {
         return;

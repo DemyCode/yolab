@@ -140,6 +140,8 @@ pub struct SafeToDestroyReport {
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct LvmVolume {
     #[serde(default)]
+    pub lv_path: String,
+    #[serde(default)]
     pub devices: Vec<String>,
     #[serde(default)]
     pub tags: HashMap<String, String>,
@@ -148,7 +150,6 @@ pub struct LvmVolume {
 }
 
 impl LvmVolume {
-    #[cfg(test)]
     pub fn cluster_fsid(&self) -> Option<&str> {
         self.tags.get("ceph.cluster_fsid").map(String::as_str)
     }
