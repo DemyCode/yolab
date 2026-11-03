@@ -2009,6 +2009,7 @@ mod tests {
     use std::io::Write;
 
     use crate::host::fake::FakeHost;
+    use crate::storage::wait::not_yet;
 
     const OURS: &str = "11111111-2222-3333-4444-555555555555";
     const THEIRS: &str = "99999999-8888-7777-6666-555555555555";
@@ -3910,13 +3911,6 @@ mod tests {
     fn listed_on(dev: &str, id: i64) -> String {
         json!({ id.to_string(): [{"devices": [dev], "tags": {"ceph.cluster_fsid": OURS}}] })
             .to_string()
-    }
-
-    fn not_yet(a: crate::storage::wait::Attempt<()>) -> String {
-        match a {
-            crate::storage::wait::Attempt::NotYet(why) => why,
-            crate::storage::wait::Attempt::Ready(()) => panic!("expected NotYet"),
-        }
     }
 
     #[tokio::test]

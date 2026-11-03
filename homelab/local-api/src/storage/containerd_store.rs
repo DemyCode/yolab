@@ -484,19 +484,13 @@ fn mounts_resting_on(root: &Path, data_root: &Path) -> Vec<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::storage::wait::not_yet;
     use crate::host::fake::FakeHost;
 
     fn policy() -> ContainerdStorePolicy {
         ContainerdStorePolicy {
             pool_name: "images".into(),
             filesystem: Filesystem::Xfs,
-        }
-    }
-
-    fn not_yet(a: Attempt<()>) -> String {
-        match a {
-            Attempt::NotYet(why) => why,
-            Attempt::Ready(()) => panic!("expected NotYet"),
         }
     }
 

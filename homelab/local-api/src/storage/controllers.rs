@@ -9,7 +9,7 @@ use crate::runtime::{lock, Controller, Ctx, Requirement, Scope, Tick};
 
 use super::{
     bootstrap, containerd_store, csi_secrets, dashboard, images_grow, images_rbd, keys, lock_name,
-    mon_member, osd, StorageEnv,
+    mon_member, osd, root, StorageEnv,
 };
 
 use super::wait::Attempt;
@@ -65,10 +65,6 @@ where
     Fut: Future<Output = Result<()>>,
 {
     locked_tick_in(dir, job, || done(f())).await
-}
-
-fn root() -> &'static std::path::Path {
-    std::path::Path::new("/")
 }
 
 macro_rules! storage_controller {

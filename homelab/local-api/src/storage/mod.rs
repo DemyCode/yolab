@@ -28,7 +28,7 @@ use anyhow::Result;
 
 use crate::host::RealHost;
 
-fn root() -> &'static Path {
+pub(crate) fn root() -> &'static Path {
     Path::new("/")
 }
 

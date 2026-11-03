@@ -100,6 +100,7 @@ pub async fn attempt<H: Host>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::storage::wait::not_yet;
     use crate::host::fake::FakeHost;
 
     fn policy() -> ImagesRbdPolicy {
@@ -107,13 +108,6 @@ mod tests {
             pool_name: "images".into(),
             share_of_pool: 0.25,
             min_size_gb: 40,
-        }
-    }
-
-    fn not_yet(a: Attempt<()>) -> String {
-        match a {
-            Attempt::NotYet(why) => why,
-            Attempt::Ready(()) => panic!("expected NotYet"),
         }
     }
 
