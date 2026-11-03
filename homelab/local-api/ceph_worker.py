@@ -34,7 +34,7 @@ def reply(rid, ret, out, outs):
     stderr = ""
     if ret < 0:
         name = errno.errorcode.get(-ret, "Unknown")
-        stderr = "Error {0}: {1}".format(name, outs)
+        stderr = f"Error {name}: {outs}"
     send({"id": rid, "ret": ret, "stdout": out, "stderr": stderr})
 
 
@@ -50,9 +50,7 @@ def signatures(cluster, target, timeout, refresh):
             if ret:
                 where = "{0}.{1}".format(*target)
                 raise RuntimeError(
-                    "problem getting command descriptions from {0}: {1}".format(
-                        where, outs
-                    )
+                    f"problem getting command descriptions from {where}: {outs}"
                 )
             sigdicts[target] = parse_json_funcsigs(outbuf.decode("utf-8"), "cli")
         return sigdicts[target]
@@ -87,7 +85,7 @@ def run(cluster, request):
             out = "\n" + out
         reply(rid, ret, out, outs)
     except Exception as e:
-        reply(rid, -errno.EIO, "", "ceph worker: {0!r}".format(e))
+        reply(rid, -errno.EIO, "", f"ceph worker: {e!r}")
 
 
 def main():

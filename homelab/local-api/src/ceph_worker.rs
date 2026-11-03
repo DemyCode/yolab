@@ -166,8 +166,8 @@ pub(crate) fn retry_due(failed_at: Option<Instant>, now: Instant) -> bool {
 }
 
 async fn worker() -> Result<Arc<Worker>, String> {
-    let conf = conf_digest(Path::new(CONF_DIR))
-        .map_err(|e| format!("cannot read {CONF_DIR}: {e}"))?;
+    let conf =
+        conf_digest(Path::new(CONF_DIR)).map_err(|e| format!("cannot read {CONF_DIR}: {e}"))?;
     let mut slot = SLOT.lock().await;
     if let Some(w) = slot.worker.as_ref() {
         if w.usable(&conf) {
@@ -272,10 +272,7 @@ async fn read_replies(stdout: ChildStdout, pending: &Pending) -> bool {
     }
 }
 
-pub(crate) async fn run(
-    req: &Request<'_>,
-    default_timeout: Duration,
-) -> Result<Outcome, CmdError> {
+pub(crate) async fn run(req: &Request<'_>, default_timeout: Duration) -> Result<Outcome, CmdError> {
     let cmd = exec::render("ceph", &req.args);
     let w = match worker().await {
         Ok(w) => w,
@@ -319,7 +316,10 @@ pub(crate) async fn run(
         Err(_) => {
             waiters(&w.pending).remove(&id);
             w.retire().await;
-            Err(CmdError::Timeout { cmd, after: timeout })
+            Err(CmdError::Timeout {
+                cmd,
+                after: timeout,
+            })
         }
     }
 }
@@ -381,7 +381,9 @@ mod tests {
     #[test]
     fn negative_numbers_are_arguments_not_options() {
         assert_eq!(
-            request(&["osd", "pool", "set", "p", "x", "-1"]).unwrap().args,
+            request(&["osd", "pool", "set", "p", "x", "-1"])
+                .unwrap()
+                .args,
             vec!["osd", "pool", "set", "p", "x", "-1"]
         );
     }
