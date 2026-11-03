@@ -32,6 +32,7 @@ pub const NAMES: &[&str] = &[
     "ceph-keys",
     "ceph-join",
     "csi-recovery",
+    "ceph-csi",
     "spaces",
 ];
 
@@ -117,17 +118,7 @@ pub fn spawn_all(leader: Leadership) {
         spawn(storage::CephJoinController { env: env.clone() }, &leader);
         spawn(storage::CsiSecretsController, &leader);
         spawn(storage::CsiRecoveryController, &leader);
-        spawn(
-            crate::storage::ceph_csi::RookManifestsGoneController,
-            &leader,
-        );
         spawn(crate::storage::ceph_csi::CephCsiController, &leader);
-        spawn(crate::storage::cephx::CephxLocalController, &leader);
-        spawn(
-            crate::storage::cephx::AdminKeyringController { env: env.clone() },
-            &leader,
-        );
-        spawn(crate::storage::cephx::CephxRotationController, &leader);
     }
 
     spawn_observed(&leader);
@@ -201,6 +192,7 @@ pub async fn run_named(name: &str) -> anyhow::Result<runtime::Tick> {
         "ceph-keys" => runtime::run_once(&storage::CephKeysController { env }).await,
         "ceph-join" => runtime::run_once(&storage::CephJoinController { env }).await,
         "csi-recovery" => runtime::run_once(&storage::CsiRecoveryController).await,
+        "ceph-csi" => runtime::run_once(&crate::storage::ceph_csi::CephCsiController).await,
         "containerd-store" => {
             runtime::resource::run_once(&storage::containerd_store_resource(env)).await
         }

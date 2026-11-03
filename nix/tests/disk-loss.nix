@@ -83,7 +83,6 @@ in
       node1.wait_for_unit("multi-user.target", timeout=900)
       node1.wait_until_succeeds("systemctl is-active ceph-mon-yolab-n1.service", timeout=600)
       node1.wait_until_succeeds(f"{K} get --raw /readyz", timeout=900)
-      node1.succeed(f"{K} create namespace rook-ceph --dry-run=client -o yaml | {K} apply -f -")
 
       # ── Two disks on, one copy of everything ──────────────────────────────
       node1.wait_for_open_port(3001, timeout=300)
@@ -114,8 +113,7 @@ in
       # ── A stand-in app with a volume on CephFS ────────────────────────────
       #
       # The image is built by Nix, not pulled from a registry: this sandbox
-      # has no internet on any runner (see two-node-test's rook-ceph-namespace
-      # comment), so a public image would sit ImagePullBackOff forever and
+      # has no internet on any runner, so a public image would sit ImagePullBackOff forever and
       # this test could only ever check that the Deployment OBJECT exists,
       # never that a pod actually runs. Importing a local image and setting
       # imagePullPolicy: Never makes the readiness assertion below meaningful.
@@ -197,7 +195,6 @@ in
       except Exception:
           dump_heal_log()
           raise
-      node1.succeed(f"{K} create namespace rook-ceph --dry-run=client -o yaml | {K} apply -f -")
       node1.succeed("ceph osd ls -f json | jq -e 'length == 0'")
       node1.fail(f"{K} get namespace yolab-demo")
       node1.wait_for_open_port(3001, timeout=300)
@@ -206,6 +203,5 @@ in
       jq_ok("ceph config-key dump yolab/disks/", 'to_entries | map(select(.value == "OFF")) | length == 2', 600)
       # The k3s manifests tmpfiles links in survive the wipe.
       node1.succeed("test -e /var/lib/rancher/k3s/server/manifests/snap-1-crds-rbac.yaml")
-      node1.fail("test -e /var/lib/rancher/k3s/server/manifests/rook-ceph-operator.yaml")
     '';
   })

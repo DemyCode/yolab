@@ -611,7 +611,7 @@ mod tests {
             "s",
             &SnapshotRef {
                 handle: "0xabc".into(),
-                driver: "rook-ceph.cephfs.csi.ceph.com".into(),
+                driver: "cephfs.csi.ceph.com".into(),
             },
         );
         assert_eq!(m["spec"]["source"]["snapshotHandle"], "0xabc");
@@ -695,7 +695,7 @@ mod tests {
     fn the_snapshot_ref_prefers_the_drivers_own_status_handle() {
         let vsc = json!({
             "spec": {
-                "driver": "rook-ceph.cephfs.csi.ceph.com",
+                "driver": "cephfs.csi.ceph.com",
                 "source": { "volumeHandle": "source-volume-handle" }
             },
             "status": { "snapshotHandle": "cephfs-snapshot-id" }
@@ -704,7 +704,7 @@ mod tests {
             snapshot_ref(&vsc),
             Some(SnapshotRef {
                 handle: "cephfs-snapshot-id".into(),
-                driver: "rook-ceph.cephfs.csi.ceph.com".into(),
+                driver: "cephfs.csi.ceph.com".into(),
             })
         );
     }
@@ -713,7 +713,7 @@ mod tests {
     fn the_snapshot_ref_falls_back_to_the_spec_handle() {
         let vsc = json!({
             "spec": {
-                "driver": "rook-ceph.cephfs.csi.ceph.com",
+                "driver": "cephfs.csi.ceph.com",
                 "source": { "snapshotHandle": "abc-123" }
             }
         });
@@ -721,7 +721,7 @@ mod tests {
             snapshot_ref(&vsc),
             Some(SnapshotRef {
                 handle: "abc-123".into(),
-                driver: "rook-ceph.cephfs.csi.ceph.com".into(),
+                driver: "cephfs.csi.ceph.com".into(),
             })
         );
         assert_eq!(snapshot_ref(&json!({})), None);

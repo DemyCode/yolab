@@ -2,7 +2,12 @@ use k8s_openapi::api::core::v1::Pod;
 use kube::api::{Api, DeleteParams, ListParams};
 use kube::Client;
 
-pub const NS: &str = "rook-ceph";
+pub const NS: &str = "ceph-csi";
+pub const DRIVER: &str = "cephfs.csi.ceph.com";
+pub const CLUSTER_ID: &str = "yolab";
+pub const PROVISIONER_SECRET: &str = "csi-cephfs-provisioner";
+pub const NODE_SECRET: &str = "csi-cephfs-node";
+pub const CONFIG_MAP: &str = "ceph-csi-config";
 
 pub async fn restart_local_plugin(client: &Client) -> anyhow::Result<()> {
     let on_this_node = ListParams::default()
@@ -28,7 +33,7 @@ pub(crate) mod testing {
     use wiremock::matchers::{method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    pub const DAEMONSET: &str = "/apis/apps/v1/namespaces/rook-ceph/daemonsets/csi-cephfsplugin";
+    pub const DAEMONSET: &str = "/apis/apps/v1/namespaces/ceph-csi/daemonsets/csi-cephfsplugin";
 
     pub async fn plugin_pods_deleted(server: &MockServer, code: u16) {
         let body = if code == 200 {
@@ -37,7 +42,7 @@ pub(crate) mod testing {
             crate::k8s::testing::status(code, "InternalError")
         };
         Mock::given(method("DELETE"))
-            .and(path("/api/v1/namespaces/rook-ceph/pods"))
+            .and(path("/api/v1/namespaces/ceph-csi/pods"))
             .and(query_param("labelSelector", "app=csi-cephfsplugin"))
             .respond_with(ResponseTemplate::new(code).set_body_json(body))
             .mount(server)
@@ -51,7 +56,7 @@ pub(crate) mod testing {
             .unwrap_or_default()
             .iter()
             .any(|r| {
-                r.method.as_str() == "DELETE" && r.url.path() == "/api/v1/namespaces/rook-ceph/pods"
+                r.method.as_str() == "DELETE" && r.url.path() == "/api/v1/namespaces/ceph-csi/pods"
             })
     }
 }

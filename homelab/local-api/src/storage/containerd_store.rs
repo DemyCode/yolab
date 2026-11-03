@@ -199,12 +199,20 @@ async fn mapped_device<H: Host>(
     }
     let image = format!("{pool}/{name}");
     let options = format!("osd_request_timeout={OSD_REQUEST_TIMEOUT_SECS},ms_mode=secure");
-    let keyring = super::cephx::images_identity(host, root, pool).await;
-    let keyring_s = keyring.as_ref().map(|k| k.to_string_lossy().into_owned());
-    let mut args = vec!["map", image.as_str(), "-o", options.as_str()];
-    if let Some(k) = keyring_s.as_deref() {
-        args.extend(["--id", super::cephx::IMAGES_ID, "--keyring", k]);
-    }
+    let keyring = super::cephx::images_identity(host, root, pool)
+        .await
+        .map_err(|e| format!("{e:#}"))?;
+    let keyring_s = keyring.to_string_lossy().into_owned();
+    let args = [
+        "map",
+        image.as_str(),
+        "-o",
+        options.as_str(),
+        "--id",
+        super::cephx::IMAGES_ID,
+        "--keyring",
+        keyring_s.as_str(),
+    ];
     let out = host
         .run_cmd("rbd", &args)
         .await
@@ -504,8 +512,16 @@ mod tests {
         );
     }
 
+    fn keyed(host: FakeHost) -> FakeHost {
+        host.ok(
+            "ceph auth get-or-create client.yolab-images",
+            "[client.yolab-images]\n\tkey = K\n",
+        )
+        .ok("chown ceph:ceph", "")
+    }
+
     fn booting() -> FakeHost {
-        FakeHost::new().fail("findmnt -rno TARGET --mountpoint", "")
+        keyed(FakeHost::new().fail("findmnt -rno TARGET --mountpoint", ""))
     }
 
     fn ran_mount(host: &FakeHost) -> bool {
@@ -529,7 +545,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(dev, "/dev/rbd0");
-        assert!(host.ran("rbd map images/yolab-n1 -o osd_request_timeout=300,ms_mode=secure"));
+        assert!(host.ran(
+            "rbd map images/yolab-n1 -o osd_request_timeout=300,ms_mode=secure --id yolab-images --keyring"
+        ));
     }
 
     fn snapshotter_at(store: &Path, db_bytes: usize, snapshot_dirs: usize) {
@@ -977,7 +995,7 @@ mod tests {
 
     fn mounted_untrusted() -> FakeHost {
         claimable(
-            FakeHost::new()
+            keyed(FakeHost::new())
                 .ok(FINDMNT, "")
                 .ok(FINDMNT, "")
                 .fail(FINDMNT, "")

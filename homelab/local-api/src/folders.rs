@@ -21,8 +21,7 @@ const ANN_TITLE: &str = "yolab.io/folder-title";
 const ANN_LINKED_AT: &str = "yolab.io/linked-at";
 const ANN_UNLINKED_SINCE: &str = "yolab.io/unlinked-since";
 const FORMAT: &str = "folder";
-const DRIVER: &str = "rook-ceph.cephfs.csi.ceph.com";
-const CSI_NAMESPACE: &str = "rook-ceph";
+
 const MAX_NAME: usize = 40;
 const SPACE_ID_BYTES: usize = 6;
 pub(crate) const NEW_FOLDER_SIZE: &str = "1Ti";
@@ -174,11 +173,11 @@ pub(crate) fn app_volume(folder: &str, namespace: &str, source: &Source) -> Valu
             "volumeMode": "Filesystem",
             "claimRef": { "namespace": namespace, "name": claim_name(folder) },
             "csi": {
-                "driver": DRIVER,
+                "driver": crate::csi::DRIVER,
                 "volumeHandle": name,
-                "nodeStageSecretRef": { "name": STATIC_SECRET, "namespace": CSI_NAMESPACE },
+                "nodeStageSecretRef": { "name": STATIC_SECRET, "namespace": crate::csi::NS },
                 "volumeAttributes": {
-                    "clusterID": CSI_NAMESPACE,
+                    "clusterID": crate::csi::CLUSTER_ID,
                     "fsName": crate::cephfs::FS_NAME,
                     "staticVolume": "true",
                     "rootPath": source.root_path,

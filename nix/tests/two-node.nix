@@ -122,25 +122,6 @@ in
             "k3s kubectl wait --for=condition=Ready node --all --timeout=60s", timeout=900
         )
 
-        # ── Create the CSI namespace ahead of the hand-over ──────────────────
-        #
-        # The disk reconciler keeps its config and status ConfigMaps in `rook-ceph`
-        # — a name left over from when Ceph ran under Rook, and still where the
-        # CephFS CSI driver lives. On a real install local-api applies that
-        # namespace with homelab/nixos/ceph-csi/cephfs.yaml, but only once every
-        # machine has dropped the Rook manifests and Rook is gone.
-        #
-        # This test creates it itself so the disk reconciler does not wait on
-        # that hand-over. Left alone, `auto_register_all_disks` fails with
-        # "namespaces \"rook-ceph\" not found" every ~33s forever, no disk is ever
-        # registered, and nothing downstream of an OSD can be reached. Creating it
-        # here is the harness substituting for a component that is out of this
-        # test's scope, not a fixture papering over a defect.
-        node1.succeed(
-            "k3s kubectl create namespace rook-ceph "
-            "--dry-run=client -o yaml | k3s kubectl apply -f -"
-        )
-
         # ── Switch a disk on, the way a person would ──────────────────────────
         #
         # Without this there is no OSD, so the images pool is never created, so the

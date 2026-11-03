@@ -6,7 +6,8 @@ import yaml
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SPEAKS_AES256K = (3, 17, 1)
-RBAC = {"ServiceAccount", "ClusterRole", "ClusterRoleBinding", "Role", "RoleBinding"}
+NAMESPACE = "ceph-csi"
+DRIVER = "cephfs.csi.ceph.com"
 
 
 def docs():
@@ -21,12 +22,6 @@ def find(kind, name):
     raise AssertionError(f"{kind} {name} missing")
 
 
-def ours(d):
-    return (d["metadata"].get("labels") or {}).get(
-        "app.kubernetes.io/managed-by"
-    ) == "yolab"
-
-
 def containers(workload):
     return workload["spec"]["template"]["spec"]["containers"]
 
@@ -37,26 +32,41 @@ def cephcsi_version(image):
 
 
 class CephfsCsiManifest(unittest.TestCase):
-    def test_existing_volumes_keep_every_name_they_were_bound_with(self):
-        driver = find("CSIDriver", "rook-ceph.cephfs.csi.ceph.com")
-        self.assertIs(driver["spec"]["attachRequired"], True)
+    def test_the_namespace_is_created_before_anything_placed_in_it(self):
+        all_docs = docs()
+        self.assertEqual(all_docs[0]["kind"], "Namespace")
+        self.assertEqual(all_docs[0]["metadata"]["name"], NAMESPACE)
+        for d in all_docs[1:]:
+            if "namespace" in d["metadata"]:
+                self.assertEqual(d["metadata"]["namespace"], NAMESPACE)
+
+    def test_the_storage_class_names_what_local_api_publishes(self):
+        find("CSIDriver", DRIVER)
         sc = find("StorageClass", "yolab-cephfs")
-        self.assertEqual(sc["provisioner"], "rook-ceph.cephfs.csi.ceph.com")
-        self.assertEqual(sc["parameters"]["clusterID"], "rook-ceph")
+        self.assertEqual(sc["provisioner"], DRIVER)
+        p = sc["parameters"]
+        self.assertEqual(p["clusterID"], "yolab")
+        self.assertEqual(p["csi.storage.k8s.io/node-stage-secret-name"], "csi-cephfs-node")
         self.assertEqual(
-            sc["parameters"]["csi.storage.k8s.io/node-stage-secret-name"],
-            "rook-csi-cephfs-node",
+            p["csi.storage.k8s.io/provisioner-secret-name"], "csi-cephfs-provisioner"
         )
-        self.assertEqual(
-            sc["parameters"]["csi.storage.k8s.io/provisioner-secret-name"],
-            "rook-csi-cephfs-provisioner",
-        )
-        ds = find("DaemonSet", "csi-cephfsplugin")
-        self.assertEqual(ds["metadata"]["namespace"], "rook-ceph")
-        self.assertEqual(
-            ds["spec"]["template"]["metadata"]["labels"]["app"], "csi-cephfsplugin"
-        )
-        find("Deployment", "csi-cephfsplugin-provisioner")
+        for key, value in p.items():
+            if key.endswith("-secret-namespace"):
+                self.assertEqual(value, NAMESPACE, key)
+
+    def test_both_workloads_read_the_config_map_local_api_publishes(self):
+        for kind, name in [
+            ("DaemonSet", "csi-cephfsplugin"),
+            ("Deployment", "csi-cephfsplugin-provisioner"),
+        ]:
+            volumes = find(kind, name)["spec"]["template"]["spec"]["volumes"]
+            maps = [v["configMap"]["name"] for v in volumes if "configMap" in v]
+            self.assertEqual(maps, ["ceph-csi-config"], name)
+
+    def test_every_driver_name_and_socket_path_is_the_same_driver(self):
+        text = open(os.path.join(HERE, "cephfs.yaml")).read()
+        for found in re.findall(r"[\w.-]*cephfs\.csi\.ceph\.com", text):
+            self.assertEqual(found, DRIVER)
 
     def test_the_node_plugin_mounts_from_the_host_network_so_mounts_outlive_its_pod(
         self,
@@ -83,19 +93,6 @@ class CephfsCsiManifest(unittest.TestCase):
                 continue
             for c in containers(w):
                 self.assertIn("@sha256:", c["image"], c["image"])
-
-    def test_everything_but_shared_names_is_labelled_ours(self):
-        for d in docs():
-            if d["kind"] in ("Namespace", "StorageClass"):
-                continue
-            self.assertTrue(ours(d), f"{d['kind']} {d['metadata']['name']}")
-
-    def test_our_rbac_never_shares_a_name_with_what_a_rook_uninstall_deletes(self):
-        for d in docs():
-            if d["kind"] in RBAC:
-                self.assertTrue(
-                    d["metadata"]["name"].startswith("yolab-"), d["metadata"]["name"]
-                )
 
 
 if __name__ == "__main__":

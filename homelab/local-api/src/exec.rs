@@ -401,7 +401,7 @@ mod tests {
     #[test]
     fn a_kubectl_not_found_is_classified_as_not_found() {
         let e = CmdError::failed(
-            "kubectl get configmap yolab-disk-config -n rook-ceph -o json",
+            "kubectl get configmap yolab-disk-config -n ceph-csi -o json",
             "Error from server (NotFound): configmaps \"yolab-disk-config\" not found",
         );
         assert!(e.is_not_found());

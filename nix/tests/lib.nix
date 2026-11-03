@@ -21,8 +21,7 @@
   # references it; pair with `imagePullPolicy: Never` so k3s never tries the
   # network anyway. This is what makes it possible for a VM test to assert a
   # pod actually reaches Ready, not just that the Deployment object exists —
-  # busybox from docker.io can never do that here: see the comment on
-  # rook-ceph-namespace in two-node.nix for why nothing in this sandbox can
+  # busybox from docker.io can never do that here: nothing in this sandbox can
   # reach the internet, ever, on any runner.
   demoImageName = "yolab-test-demo";
   demoImageTag = "latest";

@@ -98,9 +98,6 @@ in
                 timeout=600,
             )
             node1.wait_until_succeeds(f"{K} get --raw /readyz", timeout=900)
-            node1.succeed(
-                f"{K} create namespace rook-ceph --dry-run=client -o yaml | {K} apply -f -"
-            )
 
         # ── Switch on one spare disk per node: 4 OSDs, spread across both
         #    machines — the shape a real 2-node install actually has ────────

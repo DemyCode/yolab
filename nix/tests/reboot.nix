@@ -116,10 +116,6 @@ in
             finally:
                 node1.succeed("rm -f /dev/shm/pressure")
 
-        node1.succeed(
-            f"{K} create namespace rook-ceph --dry-run=client -o yaml | {K} apply -f -"
-        )
-
         # ── Switch on the spare disk, so the reboot has real storage state to
         #    lose: an OSD, a pool, and containerd's data-root on the RBD ──────
         SPARE = "select(.is_our_osd==false and .has_partitions==false and .mounted==false)"
@@ -148,8 +144,7 @@ in
         #
         # Not waiting for the PVC to bind or the deployment to go Ready: the
         # VM test sandbox has no internet, so the CephFS CSI images never pull
-        # and there is no CSI driver to actually provision a volume — the same
-        # constraint two-node-test's rook-ceph-namespace comment describes.
+        # and there is no CSI driver to actually provision a volume.
         # disk-loss-test hits the same wall and works around it the same way:
         # create the objects, track the PVC's UID, and use survival of that
         # UID across the reboot as the assertion, rather than a bind that

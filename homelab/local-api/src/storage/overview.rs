@@ -286,11 +286,7 @@ pub(crate) struct AppVolume {
 
 pub(crate) fn app_volumes(pvs: &[Value]) -> Vec<AppVolume> {
     pvs.iter()
-        .filter(|pv| {
-            pv["spec"]["csi"]["driver"]
-                .as_str()
-                .is_some_and(|d| d.contains("cephfs"))
-        })
+        .filter(|pv| pv["spec"]["csi"]["driver"].as_str() == Some(crate::csi::DRIVER))
         .filter_map(|pv| {
             Some(AppVolume {
                 namespace: pv["spec"]["claimRef"]["namespace"].as_str()?.to_string(),
@@ -593,8 +589,8 @@ mod tests {
     #[test]
     fn only_cephfs_volumes_with_a_claim_are_counted() {
         let pvs = vec![
-            pv("rook-ceph.cephfs.csi.ceph.com", "yolab-immich", "csi-vol-a"),
-            pv("rook-ceph.rbd.csi.ceph.com", "yolab-immich", "csi-vol-b"),
+            pv("cephfs.csi.ceph.com", "yolab-immich", "csi-vol-a"),
+            pv("rbd.csi.ceph.com", "yolab-immich", "csi-vol-b"),
             json!({"spec": {"csi": {"driver": "cephfs.csi.ceph.com",
                 "volumeAttributes": {"subvolumeName": "csi-vol-c"}}}}),
         ];

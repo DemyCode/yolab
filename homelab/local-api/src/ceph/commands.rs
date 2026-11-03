@@ -69,7 +69,6 @@ static SIGS: &[Sig] = &[
         &["mon", "add"],
         &[req("name", Str), req("addr", Str), opt("location", List)],
     ),
-    sig(&["mon", "set"], &[req("name", Str), req("value", Str)]),
     sig(&["osd", "stat"], &[]),
     sig(&["osd", "dump"], &[opt("epoch", Int)]),
     sig(&["osd", "tree"], &[opt("epoch", Int), opt("states", List)]),
@@ -180,17 +179,11 @@ static SIGS: &[Sig] = &[
     ),
     sig(&["auth", "get"], &[req("entity", Str)]),
     sig(&["auth", "get-key"], &[req("entity", Str)]),
-    sig(&["auth", "ls"], &[]),
     sig(&["auth", "rm"], &[req("entity", Str)]),
-    sig(
-        &["auth", "rotate"],
-        &[req("entity", Str), opt("key_type", Str)],
-    ),
     sig(
         &["auth", "get-or-create"],
         &[req("entity", Str), opt("caps", List), opt("key_type", Str)],
     ),
-    sig(&["auth", "get-or-create-pending"], &[req("entity", Str)]),
     sig(&["fs", "ls"], &[]),
     sig(&["fs", "status"], &[opt("fs", Str), opt("format", Str)]),
     sig(
@@ -539,8 +532,8 @@ mod tests {
             })
         );
         assert_eq!(
-            sent(&["auth", "rotate", "mon.", "--key_type=aes256k"]),
-            json!({"prefix": "auth rotate", "entity": "mon.", "key_type": "aes256k"})
+            sent(&["auth", "get-or-create", "client.x", "--key_type=aes256k"]),
+            json!({"prefix": "auth get-or-create", "entity": "client.x", "key_type": "aes256k"})
         );
     }
 

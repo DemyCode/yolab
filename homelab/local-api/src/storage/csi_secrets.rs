@@ -1,19 +1,15 @@
 use anyhow::{Context, Result};
+use kube::Client;
 use serde_json::{json, Value};
 
-use kube::Client;
-
-use crate::error::Outcome;
+use crate::csi::{CLUSTER_ID, CONFIG_MAP, NODE_SECRET, NS, PROVISIONER_SECRET};
 use crate::host::Host;
 use crate::routers::backup_common::Backend;
-
-const NS: &str = "rook-ceph";
 
 const KERNEL_MOUNT_OPTIONS: &str = "ms_mode=secure";
 
 pub const PROVISIONER_ENTITY: &str = "client.csi-cephfs-provisioner";
 pub const NODE_ENTITY: &str = "client.csi-cephfs-node";
-pub const NODE_ENTITY_AES256K: &str = "client.csi-cephfs-node-aes256k";
 
 pub const PROVISIONER_CAPS: &[&str] = &[
     "mon",
@@ -35,18 +31,6 @@ pub const NODE_CAPS: &[&str] = &[
     "allow rw",
 ];
 
-pub const ROOK_ONLY_LEFTOVERS: &[(&str, &str)] = &[
-    ("Secret", "rook-ceph-mon"),
-    ("Secret", "rook-ceph-config"),
-    ("Secret", "rook-ceph-crash-collector-keyring"),
-    ("Secret", "rook-ceph-exporter-keyring"),
-    ("Secret", "rook-csi-rbd-node"),
-    ("Secret", "rook-csi-rbd-provisioner"),
-    ("ConfigMap", "rook-ceph-mon-endpoints"),
-    ("ConfigMap", "rook-ceph-operator-config"),
-    ("ConfigMap", "rook-ceph-csi-mapping-config"),
-];
-
 fn mon_v2_addrs(dump: &Value) -> Vec<String> {
     let Some(mons) = dump["mons"].as_array() else {
         return Vec::new();
@@ -65,47 +49,23 @@ fn mon_v2_addrs(dump: &Value) -> Vec<String> {
 
 fn csi_cluster_config_json(mon_addrs: &[String]) -> String {
     json!([{
-        "clusterID": NS,
+        "clusterID": CLUSTER_ID,
         "monitors": mon_addrs,
         "cephFS": {"subvolumeGroup": "", "kernelMountOptions": KERNEL_MOUNT_OPTIONS},
-        "rbd": {},
     }])
     .to_string()
 }
 
-fn needs_type_fix(current_type: &str) -> bool {
-    !current_type.is_empty() && current_type != "kubernetes.io/rook"
-}
-
-async fn replace_if_wrong_type(client: &Client, name: &str) {
-    let secret = crate::k8s::reference("v1", "Secret", NS, name);
-    let have = match crate::k8s::get(client, &secret).await {
-        Ok(found) => found
-            .and_then(|s| s["type"].as_str().map(str::to_string))
-            .unwrap_or_default(),
-        Err(e) => {
-            tracing::debug!("csi-secrets: could not read {name} ({e:#})");
-            String::new()
-        }
-    };
-    if needs_type_fix(&have) {
-        tracing::warn!(
-            "csi-secrets: secret {name} has type {have}, recreating as kubernetes.io/rook"
-        );
-        crate::k8s::delete_if_present(client, &secret)
-            .await
-            .warn_on_err(format!(
-                "csi-secrets: delete {name} to recreate it with the right type"
-            ));
-    }
-}
-
 async fn ensure_key<H: Host>(host: &H, entity: &str, caps: &[&str]) -> Result<String> {
-    if host.ceph(&["auth", "get-key", entity]).await.is_err() {
-        let mut args = vec!["auth", "get-or-create", entity];
-        args.extend_from_slice(caps);
-        host.ceph(&args).await?;
+    match host.ceph(&["auth", "get-key", entity]).await {
+        Ok(key) => return Ok(key.trim().to_string()),
+        Err(e) if e.is_not_found() => {}
+        Err(e) => return Err(e).with_context(|| format!("read the key of {entity}")),
     }
+    let mut args = vec!["auth", "get-or-create", entity];
+    args.extend_from_slice(caps);
+    args.extend(["--key_type", super::cephx::AES256K]);
+    host.ceph(&args).await?;
     Ok(host
         .ceph(&["auth", "get-key", entity])
         .await?
@@ -117,46 +77,19 @@ fn user_id(entity: &str) -> &str {
     entity.strip_prefix("client.").unwrap_or(entity)
 }
 
-async fn node_credential<H: Host>(host: &H) -> Result<(&'static str, String)> {
-    match host.ceph(&["auth", "get-key", NODE_ENTITY_AES256K]).await {
-        Ok(key) => Ok((NODE_ENTITY_AES256K, key.trim().to_string())),
-        Err(e) if e.is_not_found() => {
-            Ok((NODE_ENTITY, ensure_key(host, NODE_ENTITY, NODE_CAPS).await?))
-        }
-        Err(e) => Err(e).context("read the CSI node credential"),
-    }
-}
-
-async fn apply_rook_secret(
-    client: &Client,
-    name: &str,
-    id_key: &str,
-    id: &str,
-    secret_key: &str,
-    secret: &str,
-) -> Result<()> {
-    replace_if_wrong_type(client, name).await;
-    let manifest = json!({
-        "apiVersion": "v1",
-        "kind": "Secret",
-        "metadata": {"name": name, "namespace": NS},
-        "type": "kubernetes.io/rook",
-        "stringData": {id_key: id, secret_key: secret},
-    });
-    crate::k8s::apply(client, &manifest).await
-}
-
-async fn apply_csi_config_map(client: &Client, csi_cfg: &str) -> Result<()> {
-    let config = json!({
-        "apiVersion": "v1",
-        "kind": "ConfigMap",
-        "metadata": {"name": "rook-ceph-csi-config", "namespace": NS},
-        "data": {"csi-cluster-config-json": csi_cfg},
-    });
-    match crate::k8s::merge_patch(client, &config).await {
-        Err(e) if crate::k8s::refused_with(&e, 404) => crate::k8s::apply(client, &config).await,
-        other => other,
-    }
+async fn apply_secret(client: &Client, name: &str, data: Value) -> Result<()> {
+    crate::k8s::apply(
+        client,
+        &json!({
+            "apiVersion": "v1",
+            "kind": "Secret",
+            "metadata": {"name": name, "namespace": NS},
+            "type": "Opaque",
+            "stringData": data,
+        }),
+    )
+    .await
+    .with_context(|| format!("apply the secret {name}"))
 }
 
 pub async fn run<H: Host>(b: &Backend<H>) -> Result<()> {
@@ -166,61 +99,54 @@ pub async fn run<H: Host>(b: &Backend<H>) -> Result<()> {
         return Ok(());
     }
     let namespace = crate::k8s::cluster_reference("v1", "Namespace", NS);
-    if !matches!(crate::k8s::exists(client, &namespace).await, Ok(true)) {
-        tracing::info!("csi-secrets: kubernetes not reachable yet (or namespace missing)");
+    if !crate::k8s::exists(client, &namespace).await? {
+        tracing::info!("csi-secrets: the {NS} namespace does not exist yet");
         return Ok(());
     }
 
-    let dump = host
-        .ceph_json(&["mon", "dump"])
-        .await
-        .unwrap_or(Value::Null);
-    let v2_addrs = mon_v2_addrs(&dump);
+    let v2_addrs = mon_v2_addrs(&host.ceph_json(&["mon", "dump"]).await?);
     if v2_addrs.is_empty() {
         tracing::warn!(
             "csi-secrets: no mon address in ceph mon dump — not publishing a broken CSI config"
         );
         return Ok(());
     }
-    let csi_cfg = csi_cluster_config_json(&v2_addrs);
 
-    let cephfs_prov = ensure_key(host, PROVISIONER_ENTITY, PROVISIONER_CAPS).await?;
-    let (node_entity, cephfs_node) = node_credential(host).await?;
+    let provisioner = ensure_key(host, PROVISIONER_ENTITY, PROVISIONER_CAPS).await?;
+    let node = ensure_key(host, NODE_ENTITY, NODE_CAPS).await?;
 
-    apply_rook_secret(
+    apply_secret(
         client,
-        "rook-csi-cephfs-provisioner",
-        "adminID",
-        user_id(PROVISIONER_ENTITY),
-        "adminKey",
-        &cephfs_prov,
+        PROVISIONER_SECRET,
+        json!({"adminID": user_id(PROVISIONER_ENTITY), "adminKey": provisioner}),
     )
     .await?;
-    apply_rook_secret(
+    apply_secret(
         client,
-        "rook-csi-cephfs-node",
-        "adminID",
-        user_id(node_entity),
-        "adminKey",
-        &cephfs_node,
+        NODE_SECRET,
+        json!({"adminID": user_id(NODE_ENTITY), "adminKey": node}),
     )
     .await?;
-    apply_rook_secret(
+    apply_secret(
         client,
         crate::folders::STATIC_SECRET,
-        "userID",
-        user_id(node_entity),
-        "userKey",
-        &cephfs_node,
+        json!({"userID": user_id(NODE_ENTITY), "userKey": node}),
     )
     .await?;
-
-    apply_csi_config_map(client, &csi_cfg)
-        .await
-        .context("apply rook-ceph-csi-config configmap")?;
+    crate::k8s::apply(
+        client,
+        &json!({
+            "apiVersion": "v1",
+            "kind": "ConfigMap",
+            "metadata": {"name": CONFIG_MAP, "namespace": NS},
+            "data": {"config.json": csi_cluster_config_json(&v2_addrs)},
+        }),
+    )
+    .await
+    .with_context(|| format!("apply the {CONFIG_MAP} configmap"))?;
 
     tracing::info!(
-        "csi-secrets: published Ceph credentials ({node_entity}) for mons {}",
+        "csi-secrets: published Ceph credentials for mons {}",
         v2_addrs.join(",")
     );
     Ok(())
@@ -231,6 +157,8 @@ mod tests {
     use super::*;
     use crate::host::fake::FakeHost;
     use crate::k8s::testing::{accept_patches, api_server, patched, serve, status};
+
+    const NS_PATH: &str = "/api/v1/namespaces/ceph-csi";
 
     fn dump_with(mons: &[(&str, &str)]) -> Value {
         json!({"mons": mons.iter().map(|(name, addr)| json!({
@@ -249,13 +177,6 @@ mod tests {
     }
 
     #[test]
-    fn every_cephfs_mount_asks_for_an_encrypted_connection() {
-        let cfg: Value =
-            serde_json::from_str(&csi_cluster_config_json(&["[fd00::1]:3300".into()])).unwrap();
-        assert_eq!(cfg[0]["cephFS"]["kernelMountOptions"], "ms_mode=secure");
-    }
-
-    #[test]
     fn mon_v2_addrs_covers_every_mon() {
         let d = dump_with(&[("yolab-n1", "fd00:cafe::1"), ("yolab-n2", "fd00:cafe::2")]);
         assert_eq!(mon_v2_addrs(&d).len(), 2);
@@ -268,45 +189,23 @@ mod tests {
     }
 
     #[test]
-    fn csi_cluster_config_names_the_cluster_id_and_carries_the_monitors() {
+    fn the_csi_config_names_the_cluster_and_asks_for_encrypted_mounts() {
         let cfg: Value =
             serde_json::from_str(&csi_cluster_config_json(&["[fd00::1]:3300".into()])).unwrap();
-        assert_eq!(cfg[0]["clusterID"], "rook-ceph");
+        assert_eq!(cfg[0]["clusterID"], "yolab");
         assert_eq!(cfg[0]["monitors"][0], "[fd00::1]:3300");
+        assert_eq!(cfg[0]["cephFS"]["kernelMountOptions"], "ms_mode=secure");
     }
-
-    #[test]
-    fn needs_type_fix_ignores_absent_and_matching_types() {
-        assert!(!needs_type_fix(""));
-        assert!(!needs_type_fix("kubernetes.io/rook"));
-        assert!(needs_type_fix("Opaque"));
-    }
-
-    const NS_PATH: &str = "/api/v1/namespaces/rook-ceph";
-
-    const NO_AES256K_NODE: &str =
-        "Error ENOENT: failed to find client.csi-cephfs-node-aes256k in keyring";
 
     fn ceph_ok() -> FakeHost {
-        ceph_base().fail(
-            "ceph auth get-key client.csi-cephfs-node-aes256k",
-            NO_AES256K_NODE,
-        )
-    }
-
-    fn ceph_base() -> FakeHost {
         FakeHost::new()
             .ok("ceph -s", "")
-            .ok("ceph fsid", "11111111-2222-3333-4444-555555555555\n")
             .ok(
                 "ceph mon dump",
                 &dump_with(&[("yolab-n1", "fd00:cafe::1")]).to_string(),
             )
-            .ok(
-                "ceph auth get-key client.csi-cephfs-provisioner",
-                "cephfsprovkey",
-            )
-            .ok("ceph auth get-key client.csi-cephfs-node", "cephfsnodekey")
+            .ok("ceph auth get-key client.csi-cephfs-provisioner", "provkey")
+            .ok("ceph auth get-key client.csi-cephfs-node", "nodekey")
     }
 
     async fn cluster_up() -> (wiremock::MockServer, Client) {
@@ -316,12 +215,12 @@ mod tests {
         (server, kube)
     }
 
-    async fn applied_names(server: &wiremock::MockServer) -> Vec<String> {
-        patched(server)
-            .await
+    fn named(patches: &[Value], name: &str) -> Value {
+        patches
             .iter()
-            .filter_map(|p| p["metadata"]["name"].as_str().map(str::to_string))
-            .collect()
+            .find(|p| p["metadata"]["name"] == name)
+            .cloned()
+            .unwrap_or_else(|| panic!("{name} was not published"))
     }
 
     #[tokio::test]
@@ -336,9 +235,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn does_nothing_before_kubernetes_answers() {
+    async fn waits_for_the_namespace_the_manifests_create() {
         let (server, kube) = api_server().await;
-        serve(&server, NS_PATH, 503, status(503, "ServiceUnavailable")).await;
+        serve(&server, NS_PATH, 404, status(404, "NotFound")).await;
         let b = Backend {
             kube,
             host: FakeHost::new().ok("ceph -s", ""),
@@ -349,237 +248,88 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_unanswering_kubernetes_is_an_error_not_a_quiet_skip() {
+        let b = Backend {
+            kube: crate::k8s::testing::unreachable(),
+            host: FakeHost::new().ok("ceph -s", ""),
+        };
+        assert!(run(&b).await.is_err());
+    }
+
+    #[tokio::test]
     async fn refuses_to_publish_with_no_mon_address() {
         let (server, kube) = cluster_up().await;
         let host = FakeHost::new()
             .ok("ceph -s", "")
-            .ok("ceph fsid", "fsid\n")
             .ok("ceph mon dump", r#"{"mons":[]}"#);
         run(&Backend { kube, host }).await.unwrap();
-        assert!(
-            patched(&server).await.is_empty(),
-            "an empty CSI config must never be published"
-        );
+        assert!(patched(&server).await.is_empty());
     }
 
     #[tokio::test]
-    async fn publishes_the_cephfs_secrets_and_the_csi_config() {
-        let (server, kube) = cluster_up().await;
-        run(&Backend {
-            kube,
-            host: ceph_ok(),
-        })
-        .await
-        .unwrap();
-
-        let names = applied_names(&server).await;
-        for name in [
-            "rook-csi-cephfs-provisioner",
-            "rook-csi-cephfs-node",
-            "rook-ceph-csi-config",
-        ] {
-            assert!(
-                names.iter().any(|n| n == name),
-                "{name} missing from {names:?}"
-            );
-        }
-        assert!(
-            !names.iter().any(|n| n.contains("rbd")),
-            "no RBD credential should ever be minted or published: {names:?}"
-        );
-    }
-
-    #[tokio::test]
-    async fn the_admin_key_never_reaches_kubernetes() {
+    async fn publishes_both_credentials_the_folder_secret_and_the_csi_config() {
         let (server, kube) = cluster_up().await;
         let b = Backend {
             kube,
             host: ceph_ok(),
         };
         run(&b).await.unwrap();
+
+        let patches = patched(&server).await;
+        let prov = named(&patches, "csi-cephfs-provisioner");
+        assert_eq!(prov["type"], "Opaque");
+        assert_eq!(prov["stringData"]["adminID"], "csi-cephfs-provisioner");
+        assert_eq!(prov["stringData"]["adminKey"], "provkey");
+        let node = named(&patches, "csi-cephfs-node");
+        assert_eq!(node["stringData"]["adminID"], "csi-cephfs-node");
+        assert_eq!(node["stringData"]["adminKey"], "nodekey");
+        let folder = named(&patches, crate::folders::STATIC_SECRET);
+        assert_eq!(folder["metadata"]["namespace"], "ceph-csi");
+        assert_eq!(folder["stringData"]["userID"], "csi-cephfs-node");
+        assert_eq!(folder["stringData"]["userKey"], "nodekey");
+        let config = named(&patches, "ceph-csi-config");
+        let parsed: Value =
+            serde_json::from_str(config["data"]["config.json"].as_str().unwrap()).unwrap();
+        assert_eq!(parsed[0]["monitors"][0], "[fd00:cafe::1]:3300");
+        assert!(!b.host.ran("auth get-or-create"));
         assert!(!b.host.ran("client.admin"));
-        let names = applied_names(&server).await;
-        assert!(
-            !names
-                .iter()
-                .any(|n| n == "rook-ceph-mon" || n == "rook-ceph-mon-endpoints"),
-            "only the Rook operator read these, and it is gone: {names:?}"
-        );
-    }
-
-    fn node_secret(patches: &[Value]) -> Value {
-        patches
-            .iter()
-            .find(|p| p["metadata"]["name"] == "rook-csi-cephfs-node")
-            .cloned()
-            .expect("the node secret was published")
     }
 
     #[tokio::test]
-    async fn new_mounts_use_the_aes256k_node_entity_once_it_exists() {
-        let (server, kube) = cluster_up().await;
-        let host = ceph_base().ok("ceph auth get-key client.csi-cephfs-node-aes256k", "newkey");
-        let b = Backend { kube, host };
-        run(&b).await.unwrap();
-        let secret = node_secret(&patched(&server).await);
-        assert_eq!(secret["stringData"]["adminID"], "csi-cephfs-node-aes256k");
-        assert_eq!(secret["stringData"]["adminKey"], "newkey");
-        assert!(
-            !b.host.ran("get-or-create client.csi-cephfs-node"),
-            "the old entity must never be recreated once its successor exists"
-        );
-    }
-
-    #[tokio::test]
-    async fn folder_mounts_get_the_node_identity_under_the_keys_static_volumes_read() {
-        let (server, kube) = cluster_up().await;
-        let host = ceph_base().ok("ceph auth get-key client.csi-cephfs-node-aes256k", "newkey");
-        run(&Backend { kube, host }).await.unwrap();
-        let secret = patched(&server)
-            .await
-            .into_iter()
-            .find(|p| p["metadata"]["name"] == crate::folders::STATIC_SECRET)
-            .expect("the folder mount secret was published");
-        assert_eq!(secret["metadata"]["namespace"], NS);
-        assert_eq!(secret["stringData"]["userID"], "csi-cephfs-node-aes256k");
-        assert_eq!(secret["stringData"]["userKey"], "newkey");
-    }
-
-    #[tokio::test]
-    async fn new_mounts_keep_the_old_node_entity_until_its_successor_exists() {
-        let (server, kube) = cluster_up().await;
-        run(&Backend {
-            kube,
-            host: ceph_ok(),
-        })
-        .await
-        .unwrap();
-        let secret = node_secret(&patched(&server).await);
-        assert_eq!(secret["stringData"]["adminID"], "csi-cephfs-node");
-        assert_eq!(secret["stringData"]["adminKey"], "cephfsnodekey");
-    }
-
-    #[tokio::test]
-    async fn an_unanswered_lookup_of_the_successor_publishes_nothing_rather_than_flip_back() {
-        let (server, kube) = cluster_up().await;
-        let host = ceph_base().fail(
-            "ceph auth get-key client.csi-cephfs-node-aes256k",
-            "RADOS timed out",
-        );
-        let b = Backend { kube, host };
-        assert!(run(&b).await.is_err());
-        assert!(!applied_names(&server)
-            .await
-            .iter()
-            .any(|n| n == "rook-csi-cephfs-node"));
-        assert!(!b.host.ran("get-or-create client.csi-cephfs-node"));
-    }
-
-    #[tokio::test]
-    async fn ensure_key_reuses_an_existing_key_without_recreating_it() {
-        let (_server, kube) = cluster_up().await;
-        let b = Backend {
-            kube,
-            host: ceph_ok(),
-        };
-        run(&b).await.unwrap();
-        assert!(
-            !b.host.ran("auth get-or-create"),
-            "every ensure_key call above found its key on the first read, none should be created"
-        );
-    }
-
-    #[tokio::test]
-    async fn creates_a_key_that_is_missing() {
+    async fn a_missing_key_is_created_as_aes256k() {
         let (_server, kube) = cluster_up().await;
         let host = FakeHost::new()
             .ok("ceph -s", "")
-            .ok("ceph fsid", "fsid\n")
             .ok(
                 "ceph mon dump",
                 &dump_with(&[("yolab-n1", "fd00:cafe::1")]).to_string(),
             )
             .fail(
                 "ceph auth get-key client.csi-cephfs-provisioner",
-                "not found",
+                "Error ENOENT: failed to find client.csi-cephfs-provisioner in keyring",
             )
+            .ok("ceph auth get-key client.csi-cephfs-provisioner", "fresh")
             .ok("ceph auth get-or-create client.csi-cephfs-provisioner", "")
-            .ok(
-                "ceph auth get-key client.csi-cephfs-provisioner",
-                "freshly-minted-key",
-            )
-            .ok("ceph auth get-key client.csi-cephfs-node", "k")
-            .fail(
-                "ceph auth get-key client.csi-cephfs-node-aes256k",
-                NO_AES256K_NODE,
-            );
+            .ok("ceph auth get-key client.csi-cephfs-node", "nodekey");
         let b = Backend { kube, host };
-
         run(&b).await.unwrap();
-
-        assert!(b
-            .host
-            .ran("auth get-or-create client.csi-cephfs-provisioner"));
+        assert!(b.host.ran(
+            "auth get-or-create client.csi-cephfs-provisioner mon allow r mgr allow rw osd allow rw tag cephfs metadata=* --key_type aes256k"
+        ));
     }
 
     #[tokio::test]
-    async fn a_secret_of_the_wrong_type_is_deleted_before_being_reapplied() {
-        let (server, kube) = cluster_up().await;
-        serve(
-            &server,
-            "/api/v1/namespaces/rook-ceph/secrets/rook-csi-cephfs-provisioner",
-            200,
-            json!({ "metadata": { "name": "rook-csi-cephfs-provisioner" }, "type": "Opaque" }),
-        )
-        .await;
-        wiremock::Mock::given(wiremock::matchers::method("DELETE"))
-            .and(wiremock::matchers::path(
-                "/api/v1/namespaces/rook-ceph/secrets/rook-csi-cephfs-provisioner",
-            ))
-            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(json!({})))
-            .expect(1)
-            .mount(&server)
-            .await;
-
-        run(&Backend {
-            kube,
-            host: ceph_ok(),
-        })
-        .await
-        .unwrap();
-    }
-
-    #[tokio::test]
-    async fn the_csi_config_is_created_when_it_does_not_exist_yet() {
-        let (server, kube) = api_server().await;
-        serve(&server, NS_PATH, 200, json!({ "metadata": { "name": NS } })).await;
-        wiremock::Mock::given(wiremock::matchers::method("PATCH"))
-            .and(wiremock::matchers::path(
-                "/api/v1/namespaces/rook-ceph/configmaps/rook-ceph-csi-config",
-            ))
-            .and(wiremock::matchers::header(
-                "content-type",
-                "application/merge-patch+json",
-            ))
-            .respond_with(
-                wiremock::ResponseTemplate::new(404).set_body_json(status(404, "NotFound")),
+    async fn an_unreadable_key_is_an_error_never_a_new_key() {
+        let (_server, kube) = cluster_up().await;
+        let host = FakeHost::new()
+            .ok("ceph -s", "")
+            .ok(
+                "ceph mon dump",
+                &dump_with(&[("yolab-n1", "fd00:cafe::1")]).to_string(),
             )
-            .mount(&server)
-            .await;
-        accept_patches(&server).await;
-
-        run(&Backend {
-            kube,
-            host: ceph_ok(),
-        })
-        .await
-        .unwrap();
-
-        let csi = patched(&server)
-            .await
-            .into_iter()
-            .filter(|p| p["metadata"]["name"] == "rook-ceph-csi-config")
-            .count();
-        assert_eq!(csi, 2, "the merge was refused, so it was applied whole");
+            .fail("ceph auth get-key client.csi-cephfs-provisioner", "RADOS timed out");
+        let b = Backend { kube, host };
+        assert!(run(&b).await.is_err());
+        assert!(!b.host.ran("auth get-or-create"));
     }
 }

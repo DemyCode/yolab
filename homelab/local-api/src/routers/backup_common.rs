@@ -55,11 +55,8 @@ pub(crate) const RESTIC_SECRET_SUFFIX: &str = "-restic";
 
 pub(crate) const EXCLUDED_NS: &[&str] = &[
     "kube-system",
-    "rook-ceph",
-    "velero",
+    crate::csi::NS,
     "volsync-system",
-    "cattle-system",
-    "local-path-storage",
     "default",
 ];
 

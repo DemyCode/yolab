@@ -9,8 +9,8 @@ use kube::Client;
 
 use crate::k8s::Kube;
 
-pub const LEASE_NAME: &str = "yolab-disk-reconciler";
-pub const LEASE_NS: &str = "rook-ceph";
+pub const LEASE_NAME: &str = "yolab-leader";
+pub const LEASE_NS: &str = "kube-system";
 const LEASE_SECS: i64 = 30;
 const RENEW_EVERY: Duration = Duration::from_secs(10);
 const ACT_WITHIN_MS: i64 = 20_000;
@@ -69,12 +69,19 @@ pub fn start(identity: String, kube: Kube) -> Leadership {
     }
     tokio::spawn(async move {
         let mut seen: Option<(String, Instant)> = None;
+        let mut failing = false;
         loop {
             let attempt_started = now_ms();
             let attempt = match kube.client().await {
                 Ok(client) => try_acquire(&client, &identity, Utc::now(), &mut seen).await,
                 Err(e) => Err(e),
             };
+            if let Err(e) = &attempt {
+                if !failing {
+                    tracing::warn!("leader: could not take or renew the cluster lease: {e:#}");
+                }
+            }
+            failing = attempt.is_err();
             match attempt {
                 Ok(true) => {
                     if !IS_ME.swap(true, Ordering::SeqCst) {
@@ -88,9 +95,7 @@ pub fn start(identity: String, kube: Kube) -> Leadership {
                     }
                     last.store(0, Ordering::SeqCst);
                 }
-                Err(e) => {
-                    tracing::debug!("leader: could not renew the lease: {e}");
-                }
+                Err(_) => {}
             }
             tokio::time::sleep(RENEW_EVERY).await;
         }
@@ -239,6 +244,14 @@ mod tests {
                 "renewTime": (now - chrono::Duration::seconds(renewed_secs_ago)).to_rfc3339(),
             }
         })
+    }
+
+    #[test]
+    fn the_lease_lives_in_a_namespace_k3s_creates_before_any_controller_runs() {
+        let now = Utc::now();
+        let m = manifest("node1", now, now, None);
+        assert_eq!(m["metadata"]["namespace"], "kube-system");
+        assert_ne!(m["metadata"]["namespace"], crate::csi::NS);
     }
 
     #[test]
