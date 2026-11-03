@@ -243,6 +243,7 @@ in {
       extraFlags = [
         "--disable=traefik"
         "--disable=local-storage"
+        "--disable=metrics-server"
         "--flannel-backend=vxlan"
         "--flannel-ipv6-masq"
         "--cluster-cidr=fd00:42::/56,10.42.0.0/16"
