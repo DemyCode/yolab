@@ -1,7 +1,4 @@
-{
-  lib,
-  ...
-}:
+{lib, ...}:
 with lib; {
   options.yolab.ceph.imagesStore = {
     poolName = mkOption {

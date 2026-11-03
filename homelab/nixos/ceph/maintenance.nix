@@ -3,8 +3,7 @@
   pkgs,
   localApiEnv,
   ...
-}:
-let
+}: let
   host = config.networking.hostName;
 in {
   config = {

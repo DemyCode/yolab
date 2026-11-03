@@ -222,11 +222,7 @@ export function SystemPage() {
           label="Machines"
           detail={nodesDetail}
         />
-        <NavRow
-          to="/system/updates"
-          icon={Wrench}
-          label="Updates"
-        />
+        <NavRow to="/system/updates" icon={Wrench} label="Updates" />
         {status.data?.console_url && (
           <NavRow
             onClick={openConsole}

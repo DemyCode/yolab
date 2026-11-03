@@ -70,7 +70,11 @@ async fn run_update<H: Host>(
 
     emit(
         out,
-        format!("[INFO] building {}#{}", ch.flake(), crate::config::FLAKE_TARGET),
+        format!(
+            "[INFO] building {}#{}",
+            ch.flake(),
+            crate::config::FLAKE_TARGET
+        ),
     )
     .await;
 
