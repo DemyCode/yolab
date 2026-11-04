@@ -154,13 +154,14 @@ pub async fn run(args: &[String]) -> i32 {
         "bootstrap",
         "reset-wipe",
         "release",
+        "vdisk-detach-all",
     ];
     if !known.contains(&sub) {
         eprintln!("storage: unknown subcommand '{sub}'");
         return 2;
     }
 
-    let _guard = if sub == "noout-set" || sub == "release" {
+    let _guard = if sub == "noout-set" || sub == "release" || sub == "vdisk-detach-all" {
         None
     } else {
         match crate::runtime::lock::acquire(&lock_name(sub), BOOT_LOCK_WAIT).await {
@@ -182,6 +183,7 @@ pub async fn run(args: &[String]) -> i32 {
         "noout-clear" => noout::clear(&host, root()).await,
         "noout-set" => noout::set(&host, root()).await,
         "release" => release::run(&host, root(), controllers::K3S_UNIT, release::WAITS).await,
+        "vdisk-detach-all" => crate::vdisk::detach_all(&host, root()).await,
         "bootstrap" => bootstrap::run(&host, root(), &node, &env.bootstrap_args()).await,
         "reset-wipe" => {
             let config = crate::config::machine_dir().join("config.toml");

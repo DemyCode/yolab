@@ -6,7 +6,6 @@ use axum::{
 use serde::{Deserialize, Serialize};
 
 use crate::error::Result;
-use crate::host::RealHost;
 use crate::notify::Tunnel;
 use crate::storage::settings;
 use crate::vdisk::{platform, record, record::VdiskRecord};
@@ -73,10 +72,9 @@ pub(crate) fn refuse_add(box_type: &str, node: &str, known_nodes: &[String]) -> 
     None
 }
 
-pub async fn list_vdisks(State(_s): State<AppState>) -> Result<Json<Vec<VdiskInfo>>> {
-    let host = RealHost;
-    let records = record::list(&host).await?;
-    let statuses = record::statuses(&host).await?;
+pub async fn list_vdisks(State(s): State<AppState>) -> Result<Json<Vec<VdiskInfo>>> {
+    let records = record::list(&s.host).await?;
+    let statuses = record::statuses(&s.host).await?;
     let mut out: Vec<VdiskInfo> = records
         .iter()
         .map(|r| info(r, statuses.get(&r.id.to_string())))
@@ -90,7 +88,7 @@ pub async fn add_vdisk(
     Json(body): Json<AddVdisk>,
 ) -> std::result::Result<Json<VdiskInfo>, (StatusCode, Json<serde_json::Value>)> {
     let bad = |code: StatusCode, msg: String| (code, Json(serde_json::json!({ "error": msg })));
-    let known: Vec<String> = settings::dump(&RealHost, settings::DISK_STATUS)
+    let known: Vec<String> = settings::dump(&s.host, settings::DISK_STATUS)
         .await
         .map_err(|e| {
             bad(
@@ -105,7 +103,7 @@ pub async fn add_vdisk(
     }
     let tunnel = Tunnel::read(&s.config.config_path)
         .map_err(|e| bad(StatusCode::SERVICE_UNAVAILABLE, format!("{e:#}")))?;
-    let volume = platform::create(&crate::http::client(), &tunnel, &body.box_type)
+    let volume = platform::create(&s.http, &tunnel, &body.box_type)
         .await
         .map_err(|e| bad(StatusCode::BAD_GATEWAY, format!("{e:#}")))?;
     let rec = VdiskRecord {
@@ -131,7 +129,7 @@ pub async fn add_vdisk(
         removing: false,
         osd_id: None,
     };
-    record::save(&RealHost, &rec).await.map_err(|e| {
+    record::save(&s.host, &rec).await.map_err(|e| {
         bad(
             StatusCode::INTERNAL_SERVER_ERROR,
             format!(
@@ -149,17 +147,17 @@ pub async fn add_vdisk(
 }
 
 pub async fn remove_vdisk(
-    State(_s): State<AppState>,
+    State(s): State<AppState>,
     Path(id): Path<i64>,
 ) -> std::result::Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
     let bad = |code: StatusCode, msg: String| (code, Json(serde_json::json!({ "error": msg })));
-    let host = RealHost;
-    let mut rec = record::get(&host, id)
+    let host = &s.host;
+    let mut rec = record::get(host, id)
         .await
         .map_err(|e| bad(StatusCode::SERVICE_UNAVAILABLE, e.to_string()))?
         .ok_or_else(|| bad(StatusCode::NOT_FOUND, format!("no virtual disk {id}")))?;
     rec.removing = true;
-    record::save(&host, &rec)
+    record::save(host, &rec)
         .await
         .map_err(|e| bad(StatusCode::SERVICE_UNAVAILABLE, e.to_string()))?;
     crate::routers::disks::record_switch(&rec.node, &rec.disk_id(), "OFF")

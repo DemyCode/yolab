@@ -194,7 +194,7 @@ in {
         Type = "oneshot";
         RemainAfterExit = true;
         ExecStart = "${pkgs.coreutils}/bin/true";
-        ExecStop = "${localApiEnv}/bin/local-api vdisk detach-all";
+        ExecStop = "${localApiEnv}/bin/local-api storage vdisk-detach-all";
         TimeoutStopSec = "180s";
       };
     };

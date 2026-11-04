@@ -87,9 +87,6 @@ async fn main() {
     if args.get(1).map(String::as_str) == Some("shared-names") {
         std::process::exit(shared_names::run(&args[2..]).await);
     }
-    if args.get(1).map(String::as_str) == Some("vdisk") {
-        std::process::exit(vdisk::run(&args[2..]).await);
-    }
     if args.get(1).map(String::as_str) == Some("run") {
         let name = args.get(2).map(String::as_str).unwrap_or("");
         let code = match controllers::run_named(name).await {
@@ -121,9 +118,9 @@ async fn main() {
         host: Default::default(),
     };
 
-    let app = router::build_router(state);
+    let app = router::build_router(state.clone());
 
-    controllers::spawn_all(runtime::leader::start(system::hostname(), kube));
+    controllers::spawn_all(runtime::leader::start(system::hostname(), kube), &state);
 
     let mut servers = tokio::task::JoinSet::new();
     for addr in cfg.listen_addrs() {

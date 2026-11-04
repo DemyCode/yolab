@@ -128,7 +128,7 @@ mod tests {
             })))
             .mount(&server)
             .await;
-        let v = create(&crate::http::client(), &tunnel(&server), "bx11")
+        let v = create(&Client::new(), &tunnel(&server), "bx11")
             .await
             .unwrap();
         assert_eq!(v.id, 3);
@@ -143,7 +143,7 @@ mod tests {
             .respond_with(ResponseTemplate::new(404))
             .mount(&server)
             .await;
-        delete(&crate::http::client(), &tunnel(&server), 3)
+        delete(&Client::new(), &tunnel(&server), 3)
             .await
             .unwrap();
     }
@@ -156,7 +156,7 @@ mod tests {
             .respond_with(ResponseTemplate::new(503).set_body_string("Hetzner down"))
             .mount(&server)
             .await;
-        let err = delete(&crate::http::client(), &tunnel(&server), 3)
+        let err = delete(&Client::new(), &tunnel(&server), 3)
             .await
             .unwrap_err();
         assert!(err.to_string().contains("Hetzner down"), "{err}");

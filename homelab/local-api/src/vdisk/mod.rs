@@ -8,7 +8,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 
 use crate::error::Outcome;
-use crate::host::{Host, RealHost};
+use crate::host::Host;
 use crate::notify::Tunnel;
 use crate::runtime::{Controller, Ctx, Requirement, Scope, Tick};
 use record::VdiskRecord;
@@ -129,31 +129,18 @@ pub(crate) async fn placement_allows_start<H: Host>(host: &H, root: &Path, osd_i
     }
 }
 
-pub async fn run(args: &[String]) -> i32 {
-    match args.first().map(String::as_str) {
-        Some("detach-all") => {
-            let root = Path::new("/");
-            let ids = match stack::attached_here(root) {
-                Ok(ids) => ids,
-                Err(e) => {
-                    eprintln!("vdisk detach-all: {e:#}");
-                    return 1;
-                }
-            };
-            let mut failed = 0;
-            for id in ids {
-                if let Err(e) = stack::detach(&RealHost, root, id).await {
-                    eprintln!("vdisk detach-all: virtual disk {id}: {e:#}");
-                    failed += 1;
-                }
-            }
-            i32::from(failed > 0)
-        }
-        other => {
-            eprintln!("vdisk: unknown subcommand {other:?} (known: detach-all)");
-            2
+pub async fn detach_all<H: Host>(host: &H, root: &Path) -> Result<()> {
+    let mut failed = Vec::new();
+    for id in stack::attached_here(root)? {
+        if let Err(e) = stack::detach(host, root, id).await {
+            tracing::error!("virtual disk {id}: could not detach: {e:#}");
+            failed.push(id);
         }
     }
+    if !failed.is_empty() {
+        anyhow::bail!("virtual disks {failed:?} are still attached");
+    }
+    Ok(())
 }
 
 pub(crate) const OFFLINE: &str =
@@ -163,11 +150,13 @@ pub(crate) const PREPARING: &str = "Hetzner is preparing the Storage Box…";
 pub(crate) const DRAINING: &str = "Moving your data off this virtual disk before deleting it…";
 pub(crate) const CONNECTED: &str = "Connected";
 
-pub struct VdisksController {
+pub struct VdisksController<H> {
     pub config: crate::config::Config,
+    pub host: H,
+    pub http: crate::http::Client,
 }
 
-impl Controller for VdisksController {
+impl<H: Host + 'static> Controller for VdisksController<H> {
     fn name(&self) -> &'static str {
         NAME
     }
@@ -181,9 +170,9 @@ impl Controller for VdisksController {
         &[Requirement::Ceph]
     }
     async fn reconcile(&self, ctx: &Ctx) -> Result<Tick> {
-        let host = RealHost;
+        let host = &self.host;
         let root = Path::new("/");
-        let records = record::list(&host)
+        let records = record::list(host)
             .await
             .context("read the virtual disk records")?;
         let mine: Vec<VdiskRecord> = records.into_iter().filter(|r| r.node == ctx.node).collect();
@@ -193,7 +182,7 @@ impl Controller for VdisksController {
                 tracing::warn!(
                     "virtual disk {id}: attached here but no longer recorded — detaching it"
                 );
-                stack::detach(&host, root, id)
+                stack::detach(host, root, id)
                     .await
                     .warn_on_err(format!("detach unrecorded virtual disk {id}"));
             }
@@ -203,14 +192,14 @@ impl Controller for VdisksController {
         }
 
         let tunnel = Tunnel::read(&self.config.config_path)?;
-        let client = crate::http::client();
-        let published = record::statuses(&host)
+        let client = &self.http;
+        let published = record::statuses(host)
             .await
             .ok_or_warn("read the virtual disk statuses")
             .unwrap_or_default();
         for rec in mine {
             let id = rec.id;
-            let status = match step(&host, root, &client, &tunnel, rec).await {
+            let status = match step(host, root, client, &tunnel, rec).await {
                 Ok(s) => s,
                 Err(e) => {
                     tracing::warn!("virtual disk {id}: {e:#}");
@@ -221,7 +210,7 @@ impl Controller for VdisksController {
                 continue;
             }
             if published.get(&id.to_string()) != Some(&status) {
-                record::set_status(&host, id, &status)
+                record::set_status(host, id, &status)
                     .await
                     .warn_on_err(format!("publish the status of virtual disk {id}"));
             }
@@ -338,7 +327,7 @@ async fn finish_removal<H: Host>(
             rec.id
         ),
     }
-    crate::routers::disks::forget_disk(&rec.node, &rec.disk_id())
+    crate::routers::disks::forget_disk(host, &rec.node, &rec.disk_id())
         .await
         .map_err(anyhow::Error::msg)?;
     record::forget(host, rec.id).await?;

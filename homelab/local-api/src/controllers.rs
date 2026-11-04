@@ -33,7 +33,6 @@ pub const NAMES: &[&str] = &[
     "ceph-join",
     "csi-recovery",
     "ceph-csi",
-    "vdisks",
 ];
 
 fn spawn_observed(leader: &Leadership) {
@@ -51,7 +50,7 @@ fn spawn<C: runtime::Controller>(controller: C, leader: &Leadership) {
     runtime::spawn(controller, leader.clone());
 }
 
-pub fn spawn_all(leader: Leadership) {
+pub fn spawn_all(leader: Leadership, state: &crate::AppState) {
     use crate::routers::{apps, backup, backups, restore};
     use crate::storage::controllers as storage;
 
@@ -106,6 +105,8 @@ pub fn spawn_all(leader: Leadership) {
         spawn(
             crate::vdisk::VdisksController {
                 config: crate::config::Config::from_env(),
+                host: state.host.clone(),
+                http: state.http.clone(),
             },
             &leader,
         );
@@ -197,12 +198,6 @@ pub async fn run_named(name: &str) -> anyhow::Result<runtime::Tick> {
         "ceph-join" => runtime::run_once(&storage::CephJoinController { env }).await,
         "csi-recovery" => runtime::run_once(&storage::CsiRecoveryController).await,
         "ceph-csi" => runtime::run_once(&crate::storage::ceph_csi::CephCsiController).await,
-        "vdisks" => {
-            runtime::run_once(&crate::vdisk::VdisksController {
-                config: crate::config::Config::from_env(),
-            })
-            .await
-        }
         "containerd-store" => {
             runtime::resource::run_once(&storage::containerd_store_resource(env)).await
         }

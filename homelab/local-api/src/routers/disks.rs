@@ -7,7 +7,7 @@ use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
 
 use crate::disks_reconciler::{is_globally_unique_id, record_key, SYSTEM_OSD_ID};
-use crate::host::{Host as _, RealHost};
+use crate::host::{Host, RealHost};
 use crate::storage::settings;
 use crate::store::DiskIntent;
 use crate::AppState;
@@ -197,9 +197,13 @@ pub(crate) async fn record_switch(node: &str, disk_id: &str, desired: &str) -> R
     Ok(())
 }
 
-pub(crate) async fn forget_disk(node: &str, disk_id: &str) -> Result<(), String> {
+pub(crate) async fn forget_disk<H: Host>(
+    host: &H,
+    node: &str,
+    disk_id: &str,
+) -> Result<(), String> {
     let key = format!("{}{}", settings::DISKS, record_key(node, disk_id));
-    match RealHost.ceph(&["config-key", "rm", &key]).await {
+    match host.ceph(&["config-key", "rm", &key]).await {
         Ok(_) => {}
         Err(e) if e.is_not_found() => {}
         Err(e) => return Err(format!("the disk record could not be removed: {e}")),
