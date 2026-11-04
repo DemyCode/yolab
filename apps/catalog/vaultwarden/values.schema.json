@@ -245,9 +245,19 @@
       "type": "object",
       "readOnly": true,
       "properties": {
+        "signup_url": {
+          "type": "string",
+          "title": "Create your account",
+          "format": "uri"
+        },
         "admin_email": {
           "type": "string",
-          "title": "Invited first"
+          "title": "Your account email"
+        },
+        "admin_url": {
+          "type": "string",
+          "title": "Admin page",
+          "format": "uri"
         },
         "admin_password": {
           "type": "string",

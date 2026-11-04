@@ -49,6 +49,25 @@ spec:
     spec:
       initContainers:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      - name: vault-links
+        image: {{ include "yolab-common.image.caddy" . }}
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - |
+          set -eu
+          . /yolab/env
+          if [ -n "${YOLAB_FQDN:-}" ]; then
+            echo "YOLAB_OUTPUT signup_url https://$YOLAB_FQDN/#/signup"
+            echo "YOLAB_OUTPUT admin_url https://$YOLAB_FQDN/admin"
+          else
+            echo "YOLAB_OUTPUT signup_url NONE"
+            echo "YOLAB_OUTPUT admin_url NONE"
+          fi
+        volumeMounts:
+        - name: yolab
+          mountPath: /yolab
       {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
       {{- include "yolab-common.privateAccessInit" . | nindent 6 }}
       containers:

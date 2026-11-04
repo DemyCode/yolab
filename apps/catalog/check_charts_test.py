@@ -847,6 +847,32 @@ class VaultwardenAdmin(RenderedChart):
         self.assertIsNone(text)
         self.assertIn("config.admin_email is required", err)
 
+    def run_links(self, env_file):
+        gateway = self.deployments(self.docs())["gateway"]
+        init = next(c for c in gateway["initContainers"] if c["name"] == "vault-links")
+        with tempfile.TemporaryDirectory() as root:
+            Path(root, "env").write_text(env_file)
+            script = init["command"][-1].replace("/yolab", root)
+            out = subprocess.run(
+                ["sh", "-c", script], capture_output=True, text=True, check=True
+            )
+        return out.stdout.splitlines()
+
+    def test_the_links_to_start_with_point_at_the_app_address(self):
+        self.assertEqual(
+            self.run_links("export YOLAB_FQDN=vault.example.test\n"),
+            [
+                "YOLAB_OUTPUT signup_url https://vault.example.test/#/signup",
+                "YOLAB_OUTPUT admin_url https://vault.example.test/admin",
+            ],
+        )
+
+    def test_without_a_yolab_address_the_links_say_none(self):
+        self.assertEqual(
+            self.run_links(""),
+            ["YOLAB_OUTPUT signup_url NONE", "YOLAB_OUTPUT admin_url NONE"],
+        )
+
 
 def env_part_failures(*containers):
     found = []
