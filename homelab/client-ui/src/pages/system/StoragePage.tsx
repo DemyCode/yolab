@@ -2,11 +2,13 @@ import { useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import {
   ChevronRight,
+  Cloud,
   Cpu,
   ExternalLink,
   Eye,
   EyeOff,
   HardDrive,
+  Plus,
   RefreshCw,
   WifiOff,
 } from "lucide-react";
@@ -54,6 +56,9 @@ import {
   rawPercent,
   statusLine,
   usageRows,
+  VDISK_SIZES,
+  vdiskSizeLabel,
+  virtualDiskState,
   type DiskState,
   type Domain,
   type Tone,
@@ -68,6 +73,7 @@ import type {
   StorageOverview,
   StoragePolicyData,
   StorageUsage,
+  VdiskInfo,
 } from "@/types/storage";
 
 const TONE_TEXT: Record<Tone, string> = {
@@ -329,6 +335,12 @@ const STATE_META: Record<
     pulse: true,
   },
   removable: { label: "Safe to unplug", tone: "ok" },
+  provisioning: {
+    label: "Hetzner is preparing the Storage Box…",
+    tone: "warn",
+    pulse: true,
+  },
+  offline: { label: "Offline — the Storage Box is not answering", tone: "bad" },
   stale: { label: "Checking…", tone: "idle", pulse: true },
   excluded: { label: "Connected, not in use", tone: "idle" },
   historical: { label: "Not connected", tone: "idle" },
@@ -344,21 +356,44 @@ function DiskRow({
   node,
   disk,
   osd,
+  vdisk,
   onChanged,
 }: {
   node: string;
   disk: DiskInfo;
   osd?: Osd;
+  vdisk?: VdiskInfo;
   onChanged: () => void;
 }) {
   const [busy, setBusy] = useState(false);
   const [confirm, setConfirm] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  const state = diskState(disk);
+  const state = vdisk ? virtualDiskState(disk, vdisk) : diskState(disk);
   const meta = STATE_META[state];
   const isOn = disk.desired === "ON";
-  const label = disk.model || disk.device || disk.id;
+  const label = vdisk ? "Virtual disk" : disk.model || disk.device || disk.id;
+  const message =
+    disk.message || (vdisk?.state === "error" ? vdisk.status : "");
+
+  async function remove() {
+    if (!vdisk) return;
+    if (!confirm) {
+      setConfirm(true);
+      return;
+    }
+    setBusy(true);
+    setErr(null);
+    setConfirm(false);
+    try {
+      await api.del(`/api/vdisks/${vdisk.id}`);
+      onChanged();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function toggle() {
     const next = isOn ? "OFF" : "ON";
@@ -386,15 +421,22 @@ function DiskRow({
     }
   }
 
-  const Icon = state === "missing" ? WifiOff : disk.is_loop ? Cpu : HardDrive;
+  const lost = state === "missing" || state === "offline";
+  const Icon = lost
+    ? WifiOff
+    : vdisk
+      ? Cloud
+      : disk.is_loop
+        ? Cpu
+        : HardDrive;
 
   return (
-    <div className={cn("px-5 py-4", state === "missing" && "bg-danger-soft")}>
+    <div className={cn("px-5 py-4", lost && "bg-danger-soft")}>
       <div className="flex items-center gap-3">
         <Icon
           className={cn(
             "h-5 w-5 shrink-0",
-            state === "missing" ? "text-danger" : "text-fg-muted",
+            lost ? "text-danger" : "text-fg-muted",
           )}
           strokeWidth={1.5}
         />
@@ -406,6 +448,14 @@ function DiskRow({
                 {" · "}
                 <span className="font-mono">
                   {formatBytes(disk.size_bytes)}
+                </span>
+              </span>
+            )}
+            {vdisk && !(disk.connected && disk.size_bytes > 0) && (
+              <span className="font-normal text-fg-muted">
+                {" · "}
+                <span className="font-mono">
+                  {vdiskSizeLabel(vdisk.box_type)}
                 </span>
               </span>
             )}
@@ -440,10 +490,26 @@ function DiskRow({
                   · built into this machine
                 </span>
               )}
+              {vdisk && (
+                <span className="text-fg-subtle">
+                  {" "}
+                  · encrypted here, stored at Hetzner
+                </span>
+              )}
             </span>
           </p>
         </div>
-        {state !== "unidentified" && !confirm && (
+        {vdisk && !vdisk.removing && !confirm && (
+          <Button
+            size="sm"
+            variant="quiet"
+            loading={busy}
+            onClick={() => void remove()}
+          >
+            Delete
+          </Button>
+        )}
+        {!vdisk && state !== "unidentified" && !confirm && (
           <Switch
             checked={isOn}
             onChange={() => void toggle()}
@@ -452,8 +518,8 @@ function DiskRow({
           />
         )}
       </div>
-      <Collapse open={Boolean(disk.message)}>
-        <p className="pl-8 pt-1 text-sm text-fg-muted">{disk.message}</p>
+      <Collapse open={Boolean(message)}>
+        <p className="pl-8 pt-1 text-sm text-fg-muted">{message}</p>
       </Collapse>
       <Collapse open={Boolean(err)}>
         <p className="pl-8 pt-1 text-sm text-danger">{err}</p>
@@ -461,9 +527,11 @@ function DiskRow({
       <Collapse open={confirm}>
         <div className="flex flex-wrap items-center gap-2 pl-8 pt-3">
           <span className="mr-auto text-sm text-fg-muted">
-            {isOn
-              ? "Its data moves to your other disks first. This can take a while."
-              : "Everything on it will be erased."}
+            {vdisk
+              ? "Your data moves to your other disks first. Then the Storage Box is deleted and its billing stops."
+              : isOn
+                ? "Its data moves to your other disks first. This can take a while."
+                : "Everything on it will be erased."}
           </span>
           <Button size="sm" variant="ghost" onClick={() => setConfirm(false)}>
             Cancel
@@ -472,9 +540,13 @@ function DiskRow({
             size="sm"
             variant="danger"
             loading={busy}
-            onClick={() => void toggle()}
+            onClick={() => void (vdisk ? remove() : toggle())}
           >
-            {isOn ? "Stop using it" : "Erase and use"}
+            {vdisk
+              ? "Delete virtual disk"
+              : isOn
+                ? "Stop using it"
+                : "Erase and use"}
           </Button>
         </div>
       </Collapse>
@@ -482,23 +554,171 @@ function DiskRow({
   );
 }
 
+function placeholderDisk(v: VdiskInfo): DiskInfo {
+  return {
+    id: v.disk_id,
+    device: "",
+    model: "",
+    size_bytes: 0,
+    is_loop: false,
+    is_virtual: true,
+    is_our_osd: false,
+    foreign_ceph: false,
+    osd_id: null,
+    desired: v.removing ? "OFF" : "ON",
+    connected: false,
+    has_partitions: false,
+    mounted: false,
+    phase: "",
+    message: "",
+    attempts: 0,
+  };
+}
+
+function AddVirtualDisk({
+  nodes,
+  onChanged,
+}: {
+  nodes: string[];
+  onChanged: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [boxType, setBoxType] = useState<string>(VDISK_SIZES[0].box_type);
+  const [picked, setPicked] = useState<string>("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const node = picked || nodes[0] || "";
+
+  async function add() {
+    setBusy(true);
+    setErr(null);
+    try {
+      await api.post<VdiskInfo>("/api/vdisks", { node, box_type: boxType });
+      setOpen(false);
+      onChanged();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="px-5 py-4">
+      {!open && (
+        <Button
+          size="sm"
+          variant="secondary"
+          onClick={() => setOpen(true)}
+          disabled={nodes.length === 0}
+        >
+          <Plus className="h-4 w-4" strokeWidth={1.75} />
+          Add virtual disk
+        </Button>
+      )}
+      <Collapse open={open}>
+        <div className="space-y-3">
+          <p className="text-sm text-fg-muted">
+            More space, stored in a Hetzner Storage Box. It is encrypted on
+            your machine before it leaves, so Hetzner only ever holds
+            unreadable data. Paid from your YoLab credit.
+          </p>
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+            {VDISK_SIZES.map((s) => (
+              <button
+                key={s.box_type}
+                type="button"
+                onClick={() => setBoxType(s.box_type)}
+                aria-pressed={boxType === s.box_type}
+                className={cn(
+                  "rounded-lg border px-3 py-2 text-left transition-colors",
+                  boxType === s.box_type
+                    ? "border-primary bg-primary-soft"
+                    : "border-border hover:bg-surface-2",
+                )}
+              >
+                <span className="block text-sm font-medium text-fg">
+                  {s.label}
+                </span>
+                <span className="block font-mono text-xs text-fg-muted">
+                  {s.price}
+                </span>
+              </button>
+            ))}
+          </div>
+          {nodes.length > 1 && (
+            <label className="flex items-center gap-3 text-sm text-fg-muted">
+              Connected through
+              <Select
+                value={node}
+                onChange={(e) => setPicked(e.target.value)}
+                className="w-auto"
+              >
+                {nodes.map((n) => (
+                  <option key={n} value={n}>
+                    {n}
+                  </option>
+                ))}
+              </Select>
+            </label>
+          )}
+          <p className="text-sm text-fg-subtle">
+            Writes to it are slower than to a disk in your machine. If your
+            internet goes down, it goes offline until it comes back.
+          </p>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button size="sm" loading={busy} onClick={() => void add()}>
+              Add {VDISK_SIZES.find((s) => s.box_type === boxType)?.label}
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => setOpen(false)}
+              disabled={busy}
+            >
+              Cancel
+            </Button>
+          </div>
+        </div>
+      </Collapse>
+      <Collapse open={Boolean(err)}>
+        <p className="pt-2 text-sm text-danger">{err}</p>
+      </Collapse>
+    </div>
+  );
+}
+
 function DisksSection({
   disks,
+  vdisks,
   osds,
   loading,
   onChanged,
 }: {
   disks: Record<string, DiskInfo[]> | undefined;
+  vdisks: VdiskInfo[];
   osds: Osd[];
   loading: boolean;
   onChanged: () => void;
 }) {
-  const nodes = disks ? Object.keys(disks).sort() : [];
+  const vdiskFor = (node: string, disk: DiskInfo) =>
+    vdisks.find((v) => v.node === node && v.disk_id === disk.id);
+  const listed: Record<string, DiskInfo[]> = { ...(disks ?? {}) };
+  for (const v of vdisks) {
+    const rows = listed[v.node] ?? [];
+    if (!rows.some((d) => d.id === v.disk_id)) {
+      listed[v.node] = [...rows, placeholderDisk(v)];
+    }
+  }
+  const nodes = Object.keys(listed).sort();
+  const storageNodes = disks ? Object.keys(disks).sort() : [];
   const present: [string, DiskInfo][] = [];
   const past: [string, DiskInfo][] = [];
   for (const node of nodes) {
-    for (const disk of disks?.[node] ?? []) {
-      (diskState(disk) === "historical" ? past : present).push([node, disk]);
+    for (const disk of listed[node] ?? []) {
+      const v = vdiskFor(node, disk);
+      const state = v ? virtualDiskState(disk, v) : diskState(disk);
+      (state === "historical" ? past : present).push([node, disk]);
     }
   }
   const multiNode = nodes.length > 1;
@@ -545,6 +765,7 @@ function DisksSection({
                   node={node}
                   disk={disk}
                   osd={osdFor(disk)}
+                  vdisk={vdiskFor(node, disk)}
                   onChanged={onChanged}
                 />
               </>
@@ -567,6 +788,7 @@ function DisksSection({
                       node={node}
                       disk={disk}
                       osd={osdFor(disk)}
+                      vdisk={vdiskFor(node, disk)}
                       onChanged={onChanged}
                     />
                   )}
@@ -575,6 +797,9 @@ function DisksSection({
             </DisclosureRow>
           )}
         </>
+      )}
+      {disks && (
+        <AddVirtualDisk nodes={storageNodes} onChanged={onChanged} />
       )}
     </Section>
   );
@@ -1012,6 +1237,9 @@ export function StoragePage() {
     "/api/disks",
     { pollMs },
   );
+  const vdisksRes = useApi<VdiskInfo[]>("storage-vdisks", "/api/vdisks", {
+    pollMs,
+  });
 
   const overview = overviewRes.data;
   const policy = policyRes.data;
@@ -1021,6 +1249,7 @@ export function StoragePage() {
     void overviewRes.refresh();
     void policyRes.refresh();
     void disksRes.refresh();
+    void vdisksRes.refresh();
     void movement.refresh();
   }
 
@@ -1059,6 +1288,7 @@ export function StoragePage() {
 
       <DisksSection
         disks={disksRes.data}
+        vdisks={vdisksRes.data ?? []}
         osds={overview?.osds ?? []}
         loading={disksRes.loading}
         onChanged={refreshAll}

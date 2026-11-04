@@ -33,6 +33,7 @@ pub const NAMES: &[&str] = &[
     "ceph-join",
     "csi-recovery",
     "ceph-csi",
+    "vdisks",
 ];
 
 fn spawn_observed(leader: &Leadership) {
@@ -102,6 +103,12 @@ pub fn spawn_all(leader: Leadership) {
 
     let env = StorageEnv::from_env();
     if env.is_configured() {
+        spawn(
+            crate::vdisk::VdisksController {
+                config: crate::config::Config::from_env(),
+            },
+            &leader,
+        );
         spawn(storage::OsdActivateController { env: env.clone() }, &leader);
         spawn(storage::SystemOsdController { env: env.clone() }, &leader);
         spawn(storage::ImagesRbdController { env: env.clone() }, &leader);
@@ -190,6 +197,12 @@ pub async fn run_named(name: &str) -> anyhow::Result<runtime::Tick> {
         "ceph-join" => runtime::run_once(&storage::CephJoinController { env }).await,
         "csi-recovery" => runtime::run_once(&storage::CsiRecoveryController).await,
         "ceph-csi" => runtime::run_once(&crate::storage::ceph_csi::CephCsiController).await,
+        "vdisks" => {
+            runtime::run_once(&crate::vdisk::VdisksController {
+                config: crate::config::Config::from_env(),
+            })
+            .await
+        }
         "containerd-store" => {
             runtime::resource::run_once(&storage::containerd_store_resource(env)).await
         }

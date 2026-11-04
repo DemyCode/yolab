@@ -181,10 +181,28 @@ in {
       };
     };
 
+    systemd.services.yolab-vdisks = {
+      description = "Detach virtual disks after their OSDs stop and before the network goes down";
+      wantedBy = ["multi-user.target"];
+      after = ["network-online.target"];
+      before = ["yolab-local-api.service"];
+      wants = ["network-online.target"];
+      restartIfChanged = false;
+      stopIfChanged = false;
+      path = with pkgs; [cifs-utils cryptsetup lvm2 util-linux coreutils systemd];
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        ExecStart = "${pkgs.coreutils}/bin/true";
+        ExecStop = "${localApiEnv}/bin/local-api vdisk detach-all";
+        TimeoutStopSec = "180s";
+      };
+    };
+
     systemd.services."yolab-ceph-osd@" = {
       description = "Ceph OSD %i";
       before = ["yolab-ceph-release.service"];
-      after = ["network-online.target" "ceph-mon-${host}.service"];
+      after = ["network-online.target" "ceph-mon-${host}.service" "yolab-vdisks.service"];
       wants = ["network-online.target" "ceph-mon-${host}.service"];
       restartIfChanged = false;
       path = with pkgs; [ceph ceph-client lvm2 util-linux coreutils];
@@ -234,6 +252,6 @@ in {
       util-linux
     ];
 
-    boot.kernelModules = ["rbd" "libceph"];
+    boot.kernelModules = ["rbd" "libceph" "cifs" "dm_crypt" "loop"];
   };
 }

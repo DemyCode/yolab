@@ -7,7 +7,7 @@ use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
 
 use crate::disks_reconciler::{is_globally_unique_id, record_key, SYSTEM_OSD_ID};
-use crate::host::RealHost;
+use crate::host::{Host as _, RealHost};
 use crate::storage::settings;
 use crate::store::DiskIntent;
 use crate::AppState;
@@ -19,6 +19,7 @@ pub struct DiskInfo {
     pub model: String,
     pub size_bytes: u64,
     pub is_loop: bool,
+    pub is_virtual: bool,
     pub is_our_osd: bool,
     pub foreign_ceph: bool,
     pub osd_id: Option<i64>,
@@ -90,6 +91,7 @@ fn disk_info(disk_id: &str, desired: &str, meta: Option<&Value>) -> DiskInfo {
             .and_then(|n| u32::try_from(n).ok())
             .unwrap_or(0),
         is_loop: flag("is_loop"),
+        is_virtual: flag("is_virtual"),
         is_our_osd: flag("is_our_osd"),
         foreign_ceph: flag("foreign_ceph"),
         osd_id: meta.and_then(|v| v["osd_id"].as_i64()),
@@ -195,12 +197,27 @@ pub(crate) async fn record_switch(node: &str, disk_id: &str, desired: &str) -> R
     Ok(())
 }
 
+pub(crate) async fn forget_disk(node: &str, disk_id: &str) -> Result<(), String> {
+    let key = format!("{}{}", settings::DISKS, record_key(node, disk_id));
+    match RealHost.ceph(&["config-key", "rm", &key]).await {
+        Ok(_) => {}
+        Err(e) if e.is_not_found() => {}
+        Err(e) => return Err(format!("the disk record could not be removed: {e}")),
+    }
+    store_intent(node, disk_id, DiskIntent::Forgotten);
+    Ok(())
+}
+
 fn record_intent(node: &str, disk_id: &str, desired: &str) {
     let intent = if desired == "ON" {
         DiskIntent::On
     } else {
         DiskIntent::Off
     };
+    store_intent(node, disk_id, intent);
+}
+
+fn store_intent(node: &str, disk_id: &str, intent: DiskIntent) {
     let mut store = crate::store::locked();
     if let Err(e) = store.set_disk_intent(node, disk_id, intent) {
         tracing::warn!(

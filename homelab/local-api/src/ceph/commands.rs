@@ -112,6 +112,16 @@ static SIGS: &[Sig] = &[
     ),
     sig(&["osd", "crush", "rule", "ls"], &[]),
     sig(
+        &["osd", "primary-affinity"],
+        &[req("id", Osd), req("weight", Float)],
+    ),
+    sig(&["osd", "add-noout"], &[req("ids", List)]),
+    sig(&["osd", "rm-noout"], &[req("ids", List)]),
+    sig(
+        &["osd", "crush", "rm"],
+        &[req("name", Str), opt("ancestor", Str)],
+    ),
+    sig(
         &["osd", "crush", "rule", "create-replicated"],
         &[
             req("name", Str),
@@ -489,6 +499,18 @@ mod tests {
         assert_eq!(
             mon_command(&["osd", "purge", "*", "--yes-i-really-mean-it"]),
             None
+        );
+        assert_eq!(
+            sent(&["osd", "primary-affinity", "osd.5", "0"]),
+            json!({"prefix": "osd primary-affinity", "id": 5, "weight": 0.0})
+        );
+        assert_eq!(
+            sent(&["osd", "add-noout", "osd.5"]),
+            json!({"prefix": "osd add-noout", "ids": ["osd.5"]})
+        );
+        assert_eq!(
+            sent(&["osd", "crush", "rm", "vdisk-7"]),
+            json!({"prefix": "osd crush rm", "name": "vdisk-7"})
         );
         assert_eq!(mon_command(&["osd", "purge", "mon.a"]), None);
     }

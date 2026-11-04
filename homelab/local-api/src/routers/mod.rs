@@ -17,3 +17,4 @@ pub mod restore_plan;
 pub mod status;
 pub mod store;
 pub mod update;
+pub mod vdisks;

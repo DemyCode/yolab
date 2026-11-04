@@ -135,6 +135,7 @@ pub(crate) struct Disk {
     pub model: String,
     pub size_bytes: u64,
     pub is_loop: bool,
+    pub is_virtual: bool,
     pub ownership: Ownership,
     pub has_partitions: bool,
     pub mounted: bool,
@@ -157,6 +158,9 @@ impl Disk {
         });
         if self.is_loop {
             v["is_loop"] = json!(true);
+        }
+        if self.is_virtual {
+            v["is_virtual"] = json!(true);
         }
         if let Some(p) = self.progress.as_ref().filter(|p| p.phase != Phase::Unset) {
             v["phase"] = json!(p.phase.as_str());
@@ -233,12 +237,32 @@ fn system_osd_meta(our_fsid: &str) -> Disk {
     lv_osd_meta(SYSTEM_OSD_DEV, our_fsid)
 }
 
+fn vdisk_meta(id: i64, our_fsid: &str) -> Disk {
+    let dev = crate::vdisk::record::osd_dev(id);
+    Disk {
+        model: "Virtual disk".to_string(),
+        is_loop: false,
+        is_virtual: true,
+        ..lv_osd_meta(&dev, our_fsid)
+    }
+}
+
+fn attached_vdisks(root: &Path) -> Vec<i64> {
+    crate::vdisk::stack::attached_here(root)
+        .ok_or_warn("list the virtual disks attached here")
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|id| crate::vdisk::stack::is_attached(root, *id))
+        .collect()
+}
+
 fn lv_osd_meta(dev: &str, our_fsid: &str) -> Disk {
     Disk {
         device: dev.to_string(),
         model: "System disk".to_string(),
         size_bytes: lv_size_bytes(dev),
         is_loop: true,
+        is_virtual: false,
         ownership: device_ownership(dev, our_fsid),
         has_partitions: false,
         mounted: false,
@@ -467,6 +491,9 @@ async fn publish_local<H: Host + 'static>(host: &H, node: &str) -> Result<()> {
         .collect();
     if system_osd_present() {
         meta.insert(SYSTEM_OSD_ID.to_string(), system_osd_meta(&our_fsid));
+    }
+    for id in attached_vdisks(Path::new("/")) {
+        meta.insert(crate::vdisk::record::disk_id(id), vdisk_meta(id, &our_fsid));
     }
 
     let fetched = if our_fsid.is_empty() {
@@ -1161,7 +1188,7 @@ async fn create_osd<H: Host>(host: &H, disk_id: &str, dev_path: &str) {
             Ok(local) => {
                 let want = canonical_device(dev_path);
                 if let Some((_, osd_id)) = local.iter().find(|(d, _)| canonical_device(d) == want) {
-                    start_osd_unit(host, *osd_id).await;
+                    ensure_osd_unit_running(host, *osd_id).await;
                     set_phase(disk_id, Phase::Active, "");
                     if let Ok(mut p) = PROGRESS.lock() {
                         let e = p.entry(disk_id.to_string()).or_default();
@@ -1557,6 +1584,9 @@ pub(crate) async fn ensure_osd_unit_running<H: Host>(host: &H, osd_id: i64) {
     if is_running(osd_unit_state(host, osd_id).await.as_deref()) {
         return;
     }
+    if !crate::vdisk::placement_allows_start(host, Path::new("/"), osd_id).await {
+        return;
+    }
     tracing::warn!("osd.{osd_id}: {unit} is not running — starting it");
     start_osd_unit(host, osd_id).await;
 }
@@ -1906,6 +1936,7 @@ fn disk_meta(device: &str, our_fsid: &str, flags: DiskFlags) -> Disk {
         model,
         size_bytes,
         is_loop: false,
+        is_virtual: false,
         ownership: device_ownership(device, our_fsid),
         has_partitions: flags.has_partitions,
         mounted: flags.mounted,
@@ -2550,6 +2581,7 @@ mod tests {
             model: "easystore".into(),
             size_bytes: 1000,
             is_loop: false,
+            is_virtual: false,
             ownership: o,
             has_partitions: false,
             mounted: false,
@@ -2686,6 +2718,7 @@ mod tests {
             model: "easystore".into(),
             size_bytes: 1000,
             is_loop: false,
+            is_virtual: false,
             ownership: Ownership::Blank,
             has_partitions: false,
             mounted: false,
@@ -2725,6 +2758,7 @@ mod tests {
 
         let sys = Disk {
             is_loop: true,
+            is_virtual: false,
             ..base.clone()
         }
         .to_value();
@@ -2755,6 +2789,7 @@ mod tests {
             model: String::new(),
             size_bytes: 0,
             is_loop: false,
+            is_virtual: false,
             ownership: Ownership::Blank,
             has_partitions: false,
             mounted: false,
@@ -3097,6 +3132,7 @@ mod tests {
             model: String::new(),
             size_bytes: 1_000_000_000,
             is_loop: false,
+            is_virtual: false,
             ownership,
             has_partitions: false,
             mounted: false,
@@ -3696,6 +3732,7 @@ mod tests {
             model: String::new(),
             size_bytes: 1_000_000_000,
             is_loop: false,
+            is_virtual: false,
             ownership: Ownership::Blank,
             has_partitions: false,
             mounted: false,

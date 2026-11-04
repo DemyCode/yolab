@@ -2,6 +2,7 @@ import { appDisplayName, catalogEntry } from "@/lib/apps";
 import type { AppInfo, CatalogApp } from "@/types/apps";
 import type {
   DiskInfo,
+  VdiskInfo,
   Osd,
   Space,
   StorageOverview,
@@ -49,7 +50,9 @@ export type DiskState =
   | "blocked"
   | "stale"
   | "removing"
-  | "removable";
+  | "removable"
+  | "provisioning"
+  | "offline";
 
 export function diskState(disk: DiskInfo): DiskState {
   if (disk.ownership === "unknown") return "unidentified";
@@ -82,6 +85,38 @@ export function diskState(disk: DiskInfo): DiskState {
   if (on) return "pending";
   if (disk.is_our_osd) return "draining";
   return "excluded";
+}
+
+export const VDISK_SIZES = [
+  { box_type: "bx11", label: "1 TB", price: "€3.49/mo" },
+  { box_type: "bx21", label: "5 TB", price: "€13.12/mo" },
+  { box_type: "bx31", label: "10 TB", price: "€25.08/mo" },
+  { box_type: "bx41", label: "20 TB", price: "€46.28/mo" },
+] as const;
+
+export function vdiskSizeLabel(boxType: string): string {
+  return VDISK_SIZES.find((s) => s.box_type === boxType)?.label ?? boxType;
+}
+
+export function virtualDiskState(
+  disk: DiskInfo | undefined,
+  vdisk: VdiskInfo,
+): DiskState {
+  const live = disk?.connected ? diskState(disk) : undefined;
+  switch (vdisk.state) {
+    case "provisioning":
+      return "provisioning";
+    case "offline":
+      return "offline";
+    case "removing":
+      if (!live || live === "excluded" || live === "removable")
+        return "removing";
+      return live === "active" ? "draining" : live;
+    case "error":
+      return live ?? "failing";
+    default:
+      return live ?? "pending";
+  }
 }
 
 export type Domain = "osd" | "host";

@@ -40,6 +40,7 @@ mod system;
 #[cfg(test)]
 mod testkit;
 mod topology;
+mod vdisk;
 
 use std::sync::Arc;
 
@@ -85,6 +86,9 @@ async fn main() {
     }
     if args.get(1).map(String::as_str) == Some("shared-names") {
         std::process::exit(shared_names::run(&args[2..]).await);
+    }
+    if args.get(1).map(String::as_str) == Some("vdisk") {
+        std::process::exit(vdisk::run(&args[2..]).await);
     }
     if args.get(1).map(String::as_str) == Some("run") {
         let name = args.get(2).map(String::as_str).unwrap_or("");

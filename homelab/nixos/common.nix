@@ -406,7 +406,7 @@ in {
       wantedBy = ["multi-user.target"];
       environment = {
         PATH = lib.mkForce (
-          lib.makeBinPath (with pkgs; [ceph ceph-client lvm2 util-linux xfsprogs e2fsprogs coreutils systemd])
+          lib.makeBinPath (with pkgs; [ceph ceph-client lvm2 util-linux xfsprogs e2fsprogs coreutils systemd cryptsetup cifs-utils])
           + ":/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin:/run/wrappers/bin"
         );
         YOLAB_MACHINE_DIR = config.yolab.machineDir;

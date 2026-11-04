@@ -19,11 +19,19 @@ pub struct OsdDumpEntry {
     pub is_in: bool,
     #[serde(default)]
     pub up_from: Option<i64>,
+    #[serde(default)]
+    pub primary_affinity: Option<f64>,
+    #[serde(default)]
+    pub state: Vec<String>,
 }
 
 impl OsdDumpEntry {
     pub fn never_booted(&self) -> bool {
         self.up_from == Some(0)
+    }
+
+    pub fn has_own_noout(&self) -> bool {
+        self.state.iter().any(|s| s == "noout")
     }
 }
 
@@ -210,6 +218,20 @@ mod tests {
             .map(|e| e.osd)
             .collect();
         assert_eq!(never, vec![2]);
+    }
+
+    #[test]
+    fn an_osds_own_noout_and_primary_affinity_are_read_from_the_dump() {
+        let raw = r#"{"osds":[
+            {"osd":5,"up":1,"in":1,"primary_affinity":0,"state":["exists","up","noout"]},
+            {"osd":6,"up":1,"in":1,"primary_affinity":1,"state":["exists","up"]},
+            {"osd":7,"up":1,"in":1}
+        ],"pools":[]}"#;
+        let d: OsdDump = serde_json::from_str(raw).unwrap();
+        assert!(d.osds[0].has_own_noout());
+        assert_eq!(d.osds[0].primary_affinity, Some(0.0));
+        assert!(!d.osds[1].has_own_noout());
+        assert_eq!(d.osds[2].primary_affinity, None);
     }
 
     #[test]

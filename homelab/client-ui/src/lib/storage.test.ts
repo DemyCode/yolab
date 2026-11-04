@@ -10,10 +10,13 @@ import {
   rawPercent,
   statusLine,
   usageRows,
+  vdiskSizeLabel,
+  virtualDiskState,
 } from "./storage";
 import type { AppInfo, CatalogApp } from "@/types/apps";
 import type {
   DiskInfo,
+  VdiskInfo,
   Osd,
   Space,
   StorageOverview,
@@ -420,5 +423,69 @@ describe("diskState", () => {
     expect(diskState(disk({ ownership: "unknown", foreign_ceph: true }))).toBe(
       "unidentified",
     );
+  });
+});
+
+function vdisk(over: Partial<VdiskInfo> = {}): VdiskInfo {
+  return {
+    id: 4,
+    disk_id: "vdisk-4",
+    node: "node1",
+    box_type: "bx11",
+    size_gb: 900,
+    ready: true,
+    removing: false,
+    state: "connected",
+    status: "Connected",
+    ...over,
+  };
+}
+
+describe("virtualDiskState", () => {
+  it("a box Hetzner is still preparing shows as being prepared, not missing", () => {
+    expect(
+      virtualDiskState(
+        disk({ id: "vdisk-4", desired: "ON", connected: false }),
+        vdisk({ ready: false, state: "provisioning" }),
+      ),
+    ).toBe("provisioning");
+  });
+
+  it("an unreachable box is offline rather than an unplugged disk", () => {
+    expect(
+      virtualDiskState(
+        disk({ id: "vdisk-4", desired: "ON", connected: false }),
+        vdisk({ state: "offline" }),
+      ),
+    ).toBe("offline");
+  });
+
+  it("a connected virtual disk reads like any other disk", () => {
+    expect(
+      virtualDiskState(
+        disk({ desired: "ON", is_our_osd: true, phase: "active" }),
+        vdisk(),
+      ),
+    ).toBe("active");
+  });
+
+  it("a virtual disk being deleted shows its data moving off, then finishing", () => {
+    expect(
+      virtualDiskState(
+        disk({ desired: "OFF", is_our_osd: true, phase: "draining" }),
+        vdisk({ removing: true, state: "removing" }),
+      ),
+    ).toBe("draining");
+    expect(
+      virtualDiskState(
+        disk({ desired: "OFF", connected: false }),
+        vdisk({ removing: true, state: "removing" }),
+      ),
+    ).toBe("removing");
+  });
+
+  it("sizes are named the way Hetzner sells them", () => {
+    expect(vdiskSizeLabel("bx21")).toBe("5 TB");
+    expect(vdiskSizeLabel("bx99")).toBe("bx99");
   });
 });

@@ -70,6 +70,7 @@ export interface DiskInfo {
   model: string;
   size_bytes: number;
   is_loop: boolean;
+  is_virtual?: boolean;
   is_our_osd: boolean;
   foreign_ceph: boolean;
   ownership?: "ours" | "foreign" | "blank" | "unknown";
@@ -148,4 +149,22 @@ export interface Movement {
   eta_secs: number | null;
   inactive_pgs: number;
   total_pgs: number;
+}
+
+export interface VdiskInfo {
+  id: number;
+  disk_id: string;
+  node: string;
+  box_type: string;
+  size_gb: number;
+  ready: boolean;
+  removing: boolean;
+  state:
+    | "provisioning"
+    | "connecting"
+    | "connected"
+    | "offline"
+    | "removing"
+    | "error";
+  status: string;
 }
