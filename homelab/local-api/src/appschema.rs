@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use serde::Serialize;
-use serde_json::{json, Map, Value};
+use serde_json::{json, Value};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -78,20 +78,6 @@ impl AppSchema {
             .iter()
             .map(|(key, spec)| parse_output(key, spec))
             .collect()
-    }
-
-    pub fn with_defaults(&self, config: &Map<String, Value>) -> Map<String, Value> {
-        let mut filled = config.clone();
-        if let Some(props) = self.document["properties"]["config"]["properties"].as_object() {
-            for (name, spec) in props {
-                if let Some(default) = spec.get("default") {
-                    filled
-                        .entry(name.clone())
-                        .or_insert_with(|| default.clone());
-                }
-            }
-        }
-        filled
     }
 }
 
@@ -185,18 +171,6 @@ mod tests {
         assert_eq!(url.find_in("YOLAB_OUTPUT url_extra https://f"), None);
         assert_eq!(url.find_in("YOLAB_OUTPUT url "), None);
         assert_eq!(url.find_in("YOLAB_OUTPUT url"), None);
-    }
-
-    #[test]
-    fn a_saved_setting_wins_over_its_default() {
-        let app = explorer_app();
-        let saved = json!({ "file_explorer_enabled": false });
-        let filled = app.with_defaults(saved.as_object().unwrap());
-        assert_eq!(filled["file_explorer_enabled"], json!(false));
-        assert_eq!(
-            app.with_defaults(&Map::new())["file_explorer_enabled"],
-            json!(true)
-        );
     }
 
     #[test]
