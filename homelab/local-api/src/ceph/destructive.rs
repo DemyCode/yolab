@@ -301,9 +301,11 @@ mod tests {
         assert!(purge_safe(&lingering, proof).await.unwrap().is_none());
     }
 
-    const DUMP_OSD3_DOWN: &str = r#"{"osds":[{"osd":1,"up":1,"in":1},{"osd":3,"up":0,"in":0}],"pools":[]}"#;
+    const DUMP_OSD3_DOWN: &str =
+        r#"{"osds":[{"osd":1,"up":1,"in":1},{"osd":3,"up":0,"in":0}],"pools":[]}"#;
 
-    const DUMP_OSD3_UP: &str = r#"{"osds":[{"osd":1,"up":1,"in":1},{"osd":3,"up":1,"in":0}],"pools":[]}"#;
+    const DUMP_OSD3_UP: &str =
+        r#"{"osds":[{"osd":1,"up":1,"in":1},{"osd":3,"up":1,"in":0}],"pools":[]}"#;
 
     #[tokio::test]
     async fn purge_goes_to_the_mon_as_purge_actual_not_the_mgr_only_purge() {

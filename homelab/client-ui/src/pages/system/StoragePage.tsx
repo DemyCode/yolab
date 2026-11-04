@@ -404,7 +404,9 @@ function DiskRow({
             {disk.connected && disk.size_bytes > 0 && (
               <span className="font-normal text-fg-muted">
                 {" · "}
-                <span className="font-mono">{formatBytes(disk.size_bytes)}</span>
+                <span className="font-mono">
+                  {formatBytes(disk.size_bytes)}
+                </span>
               </span>
             )}
           </p>
