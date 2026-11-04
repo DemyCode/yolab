@@ -422,13 +422,7 @@ function DiskRow({
   }
 
   const lost = state === "missing" || state === "offline";
-  const Icon = lost
-    ? WifiOff
-    : vdisk
-      ? Cloud
-      : disk.is_loop
-        ? Cpu
-        : HardDrive;
+  const Icon = lost ? WifiOff : vdisk ? Cloud : disk.is_loop ? Cpu : HardDrive;
 
   return (
     <div className={cn("px-5 py-4", lost && "bg-danger-soft")}>
@@ -619,9 +613,9 @@ function AddVirtualDisk({
       <Collapse open={open}>
         <div className="space-y-3">
           <p className="text-sm text-fg-muted">
-            More space, stored in a Hetzner Storage Box. It is encrypted on
-            your machine before it leaves, so Hetzner only ever holds
-            unreadable data. Paid from your YoLab credit.
+            More space, stored in a Hetzner Storage Box. It is encrypted on your
+            machine before it leaves, so Hetzner only ever holds unreadable
+            data. Paid from your YoLab credit.
           </p>
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
             {VDISK_SIZES.map((s) => (
@@ -798,9 +792,7 @@ function DisksSection({
           )}
         </>
       )}
-      {disks && (
-        <AddVirtualDisk nodes={storageNodes} onChanged={onChanged} />
-      )}
+      {disks && <AddVirtualDisk nodes={storageNodes} onChanged={onChanged} />}
     </Section>
   );
 }
