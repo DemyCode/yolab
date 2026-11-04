@@ -125,9 +125,7 @@ VARIANTS = {
             "config.email_server_port": "587",
         }
     ],
-    "navidrome": [
-        {"config.music_path": "Music/My Library"}
-    ],
+    "navidrome": [{"config.music_path": "Music/My Library"}],
     "movies-tv": [
         {
             "config.download_client": "existing",

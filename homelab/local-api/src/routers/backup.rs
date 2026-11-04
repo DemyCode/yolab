@@ -380,8 +380,7 @@ async fn run_set<H: Host>(
         }
     }
 
-    let (snapshot_id, services) =
-        snapshot_cluster(b, cfg, &pinned, target, run_id).await?;
+    let (snapshot_id, services) = snapshot_cluster(b, cfg, &pinned, target, run_id).await?;
 
     let repo = cfg.restic_repo("cluster-backup");
     cfg.unlock(&b.host, "cluster-backup").await;

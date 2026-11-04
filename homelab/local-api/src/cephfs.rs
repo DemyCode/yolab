@@ -189,7 +189,10 @@ mod tests {
                 .ok("ceph osd pool create", "")
                 .ok("ceph osd pool set", "")
                 .ok("ceph fs new", "")
-                .ok("ceph fs subvolumegroup ls", r#"[{"name": "csi"}, {"name": "files"}]"#);
+                .ok(
+                    "ceph fs subvolumegroup ls",
+                    r#"[{"name": "csi"}, {"name": "files"}]"#,
+                );
             ensure(&host).await.unwrap();
             assert!(host.ran("ceph osd pool create yolab-fs-data0 32 32"));
             assert!(!host.ran("ceph osd pool create yolab-fs-metadata"));

@@ -167,7 +167,9 @@ export function FilesPathWidget(props: WidgetProps) {
         value={typeof value === "string" ? value : ""}
         placeholder={placeholder}
         disabled={disabled || readonly}
-        onChange={(e) => onChange(e.target.value === "" ? undefined : e.target.value)}
+        onChange={(e) =>
+          onChange(e.target.value === "" ? undefined : e.target.value)
+        }
         className="flex-1 font-mono"
       />
     </div>

@@ -7,8 +7,8 @@ use tower_http::cors::{Any, CorsLayer};
 
 use crate::auth::auth_middleware;
 use crate::routers::{
-    apps, backups, ceph as ceph_api, ceph_join, custom_app, disks, logs, nodes, reboot,
-    rebuild, status, store, update,
+    apps, backups, ceph as ceph_api, ceph_join, custom_app, disks, logs, nodes, reboot, rebuild,
+    status, store, update,
 };
 use crate::{auth, heal, mesh, notify, runtime, topology, AppState};
 

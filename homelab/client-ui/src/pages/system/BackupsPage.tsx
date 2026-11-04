@@ -141,8 +141,8 @@ export function BackupsPage() {
       )}
 
       <p className="max-w-lg text-sm text-fg-muted">
-        Every app is copied with its own data, encrypted, to storage outside your
-        home. Open one to back it up now or bring it back as it was.
+        Every app is copied with its own data, encrypted, to storage outside
+        your home. Open one to back it up now or bring it back as it was.
       </p>
 
       <Collapse open={Boolean(error)} className="pt-6">

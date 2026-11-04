@@ -6,11 +6,7 @@ import { Page } from "@/components/AppShell";
 import { AppAccess } from "@/components/AppAccess";
 import { AppIconTile } from "@/components/AppIcon";
 import { RestoreData } from "@/components/RestoreData";
-import {
-  NO_CHOICES,
-  choicesFor,
-  type RestoreChoices,
-} from "@/lib/restore";
+import { NO_CHOICES, choicesFor, type RestoreChoices } from "@/lib/restore";
 import { useRestorePlan } from "@/lib/useRestorePlan";
 import { useRestorePoints } from "@/lib/useRestorePoints";
 import { useNow } from "@/lib/useNow";

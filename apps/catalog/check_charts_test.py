@@ -2121,7 +2121,9 @@ class FilesRules(unittest.TestCase):
 
     def test_a_files_claim_that_would_get_a_new_empty_volume_is_refused(self):
         found = self.files(
-            self.claim(storageClassName="yolab-cephfs"), self.volume(), self.deployment()
+            self.claim(storageClassName="yolab-cephfs"),
+            self.volume(),
+            self.deployment(),
         )
         self.assertTrue(any("storageClassName" in f for f in found), found)
 
@@ -2568,6 +2570,7 @@ class Composable(unittest.TestCase):
 
 class PackRendered(RenderedChart):
     CHART = "movies-tv"
+
     def named(self, docs, kind, name):
         return next(
             d for d in docs if d["kind"] == kind and d["metadata"]["name"] == name
@@ -2628,7 +2631,9 @@ class PackRendered(RenderedChart):
         )
 
     def test_only_the_apps_that_use_files_mount_it_inside_the_pack(self):
-        pods = self.deployments(self.docs({"prowlarr.config.file_explorer_enabled": "true"}))
+        pods = self.deployments(
+            self.docs({"prowlarr.config.file_explorer_enabled": "true"})
+        )
         mounted = {
             pod
             for pod, spec in pods.items()
@@ -2773,7 +2778,9 @@ class ServarrRendered(RenderedChart):
             self.env(self.radarr(), "configure")["ROOT_FOLDER"], "/files/movies"
         )
         spec = self.radarr({"config.movies_path": "media/Films"})
-        self.assertEqual(self.env(spec, "configure")["ROOT_FOLDER"], "/files/media/Films")
+        self.assertEqual(
+            self.env(spec, "configure")["ROOT_FOLDER"], "/files/media/Films"
+        )
         dirs = next(c for c in spec["initContainers"] if c["name"] == "files-dirs")
         self.assertIn('mkdir -p "/files/media/Films"', dirs["command"][2])
         self.assertEqual(dirs["securityContext"]["runAsUser"], 1000)
@@ -2830,7 +2837,6 @@ class NavidromeFiles(RenderedChart):
         )
 
 
-
 class ExplorerSeesFiles(RenderedChart):
     CHART = "sonarr"
 
@@ -2852,8 +2858,10 @@ class ExplorerSeesFiles(RenderedChart):
             [{"path": s["path"], "name": s["name"]} for s in sources],
         )
 
+
 class PackReadyToUse(RenderedChart):
     CHART = "movies-tv"
+
     def pods(self, extra=None):
         return self.deployments(self.docs(extra))
 
