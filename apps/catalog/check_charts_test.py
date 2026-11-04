@@ -805,6 +805,49 @@ class GatewayUpstream(RenderedChart):
         self.assertRegex(caddy, r"reverse_proxy \S+\n")
 
 
+class VaultwardenAdmin(RenderedChart):
+    CHART = "vaultwarden"
+
+    def vaultwarden(self):
+        return self.deployments(self.docs())["vaultwarden"]
+
+    def admin_secret_ref(self, container):
+        c = next(c for c in self.vaultwarden()["containers"] if c["name"] == container)
+        ref = next(e for e in c["env"] if e["name"] == "ADMIN_TOKEN")
+        return ref["valueFrom"]["secretKeyRef"]
+
+    def test_nobody_can_sign_up_or_be_invited_by_another_user(self):
+        env = self.env(self.vaultwarden(), "vaultwarden")
+        self.assertEqual(env["SIGNUPS_ALLOWED"], "false")
+        self.assertEqual(env["INVITATIONS_ALLOWED"], "false")
+
+    def test_the_admin_page_opens_with_the_password_chosen_at_setup(self):
+        ref = self.admin_secret_ref("vaultwarden")
+        secret = next(
+            d
+            for d in self.docs()
+            if d["kind"] == "Secret" and d["metadata"]["name"] == ref["name"]
+        )
+        self.assertEqual(
+            secret["stringData"][ref["key"]],
+            check_charts.LINT_VALUES["config.admin_password"],
+        )
+        self.assertEqual(self.admin_secret_ref("invite-admin"), ref)
+
+    def test_the_email_given_at_setup_is_the_one_invited(self):
+        env = self.env(self.vaultwarden(), "invite-admin")
+        self.assertEqual(
+            env["ADMIN_EMAIL"], check_charts.LINT_VALUES["config.admin_email"]
+        )
+
+    def test_without_an_email_the_chart_refuses_to_render(self):
+        text, err = check_charts.render(
+            self.chart, self.library, self.tmp.name, {"config.admin_email": ""}
+        )
+        self.assertIsNone(text)
+        self.assertIn("config.admin_email is required", err)
+
+
 def env_part_failures(*containers):
     found = []
     check_charts.check_env_parts(

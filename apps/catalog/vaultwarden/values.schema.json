@@ -8,7 +8,25 @@
     "config": {
       "title": "Vaultwarden",
       "type": "object",
+      "required": [
+        "admin_email",
+        "admin_password"
+      ],
       "properties": {
+        "admin_email": {
+          "type": "string",
+          "title": "Your email",
+          "format": "email",
+          "description": "Only this address can create an account at first. Nobody can sign up on their own: you add everyone else from the admin page at <your address>/admin."
+        },
+        "admin_password": {
+          "type": "string",
+          "title": "Admin page password",
+          "minLength": 12,
+          "writeOnly": true,
+          "generate": true,
+          "description": "Opens the admin page at <your address>/admin, where you invite people by email. An invited person then creates their account with that same email."
+        },
         "yolab_enabled": {
           "type": "boolean",
           "title": "YoLab address",
@@ -227,6 +245,15 @@
       "type": "object",
       "readOnly": true,
       "properties": {
+        "admin_email": {
+          "type": "string",
+          "title": "Invited first"
+        },
+        "admin_password": {
+          "type": "string",
+          "title": "Admin page password",
+          "format": "secret"
+        },
         "url": {
           "type": "string",
           "title": "Web URL",

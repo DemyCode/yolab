@@ -9,6 +9,15 @@
 {{ include "yolab-common.uninstallHook" . }}
 ---
 apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Release.Name }}-admin
+  namespace: {{ .Release.Namespace }}
+type: Opaque
+stringData:
+  admin_password: {{ required "config.admin_password is required" .Values.config.admin_password | quote }}
+---
+apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: {{ .Release.Name }}-data
@@ -81,6 +90,60 @@ spec:
         env:
         - name: ROCKET_ADDRESS
           value: '::'
+        - name: SIGNUPS_ALLOWED
+          value: "false"
+        - name: INVITATIONS_ALLOWED
+          value: "false"
+        - name: ADMIN_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: {{ .Release.Name }}-admin
+              key: admin_password
+        volumeMounts:
+        - name: data
+          mountPath: /data
+          subPath: {{ .Release.Name }}/vaultwarden
+      - name: invite-admin
+        image: {{ include "yolab-common.image.wgRegister" . }}
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        args:
+        - |
+          set -eu
+          until curl -sf -o /dev/null http://localhost:80/alive; do sleep 2; done
+          if [ ! -f /data/yolab-admin-invited ]; then
+            code=$(curl -s -o /dev/null -D /tmp/login -w '%{http_code}' --data-urlencode "token=$ADMIN_TOKEN" http://localhost:80/admin)
+            if [ "$code" != 200 ]; then
+              echo "the admin page refused the admin password: HTTP $code" >&2
+              exit 1
+            fi
+            session=$(sed -n 's/^[Ss]et-[Cc]ookie: VW_ADMIN=\([^;]*\).*/\1/p' /tmp/login | tr -d '\r')
+            if [ -z "$session" ]; then
+              echo "the admin page opened no session" >&2
+              exit 1
+            fi
+            body=$(jq -n --arg email "$ADMIN_EMAIL" '{email: $email}')
+            code=$(curl -s -o /tmp/invite -w '%{http_code}' -H "Cookie: VW_ADMIN=$session" -H 'Content-Type: application/json' -d "$body" http://localhost:80/admin/invite)
+            case "$code" in
+              200|409) touch /data/yolab-admin-invited ;;
+              *)
+                echo "inviting $ADMIN_EMAIL failed: HTTP $code $(cat /tmp/invite)" >&2
+                exit 1
+                ;;
+            esac
+          fi
+          printf 'YOLAB_OUTPUT admin_email %s\nYOLAB_OUTPUT admin_password %s\n' "$ADMIN_EMAIL" "$ADMIN_TOKEN"
+          exec sleep infinity
+        env:
+        - name: ADMIN_EMAIL
+          value: {{ required "config.admin_email is required" .Values.config.admin_email | quote }}
+        - name: ADMIN_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: {{ .Release.Name }}-admin
+              key: admin_password
         volumeMounts:
         - name: data
           mountPath: /data
