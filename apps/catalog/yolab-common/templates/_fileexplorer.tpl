@@ -215,7 +215,7 @@ data:
               - folderPath: "/"
                 viewable: true
         {{- if eq (include "yolab-common.files.enabled" .) "true" }}
-        - path: /srv/files
+        - path: {{ include "yolab-common.files.mountPath" . }}
           name: "Files"
           config:
             defaultEnabled: true
@@ -294,7 +294,7 @@ data:
     {{- end }}
     {{- if eq (include "yolab-common.files.enabled" .) "true" }}
     - name: files
-      mountPath: /srv/files
+      mountPath: {{ include "yolab-common.files.mountPath" . }}
       readOnly: {{ eq (include "yolab-common.fileExplorer.readOnly" .) "true" }}
     {{- end }}
 {{- if eq (include "yolab-common.fileExplorer.tor" .) "true" }}

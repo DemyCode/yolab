@@ -1506,14 +1506,32 @@ def files_path_fields(schema):
     return config_fields(schema, lambda prop: prop.get("format") == "files-path")
 
 
+def list_item_fields(schema):
+    found = set()
+
+    def walk(node, in_item):
+        if isinstance(node, dict):
+            if in_item:
+                found.update((node.get("properties") or {}).keys())
+            for key, v in node.items():
+                walk(v, in_item or key == "items")
+        elif isinstance(node, list):
+            for v in node:
+                walk(v, in_item)
+
+    walk((schema.get("properties") or {}).get("config") or {}, False)
+    return found
+
+
 def check_files_path_fields(app, schema, fail):
+    in_lists = list_item_fields(schema)
     for name in sorted(config_fields(schema, lambda p: p.get("format") == "folder")):
         fail(app, f"config.{name} is a folder field; folders are gone, use files-path")
     for name, prop in sorted(files_path_fields(schema).items()):
         where = f"config.{name}"
         if prop.get("type") != "string":
             fail(app, f"{where} is a Files path but not a string")
-        if not prop.get("default"):
+        if not prop.get("default") and name not in in_lists:
             fail(app, f"{where} needs a default place in Files the person can change")
         if prop.get("pattern") != FILES_PATH_PATTERN:
             fail(app, f"{where} needs the Files path pattern {FILES_PATH_PATTERN}")
@@ -1798,6 +1816,17 @@ def check_pack(chart_dir, charts, library_tgz, workdir, fail):
     wanted = uses_files(
         yaml.safe_load(values_path.read_text()) if values_path.exists() else {}
     )
+    if not wanted:
+        for member in members:
+            member_values = Path(HERE, member, "values.yaml")
+            if member_values.exists() and uses_files(
+                yaml.safe_load(member_values.read_text())
+            ):
+                fail(
+                    app,
+                    f"{member} uses Files, so the pack must set yolab.files: true "
+                    f"to give its apps one shared Files",
+                )
     for extra in [{}, *VARIANTS.get(app, [])]:
         where = app if not extra else f"{app} ({extra})"
         rendered, err = render(chart_dir, library_tgz, workdir, extra)
@@ -1979,6 +2008,7 @@ def main(argv):
                 continue
             check(app, enabled_docs, fail, text, schema)
             check_file_explorer(app, enabled_docs, fail)
+            check_files(app, enabled_docs, uses_files(values), fail)
             ways, err = render(chart_dir, library_tgz, tmp, EXPLORER_WAYS_ON)
             if ways is None:
                 fail(

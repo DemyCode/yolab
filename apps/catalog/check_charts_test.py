@@ -2048,6 +2048,30 @@ class FilesRules(unittest.TestCase):
         )
         self.assertIn("default place", found[0])
 
+    def test_a_path_in_a_list_row_takes_its_default_from_the_list(self):
+        row = {
+            "type": "string",
+            "format": "files-path",
+            "title": "In Files",
+            "pattern": check_charts.FILES_PATH_PATTERN,
+        }
+        schema = {
+            "properties": {
+                "config": {
+                    "properties": {
+                        "libraries": {
+                            "type": "array",
+                            "default": [{"path": "movies"}],
+                            "items": {"type": "object", "properties": {"path": row}},
+                        }
+                    }
+                }
+            }
+        }
+        self.assertEqual(
+            self.collect(check_charts.check_files_path_fields, "x", schema), []
+        )
+
     def test_a_path_field_without_the_files_pattern_is_refused(self):
         found = self.collect(
             check_charts.check_files_path_fields, "x", self.field(pattern=".*")
@@ -2603,6 +2627,21 @@ class PackRendered(RenderedChart):
             [("PersistentVolume", "default.files"), ("PersistentVolumeClaim", "files")],
         )
 
+    def test_only_the_apps_that_use_files_mount_it_inside_the_pack(self):
+        pods = self.deployments(self.docs({"prowlarr.config.file_explorer_enabled": "true"}))
+        mounted = {
+            pod
+            for pod, spec in pods.items()
+            if any(v["name"] == "files" for v in spec.get("volumes") or [])
+        }
+        self.assertIn("sonarr-gateway", mounted)
+        self.assertIn("jellyfin-gateway", mounted)
+        self.assertNotIn("prowlarr-gateway", mounted)
+        for c in pods["prowlarr-gateway"]["containers"]:
+            self.assertNotIn(
+                "files", [m["name"] for m in c.get("volumeMounts") or []], c["name"]
+            )
+
     def test_the_arrs_send_downloads_to_the_packs_own_qbittorrent(self):
         docs = self.docs()
         pods = self.deployments(docs)
@@ -2790,6 +2829,28 @@ class NavidromeFiles(RenderedChart):
             self.env(spec, "navidrome")["ND_MUSICFOLDER"], "/files/Music/My Library"
         )
 
+
+
+class ExplorerSeesFiles(RenderedChart):
+    CHART = "sonarr"
+
+    def test_the_file_explorer_shows_files_at_the_same_path_as_the_app(self):
+        docs = self.docs(check_charts.EXPLORER_ENABLED)
+        spec = self.deployments(docs)["gateway"]
+        explorer = next(c for c in spec["containers"] if c["name"] == "file-explorer")
+        mount = next(m for m in explorer["volumeMounts"] if m["name"] == "files")
+        self.assertEqual(mount["mountPath"], "/files")
+        self.assertNotIn("subPath", mount)
+        config = next(
+            d
+            for d in docs
+            if d["kind"] == "ConfigMap" and "config.yaml" in (d.get("data") or {})
+        )
+        sources = yaml.safe_load(config["data"]["config.yaml"])["server"]["sources"]
+        self.assertIn(
+            {"path": "/files", "name": "Files"},
+            [{"path": s["path"], "name": s["name"]} for s in sources],
+        )
 
 class PackReadyToUse(RenderedChart):
     CHART = "movies-tv"

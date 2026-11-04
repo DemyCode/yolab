@@ -39,7 +39,9 @@ annotations:
 {{- $cfg := deepCopy ($values.config | default dict) -}}
 {{- range $key, $value := $config }}{{ if not (kindIs "invalid" $value) }}{{ $_ := set $cfg $key $value }}{{ end }}{{ end -}}
 {{- $yolab := deepCopy ($values.yolab | default dict) -}}
+{{- $ownFiles := $yolab.files -}}
 {{- range $key, $value := ($root.Values.yolab | default dict) }}{{ $_ := set $yolab $key $value }}{{ end -}}
+{{- $_ := set $yolab "files" (and $ownFiles (($root.Values.yolab).files) | default false) -}}
 {{- $_ := set $yolab "serviceName" "" -}}
 {{- with (($root.Values.yolab).serviceName) }}{{ $_ := set $yolab "serviceName" (printf "%s-%s" . $name) }}{{ end -}}
 {{- $_ := set $values "config" $cfg -}}
