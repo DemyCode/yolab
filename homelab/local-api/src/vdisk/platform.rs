@@ -143,9 +143,7 @@ mod tests {
             .respond_with(ResponseTemplate::new(404))
             .mount(&server)
             .await;
-        delete(&Client::new(), &tunnel(&server), 3)
-            .await
-            .unwrap();
+        delete(&Client::new(), &tunnel(&server), 3).await.unwrap();
     }
 
     #[tokio::test]
