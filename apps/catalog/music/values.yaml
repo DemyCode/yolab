@@ -3,11 +3,11 @@ global:
 
 config:
   subdomain: music
-  music_folder: ""
   download_client: new
   listen_anywhere: true
   manage_anywhere: true
 
 yolab:
+  files: true
   platformApiUrl: ""
   serviceName: ""

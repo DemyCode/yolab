@@ -24,7 +24,8 @@ spec:
   resources:
     requests:
       storage: {{ $cfg.storage_size | default "100Gi" | quote }}
-{{ include "yolab-stack.ownFolderClaim" (list . $cfg.music_folder) }}
+---
+{{ include "yolab-common.files" . }}
 ---
 apiVersion: v1
 kind: Service
@@ -57,6 +58,7 @@ spec:
     spec:
       initContainers:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      {{- include "yolab-common.filesDirs" (list . (list $cfg.music_path)) | nindent 6 }}
       {{- include "yolab-stack.urlOutput" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
       {{- include "yolab-common.privateAccessInit" . | nindent 6 }}
@@ -69,11 +71,7 @@ spec:
         imagePullPolicy: IfNotPresent
         env:
           - name: ND_MUSICFOLDER
-            {{- if $cfg.music_folder }}
-            value: {{ trimSuffix "/" (printf "/data/%s/%s" $cfg.music_folder ($cfg.music_path | default "")) | quote }}
-            {{- else }}
-            value: "/music"
-            {{- end }}
+            value: {{ include "yolab-common.files.path" (list . $cfg.music_path) | quote }}
           - name: ND_DATAFOLDER
             value: "/data"
         readinessProbe:
@@ -85,21 +83,10 @@ spec:
           - name: data
             mountPath: /data
             subPath: {{ .Release.Name }}/navidrome
-          - name: data
-            mountPath: /music
-            subPath: {{ .Release.Name }}/music
-          {{- with $cfg.music_folder }}
-          - name: folder
-            mountPath: /data/{{ . }}
-            readOnly: true
-          {{- end }}
+          {{- include "yolab-common.filesMount" $ | nindent 10 }}
       volumes:
       {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
       {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}
-      {{- with $cfg.music_folder }}
-      - name: folder
-        persistentVolumeClaim:
-          claimName: folder-{{ . }}
-      {{- end }}
+      {{- include "yolab-common.filesVolume" $ | nindent 6 }}
 {{- end -}}

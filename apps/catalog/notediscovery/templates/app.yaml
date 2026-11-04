@@ -36,24 +36,8 @@ spec:
   resources:
     requests:
       storage: {{ $cfg.storage_size | default "10Gi" | quote }}
-{{- with $cfg.notes_folder }}
 ---
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: folder-{{ . }}
-  namespace: {{ $.Release.Namespace }}
-  labels:
-    yolab.io/folder: {{ . | quote }}
-spec:
-  accessModes:
-    - ReadWriteMany
-  storageClassName: ""
-  volumeName: {{ $.Release.Namespace }}.folder-{{ . }}
-  resources:
-    requests:
-      storage: 1Gi
-{{- end }}
+{{ include "yolab-common.files" $ }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -77,18 +61,7 @@ spec:
       {{- include "yolab-common.printOutputs" (list . (dict "password" (dict "secret" (printf "%s-secrets" .Release.Name) "key" "password"))) | nindent 6 }}
       {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
       {{- include "yolab-common.privateAccessInit" . | nindent 6 }}
-      {{- with $cfg.notes_folder }}
-      - name: notes-dir
-        image: ghcr.io/gamosoft/notediscovery:0.31.7@sha256:13e3566146428db028ec0cfb3e0c0db6dc87b53cc475d19aefc2e2e6d1b37cc2
-        imagePullPolicy: IfNotPresent
-        securityContext:
-          runAsUser: 1000
-          runAsGroup: 1000
-        command: ["mkdir", "-p", {{ trimSuffix "/" (printf "/data/%s/%s" . ($cfg.notes_path | default "")) | quote }}]
-        volumeMounts:
-        - name: folder
-          mountPath: /data/{{ . }}
-      {{- end }}
+      {{- include "yolab-common.filesDirs" (list . (list $cfg.notes_path)) | nindent 6 }}
       containers:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
@@ -112,10 +85,8 @@ spec:
             secretKeyRef:
               name: {{ .Release.Name }}-secrets
               key: session_key
-        {{- with $cfg.notes_folder }}
         - name: NOTES_DIR
-          value: {{ trimSuffix "/" (printf "/data/%s/%s" . ($cfg.notes_path | default "")) | quote }}
-        {{- end }}
+          value: {{ include "yolab-common.files.path" (list . $cfg.notes_path) | quote }}
         ports:
         - containerPort: 8000
         readinessProbe:
@@ -130,16 +101,9 @@ spec:
         - name: data
           mountPath: /app/data
           subPath: '{{ .Release.Name }}/data'
-        {{- with $cfg.notes_folder }}
-        - name: folder
-          mountPath: /data/{{ . }}
-        {{- end }}
+        {{- include "yolab-common.filesMount" $ | nindent 8 }}
       volumes:
       {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
       {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}
-      {{- with $cfg.notes_folder }}
-      - name: folder
-        persistentVolumeClaim:
-          claimName: folder-{{ . }}
-      {{- end }}
+      {{- include "yolab-common.filesVolume" $ | nindent 6 }}

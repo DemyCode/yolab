@@ -21,7 +21,8 @@ spec:
   resources:
     requests:
       storage: {{ .Values.config.storage_size | default "50Gi" | quote }}
-{{ include "yolab-stack.ownFolderClaim" (list . .Values.config.media_folder) }}
+---
+{{ include "yolab-common.files" . }}
 ---
 apiVersion: v1
 kind: Service
@@ -54,6 +55,7 @@ spec:
     spec:
       initContainers:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      {{- include "yolab-common.filesDirs" (list . (list .Values.config.shows_path)) | nindent 6 }}
       {{- include "yolab-stack.urlOutput" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
       containers:
@@ -80,20 +82,10 @@ spec:
           - name: data
             mountPath: /config
             subPath: {{ .Release.Name }}/config
-          - name: data
-            mountPath: /media
-            subPath: media
-          {{- with .Values.config.media_folder }}
-          - name: folder
-            mountPath: /data/{{ . }}
-          {{- end }}
-      {{- include "yolab-stack.servarr" (list . (dict "app" "sonarr" "port" 8989 "api" "v3" "library" "tv" "category" "tvCategory" "configSubPath" (printf "%s/config" .Release.Name))) | nindent 6 }}
+          {{- include "yolab-common.filesMount" $ | nindent 10 }}
+      {{- include "yolab-stack.servarr" (list . (dict "app" "sonarr" "port" 8989 "api" "v3" "root" .Values.config.shows_path "category" "tvCategory" "configSubPath" (printf "%s/config" .Release.Name))) | nindent 6 }}
       volumes:
       {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
-      {{- with .Values.config.media_folder }}
-      - name: folder
-        persistentVolumeClaim:
-          claimName: folder-{{ . }}
-      {{- end }}
+      {{- include "yolab-common.filesVolume" $ | nindent 6 }}
 {{- end -}}

@@ -2,6 +2,7 @@ config:
   subdomain: bazarr
   storage_size: 10Gi
 yolab:
+  files: true
   platformApiUrl: ''
   accountToken: ''
   serviceName: ''

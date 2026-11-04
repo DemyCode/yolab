@@ -9,20 +9,13 @@
       "title": "Navidrome",
       "type": "object",
       "properties": {
-        "music_folder": {
-          "type": "string",
-          "title": "Music folder",
-          "format": "folder",
-          "default": "",
-          "pattern": "^([a-z0-9]([a-z0-9-]*[a-z0-9])?)?$",
-          "description": "A shared space that Navidrome plays, at /data/<folder>. Navidrome only reads it. Leave it empty to keep your music inside Navidrome."
-        },
         "music_path": {
           "type": "string",
-          "title": "Inside the folder",
-          "default": "",
-          "pattern": "^([A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*)?$",
-          "description": "Play only this part of the music folder, e.g. music. Leave it empty to play the whole folder."
+          "title": "Music in Files",
+          "format": "files-path",
+          "default": "music",
+          "pattern": "^[A-Za-z0-9_ -][A-Za-z0-9._ -]*(/[A-Za-z0-9_ -][A-Za-z0-9._ -]*)*$",
+          "description": "The music Navidrome plays. Files is the one space every app on your machines shares."
         },
         "yolab_enabled": {
           "type": "boolean",

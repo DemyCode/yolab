@@ -1,9 +1,11 @@
 
 config:
+  music_path: music
   subdomain: navidrome
   storage_size: 100Gi
 
 yolab:
+  files: true
   platformApiUrl: ""
   accountToken: ""
   serviceName: ""

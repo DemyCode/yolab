@@ -9,13 +9,13 @@
       "title": "qBittorrent",
       "type": "object",
       "properties": {
-        "media_folder": {
+        "downloads_path": {
           "type": "string",
-          "title": "Media folder",
-          "format": "folder",
-          "default": "",
-          "pattern": "^([a-z0-9]([a-z0-9-]*[a-z0-9])?)?$",
-          "description": "A shared space to download into, at /data/<folder>. Pick the same space as Sonarr, Radarr and your media server so finished downloads are moved instantly instead of copied. Leave it empty to keep downloads inside qBittorrent."
+          "title": "Downloads in Files",
+          "format": "files-path",
+          "default": "downloads",
+          "pattern": "^[A-Za-z0-9_ -][A-Za-z0-9._ -]*(/[A-Za-z0-9_ -][A-Za-z0-9._ -]*)*$",
+          "description": "Where finished downloads go. Files is the one space every app on your machines shares. Sonarr, Radarr and Lidarr pick them up from there."
         },
         "yolab_enabled": {
           "type": "boolean",

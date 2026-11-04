@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import subprocess
 import tempfile
 import unittest
@@ -964,35 +965,11 @@ class ImmichMachineLearning(RenderedChart):
         self.assertNotIn("resources", c)
 
 
-class ImmichPhotosFolder(RenderedChart):
+class ImmichFiles(RenderedChart):
     CHART = "immich"
 
-    def test_the_photo_library_lives_in_the_chosen_folder(self):
-        docs = self.docs({"config.photos_folder": "photos"})
-        claim = next(
-            d
-            for d in docs
-            if d["kind"] == "PersistentVolumeClaim"
-            and d["metadata"]["name"] == "folder-photos"
-        )
-        self.assertEqual(
-            claim["metadata"]["labels"][check_charts.FOLDER_LABEL], "photos"
-        )
-        server = self.deployments(docs)["immich-server"]
-        photos = next(v for v in server["volumes"] if v["name"] == "photos")
-        self.assertEqual(photos["persistentVolumeClaim"]["claimName"], "folder-photos")
-        container = server["containers"][0]
-        library = next(m for m in container["volumeMounts"] if m["name"] == "photos")
-        self.assertEqual(library["mountPath"], "/data/photos")
-        self.assertNotIn("subPath", library)
-        self.assertEqual(
-            self.env(server, "immich-server")["UPLOAD_LOCATION"], "/data/photos"
-        )
-
-    def test_without_a_folder_the_library_stays_on_the_apps_own_volume(self):
-        docs = self.docs()
-        server = self.deployments(docs)["immich-server"]
-        self.assertFalse(any(v["name"] == "photos" for v in server["volumes"]))
+    def test_photos_uploaded_to_immich_stay_in_its_own_data(self):
+        server = self.deployments(self.docs())["immich-server"]
         library = next(
             m
             for m in server["containers"][0]["volumeMounts"]
@@ -1001,6 +978,16 @@ class ImmichPhotosFolder(RenderedChart):
         self.assertEqual(library["name"], "data")
         self.assertEqual(library["subPath"], "release/uploads")
         self.assertNotIn("UPLOAD_LOCATION", self.env(server, "immich-server"))
+
+    def test_files_is_mounted_whole_so_a_library_there_can_be_added(self):
+        server = self.deployments(self.docs())["immich-server"]
+        files = next(v for v in server["volumes"] if v["name"] == "files")
+        self.assertEqual(files["persistentVolumeClaim"]["claimName"], "files")
+        mount = next(
+            m for m in server["containers"][0]["volumeMounts"] if m["name"] == "files"
+        )
+        self.assertEqual(mount["mountPath"], "/files")
+        self.assertNotIn("subPath", mount)
 
 
 class FrigateAcceleration(RenderedChart):
@@ -1959,7 +1946,7 @@ class OllamaEngine(RenderedChart):
         self.assertEqual(ollama["spec"]["selector"], {"app": "ollama"})
 
 
-class Folders(unittest.TestCase):
+class FilesRules(unittest.TestCase):
     def collect(self, fn, *args):
         found = []
         fn(*args, lambda app, msg: found.append(msg))
@@ -1968,33 +1955,64 @@ class Folders(unittest.TestCase):
     def field(self, **overrides):
         prop = {
             "type": "string",
-            "format": "folder",
-            "title": "Media folder",
-            "default": "",
-            "pattern": check_charts.FOLDER_PATTERN,
+            "format": "files-path",
+            "title": "Shows in Files",
+            "default": "shows",
+            "pattern": check_charts.FILES_PATH_PATTERN,
         }
         prop.update(overrides)
-        return {"properties": {"config": {"properties": {"media_folder": prop}}}}
+        return {"properties": {"config": {"properties": {"shows_path": prop}}}}
 
     def claim(self, **spec_overrides):
         spec = {
             "accessModes": ["ReadWriteMany"],
             "storageClassName": "",
-            "volumeName": f"default.folder-{check_charts.FOLDER_PROBE}",
+            "volumeName": "default.files",
         }
         spec.update(spec_overrides)
         return {
             "kind": "PersistentVolumeClaim",
             "metadata": {
-                "name": f"folder-{check_charts.FOLDER_PROBE}",
+                "name": "files",
                 "namespace": "default",
-                "labels": {check_charts.FOLDER_LABEL: check_charts.FOLDER_PROBE},
+                "labels": {check_charts.FILES_LABEL: "true"},
             },
             "spec": spec,
         }
 
+    def volume(self, **attribute_overrides):
+        attributes = {
+            "clusterID": "yolab",
+            "fsName": check_charts.FILES_FS,
+            "staticVolume": "true",
+            "rootPath": check_charts.FILES_ROOT,
+        }
+        attributes.update(attribute_overrides)
+        return {
+            "kind": "PersistentVolume",
+            "metadata": {
+                "name": "default.files",
+                "labels": {check_charts.FILES_LABEL: "true"},
+            },
+            "spec": {
+                "accessModes": ["ReadWriteMany"],
+                "persistentVolumeReclaimPolicy": "Retain",
+                "storageClassName": "",
+                "claimRef": {"namespace": "default", "name": "files"},
+                "csi": {
+                    "driver": check_charts.FILES_DRIVER,
+                    "volumeHandle": "default.files",
+                    "nodeStageSecretRef": {
+                        "name": check_charts.FILES_SECRET,
+                        "namespace": "ceph-csi",
+                    },
+                    "volumeAttributes": attributes,
+                },
+            },
+        }
+
     def deployment(self, **mount_overrides):
-        mount = {"name": "media", "mountPath": f"/data/{check_charts.FOLDER_PROBE}"}
+        mount = {"name": "files", "mountPath": check_charts.FILES_MOUNT}
         mount.update(mount_overrides)
         return {
             "kind": "Deployment",
@@ -2007,10 +2025,8 @@ class Folders(unittest.TestCase):
                         ],
                         "volumes": [
                             {
-                                "name": "media",
-                                "persistentVolumeClaim": {
-                                    "claimName": f"folder-{check_charts.FOLDER_PROBE}"
-                                },
+                                "name": "files",
+                                "persistentVolumeClaim": {"claimName": "files"},
                             }
                         ],
                     }
@@ -2018,24 +2034,40 @@ class Folders(unittest.TestCase):
             },
         }
 
-    def test_a_well_formed_folder_field_passes(self):
+    def files(self, *docs, wanted=True):
+        return self.collect(check_charts.check_files, "x", list(docs), wanted)
+
+    def test_a_well_formed_path_field_passes(self):
         self.assertEqual(
-            self.collect(check_charts.check_folder_fields, "x", self.field()), []
+            self.collect(check_charts.check_files_path_fields, "x", self.field()), []
         )
 
-    def test_a_folder_chosen_by_default_is_refused(self):
+    def test_a_path_field_without_a_default_place_is_refused(self):
         found = self.collect(
-            check_charts.check_folder_fields, "x", self.field(default="movies")
+            check_charts.check_files_path_fields, "x", self.field(default="")
         )
-        self.assertIn("must default to empty", found[0])
+        self.assertIn("default place", found[0])
 
-    def test_a_folder_field_without_the_name_pattern_is_refused(self):
+    def test_a_path_field_without_the_files_pattern_is_refused(self):
         found = self.collect(
-            check_charts.check_folder_fields, "x", self.field(pattern=".*")
+            check_charts.check_files_path_fields, "x", self.field(pattern=".*")
         )
         self.assertIn("pattern", found[0])
 
-    def test_folder_fields_are_found_behind_switches(self):
+    def test_a_leftover_folder_field_is_refused(self):
+        found = self.collect(
+            check_charts.check_files_path_fields, "x", self.field(format="folder")
+        )
+        self.assertIn("folders are gone", found[0])
+
+    def test_the_path_pattern_keeps_every_path_inside_files(self):
+        pattern = re.compile(check_charts.FILES_PATH_PATTERN)
+        for ok in ("shows", "Music/My Library", "media/tv-shows", "a.b"):
+            self.assertRegex(ok, pattern)
+        for bad in ("", "/shows", "../x", "a/../b", ".hidden", "a//b", "a/"):
+            self.assertNotRegex(bad, pattern)
+
+    def test_path_fields_are_found_behind_switches(self):
         schema = {
             "properties": {
                 "config": {
@@ -2044,9 +2076,9 @@ class Folders(unittest.TestCase):
                             "oneOf": [
                                 {
                                     "properties": {
-                                        "downloads": {
+                                        "downloads_path": {
                                             "type": "string",
-                                            "format": "folder",
+                                            "format": "files-path",
                                         }
                                     }
                                 }
@@ -2056,48 +2088,67 @@ class Folders(unittest.TestCase):
                 }
             }
         }
-        self.assertEqual(set(check_charts.folder_fields(schema)), {"downloads"})
-
-    def test_a_chart_that_mounts_the_whole_folder_at_data_passes(self):
-        docs = [self.claim(), self.deployment()]
         self.assertEqual(
-            self.collect(check_charts.check_folders, "x", "media_folder", docs), []
+            set(check_charts.files_path_fields(schema)), {"downloads_path"}
         )
 
-    def test_a_folder_claim_that_would_get_a_new_empty_volume_is_refused(self):
-        docs = [self.claim(storageClassName="yolab-cephfs"), self.deployment()]
-        found = self.collect(check_charts.check_folders, "x", "media_folder", docs)
+    def test_a_chart_that_mounts_all_of_files_at_files_passes(self):
+        self.assertEqual(self.files(self.claim(), self.volume(), self.deployment()), [])
+
+    def test_a_files_claim_that_would_get_a_new_empty_volume_is_refused(self):
+        found = self.files(
+            self.claim(storageClassName="yolab-cephfs"), self.volume(), self.deployment()
+        )
         self.assertTrue(any("storageClassName" in f for f in found), found)
 
-    def test_a_folder_claim_bound_to_another_apps_mount_is_refused(self):
-        docs = [self.claim(volumeName="yolab-other.folder-x"), self.deployment()]
-        found = self.collect(check_charts.check_folders, "x", "media_folder", docs)
+    def test_a_files_volume_pointing_anywhere_but_the_shared_directory_is_refused(self):
+        found = self.files(
+            self.claim(), self.volume(rootPath="/volumes/csi"), self.deployment()
+        )
+        self.assertTrue(any("rootPath" in f for f in found), found)
+
+    def test_a_files_claim_bound_to_another_apps_volume_is_refused(self):
+        found = self.files(
+            self.claim(volumeName="yolab-other.files"), self.volume(), self.deployment()
+        )
         self.assertTrue(any("volumeName" in f for f in found), found)
 
-    def test_a_folder_mounted_somewhere_else_than_data_is_refused(self):
-        docs = [self.claim(), self.deployment(mountPath="/media")]
-        found = self.collect(check_charts.check_folders, "x", "media_folder", docs)
-        self.assertTrue(any("/data/<folder>" in f for f in found), found)
+    def test_files_mounted_somewhere_else_is_refused(self):
+        found = self.files(
+            self.claim(), self.volume(), self.deployment(mountPath="/media")
+        )
+        self.assertTrue(any("every app must see the same paths" in f for f in found))
 
-    def test_a_folder_mounted_in_part_is_refused(self):
-        docs = [self.claim(), self.deployment(subPath="movies")]
-        found = self.collect(check_charts.check_folders, "x", "media_folder", docs)
+    def test_files_mounted_in_part_is_refused(self):
+        found = self.files(
+            self.claim(), self.volume(), self.deployment(subPath="movies")
+        )
         self.assertTrue(any("hardlinks" in f for f in found), found)
 
-    def test_a_chosen_folder_nobody_mounts_is_refused(self):
-        found = self.collect(
-            check_charts.check_folders, "x", "media_folder", [self.claim()]
-        )
+    def test_files_nobody_mounts_is_refused(self):
+        found = self.files(self.claim(), self.volume())
         self.assertTrue(any("no container mounts" in f for f in found), found)
 
-    def test_a_folder_claim_does_not_count_as_the_apps_own_volume(self):
+    def test_a_chart_that_asks_for_files_must_render_it(self):
+        found = self.files(self.deployment())
+        self.assertTrue(any("one PersistentVolume" in f for f in found), found)
+
+    def test_files_used_without_asking_for_it_is_refused(self):
+        found = self.files(self.claim(), self.volume(), self.deployment(), wanted=False)
+        self.assertTrue(any("yolab.files" in f for f in found), found)
+
+    def test_a_chart_without_files_needs_nothing(self):
+        self.assertEqual(self.files(wanted=False), [])
+
+    def test_the_files_claim_does_not_count_as_the_apps_own_volume(self):
         own = {
             "kind": "PersistentVolumeClaim",
             "metadata": {"name": "release-data"},
             "spec": {},
         }
-        self.assertTrue(check_charts.is_folder_claim(self.claim()))
-        self.assertFalse(check_charts.is_folder_claim(own))
+        self.assertTrue(check_charts.is_files_doc(self.claim()))
+        self.assertTrue(check_charts.is_files_doc(self.volume()))
+        self.assertFalse(check_charts.is_files_doc(own))
 
 
 class ImageArches(unittest.TestCase):
@@ -2411,7 +2462,7 @@ class PackMembers(unittest.TestCase):
             ("release-sonarr-data", "sonarr"),
             ("release-qbittorrent-uninstall", "qbittorrent"),
             ("release-keys", None),
-            ("folder-media", None),
+            ("files", None),
         ]:
             self.assertEqual(check_charts.member_of(name, self.MEMBERS), owner, name)
 
@@ -2428,14 +2479,21 @@ class PackMembers(unittest.TestCase):
         found = collected(check_charts.check_pack_render, "p", docs, [])
         self.assertTrue(any("twice" in f for f in found), found)
 
-    def test_something_no_app_owns_may_only_be_a_shared_secret_or_the_folder(self):
+    def test_something_no_app_owns_may_only_be_a_shared_secret_or_files(self):
         docs = [
             {"kind": "Secret", "metadata": {"name": "release-keys"}},
             {
                 "kind": "PersistentVolumeClaim",
                 "metadata": {
-                    "name": "folder-m",
-                    "labels": {check_charts.FOLDER_LABEL: "m"},
+                    "name": "files",
+                    "labels": {check_charts.FILES_LABEL: "true"},
+                },
+            },
+            {
+                "kind": "PersistentVolume",
+                "metadata": {
+                    "name": "default.files",
+                    "labels": {check_charts.FILES_LABEL: "true"},
                 },
             },
             {"kind": "ConfigMap", "metadata": {"name": "stray"}},
@@ -2486,11 +2544,6 @@ class Composable(unittest.TestCase):
 
 class PackRendered(RenderedChart):
     CHART = "movies-tv"
-    PROBE: ClassVar[dict] = {"config.media_folder": "media"}
-
-    def docs(self, extra=None):
-        return super().docs({**self.PROBE, **(extra or {})})
-
     def named(self, docs, kind, name):
         return next(
             d for d in docs if d["kind"] == kind and d["metadata"]["name"] == name
@@ -2538,14 +2591,17 @@ class PackRendered(RenderedChart):
         env = {e["name"]: e.get("value") for e in register["env"]}
         self.assertEqual(env["SERVICE_NAME"], "media-sonarr")
 
-    def test_the_apps_share_one_folder_claimed_once(self):
+    def test_the_apps_share_files_claimed_once_by_the_pack(self):
         docs = self.docs()
-        claims = [
-            d["metadata"]["name"]
+        shared = sorted(
+            (d["kind"], d["metadata"]["name"])
             for d in docs
-            if d["kind"] == "PersistentVolumeClaim" and check_charts.is_folder_claim(d)
-        ]
-        self.assertEqual(claims, ["folder-media"])
+            if check_charts.is_files_doc(d)
+        )
+        self.assertEqual(
+            shared,
+            [("PersistentVolume", "default.files"), ("PersistentVolumeClaim", "files")],
+        )
 
     def test_the_arrs_send_downloads_to_the_packs_own_qbittorrent(self):
         docs = self.docs()
@@ -2559,10 +2615,10 @@ class PackRendered(RenderedChart):
         password = {e["name"]: e.get("value") for e in login["env"]}["PASSWORD"]
         self.assertEqual(sonarr["DC_URL"], "http://qbittorrent:8080")
         self.assertEqual(sonarr["DC_PASSWORD"], password)
-        self.assertEqual(sonarr["ROOT_FOLDER"], "/data/media/tv")
+        self.assertEqual(sonarr["ROOT_FOLDER"], "/files/shows")
         self.assertEqual(
             self.env(pods["radarr-gateway"], "configure")["ROOT_FOLDER"],
-            "/data/media/movies",
+            "/files/movies",
         )
 
     def test_prowlarr_is_handed_the_keys_the_arrs_actually_run_with(self):
@@ -2673,8 +2729,27 @@ class ServarrRendered(RenderedChart):
         self.assertEqual(env["DC_URL"], check_charts.QBITTORRENT_LINK["internal_url"])
         self.assertEqual(env["CATEGORY_FIELD"], "movieCategory")
 
-    def test_without_a_folder_radarr_picks_no_library_for_you(self):
-        self.assertEqual(self.env(self.radarr(), "configure")["ROOT_FOLDER"], "")
+    def test_radarr_keeps_films_in_files_where_the_person_said(self):
+        self.assertEqual(
+            self.env(self.radarr(), "configure")["ROOT_FOLDER"], "/files/movies"
+        )
+        spec = self.radarr({"config.movies_path": "media/Films"})
+        self.assertEqual(self.env(spec, "configure")["ROOT_FOLDER"], "/files/media/Films")
+        dirs = next(c for c in spec["initContainers"] if c["name"] == "files-dirs")
+        self.assertIn('mkdir -p "/files/media/Films"', dirs["command"][2])
+        self.assertEqual(dirs["securityContext"]["runAsUser"], 1000)
+
+    def test_a_path_that_climbs_out_of_files_is_refused_by_the_chart(self):
+        for bad in ("../etc", "/etc", "a/../../etc"):
+            self.assertIsNone(
+                check_charts.render(
+                    self.chart,
+                    self.library,
+                    self.tmp.name,
+                    {"config.movies_path": bad},
+                )[0],
+                bad,
+            )
 
 
 class QbittorrentLogin(RenderedChart):
@@ -2691,7 +2766,7 @@ class QbittorrentLogin(RenderedChart):
         login = self.inits(check_charts.VARIANTS["qbittorrent"][0])["login"]
         env = {e["name"]: e.get("value") for e in login["env"]}
         self.assertEqual(env["PASSWORD"], "PlaceholderPw2026")
-        self.assertEqual(env["SAVE_PATH"], "/downloads")
+        self.assertEqual(env["SAVE_PATH"], "/files/downloads")
         self.assertEqual(env["PASSWORD_OUTPUT"], "password")
 
     def test_without_a_password_nothing_is_shown_for_it(self):
@@ -2702,37 +2777,33 @@ class QbittorrentLogin(RenderedChart):
         self.assertNotIn("login-off", chosen)
 
 
-class NavidromeFolder(RenderedChart):
+class NavidromeFiles(RenderedChart):
     CHART = "navidrome"
 
-    def test_a_chosen_folder_is_what_navidrome_plays(self):
+    def test_navidrome_plays_the_music_in_files_where_the_person_said(self):
+        spec = self.deployments(self.docs())["gateway"]
+        self.assertEqual(self.env(spec, "navidrome")["ND_MUSICFOLDER"], "/files/music")
         spec = self.deployments(self.docs(check_charts.VARIANTS["navidrome"][0]))[
             "gateway"
         ]
         self.assertEqual(
-            self.env(spec, "navidrome")["ND_MUSICFOLDER"], "/data/probe-folder/music"
+            self.env(spec, "navidrome")["ND_MUSICFOLDER"], "/files/Music/My Library"
         )
-
-    def test_without_a_folder_it_plays_its_own_music(self):
-        spec = self.deployments(self.docs())["gateway"]
-        self.assertEqual(self.env(spec, "navidrome")["ND_MUSICFOLDER"], "/music")
 
 
 class PackReadyToUse(RenderedChart):
     CHART = "movies-tv"
-    PROBE: ClassVar[dict] = {"config.media_folder": "media"}
-
     def pods(self, extra=None):
-        return self.deployments(self.docs({**self.PROBE, **(extra or {})}))
+        return self.deployments(self.docs(extra))
 
-    def test_jellyfin_is_set_up_with_a_library_for_each_part_of_the_folder(self):
+    def test_jellyfin_is_set_up_with_a_library_for_each_place_in_files(self):
         setup = self.env(self.pods()["jellyfin-gateway"], "setup")
-        self.assertEqual(setup["ROOT"], "/data/media")
+        self.assertEqual(setup["ROOT"], "/files")
         self.assertEqual(
             json.loads(setup["LIBRARIES"]),
             [
                 {"name": "Films", "kind": "movies", "path": "movies"},
-                {"name": "Shows", "kind": "tvshows", "path": "tv"},
+                {"name": "Shows", "kind": "tvshows", "path": "shows"},
             ],
         )
         self.assertEqual(len(setup["PASSWORD"]), 32)
@@ -2786,4 +2857,14 @@ class JellyfinSetup(RenderedChart):
         env = self.env(spec, "setup")
         self.assertEqual(env["PASSWORD"], "PlaceholderPw2026")
         self.assertEqual(env["USERNAME_OUTPUT"], "username")
-        self.assertEqual(env["ROOT"], "/media")
+        self.assertEqual(env["ROOT"], "/files")
+
+    def test_alone_it_offers_films_and_shows_in_files_and_makes_their_places(self):
+        spec = self.deployments(self.docs())["gateway"]
+        self.assertEqual(
+            [lib["path"] for lib in json.loads(self.env(spec, "setup")["LIBRARIES"])],
+            ["movies", "shows"],
+        )
+        dirs = next(c for c in spec["initContainers"] if c["name"] == "files-dirs")
+        self.assertIn('mkdir -p "/files/movies"', dirs["command"][2])
+        self.assertIn('mkdir -p "/files/shows"', dirs["command"][2])

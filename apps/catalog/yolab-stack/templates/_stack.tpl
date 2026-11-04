@@ -71,37 +71,6 @@ annotations:
 {{- end -}}
 
 
-{{- define "yolab-stack.folderClaim" -}}
-{{- $root := index . 0 -}}
-{{- $folder := index . 1 -}}
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: folder-{{ $folder }}
-  namespace: {{ $root.Release.Namespace }}
-  labels:
-    yolab.io/folder: {{ $folder | quote }}
-spec:
-  accessModes:
-    - ReadWriteMany
-  storageClassName: ""
-  volumeName: {{ $root.Release.Namespace }}.folder-{{ $folder }}
-  resources:
-    requests:
-      storage: 1Gi
-{{- end -}}
-
-
-{{- define "yolab-stack.ownFolderClaim" -}}
-{{- $ctx := index . 0 -}}
-{{- $folder := index . 1 -}}
-{{- if and (not $ctx.Member) $folder }}
----
-{{ include "yolab-stack.folderClaim" (list $ctx $folder) }}
-{{- end }}
-{{- end -}}
-
-
 {{- define "yolab-stack.servarrKeyEnv" -}}
 {{- $ctx := index . 0 -}}
 {{- $app := index . 1 -}}
@@ -154,7 +123,7 @@ upsert() {
     - name: API_VERSION
       value: {{ $p.api | quote }}
     - name: ROOT_FOLDER
-      value: {{ with $cfg.media_folder }}{{ printf "/data/%s/%s" . $p.library | quote }}{{ else }}""{{ end }}
+      value: {{ include "yolab-common.files.path" (list $ctx $p.root) | quote }}
     - name: CATEGORY_FIELD
       value: {{ $p.category | quote }}
     - name: CATEGORY
@@ -221,10 +190,7 @@ upsert() {
       mountPath: /config
       subPath: {{ $p.configSubPath | quote }}
       readOnly: true
-    {{- with $cfg.media_folder }}
-    - name: folder
-      mountPath: /data/{{ . }}
-    {{- end }}
+    {{- include "yolab-common.filesMount" $ctx | nindent 4 }}
 {{- end -}}
 
 

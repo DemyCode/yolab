@@ -3,6 +3,7 @@ config:
   hardware_acceleration: true
 gpu: {}
 yolab:
+  files: true
   fileExplorer:
     protect:
     - postgres

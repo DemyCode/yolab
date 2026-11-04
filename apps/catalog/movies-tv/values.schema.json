@@ -9,19 +9,9 @@
       "title": "Movies & TV",
       "type": "object",
       "required": [
-        "media_folder",
         "subdomain"
       ],
       "properties": {
-        "media_folder": {
-          "type": "string",
-          "title": "Media folder",
-          "format": "folder",
-          "default": "",
-          "minLength": 1,
-          "pattern": "^([a-z0-9]([a-z0-9-]*[a-z0-9])?)?$",
-          "description": "One folder for downloads and the library, at /data/<folder> in every app: qBittorrent downloads into downloads/, Sonarr moves shows into tv/ and Radarr films into movies/, and Jellyfin plays them. It stays when you uninstall."
-        },
         "subdomain": {
           "type": "string",
           "title": "Address",
@@ -172,7 +162,7 @@
                 "existing_client": {
                   "type": "object",
                   "title": "Which qBittorrent",
-                  "description": "Sonarr and Radarr send their downloads to it. Point it at the same media folder in its own settings.",
+                  "description": "Sonarr and Radarr send their downloads to it. Have it save finished downloads into Files, the one space every app on your machines shares.",
                   "properties": {
                     "internal_url": {
                       "type": "string",

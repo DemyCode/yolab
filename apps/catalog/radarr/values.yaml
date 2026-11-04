@@ -1,9 +1,11 @@
 
 config:
+  movies_path: movies
   subdomain: radarr
   storage_size: 50Gi
 
 yolab:
+  files: true
   platformApiUrl: ""
   accountToken: ""
   serviceName: ""

@@ -23,7 +23,8 @@ spec:
   resources:
     requests:
       storage: 50Gi
-{{ include "yolab-stack.ownFolderClaim" (list . .Values.config.media_folder) }}
+---
+{{ include "yolab-common.files" . }}
 ---
 apiVersion: v1
 kind: Service
@@ -62,6 +63,8 @@ spec:
       initContainers:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
       {{- include "yolab-stack.urlOutput" . | nindent 6 }}
+      {{- $dirs := list }}{{- range .Values.config.libraries }}{{- $dirs = append $dirs .path }}{{- end }}
+      {{- include "yolab-common.filesDirs" (list . $dirs) | nindent 6 }}
       {{- include "jellyfin.setupOff" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
       {{- include "yolab-common.privateAccessInit" . | nindent 6 }}
@@ -110,24 +113,13 @@ spec:
         - name: data
           mountPath: /config
           subPath: {{ .Release.Name }}/jellyfin/config
-        - name: data
-          mountPath: /media
-          subPath: {{ .Release.Name }}/jellyfin/media
         - name: yolab
           mountPath: /yolab
-        {{- with .Values.config.media_folder }}
-        - name: folder
-          mountPath: /data/{{ . }}
-          readOnly: true
-        {{- end }}
+        {{- include "yolab-common.filesMount" $ | nindent 8 }}
       {{- include "jellyfin.setup" . | nindent 6 }}
       volumes:
       {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
       {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}
-      {{- with .Values.config.media_folder }}
-      - name: folder
-        persistentVolumeClaim:
-          claimName: folder-{{ . }}
-      {{- end }}
+      {{- include "yolab-common.filesVolume" $ | nindent 6 }}
 {{- end -}}

@@ -3,7 +3,6 @@ global:
 
 config:
   subdomain: media
-  media_folder: ""
   download_client: new
   requests: true
   subtitles: true
@@ -14,5 +13,6 @@ config:
   manage_anywhere: true
 
 yolab:
+  files: true
   platformApiUrl: ""
   serviceName: ""

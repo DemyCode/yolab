@@ -20,24 +20,8 @@ spec:
   resources:
     requests:
       storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
-{{- with .Values.config.media_folder }}
 ---
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: folder-{{ . }}
-  namespace: {{ $.Release.Namespace }}
-  labels:
-    yolab.io/folder: {{ . | quote }}
-spec:
-  accessModes:
-    - ReadWriteMany
-  storageClassName: ""
-  volumeName: {{ $.Release.Namespace }}.folder-{{ . }}
-  resources:
-    requests:
-      storage: 1Gi
-{{- end }}
+{{ include "yolab-common.files" $ }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -58,6 +42,29 @@ spec:
     spec:
       initContainers:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      {{- include "yolab-common.filesDirs" (list . (list .Values.config.downloads_path)) | nindent 6 }}
+      - name: download-dir
+        image: {{ include "yolab-common.image.wgRegister" . }}
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: DOWNLOADS
+          value: {{ include "yolab-common.files.path" (list . .Values.config.downloads_path) | quote }}
+        command:
+        - /bin/sh
+        - -c
+        - |
+          set -eu
+          f=/config/settings.json
+          if [ -f "$f" ]; then
+            sed -i -E "s#(\"download-dir\": *)\"[^\"]*\"#\1\"$DOWNLOADS\"#; s#(\"incomplete-dir\": *)\"[^\"]*\"#\1\"$DOWNLOADS/.incomplete\"#" "$f"
+          else
+            printf '{\n    "download-dir": "%s",\n    "incomplete-dir": "%s/.incomplete"\n}\n' "$DOWNLOADS" "$DOWNLOADS" > "$f"
+          fi
+          chown 1000:1000 "$f"
+        volumeMounts:
+        - name: data
+          mountPath: /config
+          subPath: '{{ .Release.Name }}/data/config'
       {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
       {{- include "yolab-common.privateAccessInit" . | nindent 6 }}
       containers:
@@ -81,22 +88,12 @@ spec:
         - name: data
           mountPath: /config
           subPath: '{{ .Release.Name }}/data/config'
-        - name: data
-          mountPath: /downloads
-          subPath: '{{ .Release.Name }}/storage/downloads'
-        {{- with .Values.config.media_folder }}
-        - name: folder
-          mountPath: /data/{{ . }}
-        {{- end }}
+        {{- include "yolab-common.filesMount" $ | nindent 8 }}
       volumes:
       {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
       {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}
-      {{- with .Values.config.media_folder }}
-      - name: folder
-        persistentVolumeClaim:
-          claimName: folder-{{ . }}
-      {{- end }}
+      {{- include "yolab-common.filesVolume" $ | nindent 6 }}
 ---
 apiVersion: apps/v1
 kind: Deployment

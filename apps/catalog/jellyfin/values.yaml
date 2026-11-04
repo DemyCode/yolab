@@ -1,8 +1,16 @@
 config:
+  libraries:
+    - name: Films
+      kind: movies
+      path: movies
+    - name: Shows
+      kind: tvshows
+      path: shows
   subdomain: jellyfin
   hardware_transcoding: true
 gpu: {}
 yolab:
+  files: true
   platformApiUrl: ''
   accountToken: ''
   serviceName: ''

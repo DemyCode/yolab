@@ -3,6 +3,7 @@ config:
   storage_size: 10Gi
   node: ''
 yolab:
+  files: true
   platformApiUrl: ''
   accountToken: ''
   serviceName: ''

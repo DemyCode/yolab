@@ -1,5 +1,4 @@
 {{- $cfg := .Values.config -}}
-{{- $folder := $cfg.music_folder -}}
 {{- $keys := printf "%s-keys" .Release.Name -}}
 {{- $lidarrKey := include "yolab-stack.secret" (list . $keys "lidarr") -}}
 {{- $prowlarrKey := include "yolab-stack.secret" (list . $keys "prowlarr") -}}
@@ -23,20 +22,16 @@ stringData:
   lidarr: {{ $lidarrKey | quote }}
   prowlarr: {{ $prowlarrKey | quote }}
   qbittorrent: {{ $qbittorrentPassword | quote }}
-{{- with $folder }}
 ---
-{{ include "yolab-stack.folderClaim" (list $ .) }}
-{{- end }}
+{{ include "yolab-common.files" . }}
 ---
 {{ include "yolab-stack.member" (list . "navidrome" (dict
-      "music_folder" $folder
       "music_path" "music"
       "yolab_enabled" $cfg.listen_anywhere
       "stack_outputs_off" $off)) }}
 {{- if $newClient }}
 ---
 {{ include "yolab-stack.member" (list . "qbittorrent" (dict
-      "media_folder" $folder
       "yolab_enabled" $cfg.manage_anywhere
       "webui_password" $qbittorrentPassword
       "vpn_enabled" $cfg.vpn_enabled
@@ -46,7 +41,6 @@ stringData:
 {{- end }}
 ---
 {{ include "yolab-stack.member" (list . "lidarr" (dict
-      "media_folder" $folder
       "yolab_enabled" $cfg.manage_anywhere
       "api_key" $lidarrKey
       "download_client" $client)) }}

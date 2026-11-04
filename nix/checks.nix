@@ -414,6 +414,50 @@ in let
         touch $out
       '';
 
+    files-template-matches-the-cluster =
+      pkgs.runCommand "files-template-matches-the-cluster"
+      {
+        nativeBuildInputs = [pkgs.gnugrep];
+      }
+      ''
+        src=${treeSrc}/homelab/local-api/src
+        tpl=${treeSrc}/apps/catalog/yolab-common/templates/_files.tpl
+        const() {
+          sed -n "s/^pub\(([a-z]*)\)\? const $2: &str = \"\([^\"]*\)\";$/\2/p" "$src/$1"
+        }
+        group=$(const cephfs.rs FILES_GROUP)
+        owner=$(const cephfs.rs FILES_OWNER)
+        fs=$(const cephfs.rs FS_NAME)
+        driver=$(const csi.rs DRIVER)
+        cluster=$(const csi.rs CLUSTER_ID)
+        secret=$(const csi.rs STATIC_SECRET)
+        status=0
+        for value in "$group" "$owner" "$fs" "$driver" "$cluster" "$secret"; do
+          if [ -z "$value" ]; then
+            echo "a Files constant could not be read from homelab/local-api/src" >&2
+            exit 1
+          fi
+        done
+        for line in \
+          "rootPath: /volumes/$group" \
+          "fsName: $fs" \
+          "driver: $driver" \
+          "clusterID: $cluster" \
+          "name: $secret" \
+          "runAsUser: $owner" \
+          "runAsGroup: $owner"; do
+          if ! grep -qF "$line" "$tpl"; then
+            echo "apps/catalog/yolab-common/templates/_files.tpl lacks '$line'," >&2
+            echo "which is what homelab/local-api/src makes the shared Files directory with." >&2
+            status=1
+          fi
+        done
+        if [ "$status" -ne 0 ]; then
+          exit 1
+        fi
+        touch $out
+      '';
+
     host-seam-ratchet = let
       budget = {
         "boot/mod.rs" = 2;

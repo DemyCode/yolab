@@ -1,7 +1,9 @@
 config:
+  notes_path: notes
   subdomain: notediscovery
   storage_size: 10Gi
 yolab:
+  files: true
   platformApiUrl: ''
   accountToken: ''
   serviceName: ''

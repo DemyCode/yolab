@@ -9,14 +9,6 @@
       "title": "Plex",
       "type": "object",
       "properties": {
-        "media_folder": {
-          "type": "string",
-          "title": "Media folder",
-          "format": "folder",
-          "default": "",
-          "pattern": "^([a-z0-9]([a-z0-9-]*[a-z0-9])?)?$",
-          "description": "A shared space that Plex shows, at /data/<folder>. Plex only reads it. Leave it empty to keep your media inside Plex."
-        },
         "yolab_enabled": {
           "type": "boolean",
           "title": "YoLab address",

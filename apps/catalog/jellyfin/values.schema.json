@@ -9,14 +9,6 @@
       "title": "Jellyfin",
       "type": "object",
       "properties": {
-        "media_folder": {
-          "type": "string",
-          "title": "Media folder",
-          "format": "folder",
-          "default": "",
-          "pattern": "^([a-z0-9]([a-z0-9-]*[a-z0-9])?)?$",
-          "description": "A shared space that Jellyfin shows, at /data/<folder>. Jellyfin only reads it. Leave it empty to keep your media inside Jellyfin."
-        },
         "yolab_enabled": {
           "type": "boolean",
           "title": "YoLab address",
@@ -39,8 +31,19 @@
         "libraries": {
           "type": "array",
           "title": "Libraries",
-          "default": [],
-          "description": "Libraries Jellyfin adds once it is set up, each a part of the media folder. The ones you add in Jellyfin yourself are left alone.",
+          "default": [
+            {
+              "name": "Films",
+              "kind": "movies",
+              "path": "movies"
+            },
+            {
+              "name": "Shows",
+              "kind": "tvshows",
+              "path": "shows"
+            }
+          ],
+          "description": "Libraries Jellyfin adds once it is set up, each a place in Files, the one space every app on your machines shares. The ones you add in Jellyfin yourself are left alone.",
           "items": {
             "type": "object",
             "required": [
@@ -83,8 +86,9 @@
               },
               "path": {
                 "type": "string",
-                "title": "Inside the media folder",
-                "pattern": "^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$"
+                "title": "In Files",
+                "format": "files-path",
+                "pattern": "^[A-Za-z0-9_ -][A-Za-z0-9._ -]*(/[A-Za-z0-9_ -][A-Za-z0-9._ -]*)*$"
               }
             }
           }

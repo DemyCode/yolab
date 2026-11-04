@@ -23,7 +23,8 @@ spec:
   resources:
     requests:
       storage: {{ .Values.config.storage_size | default "10Gi" | quote }}
-{{ include "yolab-stack.ownFolderClaim" (list . .Values.config.media_folder) }}
+---
+{{ include "yolab-common.files" . }}
 ---
 apiVersion: v1
 kind: Service
@@ -56,6 +57,7 @@ spec:
     spec:
       initContainers:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      {{- include "yolab-common.filesDirs" (list . (list .Values.config.music_path)) | nindent 6 }}
       {{- include "yolab-stack.urlOutput" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
       {{- include "yolab-common.privateAccessInit" . | nindent 6 }}
@@ -81,21 +83,11 @@ spec:
         - name: data
           mountPath: /config
           subPath: '{{ .Release.Name }}/data/config'
-        - name: data
-          mountPath: /downloads
-          subPath: '{{ .Release.Name }}/storage/downloads'
-        {{- with .Values.config.media_folder }}
-        - name: folder
-          mountPath: /data/{{ . }}
-        {{- end }}
-      {{- include "yolab-stack.servarr" (list . (dict "app" "lidarr" "port" 8686 "api" "v1" "library" "music" "category" "musicCategory" "configSubPath" (printf "%s/data/config" .Release.Name))) | nindent 6 }}
+        {{- include "yolab-common.filesMount" $ | nindent 8 }}
+      {{- include "yolab-stack.servarr" (list . (dict "app" "lidarr" "port" 8686 "api" "v1" "root" .Values.config.music_path "category" "musicCategory" "configSubPath" (printf "%s/data/config" .Release.Name))) | nindent 6 }}
       volumes:
       {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
       {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}
-      {{- with .Values.config.media_folder }}
-      - name: folder
-        persistentVolumeClaim:
-          claimName: folder-{{ . }}
-      {{- end }}
+      {{- include "yolab-common.filesVolume" $ | nindent 6 }}
 {{- end -}}

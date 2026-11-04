@@ -13,7 +13,7 @@
     - name: LIBRARIES
       value: {{ $cfg.libraries | default list | toJson | quote }}
     - name: ROOT
-      value: {{ with $cfg.media_folder }}{{ printf "/data/%s" . | quote }}{{ else }}"/media"{{ end }}
+      value: {{ include "yolab-common.files.mountPath" . | quote }}
     - name: USERNAME_OUTPUT
       value: {{ include "yolab-stack.outputKey" (list . "username") | quote }}
     - name: PASSWORD_OUTPUT
@@ -84,15 +84,7 @@
       echo "jellyfin is set up"
       while :; do sleep 3600; done
   volumeMounts:
-    - name: data
-      mountPath: /media
-      subPath: {{ .Release.Name }}/jellyfin/media
-      readOnly: true
-    {{- with $cfg.media_folder }}
-    - name: folder
-      mountPath: /data/{{ . }}
-      readOnly: true
-    {{- end }}
+    {{- include "yolab-common.filesMount" $ | nindent 4 }}
 {{- end }}
 {{- end -}}
 

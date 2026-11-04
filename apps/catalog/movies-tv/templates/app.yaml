@@ -1,5 +1,4 @@
 {{- $cfg := .Values.config -}}
-{{- $folder := $cfg.media_folder -}}
 {{- $keys := printf "%s-keys" .Release.Name -}}
 {{- $sonarrKey := include "yolab-stack.secret" (list . $keys "sonarr") -}}
 {{- $radarrKey := include "yolab-stack.secret" (list . $keys "radarr") -}}
@@ -35,24 +34,20 @@ stringData:
   prowlarr: {{ $prowlarrKey | quote }}
   qbittorrent: {{ $qbittorrentPassword | quote }}
   jellyfin: {{ $jellyfinPassword | quote }}
-{{- with $folder }}
 ---
-{{ include "yolab-stack.folderClaim" (list $ .) }}
-{{- end }}
+{{ include "yolab-common.files" . }}
 ---
 {{ include "yolab-stack.member" (list . "jellyfin" (dict
-      "media_folder" $folder
       "yolab_enabled" $cfg.watch_anywhere
       "hardware_transcoding" $cfg.hardware_transcoding
       "admin_password" $jellyfinPassword
       "libraries" (list
         (dict "name" "Films" "kind" "movies" "path" "movies")
-        (dict "name" "Shows" "kind" "tvshows" "path" "tv"))
+        (dict "name" "Shows" "kind" "tvshows" "path" "shows"))
       "stack_outputs_off" $off)) }}
 {{- if $newClient }}
 ---
 {{ include "yolab-stack.member" (list . "qbittorrent" (dict
-      "media_folder" $folder
       "yolab_enabled" $cfg.manage_anywhere
       "webui_password" $qbittorrentPassword
       "vpn_enabled" $cfg.vpn_enabled
@@ -62,13 +57,11 @@ stringData:
 {{- end }}
 ---
 {{ include "yolab-stack.member" (list . "sonarr" (dict
-      "media_folder" $folder
       "yolab_enabled" $cfg.manage_anywhere
       "api_key" $sonarrKey
       "download_client" $client)) }}
 ---
 {{ include "yolab-stack.member" (list . "radarr" (dict
-      "media_folder" $folder
       "yolab_enabled" $cfg.manage_anywhere
       "api_key" $radarrKey
       "download_client" $client)) }}
@@ -89,7 +82,6 @@ stringData:
 {{- if $cfg.subtitles }}
 ---
 {{ include "yolab-stack.member" (list . "bazarr" (dict
-      "media_folder" $folder
       "yolab_enabled" $cfg.manage_anywhere
       "subtitle_languages" $cfg.subtitle_languages
       "sonarr" $sonarr

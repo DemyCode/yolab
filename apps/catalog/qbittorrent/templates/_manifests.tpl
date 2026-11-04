@@ -7,7 +7,7 @@
     - name: PASSWORD
       value: {{ $cfg.webui_password | quote }}
     - name: SAVE_PATH
-      value: {{ with $cfg.media_folder }}{{ printf "/data/%s/downloads" . | quote }}{{ else }}"/downloads"{{ end }}
+      value: {{ include "yolab-common.files.path" (list . $cfg.downloads_path) | quote }}
     - name: USERNAME_OUTPUT
       value: {{ include "yolab-stack.outputKey" (list . "username") | quote }}
     - name: PASSWORD_OUTPUT
@@ -64,13 +64,7 @@
 - name: data
   mountPath: /config
   subPath: {{ .Release.Name }}/config
-- name: data
-  mountPath: /downloads
-  subPath: {{ .Release.Name }}/downloads
-{{- with .Values.config.media_folder }}
-- name: folder
-  mountPath: /data/{{ . }}
-{{- end }}
+{{- include "yolab-common.filesMount" $ | nindent 0 }}
 {{- end -}}
 
 
@@ -94,15 +88,6 @@
     periodSeconds: 10
   volumeMounts:
     {{- include "qbittorrent.mounts" . | nindent 4 }}
-{{- end -}}
-
-
-{{- define "qbittorrent.folderVolume" -}}
-{{- with .Values.config.media_folder }}
-- name: folder
-  persistentVolumeClaim:
-    claimName: folder-{{ . }}
-{{- end }}
 {{- end -}}
 
 
@@ -136,7 +121,8 @@ spec:
   resources:
     requests:
       storage: {{ $cfg.storage_size | default "200Gi" | quote }}
-{{ include "yolab-stack.ownFolderClaim" (list . $cfg.media_folder) }}
+---
+{{ include "yolab-common.files" . }}
 ---
 apiVersion: v1
 kind: Service
@@ -169,6 +155,7 @@ spec:
     spec:
       initContainers:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      {{- include "yolab-common.filesDirs" (list . (list .Values.config.downloads_path)) | nindent 6 }}
       {{- include "yolab-stack.urlOutput" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
       {{- if and $cfg.webui_password (not $vpn) }}
@@ -186,7 +173,7 @@ spec:
       volumes:
       {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
-      {{- include "qbittorrent.folderVolume" . | nindent 6 }}
+      {{- include "yolab-common.filesVolume" . | nindent 6 }}
 {{- if $vpn }}
 ---
 apiVersion: v1
@@ -255,6 +242,6 @@ spec:
       - name: data
         persistentVolumeClaim:
           claimName: {{ .Release.Name }}-data
-      {{- include "qbittorrent.folderVolume" . | nindent 6 }}
+      {{- include "yolab-common.filesVolume" . | nindent 6 }}
 {{- end }}
 {{- end -}}

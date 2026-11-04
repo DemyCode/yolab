@@ -24,7 +24,8 @@ spec:
   resources:
     requests:
       storage: {{ $cfg.storage_size | default "10Gi" | quote }}
-{{ include "yolab-stack.ownFolderClaim" (list . $cfg.media_folder) }}
+---
+{{ include "yolab-common.files" . }}
 ---
 apiVersion: v1
 kind: Service
@@ -81,21 +82,11 @@ spec:
         - name: data
           mountPath: /config
           subPath: '{{ .Release.Name }}/data/config'
-        - name: data
-          mountPath: /downloads
-          subPath: '{{ .Release.Name }}/storage/downloads'
-        {{- with $cfg.media_folder }}
-        - name: folder
-          mountPath: /data/{{ . }}
-        {{- end }}
+        {{- include "yolab-common.filesMount" $ | nindent 8 }}
       {{- include "bazarr.configure" . | nindent 6 }}
       volumes:
       {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
       {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}
-      {{- with $cfg.media_folder }}
-      - name: folder
-        persistentVolumeClaim:
-          claimName: folder-{{ . }}
-      {{- end }}
+      {{- include "yolab-common.filesVolume" $ | nindent 6 }}
 {{- end -}}
