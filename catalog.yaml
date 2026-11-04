@@ -645,7 +645,7 @@ charts:
   - name: valorgrid
     version: "0.1.13"
   - name: vaultwarden
-    version: "0.1.27"
+    version: "0.1.29"
   - name: vert
     version: "0.1.13"
   - name: vikunja
