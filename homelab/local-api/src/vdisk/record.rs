@@ -53,13 +53,6 @@ pub fn disk_id(id: i64) -> String {
     format!("{DISK_ID_PREFIX}{id}")
 }
 
-pub fn parse_disk_id(disk_id: &str) -> Option<i64> {
-    disk_id
-        .strip_prefix(DISK_ID_PREFIX)
-        .and_then(|n| n.parse::<i64>().ok())
-        .filter(|n| *n > 0)
-}
-
 pub fn file_bytes(size_gb: u64) -> u64 {
     let usable = size_gb * 1_000_000_000 / 100 * USABLE_PERCENT;
     usable / ALIGN * ALIGN
@@ -178,12 +171,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_disk_id_round_trips_and_nothing_else_parses_as_one() {
-        assert_eq!(parse_disk_id(&disk_id(42)), Some(42));
-        assert_eq!(parse_disk_id("serial-wwn-0x5"), None);
-        assert_eq!(parse_disk_id("vdisk-"), None);
-        assert_eq!(parse_disk_id("vdisk--3"), None);
-        assert_eq!(parse_disk_id("system"), None);
+    fn a_virtual_disks_id_names_its_disk_and_its_crush_host_alike() {
+        assert_eq!(disk_id(42), "vdisk-42");
+        assert_eq!(crush_bucket(42), disk_id(42));
     }
 
     #[test]
