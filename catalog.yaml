@@ -241,7 +241,7 @@ charts:
   - name: hortusfox
     version: "0.1.13"
   - name: immich
-    version: "0.2.25"
+    version: "0.2.26"
   - name: influxdb
     version: "0.1.14"
   - name: influxdb2
