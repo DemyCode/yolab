@@ -2752,8 +2752,13 @@ class ServarrRendered(RenderedChart):
         claims = [
             d["metadata"]["name"] for d in docs if d["kind"] == "PersistentVolumeClaim"
         ]
-        self.assertEqual(claims, ["release-data"])
-        claim = docs[[d["kind"] for d in docs].index("PersistentVolumeClaim")]
+        self.assertEqual(claims, ["release-data", check_charts.FILES_CLAIM])
+        claim = next(
+            d
+            for d in docs
+            if d["kind"] == "PersistentVolumeClaim"
+            and d["metadata"]["name"] == "release-data"
+        )
         self.assertNotIn("annotations", claim["metadata"])
 
     def test_without_a_key_of_its_own_radarr_keeps_the_one_it_made(self):
