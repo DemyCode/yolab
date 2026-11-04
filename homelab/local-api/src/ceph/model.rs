@@ -17,6 +17,14 @@ pub struct OsdDumpEntry {
     pub up: bool,
     #[serde(rename = "in", deserialize_with = "flag")]
     pub is_in: bool,
+    #[serde(default)]
+    pub up_from: Option<i64>,
+}
+
+impl OsdDumpEntry {
+    pub fn never_booted(&self) -> bool {
+        self.up_from == Some(0)
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
@@ -185,6 +193,23 @@ mod tests {
     fn osd_dump_parses_up_in_and_pools() {
         let d: OsdDump = serde_json::from_str(DUMP).unwrap();
         assert_eq!(d.down(), BTreeSet::from([1]));
+    }
+
+    #[test]
+    fn only_an_osd_with_up_from_zero_has_never_booted() {
+        let raw = r#"{"osds":[
+            {"osd":0,"up":1,"in":1,"up_from":12},
+            {"osd":2,"up":0,"in":1,"up_from":0},
+            {"osd":3,"up":0,"in":1}
+        ],"pools":[]}"#;
+        let d: OsdDump = serde_json::from_str(raw).unwrap();
+        let never: Vec<i64> = d
+            .osds
+            .iter()
+            .filter(|e| e.never_booted())
+            .map(|e| e.osd)
+            .collect();
+        assert_eq!(never, vec![2]);
     }
 
     #[test]

@@ -13,6 +13,7 @@ pub fn is_destructive(bin: &str, args: &[&str]) -> bool {
         "ceph" => matches!(
             w.as_slice(),
             ["osd", "purge", ..]
+                | ["osd", "purge-actual", ..]
                 | ["osd", "destroy", ..]
                 | ["osd", "lost", ..]
                 | ["osd", "rm", ..]
@@ -94,13 +95,40 @@ pub async fn purge_safe<H: Host>(
     purge(host, proof.osd).await
 }
 
+pub const DOWN_POLLS: u32 = 30;
+
+const DOWN_POLL_EVERY: std::time::Duration = std::time::Duration::from_secs(1);
+
 async fn purge<H: Host>(host: &H, osd: i64) -> Result<Option<Purged>, CmdError> {
     let door = Door(());
     let id = format!("osd.{osd}");
-    host.ceph_destructive(&door, &["osd", "purge", &id, "--yes-i-really-mean-it"])
-        .await?;
+    wait_until_down(host, osd).await?;
+    host.ceph_destructive(
+        &door,
+        &["osd", "purge-actual", &id, "--yes-i-really-mean-it"],
+    )
+    .await?;
     let still = host.osd_ids().await?;
     Ok((!still.contains(&osd)).then_some(Purged { osd }))
+}
+
+async fn wait_until_down<H: Host>(host: &H, osd: i64) -> Result<(), CmdError> {
+    for attempt in 0..DOWN_POLLS {
+        let dump = host.osd_dump().await?;
+        if dump.osds.iter().all(|e| e.osd != osd || !e.up) {
+            return Ok(());
+        }
+        if attempt + 1 < DOWN_POLLS {
+            tokio::time::sleep(DOWN_POLL_EVERY).await;
+        }
+    }
+    Err(CmdError::Failed {
+        cmd: format!("ceph osd purge-actual osd.{osd}"),
+        kind: Failure::Busy,
+        stderr: format!(
+            "osd.{osd} is still up in the osdmap after {DOWN_POLLS} checks — it must be down before it is purged"
+        ),
+    })
 }
 
 #[derive(Debug)]
@@ -254,7 +282,8 @@ mod tests {
                 "ceph osd safe-to-destroy osd.3",
                 r#"{"safe_to_destroy":[3]}"#,
             )
-            .ok("ceph osd purge osd.3", "")
+            .ok("ceph osd dump", DUMP_OSD3_DOWN)
+            .ok("ceph osd purge-actual osd.3", "")
             .ok("ceph osd ls", "[1,2]");
         let proof = safe_to_destroy(&gone, 3).await.unwrap().unwrap();
         let receipt = purge_safe(&gone, proof).await.unwrap();
@@ -265,10 +294,77 @@ mod tests {
                 "ceph osd safe-to-destroy osd.3",
                 r#"{"safe_to_destroy":[3]}"#,
             )
-            .ok("ceph osd purge osd.3", "")
+            .ok("ceph osd dump", DUMP_OSD3_DOWN)
+            .ok("ceph osd purge-actual osd.3", "")
             .ok("ceph osd ls", "[1,2,3]");
         let proof = safe_to_destroy(&lingering, 3).await.unwrap().unwrap();
         assert!(purge_safe(&lingering, proof).await.unwrap().is_none());
+    }
+
+    const DUMP_OSD3_DOWN: &str = r#"{"osds":[{"osd":1,"up":1,"in":1},{"osd":3,"up":0,"in":0}],"pools":[]}"#;
+
+    const DUMP_OSD3_UP: &str = r#"{"osds":[{"osd":1,"up":1,"in":1},{"osd":3,"up":1,"in":0}],"pools":[]}"#;
+
+    #[tokio::test]
+    async fn purge_goes_to_the_mon_as_purge_actual_not_the_mgr_only_purge() {
+        let host = FakeHost::new()
+            .ok(
+                "ceph osd safe-to-destroy osd.3",
+                r#"{"safe_to_destroy":[3]}"#,
+            )
+            .ok("ceph osd dump", DUMP_OSD3_DOWN)
+            .ok("ceph osd purge", "")
+            .ok("ceph osd ls", "[1,2]");
+        let proof = safe_to_destroy(&host, 3).await.unwrap().unwrap();
+        purge_safe(&host, proof).await.unwrap();
+        assert!(host.ran("ceph osd purge-actual osd.3 --yes-i-really-mean-it"));
+        assert!(!host.ran("ceph osd purge osd.3"));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn purge_waits_for_the_mon_to_see_the_stopped_osd_down() {
+        let host = FakeHost::new()
+            .ok(
+                "ceph osd safe-to-destroy osd.3",
+                r#"{"safe_to_destroy":[3]}"#,
+            )
+            .ok("ceph osd dump", DUMP_OSD3_UP)
+            .ok("ceph osd dump", DUMP_OSD3_DOWN)
+            .ok("ceph osd purge-actual osd.3", "")
+            .ok("ceph osd ls", "[1,2]");
+        let proof = safe_to_destroy(&host, 3).await.unwrap().unwrap();
+        assert!(purge_safe(&host, proof).await.unwrap().is_some());
+        let dumps = host
+            .calls()
+            .iter()
+            .filter(|c| c.starts_with("ceph osd dump"))
+            .count();
+        assert_eq!(dumps, 2);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_osd_the_mon_still_sees_up_is_never_purged() {
+        let host = FakeHost::new()
+            .ok(
+                "ceph osd safe-to-destroy osd.3",
+                r#"{"safe_to_destroy":[3]}"#,
+            )
+            .ok("ceph osd dump", DUMP_OSD3_UP)
+            .ok("ceph osd purge-actual osd.3", "")
+            .ok("ceph osd ls", "[1,2]");
+        let proof = safe_to_destroy(&host, 3).await.unwrap().unwrap();
+        let err = purge_safe(&host, proof).await.unwrap_err();
+        assert_eq!(err.failure(), Some(Failure::Busy));
+        assert!(err.to_string().contains("still up"));
+        assert!(!host.ran("purge-actual"));
+    }
+
+    #[test]
+    fn purge_actual_is_a_destructive_command() {
+        assert!(is_destructive(
+            "ceph",
+            &["osd", "purge-actual", "osd.3", "--yes-i-really-mean-it"]
+        ));
     }
 
     #[tokio::test]

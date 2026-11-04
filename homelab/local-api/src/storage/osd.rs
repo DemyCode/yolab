@@ -91,6 +91,21 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn osd_activate_never_restarts_an_osd_the_disks_reconciler_stopped_for_removal() {
+        let host = FakeHost::new()
+            .ok("ceph-volume lvm list", &listing())
+            .ok("ceph fsid", OURS)
+            .ok("ceph osd ls", "[1,4]")
+            .ok("systemctl show -p ActiveState --value", "inactive")
+            .ok("systemctl start", "");
+        crate::disks_reconciler::hold_stopped_for_removal(4);
+        run(&host).await.unwrap();
+        crate::disks_reconciler::release_stopped_for_removal(4);
+        assert!(host.ran("systemctl start yolab-ceph-osd@1.service"));
+        assert!(!host.ran("systemctl start yolab-ceph-osd@4.service"));
+    }
+
+    #[tokio::test]
     async fn a_running_osd_is_left_alone() {
         let host = FakeHost::new()
             .ok("ceph-volume lvm list", &listing())

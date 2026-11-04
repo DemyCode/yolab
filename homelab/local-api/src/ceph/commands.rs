@@ -95,6 +95,10 @@ static SIGS: &[Sig] = &[
     sig(&["osd", "destroy"], OSD_REMOVAL),
     sig(&["osd", "purge"], OSD_REMOVAL),
     sig(
+        &["osd", "purge-actual"],
+        &[req("id", Osd), opt("yes_i_really_mean_it", Bool)],
+    ),
+    sig(
         &["osd", "lost"],
         &[req("id", Osd), opt("yes_i_really_mean_it", Bool)],
     ),
@@ -477,6 +481,10 @@ mod tests {
         assert_eq!(
             sent(&["osd", "metadata", "7", "-f", "json"]),
             json!({"prefix": "osd metadata", "id": 7, "format": "json"})
+        );
+        assert_eq!(
+            sent(&["osd", "purge-actual", "osd.3", "--yes-i-really-mean-it"]),
+            json!({"prefix": "osd purge-actual", "id": 3, "yes_i_really_mean_it": true})
         );
         assert_eq!(
             mon_command(&["osd", "purge", "*", "--yes-i-really-mean-it"]),

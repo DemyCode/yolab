@@ -65,6 +65,34 @@ static PROGRESS: std::sync::LazyLock<std::sync::Mutex<HashMap<String, DiskProgre
 static CREATING: std::sync::LazyLock<std::sync::Mutex<std::collections::HashSet<String>>> =
     std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashSet::new()));
 
+static STOPPED_FOR_REMOVAL: std::sync::LazyLock<std::sync::Mutex<std::collections::HashSet<i64>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashSet::new()));
+
+fn stopped_for_removal() -> std::sync::MutexGuard<'static, std::collections::HashSet<i64>> {
+    STOPPED_FOR_REMOVAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+pub(crate) fn is_stopped_for_removal(osd_id: i64) -> bool {
+    stopped_for_removal().contains(&osd_id)
+}
+
+#[cfg(test)]
+pub(crate) fn hold_stopped_for_removal(osd_id: i64) {
+    stopped_for_removal().insert(osd_id);
+}
+
+#[cfg(test)]
+pub(crate) fn release_stopped_for_removal(osd_id: i64) {
+    stopped_for_removal().remove(&osd_id);
+}
+
+async fn keep_running<H: Host>(host: &H, osd_id: i64) {
+    stopped_for_removal().remove(&osd_id);
+    ensure_osd_unit_running(host, osd_id).await;
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Ownership {
     Ours,
@@ -565,7 +593,12 @@ struct OsdState {
     reweight: f64,
     kb: u64,
     up: bool,
+    in_crush: bool,
+    never_booted: bool,
 }
+
+const FIRST_START_MESSAGE: &str = "Starting for the first time. Ceph measures the disk's speed \
+     before it takes any data, which can take many minutes on a slow disk such as a USB stick.";
 
 fn decide_steer(
     want_on: bool,
@@ -577,7 +610,7 @@ fn decide_steer(
     want_copies: Option<u32>,
 ) -> Steer {
     if want_on {
-        let set_weight = if state.crush_weight == 0.0 {
+        let set_weight = if state.in_crush && state.crush_weight == 0.0 {
             let weight = weight_tib_from(state.kb, size_bytes);
             (weight > 0.0).then_some(weight)
         } else {
@@ -585,6 +618,8 @@ fn decide_steer(
         };
         let (phase, message) = if state.up {
             (Phase::Active, String::new())
+        } else if state.never_booted {
+            (Phase::Creating, FIRST_START_MESSAGE.to_string())
         } else {
             (
                 Phase::Retrying,
@@ -730,7 +765,7 @@ async fn reconcile_local_osds<H: Host + 'static>(
             continue;
         }
         if let Some(&osd_id) = disk_to_osd.get(disk_id) {
-            ensure_osd_unit_running(host, osd_id).await;
+            keep_running(host, osd_id).await;
         }
     }
 
@@ -760,6 +795,21 @@ async fn reconcile_local_osds<H: Host + 'static>(
         .filter_map(|n| n["id"].as_i64())
         .collect();
 
+    let never_booted: std::collections::HashSet<i64> = host
+        .osd_dump()
+        .await
+        .ok_or_warn(
+            "reconcile: `ceph osd dump` did not answer — a first start shows as a retry this tick",
+        )
+        .map(|d| {
+            d.osds
+                .iter()
+                .filter(|e| e.never_booted())
+                .map(|e| e.osd)
+                .collect()
+        })
+        .unwrap_or_default();
+
     let mut osd_state: HashMap<i64, (f64, f64, u64)> = HashMap::new();
     for n in &crush_nodes {
         if n["type"].as_str() != Some("osd") {
@@ -785,6 +835,7 @@ async fn reconcile_local_osds<H: Host + 'static>(
             }
             continue;
         };
+        let in_crush = osd_state.contains_key(&osd_id);
         let (crush_weight, reweight, kb) = osd_state.get(&osd_id).copied().unwrap_or((0.0, 1.0, 0));
         let osd = format!("osd.{osd_id}");
 
@@ -793,6 +844,8 @@ async fn reconcile_local_osds<H: Host + 'static>(
             reweight,
             kb,
             up: osd_state_up.contains(&osd_id),
+            in_crush,
+            never_booted: never_booted.contains(&osd_id),
         };
         let steer = decide_steer(
             want_on,
@@ -807,27 +860,26 @@ async fn reconcile_local_osds<H: Host + 'static>(
         let mut applied = true;
         if let Some(weight) = steer.set_weight {
             tracing::info!("{osd} ({disk_id}): crush_weight=0 — setting weight={weight:.5}");
-            if host
+            if let Err(e) = host
                 .ceph(&["osd", "crush", "reweight", &osd, &format!("{weight:.5}")])
                 .await
-                .is_err()
             {
                 applied = false;
-                tracing::warn!("{osd} ({disk_id}): could not set its weight");
+                tracing::warn!("{osd} ({disk_id}): could not set its weight: {e}");
             }
         }
         if steer.mark_in {
             tracing::info!("{osd} ({disk_id}): reweight={reweight:.2}, desired=ON — marking in");
-            if host.ceph(&["osd", "in", &osd]).await.is_err() {
+            if let Err(e) = host.ceph(&["osd", "in", &osd]).await {
                 applied = false;
-                tracing::warn!("{osd} ({disk_id}): could not mark it in");
+                tracing::warn!("{osd} ({disk_id}): could not mark it in: {e}");
             }
         }
         if steer.mark_out {
             tracing::info!("{osd} ({disk_id}): reweight={reweight:.2}, desired=OFF — marking out");
-            if host.ceph(&["osd", "out", &osd]).await.is_err() {
+            if let Err(e) = host.ceph(&["osd", "out", &osd]).await {
                 applied = false;
-                tracing::warn!("{osd} ({disk_id}): could not mark it out");
+                tracing::warn!("{osd} ({disk_id}): could not mark it out: {e}");
             }
         }
 
@@ -843,6 +895,7 @@ async fn reconcile_local_osds<H: Host + 'static>(
                     Phase::Removing,
                     "Finishing up — do not unplug yet.",
                 );
+                stopped_for_removal().insert(osd_id);
                 disable_osd_unit(host, osd_id).await;
             }
             let after = if safe_before {
@@ -863,6 +916,7 @@ async fn reconcile_local_osds<H: Host + 'static>(
             match plan_purge(safe_before, safe_after, loss.as_ref()) {
                 PurgeVerdict::Wait => {
                     tracing::debug!("{osd} ({disk_id}): out but not yet safe-to-destroy — waiting");
+                    keep_running(host, osd_id).await;
                     let targets = drain_targets_remaining(&crush_nodes, osd_id, &failure_domain);
                     set_phase(
                         disk_id,
@@ -872,10 +926,12 @@ async fn reconcile_local_osds<H: Host + 'static>(
                     continue;
                 }
                 PurgeVerdict::Recheck => {
-                    tracing::warn!("{osd} ({disk_id}): stopped, but no longer reports safe-to-destroy — leaving it alone");
+                    tracing::warn!("{osd} ({disk_id}): stopped, but no longer reports safe-to-destroy — starting it again");
+                    keep_running(host, osd_id).await;
                     continue;
                 }
                 PurgeVerdict::RefuseDataAtRisk => {
+                    keep_running(host, osd_id).await;
                     if let Some(l) = loss.as_ref() {
                         tracing::warn!(
                             "{osd} ({disk_id}): NOT purging — {} of {} placement groups are unreadable \
@@ -901,6 +957,7 @@ async fn reconcile_local_osds<H: Host + 'static>(
             match destructive::purge_safe(host, proof).await {
                 Ok(Some(receipt)) => {
                     tracing::info!("{osd} ({disk_id}): purged");
+                    stopped_for_removal().remove(&osd_id);
                     if !m.device.is_empty() {
                         tracing::info!("{osd} ({disk_id}): returning {} to blank", m.device);
                         wipe_device(host, &m.device, receipt).await;
@@ -1493,6 +1550,10 @@ async fn erase_forgotten_osds<H: Host>(
 
 pub(crate) async fn ensure_osd_unit_running<H: Host>(host: &H, osd_id: i64) {
     let unit = format!("yolab-ceph-osd@{osd_id}.service");
+    if is_stopped_for_removal(osd_id) {
+        tracing::debug!("osd.{osd_id}: stopped so it can be removed — not starting {unit}");
+        return;
+    }
     if is_running(osd_unit_state(host, osd_id).await.as_deref()) {
         return;
     }
@@ -2270,7 +2331,8 @@ mod tests {
                 "systemctl show -p ActiveState --value yolab-ceph-osd@7.service",
                 "inactive",
             )
-            .ok("ceph osd purge", "purged osd.7")
+            .ok("ceph osd dump", r#"{"osds":[{"osd":7,"up":0,"in":0,"up_from":5}],"pools":[]}"#)
+            .ok("ceph osd purge-actual", "purged osd.7")
             .ok("ceph osd ls", "[7]")
             .ok("ceph osd ls", "[]")
             .ok("ceph-volume lvm zap", "");
@@ -2407,7 +2469,8 @@ mod tests {
                 "systemctl show -p ActiveState --value yolab-ceph-osd@9.service",
                 "inactive",
             )
-            .ok("ceph osd purge", "purged osd.9")
+            .ok("ceph osd dump", r#"{"osds":[{"osd":9,"up":0,"in":0,"up_from":5}],"pools":[]}"#)
+            .ok("ceph osd purge-actual", "purged osd.9")
             .ok("ceph osd ls", "[9]");
 
         let meta = HashMap::from([("disk-stuck".to_string(), disk(Ownership::Blank))]);
@@ -3048,7 +3111,131 @@ mod tests {
             reweight,
             kb,
             up,
+            in_crush: true,
+            never_booted: false,
         }
+    }
+
+    #[test]
+    fn an_osd_not_yet_in_crush_gets_no_weight_and_is_not_a_failure() {
+        let state = OsdState {
+            in_crush: false,
+            never_booted: true,
+            ..seen(0.0, 1.0, 0, false)
+        };
+        let steer = decide_steer(true, 1u64 << 40, state, 2, &[], "osd", None);
+        assert_eq!(steer.set_weight, None);
+        assert_eq!(steer.phase, Some(Phase::Creating));
+        assert_eq!(steer_report(&steer, true).0, Phase::Creating);
+    }
+
+    #[test]
+    fn a_switched_on_osd_on_its_first_start_reports_setting_up_not_retrying() {
+        let state = OsdState {
+            never_booted: true,
+            ..seen(0.03, 1.0, 0, false)
+        };
+        let steer = decide_steer(true, 0, state, 2, &[], "osd", None);
+        assert_eq!(steer.phase, Some(Phase::Creating));
+        assert_eq!(steer.message.as_deref(), Some(FIRST_START_MESSAGE));
+    }
+
+    #[test]
+    fn an_osd_that_booted_before_and_is_down_still_reports_retrying() {
+        let steer = decide_steer(true, 0, seen(0.03, 1.0, 0, false), 2, &[], "osd", None);
+        assert_eq!(steer.phase, Some(Phase::Retrying));
+    }
+
+    #[tokio::test]
+    async fn an_osd_stopped_for_removal_is_never_started_by_anyone_else() {
+        let host = FakeHost::new()
+            .ok(
+                "systemctl show -p ActiveState --value yolab-ceph-osd@9301.service",
+                "inactive",
+            )
+            .ok("systemctl start yolab-ceph-osd@9301.service", "");
+        stopped_for_removal().insert(9301);
+        ensure_osd_unit_running(&host, 9301).await;
+        assert!(!host.ran("systemctl start yolab-ceph-osd@9301"));
+        stopped_for_removal().remove(&9301);
+    }
+
+    #[tokio::test]
+    async fn switching_a_disk_back_on_releases_its_osd_and_starts_it() {
+        let host = FakeHost::new()
+            .ok(
+                "systemctl show -p ActiveState --value yolab-ceph-osd@9302.service",
+                "inactive",
+            )
+            .ok("systemctl start yolab-ceph-osd@9302.service", "");
+        stopped_for_removal().insert(9302);
+        keep_running(&host, 9302).await;
+        assert!(!is_stopped_for_removal(9302));
+        assert!(host.ran("systemctl start yolab-ceph-osd@9302.service"));
+    }
+
+    #[tokio::test]
+    async fn an_osd_that_is_not_yet_safe_to_destroy_is_kept_running_to_drain() {
+        let host = FakeHost::new()
+            .ok("ceph -s", "")
+            .ok(
+                "ceph osd df tree",
+                r#"{"nodes":[{"id":9303,"type":"osd","status":"down","crush_weight":0.5,"reweight":0.0,"kb":0}]}"#,
+            )
+            .ok("ceph osd ls", "[9303]")
+            .ok("ceph osd dump", r#"{"osds":[{"osd":9303,"up":0,"in":0,"up_from":4}],"pools":[]}"#)
+            .ok("ceph osd safe-to-destroy", r#"{"safe_to_destroy":[]}"#)
+            .ok(
+                "systemctl show -p ActiveState --value yolab-ceph-osd@9303.service",
+                "inactive",
+            )
+            .ok("systemctl start yolab-ceph-osd@9303.service", "");
+        stopped_for_removal().insert(9303);
+        let meta = HashMap::from([("disk-drain-9303".to_string(), disk(Ownership::Blank))]);
+        let desired = HashMap::from([("disk-drain-9303".to_string(), "OFF".to_string())]);
+        let disk_to_osd = HashMap::from([("disk-drain-9303".to_string(), 9303i64)]);
+
+        reconcile_local_osds(&host, "node1", &meta, &desired, Some(&disk_to_osd), true).await;
+
+        assert!(!is_stopped_for_removal(9303));
+        assert!(host.ran("systemctl start yolab-ceph-osd@9303.service"));
+        assert!(!host.ran("purge-actual"));
+        assert_eq!(progress_of("disk-drain-9303").phase, Phase::Draining);
+    }
+
+    #[tokio::test]
+    async fn an_osd_stopped_for_a_purge_that_failed_stays_stopped() {
+        let host = FakeHost::new()
+            .ok("ceph -s", "")
+            .ok(
+                "ceph osd df tree",
+                r#"{"nodes":[{"id":9304,"type":"osd","status":"down","crush_weight":0.5,"reweight":0.0,"kb":0}]}"#,
+            )
+            .ok("ceph osd ls", "[9304]")
+            .ok("ceph osd dump", r#"{"osds":[{"osd":9304,"up":0,"in":0,"up_from":4}],"pools":[]}"#)
+            .ok("ceph osd safe-to-destroy", r#"{"safe_to_destroy":[9304]}"#)
+            .ok(
+                "systemctl show -p ActiveState --value yolab-ceph-osd@9304.service",
+                "inactive",
+            )
+            .ok("systemctl stop yolab-ceph-osd@9304.service", "")
+            .fail("ceph osd purge-actual", "Error EBUSY: osd.9304 is not `down`.");
+        let meta = HashMap::from([("disk-fail-9304".to_string(), disk(Ownership::Blank))]);
+        let desired = HashMap::from([("disk-fail-9304".to_string(), "OFF".to_string())]);
+        let disk_to_osd = HashMap::from([("disk-fail-9304".to_string(), 9304i64)]);
+
+        reconcile_local_osds(&host, "node1", &meta, &desired, Some(&disk_to_osd), true).await;
+
+        assert!(is_stopped_for_removal(9304));
+        let osd_activate = FakeHost::new()
+            .ok(
+                "systemctl show -p ActiveState --value yolab-ceph-osd@9304.service",
+                "inactive",
+            )
+            .ok("systemctl start yolab-ceph-osd@9304.service", "");
+        ensure_osd_unit_running(&osd_activate, 9304).await;
+        assert!(!osd_activate.ran("systemctl start"));
+        stopped_for_removal().remove(&9304);
     }
 
     #[test]
