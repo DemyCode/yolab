@@ -92,7 +92,12 @@ pub async fn add_vdisk(
     let bad = |code: StatusCode, msg: String| (code, Json(serde_json::json!({ "error": msg })));
     let known: Vec<String> = settings::dump(&RealHost, settings::DISK_STATUS)
         .await
-        .map_err(|e| bad(StatusCode::SERVICE_UNAVAILABLE, format!("the storage cluster did not answer: {e}")))?
+        .map_err(|e| {
+            bad(
+                StatusCode::SERVICE_UNAVAILABLE,
+                format!("the storage cluster did not answer: {e}"),
+            )
+        })?
         .into_keys()
         .collect();
     if let Some(why) = refuse_add(&body.box_type, &body.node, &known) {
@@ -108,9 +113,21 @@ pub async fn add_vdisk(
         node: body.node.clone(),
         box_type: volume.box_type.clone(),
         size_gb: volume.size_gb,
-        host: if volume.is_ready() { volume.host.clone() } else { String::new() },
-        username: if volume.is_ready() { volume.username.clone() } else { String::new() },
-        password: if volume.is_ready() { volume.password.clone() } else { String::new() },
+        host: if volume.is_ready() {
+            volume.host.clone()
+        } else {
+            String::new()
+        },
+        username: if volume.is_ready() {
+            volume.username.clone()
+        } else {
+            String::new()
+        },
+        password: if volume.is_ready() {
+            volume.password.clone()
+        } else {
+            String::new()
+        },
         removing: false,
         osd_id: None,
     };
@@ -184,7 +201,10 @@ mod tests {
         assert_eq!(state_of(&rec, None), "connecting");
         assert_eq!(state_of(&rec, Some(crate::vdisk::OFFLINE)), "offline");
         assert_eq!(state_of(&rec, Some(crate::vdisk::CONNECTED)), "connected");
-        assert_eq!(state_of(&rec, Some("Could not connect yet, retrying: x")), "error");
+        assert_eq!(
+            state_of(&rec, Some("Could not connect yet, retrying: x")),
+            "error"
+        );
         rec.removing = true;
         assert_eq!(state_of(&rec, Some(crate::vdisk::OFFLINE)), "removing");
     }

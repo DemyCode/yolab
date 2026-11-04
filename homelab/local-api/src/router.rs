@@ -67,8 +67,14 @@ pub fn build_router(state: AppState) -> Router {
             "/api/disks/{node}/{id}",
             axum::routing::put(disks::set_disk_state),
         )
-        .route("/api/vdisks", get(vdisks::list_vdisks).post(vdisks::add_vdisk))
-        .route("/api/vdisks/{id}", axum::routing::delete(vdisks::remove_vdisk))
+        .route(
+            "/api/vdisks",
+            get(vdisks::list_vdisks).post(vdisks::add_vdisk),
+        )
+        .route(
+            "/api/vdisks/{id}",
+            axum::routing::delete(vdisks::remove_vdisk),
+        )
         .route("/api/store/sync", post(crate::store::sync::handler))
         .route("/api/heal", get(heal::get_status).post(heal::post_heal))
         .route("/api/heal/peer", get(heal::get_peer))

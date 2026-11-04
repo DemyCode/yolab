@@ -190,7 +190,9 @@ impl Controller for VdisksController {
 
         for id in stack::attached_here(root)? {
             if !mine.iter().any(|r| r.id == id) {
-                tracing::warn!("virtual disk {id}: attached here but no longer recorded — detaching it");
+                tracing::warn!(
+                    "virtual disk {id}: attached here but no longer recorded — detaching it"
+                );
                 stack::detach(&host, root, id)
                     .await
                     .warn_on_err(format!("detach unrecorded virtual disk {id}"));
@@ -258,7 +260,10 @@ async fn step<H: Host>(
 
     if rec.removing {
         let known = host.osd_ids().await.context("list the cluster's OSDs")?;
-        let tree = host.ceph_json(&["osd", "tree"]).await.context("read the CRUSH tree")?;
+        let tree = host
+            .ceph_json(&["osd", "tree"])
+            .await
+            .context("read the CRUSH tree")?;
         let mut holding = crush_children(&tree, &record::crush_bucket(rec.id));
         holding.extend(osd_on(root, rec.id));
         holding.extend(rec.osd_id);
@@ -270,7 +275,10 @@ async fn step<H: Host>(
 
     let mnt_up = stack::is_mounted(host, &stack::run_dir(root, rec.id).join("mnt")).await?;
     if mnt_up && !stack::reachable(host, root, rec.id).await {
-        tracing::warn!("virtual disk {}: the Storage Box stopped answering — detaching", rec.id);
+        tracing::warn!(
+            "virtual disk {}: the Storage Box stopped answering — detaching",
+            rec.id
+        );
         stack::detach(host, root, rec.id).await?;
         return Ok(OFFLINE.into());
     }
@@ -299,7 +307,12 @@ pub(crate) fn crush_children(tree: &serde_json::Value, bucket: &str) -> Vec<i64>
         .flatten()
         .find(|n| n["name"].as_str() == Some(bucket))
         .and_then(|n| n["children"].as_array())
-        .map(|c| c.iter().filter_map(|x| x.as_i64()).filter(|id| *id >= 0).collect())
+        .map(|c| {
+            c.iter()
+                .filter_map(|x| x.as_i64())
+                .filter(|id| *id >= 0)
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -320,7 +333,10 @@ async fn finish_removal<H: Host>(
     match host.ceph(&["osd", "crush", "rm", &bucket]).await {
         Ok(_) => {}
         Err(e) if e.is_not_found() => {}
-        Err(e) => tracing::warn!("virtual disk {}: its empty CRUSH host {bucket} stays: {e}", rec.id),
+        Err(e) => tracing::warn!(
+            "virtual disk {}: its empty CRUSH host {bucket} stays: {e}",
+            rec.id
+        ),
     }
     crate::routers::disks::forget_disk(&rec.node, &rec.disk_id())
         .await
@@ -351,7 +367,10 @@ mod tests {
     #[test]
     fn a_virtual_disk_osd_is_recognised_from_either_lvm_path() {
         assert_eq!(vdisk_of_block_target("/dev/yolab_vdisk_4/osd"), Some(4));
-        assert_eq!(vdisk_of_block_target("/dev/mapper/yolab_vdisk_4-osd"), Some(4));
+        assert_eq!(
+            vdisk_of_block_target("/dev/mapper/yolab_vdisk_4-osd"),
+            Some(4)
+        );
         assert_eq!(vdisk_of_block_target("/dev/pool/ceph"), None);
         assert_eq!(vdisk_of_block_target("/dev/yolab_vdisk_4/other"), None);
     }
@@ -371,8 +390,15 @@ mod tests {
 
     #[test]
     fn a_placed_virtual_disk_osd_needs_nothing() {
-        let e = entry(r#"{"osd":5,"up":1,"in":1,"primary_affinity":0,"state":["exists","up","noout"]}"#);
-        assert!(placement_steps("root=default host=vdisk-4\n", &e, "root=default host=vdisk-4").is_empty());
+        let e = entry(
+            r#"{"osd":5,"up":1,"in":1,"primary_affinity":0,"state":["exists","up","noout"]}"#,
+        );
+        assert!(placement_steps(
+            "root=default host=vdisk-4\n",
+            &e,
+            "root=default host=vdisk-4"
+        )
+        .is_empty());
     }
 
     #[test]

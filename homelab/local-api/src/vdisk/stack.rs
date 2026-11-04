@@ -179,7 +179,10 @@ async fn image_size<H: Host>(host: &H, image: &Path) -> Result<Option<u64>> {
     if out.stderr.contains("No such file") {
         return Ok(None);
     }
-    bail!("the Storage Box did not answer for {path}: {}", out.stderr.trim())
+    bail!(
+        "the Storage Box did not answer for {path}: {}",
+        out.stderr.trim()
+    )
 }
 
 pub(crate) async fn reachable<H: Host>(host: &H, root: &Path, id: i64) -> bool {
@@ -215,7 +218,12 @@ async fn mount<H: Host>(host: &H, root: &Path, rec: &VdiskRecord) -> Result<()> 
     Ok(())
 }
 
-async fn ensure_image<H: Host>(host: &H, root: &Path, rec: &VdiskRecord, formatted: bool) -> Result<()> {
+async fn ensure_image<H: Host>(
+    host: &H,
+    root: &Path,
+    rec: &VdiskRecord,
+    formatted: bool,
+) -> Result<()> {
     let img = image(root, rec.id);
     let existing = image_size(host, &img).await?;
     match plan_image(formatted, existing, rec.file_bytes()) {
@@ -279,7 +287,13 @@ async fn ensure_key<H: Host>(host: &H, id: i64, formatted: bool) -> Result<Vec<u
     }
 }
 
-async fn open_crypt<H: Host>(host: &H, root: &Path, id: i64, loop_dev: &str, key: &[u8]) -> Result<()> {
+async fn open_crypt<H: Host>(
+    host: &H,
+    root: &Path,
+    id: i64,
+    loop_dev: &str,
+    key: &[u8],
+) -> Result<()> {
     if dev_exists(root, &record::crypt_dev(id)) {
         return Ok(());
     }
@@ -318,7 +332,11 @@ async fn open_crypt<H: Host>(host: &H, root: &Path, id: i64, loop_dev: &str, key
 
 async fn content_type<H: Host>(host: &H, dev: &str) -> Result<String> {
     let out = host
-        .run_cmd_bounded("blkid", &["-p", "-s", "TYPE", "-o", "value", dev], STEP_TIMEOUT)
+        .run_cmd_bounded(
+            "blkid",
+            &["-p", "-s", "TYPE", "-o", "value", dev],
+            STEP_TIMEOUT,
+        )
         .await
         .context("run blkid")?;
     blkid_type(out.success, &out.stdout, &out.stderr)
@@ -339,7 +357,13 @@ async fn format<H: Host>(host: &H, root: &Path, id: i64) -> Result<()> {
     let crypt = record::crypt_dev(id);
     let vg = record::vg_name(id);
     if dev_exists(root, &record::osd_dev(id)) {
-        checked(host, "dmsetup", &["remove", "--retry", &record::osd_dm_name(id)], STEP_TIMEOUT).await?;
+        checked(
+            host,
+            "dmsetup",
+            &["remove", "--retry", &record::osd_dm_name(id)],
+            STEP_TIMEOUT,
+        )
+        .await?;
     }
     checked(host, "pvcreate", &["-ff", "-y", &crypt], STEP_TIMEOUT).await?;
     checked(host, "vgcreate", &["-y", &vg, &crypt], STEP_TIMEOUT).await?;
@@ -371,14 +395,25 @@ pub async fn attach<H: Host>(host: &H, root: &Path, rec: &VdiskRecord) -> Result
         ContentPlan::Activate => {}
         ContentPlan::Format => format(host, root, id).await?,
         ContentPlan::Refuse(why) => {
-            checked(host, "cryptsetup", &["close", &record::crypt_name(id)], STEP_TIMEOUT)
-                .await
-                .context("close the encryption layer that did not decrypt")?;
+            checked(
+                host,
+                "cryptsetup",
+                &["close", &record::crypt_name(id)],
+                STEP_TIMEOUT,
+            )
+            .await
+            .context("close the encryption layer that did not decrypt")?;
             bail!("{why}");
         }
     }
     if !dev_exists(root, &record::osd_dev(id)) {
-        checked(host, "vgchange", &["-ay", &record::vg_name(id)], STEP_TIMEOUT).await?;
+        checked(
+            host,
+            "vgchange",
+            &["-ay", &record::vg_name(id)],
+            STEP_TIMEOUT,
+        )
+        .await?;
     }
     if !dev_exists(root, &record::osd_dev(id)) {
         bail!("{} did not appear after activating it", record::osd_dev(id));
@@ -408,11 +443,22 @@ pub async fn detach<H: Host>(host: &H, root: &Path, id: i64) -> Result<()> {
         }
     }
     if dev_exists(root, &record::osd_dev(id)) {
-        checked(host, "dmsetup", &["remove", "--retry", &record::osd_dm_name(id)], STEP_TIMEOUT)
-            .await?;
+        checked(
+            host,
+            "dmsetup",
+            &["remove", "--retry", &record::osd_dm_name(id)],
+            STEP_TIMEOUT,
+        )
+        .await?;
     }
     if dev_exists(root, &record::crypt_dev(id)) {
-        checked(host, "cryptsetup", &["close", &record::crypt_name(id)], STEP_TIMEOUT).await?;
+        checked(
+            host,
+            "cryptsetup",
+            &["close", &record::crypt_name(id)],
+            STEP_TIMEOUT,
+        )
+        .await?;
     }
     if let Some(dev) = recorded_loop(root, id)? {
         if loop_in_use(root, &dev) {
@@ -486,7 +532,10 @@ mod tests {
 
     #[test]
     fn blkid_finding_nothing_is_no_signature_but_a_read_error_is_an_error() {
-        assert_eq!(blkid_type(true, "LVM2_member\n", "").unwrap(), "LVM2_member");
+        assert_eq!(
+            blkid_type(true, "LVM2_member\n", "").unwrap(),
+            "LVM2_member"
+        );
         assert_eq!(blkid_type(false, "", "").unwrap(), "");
         assert!(blkid_type(false, "", "blkid: error: /dev/x: Input/output error").is_err());
     }
