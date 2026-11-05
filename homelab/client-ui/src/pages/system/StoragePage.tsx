@@ -621,7 +621,7 @@ function AddVirtualDisk({
           <p className="text-sm text-fg-muted">
             More space, stored online. It is encrypted on your machine before it
             leaves, so only your machines can read it. Paid from your YoLab
-            credit.
+            credit by the hour, never more than the monthly price.
           </p>
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
             {VDISK_SIZES.map((s) => (
