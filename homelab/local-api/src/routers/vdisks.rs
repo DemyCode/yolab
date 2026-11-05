@@ -83,6 +83,11 @@ pub async fn list_vdisks(State(s): State<AppState>) -> Result<Json<Vec<VdiskInfo
     Ok(Json(out))
 }
 
+pub async fn list_offers(State(s): State<AppState>) -> Result<Json<Vec<platform::Offer>>> {
+    let tunnel = Tunnel::read(&s.config.config_path)?;
+    Ok(Json(platform::offers(&s.http, &tunnel).await?))
+}
+
 pub async fn add_vdisk(
     State(s): State<AppState>,
     Json(body): Json<AddVdisk>,

@@ -10,6 +10,7 @@ import {
   rawPercent,
   statusLine,
   usageRows,
+  vdiskPrice,
   vdiskSizeLabel,
   virtualDiskState,
 } from "./storage";
@@ -484,8 +485,18 @@ describe("virtualDiskState", () => {
     ).toBe("removing");
   });
 
-  it("sizes are named the way Hetzner sells them", () => {
+  it("sizes are named by their capacity", () => {
     expect(vdiskSizeLabel("bx21")).toBe("5 TB");
     expect(vdiskSizeLabel("bx99")).toBe("bx99");
+  });
+
+  it("a price is the one the platform sent, in euros a month", () => {
+    const offers = [{ box_type: "bx11", size_gb: 900, monthly_cents: 640 }];
+    expect(vdiskPrice(offers, "bx11")).toBe("€6.40/mo");
+  });
+
+  it("no price is shown before the platform has sent one", () => {
+    expect(vdiskPrice(undefined, "bx11")).toBeNull();
+    expect(vdiskPrice([], "bx11")).toBeNull();
   });
 });

@@ -57,6 +57,7 @@ import {
   statusLine,
   usageRows,
   VDISK_SIZES,
+  vdiskPrice,
   vdiskSizeLabel,
   virtualDiskState,
   type DiskState,
@@ -74,6 +75,7 @@ import type {
   StoragePolicyData,
   StorageUsage,
   VdiskInfo,
+  VdiskOffer,
 } from "@/types/storage";
 
 const TONE_TEXT: Record<Tone, string> = {
@@ -336,7 +338,7 @@ const STATE_META: Record<
   },
   removable: { label: "Safe to unplug", tone: "ok" },
   provisioning: {
-    label: "Hetzner is preparing the Storage Box…",
+    label: "Preparing the virtual disk…",
     tone: "warn",
     pulse: true,
   },
@@ -487,7 +489,7 @@ function DiskRow({
               {vdisk && (
                 <span className="text-fg-subtle">
                   {" "}
-                  · encrypted here, stored at Hetzner
+                  · encrypted here, stored online
                 </span>
               )}
             </span>
@@ -581,6 +583,10 @@ function AddVirtualDisk({
   const [picked, setPicked] = useState<string>("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const offers = useApi<VdiskOffer[]>(
+    open ? "storage-vdisk-offers" : null,
+    "/api/vdisks/offers",
+  );
   const node = picked || nodes[0] || "";
 
   async function add() {
@@ -613,9 +619,9 @@ function AddVirtualDisk({
       <Collapse open={open}>
         <div className="space-y-3">
           <p className="text-sm text-fg-muted">
-            More space, stored in a Hetzner Storage Box. It is encrypted on your
-            machine before it leaves, so Hetzner only ever holds unreadable
-            data. Paid from your YoLab credit.
+            More space, stored online. It is encrypted on your machine before it
+            leaves, so only your machines can read it. Paid from your YoLab
+            credit.
           </p>
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
             {VDISK_SIZES.map((s) => (
@@ -635,7 +641,7 @@ function AddVirtualDisk({
                   {s.label}
                 </span>
                 <span className="block font-mono text-xs text-fg-muted">
-                  {s.price}
+                  {vdiskPrice(offers.data, s.box_type) ?? "…"}
                 </span>
               </button>
             ))}
@@ -655,6 +661,9 @@ function AddVirtualDisk({
                 ))}
               </Select>
             </label>
+          )}
+          {offers.error && (
+            <p className="text-sm text-danger">{offers.error}</p>
           )}
           <p className="text-sm text-fg-subtle">
             Writes to it are slower than to a disk in your machine. If your

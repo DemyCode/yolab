@@ -71,6 +71,7 @@ pub fn build_router(state: AppState) -> Router {
             "/api/vdisks",
             get(vdisks::list_vdisks).post(vdisks::add_vdisk),
         )
+        .route("/api/vdisks/offers", get(vdisks::list_offers))
         .route(
             "/api/vdisks/{id}",
             axum::routing::delete(vdisks::remove_vdisk),

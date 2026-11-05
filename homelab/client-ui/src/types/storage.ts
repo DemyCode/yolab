@@ -151,6 +151,12 @@ export interface Movement {
   total_pgs: number;
 }
 
+export interface VdiskOffer {
+  box_type: string;
+  size_gb: number;
+  monthly_cents: number;
+}
+
 export interface VdiskInfo {
   id: number;
   disk_id: string;

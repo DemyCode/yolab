@@ -28,6 +28,7 @@ pub(crate) const ROUTE_TABLE: &[(&str, &[&str])] = &[
     ("/api/disks", &["GET"]),
     ("/api/disks/{node}/{id}", &["PUT"]),
     ("/api/vdisks", &["GET", "POST"]),
+    ("/api/vdisks/offers", &["GET"]),
     ("/api/vdisks/{id}", &["DELETE"]),
     ("/api/store/sync", &["POST"]),
     ("/api/heal", &["GET", "POST"]),

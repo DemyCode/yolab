@@ -3,6 +3,7 @@ import type { AppInfo, CatalogApp } from "@/types/apps";
 import type {
   DiskInfo,
   VdiskInfo,
+  VdiskOffer,
   Osd,
   Space,
   StorageOverview,
@@ -88,11 +89,19 @@ export function diskState(disk: DiskInfo): DiskState {
 }
 
 export const VDISK_SIZES = [
-  { box_type: "bx11", label: "1 TB", price: "€3.49/mo" },
-  { box_type: "bx21", label: "5 TB", price: "€13.12/mo" },
-  { box_type: "bx31", label: "10 TB", price: "€25.08/mo" },
-  { box_type: "bx41", label: "20 TB", price: "€46.28/mo" },
+  { box_type: "bx11", label: "1 TB" },
+  { box_type: "bx21", label: "5 TB" },
+  { box_type: "bx31", label: "10 TB" },
+  { box_type: "bx41", label: "20 TB" },
 ] as const;
+
+export function vdiskPrice(
+  offers: VdiskOffer[] | undefined,
+  boxType: string,
+): string | null {
+  const offer = offers?.find((o) => o.box_type === boxType);
+  return offer ? `€${(offer.monthly_cents / 100).toFixed(2)}/mo` : null;
+}
 
 export function vdiskSizeLabel(boxType: string): string {
   return VDISK_SIZES.find((s) => s.box_type === boxType)?.label ?? boxType;

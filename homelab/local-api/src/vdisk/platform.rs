@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::http::{Client, StatusCode};
 use crate::notify::Tunnel;
@@ -30,6 +30,13 @@ impl Volume {
             && !self.username.is_empty()
             && !self.password.is_empty()
     }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+pub struct Offer {
+    pub box_type: String,
+    pub size_gb: u64,
+    pub monthly_cents: u64,
 }
 
 fn connected(tunnel: &Tunnel) -> Result<()> {
@@ -84,6 +91,23 @@ pub(crate) async fn list(client: &Client, tunnel: &Tunnel) -> Result<Vec<Volume>
         .context("read the platform's list of virtual disks")
 }
 
+pub(crate) async fn offers(client: &Client, tunnel: &Tunnel) -> Result<Vec<Offer>> {
+    connected(tunnel)?;
+    let resp = client
+        .get(url(tunnel, "/offers"))
+        .bearer_auth(&tunnel.account_token)
+        .timeout(TIMEOUT)
+        .send()
+        .await
+        .context("reach the platform for virtual disk prices")?;
+    if !resp.status().is_success() {
+        return Err(refused(resp, "give virtual disk prices").await);
+    }
+    resp.json::<Vec<Offer>>()
+        .await
+        .context("read the platform's virtual disk prices")
+}
+
 pub(crate) async fn delete(client: &Client, tunnel: &Tunnel, id: i64) -> Result<()> {
     connected(tunnel)?;
     let resp = client
@@ -133,6 +157,28 @@ mod tests {
             .unwrap();
         assert_eq!(v.id, 3);
         assert!(!v.is_ready());
+    }
+
+    #[tokio::test]
+    async fn prices_come_from_the_platform_as_it_sends_them() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/storage/volume/offers"))
+            .and(header("authorization", "Bearer tok"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                { "box_type": "bx11", "size_gb": 900, "monthly_cents": 640 }
+            ])))
+            .mount(&server)
+            .await;
+        let got = offers(&Client::new(), &tunnel(&server)).await.unwrap();
+        assert_eq!(
+            got,
+            vec![Offer {
+                box_type: "bx11".into(),
+                size_gb: 900,
+                monthly_cents: 640
+            }]
+        );
     }
 
     #[tokio::test]
