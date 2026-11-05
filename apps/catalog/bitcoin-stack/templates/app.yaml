@@ -18,6 +18,7 @@ metadata:
   namespace: {{ .Release.Namespace }}
 data:
   Caddyfile: |
+    {{- include "yolab-common.caddyGlobal" . | nindent 4 }}
     {{- if $yolabOn }}
     {{ $df }}{YOLAB_FQDN} {
       reverse_proxy bitcoin-node:3000

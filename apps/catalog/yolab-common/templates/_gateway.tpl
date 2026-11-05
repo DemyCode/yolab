@@ -286,6 +286,16 @@ printf 'export YOLAB_HOST=%s\nexport YOLAB_URL=https://%s\nexport YOLAB_SITES="%
     - -c
     - |
       . /yolab/env && exec caddy run --config /etc/caddy/Caddyfile --adapter caddyfile
+  {{- if eq (include "yolab-common.tunnel.enabled" .) "true" }}
+  env:
+    - name: PLATFORM_API_URL
+      value: {{ ((.Values.yolab).platformApiUrl) | default "" | quote }}
+    - name: ACCOUNT_TOKEN
+      valueFrom:
+        secretKeyRef:
+          name: {{ include "yolab-common.tunnelSecretName" . }}
+          key: account-token
+  {{- end }}
   ports:
     - containerPort: 80
     - containerPort: 443
@@ -327,6 +337,23 @@ printf 'export YOLAB_HOST=%s\nexport YOLAB_URL=https://%s\nexport YOLAB_SITES="%
 {{- end -}}
 
 
+{{- define "yolab-common.caddyGlobal" -}}
+{{- if eq (include "yolab-common.tunnel.enabled" .) "true" }}
+{
+  cert_issuer acme {
+    dns acmedns {
+      username yolab
+      password {env.ACCOUNT_TOKEN}
+      subdomain apps
+      server_url {$PLATFORM_API_URL}/acme-dns
+    }
+  }
+  cert_issuer acme
+}
+{{- end }}
+{{- end -}}
+
+
 {{- define "yolab-common.caddyConfigMap" -}}
 apiVersion: v1
 kind: ConfigMap
@@ -335,6 +362,7 @@ metadata:
   namespace: {{ .Release.Namespace }}
 data:
   Caddyfile: |
+    {{- include "yolab-common.caddyGlobal" . | nindent 4 }}
     {{- if (((.Values.yolab).gateway).caddyfile) }}
     {{- .Values.yolab.gateway.caddyfile | nindent 4 }}
     {{- else if ne (include "yolab-common.yolab.enabled" .) "true" }}

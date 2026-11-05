@@ -882,6 +882,69 @@ def env_part_failures(*containers):
     return found
 
 
+
+def caddy_dns_failures(caddyfile, caddy_env=("ACCOUNT_TOKEN", "PLATFORM_API_URL"), tunneled=True):
+    gateway = pod({"name": "caddy", "env": [{"name": n, "value": "x"} for n in caddy_env]})
+    if tunneled:
+        gateway["spec"]["template"]["spec"]["initContainers"] = [{"name": "wg-register"}]
+    config = {
+        "kind": "ConfigMap",
+        "metadata": {"name": "demo-caddy"},
+        "data": {"Caddyfile": caddyfile},
+    }
+    found = []
+    check_charts.check_caddy_dns("demo", [gateway, config], lambda app, msg: found.append(msg))
+    return found
+
+
+DNS_CADDYFILE = (
+    "\n{\n  cert_issuer acme {\n    dns acmedns {\n      subdomain apps\n    }\n  }\n"
+    "  cert_issuer acme\n}\n{$YOLAB_SITES} {\n  reverse_proxy app:80\n}\n"
+)
+
+
+class CaddyDns(unittest.TestCase):
+    def test_a_gateway_proving_its_names_through_dns_passes(self):
+        self.assertEqual(caddy_dns_failures(DNS_CADDYFILE), [])
+
+    def test_a_gateway_waiting_for_let_s_encrypt_to_reach_it_is_reported(self):
+        found = caddy_dns_failures("{$YOLAB_SITES} {\n  reverse_proxy app:80\n}\n")
+        self.assertEqual(len(found), 1)
+        self.assertIn("demo-caddy", found[0])
+
+    def test_caddy_without_the_account_token_is_reported(self):
+        found = caddy_dns_failures(DNS_CADDYFILE, caddy_env=("PLATFORM_API_URL",))
+        self.assertEqual(len(found), 1)
+        self.assertIn("ACCOUNT_TOKEN", found[0])
+
+    def test_a_gateway_without_a_tunnel_has_nothing_to_prove(self):
+        self.assertEqual(
+            caddy_dns_failures("http://:8080 {\n}\n", caddy_env=(), tunneled=False), []
+        )
+
+
+class GatewayProvesNamesThroughDns(RenderedChart):
+    CHART = "vaultwarden"
+
+    def test_the_account_token_reaches_caddy_from_the_tunnel_secret(self):
+        docs = self.docs()
+        gateway = self.deployments(docs)["gateway"]
+        caddy = next(c for c in gateway["containers"] if c["name"] == "caddy")
+        token = next(e for e in caddy["env"] if e["name"] == "ACCOUNT_TOKEN")
+        self.assertEqual(token["valueFrom"]["secretKeyRef"]["key"], "account-token")
+        self.assertNotIn("value", token)
+
+    def test_every_yolab_name_is_proven_through_the_apps_bucket(self):
+        caddyfile = next(
+            d["data"]["Caddyfile"]
+            for d in self.docs()
+            if d["kind"] == "ConfigMap" and d["metadata"]["name"].endswith("-caddy")
+        )
+        self.assertTrue(caddyfile.lstrip().startswith(check_charts.CADDY_DNS_GLOBAL))
+        self.assertIn("subdomain apps", caddyfile)
+        self.assertIn("password {env.ACCOUNT_TOKEN}", caddyfile)
+
+
 class EnvParts(unittest.TestCase):
     def test_appending_to_the_shared_env_file_is_reported(self):
         found = env_part_failures(

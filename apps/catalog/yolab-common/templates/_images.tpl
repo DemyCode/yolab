@@ -9,7 +9,7 @@
 {{- end -}}
 
 {{- define "yolab-common.image.caddy" -}}
-{{- (((.Values.yolab).images).caddy) | default "caddy:2@sha256:685ae3d7c34d9b5f8caeddc5d14051db7bbd88ff1f5a2fa0c16bd8ca328fb7af" -}}
+{{- (((.Values.yolab).images).caddy) | default "ghcr.io/demycode/caddy:main-latest@sha256:6939186a01241a5a243371153dc4edf9d3fcc21c728980a10ee7ee72288c55fe" -}}
 {{- end -}}
 
 {{- define "yolab-common.image.fileExplorer" -}}

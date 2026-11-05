@@ -103,10 +103,6 @@
     "amd64",
     "arm64"
   ],
-  "caddy:2@sha256:685ae3d7c34d9b5f8caeddc5d14051db7bbd88ff1f5a2fa0c16bd8ca328fb7af": [
-    "amd64",
-    "arm64"
-  ],
   "calvadev/shopstr:v0.7.5@sha256:b123e9d16f4267ea766813cbc12ac0989afcea03a72b42edfa37b64951ececdb": [
     "amd64",
     "arm64"

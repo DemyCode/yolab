@@ -224,7 +224,7 @@ WORKLOAD_KINDS = ("Deployment", "DaemonSet", "StatefulSet")
 OWN_IMAGES = "ghcr.io/demycode/"
 with open(os.path.join(HERE, "image_arches.json")) as _f:
     ARCHES = json.load(_f)
-TOKEN_CONTAINERS = ("wg-register", "cleanup", "yolab-env")
+TOKEN_CONTAINERS = ("wg-register", "cleanup", "yolab-env", "caddy")
 
 
 class Failures:
@@ -624,6 +624,7 @@ def check(app, docs, fail, chart_yaml="", schema=None, arches=None):
 
     check_sourced_secrets_reach_the_program(app, docs, fail)
     check_env_parts(app, docs, fail)
+    check_caddy_dns(app, docs, fail)
 
     for d in docs:
         spec = (d.get("spec", {}).get("template", {}) or {}).get("spec", {})
@@ -1236,6 +1237,41 @@ def check_env_parts(app, docs, fail):
                     f"pod {pod_name}: {container} writes /yolab/env.d/{part}, which "
                     f"/yolab/env never sources (it reads {', '.join(ENV_PARTS)})",
                 )
+
+
+CADDY_DNS_GLOBAL = "{\n  cert_issuer acme {\n    dns acmedns {"
+
+
+def check_caddy_dns(app, docs, fail):
+    tunneled = any(
+        c["name"] == "wg-register"
+        for _, spec in pod_specs(docs)
+        for c in spec.get("initContainers") or []
+    )
+    if not tunneled:
+        return
+    for d in docs:
+        if d.get("kind") != "ConfigMap" or not d["metadata"]["name"].endswith("-caddy"):
+            continue
+        text = (d.get("data") or {}).get("Caddyfile")
+        if text is not None and not text.lstrip().startswith(CADDY_DNS_GLOBAL):
+            fail(
+                app,
+                f"{d['metadata']['name']} does not start with yolab-common.caddyGlobal, "
+                f"so its certificates depend on Let's Encrypt reaching this machine",
+            )
+    for pod_name, spec in pod_specs(docs):
+        for c in spec.get("containers") or []:
+            if c["name"] != "caddy":
+                continue
+            names = {e.get("name") for e in c.get("env") or []}
+            for needed in ("ACCOUNT_TOKEN", "PLATFORM_API_URL"):
+                if needed not in names:
+                    fail(
+                        app,
+                        f"pod {pod_name}: caddy has no {needed}, so it cannot prove "
+                        f"its names through the platform's DNS",
+                    )
 
 
 def check_yolab_off(app, docs, fail):

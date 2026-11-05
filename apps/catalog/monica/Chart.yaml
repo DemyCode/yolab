@@ -3,12 +3,12 @@ name: monica
 description: "Personal CRM for remembering the people in your life"
 home: https://www.monicahq.com
 type: application
-version: 0.1.28
+version: 0.1.29
 appVersion: "latest"
 
 dependencies:
   - name: yolab-common
-    version: "0.1.25"
+    version: "0.1.26"
     repository: "oci://ghcr.io/demycode/charts"
 
 annotations:
