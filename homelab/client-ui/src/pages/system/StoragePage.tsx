@@ -342,7 +342,10 @@ const STATE_META: Record<
     tone: "warn",
     pulse: true,
   },
-  offline: { label: "Offline — its online storage is not answering", tone: "bad" },
+  offline: {
+    label: "Offline — its online storage is not answering",
+    tone: "bad",
+  },
   stale: { label: "Checking…", tone: "idle", pulse: true },
   excluded: { label: "Connected, not in use", tone: "idle" },
   historical: { label: "Not connected", tone: "idle" },
