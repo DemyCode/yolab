@@ -90,10 +90,6 @@ pub fn crush_bucket(id: i64) -> String {
     disk_id(id)
 }
 
-pub fn crush_location(id: i64) -> String {
-    format!("root=default host={}", crush_bucket(id))
-}
-
 fn record_key(id: i64) -> String {
     format!("{RECORDS}{id}")
 }
@@ -191,11 +187,6 @@ mod tests {
         assert_eq!(id_of_osd_dev(&osd_dev(9)), Some(9));
         assert_eq!(id_of_osd_dev("/dev/yolab_vdisk_9/osd"), None);
         assert_eq!(id_of_osd_dev("/dev/mapper/pool-ceph"), None);
-    }
-
-    #[test]
-    fn a_virtual_disk_is_its_own_crush_host_so_a_copy_can_stay_home() {
-        assert_eq!(crush_location(3), "root=default host=vdisk-3");
     }
 
     #[test]

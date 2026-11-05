@@ -182,6 +182,7 @@ static SIGS: &[Sig] = &[
     sig(&["config-key", "rm"], &[req("key", Str)]),
     sig(&["config-key", "dump"], &[opt("key", Str)]),
     sig(&["config", "get"], &[req("who", Str), opt("key", Str)]),
+    sig(&["config", "rm"], &[req("who", Str), req("name", Str)]),
     sig(
         &["config", "set"],
         &[

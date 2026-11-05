@@ -63,10 +63,9 @@ pub(crate) enum PlacementStep {
 pub(crate) fn placement_steps(
     crush_location: &str,
     entry: &crate::ceph::model::OsdDumpEntry,
-    want_location: &str,
 ) -> Vec<PlacementStep> {
     let mut steps = Vec::new();
-    if crush_location.trim() != want_location {
+    if !crush_location.trim().is_empty() {
         steps.push(PlacementStep::CrushLocation);
     }
     if entry.primary_affinity != Some(0.0) {
@@ -78,9 +77,8 @@ pub(crate) fn placement_steps(
     steps
 }
 
-pub(crate) async fn ensure_placement<H: Host>(host: &H, osd_id: i64, vdisk: i64) -> Result<()> {
+pub(crate) async fn ensure_placement<H: Host>(host: &H, osd_id: i64) -> Result<()> {
     let osd = format!("osd.{osd_id}");
-    let want = record::crush_location(vdisk);
     let have = match host.ceph(&["config", "get", &osd, "crush_location"]).await {
         Ok(v) => v,
         Err(e) if e.is_not_found() => String::new(),
@@ -92,12 +90,12 @@ pub(crate) async fn ensure_placement<H: Host>(host: &H, osd_id: i64, vdisk: i64)
         .iter()
         .find(|e| e.osd == osd_id)
         .with_context(|| format!("{osd} is not in the OSD map"))?;
-    for step in placement_steps(&have, entry, &want) {
+    for step in placement_steps(&have, entry) {
         match step {
             PlacementStep::CrushLocation => {
-                host.ceph(&["config", "set", &osd, "crush_location", &want])
+                host.ceph(&["config", "rm", &osd, "crush_location"])
                     .await
-                    .context("place the OSD in its own CRUSH host")?;
+                    .context("keep the OSD under the machine it is attached to")?;
             }
             PlacementStep::PrimaryAffinity => {
                 host.ceph(&["osd", "primary-affinity", &osd, "0"])
@@ -118,7 +116,7 @@ pub(crate) async fn placement_allows_start<H: Host>(host: &H, root: &Path, osd_i
     let Some(vdisk) = vdisk_of_osd(root, osd_id) else {
         return true;
     };
-    match ensure_placement(host, osd_id, vdisk).await {
+    match ensure_placement(host, osd_id).await {
         Ok(()) => true,
         Err(e) => {
             tracing::warn!(
@@ -277,9 +275,23 @@ async fn step<H: Host>(
     }
 
     if let Some(osd) = osd_on(root, rec.id) {
+        ensure_placement(host, osd).await?;
         if rec.osd_id != Some(osd) {
             rec.osd_id = Some(osd);
             record::save(host, &rec).await?;
+        }
+    }
+
+    if !rec.removing {
+        let tree = host
+            .ceph_json(&["osd", "tree"])
+            .await
+            .context("read the CRUSH tree")?;
+        let bucket = record::crush_bucket(rec.id);
+        if is_empty_bucket(&tree, &bucket) {
+            host.ceph(&["osd", "crush", "rm", &bucket])
+                .await
+                .with_context(|| format!("remove the empty CRUSH host {bucket}"))?;
         }
     }
 
@@ -303,6 +315,15 @@ pub(crate) fn crush_children(tree: &serde_json::Value, bucket: &str) -> Vec<i64>
                 .collect()
         })
         .unwrap_or_default()
+}
+
+pub(crate) fn is_empty_bucket(tree: &serde_json::Value, bucket: &str) -> bool {
+    tree["nodes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|n| n["name"].as_str() == Some(bucket))
+        .is_some_and(|n| n["children"].as_array().is_none_or(Vec::is_empty))
 }
 
 pub(crate) fn removal_must_wait(holding: &[i64], known: &[i64]) -> bool {
@@ -365,10 +386,10 @@ mod tests {
     }
 
     #[test]
-    fn a_fresh_virtual_disk_osd_needs_every_placement_step() {
+    fn a_virtual_disk_osd_placed_in_its_own_crush_host_is_moved_back_under_its_machine() {
         let e = entry(r#"{"osd":5,"up":0,"in":1,"primary_affinity":1,"state":["exists","new"]}"#);
         assert_eq!(
-            placement_steps("", &e, "root=default host=vdisk-4"),
+            placement_steps("root=default host=vdisk-4", &e),
             vec![
                 PlacementStep::CrushLocation,
                 PlacementStep::PrimaryAffinity,
@@ -382,12 +403,28 @@ mod tests {
         let e = entry(
             r#"{"osd":5,"up":1,"in":1,"primary_affinity":0,"state":["exists","up","noout"]}"#,
         );
-        assert!(placement_steps(
-            "root=default host=vdisk-4\n",
-            &e,
-            "root=default host=vdisk-4"
-        )
-        .is_empty());
+        assert!(placement_steps("\n", &e).is_empty());
+    }
+
+    #[test]
+    fn a_virtual_disk_osd_has_no_crush_location_of_its_own() {
+        let e = entry(r#"{"osd":5,"up":0,"in":1,"primary_affinity":1,"state":["exists","new"]}"#);
+        assert_eq!(
+            placement_steps("", &e),
+            vec![PlacementStep::PrimaryAffinity, PlacementStep::NoOut]
+        );
+    }
+
+    #[test]
+    fn only_an_empty_leftover_crush_host_is_removed() {
+        let tree = serde_json::json!({"nodes": [
+            {"id": -3, "name": "node1", "type": "host", "children": [0, 6]},
+            {"id": -9, "name": "vdisk-4", "type": "host", "children": []},
+            {"id": -10, "name": "vdisk-5", "type": "host", "children": [7]}
+        ]});
+        assert!(is_empty_bucket(&tree, "vdisk-4"));
+        assert!(!is_empty_bucket(&tree, "vdisk-5"));
+        assert!(!is_empty_bucket(&tree, "vdisk-6"));
     }
 
     #[test]
