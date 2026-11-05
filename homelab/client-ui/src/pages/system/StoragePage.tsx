@@ -524,7 +524,7 @@ function DiskRow({
         <div className="flex flex-wrap items-center gap-2 pl-8 pt-3">
           <span className="mr-auto text-sm text-fg-muted">
             {vdisk
-              ? "Your data moves to your other disks first. Then the Storage Box is deleted and its billing stops."
+              ? "Your data moves to your other disks first. Then the virtual disk is deleted and its billing stops."
               : isOn
                 ? "Its data moves to your other disks first. This can take a while."
                 : "Everything on it will be erased."}
