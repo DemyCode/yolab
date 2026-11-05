@@ -144,7 +144,7 @@ pub async fn detach_all<H: Host>(host: &H, root: &Path) -> Result<()> {
 }
 
 pub(crate) const OFFLINE: &str =
-    "The Storage Box is not answering. This virtual disk is offline until it does; your data \
+    "The online storage behind this disk is not answering. This virtual disk is offline until it does; your data \
      stays on your other disks.";
 pub(crate) const PREPARING: &str = "Preparing the virtual disk…";
 pub(crate) const DRAINING: &str = "Moving your data off this virtual disk before deleting it…";
