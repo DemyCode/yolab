@@ -649,16 +649,19 @@ write_state <<EOF
 $CACHED_STATE
 EOF
 BEFORE=$(state_inode)
+ln "$SANDBOX/state/wg-state.json" "$SANDBOX/old-state"
 respond verify 200 '{}'
 respond records 200 "$RECORD_BODY"
 run_setup
 assert_eq "$RC" "0" "exit code"
 assert_contains "$(state)" 'myapp.example.test' "the new FQDN is persisted"
+assert_eq "$(cat "$SANDBOX/old-state")" "$CACHED_STATE" "the old file is left as it was"
 if [ "$(state_inode)" = "$BEFORE" ]; then
     bad "the state was rewritten in place, so a crash mid-write could leave it empty"
 else
     ok
 fi
+rm -f "$SANDBOX/old-state"
 case_end
 
 case_start "a restart with nothing new leaves the state file untouched"

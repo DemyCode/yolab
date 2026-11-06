@@ -162,7 +162,12 @@
     in
       if system == "x86_64-linux"
       then all
-      else builtins.removeAttrs all ["android-apk-is-signed-so-android-will-install-it"];
+      else
+        builtins.removeAttrs all [
+          "android-apk-is-signed-so-android-will-install-it"
+          "hardware-report-picks-cpu-and-disk-modules"
+          "gpu-detection-picks-the-driver-each-card-can-run"
+        ];
 
     devShellsFor = system: let
       p = pkgsFor system;
