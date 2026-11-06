@@ -55,7 +55,7 @@ charts:
   - name: bark-wallet
     version: "0.1.17"
   - name: bazarr
-    version: "0.2.17"
+    version: "0.2.18"
   - name: bentopdf
     version: "0.1.16"
   - name: bffless
@@ -259,9 +259,9 @@ charts:
   - name: jackett
     version: "0.1.17"
   - name: jellyfin
-    version: "0.3.17"
+    version: "0.3.18"
   - name: jellyseerr
-    version: "0.2.16"
+    version: "0.2.17"
   - name: jotty
     version: "0.1.17"
   - name: jupyterlab
@@ -303,7 +303,7 @@ charts:
   - name: libretranslate
     version: "0.1.18"
   - name: lidarr
-    version: "0.2.17"
+    version: "0.2.18"
   - name: linkstack
     version: "0.1.16"
   - name: linkwarden
@@ -363,7 +363,7 @@ charts:
   - name: mosquitto
     version: "0.1.16"
   - name: movies-tv
-    version: "0.2.18"
+    version: "0.2.19"
   - name: mqttx-web
     version: "0.1.16"
   - name: mstream
@@ -371,13 +371,13 @@ charts:
   - name: music-assistant
     version: "0.1.17"
   - name: music
-    version: "0.2.17"
+    version: "0.2.18"
   - name: myspeed
     version: "0.1.16"
   - name: n8n
     version: "0.1.31"
   - name: navidrome
-    version: "0.2.16"
+    version: "0.2.17"
   - name: neko
     version: "0.1.17"
   - name: netbird
@@ -495,15 +495,15 @@ charts:
   - name: privatebin
     version: "0.1.16"
   - name: prowlarr
-    version: "0.2.16"
+    version: "0.2.17"
   - name: public-pool-web
     version: "0.1.17"
   - name: pyload-ng
     version: "0.1.17"
   - name: qbittorrent
-    version: "0.2.16"
-  - name: radarr
     version: "0.2.17"
+  - name: radarr
+    version: "0.2.18"
   - name: reactive-resume
     version: "0.1.33"
   - name: readarr
@@ -563,7 +563,7 @@ charts:
   - name: solidtime
     version: "0.1.17"
   - name: sonarr
-    version: "0.2.17"
+    version: "0.2.18"
   - name: spacebot
     version: "0.1.17"
   - name: speedtest-tracker
