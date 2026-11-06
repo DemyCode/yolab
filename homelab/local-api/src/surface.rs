@@ -73,6 +73,7 @@ pub(crate) const ROUTE_TABLE: &[(&str, &[&str])] = &[
     ("/api/apps", &["GET"]),
     ("/api/apps/{id}", &["POST", "DELETE"]),
     ("/api/apps/{id}/update", &["POST"]),
+    ("/api/apps/{id}/data", &["GET"]),
     ("/api/apps/{id}/definition", &["GET"]),
     ("/api/apps/{id}/schema", &["GET"]),
     ("/api/apps/{id}/backup", &["PUT"]),
