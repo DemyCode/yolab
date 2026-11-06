@@ -1350,7 +1350,11 @@ class OutputsRendered(RenderedChart):
         return {c["name"]: c for c in spec["initContainers"]}
 
     def off(self, extra=None):
-        return self.inits(extra)["outputs-off"]["command"][2]
+        init = self.inits(extra).get("outputs-off")
+        return init["command"][2] if init else ""
+
+    def test_nothing_switched_off_needs_no_outputs_off_step(self):
+        self.assertNotIn("outputs-off", self.inits({**PRIVATE_ON}))
 
     def test_a_way_in_switched_off_prints_none_so_its_old_address_goes(self):
         script = self.off()
