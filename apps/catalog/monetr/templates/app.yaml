@@ -1,9 +1,5 @@
 {{ include "yolab-common.caddyConfigMap" . }}
 ---
-{{ include "yolab-common.fileExplorerSecret" . }}
----
-{{ include "yolab-common.fileExplorerConfigMap" . }}
----
 {{ include "yolab-common.privateAccessResources" . }}
 ---
 {{ include "yolab-common.uninstallHook" . }}
@@ -29,11 +25,9 @@ spec:
     spec:
       initContainers:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
-      {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
       {{- include "yolab-common.privateAccessInit" . | nindent 6 }}
       containers:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
-      {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
       {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
       - name: monetr
         image: ghcr.io/monetr/monetr:1.19.0@sha256:1a09c76c85f411c0239529aca0bae2b870da095c48ff822b12717e233bf7a2e2
@@ -81,7 +75,6 @@ spec:
           subPath: 'data/app'
       volumes:
       {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
-      {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
       {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}
 ---
 apiVersion: apps/v1

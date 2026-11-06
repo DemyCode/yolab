@@ -1,9 +1,5 @@
 {{ include "yolab-common.caddyConfigMap" . }}
 ---
-{{ include "yolab-common.fileExplorerSecret" . }}
----
-{{ include "yolab-common.fileExplorerConfigMap" . }}
----
 {{ include "yolab-common.privateAccessResources" . }}
 ---
 {{ include "yolab-common.uninstallHook" . }}
@@ -31,11 +27,9 @@ spec:
         kubernetes.io/arch: amd64
       initContainers:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
-      {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
       {{- include "yolab-common.privateAccessInit" . | nindent 6 }}
       containers:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
-      {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
       {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
       - name: web
         image: uusec/openresty-manager:2.4.6@sha256:003a57fbbe23c6844ac68a924496df9d8edb15307220f792cedbf724ee9d67cb
@@ -72,7 +66,6 @@ spec:
           subPath: 'data/logs'
       volumes:
       {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
-      {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
       {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}
       - name: host-etc-localtime
         hostPath:

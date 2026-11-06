@@ -1,9 +1,5 @@
 {{ include "yolab-common.caddyConfigMap" . }}
 ---
-{{ include "yolab-common.fileExplorerSecret" . }}
----
-{{ include "yolab-common.fileExplorerConfigMap" . }}
----
 {{ include "yolab-common.privateAccessResources" . }}
 ---
 {{ include "yolab-common.uninstallHook" . }}
@@ -38,11 +34,9 @@ spec:
     spec:
       initContainers:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
-      {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
       {{- include "yolab-common.privateAccessInit" . | nindent 6 }}
       containers:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
-      {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
       {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
       - name: web
         image: codeberg.org/readeck/readeck:0.23.4@sha256:fc34b2e9bc766422a4265dc253d1a3e95e0608ee08e86c7e3dda8773ec906fdc
@@ -82,5 +76,4 @@ spec:
           subPath: 'data'
       volumes:
       {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
-      {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
       {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}

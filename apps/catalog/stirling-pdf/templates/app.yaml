@@ -1,9 +1,5 @@
 {{ include "yolab-common.caddyConfigMap" . }}
 ---
-{{ include "yolab-common.fileExplorerSecret" . }}
----
-{{ include "yolab-common.fileExplorerConfigMap" . }}
----
 {{ include "yolab-common.privateAccessResources" . }}
 ---
 {{ include "yolab-common.uninstallHook" . }}
@@ -29,11 +25,9 @@ spec:
     spec:
       initContainers:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
-      {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
       {{- include "yolab-common.privateAccessInit" . | nindent 6 }}
       containers:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
-      {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
       {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
       - name: stirling-pdf
         image: ghcr.io/stirling-tools/stirling-pdf:latest@sha256:10164ffe04961b02ebc9fa4da12064eeacb8d3bc3e09ceb059f78ce7aaa83207
@@ -49,5 +43,4 @@ spec:
             subPath: configs
       volumes:
       {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
-      {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
       {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}

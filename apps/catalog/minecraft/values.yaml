@@ -1,5 +1,4 @@
 config:
-  file_explorer_enabled: false
   difficulty: normal
   gamemode: survival
   seed: ""

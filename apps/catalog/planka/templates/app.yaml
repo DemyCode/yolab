@@ -1,9 +1,5 @@
 {{ include "yolab-common.caddyConfigMap" . }}
 ---
-{{ include "yolab-common.fileExplorerSecret" . }}
----
-{{ include "yolab-common.fileExplorerConfigMap" . }}
----
 {{ include "yolab-common.uninstallHook" . }}
 ---
 {{ include "yolab-common.homeVolume" $ }}
@@ -40,10 +36,8 @@ spec:
       initContainers:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
       {{- include "yolab-common.printOutputs" (list . (dict "admin_password" (dict "secret" (printf "%s-secrets" .Release.Name) "key" "admin_password") "app_secret" (dict "secret" (printf "%s-secrets" .Release.Name) "key" "app_secret"))) | nindent 6 }}
-      {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
       containers:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
-      {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
       - name: planka
         image: ghcr.io/plankanban/planka:latest@sha256:125f45330853210c678fed1132bedc0912b4a11a27779b79802fbca108e069e2
         imagePullPolicy: IfNotPresent
@@ -86,7 +80,6 @@ spec:
             mountPath: /yolab
       volumes:
       {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
-      {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
 ---
 apiVersion: apps/v1
 kind: Deployment

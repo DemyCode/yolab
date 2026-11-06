@@ -3,9 +3,6 @@ config:
   admin_email: admin@example.com
   admin_password: ""
 yolab:
-  fileExplorer:
-    protect:
-    - mariadb
   platformApiUrl: ""
   accountToken: ""
   serviceName: ""

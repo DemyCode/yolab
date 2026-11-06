@@ -6,7 +6,3 @@ yolab:
   serviceName: ''
   gateway:
     upstream: localhost:5537
-  fileExplorer:
-    protect:
-    - data/db/init-databases.sql
-    - data/postgres

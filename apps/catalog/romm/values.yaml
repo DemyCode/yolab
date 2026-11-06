@@ -2,10 +2,6 @@ config:
   subdomain: romm
 
 yolab:
-  fileExplorer:
-    protect:
-    - mariadb
-    - romm/redis
   platformApiUrl: ""
   accountToken: ""
   serviceName: ""

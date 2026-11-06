@@ -102,10 +102,6 @@
 {{- end }}
 {{ include "yolab-common.caddyConfigMap" . }}
 ---
-{{ include "yolab-common.fileExplorerSecret" . }}
----
-{{ include "yolab-common.fileExplorerConfigMap" . }}
----
 {{ include "yolab-common.uninstallHook" . }}
 ---
 {{ include "yolab-common.homeVolume" $ }}
@@ -145,7 +141,6 @@ spec:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
       {{- include "yolab-common.filesDirs" (list . (list .Values.config.downloads_path)) | nindent 6 }}
       {{- include "yolab-stack.urlOutput" . | nindent 6 }}
-      {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
       {{- if and $cfg.webui_password (not $vpn) }}
       {{- include "qbittorrent.login" . | nindent 6 }}
       {{- end }}
@@ -154,13 +149,11 @@ spec:
       {{- end }}
       containers:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
-      {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
       {{- if not $vpn }}
       {{- include "qbittorrent.container" . | nindent 6 }}
       {{- end }}
       volumes:
       {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
-      {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
       {{- include "yolab-common.filesVolume" . | nindent 6 }}
 {{- if $vpn }}
 ---

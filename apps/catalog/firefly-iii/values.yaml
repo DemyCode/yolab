@@ -4,9 +4,6 @@ config:
   app_key: ""
 
 yolab:
-  fileExplorer:
-    protect:
-    - postgres
   platformApiUrl: ""
   accountToken: ""
   serviceName: ""

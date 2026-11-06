@@ -1,9 +1,6 @@
 config:
   subdomain: 2fauth
 yolab:
-  fileExplorer:
-    protect:
-    - postgres
   platformApiUrl: ''
   accountToken: ''
   serviceName: ''

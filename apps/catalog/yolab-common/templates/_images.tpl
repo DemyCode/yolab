@@ -11,7 +11,3 @@
 {{- define "yolab-common.image.caddy" -}}
 {{- (((.Values.yolab).images).caddy) | default "ghcr.io/demycode/caddy:main-latest@sha256:6939186a01241a5a243371153dc4edf9d3fcc21c728980a10ee7ee72288c55fe" -}}
 {{- end -}}
-
-{{- define "yolab-common.image.fileExplorer" -}}
-{{- (((.Values.yolab).images).fileExplorer) | default "gtstef/filebrowser:2.1.2-beta@sha256:0ff80341ce8a9c1e3c5ac8ca319bdf9675092028b04ed97607bbfebc10810fff" -}}
-{{- end -}}

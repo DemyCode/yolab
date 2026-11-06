@@ -6,7 +6,3 @@ yolab:
   serviceName: ''
   gateway:
     upstream: localhost:3000
-  fileExplorer:
-    protect:
-    - data/postgres
-    - data/redis

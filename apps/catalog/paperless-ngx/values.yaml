@@ -8,10 +8,6 @@ config:
   app_secret: ""
 
 yolab:
-  fileExplorer:
-    protect:
-    - postgres
-    - redis
   platformApiUrl: ""
   accountToken: ""
   serviceName: ""

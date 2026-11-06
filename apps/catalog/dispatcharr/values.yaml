@@ -1,9 +1,6 @@
 config:
   subdomain: dispatcharr
 yolab:
-  fileExplorer:
-    protect:
-    - data/db
   platformApiUrl: ''
   accountToken: ''
   serviceName: ''

@@ -736,36 +736,6 @@ def check(app, docs, fail, chart_yaml="", schema=None, arches=None, home=RELEASE
             if "startupProbe" in c:
                 fail(app, f"container {c['name']} has a startupProbe — none by design")
 
-    renders_file_explorer = any(
-        c.get("name") == "file-explorer-init"
-        for d in docs
-        for c in (
-            d.get("spec", {}).get("template", {}).get("spec", {}).get("initContainers")
-            or []
-        )
-    )
-    if renders_file_explorer:
-        outputs = ((schema or {}).get("properties") or {}).get("outputs") or {}
-        declared = outputs.get("properties") or {}
-        for key in EXPLORER_OUTPUTS:
-            if key not in declared:
-                fail(
-                    app,
-                    f"renders the file explorer but its schema's outputs "
-                    f"do not declare {key}",
-                )
-
-
-DATABASE_IMAGES = re.compile(
-    r"^(postgres|postgis|pgvector|mariadb|mysql|redis|valkey|mongo|minio)$"
-)
-EXPLORER_HEADER_UP = re.compile(r"header_up\s+(\S+)\s+\{http\.auth\.user\.id\}")
-
-
-def image_name(image):
-    repo = image.split("@", 1)[0].rsplit("/", 1)[-1]
-    return repo.split(":", 1)[0]
-
 
 def pod_specs(docs):
     for d in docs:
@@ -865,139 +835,6 @@ def state_claimed(spec, sidecar, state):
     return False
 
 
-def explorer_pod(docs):
-    for name, spec in pod_specs(docs):
-        if any(
-            c["name"] == "file-explorer-init" for c in spec.get("initContainers") or []
-        ):
-            return name, spec
-    return None, None
-
-
-def explorer_config(docs):
-    for d in docs:
-        if d.get("kind") != "ConfigMap":
-            continue
-        if not d["metadata"]["name"].endswith("-file-explorer"):
-            continue
-        text = (d.get("data") or {}).get("config.yaml")
-        if text is not None:
-            return yaml.safe_load(text) or {}
-    return None
-
-
-def check_file_explorer(app, docs, fail):
-    pod_name, spec = explorer_pod(docs)
-    if spec is None:
-        return
-    explorer = next(
-        (c for c in spec.get("containers") or [] if c["name"] == "file-explorer"),
-        None,
-    )
-    if explorer is None:
-        fail(
-            app,
-            f"pod {pod_name} runs file-explorer-init but no file-explorer container",
-        )
-        return
-
-    config = explorer_config(docs)
-    if config is None:
-        fail(app, "the file-explorer container has no rendered config.yaml ConfigMap")
-        return
-
-    http = config.get("http") or {}
-    if http.get("listen") != "127.0.0.1":
-        fail(
-            app,
-            f"file-explorer listens on {http.get('listen')!r}, not 127.0.0.1 — any pod "
-            f"could reach it without the Caddy login",
-        )
-
-    methods = (config.get("auth") or {}).get("methods") or {}
-    proxy = methods.get("proxy") or {}
-    if (methods.get("password") or {}).get("enabled") is not False:
-        fail(app, "file-explorer keeps its own password login next to the Caddy one")
-    if proxy.get("enabled") is not True or not proxy.get("header"):
-        fail(app, "file-explorer does not take the signed-in user from Caddy")
-
-    caddyfile = next(
-        (
-            c["data"]["Caddyfile"]
-            for c in docs
-            if c.get("kind") == "ConfigMap" and "Caddyfile" in (c.get("data") or {})
-        ),
-        "",
-    )
-    handed = EXPLORER_HEADER_UP.findall(caddyfile)
-    if proxy.get("header") and proxy["header"] not in handed:
-        fail(
-            app,
-            f"Caddy never sets {proxy['header']} from its basic_auth user, so a "
-            f"browser could send that header itself",
-        )
-
-    read_only = [(claim, sub) for claim, sub, ro in claim_mounts(spec, explorer) if ro]
-    for dname, dspec in pod_specs(docs):
-        for c in dspec.get("containers") or []:
-            if not DATABASE_IMAGES.match(image_name(c["image"])):
-                continue
-            for claim, sub, _ in claim_mounts(dspec, c):
-                guarded = any(
-                    claim == rclaim
-                    and (rsub == "" or sub == rsub or sub.startswith(rsub + "/"))
-                    for rclaim, rsub in read_only
-                )
-                mounted = any(
-                    claim == eclaim for eclaim, _, _ in claim_mounts(spec, explorer)
-                )
-                if mounted and not guarded:
-                    fail(
-                        app,
-                        f"database {dname}/{c['name']} keeps its files in {sub!r}, "
-                        f"which file-explorer can write — add it to "
-                        f"yolab.fileExplorer.protect",
-                    )
-
-
-def check_file_explorer_read_only(app, docs, fail):
-    _, spec = explorer_pod(docs)
-    if spec is None:
-        return
-    explorer = next(
-        (c for c in spec.get("containers") or [] if c["name"] == "file-explorer"),
-        None,
-    )
-    if explorer is None:
-        return
-    for claim, sub, ro in claim_mounts(spec, explorer):
-        if not ro:
-            fail(
-                app,
-                f"read-only file-explorer still mounts {claim}:{sub!r} writable",
-            )
-    for source in ((explorer_config(docs) or {}).get("server") or {}).get(
-        "sources"
-    ) or []:
-        cfg = source.get("config") or {}
-        if cfg.get("readOnly") is not True:
-            fail(
-                app,
-                f"read-only file-explorer leaves source {source.get('name')} writable",
-            )
-        granted = [
-            k
-            for k in ("modify", "create", "delete")
-            if (cfg.get("defaultPermissions") or {}).get(k)
-        ]
-        if granted:
-            fail(
-                app,
-                f"read-only file-explorer still grants {', '.join(granted)} on "
-                f"source {source.get('name')}",
-            )
-
-
 SOURCED = re.compile(r"^\s*\.\s+(\S+)", re.MULTILINE)
 BARE_SECRET = re.compile(r"printf '([A-Z_][A-Z0-9_]*)=%s")
 
@@ -1023,13 +860,6 @@ PRIVATE_ACCESS_ON = {
         "config.tailscale_auth_key": "tskey-auth-placeholder",
     },
 }
-
-
-def offers_file_explorer(schema):
-    config = ((schema.get("properties") or {}).get("config") or {}).get(
-        "properties"
-    ) or {}
-    return "file_explorer_enabled" in config
 
 
 def offered_private_access(schema):
@@ -1212,97 +1042,7 @@ def check_api_key(app, docs, upstream, fail):
         )
 
 
-EXPLORER_WAYS = {
-    "file_explorer_tor_enabled": {
-        "container": "file-explorer-tor",
-        "state": "file-explorer-tor",
-        "port": 18794,
-    },
-    "file_explorer_tailscale_enabled": {
-        "container": "file-explorer-tailscale",
-        "state": "file-explorer-tailscale",
-        "port": 18793,
-    },
-}
-EXPLORER_ENABLED = {"config.file_explorer_enabled": "true"}
-EXPLORER_WAYS_ON = {
-    **EXPLORER_ENABLED,
-    "config.file_explorer_tor_enabled": "true",
-    "config.file_explorer_tailscale_enabled": "true",
-    "config.file_explorer_tailscale_auth_key": "tskey-auth-placeholder",
-}
-
-
-def check_file_explorer_ways(app, docs, fail):
-    pod_name, spec = explorer_pod(docs)
-    if spec is None:
-        fail(app, "the file explorer's Tor and Tailscale are on but it does not run")
-        return
-    containers = {c["name"]: c for c in spec.get("containers") or []}
-    caddyfile = configmap_data(docs, "-caddy", "Caddyfile") or ""
-    for key, want in EXPLORER_WAYS.items():
-        c = containers.get(want["container"])
-        if c is None:
-            fail(app, f"{key} is on but pod {pod_name} has no {want['container']}")
-            continue
-        if (c.get("securityContext") or {}).get("privileged"):
-            fail(app, f"the {want['container']} container must not run privileged")
-        state = [sub.strip('"') for _, sub, _ in claim_mounts(spec, c)]
-        if not any(ends_in(sub, want["state"]) for sub in state):
-            fail(
-                app,
-                f"the {want['container']} container keeps no state of its own on "
-                f"the app's volume, so its address changes on every restart",
-            )
-        if not state_claimed(spec, c, want["state"]):
-            fail(
-                app,
-                f"nothing claims the {want['container']} state for this namespace "
-                f"before it starts, so a copy would run with the original's identity",
-            )
-        site = f"http://:{want['port']} {{\n  bind 127.0.0.1\n  basic_auth {{"
-        if site not in caddyfile:
-            fail(
-                app,
-                f"Caddy has no loopback-only entry point behind the explorer's "
-                f"login on port {want['port']} for {want['container']}",
-            )
-    torrc = configmap_data(docs, "-file-explorer", "torrc") or ""
-    port = EXPLORER_WAYS["file_explorer_tor_enabled"]["port"]
-    if f"HiddenServicePort 80 127.0.0.1:{port}" not in torrc:
-        fail(
-            app, "the explorer's onion service does not point at its Caddy entry point"
-        )
-    if "SocksPort 0" not in torrc:
-        fail(app, "the explorer's Tor must not open a SOCKS proxy inside the pod")
-    serve = configmap_data(docs, "-file-explorer", "serve.json") or "{}"
-    try:
-        web = json.loads(serve).get("Web") or {}
-    except json.JSONDecodeError:
-        web = {}
-    targets = [
-        h.get("Proxy")
-        for site in web.values()
-        for h in (site.get("Handlers") or {}).values()
-    ]
-    tailscale_port = EXPLORER_WAYS["file_explorer_tailscale_enabled"]["port"]
-    wanted = f"http://127.0.0.1:{tailscale_port}"
-    if targets != [wanted]:
-        fail(app, f"the explorer's Tailscale serves {targets}, not {wanted}")
-    env = {
-        e["name"]: e.get("value")
-        for e in containers.get("file-explorer-tailscale", {}).get("env") or []
-    }
-    if env.get("TS_USERSPACE") != "true":
-        fail(app, "the explorer's Tailscale must run in userspace")
-    if env.get("TS_KUBE_SECRET") != "":
-        fail(
-            app,
-            "the explorer's Tailscale would keep its identity in a Kubernetes Secret",
-        )
-
-
-ENV_PARTS = ("env", "host", "explorer", "apikey")
+ENV_PARTS = ("env", "host", "apikey")
 ENV_LOADER_WRITE = "cat > /yolab/env <<'YOLAB_ENV'"
 WRITES_ENV = re.compile(r"(?m)^.*>>?\s*/yolab/env(?![.\w/]).*$")
 WRITES_ENV_PART = re.compile(r">>?\s*/yolab/env\.d/([\w.-]+)")
@@ -1384,11 +1124,11 @@ def check_yolab_off(app, docs, fail):
         names = {c["name"] for c in (spec.get("containers") or [])} | {
             c["name"] for c in (spec.get("initContainers") or [])
         }
-        if names & {"wg-register", "wireguard", "file-explorer"}:
+        if names & {"wg-register", "wireguard"}:
             fail(
                 app,
-                f"pod {name} still registers a tunnel, runs WireGuard or the file "
-                f"explorer with the YoLab address off",
+                f"pod {name} still registers a tunnel or runs WireGuard with the "
+                f"YoLab address off",
             )
     caddyfile = configmap_data(docs, "-caddy", "Caddyfile") or ""
     if "YOLAB_FQDN" in caddyfile:
@@ -1416,13 +1156,6 @@ def check_sourced_secrets_reach_the_program(app, docs, fail):
                 )
 
 
-EXPLORER_OUTPUTS = (
-    "file_explorer_url",
-    "file_explorer_username",
-    "file_explorer_password",
-    "file_explorer_tor_url",
-    "file_explorer_tailscale_url",
-)
 OUTPUT_FORMATS = {"text", "uri", "secret", "multiline"}
 OUTPUT_FIELDS = {"type", "title", "format"}
 LEGACY_ANNOTATIONS = ("yolab.io/uischema", "yolab.io/outputs")
@@ -1731,6 +1464,32 @@ def check_files_folder_offer(app, schema, values_path, fail):
         )
 
 
+def schema_keys(node):
+    if isinstance(node, dict):
+        for k, v in node.items():
+            yield k
+            yield from schema_keys(v)
+    elif isinstance(node, list):
+        for v in node:
+            yield from schema_keys(v)
+
+
+def check_no_file_explorer(app, schema, values, fail):
+    own = sorted({k for k in schema_keys(schema) if k.startswith("file_explorer")})
+    if own:
+        fail(
+            app,
+            f"still offers its own file explorer ({', '.join(own)}); install File "
+            f"Browser on the service's folder instead",
+        )
+    if "fileExplorer" in ((values or {}).get("yolab") or {}):
+        fail(
+            app,
+            "values.yaml still sets yolab.fileExplorer; services no longer carry "
+            "their own file explorer",
+        )
+
+
 LIBRARIES = ("yolab-common", "yolab-stack")
 RETIRED_MEMBERS = "yolab.io/members"
 MEMBER_LABEL = "yolab.io/member"
@@ -2024,8 +1783,8 @@ def main(argv):
                 yaml.safe_load(values_path.read_text()) if values_path.exists() else {}
             )
             check_files(app, docs, uses_files(values), fail)
-            check_file_explorer(app, docs, fail)
             check_files_folder_offer(app, schema, values_path, fail)
+            check_no_file_explorer(app, schema, values, fail)
             check_private_access_offer(
                 app,
                 schema,
@@ -2094,52 +1853,6 @@ def main(argv):
                     text,
                     schema,
                 )
-
-            if not offers_file_explorer(schema):
-                continue
-            enabled, err = render(chart_dir, library_tgz, tmp, EXPLORER_ENABLED)
-            if enabled is None:
-                fail(
-                    app,
-                    f"helm template with the file explorer on failed: "
-                    f"{err.splitlines()[-1] if err else 'unknown'}",
-                )
-                continue
-            enabled_docs = [d for d in yaml.safe_load_all(enabled) if d]
-            if explorer_pod(enabled_docs)[1] is None:
-                fail(app, "the file explorer is switched on but does not run")
-                continue
-            check(app, enabled_docs, fail, text, schema)
-            check_file_explorer(app, enabled_docs, fail)
-            check_files(app, enabled_docs, uses_files(values), fail)
-            ways, err = render(chart_dir, library_tgz, tmp, EXPLORER_WAYS_ON)
-            if ways is None:
-                fail(
-                    app,
-                    f"helm template with the file explorer's Tor and Tailscale on "
-                    f"failed: {err.splitlines()[-1] if err else 'unknown'}",
-                )
-            else:
-                ways_docs = [d for d in yaml.safe_load_all(ways) if d]
-                check(app, ways_docs, fail, text, schema)
-                check_file_explorer(app, ways_docs, fail)
-                check_file_explorer_ways(app, ways_docs, fail)
-            rendered, err = render(
-                chart_dir,
-                library_tgz,
-                tmp,
-                {**EXPLORER_ENABLED, "config.file_explorer_read_only": "true"},
-            )
-            if rendered is None:
-                fail(
-                    app,
-                    f"helm template with a read-only file-explorer failed: "
-                    f"{err.splitlines()[-1] if err else 'unknown'}",
-                )
-                continue
-            check_file_explorer_read_only(
-                app, [d for d in yaml.safe_load_all(rendered) if d], fail
-            )
 
         charts = catalog_charts()
         for chart_dir in packs:

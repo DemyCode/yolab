@@ -6,7 +6,3 @@ yolab:
   serviceName: ''
   gateway:
     upstream: localhost:4000
-  fileExplorer:
-    protect:
-    - data/db
-    - data/valkey

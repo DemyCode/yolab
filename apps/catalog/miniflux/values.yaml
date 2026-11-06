@@ -5,9 +5,6 @@ config:
   admin_password: ""
 
 yolab:
-  fileExplorer:
-    protect:
-    - postgres
   platformApiUrl: ""
   accountToken: ""
   serviceName: ""

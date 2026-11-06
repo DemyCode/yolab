@@ -6,9 +6,3 @@ yolab:
   serviceName: ''
   gateway:
     upstream: localhost:8762
-  fileExplorer:
-    protect:
-    - data/db
-    - data/rabbitmq
-    - data/redis
-    - data/uploads

@@ -6,6 +6,3 @@ yolab:
   serviceName: ''
   gateway:
     upstream: frontend:80
-  fileExplorer:
-    protect:
-    - data/db

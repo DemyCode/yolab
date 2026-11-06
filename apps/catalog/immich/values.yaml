@@ -4,9 +4,6 @@ config:
 gpu: {}
 yolab:
   files: true
-  fileExplorer:
-    protect:
-    - postgres
   platformApiUrl: ''
   accountToken: ''
   serviceName: ''

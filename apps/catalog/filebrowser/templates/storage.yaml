@@ -1,5 +1,7 @@
 {{ include "yolab-common.homeVolume" $ }}
 ---
+{{ include "yolab-common.files" . }}
+---
 {{ include "yolab-common.caddyConfigMap" . }}
 ---
 {{ include "yolab-common.privateAccessResources" . }}

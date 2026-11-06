@@ -4,8 +4,8 @@
 An Umbrel app is a directory holding `umbrel-app.yml` (metadata) and
 `docker-compose.yml` (the workload). A YoLab app is a Helm chart built on the
 `yolab-common` library: one PVC, one gateway Deployment carrying the tunnel,
-Caddy, the file explorer and the app's own container, and a Deployment+Service
-per backing service (postgres, redis, ...).
+Caddy and the app's own container, and a Deployment+Service per backing
+service (postgres, redis, ...).
 
 This script does that translation mechanically so the long tail of the Umbrel
 catalogue does not have to be re-typed one chart at a time. It is deliberately
@@ -38,7 +38,7 @@ import yaml
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_SRC = "/tmp/opencode/umbrel-apps"
-LIB_VERSION = "0.1.21"
+LIB_VERSION = "0.1.30"
 
 # Which processors each pinned image is published for, recorded by
 # image_arches.py. Read when present so a workload running an x86-only image is
@@ -688,16 +688,6 @@ def compose_cmd(value):
 # ---------------------------------------------------------------------------
 
 
-def explorer_password_prop():
-    return {
-        "type": "string",
-        "title": "File explorer password",
-        "minLength": 12,
-        "writeOnly": True,
-        "generate": True,
-    }
-
-
 def build_schema(name, display, has_app_secret, has_admin_password, offer_node=False):
     config = {
         "yolab_enabled": {
@@ -730,13 +720,6 @@ def build_schema(name, display, has_app_secret, has_admin_password, offer_node=F
             "writeOnly": True,
             "generate": True,
         }
-    config["file_explorer_enabled"] = {
-        "type": "boolean",
-        "title": "File explorer",
-        "default": False,
-        "description": "A password-protected file manager for this app's own data on its own address: browse, download, upload, rename and delete files without needing a terminal. Folders holding a database server (Postgres, MariaDB, Redis, MongoDB, MinIO) always stay read-only.",
-    }
-
     config_deps = {
         "yolab_enabled": {
             "oneOf": [
@@ -765,129 +748,10 @@ def build_schema(name, display, has_app_secret, has_admin_password, offer_node=F
                 },
             ]
         },
-        "file_explorer_enabled": {
-            "oneOf": [
-                {"properties": {"file_explorer_enabled": {"const": False}}},
-                {
-                    "properties": {
-                        "file_explorer_enabled": {"const": True},
-                        "file_explorer_yolab_enabled": {
-                            "type": "boolean",
-                            "title": "File explorer YoLab address",
-                            "default": True,
-                            "description": "The file explorer reachable from anywhere at https://<subdomain>.<your-number>.yolab.io, through your YoLab tunnel. Visitors need IPv6.",
-                        },
-                        "file_explorer_tor_enabled": {
-                            "type": "boolean",
-                            "title": "File explorer on Tor",
-                            "default": False,
-                            "description": "The file explorer also reachable as its own .onion address in Tor Browser, from any network and without IPv6. Slower, and visitors never learn your home's IP address.",
-                        },
-                        "file_explorer_tailscale_enabled": {
-                            "type": "boolean",
-                            "title": "File explorer on Tailscale",
-                            "default": False,
-                            "description": "The file explorer also reachable from your own devices in your Tailscale network, as its own device at https://<name>.<your-tailnet>.ts.net. Turn on HTTPS certificates in the Tailscale admin console (DNS page) first.",
-                        },
-                        "file_explorer_username": {
-                            "type": "string",
-                            "title": "File explorer username",
-                            "default": "admin",
-                            "pattern": "^[A-Za-z0-9._-]+$",
-                        },
-                        "file_explorer_password": explorer_password_prop(),
-                        "file_explorer_read_only": {
-                            "type": "boolean",
-                            "title": "Read only",
-                            "default": False,
-                            "description": "Only browse and download. Nothing can be uploaded, renamed, edited or deleted through the file explorer.",
-                        },
-                    },
-                    "dependencies": {
-                        "file_explorer_yolab_enabled": {
-                            "oneOf": [
-                                {
-                                    "properties": {
-                                        "file_explorer_yolab_enabled": {"const": False}
-                                    }
-                                },
-                                {
-                                    "properties": {
-                                        "file_explorer_yolab_enabled": {"const": True},
-                                        "file_explorer_subdomain": {
-                                            "type": "string",
-                                            "title": "File explorer subdomain",
-                                            "format": "tunnel",
-                                            "description": "Leave empty to use this app's subdomain followed by -files.",
-                                        },
-                                    },
-                                },
-                            ]
-                        },
-                        "file_explorer_tailscale_enabled": {
-                            "oneOf": [
-                                {
-                                    "properties": {
-                                        "file_explorer_tailscale_enabled": {
-                                            "const": False
-                                        }
-                                    }
-                                },
-                                {
-                                    "properties": {
-                                        "file_explorer_tailscale_enabled": {
-                                            "const": True
-                                        },
-                                        "file_explorer_tailscale_auth_key": {
-                                            "type": "string",
-                                            "title": "File explorer Tailscale auth key",
-                                            "writeOnly": True,
-                                            "pattern": "^tskey-",
-                                            "description": "Create one in the Tailscale admin console under Settings, Keys. A reusable key can be the same one the app uses. It is used only the first time.",
-                                        },
-                                        "file_explorer_tailscale_hostname": {
-                                            "type": "string",
-                                            "title": "File explorer Tailscale name",
-                                            "pattern": "^[a-z0-9]([a-z0-9-]*[a-z0-9])?$",
-                                            "description": "The file explorer's device name in your tailnet. Leave empty to use its subdomain.",
-                                        },
-                                    },
-                                    "required": ["file_explorer_tailscale_auth_key"],
-                                },
-                            ]
-                        },
-                    },
-                },
-            ]
-        },
     }
 
     outputs = {
         "url": {"type": "string", "title": "Web URL", "format": "uri"},
-        "file_explorer_url": {
-            "type": "string",
-            "title": "File explorer",
-            "format": "uri",
-        },
-        "file_explorer_username": {
-            "type": "string",
-            "title": "File explorer username",
-        },
-        "file_explorer_password": {
-            "type": "string",
-            "title": "File explorer password",
-            "format": "secret",
-        },
-        "file_explorer_tor_url": {
-            "type": "string",
-            "title": "File explorer Tor address",
-            "format": "uri",
-        },
-        "file_explorer_tailscale_url": {
-            "type": "string",
-            "title": "File explorer Tailscale address",
-            "format": "uri",
-        },
     }
 
     return {
@@ -1081,20 +945,11 @@ def build_chart(app_id, um, compose, out_dir, src_dir, seeds=()):
     if home:
         chart_yaml["home"] = home
 
-    # Secret + protect values
     secret_entries = []
     if has_app_secret:
         secret_entries.append(("app_secret", "config.app_secret"))
     if has_admin_password:
         secret_entries.append(("admin_password", "config.admin_password"))
-    protect = []
-    for sname, (c, ports) in containers.items():
-        base = c["image"].split("@")[0].rsplit("/", 1)[-1].split(":")[0].lower()
-        if base in DEFAULT_PORTS:
-            for mount in c.get("volumeMounts", []):
-                rel = mount.get("subPath", "")
-                if mount["name"] == "data" and rel and rel not in protect:
-                    protect.append(rel)
 
     values = {
         "config": {"subdomain": app_id},
@@ -1111,8 +966,6 @@ def build_chart(app_id, um, compose, out_dir, src_dir, seeds=()):
     }
     if offer_node:
         values["config"]["node"] = ""
-    if protect:
-        values["yolab"]["fileExplorer"] = {"protect": sorted(protect)}
 
     schema = build_schema(
         app_id, display, has_app_secret, has_admin_password, offer_node=offer_node
@@ -1127,8 +980,6 @@ def build_chart(app_id, um, compose, out_dir, src_dir, seeds=()):
     )
     parts = [
         '{{ include "yolab-common.caddyConfigMap" . }}\n---\n'
-        + '{{ include "yolab-common.fileExplorerSecret" . }}\n---\n'
-        + '{{ include "yolab-common.fileExplorerConfigMap" . }}\n---\n'
         + '{{ include "yolab-common.privateAccessResources" . }}\n---\n'
         + '{{ include "yolab-common.uninstallHook" . }}\n---\n'
     ]
@@ -1181,7 +1032,6 @@ def build_chart(app_id, um, compose, out_dir, src_dir, seeds=()):
     gw += [
         "      initContainers:\n",
         '      {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}\n',
-        '      {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}\n',
         '      {{- include "yolab-common.privateAccessInit" . | nindent 6 }}\n',
     ]
     if seeds:
@@ -1189,14 +1039,12 @@ def build_chart(app_id, um, compose, out_dir, src_dir, seeds=()):
     gw += [
         "      containers:\n",
         '      {{- include "yolab-common.gatewayContainers" . | nindent 6 }}\n',
-        '      {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}\n',
         '      {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}\n',
     ]
     if share_gateway:
         gw.append(gateway_primary_block(primary_container))
     gw.append("      volumes:\n")
     gw.append('      {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}\n')
-    gw.append('      {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}\n')
     gw.append(
         '      {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}\n'
     )

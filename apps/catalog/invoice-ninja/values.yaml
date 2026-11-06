@@ -6,7 +6,3 @@ yolab:
   serviceName: ''
   gateway:
     upstream: nginx:80
-  fileExplorer:
-    protect:
-    - data/db
-    - data/redis

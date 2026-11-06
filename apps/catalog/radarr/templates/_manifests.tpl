@@ -2,10 +2,6 @@
 {{- $prefix := include "yolab-stack.prefix" . -}}
 {{ include "yolab-common.caddyConfigMap" . }}
 ---
-{{ include "yolab-common.fileExplorerSecret" . }}
----
-{{ include "yolab-common.fileExplorerConfigMap" . }}
----
 {{ include "yolab-common.uninstallHook" . }}
 ---
 {{ include "yolab-common.homeVolume" $ }}
@@ -45,10 +41,8 @@ spec:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
       {{- include "yolab-common.filesDirs" (list . (list .Values.config.movies_path)) | nindent 6 }}
       {{- include "yolab-stack.urlOutput" . | nindent 6 }}
-      {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
       containers:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
-      {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
       - name: radarr
         image: linuxserver/radarr:version-6.3.0.10514@sha256:fe051413dfd91b383ba04910552e83fb0306895fefee275c48dafe7bb90807dc
         imagePullPolicy: IfNotPresent
@@ -74,6 +68,5 @@ spec:
       {{- include "yolab-stack.servarr" (list . (dict "app" "radarr" "port" 7878 "api" "v3" "root" .Values.config.movies_path "category" "movieCategory" "configSubPath" "config")) | nindent 6 }}
       volumes:
       {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
-      {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
       {{- include "yolab-common.filesVolume" $ | nindent 6 }}
 {{- end -}}

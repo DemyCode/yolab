@@ -3,9 +3,6 @@ config:
   app_secret: ""
   sign_in: oidc
 yolab:
-  fileExplorer:
-    protect:
-    - postgres
   platformApiUrl: ''
   accountToken: ''
   serviceName: ''

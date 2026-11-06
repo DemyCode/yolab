@@ -19,7 +19,7 @@ yolab-tunnel-credentials
 
 
 {{- define "yolab-common.tunnel.enabled" -}}
-{{- if or (eq (include "yolab-common.yolab.enabled" .) "true") (eq (include "yolab-common.fileExplorer.yolab" .) "true") -}}true{{- end -}}
+{{- include "yolab-common.yolab.enabled" . -}}
 {{- end -}}
 
 
@@ -43,9 +43,6 @@ yolab-tunnel-credentials
     - name: SERVICE_NAME
       value: {{ ternary (((.Values.yolab).serviceName) | default "") "" $appOn | quote }}
     {{- $aliases := list }}
-    {{- if eq (include "yolab-common.fileExplorer.yolab" .) "true" }}
-    {{- $aliases = append $aliases (printf "FILE_EXPLORER_FQDN=%s" (include "yolab-common.fileExplorer.subdomain" .)) }}
-    {{- end }}
     {{- $base := ((.Values.yolab).serviceName) | default .Release.Name }}
     {{- $extra := ternary ((((.Values.yolab).gateway).aliases) | default dict) (dict) $appOn }}
     {{- range $var := keys $extra | sortAlpha }}
@@ -106,18 +103,6 @@ yolab-tunnel-credentials
 {{- if ne (include "yolab-common.tunnel.enabled" .) "true" -}}
 {{- $off = append $off "ipv6" -}}
 {{- end -}}
-{{- if ne (include "yolab-common.fileExplorer.yolab" .) "true" -}}
-{{- $off = append $off "file_explorer_url" -}}
-{{- end -}}
-{{- if ne (include "yolab-common.fileExplorer.enabled" .) "true" -}}
-{{- $off = concat $off (list "file_explorer_username" "file_explorer_password") -}}
-{{- end -}}
-{{- if ne (include "yolab-common.fileExplorer.tor" .) "true" -}}
-{{- $off = append $off "file_explorer_tor_url" -}}
-{{- end -}}
-{{- if ne (include "yolab-common.fileExplorer.tailscale" .) "true" -}}
-{{- $off = append $off "file_explorer_tailscale_url" -}}
-{{- end -}}
 {{- if ne (include "yolab-common.tor.enabled" .) "true" -}}
 {{- $off = append $off "tor_url" -}}
 {{- end -}}
@@ -162,7 +147,7 @@ yolab-tunnel-credentials
 {{- define "yolab-common.envLoader" -}}
 mkdir -p /yolab/env.d
 cat > /yolab/env <<'YOLAB_ENV'
-for yolab_env_part in env host explorer apikey; do
+for yolab_env_part in env host apikey; do
   if [ -f "/yolab/env.d/$yolab_env_part" ]; then . "/yolab/env.d/$yolab_env_part"; fi
 done
 YOLAB_ENV
@@ -389,7 +374,6 @@ data:
       {{- include "yolab-common.reverseProxy" (list . (list)) | nindent 6 }}
     }
     {{- end }}
-    {{- include "yolab-common.fileExplorer.caddySite" . | nindent 4 }}
     {{- include "yolab-common.privateAccess.caddySites" . | nindent 4 }}
 {{- end -}}
 

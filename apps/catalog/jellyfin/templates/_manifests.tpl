@@ -2,10 +2,6 @@
 {{- $prefix := include "yolab-stack.prefix" . -}}
 {{ include "yolab-common.caddyConfigMap" . }}
 ---
-{{ include "yolab-common.fileExplorerSecret" . }}
----
-{{ include "yolab-common.fileExplorerConfigMap" . }}
----
 {{ include "yolab-common.privateAccessResources" . }}
 ---
 {{ include "yolab-common.uninstallHook" . }}
@@ -54,11 +50,9 @@ spec:
       {{- $dirs := list }}{{- range .Values.config.libraries }}{{- $dirs = append $dirs .path }}{{- end }}
       {{- include "yolab-common.filesDirs" (list . $dirs) | nindent 6 }}
       {{- include "jellyfin.setupOff" . | nindent 6 }}
-      {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
       {{- include "yolab-common.privateAccessInit" . | nindent 6 }}
       containers:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
-      {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
       {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
       - name: jellyfin
         image: lscr.io/linuxserver/jellyfin:latest@sha256:799509f8ef3be7037478699cc6fd14d19dd75faac5e474ed219e98ae78a5b3e4
@@ -107,7 +101,6 @@ spec:
       {{- include "jellyfin.setup" . | nindent 6 }}
       volumes:
       {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
-      {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
       {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}
       {{- include "yolab-common.filesVolume" $ | nindent 6 }}
 {{- end -}}

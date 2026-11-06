@@ -6,6 +6,3 @@ yolab:
   serviceName: ''
   gateway:
     upstream: web:80
-  fileExplorer:
-    protect:
-    - data/postgres

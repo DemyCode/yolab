@@ -14,7 +14,7 @@ data:
       database:
         path: /var/lib/filebrowser/database.sqlite
       sources:
-        - path: /srv
+        - path: /files
           name: files
           config:
             defaultEnabled: true
@@ -52,14 +52,12 @@ spec:
         - name: fix-perms
           image: busybox:1@sha256:fd7dc98638c8e305f4dc34e979f1c0fdfdcaeb0fbf8fcff77ae834b6da3d7e6e
           imagePullPolicy: IfNotPresent
-          command: ["sh", "-c", "chown -R 1000:1000 /state /srv"]
+          command: ["sh", "-c", "chown -R 1000:1000 /state"]
           volumeMounts:
             - name: data
               mountPath: /state
               subPath: "quantum"
-            - name: data
-              mountPath: /srv
-              subPath: "files"
+        {{- include "yolab-common.filesDirs" (list . (list)) | nindent 8 }}
       containers:
         - name: filebrowser
           image: gtstef/filebrowser:2.1.2-beta@sha256:0ff80341ce8a9c1e3c5ac8ca319bdf9675092028b04ed97607bbfebc10810fff
@@ -85,9 +83,7 @@ spec:
             - name: data
               mountPath: /var/lib/filebrowser
               subPath: "quantum"
-            - name: data
-              mountPath: /srv
-              subPath: "files"
+            {{- include "yolab-common.filesMount" . | nindent 12 }}
             - name: cache
               mountPath: /tmp/filebrowser-cache
       volumes:
@@ -99,6 +95,7 @@ spec:
         - name: data
           persistentVolumeClaim:
             claimName: {{ .Release.Name }}-data
+        {{- include "yolab-common.filesVolume" . | nindent 8 }}
 ---
 apiVersion: v1
 kind: Service

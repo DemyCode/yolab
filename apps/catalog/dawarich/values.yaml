@@ -4,10 +4,6 @@ config:
   admin_email: ""
   admin_password: ""
 yolab:
-  fileExplorer:
-    protect:
-    - postgres
-    - redis
   platformApiUrl: ''
   accountToken: ''
   serviceName: ''

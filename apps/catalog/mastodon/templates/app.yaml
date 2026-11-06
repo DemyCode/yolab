@@ -1,9 +1,5 @@
 {{ include "yolab-common.caddyConfigMap" . }}
 ---
-{{ include "yolab-common.fileExplorerSecret" . }}
----
-{{ include "yolab-common.fileExplorerConfigMap" . }}
----
 {{ include "yolab-common.uninstallHook" . }}
 ---
 {{- $img := "linuxserver/mastodon:version-v4.7.0@sha256:2de60e78c598007b0353e2e42e9638ac67961dfa697f9714151e632f58049bce" }}
@@ -29,7 +25,6 @@ spec:
     spec:
       initContainers:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
-      {{- include "yolab-common.fileExplorerInit" . | nindent 6 }}
       # Mastodon's secrets are generated here, once, and never again.
       #
       # This runs in the GATEWAY pod on purpose. wg-register writes /yolab/env in the
@@ -84,10 +79,8 @@ spec:
             mountPath: /yolab
       containers:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
-      {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
       volumes:
       {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
-      {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
 ---
 apiVersion: apps/v1
 kind: Deployment

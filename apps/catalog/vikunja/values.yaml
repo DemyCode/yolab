@@ -4,9 +4,6 @@ config:
   app_secret: ""
 
 yolab:
-  fileExplorer:
-    protect:
-    - vikunja/db
   platformApiUrl: ""
   accountToken: ""
   serviceName: ""

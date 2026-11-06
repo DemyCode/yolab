@@ -7,6 +7,3 @@ yolab:
   serviceName: ''
   gateway:
     upstream: localhost:6610
-  fileExplorer:
-    protect:
-    - data/postgres

@@ -1,9 +1,6 @@
 config:
   subdomain: synapse
 yolab:
-  fileExplorer:
-    protect:
-    - postgres
   platformApiUrl: ''
   accountToken: ''
   serviceName: ''

@@ -1,9 +1,6 @@
 config:
   subdomain: unifi
 yolab:
-  fileExplorer:
-    protect:
-    - mongo
   platformApiUrl: ""
   accountToken: ""
   serviceName: ""

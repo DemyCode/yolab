@@ -10,10 +10,6 @@ config:
   smtp_from_address: ""
 
 yolab:
-  fileExplorer:
-    protect:
-    - postgres
-    - redis
   platformApiUrl: ""
   accountToken: ""
   serviceName: ""

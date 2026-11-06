@@ -38,12 +38,10 @@ GOOD = schema(
         "subdomain": {"type": "string", "format": "tunnel"},
         "password": {"type": "string", "writeOnly": True, "generate": True},
         "pin": {"type": "string", "writeOnly": True},
-        "file_explorer_enabled": {"type": "boolean", "default": True},
     },
     outputs={
         "url": output(format="uri"),
         "password": output(title="Admin password", format="secret"),
-        "file_explorer_password": output(format="secret"),
     },
 )
 
@@ -132,14 +130,7 @@ class CheckSchema(unittest.TestCase):
                 )
 
 
-def rendered_explorer():
-    def container(name):
-        return {
-            "name": name,
-            "image": f"example/{name}@sha256:0",
-            "imagePullPolicy": "IfNotPresent",
-        }
-
+def rendered_gateway():
     return [
         {
             "kind": "Deployment",
@@ -149,8 +140,11 @@ def rendered_explorer():
                     "metadata": {"labels": {"app": "gateway"}},
                     "spec": {
                         "initContainers": [
-                            container("wg-register"),
-                            container("file-explorer-init"),
+                            {
+                                "name": "wg-register",
+                                "image": "example/wg-register@sha256:0",
+                                "imagePullPolicy": "IfNotPresent",
+                            }
                         ],
                         "containers": [],
                     },
@@ -158,222 +152,6 @@ def rendered_explorer():
             },
         }
     ]
-
-
-EXPLORER_OUTPUTS = {
-    key: output(format="secret" if key.endswith("password") else "uri")
-    for key in check_charts.EXPLORER_OUTPUTS
-}
-
-
-class FileExplorerOutputs(unittest.TestCase):
-    def explorer_failures(self, s):
-        found = []
-        check_charts.check(
-            "demo", rendered_explorer(), lambda app, msg: found.append(msg), "", s
-        )
-        return [f for f in found if "file explorer" in f or "file_explorer" in f]
-
-    def test_every_explorer_output_declared_passes(self):
-        s = schema(outputs=EXPLORER_OUTPUTS)
-        self.assertEqual(self.explorer_failures(s), [])
-
-    def test_a_missing_explorer_output_is_reported(self):
-        for key in check_charts.EXPLORER_OUTPUTS:
-            outputs = {k: v for k, v in EXPLORER_OUTPUTS.items() if k != key}
-            found = self.explorer_failures(schema(outputs=outputs))
-            self.assertEqual(len(found), 1, key)
-            self.assertIn(f"do not declare {key}", found[0])
-
-
-def explorer_chart(
-    listen="127.0.0.1",
-    header_up=True,
-    protected=("postgres",),
-    read_only=False,
-):
-    writable = not read_only
-    config = {
-        "http": {"listen": listen, "port": 18790},
-        "server": {
-            "sources": [
-                {
-                    "path": "/srv/data",
-                    "name": "demo",
-                    "config": {
-                        "readOnly": read_only,
-                        "defaultPermissions": {
-                            "view": True,
-                            "download": True,
-                            "modify": writable,
-                            "create": writable,
-                            "delete": writable,
-                        },
-                    },
-                }
-            ]
-        },
-        "auth": {
-            "methods": {
-                "password": {"enabled": False},
-                "proxy": {"enabled": True, "header": "X-Yolab-User"},
-            }
-        },
-    }
-    caddyfile = "files.example {\n  reverse_proxy localhost:18790"
-    if header_up:
-        caddyfile += " {\n    header_up X-Yolab-User {http.auth.user.id}\n  }"
-    caddyfile += "\n}\n"
-    data_volume = {
-        "name": "data",
-        "persistentVolumeClaim": {"claimName": "release-data"},
-    }
-    explorer_mounts = [
-        {
-            "name": "data",
-            "mountPath": "/srv/data",
-            "readOnly": read_only,
-        }
-    ] + [
-        {"name": "data", "mountPath": f"/srv/data/{p}", "subPath": p, "readOnly": True}
-        for p in protected
-    ]
-    return [
-        {
-            "kind": "ConfigMap",
-            "metadata": {"name": "release-caddy"},
-            "data": {"Caddyfile": caddyfile},
-        },
-        {
-            "kind": "ConfigMap",
-            "metadata": {"name": "release-file-explorer"},
-            "data": {"config.yaml": yaml.safe_dump(config)},
-        },
-        {
-            "kind": "Deployment",
-            "metadata": {"name": "gateway"},
-            "spec": {
-                "template": {
-                    "spec": {
-                        "initContainers": [{"name": "file-explorer-init"}],
-                        "containers": [
-                            {
-                                "name": "file-explorer",
-                                "image": "gtstef/filebrowser:2@sha256:0",
-                                "volumeMounts": explorer_mounts,
-                            }
-                        ],
-                        "volumes": [data_volume],
-                    }
-                }
-            },
-        },
-        {
-            "kind": "Deployment",
-            "metadata": {"name": "postgres"},
-            "spec": {
-                "template": {
-                    "spec": {
-                        "containers": [
-                            {
-                                "name": "postgres",
-                                "image": "postgres:16-alpine@sha256:0",
-                                "volumeMounts": [
-                                    {
-                                        "name": "data",
-                                        "mountPath": "/var/lib/postgresql/data",
-                                        "subPath": "postgres",
-                                    }
-                                ],
-                            }
-                        ],
-                        "volumes": [data_volume],
-                    }
-                }
-            },
-        },
-    ]
-
-
-def explorer_failures(docs, read_only=False):
-    found = []
-    check = (
-        check_charts.check_file_explorer_read_only
-        if read_only
-        else check_charts.check_file_explorer
-    )
-    check("demo", docs, lambda app, msg: found.append(msg))
-    return found
-
-
-class FileExplorerContainer(unittest.TestCase):
-    def test_a_loopback_explorer_behind_caddy_with_its_database_guarded_passes(self):
-        self.assertEqual(explorer_failures(explorer_chart()), [])
-
-    def test_an_explorer_other_pods_can_reach_is_reported(self):
-        found = explorer_failures(explorer_chart(listen="0.0.0.0"))
-        self.assertEqual(len(found), 1)
-        self.assertIn("without the Caddy login", found[0])
-
-    def test_a_user_header_caddy_does_not_overwrite_is_reported(self):
-        found = explorer_failures(explorer_chart(header_up=False))
-        self.assertEqual(len(found), 1)
-        self.assertIn("could send that header itself", found[0])
-
-    def test_a_database_folder_the_explorer_can_write_is_reported(self):
-        found = explorer_failures(explorer_chart(protected=()))
-        self.assertEqual(len(found), 1)
-        self.assertIn("'postgres'", found[0])
-        self.assertIn("yolab.fileExplorer.protect", found[0])
-
-    def test_a_read_only_parent_folder_guards_the_database_inside_it(self):
-        self.assertEqual(
-            explorer_failures(explorer_chart(protected=(), read_only=True)), []
-        )
-
-    def test_an_init_without_the_explorer_container_is_reported(self):
-        docs = explorer_chart()
-        docs[2]["spec"]["template"]["spec"]["containers"] = []
-        found = explorer_failures(docs)
-        self.assertEqual(len(found), 1)
-        self.assertIn("no file-explorer container", found[0])
-
-    def test_the_database_image_is_recognised_whatever_its_registry(self):
-        for image in (
-            "postgres:16-alpine@sha256:0",
-            "ghcr.io/immich-app/postgres:14-vectorchord0.4.3@sha256:0",
-            "docker.io/valkey/valkey:8-bookworm@sha256:0",
-            "postgis/postgis:17-3.5-alpine@sha256:0",
-        ):
-            self.assertTrue(
-                check_charts.DATABASE_IMAGES.match(check_charts.image_name(image)),
-                image,
-            )
-        self.assertFalse(
-            check_charts.DATABASE_IMAGES.match(
-                check_charts.image_name(
-                    "ghcr.io/umami-software/umami:postgresql-latest"
-                )
-            )
-        )
-
-
-class FileExplorerReadOnly(unittest.TestCase):
-    def test_a_fully_read_only_explorer_passes(self):
-        self.assertEqual(
-            explorer_failures(explorer_chart(read_only=True), read_only=True), []
-        )
-
-    def test_a_writable_mount_under_read_only_is_reported(self):
-        found = explorer_failures(explorer_chart(), read_only=True)
-        self.assertTrue(
-            any("mounts release-data:" in f and "writable" in f for f in found), found
-        )
-
-    def test_write_permissions_under_read_only_are_reported(self):
-        found = explorer_failures(explorer_chart(), read_only=True)
-        self.assertTrue(any("leaves source demo writable" in f for f in found))
-        self.assertTrue(any("still grants modify, create, delete" in f for f in found))
 
 
 def pod(*containers):
@@ -460,7 +238,7 @@ class Workloads(unittest.TestCase):
         found = []
         check_charts.check(
             "demo",
-            rendered_explorer() + [daemonset, service],
+            rendered_gateway() + [daemonset, service],
             lambda app, msg: found.append(msg),
             arches=arches
             if arches is not None
@@ -1398,19 +1176,6 @@ class PrivateAccessRendered(RenderedChart):
         self.assertIsNone(text)
         self.assertIn("tailscale_auth_key", err)
 
-    def test_the_file_explorer_cannot_change_the_onion_key_or_tailscale_identity(self):
-        spec = self.deployments(
-            self.docs({**PRIVATE_ON, **check_charts.EXPLORER_ENABLED})
-        )["gateway"]
-        explorer = next(c for c in spec["containers"] if c["name"] == "file-explorer")
-        read_only = {
-            m.get("subPath")
-            for m in explorer["volumeMounts"]
-            if m.get("readOnly") is True
-        }
-        self.assertIn("tor", read_only)
-        self.assertIn("tailscale", read_only)
-
     def init(self, docs, name):
         spec = self.deployments(docs)["gateway"]
         return next(c for c in spec["initContainers"] if c["name"] == name)
@@ -1548,7 +1313,7 @@ class YolabOffRendered(RenderedChart):
         self.assertIn("wg-register", {c["name"] for c in spec["initContainers"]})
         self.assertIn("wireguard", {c["name"] for c in spec["containers"]})
 
-    def test_off_no_tunnel_wireguard_explorer_or_public_site(self):
+    def test_off_no_tunnel_wireguard_or_public_site(self):
         docs = self.docs(YOLAB_OFF)
         found = []
         check_charts.check_yolab_off(
@@ -1632,177 +1397,6 @@ class ValheimPasswordOutput(RenderedChart):
         env = {e["name"]: e.get("value") for e in outputs["env"]}
         self.assertEqual(env["OUTPUT_SERVER_PASS"], "")
         self.assertIn("${OUTPUT_SERVER_PASS:-NONE}", outputs["command"][2])
-
-
-EXPLORER_ENABLED = check_charts.EXPLORER_ENABLED
-EXPLORER_WAYS_ON = check_charts.EXPLORER_WAYS_ON
-
-
-class FileExplorerWaysRendered(RenderedChart):
-    CHART = "vaultwarden"
-
-    def gateway(self, docs):
-        return self.deployments(docs)["gateway"]
-
-    def names(self, spec, key="containers"):
-        return {c["name"] for c in spec.get(key) or []}
-
-    def ways_failures(self, docs):
-        found = []
-        check_charts.check_file_explorer_ways(
-            "vaultwarden", docs, lambda app, msg: found.append(msg)
-        )
-        return found
-
-    def test_by_default_the_explorer_is_off(self):
-        docs = self.docs()
-        self.assertFalse(
-            {"file-explorer", "file-explorer-tor", "file-explorer-tailscale"}
-            & self.names(self.gateway(docs))
-        )
-        self.assertNotIn(
-            "{$FILE_EXPLORER_FQDN}",
-            check_charts.configmap_data(docs, "-caddy", "Caddyfile"),
-        )
-
-    def test_switched_on_the_explorer_has_only_its_yolab_address(self):
-        docs = self.docs(EXPLORER_ENABLED)
-        containers = self.names(self.gateway(docs))
-        self.assertIn("file-explorer", containers)
-        self.assertFalse({"file-explorer-tor", "file-explorer-tailscale"} & containers)
-        caddyfile = check_charts.configmap_data(docs, "-caddy", "Caddyfile")
-        self.assertIn("{$FILE_EXPLORER_FQDN}", caddyfile)
-        self.assertNotIn("18793", caddyfile)
-        self.assertNotIn("18794", caddyfile)
-
-    def test_switched_on_the_explorer_s_tor_and_tailscale_pass_the_checks(self):
-        docs = self.docs(EXPLORER_WAYS_ON)
-        self.assertTrue(
-            {"file-explorer", "file-explorer-tor", "file-explorer-tailscale"}
-            <= self.names(self.gateway(docs))
-        )
-        self.assertIn(
-            "file-explorer-tor-state",
-            self.names(self.gateway(docs), "initContainers"),
-        )
-        self.assertEqual(self.ways_failures(docs), [])
-
-    def test_an_explorer_tailscale_identity_nobody_claims_is_reported(self):
-        docs = self.docs(EXPLORER_WAYS_ON)
-        sidecar = next(
-            c
-            for c in self.gateway(docs)["containers"]
-            if c["name"] == "file-explorer-tailscale"
-        )
-        sidecar["command"][-1] = sidecar["command"][-1].replace(
-            "claim_state /var/lib/tailscale\n", ""
-        )
-        found = self.ways_failures(docs)
-        self.assertEqual(len(found), 1, found)
-        self.assertIn("file-explorer-tailscale", found[0])
-        self.assertIn("a copy would run with the original's identity", found[0])
-
-    def test_the_explorer_s_tailscale_cannot_be_switched_on_without_its_own_key(self):
-        text, err = check_charts.render(
-            self.chart,
-            self.library,
-            self.tmp.name,
-            {**EXPLORER_ENABLED, "config.file_explorer_tailscale_enabled": "true"},
-        )
-        self.assertIsNone(text)
-        self.assertIn("file_explorer_tailscale_auth_key", err)
-
-    def test_the_explorer_keeps_identities_apart_from_the_app_s(self):
-        spec = self.gateway(self.docs({**PRIVATE_ON, **EXPLORER_WAYS_ON}))
-        mounts = {
-            c["name"]: {m.get("subPath") for m in c.get("volumeMounts") or []}
-            for c in spec["containers"]
-        }
-        self.assertIn("tor", mounts["tor"])
-        self.assertIn("file-explorer-tor", mounts["file-explorer-tor"])
-        self.assertIn("tailscale", mounts["tailscale"])
-        self.assertIn("file-explorer-tailscale", mounts["file-explorer-tailscale"])
-        self.assertNotEqual(
-            self.env(spec, "tailscale")["TS_HOSTNAME"],
-            self.env(spec, "file-explorer-tailscale")["TS_HOSTNAME"],
-        )
-
-    def test_the_explorer_cannot_change_its_own_onion_key_or_tailscale_identity(self):
-        spec = self.gateway(self.docs(EXPLORER_WAYS_ON))
-        explorer = next(c for c in spec["containers"] if c["name"] == "file-explorer")
-        read_only = {
-            m.get("subPath")
-            for m in explorer["volumeMounts"]
-            if m.get("readOnly") is True
-        }
-        self.assertIn("file-explorer-tor", read_only)
-        self.assertIn("file-explorer-tailscale", read_only)
-
-    def test_two_tailscale_devices_in_one_pod_do_not_fight_over_a_port(self):
-        spec = self.gateway(self.docs({**PRIVATE_ON, **EXPLORER_WAYS_ON}))
-        self.assertEqual(
-            self.env(spec, "file-explorer-tailscale")["TS_TAILSCALED_EXTRA_ARGS"],
-            "--port=0",
-        )
-
-    def test_an_explorer_entry_point_without_the_login_is_reported(self):
-        docs = self.docs(EXPLORER_WAYS_ON)
-        for d in docs:
-            if d.get("kind") == "ConfigMap" and "Caddyfile" in (d.get("data") or {}):
-                d["data"]["Caddyfile"] = d["data"]["Caddyfile"].replace(
-                    "http://:18794 {\n  bind 127.0.0.1\n  basic_auth",
-                    "http://:18794 {\n  bind 127.0.0.1\n  log",
-                )
-        found = self.ways_failures(docs)
-        self.assertEqual(len(found), 1)
-        self.assertIn("18794", found[0])
-
-    def test_app_address_off_and_explorer_s_on_registers_only_the_explorer(self):
-        docs = self.docs(
-            {
-                **EXPLORER_ENABLED,
-                "config.yolab_enabled": "false",
-                "config.tor_enabled": "true",
-                "config.file_explorer_yolab_enabled": "true",
-            }
-        )
-        spec = self.gateway(docs)
-        register = next(c for c in spec["initContainers"] if c["name"] == "wg-register")
-        env = {e["name"]: e.get("value") for e in register["env"]}
-        self.assertEqual(env["SERVICE_NAME"], "")
-        self.assertTrue(env["ALIASES"].startswith("FILE_EXPLORER_FQDN="))
-        self.assertIn("wireguard", self.names(spec))
-        caddyfile = check_charts.configmap_data(docs, "-caddy", "Caddyfile")
-        self.assertIn("{$FILE_EXPLORER_FQDN}", caddyfile)
-        self.assertNotIn("YOLAB_FQDN", caddyfile)
-
-    def test_an_explorer_reached_only_over_tor_needs_no_tunnel(self):
-        docs = self.docs(
-            {
-                **EXPLORER_ENABLED,
-                "config.yolab_enabled": "false",
-                "config.tor_enabled": "true",
-                "config.file_explorer_yolab_enabled": "false",
-                "config.file_explorer_tor_enabled": "true",
-            }
-        )
-        spec = self.gateway(docs)
-        inits = self.names(spec, "initContainers")
-        self.assertNotIn("wg-register", inits)
-        self.assertIn("yolab-env", inits)
-        self.assertFalse({"wireguard"} & self.names(spec))
-        self.assertIn("file-explorer-tor", self.names(spec))
-        explorer_init = next(
-            c for c in spec["initContainers"] if c["name"] == "file-explorer-init"
-        )
-        self.assertNotIn("FILE_EXPLORER_FQDN", explorer_init["command"][2])
-        caddyfile = check_charts.configmap_data(docs, "-caddy", "Caddyfile")
-        self.assertNotIn("FILE_EXPLORER_FQDN", caddyfile)
-
-    def test_from_before_the_switches_the_explorer_follows_the_app_s_address(self):
-        spec = self.gateway(self.docs({**YOLAB_OFF, **EXPLORER_ENABLED}))
-        self.assertNotIn("file-explorer", self.names(spec))
-        self.assertNotIn("wg-register", self.names(spec, "initContainers"))
 
 
 class ImportedEnvironment(unittest.TestCase):
@@ -2411,24 +2005,66 @@ class ImageArches(unittest.TestCase):
         self.assertEqual(result, {})
 
 
-class OffersFileExplorer(unittest.TestCase):
-    def test_a_chart_with_the_explorer_switch_offers_it_even_when_off_by_default(self):
-        schema = {
-            "properties": {
-                "config": {
-                    "properties": {
-                        "file_explorer_enabled": {"type": "boolean", "default": False}
-                    }
-                }
+def no_explorer_failures(schema, values=None):
+    found = []
+    check_charts.check_no_file_explorer(
+        "demo", schema, values or {}, lambda app, msg: found.append(msg)
+    )
+    return found
+
+
+class NoFileExplorerOfItsOwn(unittest.TestCase):
+    def test_a_service_without_an_explorer_of_its_own_passes(self):
+        self.assertEqual(no_explorer_failures(GOOD, {"yolab": {"files": True}}), [])
+
+    def test_an_explorer_switch_left_in_the_schema_is_reported(self):
+        s = schema(
+            config={"file_explorer_enabled": {"type": "boolean", "default": False}}
+        )
+        found = no_explorer_failures(s)
+        self.assertEqual(len(found), 1)
+        self.assertIn("file_explorer_enabled", found[0])
+        self.assertIn("File Browser", found[0])
+
+    def test_an_explorer_setting_inside_a_switch_or_an_output_is_reported(self):
+        s = schema(
+            config={"yolab_enabled": {"type": "boolean"}},
+            outputs={"file_explorer_url": output(format="uri")},
+        )
+        s["properties"]["config"]["dependencies"] = {
+            "yolab_enabled": {
+                "oneOf": [
+                    {"properties": {"file_explorer_subdomain": {"type": "string"}}}
+                ]
             }
         }
-        self.assertTrue(check_charts.offers_file_explorer(schema))
+        found = no_explorer_failures(s)
+        self.assertEqual(len(found), 1)
+        self.assertIn("file_explorer_subdomain, file_explorer_url", found[0])
 
-    def test_a_chart_without_the_switch_does_not_offer_it(self):
-        self.assertFalse(
-            check_charts.offers_file_explorer({"properties": {"config": {}}})
+    def test_explorer_values_left_behind_are_reported(self):
+        found = no_explorer_failures(
+            GOOD, {"yolab": {"fileExplorer": {"protect": ["postgres"]}}}
         )
-        self.assertFalse(check_charts.offers_file_explorer({}))
+        self.assertEqual(len(found), 1)
+        self.assertIn("yolab.fileExplorer", found[0])
+
+    def test_no_catalog_service_carries_its_own_explorer(self):
+        for chart in sorted(Path(check_charts.HERE).glob("*/Chart.yaml")):
+            schema_path = chart.parent / "values.schema.json"
+            values_path = chart.parent / "values.yaml"
+            self.assertEqual(
+                no_explorer_failures(
+                    json.loads(schema_path.read_text())
+                    if schema_path.exists()
+                    else {},
+                    yaml.safe_load(values_path.read_text())
+                    if values_path.exists()
+                    else {},
+                ),
+                [],
+                chart.parent.name,
+            )
 
 
 def api_key_failures(s):
@@ -2819,7 +2455,7 @@ class PackRendered(RenderedChart):
 
     def test_only_the_apps_that_use_files_mount_it_inside_the_pack(self):
         pods = self.deployments(
-            self.docs({"prowlarr.config.file_explorer_enabled": "true"})
+            self.docs()
         )
         mounted = {
             pod
@@ -3038,26 +2674,52 @@ class NavidromeFiles(RenderedChart):
         )
 
 
-class ExplorerSeesFiles(RenderedChart):
-    CHART = "sonarr"
+class FileBrowserOnAFolder(RenderedChart):
+    CHART = "filebrowser"
 
-    def test_the_file_explorer_shows_files_at_the_same_path_as_the_app(self):
-        docs = self.docs(check_charts.EXPLORER_ENABLED)
-        spec = self.deployments(docs)["gateway"]
-        explorer = next(c for c in spec["containers"] if c["name"] == "file-explorer")
-        mount = next(m for m in explorer["volumeMounts"] if m["name"] == "files")
+    def browsed(self, docs):
+        spec = self.deployments(docs)["filebrowser"]
+        browser = next(c for c in spec["containers"] if c["name"] == "filebrowser")
+        mount = next(m for m in browser["volumeMounts"] if m["name"] == "files")
+        claim = next(
+            v["persistentVolumeClaim"]["claimName"]
+            for v in spec["volumes"]
+            if v["name"] == "files"
+        )
+        config = check_charts.configmap_data(docs, "-config", "config.yaml")
+        sources = yaml.safe_load(config)["server"]["sources"]
+        return mount, claim, sources
+
+    def test_alone_it_browses_its_own_files_folder(self):
+        docs = self.docs()
+        mount, claim, sources = self.browsed(docs)
         self.assertEqual(mount["mountPath"], "/files")
         self.assertNotIn("subPath", mount)
-        config = next(
-            d
-            for d in docs
-            if d["kind"] == "ConfigMap" and "config.yaml" in (d.get("data") or {})
+        self.assertEqual([s["path"] for s in sources], ["/files"])
+        files = [d for d in docs if check_charts.is_files_doc(d)]
+        self.assertEqual(
+            {check_charts.tree_path(d) for d in files}, {"release.files"}
         )
-        sources = yaml.safe_load(config["data"]["config.yaml"])["server"]["sources"]
-        self.assertIn(
-            {"path": "/files", "name": "Files"},
-            [{"path": s["path"], "name": s["name"]} for s in sources],
+        self.assertEqual(claim, check_charts.files_claim("release.files"))
+
+    def test_pointed_at_another_service_s_folder_it_browses_that_folder(self):
+        docs = self.docs({"config.files_folder": "movies-tv.files"})
+        _, claim, _ = self.browsed(docs)
+        files = [d for d in docs if check_charts.is_files_doc(d)]
+        self.assertEqual(
+            {check_charts.tree_path(d) for d in files}, {"movies-tv.files"}
         )
+        self.assertEqual(claim, check_charts.files_claim("movies-tv.files"))
+
+    def test_it_never_re_owns_everything_in_the_folder_it_is_pointed_at(self):
+        spec = self.deployments(self.docs({"config.files_folder": "immich"}))[
+            "filebrowser"
+        ]
+        for c in spec.get("initContainers") or []:
+            script = " ".join(c.get("command") or [])
+            if "/files" in script:
+                self.assertNotIn("chown -R", script, c["name"])
+        self.assertNotIn("fsGroup", spec.get("securityContext") or {})
 
 
 class PackReadyToUse(RenderedChart):

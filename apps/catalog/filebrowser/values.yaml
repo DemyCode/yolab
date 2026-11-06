@@ -2,9 +2,9 @@
 config:
   subdomain: filebrowser
   password: ""
-  file_explorer_enabled: false
 
 yolab:
+  files: true
   platformApiUrl: ""
   accountToken: ""
   serviceName: ""

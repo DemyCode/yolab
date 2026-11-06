@@ -26,6 +26,13 @@
           "writeOnly": true,
           "generate": true
         },
+        "files_folder": {
+          "type": "string",
+          "title": "Folder",
+          "default": "",
+          "pattern": "^$|^/?[A-Za-z0-9_ -][A-Za-z0-9._ -]*(/[A-Za-z0-9_ -][A-Za-z0-9._ -]*)*/?$",
+          "description": "Which folder of your file tree File Browser shows. Leave it empty for a folder of its own. Give another service's folder, like jellyfin.files, to browse and manage that service's files."
+        },
         "tor_enabled": {
           "type": "boolean",
           "title": "Tor",
