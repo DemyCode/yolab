@@ -42,6 +42,7 @@ annotations:
 {{- $ownFiles := $yolab.files -}}
 {{- range $key, $value := ($root.Values.yolab | default dict) }}{{ $_ := set $yolab $key $value }}{{ end -}}
 {{- $_ := set $yolab "files" (and $ownFiles (($root.Values.yolab).files) | default false) -}}
+{{- $_ := set $yolab "filesFolder" (include "yolab-common.files.folder" $root) -}}
 {{- $_ := set $yolab "serviceName" "" -}}
 {{- with (($root.Values.yolab).serviceName) }}{{ $_ := set $yolab "serviceName" (printf "%s-%s" . $name) }}{{ end -}}
 {{- $_ := set $values "config" $cfg -}}

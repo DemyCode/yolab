@@ -15,18 +15,7 @@ type: Opaque
 stringData:
   desktop: {{ required "config.desktop_password is required" .Values.config.desktop_password | quote }}
 ---
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: {{ .Release.Name }}-data
-  namespace: {{ .Release.Namespace }}
-spec:
-  accessModes:
-  - ReadWriteMany
-  storageClassName: yolab-cephfs
-  resources:
-    requests:
-      storage: {{ include "yolab-common.storageSize" $ | quote }}
+{{ include "yolab-common.homeVolume" $ }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -149,13 +138,13 @@ spec:
           mountPath: /run
         - name: data
           mountPath: /home/steamheadless
-          subPath: {{ .Release.Name }}/home
+          subPath: home
         - name: data
           mountPath: /var/lib/steam-headless
-          subPath: {{ .Release.Name }}/state
+          subPath: state
         - name: data
           mountPath: /mnt/games
-          subPath: {{ .Release.Name }}/games
+          subPath: games
         - name: password
           mountPath: /steam-headless-provisioning-password
           subPath: password

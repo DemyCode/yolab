@@ -8,18 +8,7 @@
 ---
 {{ include "yolab-common.uninstallHook" . }}
 ---
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: {{ .Release.Name }}-data
-  namespace: {{ .Release.Namespace }}
-spec:
-  accessModes:
-    - ReadWriteMany
-  storageClassName: yolab-cephfs
-  resources:
-    requests:
-      storage: {{ include "yolab-common.storageSize" $ | quote }}
+{{ include "yolab-common.homeVolume" $ }}
 {{- $gpu := include "frigate.gpu" . | fromJson }}
 ---
 apiVersion: apps/v1
@@ -90,7 +79,7 @@ spec:
         volumeMounts:
           - name: data
             mountPath: /config
-            subPath: {{ printf "%s/frigate/config" .Release.Name | quote }}
+            subPath: "frigate/config"
       containers:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
@@ -118,10 +107,10 @@ spec:
         volumeMounts:
           - name: data
             mountPath: /config
-            subPath: {{ printf "%s/frigate/config" .Release.Name | quote }}
+            subPath: "frigate/config"
           - name: data
             mountPath: /media/frigate
-            subPath: {{ printf "%s/frigate/media" .Release.Name | quote }}
+            subPath: "frigate/media"
           - name: shm
             mountPath: /dev/shm
       volumes:

@@ -8,18 +8,7 @@
 ---
 {{ include "yolab-common.uninstallHook" . }}
 ---
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: {{ .Release.Name }}-data
-  namespace: {{ .Release.Namespace }}
-spec:
-  accessModes:
-    - ReadWriteMany
-  storageClassName: yolab-cephfs
-  resources:
-    requests:
-      storage: {{ include "yolab-common.storageSize" $ | quote }}
+{{ include "yolab-common.homeVolume" $ }}
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -64,7 +53,7 @@ spec:
         - -c
         - 'set -e
 
-          D=/data/{{ .Release.Name }}
+          D=/data
 
           [ -e "$D/default-password" ] || cp /seed/f0 "$D/default-password"
 
@@ -96,13 +85,13 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /default-password
-          subPath: '{{ .Release.Name }}/default-password'
+          subPath: 'default-password'
         - name: data
           mountPath: /data
-          subPath: '{{ .Release.Name }}/data/portainer'
+          subPath: 'data/portainer'
         - name: data
           mountPath: /var/run
-          subPath: '{{ .Release.Name }}/data/docker'
+          subPath: 'data/docker'
       volumes:
       {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
@@ -154,10 +143,10 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /entrypoint.sh
-          subPath: '{{ .Release.Name }}/entrypoint.sh'
+          subPath: 'entrypoint.sh'
         - name: data
           mountPath: /data
-          subPath: '{{ .Release.Name }}/data/docker'
+          subPath: 'data/docker'
       volumes:
       - name: data
         persistentVolumeClaim:
@@ -174,7 +163,7 @@ spec:
         - -c
         - 'set -e
 
-          D=/data/{{ .Release.Name }}
+          D=/data
 
           [ -e "$D/default-password" ] || cp /seed/f0 "$D/default-password"
 

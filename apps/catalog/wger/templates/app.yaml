@@ -8,18 +8,7 @@
 ---
 {{ include "yolab-common.uninstallHook" . }}
 ---
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: {{ .Release.Name }}-data
-  namespace: {{ .Release.Namespace }}
-spec:
-  accessModes:
-    - ReadWriteMany
-  storageClassName: yolab-cephfs
-  resources:
-    requests:
-      storage: {{ include "yolab-common.storageSize" $ | quote }}
+{{ include "yolab-common.homeVolume" $ }}
 ---
 apiVersion: v1
 kind: Secret
@@ -68,7 +57,7 @@ spec:
         - -c
         - 'set -e
 
-          D=/data/{{ .Release.Name }}
+          D=/data
 
           mkdir -p "$D/config"
 
@@ -261,10 +250,10 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /home/wger/static
-          subPath: '{{ .Release.Name }}/data/static'
+          subPath: 'data/static'
         - name: data
           mountPath: /home/wger/media
-          subPath: '{{ .Release.Name }}/data/media'
+          subPath: 'data/media'
       volumes:
       - name: data
         persistentVolumeClaim:
@@ -281,7 +270,7 @@ spec:
         - -c
         - 'set -e
 
-          D=/data/{{ .Release.Name }}
+          D=/data
 
           mkdir -p "$D/config"
 
@@ -462,7 +451,7 @@ spec:
         - -c
         - 'set -e
 
-          D=/data/{{ .Release.Name }}
+          D=/data
 
           mkdir -p "$D/config"
 
@@ -526,11 +515,11 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /config/powersync.yaml
-          subPath: '{{ .Release.Name }}/powersync.yaml'
+          subPath: 'powersync.yaml'
           readOnly: true
         - name: data
           mountPath: /config/sync_rules.yaml
-          subPath: '{{ .Release.Name }}/sync_rules.yaml'
+          subPath: 'sync_rules.yaml'
           readOnly: true
       volumes:
       - name: data
@@ -548,7 +537,7 @@ spec:
         - -c
         - 'set -e
 
-          D=/data/{{ .Release.Name }}
+          D=/data
 
           mkdir -p "$D/config"
 
@@ -608,15 +597,15 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /etc/nginx/conf.d/default.conf
-          subPath: '{{ .Release.Name }}/config/nginx.conf'
+          subPath: 'config/nginx.conf'
           readOnly: true
         - name: data
           mountPath: /wger/static
-          subPath: '{{ .Release.Name }}/data/static'
+          subPath: 'data/static'
           readOnly: true
         - name: data
           mountPath: /wger/media
-          subPath: '{{ .Release.Name }}/data/media'
+          subPath: 'data/media'
           readOnly: true
       volumes:
       - name: data
@@ -634,7 +623,7 @@ spec:
         - -c
         - 'set -e
 
-          D=/data/{{ .Release.Name }}
+          D=/data
 
           mkdir -p "$D/config"
 
@@ -729,7 +718,7 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /var/lib/postgresql/data/
-          subPath: '{{ .Release.Name }}/data/postgres-data'
+          subPath: 'data/postgres-data'
       volumes:
       - name: data
         persistentVolumeClaim:
@@ -746,7 +735,7 @@ spec:
         - -c
         - 'set -e
 
-          D=/data/{{ .Release.Name }}
+          D=/data
 
           mkdir -p "$D/config"
 
@@ -819,7 +808,7 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /data
-          subPath: '{{ .Release.Name }}/data/redis-data'
+          subPath: 'data/redis-data'
       volumes:
       - name: data
         persistentVolumeClaim:
@@ -836,7 +825,7 @@ spec:
         - -c
         - 'set -e
 
-          D=/data/{{ .Release.Name }}
+          D=/data
 
           mkdir -p "$D/config"
 
@@ -1023,7 +1012,7 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /home/wger/media
-          subPath: '{{ .Release.Name }}/data/media'
+          subPath: 'data/media'
       volumes:
       - name: data
         persistentVolumeClaim:
@@ -1040,7 +1029,7 @@ spec:
         - -c
         - 'set -e
 
-          D=/data/{{ .Release.Name }}
+          D=/data
 
           mkdir -p "$D/config"
 
@@ -1207,7 +1196,7 @@ spec:
         volumeMounts:
         - name: data
           mountPath: ${APP_DATA_DIR}/beat/
-          subPath: '{{ .Release.Name }}/data/celery-beat'
+          subPath: 'data/celery-beat'
       volumes:
       - name: data
         persistentVolumeClaim:
@@ -1224,7 +1213,7 @@ spec:
         - -c
         - 'set -e
 
-          D=/data/{{ .Release.Name }}
+          D=/data
 
           mkdir -p "$D/config"
 

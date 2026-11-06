@@ -8,18 +8,7 @@
 ---
 {{ include "yolab-common.uninstallHook" . }}
 ---
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: {{ .Release.Name }}-data
-  namespace: {{ .Release.Namespace }}
-spec:
-  accessModes:
-    - ReadWriteMany
-  storageClassName: yolab-cephfs
-  resources:
-    requests:
-      storage: {{ include "yolab-common.storageSize" $ | quote }}
+{{ include "yolab-common.homeVolume" $ }}
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -61,7 +50,7 @@ spec:
         - -c
         - 'set -e
 
-          D=/data/{{ .Release.Name }}
+          D=/data
 
           mkdir -p "$D/data"
 
@@ -104,13 +93,13 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /app/server_public_key.pub
-          subPath: '{{ .Release.Name }}/data/server_public_key.pub'
+          subPath: 'data/server_public_key.pub'
         - name: data
           mountPath: /app/server_private_key.key
-          subPath: '{{ .Release.Name }}/data/server_private_key.key'
+          subPath: 'data/server_private_key.key'
         - name: data
           mountPath: /app/pins
-          subPath: '{{ .Release.Name }}/data/pins'
+          subPath: 'data/pins'
       volumes:
       {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
@@ -148,13 +137,13 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /server_public_key.pub
-          subPath: '{{ .Release.Name }}/data/server_public_key.pub'
+          subPath: 'data/server_public_key.pub'
         - name: data
           mountPath: /server_private_key.key
-          subPath: '{{ .Release.Name }}/data/server_private_key.key'
+          subPath: 'data/server_private_key.key'
         - name: data
           mountPath: /pins
-          subPath: '{{ .Release.Name }}/data/pins'
+          subPath: 'data/pins'
       volumes:
       - name: data
         persistentVolumeClaim:
@@ -171,7 +160,7 @@ spec:
         - -c
         - 'set -e
 
-          D=/data/{{ .Release.Name }}
+          D=/data
 
           mkdir -p "$D/data"
 
@@ -233,11 +222,11 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /etc/tor/torrc
-          subPath: '{{ .Release.Name }}/torrc'
+          subPath: 'torrc'
           readOnly: true
         - name: data
           mountPath: /data
-          subPath: '{{ .Release.Name }}/volumes/${TOR_DATA_DIR}'
+          subPath: 'volumes/${TOR_DATA_DIR}'
       volumes:
       - name: data
         persistentVolumeClaim:
@@ -254,7 +243,7 @@ spec:
         - -c
         - 'set -e
 
-          D=/data/{{ .Release.Name }}
+          D=/data
 
           mkdir -p "$D/data"
 

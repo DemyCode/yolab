@@ -3,7 +3,19 @@
 {{- end -}}
 
 
-{{- define "yolab-common.files.claim" -}}content{{- end -}}
+{{- define "yolab-common.files.folder" -}}
+{{- $given := ((.Values.yolab).filesFolder) | default ((.Values.config | default dict).files_folder) | default "" -}}
+{{- if $given -}}
+{{- include "yolab-common.tree.path" $given -}}
+{{- else -}}
+{{- printf "%s.files" (include "yolab-common.instance" .) -}}
+{{- end -}}
+{{- end -}}
+
+
+{{- define "yolab-common.files.claim" -}}
+{{- printf "content-%s" (include "yolab-common.files.folder" . | sha256sum | trunc 8) -}}
+{{- end -}}
 
 {{- define "yolab-common.files.mountPath" -}}/files{{- end -}}
 
@@ -24,18 +36,7 @@
 
 {{- define "yolab-common.files" -}}
 {{- if and (eq (include "yolab-common.files.enabled" .) "true") (not .Member) }}
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: {{ include "yolab-common.files.claim" . }}
-  namespace: {{ .Release.Namespace }}
-spec:
-  accessModes:
-    - ReadWriteMany
-  storageClassName: yolab-cephfs
-  resources:
-    requests:
-      storage: {{ include "yolab-common.storageSize" . | quote }}
+{{ include "yolab-common.tree.volume" (list . (include "yolab-common.files.claim" .) (include "yolab-common.files.folder" .)) }}
 {{- end }}
 {{- end -}}
 

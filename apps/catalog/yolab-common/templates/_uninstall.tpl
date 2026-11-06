@@ -55,7 +55,7 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /state
-              subPath: {{ printf "%s/yolab-state" .Release.Name | quote }}
+              subPath: "yolab-state"
       volumes:
         - name: data
           persistentVolumeClaim:

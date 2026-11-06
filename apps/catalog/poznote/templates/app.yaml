@@ -8,18 +8,7 @@
 ---
 {{ include "yolab-common.uninstallHook" . }}
 ---
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: {{ .Release.Name }}-data
-  namespace: {{ .Release.Namespace }}
-spec:
-  accessModes:
-    - ReadWriteMany
-  storageClassName: yolab-cephfs
-  resources:
-    requests:
-      storage: {{ include "yolab-common.storageSize" $ | quote }}
+{{ include "yolab-common.homeVolume" $ }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -94,10 +83,10 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /var/www/html/data
-          subPath: '{{ .Release.Name }}/data'
+          subPath: 'data'
         - name: data
           mountPath: /var/www/html/public/umbrel-mcp.php
-          subPath: '{{ .Release.Name }}/umbrel-mcp.php'
+          subPath: 'umbrel-mcp.php'
           readOnly: true
       volumes:
       - name: data
@@ -152,7 +141,7 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /var/www/html/data
-          subPath: '{{ .Release.Name }}/data'
+          subPath: 'data'
           readOnly: true
       volumes:
       - name: data

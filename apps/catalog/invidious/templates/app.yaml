@@ -8,18 +8,7 @@
 ---
 {{ include "yolab-common.uninstallHook" . }}
 ---
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: {{ .Release.Name }}-data
-  namespace: {{ .Release.Namespace }}
-spec:
-  accessModes:
-    - ReadWriteMany
-  storageClassName: yolab-cephfs
-  resources:
-    requests:
-      storage: {{ include "yolab-common.storageSize" $ | quote }}
+{{ include "yolab-common.homeVolume" $ }}
 ---
 apiVersion: v1
 kind: Secret
@@ -123,7 +112,7 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /var/lib/postgresql/data
-          subPath: '{{ .Release.Name }}/data/db'
+          subPath: 'data/db'
       volumes:
       - name: data
         persistentVolumeClaim:
@@ -176,7 +165,7 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /var/tmp/youtubei.js
-          subPath: '{{ .Release.Name }}/data/companioncache'
+          subPath: 'data/companioncache'
       volumes:
       - name: data
         persistentVolumeClaim:

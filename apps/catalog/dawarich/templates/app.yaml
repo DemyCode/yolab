@@ -16,18 +16,7 @@ stringData:
   admin_email: {{ required "config.admin_email is required" .Values.config.admin_email | quote }}
   admin_password: {{ required "config.admin_password is required" .Values.config.admin_password | quote }}
 ---
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: {{ .Release.Name }}-data
-  namespace: {{ .Release.Namespace }}
-spec:
-  accessModes:
-  - ReadWriteMany
-  storageClassName: yolab-cephfs
-  resources:
-    requests:
-      storage: {{ include "yolab-common.storageSize" $ | quote }}
+{{ include "yolab-common.homeVolume" $ }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -60,7 +49,7 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /state
-          subPath: {{ .Release.Name }}/yolab-state
+          subPath: yolab-state
         - name: yolab
           mountPath: /yolab
       containers:
@@ -127,13 +116,13 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /var/app/public
-          subPath: {{ .Release.Name }}/dawarich/public
+          subPath: dawarich/public
         - name: data
           mountPath: /var/app/tmp/imports/watched
-          subPath: {{ .Release.Name }}/dawarich/imports
+          subPath: dawarich/imports
         - name: data
           mountPath: /var/app/storage
-          subPath: {{ .Release.Name }}/dawarich/storage
+          subPath: dawarich/storage
         - name: yolab
           mountPath: /yolab
       volumes:
@@ -201,16 +190,16 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /var/app/public
-          subPath: {{ .Release.Name }}/dawarich/public
+          subPath: dawarich/public
         - name: data
           mountPath: /var/app/tmp/imports/watched
-          subPath: {{ .Release.Name }}/dawarich/imports
+          subPath: dawarich/imports
         - name: data
           mountPath: /var/app/storage
-          subPath: {{ .Release.Name }}/dawarich/storage
+          subPath: dawarich/storage
         - name: data
           mountPath: /state
-          subPath: {{ .Release.Name }}/yolab-state
+          subPath: yolab-state
       volumes:
       - name: data
         persistentVolumeClaim:
@@ -257,7 +246,7 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /var/lib/postgresql/data
-          subPath: {{ .Release.Name }}/postgres
+          subPath: postgres
       volumes:
       - name: data
         persistentVolumeClaim:
@@ -310,7 +299,7 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /data
-          subPath: {{ .Release.Name }}/redis
+          subPath: redis
       volumes:
       - name: data
         persistentVolumeClaim:

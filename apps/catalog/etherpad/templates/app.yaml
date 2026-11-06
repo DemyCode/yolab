@@ -8,18 +8,7 @@
 ---
 {{ include "yolab-common.uninstallHook" . }}
 ---
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: {{ .Release.Name }}-data
-  namespace: {{ .Release.Namespace }}
-spec:
-  accessModes:
-    - ReadWriteMany
-  storageClassName: yolab-cephfs
-  resources:
-    requests:
-      storage: {{ include "yolab-common.storageSize" $ | quote }}
+{{ include "yolab-common.homeVolume" $ }}
 ---
 apiVersion: v1
 kind: Secret
@@ -115,10 +104,10 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /opt/etherpad-lite/src/plugin_packages
-          subPath: '{{ .Release.Name }}/data/plugins'
+          subPath: 'data/plugins'
         - name: data
           mountPath: /opt/etherpad-lite/var
-          subPath: '{{ .Release.Name }}/data/etherpad-var'
+          subPath: 'data/etherpad-var'
       volumes:
       {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
@@ -172,7 +161,7 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /var/lib/postgresql/data/pgdata
-          subPath: '{{ .Release.Name }}/data/postgres_data'
+          subPath: 'data/postgres_data'
       volumes:
       - name: data
         persistentVolumeClaim:

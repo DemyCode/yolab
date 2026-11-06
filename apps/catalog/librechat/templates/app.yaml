@@ -8,18 +8,7 @@
 ---
 {{ include "yolab-common.uninstallHook" . }}
 ---
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: {{ .Release.Name }}-data
-  namespace: {{ .Release.Namespace }}
-spec:
-  accessModes:
-    - ReadWriteMany
-  storageClassName: yolab-cephfs
-  resources:
-    requests:
-      storage: {{ include "yolab-common.storageSize" $ | quote }}
+{{ include "yolab-common.homeVolume" $ }}
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -58,7 +47,7 @@ spec:
         - -c
         - 'set -e
 
-          D=/data/{{ .Release.Name }}
+          D=/data
 
           mkdir -p "$D/data/api"
 
@@ -120,16 +109,16 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /app/librechat.yaml
-          subPath: '{{ .Release.Name }}/data/api/librechat.yaml'
+          subPath: 'data/api/librechat.yaml'
         - name: data
           mountPath: /app/client/public/images
-          subPath: '{{ .Release.Name }}/data/api/images'
+          subPath: 'data/api/images'
         - name: data
           mountPath: /app/uploads
-          subPath: '{{ .Release.Name }}/data/api/uploads'
+          subPath: 'data/api/uploads'
         - name: data
           mountPath: /app/api/logs
-          subPath: '{{ .Release.Name }}/data/api/logs'
+          subPath: 'data/api/logs'
       volumes:
       {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
@@ -173,7 +162,7 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /data/db
-          subPath: '{{ .Release.Name }}/data/db'
+          subPath: 'data/db'
       volumes:
       - name: data
         persistentVolumeClaim:
@@ -190,7 +179,7 @@ spec:
         - -c
         - 'set -e
 
-          D=/data/{{ .Release.Name }}
+          D=/data
 
           mkdir -p "$D/data/api"
 
@@ -250,7 +239,7 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /meili_data
-          subPath: '{{ .Release.Name }}/data/meilisearch'
+          subPath: 'data/meilisearch'
       volumes:
       - name: data
         persistentVolumeClaim:
@@ -267,7 +256,7 @@ spec:
         - -c
         - 'set -e
 
-          D=/data/{{ .Release.Name }}
+          D=/data
 
           mkdir -p "$D/data/api"
 
@@ -317,7 +306,7 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /var/lib/postgresql/data
-          subPath: '{{ .Release.Name }}/data/vectordb'
+          subPath: 'data/vectordb'
       volumes:
       - name: data
         persistentVolumeClaim:
@@ -334,7 +323,7 @@ spec:
         - -c
         - 'set -e
 
-          D=/data/{{ .Release.Name }}
+          D=/data
 
           mkdir -p "$D/data/api"
 
@@ -410,7 +399,7 @@ spec:
         - -c
         - 'set -e
 
-          D=/data/{{ .Release.Name }}
+          D=/data
 
           mkdir -p "$D/data/api"
 

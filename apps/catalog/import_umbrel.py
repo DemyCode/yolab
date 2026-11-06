@@ -418,9 +418,9 @@ def container_volume_mounts(svc, app_id):
     """Turn Compose volumes into volumeMounts, splitting app data from the host.
 
     Umbrel's `${APP_DATA_DIR}` is this app's own directory, which is exactly
-    what the chart's raw PVC is, so `/<rel>` under the PVC mirrors it.
-    `${UMBREL_ROOT}` storage and named volumes also land on the PVC. Anything
-    the Compose file takes straight from the host (`/dev`, `/run/dbus`, the
+    what the service's folder in the file tree is, so `/<rel>` under it
+    mirrors it. `${UMBREL_ROOT}` storage and named volumes also land there.
+    Anything the Compose file takes straight from the host (`/dev`, `/run/dbus`, the
     Docker socket, a USB stick) becomes a hostPath volume, because those apps
     exist precisely to talk to the machine they run on.
     """
@@ -455,7 +455,7 @@ def container_volume_mounts(svc, app_id):
             mount = {"name": "data", "mountPath": target}
             rel = src[len("${APP_DATA_DIR}") :].lstrip("/")
             if rel:
-                mount["subPath"] = "{{ .Release.Name }}/" + rel
+                mount["subPath"] = rel
             if read_only:
                 mount["readOnly"] = True
             mounts.append(mount)
@@ -464,11 +464,9 @@ def container_volume_mounts(svc, app_id):
             rel = src[len("${UMBREL_ROOT}") :].lstrip("/")
             if rel.startswith("data/storage"):
                 rem = rel[len("data/storage") :].lstrip("/")
-                mount["subPath"] = "{{ .Release.Name }}/storage" + (
-                    ("/" + rem) if rem else ""
-                )
+                mount["subPath"] = "storage" + (("/" + rem) if rem else "")
             else:
-                mount["subPath"] = "{{ .Release.Name }}/umbrel/" + rel
+                mount["subPath"] = "umbrel/" + rel
             if read_only:
                 mount["readOnly"] = True
             mounts.append(mount)
@@ -476,7 +474,7 @@ def container_volume_mounts(svc, app_id):
             add_host(src, target, read_only)
         else:
             mount = {"name": "data", "mountPath": target}
-            mount["subPath"] = "{{ .Release.Name }}/volumes/" + src.replace("/", "-")
+            mount["subPath"] = "volumes/" + src.replace("/", "-")
             if read_only:
                 mount["readOnly"] = True
             mounts.append(mount)
@@ -633,7 +631,7 @@ def env_file_vars(src_dir, app_id, svc):
 
 
 def seed_script(seeds):
-    lines = ["set -e", "D=/data/{{ .Release.Name }}"]
+    lines = ["set -e", "D=/data"]
     for i, (dest, _) in enumerate(seeds):
         parent = os.path.dirname(dest)
         if parent:
@@ -1094,11 +1092,9 @@ def build_chart(app_id, um, compose, out_dir, src_dir, seeds=()):
         base = c["image"].split("@")[0].rsplit("/", 1)[-1].split(":")[0].lower()
         if base in DEFAULT_PORTS:
             for mount in c.get("volumeMounts", []):
-                sub = mount.get("subPath", "")
-                if sub.startswith("{{ .Release.Name }}/"):
-                    rel = sub[len("{{ .Release.Name }}/") :]
-                    if rel and rel not in protect:
-                        protect.append(rel)
+                rel = mount.get("subPath", "")
+                if mount["name"] == "data" and rel and rel not in protect:
+                    protect.append(rel)
 
     values = {
         "config": {"subdomain": app_id},
@@ -1136,12 +1132,7 @@ def build_chart(app_id, um, compose, out_dir, src_dir, seeds=()):
         + '{{ include "yolab-common.privateAccessResources" . }}\n---\n'
         + '{{ include "yolab-common.uninstallHook" . }}\n---\n'
     ]
-    parts.append(
-        "apiVersion: v1\nkind: PersistentVolumeClaim\n"
-        "metadata:\n  name: {{ .Release.Name }}-data\n  namespace: {{ .Release.Namespace }}\n"
-        "spec:\n  accessModes:\n    - ReadWriteMany\n  storageClassName: yolab-cephfs\n"
-        '  resources:\n    requests:\n      storage: {{ include "yolab-common.storageSize" $ | quote }}\n'
-    )
+    parts.append('{{ include "yolab-common.homeVolume" $ }}\n')
     if secret_entries:
         parts.append("---\n")
         secret = ["apiVersion: v1\nkind: Secret\n"]

@@ -8,18 +8,7 @@
 ---
 {{ include "yolab-common.uninstallHook" . }}
 ---
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: {{ .Release.Name }}-data
-  namespace: {{ .Release.Namespace }}
-spec:
-  accessModes:
-    - ReadWriteMany
-  storageClassName: yolab-cephfs
-  resources:
-    requests:
-      storage: {{ include "yolab-common.storageSize" $ | quote }}
+{{ include "yolab-common.homeVolume" $ }}
 ---
 apiVersion: v1
 kind: Secret
@@ -67,7 +56,7 @@ spec:
         - -c
         - 'set -e
 
-          D=/data/{{ .Release.Name }}
+          D=/data
 
           mkdir -p "$D/data"
 
@@ -123,16 +112,16 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /app/server/.env
-          subPath: '{{ .Release.Name }}/data/.env'
+          subPath: 'data/.env'
         - name: data
           mountPath: /app/server/storage
-          subPath: '{{ .Release.Name }}/data/server-storage'
+          subPath: 'data/server-storage'
         - name: data
           mountPath: /app/collector/hotdir
-          subPath: '{{ .Release.Name }}/data/collector-hotdir'
+          subPath: 'data/collector-hotdir'
         - name: data
           mountPath: /app/collector/outputs
-          subPath: '{{ .Release.Name }}/data/collector-outputs'
+          subPath: 'data/collector-outputs'
       volumes:
       {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}

@@ -8,18 +8,7 @@
 ---
 {{ include "yolab-common.uninstallHook" . }}
 ---
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: {{ .Release.Name }}-data
-  namespace: {{ .Release.Namespace }}
-spec:
-  accessModes:
-    - ReadWriteMany
-  storageClassName: yolab-cephfs
-  resources:
-    requests:
-      storage: {{ include "yolab-common.storageSize" $ | quote }}
+{{ include "yolab-common.homeVolume" $ }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -83,7 +72,7 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /a0/usr
-          subPath: '{{ .Release.Name }}/data/usr'
+          subPath: 'data/usr'
       volumes:
       - name: data
         persistentVolumeClaim:

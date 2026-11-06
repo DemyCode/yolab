@@ -8,18 +8,7 @@
 ---
 {{ include "yolab-common.uninstallHook" . }}
 ---
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: {{ .Release.Name }}-data
-  namespace: {{ .Release.Namespace }}
-spec:
-  accessModes:
-    - ReadWriteMany
-  storageClassName: yolab-cephfs
-  resources:
-    requests:
-      storage: {{ include "yolab-common.storageSize" $ | quote }}
+{{ include "yolab-common.homeVolume" $ }}
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -59,7 +48,7 @@ spec:
         - -c
         - 'set -e
 
-          D=/data/{{ .Release.Name }}
+          D=/data
 
           mkdir -p "$D/data/config"
 
@@ -94,15 +83,15 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /app/config
-          subPath: '{{ .Release.Name }}/data/config'
+          subPath: 'data/config'
           readOnly: true
         - name: data
           mountPath: /usr/share/nginx/html/app
-          subPath: '{{ .Release.Name }}/data/frontend'
+          subPath: 'data/frontend'
           readOnly: true
         - name: data
           mountPath: /etc/nginx/sites-enabled
-          subPath: '{{ .Release.Name }}/data/nginx'
+          subPath: 'data/nginx'
       volumes:
       {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
@@ -165,10 +154,10 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /var/lib/postgresql/data
-          subPath: '{{ .Release.Name }}/data/postgres'
+          subPath: 'data/postgres'
         - name: data
           mountPath: /docker-entrypoint-initdb.d/init.sql
-          subPath: '{{ .Release.Name }}/data/db/init-databases.sql'
+          subPath: 'data/db/init-databases.sql'
           readOnly: true
       volumes:
       - name: data
@@ -186,7 +175,7 @@ spec:
         - -c
         - 'set -e
 
-          D=/data/{{ .Release.Name }}
+          D=/data
 
           mkdir -p "$D/data/config"
 
@@ -276,7 +265,7 @@ spec:
         - -c
         - 'set -e
 
-          D=/data/{{ .Release.Name }}
+          D=/data
 
           mkdir -p "$D/data/config"
 
@@ -375,14 +364,14 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /app/apps/backend/uploads
-          subPath: '{{ .Release.Name }}/data/uploads'
+          subPath: 'data/uploads'
         - name: data
           mountPath: /app/config
-          subPath: '{{ .Release.Name }}/data/config'
+          subPath: 'data/config'
           readOnly: true
         - name: data
           mountPath: /etc/nginx/sites-enabled
-          subPath: '{{ .Release.Name }}/data/nginx'
+          subPath: 'data/nginx'
       volumes:
       - name: data
         persistentVolumeClaim:
@@ -399,7 +388,7 @@ spec:
         - -c
         - 'set -e
 
-          D=/data/{{ .Release.Name }}
+          D=/data
 
           mkdir -p "$D/data/config"
 
@@ -441,7 +430,7 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /app/dist
-          subPath: '{{ .Release.Name }}/data/frontend'
+          subPath: 'data/frontend'
       volumes:
       - name: data
         persistentVolumeClaim:
@@ -458,7 +447,7 @@ spec:
         - -c
         - 'set -e
 
-          D=/data/{{ .Release.Name }}
+          D=/data
 
           mkdir -p "$D/data/config"
 

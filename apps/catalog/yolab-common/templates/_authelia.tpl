@@ -138,7 +138,7 @@ stringData:
       readOnly: true
     - name: data
       mountPath: /data
-      subPath: {{ printf "%s/authelia" .Release.Name | quote }}
+      subPath: "authelia"
 {{- end -}}
 {{- end -}}
 
@@ -161,7 +161,7 @@ stringData:
       mountPath: /authelia-config
     - name: data
       mountPath: /data
-      subPath: {{ printf "%s/authelia" .Release.Name | quote }}
+      subPath: "authelia"
 {{- end -}}
 {{- end -}}
 

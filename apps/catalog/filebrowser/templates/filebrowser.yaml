@@ -56,10 +56,10 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /state
-              subPath: {{ printf "%s/quantum" .Release.Name | quote }}
+              subPath: "quantum"
             - name: data
               mountPath: /srv
-              subPath: {{ printf "%s/files" .Release.Name | quote }}
+              subPath: "files"
       containers:
         - name: filebrowser
           image: gtstef/filebrowser:2.1.2-beta@sha256:0ff80341ce8a9c1e3c5ac8ca319bdf9675092028b04ed97607bbfebc10810fff
@@ -84,10 +84,10 @@ spec:
               readOnly: true
             - name: data
               mountPath: /var/lib/filebrowser
-              subPath: {{ printf "%s/quantum" .Release.Name | quote }}
+              subPath: "quantum"
             - name: data
               mountPath: /srv
-              subPath: {{ printf "%s/files" .Release.Name | quote }}
+              subPath: "files"
             - name: cache
               mountPath: /tmp/filebrowser-cache
       volumes:

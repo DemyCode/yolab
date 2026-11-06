@@ -8,18 +8,7 @@
 ---
 {{ include "yolab-common.uninstallHook" . }}
 ---
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: {{ .Release.Name }}-data
-  namespace: {{ .Release.Namespace }}
-spec:
-  accessModes:
-    - ReadWriteMany
-  storageClassName: yolab-cephfs
-  resources:
-    requests:
-      storage: {{ include "yolab-common.storageSize" $ | quote }}
+{{ include "yolab-common.homeVolume" $ }}
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -65,7 +54,7 @@ spec:
         - -c
         - 'set -e
 
-          D=/data/{{ .Release.Name }}
+          D=/data
 
           mkdir -p "$D/data/www"
 
@@ -130,7 +119,7 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /var/lib/netbird
-          subPath: '{{ .Release.Name }}/data/app_data'
+          subPath: 'data/app_data'
       volumes:
       - name: data
         persistentVolumeClaim:
@@ -147,7 +136,7 @@ spec:
         - -c
         - 'set -e
 
-          D=/data/{{ .Release.Name }}
+          D=/data
 
           mkdir -p "$D/data/www"
 
@@ -202,7 +191,7 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /usr/share/nginx/html
-          subPath: '{{ .Release.Name }}/data/www'
+          subPath: 'data/www'
           readOnly: true
       volumes:
       - name: data
@@ -220,7 +209,7 @@ spec:
         - -c
         - 'set -e
 
-          D=/data/{{ .Release.Name }}
+          D=/data
 
           mkdir -p "$D/data/www"
 

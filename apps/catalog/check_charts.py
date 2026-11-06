@@ -31,6 +31,7 @@ Usage:
 """
 
 import glob
+import hashlib
 import json
 import os
 import re
@@ -46,6 +47,8 @@ import yaml
 HERE = os.path.dirname(os.path.abspath(__file__))
 LIBRARY = os.path.join(HERE, "yolab-common")
 STACK_LIBRARY = os.path.join(HERE, "yolab-stack")
+RELEASE = "release"
+NAMESPACE = f"yolab-{RELEASE}"
 
 LINT_VALUES = {
     "config.password": "PlaceholderPw2026",
@@ -294,7 +297,7 @@ def render(chart_dir, library_tgz, workdir, extra=None):
     libraries = {"yolab-common": library_tgz, "yolab-stack": stack_library(workdir)}
     stage(chart_dir, staged, libraries)
 
-    cmd = ["helm", "template", "release", staged]
+    cmd = ["helm", "template", RELEASE, staged, "--namespace", NAMESPACE]
     for k, v in {**LINT_VALUES, **(extra or {})}.items():
         flag = "--set-string" if isinstance(v, str) and v.isdigit() else "--set"
         cmd += [flag, f"{k}={v}"]
@@ -398,6 +401,11 @@ def check_arch(app, workload, fail, arches):
 
 
 VOLUME_SIZE = "100Ti"
+TREE_ROOT = "/tree"
+TREE_LABEL = "yolab.io/tree"
+TREE_PATH = "yolab.io/tree-path"
+TREE_DRIVER = "cephfs.csi.ceph.com"
+TREE_SECRET = {"name": "yolab-cephfs-static", "namespace": "ceph-csi"}
 
 
 def claim_size(claim):
@@ -406,26 +414,86 @@ def claim_size(claim):
     return requests.get("storage")
 
 
-def check_volume_sizes(app, docs, fail):
-    for d in docs:
-        if d.get("kind") != "PersistentVolumeClaim":
+def tree_path(doc):
+    return ((doc.get("metadata") or {}).get("annotations") or {}).get(TREE_PATH)
+
+
+def check_tree_volumes(app, docs, fail):
+    claims = [d for d in docs if d.get("kind") == "PersistentVolumeClaim"]
+    volumes = {
+        d["metadata"]["name"]: d for d in docs if d.get("kind") == "PersistentVolume"
+    }
+    claimed = set()
+    for claim in claims:
+        name = claim["metadata"]["name"]
+        spec = claim.get("spec") or {}
+        path = tree_path(claim)
+        pv_name = f"{NAMESPACE}.{name}"
+        expected = {
+            "its storageClassName": (spec.get("storageClassName"), ""),
+            "its volumeName": (spec.get("volumeName"), pv_name),
+            "its accessModes": (spec.get("accessModes"), ["ReadWriteMany"]),
+            "its size": (claim_size(claim), VOLUME_SIZE),
+            f"its {TREE_LABEL} label": (
+                (claim["metadata"].get("labels") or {}).get(TREE_LABEL),
+                "true",
+            ),
+        }
+        for what, (got, want) in expected.items():
+            if got != want:
+                fail(
+                    app,
+                    f"claim {name}: {what} must be {want!r}, got {got!r} — every "
+                    f"volume is a folder of the file tree, made with "
+                    f"yolab-common.tree.volume",
+                )
+        if not path:
+            fail(app, f"claim {name} does not say which folder of the tree it is")
+        volume = volumes.get(pv_name)
+        if volume is None:
+            fail(app, f"claim {name} binds {pv_name}, which the chart does not render")
             continue
-        size = claim_size(d)
-        if size != VOLUME_SIZE:
-            fail(
-                app,
-                f"claim {d['metadata'].get('name')} asks for {size!r}: every "
-                f"volume asks for {VOLUME_SIZE} through yolab-common.storageSize, "
-                f"so a service can use all the space the cluster has",
-            )
+        claimed.add(pv_name)
+        vspec = volume.get("spec") or {}
+        csi = vspec.get("csi") or {}
+        wanted = {
+            "its folder": (tree_path(volume), path),
+            "its claimRef": (
+                vspec.get("claimRef"),
+                {"namespace": NAMESPACE, "name": name},
+            ),
+            "its capacity": ((vspec.get("capacity") or {}).get("storage"), VOLUME_SIZE),
+            "its reclaim policy": (
+                vspec.get("persistentVolumeReclaimPolicy"),
+                "Retain",
+            ),
+            "its storageClassName": (vspec.get("storageClassName"), ""),
+            "its driver": (csi.get("driver"), TREE_DRIVER),
+            "its volumeHandle": (csi.get("volumeHandle"), pv_name),
+            "its secret": (csi.get("nodeStageSecretRef"), TREE_SECRET),
+            "its attributes": (
+                csi.get("volumeAttributes"),
+                {
+                    "clusterID": "yolab",
+                    "fsName": "yolab-fs",
+                    "staticVolume": "true",
+                    "rootPath": f"{TREE_ROOT}/{path}",
+                },
+            ),
+        }
+        for what, (got, want) in wanted.items():
+            if got != want:
+                fail(app, f"volume {pv_name}: {what} must be {want!r}, got {got!r}")
+    for pv_name in sorted(set(volumes) - claimed):
+        fail(app, f"renders volume {pv_name}, which no claim of the chart binds")
 
 
-def check(app, docs, fail, chart_yaml="", schema=None, arches=None):
+def check(app, docs, fail, chart_yaml="", schema=None, arches=None, home=RELEASE):
     kinds = {}
     for d in docs:
         kinds.setdefault(d["kind"], []).append(d)
     check_containers(app, docs, fail)
-    check_volume_sizes(app, docs, fail)
+    check_tree_volumes(app, docs, fail)
 
     has_caddy = any(
         "Caddyfile" in (c.get("data") or {}) for c in kinds.get("ConfigMap", [])
@@ -440,6 +508,14 @@ def check(app, docs, fail, chart_yaml="", schema=None, arches=None):
         )
         if got != want:
             fail(app, f"expected {want} {kind}, got {got}")
+    for claim in own_claims:
+        if tree_path(claim) != home:
+            fail(
+                app,
+                f"its own volume {claim['metadata']['name']} is the folder "
+                f"{tree_path(claim)!r}, not {home!r}: a service keeps its data in the "
+                f"folder named after it, through yolab-common.homeVolume",
+            )
 
     job = (kinds.get("Job") or [{}])[0]
     if (
@@ -765,6 +841,11 @@ def claim_mounts(spec, container):
             yield claims[m["name"]], m.get("subPath", ""), m.get("readOnly") is True
 
 
+def ends_in(sub_path, name):
+    path = sub_path.strip('"').strip("/")
+    return path == name or path.endswith(f"/{name}")
+
+
 def state_claimed(spec, sidecar, state):
     for c in list(spec.get("initContainers") or []) + [sidecar]:
         script = "\n".join((c.get("command") or []) + (c.get("args") or []))
@@ -777,7 +858,7 @@ def state_claimed(spec, sidecar, state):
         if namespace != "metadata.namespace":
             continue
         for m in c.get("volumeMounts") or []:
-            if not m.get("subPath", "").strip('"').endswith(f"/{state}"):
+            if not ends_in(m.get("subPath", ""), state):
                 continue
             if f"claim_state {m['mountPath']}\n" in script + "\n":
                 return True
@@ -1025,7 +1106,7 @@ def check_private_access(app, docs, offered, fail):
         if (c.get("securityContext") or {}).get("privileged"):
             fail(app, f"the {want['container']} container must not run privileged")
         state = [s for _, s, _ in claim_mounts(spec, c)]
-        if not any(s.strip('"').endswith(f"/{want['state']}") for s in state):
+        if not any(ends_in(s, want["state"]) for s in state):
             fail(
                 app,
                 f"the {want['container']} container keeps no state on the app's "
@@ -1167,7 +1248,7 @@ def check_file_explorer_ways(app, docs, fail):
         if (c.get("securityContext") or {}).get("privileged"):
             fail(app, f"the {want['container']} container must not run privileged")
         state = [sub.strip('"') for _, sub, _ in claim_mounts(spec, c)]
-        if not any(sub.endswith(f"/{want['state']}") for sub in state):
+        if not any(ends_in(sub, want["state"]) for sub in state):
             fail(
                 app,
                 f"the {want['container']} container keeps no state of its own on "
@@ -1548,14 +1629,24 @@ def check_no_links(app, schema, fail):
 
 FILES_CLAIM = "content"
 FILES_MOUNT = "/files"
-FILES_CLASS = "yolab-cephfs"
+FILES_FOLDER = f"{RELEASE}.files"
+FILES_MEMBER = "files"
+
+
+def files_claim(folder):
+    return f"{FILES_CLAIM}-{hashlib.sha256(folder.encode()).hexdigest()[:8]}"
+
+
+def tree_claim_name(doc):
+    if doc.get("kind") == "PersistentVolume":
+        return ((doc.get("spec") or {}).get("claimRef") or {}).get("name") or ""
+    if doc.get("kind") == "PersistentVolumeClaim":
+        return (doc.get("metadata") or {}).get("name") or ""
+    return ""
 
 
 def is_files_doc(doc):
-    return (
-        doc.get("kind") == "PersistentVolumeClaim"
-        and (doc.get("metadata") or {}).get("name") == FILES_CLAIM
-    )
+    return tree_claim_name(doc).startswith(f"{FILES_CLAIM}-")
 
 
 def uses_files(values):
@@ -1567,7 +1658,9 @@ def files_mounts(docs):
         volumes = {
             v["name"]
             for v in spec.get("volumes") or []
-            if (v.get("persistentVolumeClaim") or {}).get("claimName") == FILES_CLAIM
+            if (
+                (v.get("persistentVolumeClaim") or {}).get("claimName") or ""
+            ).startswith(f"{FILES_CLAIM}-")
         }
         for c in (spec.get("initContainers") or []) + (spec.get("containers") or []):
             for m in c.get("volumeMounts") or []:
@@ -1575,64 +1668,72 @@ def files_mounts(docs):
                     yield pod, c["name"], m
 
 
-def check_files(app, docs, wanted, fail):
-    for d in docs:
-        if d.get("kind") == "PersistentVolume":
-            fail(
-                app,
-                f"renders PersistentVolume {d['metadata'].get('name')}: a chart "
-                f"keeps its data in its own claims, never in a volume another "
-                f"app could share",
-            )
-    claims = [d for d in docs if is_files_doc(d)]
+def check_files(app, docs, wanted, fail, folder=FILES_FOLDER):
+    claims = [
+        d for d in docs if d.get("kind") == "PersistentVolumeClaim" and is_files_doc(d)
+    ]
     mounts = list(files_mounts(docs))
     if not wanted:
         if claims or mounts:
             fail(
                 app,
-                f"renders or mounts the {FILES_CLAIM} claim but values.yaml does "
+                f"renders or mounts a {FILES_CLAIM} claim but values.yaml does "
                 f"not set yolab.files: true",
             )
         return
     if len(claims) != 1:
         fail(
             app,
-            f"with yolab.files the chart must render one claim named "
-            f"{FILES_CLAIM}, got {len(claims)}",
+            f"with yolab.files the chart must render one {FILES_CLAIM} claim, "
+            f"got {len(claims)}",
         )
         return
-    spec = claims[0].get("spec") or {}
-    expected = {
-        "its storageClassName": (spec.get("storageClassName"), FILES_CLASS),
-        "its accessModes": (spec.get("accessModes"), ["ReadWriteMany"]),
-        "its size": (claim_size(claims[0]), VOLUME_SIZE),
-        "its volumeName": (spec.get("volumeName"), None),
-    }
-    for what, (got, want) in expected.items():
-        if got != want:
-            fail(app, f"the {FILES_CLAIM} claim: {what} must be {want!r}, got {got!r}")
+    claim = claims[0]
+    if tree_path(claim) != folder:
+        fail(
+            app,
+            f"its files are the folder {tree_path(claim)!r}, not {folder!r}: "
+            f"yolab-common.files.folder decides it",
+        )
+    if claim["metadata"]["name"] != files_claim(folder):
+        fail(
+            app,
+            f"its files claim is {claim['metadata']['name']}, not "
+            f"{files_claim(folder)}: the name follows the folder so a new folder "
+            f"is a new claim instead of an edit Kubernetes refuses",
+        )
     if not mounts:
-        fail(app, f"yolab.files is on but no container mounts the {FILES_CLAIM} claim")
+        fail(app, f"yolab.files is on but no container mounts its {FILES_CLAIM} claim")
     for pod, container, m in mounts:
         if m.get("mountPath") != FILES_MOUNT:
             fail(
                 app,
-                f"{pod}/{container} mounts {FILES_CLAIM} at {m.get('mountPath')!r}, "
+                f"{pod}/{container} mounts its files at {m.get('mountPath')!r}, "
                 f"not {FILES_MOUNT} — the apps of a pack must see the same paths",
             )
         if m.get("subPath"):
             fail(
                 app,
-                f"{pod}/{container} mounts only part of {FILES_CLAIM}; moves and "
-                f"hardlinks between the apps of a pack need it whole",
+                f"{pod}/{container} mounts only part of its files; moves and "
+                f"hardlinks between the apps of a pack need them whole",
             )
+
+
+def check_files_folder_offer(app, schema, values_path, fail):
+    values = yaml.safe_load(values_path.read_text()) if values_path.exists() else {}
+    if not uses_files(values):
+        return
+    if "files_folder" not in config_fields(schema, lambda _prop: True):
+        fail(
+            app,
+            "uses yolab.files but does not ask config.files_folder, so nobody can "
+            "choose where in the file tree its files go",
+        )
 
 
 LIBRARIES = ("yolab-common", "yolab-stack")
 RETIRED_MEMBERS = "yolab.io/members"
 MEMBER_LABEL = "yolab.io/member"
-KEEP = "helm.sh/resource-policy"
-RELEASE = "release"
 PACK_SHARED_KINDS = ("Secret",)
 
 
@@ -1676,6 +1777,12 @@ def check_pack_declaration(app, chart_yaml, charts, fail):
         )
     if len(set(members)) != len(members):
         fail(app, "depends on an app twice: a pack runs each chart once")
+    if FILES_MEMBER in members:
+        fail(
+            app,
+            f"is built from {FILES_MEMBER}, whose folder would be the pack's own "
+            f"files folder",
+        )
     if not any(d["name"] == "yolab-stack" for d in deps):
         fail(
             app, "a pack renders its apps through yolab-stack, so it must depend on it"
@@ -1730,7 +1837,8 @@ def split_by_member(docs, members):
     parts = {m: [] for m in members}
     shared = []
     for d in docs:
-        owner = member_of((d.get("metadata") or {}).get("name") or "", members)
+        name = tree_claim_name(d) or (d.get("metadata") or {}).get("name") or ""
+        owner = member_of(name, members)
         (parts[owner] if owner else shared).append(d)
     return parts, shared
 
@@ -1760,17 +1868,7 @@ def check_pack_render(app, docs, members, fail):
             schema = json.loads(Path(HERE, member, "values.schema.json").read_text())
         except (FileNotFoundError, json.JSONDecodeError):
             schema = {}
-        check(where, member_docs, fail, chart_yaml, schema)
-        for claim in member_docs:
-            if claim.get("kind") != "PersistentVolumeClaim" or is_files_doc(claim):
-                continue
-            if (claim["metadata"].get("annotations") or {}).get(KEEP) != "keep":
-                fail(
-                    where,
-                    f"its volume {claim['metadata']['name']} is not kept when the "
-                    f"app is switched off in the pack, so switching it off deletes "
-                    f"its data",
-                )
+        check(where, member_docs, fail, chart_yaml, schema, home=f"{RELEASE}.{member}")
         for workload in member_docs:
             if workload.get("kind") not in WORKLOAD_KINDS:
                 continue
@@ -1812,6 +1910,7 @@ def check_pack(chart_dir, charts, library_tgz, workdir, fail):
     check_no_links(app, schema, fail)
     check_pack_declaration(app, text, charts, fail)
     check_pack_outputs(app, schema, members, fail)
+    check_files_folder_offer(app, schema, Path(chart_dir, "values.yaml"), fail)
     for member in members:
         if member in charts:
             check_composable(member, os.path.join(HERE, member), fail)
@@ -1838,6 +1937,7 @@ def check_pack(chart_dir, charts, library_tgz, workdir, fail):
             continue
         docs = [d for d in yaml.safe_load_all(rendered) if d]
         check_pack_render(where, docs, members, fail)
+        check_tree_volumes(where, docs, fail)
         check_files(where, docs, wanted, fail)
     return schema
 
@@ -1925,6 +2025,7 @@ def main(argv):
             )
             check_files(app, docs, uses_files(values), fail)
             check_file_explorer(app, docs, fail)
+            check_files_folder_offer(app, schema, values_path, fail)
             check_private_access_offer(
                 app,
                 schema,

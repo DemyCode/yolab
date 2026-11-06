@@ -8,18 +8,7 @@
 ---
 {{ include "yolab-common.uninstallHook" . }}
 ---
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: {{ .Release.Name }}-data
-  namespace: {{ .Release.Namespace }}
-spec:
-  accessModes:
-    - ReadWriteMany
-  storageClassName: yolab-cephfs
-  resources:
-    requests:
-      storage: {{ include "yolab-common.storageSize" $ | quote }}
+{{ include "yolab-common.homeVolume" $ }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -64,13 +53,13 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /app/data
-          subPath: '{{ .Release.Name }}/data/app'
+          subPath: 'data/app'
         - name: data
           mountPath: /books
-          subPath: '{{ .Release.Name }}/data/books'
+          subPath: 'data/books'
         - name: data
           mountPath: /bookdrop
-          subPath: '{{ .Release.Name }}/data/bookdrop'
+          subPath: 'data/bookdrop'
       volumes:
       {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
@@ -117,7 +106,7 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /var/lib/mysql
-          subPath: '{{ .Release.Name }}/data/db'
+          subPath: 'data/db'
       volumes:
       - name: data
         persistentVolumeClaim:

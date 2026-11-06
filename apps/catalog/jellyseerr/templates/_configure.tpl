@@ -101,6 +101,6 @@
   volumeMounts:
     - name: data
       mountPath: /app/config
-      subPath: {{ .Release.Name }}/jellyseerr
+      subPath: jellyseerr
       readOnly: true
 {{- end -}}

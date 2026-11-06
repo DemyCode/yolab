@@ -8,18 +8,7 @@
 ---
 {{ include "yolab-common.uninstallHook" . }}
 ---
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: {{ .Release.Name }}-data
-  namespace: {{ .Release.Namespace }}
-spec:
-  accessModes:
-    - ReadWriteMany
-  storageClassName: yolab-cephfs
-  resources:
-    requests:
-      storage: {{ include "yolab-common.storageSize" $ | quote }}
+{{ include "yolab-common.homeVolume" $ }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -68,10 +57,10 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /root/.affine/config
-          subPath: '{{ .Release.Name }}/data/config'
+          subPath: 'data/config'
         - name: data
           mountPath: /root/.affine/storage
-          subPath: '{{ .Release.Name }}/data/storage/blob'
+          subPath: 'data/storage/blob'
       volumes:
       {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
@@ -116,10 +105,10 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /root/.affine/config
-          subPath: '{{ .Release.Name }}/data/config'
+          subPath: 'data/config'
         - name: data
           mountPath: /root/.affine/storage
-          subPath: '{{ .Release.Name }}/data/storage/blob'
+          subPath: 'data/storage/blob'
       volumes:
       - name: data
         persistentVolumeClaim:
@@ -159,7 +148,7 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /data
-          subPath: '{{ .Release.Name }}/data/storage/redis'
+          subPath: 'data/storage/redis'
       volumes:
       - name: data
         persistentVolumeClaim:
@@ -221,7 +210,7 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /var/lib/postgresql/data
-          subPath: '{{ .Release.Name }}/data/storage/postgres'
+          subPath: 'data/storage/postgres'
       volumes:
       - name: data
         persistentVolumeClaim:

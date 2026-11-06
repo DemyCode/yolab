@@ -17,18 +17,7 @@ type: Opaque
 stringData:
   admin_password: {{ required "config.admin_password is required" .Values.config.admin_password | quote }}
 ---
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: {{ .Release.Name }}-data
-  namespace: {{ .Release.Namespace }}
-spec:
-  accessModes:
-  - ReadWriteMany
-  storageClassName: yolab-cephfs
-  resources:
-    requests:
-      storage: {{ include "yolab-common.storageSize" $ | quote }}
+{{ include "yolab-common.homeVolume" $ }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -121,7 +110,7 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /data
-          subPath: {{ .Release.Name }}/vaultwarden
+          subPath: vaultwarden
       - name: invite-admin
         image: {{ include "yolab-common.image.wgRegister" . }}
         imagePullPolicy: IfNotPresent
@@ -166,7 +155,7 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /data
-          subPath: {{ .Release.Name }}/vaultwarden
+          subPath: vaultwarden
       volumes:
       - name: data
         persistentVolumeClaim:

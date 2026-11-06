@@ -8,18 +8,7 @@
 ---
 {{ include "yolab-common.uninstallHook" . }}
 ---
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: {{ .Release.Name }}-data
-  namespace: {{ .Release.Namespace }}
-spec:
-  accessModes:
-    - ReadWriteMany
-  storageClassName: yolab-cephfs
-  resources:
-    requests:
-      storage: {{ include "yolab-common.storageSize" $ | quote }}
+{{ include "yolab-common.homeVolume" $ }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -73,7 +62,7 @@ spec:
         volumeMounts:
           - name: data
             mountPath: /config
-            subPath: {{ printf "%s/home-assistant" .Release.Name | quote }}
+            subPath: "home-assistant"
       containers:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
@@ -89,10 +78,10 @@ spec:
         volumeMounts:
           - name: data
             mountPath: /config
-            subPath: {{ printf "%s/home-assistant" .Release.Name | quote }}
+            subPath: "home-assistant"
           - name: data
             mountPath: /media
-            subPath: {{ printf "%s/home-assistant/media" .Release.Name | quote }}
+            subPath: "home-assistant/media"
           - name: dev
             mountPath: /dev
           - name: dbus

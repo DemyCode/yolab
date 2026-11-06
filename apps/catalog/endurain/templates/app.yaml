@@ -8,18 +8,7 @@
 ---
 {{ include "yolab-common.uninstallHook" . }}
 ---
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: {{ .Release.Name }}-data
-  namespace: {{ .Release.Namespace }}
-spec:
-  accessModes:
-    - ReadWriteMany
-  storageClassName: yolab-cephfs
-  resources:
-    requests:
-      storage: {{ include "yolab-common.storageSize" $ | quote }}
+{{ include "yolab-common.homeVolume" $ }}
 ---
 apiVersion: v1
 kind: Secret
@@ -67,7 +56,7 @@ spec:
         - -c
         - 'set -e
 
-          D=/data/{{ .Release.Name }}
+          D=/data
 
           [ -e "$D/settings.env" ] || cp /seed/f0 "$D/settings.env"
 
@@ -121,10 +110,10 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /app/backend/data
-          subPath: '{{ .Release.Name }}/data/app'
+          subPath: 'data/app'
         - name: data
           mountPath: /app/backend/logs
-          subPath: '{{ .Release.Name }}/data/logs'
+          subPath: 'data/logs'
       volumes:
       {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
@@ -183,7 +172,7 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /var/lib/postgresql/data
-          subPath: '{{ .Release.Name }}/data/db'
+          subPath: 'data/db'
       volumes:
       - name: data
         persistentVolumeClaim:
@@ -200,7 +189,7 @@ spec:
         - -c
         - 'set -e
 
-          D=/data/{{ .Release.Name }}
+          D=/data
 
           [ -e "$D/settings.env" ] || cp /seed/f0 "$D/settings.env"
 

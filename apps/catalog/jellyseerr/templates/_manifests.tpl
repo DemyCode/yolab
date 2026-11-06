@@ -11,19 +11,7 @@
 ---
 {{ include "yolab-common.uninstallHook" . }}
 ---
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: {{ .Release.Name }}-data
-  namespace: {{ .Release.Namespace }}
-  {{- include "yolab-stack.keep" . | nindent 2 }}
-spec:
-  accessModes:
-    - ReadWriteMany
-  storageClassName: yolab-cephfs
-  resources:
-    requests:
-      storage: {{ include "yolab-common.storageSize" $ | quote }}
+{{ include "yolab-common.homeVolume" $ }}
 ---
 apiVersion: v1
 kind: Service
@@ -73,7 +61,7 @@ spec:
         volumeMounts:
           - name: data
             mountPath: /app/config
-            subPath: {{ .Release.Name }}/jellyseerr
+            subPath: jellyseerr
       containers:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
@@ -89,7 +77,7 @@ spec:
         volumeMounts:
           - name: data
             mountPath: /app/config
-            subPath: {{ .Release.Name }}/jellyseerr
+            subPath: jellyseerr
       {{- include "jellyseerr.configure" . | nindent 6 }}
       volumes:
       {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}

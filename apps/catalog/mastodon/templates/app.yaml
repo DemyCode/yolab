@@ -8,18 +8,7 @@
 ---
 {{- $img := "linuxserver/mastodon:version-v4.7.0@sha256:2de60e78c598007b0353e2e42e9638ac67961dfa697f9714151e632f58049bce" }}
 {{- $db := "mastodon" }}
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: {{ .Release.Name }}-data
-  namespace: {{ .Release.Namespace }}
-spec:
-  accessModes:
-    - ReadWriteMany
-  storageClassName: yolab-cephfs
-  resources:
-    requests:
-      storage: {{ include "yolab-common.storageSize" $ | quote }}
+{{ include "yolab-common.homeVolume" $ }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -90,7 +79,7 @@ spec:
         volumeMounts:
           - name: data
             mountPath: /state
-            subPath: {{ .Release.Name }}/yolab-state
+            subPath: yolab-state
           - name: yolab
             mountPath: /yolab
       containers:
@@ -180,10 +169,10 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /config
-              subPath: {{ .Release.Name }}/mastodon
+              subPath: mastodon
             - name: data
               mountPath: /state
-              subPath: {{ .Release.Name }}/yolab-state
+              subPath: yolab-state
         # Creates the owner account once the schema exists, and prints its password
         # exactly once so the install page can show it. Without this the server has no
         # way in at all: Mastodon ships no default login, and the web signup form
@@ -249,7 +238,7 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /state
-              subPath: {{ .Release.Name }}/yolab-state
+              subPath: yolab-state
       volumes:
         - name: data
           persistentVolumeClaim:
@@ -334,10 +323,10 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /config
-              subPath: {{ .Release.Name }}/mastodon
+              subPath: mastodon
             - name: data
               mountPath: /state
-              subPath: {{ .Release.Name }}/yolab-state
+              subPath: yolab-state
       volumes:
         - name: data
           persistentVolumeClaim:
@@ -381,7 +370,7 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /var/lib/postgresql/data
-              subPath: {{ .Release.Name }}/postgres
+              subPath: postgres
       volumes:
         - name: data
           persistentVolumeClaim:
@@ -431,7 +420,7 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /data
-              subPath: {{ .Release.Name }}/redis
+              subPath: redis
       volumes:
         - name: data
           persistentVolumeClaim:

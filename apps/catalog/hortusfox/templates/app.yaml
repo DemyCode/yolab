@@ -8,18 +8,7 @@
 ---
 {{ include "yolab-common.uninstallHook" . }}
 ---
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: {{ .Release.Name }}-data
-  namespace: {{ .Release.Namespace }}
-spec:
-  accessModes:
-    - ReadWriteMany
-  storageClassName: yolab-cephfs
-  resources:
-    requests:
-      storage: {{ include "yolab-common.storageSize" $ | quote }}
+{{ include "yolab-common.homeVolume" $ }}
 ---
 apiVersion: v1
 kind: Secret
@@ -111,22 +100,22 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /var/www/html/public/img
-          subPath: '{{ .Release.Name }}/data/images'
+          subPath: 'data/images'
         - name: data
           mountPath: /var/www/html/public/attachments
-          subPath: '{{ .Release.Name }}/data/attachments'
+          subPath: 'data/attachments'
         - name: data
           mountPath: /var/www/html/app/logs
-          subPath: '{{ .Release.Name }}/data/logs'
+          subPath: 'data/logs'
         - name: data
           mountPath: /var/www/html/public/backup
-          subPath: '{{ .Release.Name }}/data/backup'
+          subPath: 'data/backup'
         - name: data
           mountPath: /var/www/html/public/themes
-          subPath: '{{ .Release.Name }}/data/themes'
+          subPath: 'data/themes'
         - name: data
           mountPath: /var/www/html/app/migrations
-          subPath: '{{ .Release.Name }}/data/migrate'
+          subPath: 'data/migrate'
       volumes:
       - name: data
         persistentVolumeClaim:
@@ -187,7 +176,7 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /var/lib/mysql
-          subPath: '{{ .Release.Name }}/data/db_data'
+          subPath: 'data/db_data'
       volumes:
       - name: data
         persistentVolumeClaim:

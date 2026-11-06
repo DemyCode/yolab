@@ -9,6 +9,13 @@
       "title": "NoteDiscovery",
       "type": "object",
       "properties": {
+        "files_folder": {
+          "type": "string",
+          "title": "Files folder",
+          "default": "",
+          "pattern": "^$|^/?[A-Za-z0-9_ -][A-Za-z0-9._ -]*(/[A-Za-z0-9_ -][A-Za-z0-9._ -]*)*/?$",
+          "description": "Where in your file tree this service keeps its files. Leave it empty for a folder named after the service. Set another service to the same folder and both see the same files."
+        },
         "password": {
           "type": "string",
           "title": "Password",
@@ -22,7 +29,7 @@
           "title": "Notes folder",
           "default": "notes",
           "pattern": "^[A-Za-z0-9_ -][A-Za-z0-9._ -]*(/[A-Za-z0-9_ -][A-Za-z0-9._ -]*)*$",
-          "description": "Where your notes are kept, as plain Markdown files, inside its own storage."
+          "description": "Where your notes are kept, as plain Markdown files, inside its files folder."
         },
         "yolab_enabled": {
           "type": "boolean",

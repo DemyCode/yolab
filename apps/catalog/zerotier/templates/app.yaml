@@ -8,18 +8,7 @@
 ---
 {{ include "yolab-common.uninstallHook" . }}
 ---
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: {{ .Release.Name }}-data
-  namespace: {{ .Release.Namespace }}
-spec:
-  accessModes:
-    - ReadWriteMany
-  storageClassName: yolab-cephfs
-  resources:
-    requests:
-      storage: {{ include "yolab-common.storageSize" $ | quote }}
+{{ include "yolab-common.homeVolume" $ }}
 ---
 apiVersion: v1
 kind: Secret
@@ -88,10 +77,10 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /var/lib/zerotier-one
-          subPath: '{{ .Release.Name }}/data'
+          subPath: 'data'
         - name: data
           mountPath: /var/lib/zerotier-one/local.conf
-          subPath: '{{ .Release.Name }}/local.conf'
+          subPath: 'local.conf'
           readOnly: true
         - name: host-dev-net-tun
           mountPath: /dev/net/tun

@@ -8,18 +8,7 @@
 ---
 {{ include "yolab-common.uninstallHook" . }}
 ---
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: {{ .Release.Name }}-data
-  namespace: {{ .Release.Namespace }}
-spec:
-  accessModes:
-    - ReadWriteMany
-  storageClassName: yolab-cephfs
-  resources:
-    requests:
-      storage: {{ include "yolab-common.storageSize" $ | quote }}
+{{ include "yolab-common.homeVolume" $ }}
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -65,7 +54,7 @@ spec:
         - -c
         - 'set -e
 
-          D=/data/{{ .Release.Name }}
+          D=/data
 
           mkdir -p "$D/data/www"
 
@@ -129,7 +118,7 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /root
-          subPath: '{{ .Release.Name }}/data/hbbs'
+          subPath: 'data/hbbs'
       volumes:
       - name: data
         persistentVolumeClaim:
@@ -146,7 +135,7 @@ spec:
         - -c
         - 'set -e
 
-          D=/data/{{ .Release.Name }}
+          D=/data
 
           mkdir -p "$D/data/www"
 
@@ -215,7 +204,7 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /root
-          subPath: '{{ .Release.Name }}/data/hbbr'
+          subPath: 'data/hbbr'
       volumes:
       - name: data
         persistentVolumeClaim:
@@ -232,7 +221,7 @@ spec:
         - -c
         - 'set -e
 
-          D=/data/{{ .Release.Name }}
+          D=/data
 
           mkdir -p "$D/data/www"
 
@@ -299,7 +288,7 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /usr/share/nginx/html
-          subPath: '{{ .Release.Name }}/data/www'
+          subPath: 'data/www'
           readOnly: true
       volumes:
       - name: data
@@ -317,7 +306,7 @@ spec:
         - -c
         - 'set -e
 
-          D=/data/{{ .Release.Name }}
+          D=/data
 
           mkdir -p "$D/data/www"
 

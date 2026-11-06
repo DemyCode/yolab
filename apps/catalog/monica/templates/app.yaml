@@ -6,18 +6,7 @@
 ---
 {{ include "yolab-common.uninstallHook" . }}
 ---
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: {{ .Release.Name }}-data
-  namespace: {{ .Release.Namespace }}
-spec:
-  accessModes:
-    - ReadWriteMany
-  storageClassName: yolab-cephfs
-  resources:
-    requests:
-      storage: {{ include "yolab-common.storageSize" $ | quote }}
+{{ include "yolab-common.homeVolume" $ }}
 ---
 apiVersion: v1
 kind: Secret
@@ -114,7 +103,7 @@ spec:
         volumeMounts:
           - name: data
             mountPath: /var/www/monica/storage
-            subPath: {{ printf "%s/monica" .Release.Name }}
+            subPath: monica
           - name: yolab
             mountPath: /yolab
       volumes:
@@ -170,7 +159,7 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /var/lib/mysql
-              subPath: {{ printf "%s/mariadb" .Release.Name }}
+              subPath: mariadb
       volumes:
         - name: data
           persistentVolumeClaim:

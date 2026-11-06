@@ -8,18 +8,7 @@
 ---
 {{ include "yolab-common.uninstallHook" . }}
 ---
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: {{ .Release.Name }}-data
-  namespace: {{ .Release.Namespace }}
-spec:
-  accessModes:
-    - ReadWriteMany
-  storageClassName: yolab-cephfs
-  resources:
-    requests:
-      storage: {{ include "yolab-common.storageSize" $ | quote }}
+{{ include "yolab-common.homeVolume" $ }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -108,16 +97,16 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /var/log/onlyoffice
-          subPath: '{{ .Release.Name }}/data/logs'
+          subPath: 'data/logs'
         - name: data
           mountPath: /var/www/onlyoffice/Data
-          subPath: '{{ .Release.Name }}/data/certs'
+          subPath: 'data/certs'
         - name: data
           mountPath: /var/lib/onlyoffice
-          subPath: '{{ .Release.Name }}/data/cache'
+          subPath: 'data/cache'
         - name: data
           mountPath: /var/lib/postgresql
-          subPath: '{{ .Release.Name }}/data/db'
+          subPath: 'data/db'
       volumes:
       - name: data
         persistentVolumeClaim:

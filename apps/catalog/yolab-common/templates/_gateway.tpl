@@ -2,7 +2,7 @@
 
 
 {{- define "yolab-common.gateway.pvcName" -}}
-{{- (((.Values.yolab).gateway).pvcName) | default (printf "%s-data" .Release.Name) -}}
+{{- (((.Values.yolab).gateway).pvcName) | default (include "yolab-common.home.claim" .) -}}
 {{- end -}}
 
 
@@ -75,7 +75,7 @@ yolab-tunnel-credentials
       mountPath: /yolab
     - name: data
       mountPath: /state
-      subPath: {{ printf "%s/yolab-state" .Release.Name | quote }}
+      subPath: "yolab-state"
 {{- if $appOn }}
 - name: yolab-host
   image: {{ include "yolab-common.image.wgRegister" . }}
@@ -219,7 +219,7 @@ printf 'export YOLAB_HOST=%s\nexport YOLAB_URL=https://%s\nexport YOLAB_SITES="%
       mountPath: /yolab
     - name: data
       mountPath: /state
-      subPath: {{ printf "%s/yolab-state" .Release.Name | quote }}
+      subPath: "yolab-state"
 {{- end -}}
 
 
@@ -309,7 +309,7 @@ printf 'export YOLAB_HOST=%s\nexport YOLAB_URL=https://%s\nexport YOLAB_SITES="%
   volumeMounts:
     - name: data
       mountPath: /data
-      subPath: {{ printf "%s/caddy" .Release.Name | quote }}
+      subPath: "caddy"
     - name: caddy-config
       mountPath: /etc/caddy/Caddyfile
       subPath: Caddyfile
@@ -426,7 +426,7 @@ data:
   volumeMounts:
     - name: data
       mountPath: /state
-      subPath: {{ printf "%s/yolab-state" .Release.Name | quote }}
+      subPath: "yolab-state"
     - name: yolab
       mountPath: /yolab
 {{- end -}}

@@ -8,18 +8,7 @@
 ---
 {{ include "yolab-common.uninstallHook" . }}
 ---
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: {{ .Release.Name }}-data
-  namespace: {{ .Release.Namespace }}
-spec:
-  accessModes:
-    - ReadWriteMany
-  storageClassName: yolab-cephfs
-  resources:
-    requests:
-      storage: {{ include "yolab-common.storageSize" $ | quote }}
+{{ include "yolab-common.homeVolume" $ }}
 ---
 apiVersion: v1
 kind: Secret
@@ -82,19 +71,19 @@ spec:
         volumeMounts:
           - name: data
             mountPath: /romm/library
-            subPath: {{ printf "%s/romm/library" .Release.Name }}
+            subPath: romm/library
           - name: data
             mountPath: /romm/resources
-            subPath: {{ printf "%s/romm/resources" .Release.Name }}
+            subPath: romm/resources
           - name: data
             mountPath: /romm/assets
-            subPath: {{ printf "%s/romm/assets" .Release.Name }}
+            subPath: romm/assets
           - name: data
             mountPath: /romm/config
-            subPath: {{ printf "%s/romm/config" .Release.Name }}
+            subPath: romm/config
           - name: data
             mountPath: /redis-data
-            subPath: {{ printf "%s/romm/redis" .Release.Name }}
+            subPath: romm/redis
       volumes:
       {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
@@ -138,7 +127,7 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /var/lib/mysql
-              subPath: {{ printf "%s/mariadb" .Release.Name }}
+              subPath: mariadb
       volumes:
         - name: data
           persistentVolumeClaim:

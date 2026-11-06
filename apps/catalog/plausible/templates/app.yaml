@@ -8,18 +8,7 @@
 ---
 {{ include "yolab-common.uninstallHook" . }}
 ---
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: {{ .Release.Name }}-data
-  namespace: {{ .Release.Namespace }}
-spec:
-  accessModes:
-    - ReadWriteMany
-  storageClassName: yolab-cephfs
-  resources:
-    requests:
-      storage: {{ include "yolab-common.storageSize" $ | quote }}
+{{ include "yolab-common.homeVolume" $ }}
 ---
 apiVersion: v1
 kind: Secret
@@ -68,7 +57,7 @@ spec:
         - -c
         - 'set -e
 
-          D=/data/{{ .Release.Name }}
+          D=/data
 
           mkdir -p "$D/clickhouse"
 
@@ -159,7 +148,7 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /var/lib/postgresql/data
-          subPath: '{{ .Release.Name }}/db-data'
+          subPath: 'db-data'
       volumes:
       - name: data
         persistentVolumeClaim:
@@ -176,7 +165,7 @@ spec:
         - -c
         - 'set -e
 
-          D=/data/{{ .Release.Name }}
+          D=/data
 
           mkdir -p "$D/clickhouse"
 
@@ -236,17 +225,17 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /var/lib/clickhouse
-          subPath: '{{ .Release.Name }}/event-data'
+          subPath: 'event-data'
         - name: data
           mountPath: /var/log/clickhouse-server
-          subPath: '{{ .Release.Name }}/event-logs'
+          subPath: 'event-logs'
         - name: data
           mountPath: /etc/clickhouse-server/config.d/logging.xml
-          subPath: '{{ .Release.Name }}/clickhouse/clickhouse-config.xml'
+          subPath: 'clickhouse/clickhouse-config.xml'
           readOnly: true
         - name: data
           mountPath: /etc/clickhouse-server/users.d/logging.xml
-          subPath: '{{ .Release.Name }}/clickhouse/clickhouse-user-config.xml'
+          subPath: 'clickhouse/clickhouse-user-config.xml'
           readOnly: true
       volumes:
       - name: data
@@ -264,7 +253,7 @@ spec:
         - -c
         - 'set -e
 
-          D=/data/{{ .Release.Name }}
+          D=/data
 
           mkdir -p "$D/clickhouse"
 

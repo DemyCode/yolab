@@ -10,19 +10,7 @@
 ---
 {{ include "yolab-common.uninstallHook" . }}
 ---
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: {{ .Release.Name }}-data
-  namespace: {{ .Release.Namespace }}
-  {{- include "yolab-stack.keep" . | nindent 2 }}
-spec:
-  accessModes:
-    - ReadWriteMany
-  storageClassName: yolab-cephfs
-  resources:
-    requests:
-      storage: {{ include "yolab-common.storageSize" $ | quote }}
+{{ include "yolab-common.homeVolume" $ }}
 ---
 {{ include "yolab-common.files" . }}
 ---
@@ -82,9 +70,9 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /config
-          subPath: '{{ .Release.Name }}/data/config'
+          subPath: 'data/config'
         {{- include "yolab-common.filesMount" $ | nindent 8 }}
-      {{- include "yolab-stack.servarr" (list . (dict "app" "lidarr" "port" 8686 "api" "v1" "root" .Values.config.music_path "category" "musicCategory" "configSubPath" (printf "%s/data/config" .Release.Name))) | nindent 6 }}
+      {{- include "yolab-stack.servarr" (list . (dict "app" "lidarr" "port" 8686 "api" "v1" "root" .Values.config.music_path "category" "musicCategory" "configSubPath" "data/config")) | nindent 6 }}
       volumes:
       {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}

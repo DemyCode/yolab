@@ -17,18 +17,7 @@ type: Opaque
 stringData:
   registration_token: {{ required "config.registration_token is required" .Values.config.registration_token | quote }}
 ---
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: {{ .Release.Name }}-data
-  namespace: {{ .Release.Namespace }}
-spec:
-  accessModes:
-    - ReadWriteMany
-  storageClassName: yolab-cephfs
-  resources:
-    requests:
-      storage: {{ include "yolab-common.storageSize" $ | quote }}
+{{ include "yolab-common.homeVolume" $ }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -59,7 +48,7 @@ spec:
         volumeMounts:
           - name: data
             mountPath: /db
-            subPath: {{ printf "%s/db" .Release.Name | quote }}
+            subPath: "db"
       containers:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
@@ -86,7 +75,7 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /var/lib/fmd-server/db
-          subPath: '{{ .Release.Name }}/db'
+          subPath: 'db'
       volumes:
       {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}

@@ -88,6 +88,6 @@
   volumeMounts:
     - name: data
       mountPath: /config
-      subPath: '{{ .Release.Name }}/data/config'
+      subPath: 'data/config'
       readOnly: true
 {{- end -}}

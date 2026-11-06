@@ -63,7 +63,7 @@
 {{- define "qbittorrent.mounts" -}}
 - name: data
   mountPath: /config
-  subPath: {{ .Release.Name }}/config
+  subPath: config
 {{- include "yolab-common.filesMount" $ | nindent 0 }}
 {{- end -}}
 
@@ -108,19 +108,7 @@
 ---
 {{ include "yolab-common.uninstallHook" . }}
 ---
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: {{ .Release.Name }}-data
-  namespace: {{ .Release.Namespace }}
-  {{- include "yolab-stack.keep" . | nindent 2 }}
-spec:
-  accessModes:
-    - ReadWriteMany
-  storageClassName: yolab-cephfs
-  resources:
-    requests:
-      storage: {{ include "yolab-common.storageSize" $ | quote }}
+{{ include "yolab-common.homeVolume" $ }}
 ---
 {{ include "yolab-common.files" . }}
 ---

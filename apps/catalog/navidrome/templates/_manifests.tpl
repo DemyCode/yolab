@@ -11,19 +11,7 @@
 ---
 {{ include "yolab-common.uninstallHook" . }}
 ---
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: {{ .Release.Name }}-data
-  namespace: {{ .Release.Namespace }}
-  {{- include "yolab-stack.keep" . | nindent 2 }}
-spec:
-  accessModes:
-    - ReadWriteMany
-  storageClassName: yolab-cephfs
-  resources:
-    requests:
-      storage: {{ include "yolab-common.storageSize" $ | quote }}
+{{ include "yolab-common.homeVolume" $ }}
 ---
 {{ include "yolab-common.files" . }}
 ---
@@ -82,7 +70,7 @@ spec:
         volumeMounts:
           - name: data
             mountPath: /data
-            subPath: {{ .Release.Name }}/navidrome
+            subPath: navidrome
           {{- include "yolab-common.filesMount" $ | nindent 10 }}
       volumes:
       {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}

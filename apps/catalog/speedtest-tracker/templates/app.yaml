@@ -6,18 +6,7 @@
 ---
 {{ include "yolab-common.uninstallHook" . }}
 ---
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: {{ .Release.Name }}-data
-  namespace: {{ .Release.Namespace }}
-spec:
-  accessModes:
-    - ReadWriteMany
-  storageClassName: yolab-cephfs
-  resources:
-    requests:
-      storage: {{ include "yolab-common.storageSize" $ | quote }}
+{{ include "yolab-common.homeVolume" $ }}
 ---
 apiVersion: v1
 kind: Secret
@@ -92,7 +81,7 @@ spec:
         volumeMounts:
           - name: data
             mountPath: /state
-            subPath: {{ .Release.Name }}/yolab-state
+            subPath: yolab-state
       containers:
         - name: speedtest-tracker
           image: linuxserver/speedtest-tracker:version-v1.15.0@sha256:1eeed2307699c083407bd4c1eb86f14d5179f9e1cd960f57d4cbab6f1f8b8a42
@@ -138,10 +127,10 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /config
-              subPath: {{ .Release.Name }}/config
+              subPath: config
             - name: data
               mountPath: /state
-              subPath: {{ .Release.Name }}/yolab-state
+              subPath: yolab-state
             - name: yolab
               mountPath: /yolab
       volumes:

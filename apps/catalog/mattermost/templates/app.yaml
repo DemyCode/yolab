@@ -8,18 +8,7 @@
 ---
 {{ include "yolab-common.uninstallHook" . }}
 ---
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: {{ .Release.Name }}-data
-  namespace: {{ .Release.Namespace }}
-spec:
-  accessModes:
-    - ReadWriteMany
-  storageClassName: yolab-cephfs
-  resources:
-    requests:
-      storage: {{ include "yolab-common.storageSize" $ | quote }}
+{{ include "yolab-common.homeVolume" $ }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -69,19 +58,19 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /mattermost/config
-          subPath: '{{ .Release.Name }}/data/app/mattermost/config'
+          subPath: 'data/app/mattermost/config'
         - name: data
           mountPath: /mattermost/data
-          subPath: '{{ .Release.Name }}/data/app/mattermost/data'
+          subPath: 'data/app/mattermost/data'
         - name: data
           mountPath: /mattermost/logs
-          subPath: '{{ .Release.Name }}/data/app/mattermost/logs'
+          subPath: 'data/app/mattermost/logs'
         - name: data
           mountPath: /mattermost/plugins
-          subPath: '{{ .Release.Name }}/data/app/mattermost/plugins'
+          subPath: 'data/app/mattermost/plugins'
         - name: data
           mountPath: /mattermost/client/plugins
-          subPath: '{{ .Release.Name }}/data/app/mattermost/client-plugins'
+          subPath: 'data/app/mattermost/client-plugins'
         - name: host-etc-localtime
           mountPath: /etc/localtime
           readOnly: true
@@ -134,7 +123,7 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /var/lib/postgresql/data
-          subPath: '{{ .Release.Name }}/data/db'
+          subPath: 'data/db'
         - name: host-etc-localtime
           mountPath: /etc/localtime
           readOnly: true

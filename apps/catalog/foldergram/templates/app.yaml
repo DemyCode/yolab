@@ -8,18 +8,7 @@
 ---
 {{ include "yolab-common.uninstallHook" . }}
 ---
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: {{ .Release.Name }}-data
-  namespace: {{ .Release.Namespace }}
-spec:
-  accessModes:
-    - ReadWriteMany
-  storageClassName: yolab-cephfs
-  resources:
-    requests:
-      storage: {{ include "yolab-common.storageSize" $ | quote }}
+{{ include "yolab-common.homeVolume" $ }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -62,16 +51,16 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /app/data/gallery
-          subPath: '{{ .Release.Name }}/data/gallery'
+          subPath: 'data/gallery'
         - name: data
           mountPath: /app/data/db
-          subPath: '{{ .Release.Name }}/data/db'
+          subPath: 'data/db'
         - name: data
           mountPath: /app/data/thumbnails
-          subPath: '{{ .Release.Name }}/data/thumbnails'
+          subPath: 'data/thumbnails'
         - name: data
           mountPath: /app/data/previews
-          subPath: '{{ .Release.Name }}/data/previews'
+          subPath: 'data/previews'
       volumes:
       {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}

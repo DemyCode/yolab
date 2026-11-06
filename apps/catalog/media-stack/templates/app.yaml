@@ -17,18 +17,7 @@ type: Opaque
 stringData:
   private-key: {{ .Values.config.vpn_private_key | quote }}
 ---
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: {{ .Release.Name }}-data
-  namespace: {{ .Release.Namespace }}
-spec:
-  accessModes:
-    - ReadWriteMany
-  storageClassName: yolab-cephfs
-  resources:
-    requests:
-      storage: {{ include "yolab-common.storageSize" $ | quote }}
+{{ include "yolab-common.homeVolume" $ }}
 ---
 apiVersion: v1
 kind: Service
@@ -111,7 +100,7 @@ spec:
         volumeMounts:
           - name: data
             mountPath: /app/config
-            subPath: {{ .Release.Name }}/config/jellyseerr
+            subPath: config/jellyseerr
       containers:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
@@ -142,10 +131,10 @@ spec:
         volumeMounts:
           - name: data
             mountPath: /config
-            subPath: {{ .Release.Name }}/config/jellyfin
+            subPath: config/jellyfin
           - name: data
             mountPath: /data
-            subPath: {{ .Release.Name }}/data
+            subPath: data
             readOnly: true
           - name: yolab
             mountPath: /yolab
@@ -163,7 +152,7 @@ spec:
         volumeMounts:
           - name: data
             mountPath: /app/config
-            subPath: {{ .Release.Name }}/config/jellyseerr
+            subPath: config/jellyseerr
       - name: bazarr
         image: lscr.io/linuxserver/bazarr:v1.6.2-ls366@sha256:8b30e81c4aec2991f469e78fae8afaa89ecc9b21a80e3897f50427216b55470c
         imagePullPolicy: IfNotPresent
@@ -182,10 +171,10 @@ spec:
         volumeMounts:
           - name: data
             mountPath: /config
-            subPath: {{ .Release.Name }}/config/bazarr
+            subPath: config/bazarr
           - name: data
             mountPath: /data
-            subPath: {{ .Release.Name }}/data
+            subPath: data
       - name: cleanuparr
         image: ghcr.io/cleanuparr/cleanuparr:2.10.12@sha256:d0212e4c66bd0522e23c5e5da5d3006bd5ff0e0de1e3ecfcf892e039d55721e2
         imagePullPolicy: IfNotPresent
@@ -204,10 +193,10 @@ spec:
         volumeMounts:
           - name: data
             mountPath: /config
-            subPath: {{ .Release.Name }}/config/cleanuparr
+            subPath: config/cleanuparr
           - name: data
             mountPath: /data
-            subPath: {{ .Release.Name }}/data
+            subPath: data
       volumes:
       {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
@@ -259,7 +248,7 @@ spec:
         volumeMounts:
           - name: data
             mountPath: /data
-            subPath: {{ .Release.Name }}/data
+            subPath: data
       - name: torrents-login
         image: python:3.15-alpine@sha256:2699b90f4d562a22e2dd076c82f964032f64814204bff36d271a54ba4cc2c7e2
         imagePullPolicy: IfNotPresent
@@ -301,7 +290,7 @@ spec:
         volumeMounts:
           - name: data
             mountPath: /config
-            subPath: {{ .Release.Name }}/config/qbittorrent
+            subPath: config/qbittorrent
       containers:
       - name: gluetun
         image: qmcgaw/gluetun:v3@sha256:fa19cc76b2af13d57a8d3dc3066f2ada061b1c761b8aecf989b3877c0486e027
@@ -352,10 +341,10 @@ spec:
         volumeMounts:
           - name: data
             mountPath: /config
-            subPath: {{ .Release.Name }}/config/qbittorrent
+            subPath: config/qbittorrent
           - name: data
             mountPath: /data
-            subPath: {{ .Release.Name }}/data
+            subPath: data
       - name: prowlarr
         image: linuxserver/prowlarr:version-2.5.2.5491@sha256:aaa16ba7d66e413db6d0358d3b6c68d833578ba7f176f24a51807181e7637fce
         imagePullPolicy: IfNotPresent
@@ -374,7 +363,7 @@ spec:
         volumeMounts:
           - name: data
             mountPath: /config
-            subPath: {{ .Release.Name }}/config/prowlarr
+            subPath: config/prowlarr
       - name: flaresolverr
         image: ghcr.io/flaresolverr/flaresolverr:v3.5.2@sha256:c80ae007ce2ccdcd217a12426e4f039ef763ff90738c808d38810c3e59323767
         imagePullPolicy: IfNotPresent
@@ -406,10 +395,10 @@ spec:
         volumeMounts:
           - name: data
             mountPath: /config
-            subPath: {{ .Release.Name }}/config/sonarr
+            subPath: config/sonarr
           - name: data
             mountPath: /data
-            subPath: {{ .Release.Name }}/data
+            subPath: data
       - name: radarr
         image: linuxserver/radarr:version-6.3.0.10514@sha256:fe051413dfd91b383ba04910552e83fb0306895fefee275c48dafe7bb90807dc
         imagePullPolicy: IfNotPresent
@@ -428,10 +417,10 @@ spec:
         volumeMounts:
           - name: data
             mountPath: /config
-            subPath: {{ .Release.Name }}/config/radarr
+            subPath: config/radarr
           - name: data
             mountPath: /data
-            subPath: {{ .Release.Name }}/data
+            subPath: data
       - name: lidarr
         image: lscr.io/linuxserver/lidarr:3.1.0.4875-ls42@sha256:044d616beb43c5e7810991242c6a9c42b93ff238c8c0850684939634ea751208
         imagePullPolicy: IfNotPresent
@@ -450,10 +439,10 @@ spec:
         volumeMounts:
           - name: data
             mountPath: /config
-            subPath: {{ .Release.Name }}/config/lidarr
+            subPath: config/lidarr
           - name: data
             mountPath: /data
-            subPath: {{ .Release.Name }}/data
+            subPath: data
       - name: lazylibrarian
         image: lscr.io/linuxserver/lazylibrarian:9af8fbd8-ls360@sha256:451e73343d76ae09614b737dfaf90cdcd66d2168c599bb842aab3cd565a9a1d0
         imagePullPolicy: IfNotPresent
@@ -472,10 +461,10 @@ spec:
         volumeMounts:
           - name: data
             mountPath: /config
-            subPath: {{ .Release.Name }}/config/lazylibrarian
+            subPath: config/lazylibrarian
           - name: data
             mountPath: /data
-            subPath: {{ .Release.Name }}/data
+            subPath: data
       volumes:
       - name: data
         persistentVolumeClaim:

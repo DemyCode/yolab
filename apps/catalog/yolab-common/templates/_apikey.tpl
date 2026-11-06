@@ -32,7 +32,7 @@
       mountPath: /yolab
     - name: data
       mountPath: /api-key
-      subPath: {{ printf "%s/api-key" .Release.Name | quote }}
+      subPath: "api-key"
 {{- end }}
 {{- end -}}
 

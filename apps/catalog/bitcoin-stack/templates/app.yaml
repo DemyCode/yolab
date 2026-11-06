@@ -62,18 +62,7 @@ data:
     HiddenServiceDir /data/rpc
     HiddenServicePort {{ $rpcPort }} 127.0.0.1:{{ $rpcPort }}
 ---
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: {{ .Release.Name }}-data
-  namespace: {{ .Release.Namespace }}
-spec:
-  accessModes:
-    - ReadWriteMany
-  storageClassName: yolab-cephfs
-  resources:
-    requests:
-      storage: {{ include "yolab-common.storageSize" $ | quote }}
+{{ include "yolab-common.homeVolume" $ }}
 ---
 apiVersion: v1
 kind: Secret
@@ -186,7 +175,7 @@ spec:
         volumeMounts:
           - name: data
             mountPath: /data
-            subPath: {{ printf "%s/bitcoin-node" .Release.Name | quote }}
+            subPath: "bitcoin-node"
       - name: tor
         image: ghcr.io/getumbrel/tor:0.4.9.11@sha256:e382b8629c0dfef6ceb396b062622d4e4e955b19d6f16b883fd2c0723ad5671a
         imagePullPolicy: IfNotPresent
@@ -205,7 +194,7 @@ spec:
             subPath: torrc
           - name: data
             mountPath: /data
-            subPath: {{ printf "%s/tor" .Release.Name | quote }}
+            subPath: "tor"
       - name: i2pd
         image: purplei2p/i2pd:release-2.59.0@sha256:257653c18ce0b127ef480e3d8373b3ddbf1495e842674c8cfc59909be0015979
         imagePullPolicy: IfNotPresent
@@ -222,7 +211,7 @@ spec:
         volumeMounts:
           - name: data
             mountPath: /home/i2pd/data
-            subPath: {{ printf "%s/i2pd" .Release.Name | quote }}
+            subPath: "i2pd"
       volumes:
       - name: data
         persistentVolumeClaim:
@@ -309,10 +298,10 @@ spec:
         volumeMounts:
           - name: data
             mountPath: /data
-            subPath: {{ printf "%s/electrs" .Release.Name | quote }}
+            subPath: "electrs"
           - name: data
             mountPath: /data/.bitcoin
-            subPath: {{ printf "%s/bitcoin-node/bitcoin" .Release.Name | quote }}
+            subPath: "bitcoin-node/bitcoin"
             readOnly: true
       volumes:
       - name: data
@@ -445,7 +434,7 @@ spec:
         volumeMounts:
           - name: data
             mountPath: /backend/cache
-            subPath: {{ printf "%s/mempool" .Release.Name | quote }}
+            subPath: "mempool"
       - name: db
         image: mariadb:10.11.19@sha256:0d0945c57f75b3a3b9ebe71aedaaad005fa5305054e8fca3d2e42a8c92b43b5e
         imagePullPolicy: IfNotPresent
@@ -471,7 +460,7 @@ spec:
         volumeMounts:
           - name: data
             mountPath: /var/lib/mysql
-            subPath: {{ printf "%s/mempool-db" .Release.Name | quote }}
+            subPath: "mempool-db"
       volumes:
       - name: data
         persistentVolumeClaim:
@@ -630,7 +619,7 @@ spec:
         volumeMounts:
           - name: data
             mountPath: /data
-            subPath: {{ printf "%s/specter" .Release.Name | quote }}
+            subPath: "specter"
       volumes:
       - name: data
         persistentVolumeClaim:
@@ -713,10 +702,10 @@ spec:
         volumeMounts:
           - name: data
             mountPath: /var/lib/ord
-            subPath: {{ printf "%s/ordinals" .Release.Name | quote }}
+            subPath: "ordinals"
           - name: data
             mountPath: /var/lib/bitcoind
-            subPath: {{ printf "%s/bitcoin-node/bitcoin" .Release.Name | quote }}
+            subPath: "bitcoin-node/bitcoin"
             readOnly: true
       volumes:
       - name: data

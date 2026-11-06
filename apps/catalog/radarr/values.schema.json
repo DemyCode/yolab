@@ -9,12 +9,19 @@
       "title": "Radarr",
       "type": "object",
       "properties": {
+        "files_folder": {
+          "type": "string",
+          "title": "Files folder",
+          "default": "",
+          "pattern": "^$|^/?[A-Za-z0-9_ -][A-Za-z0-9._ -]*(/[A-Za-z0-9_ -][A-Za-z0-9._ -]*)*/?$",
+          "description": "Where in your file tree this service keeps its files. Leave it empty for a folder named after the service. Set another service to the same folder and both see the same files."
+        },
         "movies_path": {
           "type": "string",
           "title": "Films folder",
           "default": "movies",
           "pattern": "^[A-Za-z0-9_ -][A-Za-z0-9._ -]*(/[A-Za-z0-9_ -][A-Za-z0-9._ -]*)*$",
-          "description": "Where Radarr keeps your films, inside its own storage."
+          "description": "Where Radarr keeps your films, inside its files folder."
         },
         "yolab_enabled": {
           "type": "boolean",

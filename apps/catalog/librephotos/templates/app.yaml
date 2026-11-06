@@ -8,18 +8,7 @@
 ---
 {{ include "yolab-common.uninstallHook" . }}
 ---
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: {{ .Release.Name }}-data
-  namespace: {{ .Release.Namespace }}
-spec:
-  accessModes:
-    - ReadWriteMany
-  storageClassName: yolab-cephfs
-  resources:
-    requests:
-      storage: {{ include "yolab-common.storageSize" $ | quote }}
+{{ include "yolab-common.homeVolume" $ }}
 ---
 apiVersion: v1
 kind: Secret
@@ -90,10 +79,10 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /data
-          subPath: '{{ .Release.Name }}/data/photos'
+          subPath: 'data/photos'
         - name: data
           mountPath: /protected_media
-          subPath: '{{ .Release.Name }}/data/protected_media'
+          subPath: 'data/protected_media'
       volumes:
       - name: data
         persistentVolumeClaim:
@@ -155,7 +144,7 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /var/lib/postgresql/data
-          subPath: '{{ .Release.Name }}/data/db'
+          subPath: 'data/db'
       volumes:
       - name: data
         persistentVolumeClaim:
@@ -262,16 +251,16 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /data
-          subPath: '{{ .Release.Name }}/data/photos'
+          subPath: 'data/photos'
         - name: data
           mountPath: /protected_media
-          subPath: '{{ .Release.Name }}/data/protected_media'
+          subPath: 'data/protected_media'
         - name: data
           mountPath: /logs
-          subPath: '{{ .Release.Name }}/data/logs'
+          subPath: 'data/logs'
         - name: data
           mountPath: /root/.cache
-          subPath: '{{ .Release.Name }}/data/cache'
+          subPath: 'data/cache'
       volumes:
       - name: data
         persistentVolumeClaim:

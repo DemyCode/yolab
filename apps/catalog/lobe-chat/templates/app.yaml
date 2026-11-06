@@ -8,18 +8,7 @@
 ---
 {{ include "yolab-common.uninstallHook" . }}
 ---
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: {{ .Release.Name }}-data
-  namespace: {{ .Release.Namespace }}
-spec:
-  accessModes:
-    - ReadWriteMany
-  storageClassName: yolab-cephfs
-  resources:
-    requests:
-      storage: {{ include "yolab-common.storageSize" $ | quote }}
+{{ include "yolab-common.homeVolume" $ }}
 ---
 apiVersion: v1
 kind: Secret
@@ -68,7 +57,7 @@ spec:
         - -c
         - 'set -e
 
-          D=/data/{{ .Release.Name }}
+          D=/data
 
           mkdir -p "$D/data/searxng"
 
@@ -136,7 +125,7 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /app/.elasticsearch-reindex
-          subPath: '{{ .Release.Name }}/data/elasticsearch-reindex'
+          subPath: 'data/elasticsearch-reindex'
       volumes:
       {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
@@ -189,7 +178,7 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /var/lib/postgresql/data
-          subPath: '{{ .Release.Name }}/data/db'
+          subPath: 'data/db'
       volumes:
       - name: data
         persistentVolumeClaim:
@@ -206,7 +195,7 @@ spec:
         - -c
         - 'set -e
 
-          D=/data/{{ .Release.Name }}
+          D=/data
 
           mkdir -p "$D/data/searxng"
 
@@ -268,7 +257,7 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /data
-          subPath: '{{ .Release.Name }}/data/redis'
+          subPath: 'data/redis'
       volumes:
       - name: data
         persistentVolumeClaim:
@@ -285,7 +274,7 @@ spec:
         - -c
         - 'set -e
 
-          D=/data/{{ .Release.Name }}
+          D=/data
 
           mkdir -p "$D/data/searxng"
 
@@ -367,10 +356,10 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /data
-          subPath: '{{ .Release.Name }}/data/rustfs'
+          subPath: 'data/rustfs'
         - name: data
           mountPath: /logs
-          subPath: '{{ .Release.Name }}/data/rustfs-logs'
+          subPath: 'data/rustfs-logs'
       volumes:
       - name: data
         persistentVolumeClaim:
@@ -387,7 +376,7 @@ spec:
         - -c
         - 'set -e
 
-          D=/data/{{ .Release.Name }}
+          D=/data
 
           mkdir -p "$D/data/searxng"
 
@@ -454,7 +443,7 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /bucket.config.json
-          subPath: '{{ .Release.Name }}/volumes/.-bucket.config.json'
+          subPath: 'volumes/.-bucket.config.json'
           readOnly: true
       volumes:
       - name: data
@@ -472,7 +461,7 @@ spec:
         - -c
         - 'set -e
 
-          D=/data/{{ .Release.Name }}
+          D=/data
 
           mkdir -p "$D/data/searxng"
 
@@ -525,7 +514,7 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /etc/searxng/settings.yml
-          subPath: '{{ .Release.Name }}/data/searxng/settings.yml'
+          subPath: 'data/searxng/settings.yml'
       volumes:
       - name: data
         persistentVolumeClaim:
@@ -542,7 +531,7 @@ spec:
         - -c
         - 'set -e
 
-          D=/data/{{ .Release.Name }}
+          D=/data
 
           mkdir -p "$D/data/searxng"
 

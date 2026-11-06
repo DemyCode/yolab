@@ -8,18 +8,7 @@
 ---
 {{ include "yolab-common.uninstallHook" . }}
 ---
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: {{ .Release.Name }}-data
-  namespace: {{ .Release.Namespace }}
-spec:
-  accessModes:
-    - ReadWriteMany
-  storageClassName: yolab-cephfs
-  resources:
-    requests:
-      storage: {{ include "yolab-common.storageSize" $ | quote }}
+{{ include "yolab-common.homeVolume" $ }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -66,13 +55,13 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /torrents
-          subPath: '{{ .Release.Name }}/data/torrents'
+          subPath: 'data/torrents'
         - name: data
           mountPath: /downloads
-          subPath: '{{ .Release.Name }}/storage/downloads'
+          subPath: 'storage/downloads'
         - name: data
           mountPath: /config
-          subPath: '{{ .Release.Name }}/data/config'
+          subPath: 'data/config'
       volumes:
       {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}

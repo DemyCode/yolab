@@ -24,18 +24,7 @@ stringData:
   password: {{ required "config.password is required" $cfg.password | quote }}
   session_key: {{ $sessionKey | quote }}
 ---
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: {{ .Release.Name }}-data
-  namespace: {{ .Release.Namespace }}
-spec:
-  accessModes:
-    - ReadWriteMany
-  storageClassName: yolab-cephfs
-  resources:
-    requests:
-      storage: {{ include "yolab-common.storageSize" $ | quote }}
+{{ include "yolab-common.homeVolume" $ }}
 ---
 {{ include "yolab-common.files" $ }}
 ---
@@ -100,7 +89,7 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /app/data
-          subPath: '{{ .Release.Name }}/data'
+          subPath: 'data'
         {{- include "yolab-common.filesMount" $ | nindent 8 }}
       volumes:
       {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}

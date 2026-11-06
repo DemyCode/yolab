@@ -116,7 +116,7 @@ data:
   volumeMounts:
     - name: data
       mountPath: /var/lib/tor
-      subPath: {{ printf "%s/tor" .Release.Name | quote }}
+      subPath: "tor"
 {{- end }}
 {{- end -}}
 
@@ -151,7 +151,7 @@ data:
       readOnly: true
     - name: data
       mountPath: /var/lib/tor
-      subPath: {{ printf "%s/tor" .Release.Name | quote }}
+      subPath: "tor"
 {{- end }}
 {{- if eq (include "yolab-common.tailscale.enabled" .) "true" }}
 - name: tailscale
@@ -204,7 +204,7 @@ data:
       readOnly: true
     - name: data
       mountPath: /var/lib/tailscale
-      subPath: {{ printf "%s/tailscale" .Release.Name | quote }}
+      subPath: "tailscale"
 {{- end }}
 {{- end -}}
 

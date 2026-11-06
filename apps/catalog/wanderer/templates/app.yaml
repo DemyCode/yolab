@@ -8,18 +8,7 @@
 ---
 {{ include "yolab-common.uninstallHook" . }}
 ---
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: {{ .Release.Name }}-data
-  namespace: {{ .Release.Namespace }}
-spec:
-  accessModes:
-    - ReadWriteMany
-  storageClassName: yolab-cephfs
-  resources:
-    requests:
-      storage: {{ include "yolab-common.storageSize" $ | quote }}
+{{ include "yolab-common.homeVolume" $ }}
 ---
 apiVersion: v1
 kind: Secret
@@ -109,7 +98,7 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /app/uploads
-          subPath: '{{ .Release.Name }}/data/uploads'
+          subPath: 'data/uploads'
       volumes:
       {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
@@ -164,7 +153,7 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /meili_data/data.ms
-          subPath: '{{ .Release.Name }}/data/data.ms'
+          subPath: 'data/data.ms'
       volumes:
       - name: data
         persistentVolumeClaim:
@@ -226,10 +215,10 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /pb_data
-          subPath: '{{ .Release.Name }}/data/pb_data'
+          subPath: 'data/pb_data'
         - name: data
           mountPath: /data/plugins
-          subPath: '{{ .Release.Name }}/data/plugins'
+          subPath: 'data/plugins'
       volumes:
       - name: data
         persistentVolumeClaim:

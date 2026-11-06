@@ -8,18 +8,7 @@
 ---
 {{ include "yolab-common.uninstallHook" . }}
 ---
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: {{ .Release.Name }}-data
-  namespace: {{ .Release.Namespace }}
-spec:
-  accessModes:
-    - ReadWriteMany
-  storageClassName: yolab-cephfs
-  resources:
-    requests:
-      storage: {{ include "yolab-common.storageSize" $ | quote }}
+{{ include "yolab-common.homeVolume" $ }}
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -63,7 +52,7 @@ spec:
         - -c
         - 'set -e
 
-          D=/data/{{ .Release.Name }}
+          D=/data
 
           [ -e "$D/entrypoint.sh" ] || cp /seed/f0 "$D/entrypoint.sh"
 
@@ -107,13 +96,13 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /var/run
-          subPath: '{{ .Release.Name }}/data/docker'
+          subPath: 'data/docker'
         - name: data
           mountPath: /.openhands
-          subPath: '{{ .Release.Name }}/data/openhands'
+          subPath: 'data/openhands'
         - name: data
           mountPath: /opt/workspace_base
-          subPath: '{{ .Release.Name }}/data/workspace'
+          subPath: 'data/workspace'
       volumes:
       {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
@@ -164,10 +153,10 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /entrypoint.sh
-          subPath: '{{ .Release.Name }}/entrypoint.sh'
+          subPath: 'entrypoint.sh'
         - name: data
           mountPath: /data
-          subPath: '{{ .Release.Name }}/data/docker'
+          subPath: 'data/docker'
       volumes:
       - name: data
         persistentVolumeClaim:
@@ -184,7 +173,7 @@ spec:
         - -c
         - 'set -e
 
-          D=/data/{{ .Release.Name }}
+          D=/data
 
           [ -e "$D/entrypoint.sh" ] || cp /seed/f0 "$D/entrypoint.sh"
 

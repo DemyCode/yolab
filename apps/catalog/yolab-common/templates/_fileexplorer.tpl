@@ -147,7 +147,7 @@ stringData:
       mountPath: /yolab
     - name: data
       mountPath: /browse-state
-      subPath: {{ printf "%s/file-explorer" .Release.Name | quote }}
+      subPath: "file-explorer"
 {{- if eq (include "yolab-common.fileExplorer.tor" .) "true" }}
 - name: file-explorer-tor-state
   image: {{ include "yolab-common.image.tor" . }}
@@ -170,7 +170,7 @@ stringData:
   volumeMounts:
     - name: data
       mountPath: /var/lib/tor
-      subPath: {{ printf "%s/file-explorer-tor" .Release.Name | quote }}
+      subPath: "file-explorer-tor"
 {{- end }}
 {{- end -}}
 {{- end -}}
@@ -284,12 +284,11 @@ data:
       mountPath: /var/lib/filebrowser
     - name: data
       mountPath: /srv/data
-      subPath: {{ .Release.Name | quote }}
       readOnly: {{ eq (include "yolab-common.fileExplorer.readOnly" .) "true" }}
     {{- range (include "yolab-common.fileExplorer.protected" . | fromJsonArray) }}
     - name: data
       mountPath: {{ printf "/srv/data/%s" . | quote }}
-      subPath: {{ printf "%s/%s" $.Release.Name . | quote }}
+      subPath: {{ . | quote }}
       readOnly: true
     {{- end }}
     {{- if eq (include "yolab-common.files.enabled" .) "true" }}
@@ -326,7 +325,7 @@ data:
       readOnly: true
     - name: data
       mountPath: /var/lib/tor
-      subPath: {{ printf "%s/file-explorer-tor" .Release.Name | quote }}
+      subPath: "file-explorer-tor"
 {{- end }}
 {{- if eq (include "yolab-common.fileExplorer.tailscale" .) "true" }}
 - name: file-explorer-tailscale
@@ -381,7 +380,7 @@ data:
       readOnly: true
     - name: data
       mountPath: /var/lib/tailscale
-      subPath: {{ printf "%s/file-explorer-tailscale" .Release.Name | quote }}
+      subPath: "file-explorer-tailscale"
 {{- end }}
 {{- end -}}
 {{- end -}}

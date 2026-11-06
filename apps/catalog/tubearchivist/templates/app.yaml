@@ -8,18 +8,7 @@
 ---
 {{ include "yolab-common.uninstallHook" . }}
 ---
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: {{ .Release.Name }}-data
-  namespace: {{ .Release.Namespace }}
-spec:
-  accessModes:
-    - ReadWriteMany
-  storageClassName: yolab-cephfs
-  resources:
-    requests:
-      storage: {{ include "yolab-common.storageSize" $ | quote }}
+{{ include "yolab-common.homeVolume" $ }}
 ---
 apiVersion: v1
 kind: Secret
@@ -90,10 +79,10 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /youtube
-          subPath: '{{ .Release.Name }}/data/media'
+          subPath: 'data/media'
         - name: data
           mountPath: /cache
-          subPath: '{{ .Release.Name }}/data/cache'
+          subPath: 'data/cache'
       volumes:
       {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
@@ -137,7 +126,7 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /data
-          subPath: '{{ .Release.Name }}/data/redis'
+          subPath: 'data/redis'
       volumes:
       - name: data
         persistentVolumeClaim:
@@ -205,7 +194,7 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /usr/share/elasticsearch/data
-          subPath: '{{ .Release.Name }}/data/elasticsearch'
+          subPath: 'data/elasticsearch'
       volumes:
       - name: data
         persistentVolumeClaim:

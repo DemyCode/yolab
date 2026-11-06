@@ -8,18 +8,7 @@
 ---
 {{ include "yolab-common.uninstallHook" . }}
 ---
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: {{ .Release.Name }}-data
-  namespace: {{ .Release.Namespace }}
-spec:
-  accessModes:
-  - ReadWriteMany
-  storageClassName: yolab-cephfs
-  resources:
-    requests:
-      storage: {{ include "yolab-common.storageSize" $ | quote }}
+{{ include "yolab-common.homeVolume" $ }}
 ---
 {{ include "yolab-common.files" $ }}
 ---
@@ -54,7 +43,7 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /state
-          subPath: {{ .Release.Name }}/yolab-state
+          subPath: yolab-state
       containers:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerContainer" . | nindent 6 }}
@@ -124,11 +113,11 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /usr/src/app/upload
-          subPath: {{ .Release.Name }}/uploads
+          subPath: uploads
         {{- include "yolab-common.filesMount" $ | nindent 8 }}
         - name: data
           mountPath: /state
-          subPath: {{ .Release.Name }}/yolab-state
+          subPath: yolab-state
       volumes:
       - name: data
         persistentVolumeClaim:
@@ -183,7 +172,7 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /cache
-          subPath: {{ .Release.Name }}/ml-cache
+          subPath: ml-cache
       volumes:
       - name: data
         persistentVolumeClaim:
@@ -286,10 +275,10 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /var/lib/postgresql/data
-          subPath: {{ .Release.Name }}/postgres
+          subPath: postgres
         - name: data
           mountPath: /state
-          subPath: {{ .Release.Name }}/yolab-state
+          subPath: yolab-state
       volumes:
       - name: data
         persistentVolumeClaim:

@@ -8,18 +8,7 @@
 ---
 {{ include "yolab-common.uninstallHook" . }}
 ---
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: {{ .Release.Name }}-data
-  namespace: {{ .Release.Namespace }}
-spec:
-  accessModes:
-    - ReadWriteMany
-  storageClassName: yolab-cephfs
-  resources:
-    requests:
-      storage: {{ include "yolab-common.storageSize" $ | quote }}
+{{ include "yolab-common.homeVolume" $ }}
 ---
 apiVersion: v1
 kind: Secret
@@ -68,7 +57,7 @@ spec:
         - -c
         - 'set -e
 
-          D=/data/{{ .Release.Name }}
+          D=/data
 
           mkdir -p "$D/data/config"
 
@@ -153,7 +142,7 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /var/lib/outline/data
-          subPath: '{{ .Release.Name }}/data/app'
+          subPath: 'data/app'
       volumes:
       {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
       {{- include "yolab-common.fileExplorerVolumes" . | nindent 6 }}
@@ -212,7 +201,7 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /var/lib/postgresql/data
-          subPath: '{{ .Release.Name }}/data/db'
+          subPath: 'data/db'
       volumes:
       - name: data
         persistentVolumeClaim:
@@ -229,7 +218,7 @@ spec:
         - -c
         - 'set -e
 
-          D=/data/{{ .Release.Name }}
+          D=/data
 
           mkdir -p "$D/data/config"
 
@@ -298,7 +287,7 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /data
-          subPath: '{{ .Release.Name }}/data/redis'
+          subPath: 'data/redis'
       volumes:
       - name: data
         persistentVolumeClaim:
@@ -315,7 +304,7 @@ spec:
         - -c
         - 'set -e
 
-          D=/data/{{ .Release.Name }}
+          D=/data
 
           mkdir -p "$D/data/config"
 
@@ -387,10 +376,10 @@ spec:
         volumeMounts:
         - name: data
           mountPath: /etc/dex
-          subPath: '{{ .Release.Name }}/data/config'
+          subPath: 'data/config'
         - name: data
           mountPath: /var/dex
-          subPath: '{{ .Release.Name }}/data/dex'
+          subPath: 'data/dex'
       volumes:
       - name: data
         persistentVolumeClaim:
@@ -407,7 +396,7 @@ spec:
         - -c
         - 'set -e
 
-          D=/data/{{ .Release.Name }}
+          D=/data
 
           mkdir -p "$D/data/config"
 
