@@ -2143,7 +2143,7 @@ class TreeVolumes(unittest.TestCase):
         self.assertEqual(self.tree(*tree_pair("release-data", "release")), [])
 
     def test_a_volume_the_cluster_makes_up_on_its_own_is_refused(self):
-        pv, claim = tree_pair("release-data", "release")
+        _, claim = tree_pair("release-data", "release")
         claim["spec"]["storageClassName"] = "yolab-cephfs"
         del claim["spec"]["volumeName"]
         found = self.tree(claim)
