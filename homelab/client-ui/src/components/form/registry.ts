@@ -5,7 +5,6 @@ import {
 } from "./templates";
 import {
   CheckboxWidget,
-  FilesPathWidget,
   PasswordWidget,
   TextareaWidget,
   TunnelWidget,
@@ -21,7 +20,6 @@ export const templates = {
 export const widgets = {
   TunnelWidget,
   YolabTokenWidget,
-  FilesPathWidget,
   PasswordWidget,
   CheckboxWidget,
   TextareaWidget,

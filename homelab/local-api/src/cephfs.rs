@@ -10,9 +10,6 @@ pub(crate) const FS_NAME: &str = "yolab-fs";
 pub(crate) const META_POOL: &str = "yolab-fs-metadata";
 pub(crate) const DATA_POOL: &str = "yolab-fs-data0";
 pub(crate) const SUBVOLUME_GROUP: &str = "csi";
-pub(crate) const FILES_GROUP: &str = "files";
-pub(crate) const FILES_OWNER: &str = "1000";
-pub(crate) const FILES_MODE: &str = "775";
 
 fn pool_listed(pool_ls: &str, name: &str) -> bool {
     pool_ls.lines().any(|l| l.trim() == name)
@@ -95,23 +92,6 @@ async fn ensure_subvolumegroups<H: Host>(host: &H) -> Result<()> {
         host.ceph(&["fs", "subvolumegroup", "create", FS_NAME, SUBVOLUME_GROUP])
             .await?;
     }
-    if !has_named(&ls, FILES_GROUP) {
-        host.ceph(&[
-            "fs",
-            "subvolumegroup",
-            "create",
-            FS_NAME,
-            FILES_GROUP,
-            "--uid",
-            FILES_OWNER,
-            "--gid",
-            FILES_OWNER,
-            "--mode",
-            FILES_MODE,
-        ])
-        .await?;
-        tracing::info!("created the shared Files directory");
-    }
     Ok(())
 }
 
@@ -170,9 +150,15 @@ mod tests {
                 .ok("ceph fs subvolumegroup create", "");
             ensure(&host).await.unwrap();
             assert!(host.ran("ceph fs subvolumegroup create yolab-fs csi"));
-            assert!(host.ran(
-                "ceph fs subvolumegroup create yolab-fs files --uid 1000 --gid 1000 --mode 775"
-            ));
+            assert_eq!(
+                host.calls()
+                    .iter()
+                    .filter(|c| c.contains("subvolumegroup create"))
+                    .count(),
+                1,
+                "{:?}",
+                host.calls()
+            );
             assert!(!host.ran("ceph fs new"));
             assert!(!host.ran("ceph osd pool create"));
         }
@@ -189,10 +175,7 @@ mod tests {
                 .ok("ceph osd pool create", "")
                 .ok("ceph osd pool set", "")
                 .ok("ceph fs new", "")
-                .ok(
-                    "ceph fs subvolumegroup ls",
-                    r#"[{"name": "csi"}, {"name": "files"}]"#,
-                );
+                .ok("ceph fs subvolumegroup ls", r#"[{"name": "csi"}]"#);
             ensure(&host).await.unwrap();
             assert!(host.ran("ceph osd pool create yolab-fs-data0 32 32"));
             assert!(!host.ran("ceph osd pool create yolab-fs-metadata"));
@@ -205,33 +188,16 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn the_shared_files_directory_is_made_once_and_owned_by_the_apps_user() {
+        async fn no_directory_shared_between_apps_is_made() {
             let host = FakeHost::new()
                 .ok(
                     "ceph osd stat",
                     r#"{"num_osds": 1, "num_up_osds": 1, "num_in_osds": 1}"#,
                 )
                 .ok("ceph fs ls", r#"[{"name": "yolab-fs"}]"#)
-                .ok("ceph fs subvolumegroup ls", r#"[{"name": "csi"}]"#)
-                .ok("ceph fs subvolumegroup create", "");
+                .ok("ceph fs subvolumegroup ls", r#"[{"name": "csi"}]"#);
             ensure(&host).await.unwrap();
-            assert!(host.ran(
-                "ceph fs subvolumegroup create yolab-fs files --uid 1000 --gid 1000 --mode 775"
-            ));
-            assert!(!host.ran("ceph fs subvolumegroup create yolab-fs csi"));
-
-            let again = FakeHost::new()
-                .ok(
-                    "ceph osd stat",
-                    r#"{"num_osds": 1, "num_up_osds": 1, "num_in_osds": 1}"#,
-                )
-                .ok("ceph fs ls", r#"[{"name": "yolab-fs"}]"#)
-                .ok(
-                    "ceph fs subvolumegroup ls",
-                    r#"[{"name": "csi"}, {"name": "files"}]"#,
-                );
-            ensure(&again).await.unwrap();
-            assert!(!again.ran("ceph fs subvolumegroup create"));
+            assert!(!host.ran("ceph fs subvolumegroup create"));
         }
 
         #[tokio::test]

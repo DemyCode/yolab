@@ -11,11 +11,10 @@
       "properties": {
         "music_path": {
           "type": "string",
-          "title": "Music in Files",
-          "format": "files-path",
+          "title": "Music folder",
           "default": "music",
           "pattern": "^[A-Za-z0-9_ -][A-Za-z0-9._ -]*(/[A-Za-z0-9_ -][A-Za-z0-9._ -]*)*$",
-          "description": "The music Navidrome plays. Files is the one space every app on your machines shares."
+          "description": "The folder inside Navidrome's own storage it plays music from. Add music with the file explorer."
         },
         "yolab_enabled": {
           "type": "boolean",

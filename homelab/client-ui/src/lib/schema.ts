@@ -72,9 +72,6 @@ function fieldUi(prop: SchemaProp, domain: string): UiSchema | undefined {
   if (prop.format === "tunnel") {
     return { "ui:widget": "TunnelWidget", "ui:options": { domain } };
   }
-  if (prop.format === "files-path") {
-    return { "ui:widget": "FilesPathWidget" };
-  }
   if (prop.format === "yolab-token") {
     return { "ui:widget": "YolabTokenWidget" };
   }

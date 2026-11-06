@@ -11,11 +11,10 @@
       "properties": {
         "shows_path": {
           "type": "string",
-          "title": "Shows in Files",
-          "format": "files-path",
+          "title": "Shows folder",
           "default": "shows",
           "pattern": "^[A-Za-z0-9_ -][A-Za-z0-9._ -]*(/[A-Za-z0-9_ -][A-Za-z0-9._ -]*)*$",
-          "description": "Where Sonarr keeps your shows. Files is the one space every app on your machines shares. Point your media server at the same place."
+          "description": "Where Sonarr keeps your shows, inside its own storage."
         },
         "yolab_enabled": {
           "type": "boolean",

@@ -445,7 +445,7 @@ function RestoreSheet({
       open={open}
       onClose={close}
       title={`Restore ${name}`}
-      subtitle="Its settings go back to the backup you pick. Choose below what happens to its data; whatever is replaced loses anything newer. Files is not touched."
+      subtitle="Its settings go back to the backup you pick. Choose below what happens to its data; whatever is replaced loses anything newer."
     >
       {snapshots === null ? (
         <div className="flex items-center gap-2 py-4 text-sm text-fg-muted">
@@ -1157,8 +1157,8 @@ export function AppDetailPage() {
         busy={working === "remove"}
         body={
           <>
-            {name} stops and is removed with its own data. What it put in Files
-            stays. Backups you already have are kept.
+            {name} stops and is removed with all of its data. Backups you already
+            have are kept.
           </>
         }
       />

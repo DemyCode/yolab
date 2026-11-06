@@ -127,12 +127,6 @@ pub async fn run<H: Host>(b: &Backend<H>) -> Result<()> {
         json!({"adminID": user_id(NODE_ENTITY), "adminKey": node}),
     )
     .await?;
-    apply_secret(
-        client,
-        crate::csi::STATIC_SECRET,
-        json!({"userID": user_id(NODE_ENTITY), "userKey": node}),
-    )
-    .await?;
     crate::k8s::apply(
         client,
         &json!({
@@ -267,7 +261,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn publishes_both_credentials_the_files_secret_and_the_csi_config() {
+    async fn publishes_both_credentials_and_the_csi_config_and_no_static_volume_secret() {
         let (server, kube) = cluster_up().await;
         let b = Backend {
             kube,
@@ -283,10 +277,9 @@ mod tests {
         let node = named(&patches, "csi-cephfs-node");
         assert_eq!(node["stringData"]["adminID"], "csi-cephfs-node");
         assert_eq!(node["stringData"]["adminKey"], "nodekey");
-        let files = named(&patches, crate::csi::STATIC_SECRET);
-        assert_eq!(files["metadata"]["namespace"], "ceph-csi");
-        assert_eq!(files["stringData"]["userID"], "csi-cephfs-node");
-        assert_eq!(files["stringData"]["userKey"], "nodekey");
+        assert!(patches
+            .iter()
+            .all(|p| p["metadata"]["name"] != "yolab-cephfs-static"));
         let config = named(&patches, "ceph-csi-config");
         let parsed: Value =
             serde_json::from_str(config["data"]["config.json"].as_str().unwrap()).unwrap();

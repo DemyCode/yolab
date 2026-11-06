@@ -162,7 +162,7 @@
                 "existing_client": {
                   "type": "object",
                   "title": "Which qBittorrent",
-                  "description": "Sonarr and Radarr send their downloads to it. Have it save finished downloads into Files, the one space every app on your machines shares.",
+                  "description": "Sonarr and Radarr send their downloads to it.",
                   "properties": {
                     "internal_url": {
                       "type": "string",

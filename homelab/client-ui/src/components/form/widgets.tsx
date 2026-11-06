@@ -156,22 +156,3 @@ export function TextareaWidget(props: WidgetProps) {
     />
   );
 }
-
-export function FilesPathWidget(props: WidgetProps) {
-  const { value, onChange, disabled, readonly, id, placeholder } = props;
-  return (
-    <div className="flex items-center gap-2">
-      <span className="shrink-0 font-mono text-sm text-fg-muted">Files /</span>
-      <Input
-        id={id}
-        value={typeof value === "string" ? value : ""}
-        placeholder={placeholder}
-        disabled={disabled || readonly}
-        onChange={(e) =>
-          onChange(e.target.value === "" ? undefined : e.target.value)
-        }
-        className="flex-1 font-mono"
-      />
-    </div>
-  );
-}

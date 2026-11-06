@@ -43,7 +43,7 @@
               "path": "shows"
             }
           ],
-          "description": "Libraries Jellyfin adds once it is set up, each a place in Files, the one space every app on your machines shares. The ones you add in Jellyfin yourself are left alone.",
+          "description": "Libraries Jellyfin adds once it is set up, each a folder inside its own storage. The ones you add in Jellyfin yourself are left alone.",
           "items": {
             "type": "object",
             "required": [
@@ -86,8 +86,7 @@
               },
               "path": {
                 "type": "string",
-                "title": "In Files",
-                "format": "files-path",
+                "title": "Folder",
                 "pattern": "^[A-Za-z0-9_ -][A-Za-z0-9._ -]*(/[A-Za-z0-9_ -][A-Za-z0-9._ -]*)*$"
               }
             }

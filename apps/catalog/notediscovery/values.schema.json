@@ -19,11 +19,10 @@
         },
         "notes_path": {
           "type": "string",
-          "title": "Notes in Files",
-          "format": "files-path",
+          "title": "Notes folder",
           "default": "notes",
           "pattern": "^[A-Za-z0-9_ -][A-Za-z0-9._ -]*(/[A-Za-z0-9_ -][A-Za-z0-9._ -]*)*$",
-          "description": "Where your notes are kept, as plain Markdown files. Files is the one space every app on your machines shares."
+          "description": "Where your notes are kept, as plain Markdown files, inside its own storage."
         },
         "yolab_enabled": {
           "type": "boolean",

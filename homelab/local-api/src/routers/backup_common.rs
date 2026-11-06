@@ -330,12 +330,7 @@ pub(crate) async fn user_pvcs(client: &Client) -> anyhow::Result<Vec<PvcInfo>> {
             if EXCLUDED_NS.contains(&ns.as_str()) || !managed.contains(&ns) {
                 return None;
             }
-            let is_files = claim
-                .metadata
-                .labels
-                .as_ref()
-                .is_some_and(|l| l.contains_key(crate::routers::apps::FILES_LABEL));
-            if name.starts_with("volsync-") || is_files {
+            if name.starts_with("volsync-") {
                 return None;
             }
             let capacity = claim
@@ -1226,7 +1221,7 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn the_shared_files_are_never_backed_up_or_copied_as_part_of_an_app() {
+        async fn a_charts_own_files_claim_is_backed_up_with_the_rest_of_the_app() {
             let (server, client) = api_server().await;
             Mock::given(method("GET"))
                 .and(path("/api/v1/namespaces"))
@@ -1236,8 +1231,7 @@ mod tests {
                 )))
                 .mount(&server)
                 .await;
-            let mut files = claim("yolab-a", "files", Some("1Ti"));
-            files["metadata"]["labels"] = json!({ "yolab.io/files": "true" });
+            let files = claim("yolab-a", "content", Some("100Gi"));
             Mock::given(method("GET"))
                 .and(path("/api/v1/persistentvolumeclaims"))
                 .respond_with(ResponseTemplate::new(200).set_body_json(list(
@@ -1249,7 +1243,7 @@ mod tests {
 
             let pvcs = user_pvcs(&client).await.unwrap();
             let names: Vec<&str> = pvcs.iter().map(|p| p.name.as_str()).collect();
-            assert_eq!(names, vec!["data"]);
+            assert_eq!(names, vec!["data", "content"]);
         }
 
         fn source(pvc: &str) -> PvcInfo {

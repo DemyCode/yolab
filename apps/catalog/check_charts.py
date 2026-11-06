@@ -1516,61 +1516,20 @@ def check_no_links(app, schema, fail):
         )
 
 
-FILES_LABEL = "yolab.io/files"
-FILES_CLAIM = "files"
+FILES_CLAIM = "content"
 FILES_MOUNT = "/files"
-FILES_ROOT = "/volumes/files"
-FILES_DRIVER = "cephfs.csi.ceph.com"
-FILES_SECRET = "yolab-cephfs-static"
-FILES_FS = "yolab-fs"
-FILES_PATH_PATTERN = (
-    "^[A-Za-z0-9_ -][A-Za-z0-9._ -]*(/[A-Za-z0-9_ -][A-Za-z0-9._ -]*)*$"
-)
+FILES_CLASS = "yolab-cephfs"
 
 
 def is_files_doc(doc):
-    return FILES_LABEL in ((doc.get("metadata") or {}).get("labels") or {})
+    return (
+        doc.get("kind") == "PersistentVolumeClaim"
+        and (doc.get("metadata") or {}).get("name") == FILES_CLAIM
+    )
 
 
 def uses_files(values):
     return bool(((values or {}).get("yolab") or {}).get("files"))
-
-
-def files_path_fields(schema):
-    return config_fields(schema, lambda prop: prop.get("format") == "files-path")
-
-
-def list_item_fields(schema):
-    found = set()
-
-    def walk(node, in_item):
-        if isinstance(node, dict):
-            if in_item:
-                found.update((node.get("properties") or {}).keys())
-            for key, v in node.items():
-                walk(v, in_item or key == "items")
-        elif isinstance(node, list):
-            for v in node:
-                walk(v, in_item)
-
-    walk((schema.get("properties") or {}).get("config") or {}, False)
-    return found
-
-
-def check_files_path_fields(app, schema, fail):
-    in_lists = list_item_fields(schema)
-    for name in sorted(config_fields(schema, lambda p: p.get("format") == "folder")):
-        fail(app, f"config.{name} is a folder field; folders are gone, use files-path")
-    for name, prop in sorted(files_path_fields(schema).items()):
-        where = f"config.{name}"
-        if prop.get("type") != "string":
-            fail(app, f"{where} is a Files path but not a string")
-        if not prop.get("default") and name not in in_lists:
-            fail(app, f"{where} needs a default place in Files the person can change")
-        if prop.get("pattern") != FILES_PATH_PATTERN:
-            fail(app, f"{where} needs the Files path pattern {FILES_PATH_PATTERN}")
-        if not str(prop.get("title") or "").strip():
-            fail(app, f"{where} has no title to show")
 
 
 def files_mounts(docs):
@@ -1587,71 +1546,54 @@ def files_mounts(docs):
 
 
 def check_files(app, docs, wanted, fail):
-    claims = [
-        d for d in docs if d.get("kind") == "PersistentVolumeClaim" and is_files_doc(d)
-    ]
-    volumes = [
-        d for d in docs if d.get("kind") == "PersistentVolume" and is_files_doc(d)
-    ]
+    for d in docs:
+        if d.get("kind") == "PersistentVolume":
+            fail(
+                app,
+                f"renders PersistentVolume {d['metadata'].get('name')}: a chart "
+                f"keeps its data in its own claims, never in a volume another "
+                f"app could share",
+            )
+    claims = [d for d in docs if is_files_doc(d)]
     mounts = list(files_mounts(docs))
     if not wanted:
-        if claims or volumes or mounts:
-            fail(app, "uses Files but values.yaml does not set yolab.files: true")
+        if claims or mounts:
+            fail(
+                app,
+                f"renders or mounts the {FILES_CLAIM} claim but values.yaml does "
+                f"not set yolab.files: true",
+            )
         return
-    if [c["metadata"]["name"] for c in claims] != [FILES_CLAIM] or len(volumes) != 1:
+    if len(claims) != 1:
         fail(
             app,
-            f"with yolab.files the chart must render one PersistentVolume and one "
-            f"claim named {FILES_CLAIM}, got {len(volumes)} and "
-            f"{[c['metadata']['name'] for c in claims]}",
+            f"with yolab.files the chart must render one claim named "
+            f"{FILES_CLAIM}, got {len(claims)}",
         )
         return
-    claim, volume = claims[0], volumes[0]
-    namespace = claim["metadata"].get("namespace") or "default"
-    name = f"{namespace}.files"
-    spec = volume.get("spec") or {}
-    csi = spec.get("csi") or {}
-    attributes = csi.get("volumeAttributes") or {}
+    spec = claims[0].get("spec") or {}
     expected = {
-        "the volume's name": (volume["metadata"].get("name"), name),
-        "its volumeHandle": (csi.get("volumeHandle"), name),
-        "its driver": (csi.get("driver"), FILES_DRIVER),
-        "its secret": ((csi.get("nodeStageSecretRef") or {}).get("name"), FILES_SECRET),
-        "its filesystem": (attributes.get("fsName"), FILES_FS),
-        "its rootPath": (attributes.get("rootPath"), FILES_ROOT),
-        "staticVolume": (attributes.get("staticVolume"), "true"),
-        "its reclaim policy": (spec.get("persistentVolumeReclaimPolicy"), "Retain"),
-        "its claimRef": (
-            spec.get("claimRef"),
-            {"namespace": namespace, "name": FILES_CLAIM},
-        ),
-        "the claim's volumeName": ((claim.get("spec") or {}).get("volumeName"), name),
-        "the claim's storageClassName": (
-            (claim.get("spec") or {}).get("storageClassName"),
-            "",
-        ),
-        "the claim's accessModes": (
-            (claim.get("spec") or {}).get("accessModes"),
-            ["ReadWriteMany"],
-        ),
+        "its storageClassName": (spec.get("storageClassName"), FILES_CLASS),
+        "its accessModes": (spec.get("accessModes"), ["ReadWriteMany"]),
+        "its volumeName": (spec.get("volumeName"), None),
     }
     for what, (got, want) in expected.items():
         if got != want:
-            fail(app, f"Files: {what} must be {want!r}, got {got!r}")
+            fail(app, f"the {FILES_CLAIM} claim: {what} must be {want!r}, got {got!r}")
     if not mounts:
-        fail(app, "yolab.files is on but no container mounts Files")
+        fail(app, f"yolab.files is on but no container mounts the {FILES_CLAIM} claim")
     for pod, container, m in mounts:
         if m.get("mountPath") != FILES_MOUNT:
             fail(
                 app,
-                f"{pod}/{container} mounts Files at {m.get('mountPath')!r}, not "
-                f"{FILES_MOUNT} — every app must see the same paths",
+                f"{pod}/{container} mounts {FILES_CLAIM} at {m.get('mountPath')!r}, "
+                f"not {FILES_MOUNT} — the apps of a pack must see the same paths",
             )
         if m.get("subPath"):
             fail(
                 app,
-                f"{pod}/{container} mounts only part of Files; moves and hardlinks "
-                f"need it whole",
+                f"{pod}/{container} mounts only part of {FILES_CLAIM}; moves and "
+                f"hardlinks between the apps of a pack need it whole",
             )
 
 
@@ -1771,10 +1713,7 @@ def check_pack_render(app, docs, members, fail):
         seen.add(key)
     parts, shared = split_by_member(docs, members)
     for d in shared:
-        if d.get("kind") in PACK_SHARED_KINDS or (
-            d.get("kind") in ("PersistentVolumeClaim", "PersistentVolume")
-            and is_files_doc(d)
-        ):
+        if d.get("kind") in PACK_SHARED_KINDS or is_files_doc(d):
             continue
         fail(
             app,
@@ -1839,7 +1778,6 @@ def check_pack(chart_dir, charts, library_tgz, workdir, fail):
         schema = {}
     members = pack_members(text)
     check_schema(app, schema, text, fail)
-    check_files_path_fields(app, schema, fail)
     check_no_links(app, schema, fail)
     check_pack_declaration(app, text, charts, fail)
     check_pack_outputs(app, schema, members, fail)
@@ -1858,8 +1796,8 @@ def check_pack(chart_dir, charts, library_tgz, workdir, fail):
             ):
                 fail(
                     app,
-                    f"{member} uses Files, so the pack must set yolab.files: true "
-                    f"to give its apps one shared Files",
+                    f"{member} uses yolab.files, so the pack must set it too "
+                    f"to give its apps one {FILES_CLAIM} claim",
                 )
     for extra in [{}, *VARIANTS.get(app, [])]:
         where = app if not extra else f"{app} ({extra})"
@@ -1950,7 +1888,6 @@ def main(argv):
             check_schema(app, schema, text, fail)
             check(app, docs, fail, text, schema)
             check_no_links(app, schema, fail)
-            check_files_path_fields(app, schema, fail)
             values_path = Path(chart_dir, "values.yaml")
             values = (
                 yaml.safe_load(values_path.read_text()) if values_path.exists() else {}

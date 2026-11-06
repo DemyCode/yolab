@@ -11,11 +11,10 @@
       "properties": {
         "downloads_path": {
           "type": "string",
-          "title": "Downloads in Files",
-          "format": "files-path",
+          "title": "Downloads folder",
           "default": "downloads",
           "pattern": "^[A-Za-z0-9_ -][A-Za-z0-9._ -]*(/[A-Za-z0-9_ -][A-Za-z0-9._ -]*)*$",
-          "description": "Where finished downloads go. Files is the one space every app on your machines shares. Sonarr, Radarr and Lidarr pick them up from there."
+          "description": "Where finished downloads go, inside its own storage."
         },
         "yolab_enabled": {
           "type": "boolean",

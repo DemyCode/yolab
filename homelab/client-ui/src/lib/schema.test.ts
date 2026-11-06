@@ -359,17 +359,17 @@ describe("an address of another app", () => {
   });
 });
 
-describe("a path in Files", () => {
-  it("gets the field that shows it is inside Files", () => {
+describe("a folder path", () => {
+  it("is a plain text field", () => {
     const ui = uiSchemaFor(
       {
         properties: {
-          downloads_path: { type: "string", format: "files-path" },
+          downloads_path: { type: "string" },
         },
       },
       "6.yolab.io",
     ) as Record<string, Record<string, unknown>>;
-    expect(ui.downloads_path["ui:widget"]).toBe("FilesPathWidget");
+    expect(ui.downloads_path?.["ui:widget"]).toBeUndefined();
   });
 });
 

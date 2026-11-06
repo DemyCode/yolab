@@ -11,11 +11,10 @@
       "properties": {
         "movies_path": {
           "type": "string",
-          "title": "Films in Files",
-          "format": "files-path",
+          "title": "Films folder",
           "default": "movies",
           "pattern": "^[A-Za-z0-9_ -][A-Za-z0-9._ -]*(/[A-Za-z0-9_ -][A-Za-z0-9._ -]*)*$",
-          "description": "Where Radarr keeps your films. Files is the one space every app on your machines shares. Point your media server at the same place."
+          "description": "Where Radarr keeps your films, inside its own storage."
         },
         "yolab_enabled": {
           "type": "boolean",

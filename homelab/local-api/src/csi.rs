@@ -8,7 +8,6 @@ pub const CLUSTER_ID: &str = "yolab";
 pub const PROVISIONER_SECRET: &str = "csi-cephfs-provisioner";
 pub const NODE_SECRET: &str = "csi-cephfs-node";
 pub const CONFIG_MAP: &str = "ceph-csi-config";
-pub const STATIC_SECRET: &str = "yolab-cephfs-static";
 
 pub async fn restart_local_plugin(client: &Client) -> anyhow::Result<()> {
     let on_this_node = ListParams::default()

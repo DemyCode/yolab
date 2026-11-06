@@ -3,7 +3,7 @@
 {{- end -}}
 
 
-{{- define "yolab-common.files.claim" -}}files{{- end -}}
+{{- define "yolab-common.files.claim" -}}content{{- end -}}
 
 {{- define "yolab-common.files.mountPath" -}}/files{{- end -}}
 
@@ -12,7 +12,7 @@
 {{- $ctx := index . 0 -}}
 {{- $sub := index . 1 | default "" | trimAll "/" -}}
 {{- if or (hasPrefix "/" (index . 1 | default "")) (regexMatch "(^|/)\\.\\.(/|$)" $sub) -}}
-{{- fail (printf "%q is not a path inside Files" (index . 1)) -}}
+{{- fail (printf "%q is not a folder inside this app's files" (index . 1)) -}}
 {{- end -}}
 {{- if $sub -}}
 {{- printf "%s/%s" (include "yolab-common.files.mountPath" $ctx) $sub -}}
@@ -25,49 +25,17 @@
 {{- define "yolab-common.files" -}}
 {{- if and (eq (include "yolab-common.files.enabled" .) "true") (not .Member) }}
 apiVersion: v1
-kind: PersistentVolume
-metadata:
-  name: {{ printf "%s.files" .Release.Namespace }}
-  labels:
-    yolab.io/files: "true"
-spec:
-  accessModes:
-    - ReadWriteMany
-  capacity:
-    storage: 1Ti
-  persistentVolumeReclaimPolicy: Retain
-  storageClassName: ""
-  volumeMode: Filesystem
-  claimRef:
-    namespace: {{ .Release.Namespace }}
-    name: {{ include "yolab-common.files.claim" . }}
-  csi:
-    driver: cephfs.csi.ceph.com
-    volumeHandle: {{ printf "%s.files" .Release.Namespace }}
-    nodeStageSecretRef:
-      name: yolab-cephfs-static
-      namespace: ceph-csi
-    volumeAttributes:
-      clusterID: yolab
-      fsName: yolab-fs
-      staticVolume: "true"
-      rootPath: /volumes/files
----
-apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: {{ include "yolab-common.files.claim" . }}
   namespace: {{ .Release.Namespace }}
-  labels:
-    yolab.io/files: "true"
 spec:
   accessModes:
     - ReadWriteMany
-  storageClassName: ""
-  volumeName: {{ printf "%s.files" .Release.Namespace }}
+  storageClassName: yolab-cephfs
   resources:
     requests:
-      storage: 1Ti
+      storage: {{ ((.Values.yolab).filesSize) | default "1Ti" | quote }}
 {{- end }}
 {{- end -}}
 
@@ -97,15 +65,17 @@ spec:
   image: {{ include "yolab-common.image.wgRegister" $ctx }}
   imagePullPolicy: IfNotPresent
   securityContext:
-    runAsUser: 1000
-    runAsGroup: 1000
+    runAsUser: 0
+    runAsGroup: 0
   command:
     - /bin/sh
     - -c
     - |
       set -eu
+      chown 1000:1000 {{ include "yolab-common.files.mountPath" $ctx | quote }}
       {{- range $dirs }}
       mkdir -p {{ include "yolab-common.files.path" (list $ctx .) | quote }}
+      chown 1000:1000 {{ include "yolab-common.files.path" (list $ctx .) | quote }}
       {{- end }}
   volumeMounts:
     {{- include "yolab-common.filesMount" $ctx | nindent 4 }}

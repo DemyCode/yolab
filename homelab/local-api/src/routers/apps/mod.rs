@@ -3330,19 +3330,6 @@ mod tests {
                 .await;
         }
 
-        async fn files_volume_is(server: &MockServer, code: u16) {
-            Mock::given(method("DELETE"))
-                .and(path("/api/v1/persistentvolumes/yolab-notes.files"))
-                .respond_with(ResponseTemplate::new(code).set_body_json(if code == 404 {
-                    gone()
-                } else {
-                    json!({ "metadata": { "name": "yolab-notes.files" } })
-                }))
-                .expect(1)
-                .mount(server)
-                .await;
-        }
-
         fn pv(name: &str, claim_namespace: &str) -> Value {
             json!({
                 "metadata": { "name": name },
@@ -3359,18 +3346,6 @@ mod tests {
                 json!({ "metadata": { "name": "pvc-unbound" }, "spec": {} }),
             ];
             assert_eq!(volumes_of(&pvs, "yolab-notes"), vec!["pvc-notes"]);
-        }
-
-        #[test]
-        fn the_files_mount_is_never_taken_for_data_the_uninstall_left_behind() {
-            let mut files = pv("yolab-notes.files", "yolab-notes");
-            files["metadata"]["labels"] = json!({ "yolab.io/files": "true" });
-            let pvs = vec![pv("pvc-notes", "yolab-notes"), files];
-            assert_eq!(volumes_of(&pvs, "yolab-notes"), vec!["pvc-notes"]);
-            assert_eq!(
-                files_volume("yolab-notes")["metadata"]["name"],
-                "yolab-notes.files"
-            );
         }
 
         #[tokio::test]
@@ -3486,7 +3461,6 @@ mod tests {
                 .expect(1)
                 .mount(&server)
                 .await;
-            files_volume_is(&server, 404).await;
             volumes_are(&server, vec![]).await;
             no_saved_settings(&server).await;
             let b = Backend {
@@ -3530,7 +3504,6 @@ mod tests {
                 .expect(1)
                 .mount(&server)
                 .await;
-            files_volume_is(&server, 200).await;
             volumes_are(&server, vec![]).await;
             no_saved_settings(&server).await;
             let b = Backend {
