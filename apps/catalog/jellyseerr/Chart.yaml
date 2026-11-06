@@ -3,7 +3,7 @@ name: jellyseerr
 description: "Request manager for Jellyfin, Plex and Emby libraries"
 home: https://github.com/seerr-team/seerr
 type: application
-version: 0.2.16
+version: 0.2.17
 appVersion: "3.5.0"
 
 dependencies:
@@ -11,7 +11,7 @@ dependencies:
     version: "0.1.29"
     repository: "oci://ghcr.io/demycode/charts"
   - name: yolab-stack
-    version: "0.1.3"
+    version: "0.1.4"
     repository: "oci://ghcr.io/demycode/charts"
 
 annotations:
