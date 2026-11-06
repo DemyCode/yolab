@@ -268,16 +268,16 @@ export function StoreSharing() {
   return (
     <Card className="mb-4 overflow-hidden p-0">
       <Row
-        label="Count my installs in the app store"
+        label="Count my installs in the Service Store"
         detail={
           note ??
-          "When you install an app from the YoLab catalog, it is counted once for your account. Nothing else about you or your data is sent."
+          "When you install a service from the YoLab catalog, it is counted once for your account. Nothing else about you or your data is sent."
         }
         trailing={
           <Switch
             checked={on}
             onChange={(v) => void change(v)}
-            label="Count my installs in the app store"
+            label="Count my installs in the Service Store"
             disabled={!settings.data}
           />
         }

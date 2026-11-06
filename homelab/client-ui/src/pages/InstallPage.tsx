@@ -292,15 +292,15 @@ export function InstallPage() {
 
   if (!app) {
     return (
-      <Page title="App not found">
+      <Page title="Service not found">
         <p className="text-sm text-fg-muted">
-          That app is not in the catalog any more.
+          That service is not in the catalog any more.
         </p>
         <Link
           to="/add"
           className={cn(buttonClass({ variant: "secondary" }), "mt-4")}
         >
-          Back to apps
+          Back to services
         </Link>
       </Page>
     );
@@ -368,9 +368,9 @@ export function InstallPage() {
       {error}
     </Banner>
   ) : app.repo !== "official" ? (
-    <Banner tone="warning" title={`This app comes from "${app.repo}"`}>
-      You added this source yourself. Apps from outside the official catalog can
-      do anything on your machines, so only install ones you trust.
+    <Banner tone="warning" title={`This service comes from "${app.repo}"`}>
+      You added this source yourself. Services from outside the official catalog
+      can do anything on your machines, so only install ones you trust.
     </Banner>
   ) : null;
 
@@ -393,7 +393,7 @@ export function InstallPage() {
       <Page wide>
         <Link to="/add" className={backLink}>
           <ArrowLeft className="h-4 w-4" />
-          All apps
+          All services
         </Link>
 
         <Swap id="overview" className="block">
@@ -520,7 +520,7 @@ export function InstallPage() {
         {similar.length > 0 && (
           <section className="mt-14 border-t border-border pt-8">
             <h2 className="font-display text-xl font-semibold tracking-tight text-fg">
-              Similar apps
+              Similar services
             </h2>
             <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
               {similar.map((other) => (
@@ -552,7 +552,7 @@ export function InstallPage() {
 
   const subtitle =
     origin.mode === "duplicate"
-      ? "A separate app from the same settings, with its own address and storage."
+      ? "A separate service from the same settings, with its own address and storage."
       : origin.mode === "restore"
         ? "Its settings come back from the backup; change any of them before it is installed."
         : origin.mode === "edit"
@@ -574,7 +574,7 @@ export function InstallPage() {
       ) : (
         <Link to="/add" className={backLink}>
           <ArrowLeft className="h-4 w-4" />
-          All apps
+          All services
         </Link>
       )}
 
@@ -617,7 +617,7 @@ export function InstallPage() {
       {origin.mode === "duplicate" && (
         <Section title="Files">
           <Row
-            label="Copy this app’s files too"
+            label="Copy this service’s files too"
             detail={
               copyData
                 ? "Copied straight from the app, as they are now."
@@ -627,7 +627,7 @@ export function InstallPage() {
               <Switch
                 checked={copyData}
                 onChange={setCopyData}
-                label="Copy this app’s files too"
+                label="Copy this service’s files too"
               />
             }
           />

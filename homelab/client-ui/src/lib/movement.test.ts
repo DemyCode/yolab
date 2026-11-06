@@ -166,11 +166,11 @@ describe("the other jobs Ceph runs", () => {
     const one = movementCopy(
       movement({ jobs: [job({ kind: "clone", unit: "percent" })], clones: 1 }),
     );
-    expect(one?.headline).toBe("Copying files for an app");
+    expect(one?.headline).toBe("Copying files for a service");
     const two = movementCopy(
       movement({ jobs: [job({ kind: "clone", unit: "percent" })], clones: 2 }),
     );
-    expect(two?.headline).toBe("Copying files for 2 apps");
+    expect(two?.headline).toBe("Copying files for 2 services");
     expect(two?.tone).toBe("calm");
   });
 

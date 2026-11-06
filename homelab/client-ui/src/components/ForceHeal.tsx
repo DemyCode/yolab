@@ -73,7 +73,7 @@ export function HealBanner({ className }: { className?: string }) {
       >
         {heal?.failed
           ? "Every machine was put back as it was."
-          : "Add your apps back with “Add from backup”."}
+          : "Add your services back with “Add from backup”."}
       </Banner>
     ) : null;
   }
@@ -156,7 +156,7 @@ function HealProgress({ heal, action }: { heal: Heal; action?: ReactNode }) {
               ? `${heal.failed}. Nothing was deleted: every machine is put back as it was.`
               : heal.running
                 ? "This page updates by itself. Machines restart along the way, so it may stop answering for a few minutes."
-                : "The cluster is as fresh as a new installation. Add your apps back from backup on the home page, and switch your disks back on here."}
+                : "The cluster is as fresh as a new installation. Add your services back from backup on the home page, and switch your disks back on here."}
           </p>
         </div>
         <StepList heal={heal} />
@@ -169,7 +169,7 @@ function HealProgress({ heal, action }: { heal: Heal; action?: ReactNode }) {
         )}
         {!heal.running && !heal.failed && (
           <Link to="/" className={buttonClass({ size: "sm" })}>
-            Add apps from backup
+            Add services from backup
           </Link>
         )}
         {action}
@@ -244,10 +244,10 @@ function HealDialog({
           A new cluster is installed on the machines that still answer, as if
           they were brand new.{" "}
           <span className="font-medium text-fg">
-            Every app and every stored file on them is erased.
+            Every service and every stored file on them is erased.
           </span>{" "}
-          Afterwards, add your apps back from backup on the home page. Once the
-          machines restart this cannot be undone.
+          Afterwards, add your services back from backup on the home page. Once
+          the machines restart this cannot be undone.
         </p>
         <ul className="list-disc space-y-1 pl-5">
           <li>

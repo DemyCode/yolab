@@ -8,7 +8,7 @@ import { ThemeControl } from "@/components/ThemeControl";
 
 const NAV = [
   { to: "/", icon: Home, label: "Home", end: true },
-  { to: "/add", icon: LayoutGrid, label: "Apps" },
+  { to: "/add", icon: LayoutGrid, label: "Services" },
   { to: "/system", icon: Server, label: "System" },
 ];
 

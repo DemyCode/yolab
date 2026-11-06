@@ -141,7 +141,7 @@ export function BackupsPage() {
       )}
 
       <p className="max-w-lg text-sm text-fg-muted">
-        Every app is copied with its own data, encrypted, to storage outside
+        Every service is copied with its own data, encrypted, to storage outside
         your home. Open one to back it up now or bring it back as it was.
       </p>
 
@@ -157,7 +157,7 @@ export function BackupsPage() {
         <Section title="Backups">
           <Row
             label="Backups are off"
-            detail="Turn them on and every app is copied, encrypted, to storage outside your home."
+            detail="Turn them on and every service is copied, encrypted, to storage outside your home."
             trailing={
               <Button
                 onClick={() => void enable()}
@@ -179,7 +179,7 @@ export function BackupsPage() {
                   `${attention[0].instance_name} has no recent backup`
                 ) : (
                   <>
-                    <RollingNumber value={attention.length} /> apps have no
+                    <RollingNumber value={attention.length} /> services have no
                     recent backup
                   </>
                 )
@@ -192,7 +192,7 @@ export function BackupsPage() {
             </Banner>
           </Collapse>
 
-          <Section title="Apps">
+          <Section title="Services">
             {apps.length === 0 ? (
               <Row
                 label="Nothing to back up yet"

@@ -19,7 +19,8 @@ async function chartOf(
   const def = await api.get<AppDefinition>(
     `/api/backups/apps/${encodeURIComponent(namespace)}/definition?snapshot_id=${encodeURIComponent(snapshotId)}`,
   );
-  if (!def.app_id) throw new Error("That backup does not say which app it is.");
+  if (!def.app_id)
+    throw new Error("That backup does not say which service it is.");
   return def.app_id;
 }
 

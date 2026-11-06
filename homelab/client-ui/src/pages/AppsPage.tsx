@@ -188,7 +188,7 @@ export function AppsPage() {
   return (
     <Page
       wide
-      title="Apps"
+      title="Service Store"
       subtitle="Everything here runs at home, on your own machines."
       action={<AddFromBackupButton />}
     >
@@ -199,12 +199,12 @@ export function AppsPage() {
           onChange={(e) => setQuery(e.target.value)}
           placeholder={
             all.length > 0
-              ? `Search ${all.length} apps, like photos, films or passwords`
-              : "Search apps"
+              ? `Search ${all.length} services, like photos, films or passwords`
+              : "Search services"
           }
           className="h-12 pl-10 text-base"
           type="search"
-          aria-label="Search apps"
+          aria-label="Search services"
         />
       </div>
 
@@ -221,7 +221,7 @@ export function AppsPage() {
         <div className="mt-8">
           <EmptyState
             icon={<Package className="h-6 w-6" />}
-            title="No apps yet"
+            title="No services yet"
             body="Nothing is available to install yet. Add a source below, or sync the catalog."
           />
         </div>
@@ -275,7 +275,7 @@ export function AppsPage() {
             <div className="flex flex-wrap items-end justify-between gap-x-6 gap-y-3">
               <div className="flex items-baseline gap-3">
                 <h2 className="font-display text-xl font-semibold tracking-tight text-fg md:text-2xl">
-                  {searching ? `Results for “${query.trim()}”` : "All apps"}
+                  {searching ? `Results for “${query.trim()}”` : "All services"}
                 </h2>
                 <span className="font-mono text-sm tabular-nums text-fg-subtle">
                   <RollingNumber value={matches.length} />
@@ -360,7 +360,7 @@ export function AppsPage() {
                 <EmptyState
                   icon={<Package className="h-6 w-6" />}
                   title="Nothing matches that"
-                  body="No app matches the search and filters. Try another word, or clear them."
+                  body="No service matches the search and filters. Try another word, or clear them."
                   action={
                     <Button variant="secondary" onClick={clearAll}>
                       Clear search and filters

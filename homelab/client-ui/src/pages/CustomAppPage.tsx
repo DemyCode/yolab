@@ -141,8 +141,8 @@ export default function CustomAppPage() {
 
   return (
     <Page
-      title="Add your own app"
-      subtitle="Upload a Helm chart, or paste Kubernetes YAML. Either way it becomes an app like any other — its own address, its own backups."
+      title="Add your own service"
+      subtitle="Upload a Helm chart, or paste Kubernetes YAML. Either way it becomes a service like any other — its own address, its own backups."
     >
       <div className="space-y-4">
         <section className="rounded-card border border-border bg-surface p-4">
@@ -242,8 +242,8 @@ export default function CustomAppPage() {
               inputMode="numeric"
             />
             <span className="mt-1 block text-xs text-fg-muted">
-              The port your app listens on. Leave empty if it has no web page —
-              it will run without an address of its own.
+              The port your service listens on. Leave empty if it has no web
+              page — it will run without an address of its own.
             </span>
           </label>
           <label className="block sm:col-span-2">
@@ -293,9 +293,9 @@ export default function CustomAppPage() {
             className="w-full rounded-control border border-border bg-bg p-3 font-mono text-xs text-fg outline-none focus:border-primary focus:ring-1 focus:ring-primary"
           />
           <span className="mt-1 block text-xs text-fg-muted">
-            Leave out <code>namespace:</code> — YoLab gives this app its own.
-            Anything that reaches outside that namespace is refused, and it will
-            say which line.
+            Leave out <code>namespace:</code> — YoLab gives this service its
+            own. Anything that reaches outside that namespace is refused, and it
+            will say which line.
           </span>
         </label>
 
@@ -329,7 +329,7 @@ export default function CustomAppPage() {
         {(apps.data?.length ?? 0) > 0 && (
           <section className="mt-8">
             <h2 className="mb-2 text-sm font-semibold text-fg-muted">
-              Your own apps
+              Your own services
             </h2>
             <ul className="divide-y divide-border rounded-card border border-border bg-surface">
               <AnimatedList
@@ -375,7 +375,7 @@ export default function CustomAppPage() {
         <p className="flex items-start gap-2 pt-2 text-xs text-fg-muted">
           <FileCode2 className="mt-0.5 h-3.5 w-3.5 shrink-0" />
           <span>
-            Removing an app here only takes it out of the catalog. Anything
+            Removing a service here only takes it out of the catalog. Anything
             already installed from it keeps running and is uninstalled from its
             own page.
           </span>

@@ -345,8 +345,8 @@ function TechnicalDetails({ app }: { app: AppInfo }) {
             {logs.lines.length > 0
               ? logs.lines.join("\n")
               : logs.live
-                ? "Connected — waiting for this app to print something…"
-                : "This app printed nothing."}
+                ? "Connected — waiting for this service to print something…"
+                : "This service printed nothing."}
           </pre>
         </div>
       )}
@@ -459,7 +459,8 @@ function RestoreSheet({
         </p>
       ) : snapshots.length === 0 ? (
         <p className="py-4 text-sm text-fg-muted">
-          There is no backup of this app yet, so there is nothing to go back to.
+          There is no backup of this service yet, so there is nothing to go back
+          to.
         </p>
       ) : (
         <div className="divide-y divide-border rounded-card border border-border">
@@ -753,17 +754,17 @@ export function AppDetailPage() {
 
   if (!app) {
     return (
-      <Page title="App not found">
+      <Page title="Service not found">
         <p className="text-sm text-fg-muted">
-          There is no app called “{instanceName}” on this server. It may have
-          been removed.
+          There is no service called “{instanceName}” on this server. It may
+          have been removed.
         </p>
         <Link
           to="/"
           className="mt-4 inline-flex items-center gap-1.5 text-sm text-primary"
         >
           <ArrowLeft className="h-4 w-4" />
-          Back to my apps
+          Back to my services
         </Link>
       </Page>
     );
@@ -822,7 +823,7 @@ export function AppDetailPage() {
       setNotice({
         tone: "error",
         title: "The update did not finish",
-        body: result.error ?? "Your app was left as it was.",
+        body: result.error ?? "Your service was left as it was.",
       });
     }
     await Promise.all([apps.refresh(), catalog.refresh()]);
@@ -839,7 +840,7 @@ export function AppDetailPage() {
     if (state === "removing") {
       return (
         <Banner tone="warning" title="Being removed">
-          It is being removed. A space no other app uses is deleted about an
+          It is being removed. A space no other service uses is deleted about an
           hour after it is gone.
           <WaitNote note={note} />
         </Banner>
@@ -1013,7 +1014,7 @@ export function AppDetailPage() {
         className="mb-5 inline-flex items-center gap-1.5 rounded-control text-sm text-fg-muted hover:text-fg focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
       >
         <ArrowLeft className="h-4 w-4" />
-        My apps
+        My services
       </Link>
 
       <header className="flex flex-wrap items-center gap-4">
@@ -1085,7 +1086,7 @@ export function AppDetailPage() {
         )}
         {members.length > 0 && (
           <Row
-            label="Apps inside"
+            label="Services inside"
             detail={`${members.join(", ")}, updated and removed together`}
           />
         )}
@@ -1123,7 +1124,7 @@ export function AppDetailPage() {
         <Section title="Remove">
           <Row
             label={`Remove ${name}`}
-            detail="A space no other app uses is deleted with it"
+            detail="A space no other service uses is deleted with it"
             danger
             onClick={() => setConfirmRemove(true)}
           />

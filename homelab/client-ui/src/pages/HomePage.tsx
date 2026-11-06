@@ -35,7 +35,7 @@ function topConcern(health: ClusterHealth | undefined): Concern | null {
       return {
         tone: "info" as const,
         title: "Your storage is starting up",
-        body: "This usually takes a minute after the machine boots. Apps will come back on their own.",
+        body: "This usually takes a minute after the machine boots. Services will come back on their own.",
       };
     }
     if (health.provisioning) {
@@ -154,7 +154,7 @@ export function HomePage() {
           action={
             <Link to="/add" className={buttonClass()}>
               <Plus className="h-4 w-4" />
-              Browse apps
+              Browse services
             </Link>
           }
         />

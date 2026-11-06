@@ -56,8 +56,8 @@ function moveLabel(m: Movement, yours: boolean): string {
 
 function cloneLabel(m: Movement): string {
   return m.clones > 1
-    ? `Copying files for ${m.clones} apps`
-    : "Copying files for an app";
+    ? `Copying files for ${m.clones} services`
+    : "Copying files for a service";
 }
 
 function jobCopy(job: MovementJob, m: Movement): JobCopy {
@@ -86,7 +86,7 @@ function jobCopy(job: MovementJob, m: Movement): JobCopy {
       return {
         job,
         label: cloneLabel(m),
-        note: "Duplicating or restoring an app copies its files inside your storage.",
+        note: "Duplicating or restoring a service copies its files inside your storage.",
         tone: "calm",
       };
     case "free_space":
@@ -142,7 +142,7 @@ export function movementCopy(m: Movement): MovementCopy | null {
         return {
           headline: headlineFor(jobs, m),
           safety:
-            "Some copies were found damaged. Your apps keep working; don't unplug any disk or machine until they're repaired.",
+            "Some copies were found damaged. Your services keep working; don't unplug any disk or machine until they're repaired.",
           tone: "warning",
           jobs,
         };
@@ -155,7 +155,7 @@ export function movementCopy(m: Movement): MovementCopy | null {
         };
       return {
         headline: headlineFor(jobs, m),
-        safety: "Your files are safe and your apps keep working meanwhile.",
+        safety: "Your files are safe and your services keep working meanwhile.",
         tone: "calm",
         jobs,
       };
@@ -165,10 +165,10 @@ export function movementCopy(m: Movement): MovementCopy | null {
           ? `Waiting for ${list(m.waiting_for)}`
           : "Some of your files can't be reached",
         safety: m.waiting_for.length
-          ? "Some files can't be opened until it's back. Apps that use them may pause."
+          ? "Some files can't be opened until it's back. Services that use them may pause."
           : jobs.length
-            ? "Some files can't be opened until enough copies are made. Apps that use them may pause."
-            : "Some files can't be opened right now. Apps that use them may pause.",
+            ? "Some files can't be opened until enough copies are made. Services that use them may pause."
+            : "Some files can't be opened right now. Services that use them may pause.",
         tone: "error",
         jobs,
       };

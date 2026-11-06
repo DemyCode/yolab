@@ -14,7 +14,7 @@ export function PackMembers({ members }: { members: CatalogApp[] }) {
   const navigate = useNavigate();
   if (members.length === 0) return null;
   return (
-    <Section title="Apps inside">
+    <Section title="Services inside">
       {members.map((m) => {
         const repo = githubUrl(m);
         const website = m.home && m.home !== repo ? m.home : null;

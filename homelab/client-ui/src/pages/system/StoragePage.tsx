@@ -187,8 +187,8 @@ function SpaceSection({
             />
           </div>
           <p className="mt-3 text-sm text-fg-muted">
-            Apps’ files <Bytes value={space.apps_bytes} /> · App programs{" "}
-            <Bytes value={space.images_bytes} />
+            Services’ files <Bytes value={space.apps_bytes} /> · Service
+            programs <Bytes value={space.images_bytes} />
             {space.other_bytes > 0 && (
               <>
                 {" "}
@@ -246,11 +246,11 @@ function UsageSection({ imagesBytes }: { imagesBytes: number }) {
           ))
         ) : usage.error && !usage.data ? (
           <Row
-            label="App sizes could not be read right now"
+            label="Service sizes could not be read right now"
             detail={usage.error}
           />
         ) : rows.length === 0 ? (
-          <Row label="No app is storing anything yet" />
+          <Row label="No service is storing anything yet" />
         ) : (
           <AnimatedList items={rows} keyOf={(r) => r.key}>
             {(r) => {

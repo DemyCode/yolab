@@ -187,7 +187,7 @@ export function pickBanner({
     return {
       tone: "error",
       title: "Storage is not answering",
-      body: `Your apps may not be able to read or save files until it comes back. (${error})`,
+      body: `Your services may not be able to read or save files until it comes back. (${error})`,
     };
   }
   if (movementBlocked) return "movement";
@@ -297,7 +297,7 @@ export function usageRows(
     });
   }
   if (imagesBytes > 0) {
-    rows.push({ key: "images", label: "App programs", bytes: imagesBytes });
+    rows.push({ key: "images", label: "Service programs", bytes: imagesBytes });
   }
   if (other > 0) {
     rows.push({

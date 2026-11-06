@@ -82,7 +82,7 @@ export function AppSources({ onChanged }: { onChanged?: () => void }) {
       const ok = Object.entries(res).filter(([, r]) => r.ok);
       if (ok.length > 0) {
         const total = ok.reduce((n, [, r]) => n + (r.charts ?? 0), 0);
-        setSyncNote(`${total} app${total === 1 ? "" : "s"} available`);
+        setSyncNote(`${total} service${total === 1 ? "" : "s"} available`);
       }
       onChanged?.();
     } catch (e) {
@@ -98,10 +98,10 @@ export function AppSources({ onChanged }: { onChanged?: () => void }) {
         <Library className="h-4 w-4 shrink-0 text-fg-muted" />
         <div className="min-w-0 flex-1">
           <h2 className="text-sm font-semibold text-fg">
-            Where apps come from
+            Where services come from
           </h2>
           <p className="mt-0.5 text-sm text-fg-muted">
-            YoLab ships one catalog. Add another and its apps appear above,
+            YoLab ships one catalog. Add another and its services appear above,
             alongside the rest.
           </p>
         </div>
@@ -128,7 +128,7 @@ export function AppSources({ onChanged }: { onChanged?: () => void }) {
           <p className="mt-4 flex items-start gap-2 rounded-control border border-warning-soft bg-warning-soft p-3 text-sm text-warning">
             <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
             <span>
-              Apps from another source run with the same access as the ones
+              Services from another source run with the same access as the ones
               YoLab ships. Only add a source you would trust with the whole
               machine.
             </span>
@@ -214,7 +214,7 @@ export function AppSources({ onChanged }: { onChanged?: () => void }) {
         >
           <FileCode2 className="h-4 w-4 shrink-0" />
           <span>
-            Not here at all? <span className="text-fg">Add your own app</span>{" "}
+            Not here at all? <span className="text-fg">Add your own service</span>{" "}
             from Kubernetes YAML.
           </span>
         </Link>

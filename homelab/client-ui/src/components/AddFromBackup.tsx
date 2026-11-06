@@ -27,20 +27,20 @@ function AppPoints({ app, onBack }: { app: BackedUpApp; onBack: () => void }) {
         onClick={onBack}
         className="text-sm text-fg-muted underline underline-offset-2 hover:text-fg"
       >
-        All backed-up apps
+        All backed-up services
       </button>
       {app.installed && (
         <p className="text-xs text-fg-muted">
           Restoring here adds a separate copy alongside the one you already run.
-          To put this backup back into the app you are running, open it and use
-          Restore there.
+          To put this backup back into the service you are running, open it and
+          use Restore there.
         </p>
       )}
       <RestorePointList
         namespace={app.namespace}
         points={points}
         error={error}
-        emptyHint="No backup of this app could be read."
+        emptyHint="No backup of this service could be read."
       />
     </div>
   );
@@ -73,7 +73,7 @@ export function AddFromBackupButton() {
         subtitle={
           chosen
             ? "Pick the moment you want back."
-            : "Bring an app back as it was, with its settings and files."
+            : "Bring a service back as it was, with its settings and files."
         }
         wide
       >
@@ -94,7 +94,7 @@ export function AddFromBackupButton() {
             )}
             {data?.configured && data.apps.length === 0 && (
               <p className="text-sm text-fg-muted">
-                No app has been backed up yet.
+                No service has been backed up yet.
               </p>
             )}
             {data && data.apps.length > 0 && (

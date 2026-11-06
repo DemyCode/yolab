@@ -117,7 +117,7 @@ export interface BlockerInput {
 }
 
 export function installBlocker(input: BlockerInput): string | null {
-  if (!input.instanceName) return "This app has no name to install under.";
+  if (!input.instanceName) return "This service has no name to install under.";
   if (input.requiredMissing) return "Fill in everything marked required.";
   if (input.withData && input.needsBackup) {
     if (input.snapshotsLoaded && input.snapshotCount === 0) {
