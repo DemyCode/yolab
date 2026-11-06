@@ -1452,16 +1452,61 @@ def check_files(app, docs, wanted, fail, folder=FILES_FOLDER):
             )
 
 
+FOLDER_SWITCH = "files_folder_existing"
+TREE_FOLDER = "tree-folder"
+
+
+def files_folder_offer_problem(schema):
+    config = (schema.get("properties") or {}).get("config") or {}
+    top = config.get("properties") or {}
+    if "files_folder" in top:
+        return (
+            "asks config.files_folder outright; it belongs behind the "
+            f"{FOLDER_SWITCH} switch, so off means a new folder of its own"
+        )
+    switch = top.get(FOLDER_SWITCH)
+    if not switch:
+        return (
+            f"uses yolab.files but has no {FOLDER_SWITCH} switch, so nobody can "
+            "choose where in the file tree its files go"
+        )
+    if switch.get("type") != "boolean" or switch.get("default") is not False:
+        return f"{FOLDER_SWITCH} must be a boolean that is off by default"
+    branches = (
+        ((config.get("dependencies") or {}).get(FOLDER_SWITCH) or {}).get("oneOf")
+    ) or []
+    on = [
+        b
+        for b in branches
+        if ((b.get("properties") or {}).get(FOLDER_SWITCH) or {}).get("const") is True
+    ]
+    off = [
+        b
+        for b in branches
+        if ((b.get("properties") or {}).get(FOLDER_SWITCH) or {}).get("const") is False
+    ]
+    if len(on) != 1 or len(off) != 1 or len(branches) != 2:
+        return f"{FOLDER_SWITCH} needs exactly one off and one on branch"
+    if "files_folder" in (off[0].get("properties") or {}):
+        return f"the off branch of {FOLDER_SWITCH} must not ask a folder"
+    chosen = (on[0].get("properties") or {}).get("files_folder")
+    if not chosen or "files_folder" not in (on[0].get("required") or []):
+        return f"the on branch of {FOLDER_SWITCH} must require files_folder"
+    if chosen.get("format") != TREE_FOLDER:
+        return (
+            f"files_folder must have format {TREE_FOLDER}, so the form only "
+            "accepts a folder that exists in the tree"
+        )
+    return None
+
+
 def check_files_folder_offer(app, schema, values_path, fail):
     values = yaml.safe_load(values_path.read_text()) if values_path.exists() else {}
     if not uses_files(values):
         return
-    if "files_folder" not in config_fields(schema, lambda _prop: True):
-        fail(
-            app,
-            "uses yolab.files but does not ask config.files_folder, so nobody can "
-            "choose where in the file tree its files go",
-        )
+    problem = files_folder_offer_problem(schema)
+    if problem:
+        fail(app, problem)
 
 
 def schema_keys(node):

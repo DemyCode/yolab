@@ -84,11 +84,16 @@ export function installSource(
 }
 
 export const FILES_FOLDER = "files_folder";
+export const FOLDER_SWITCH = "files_folder_existing";
 
 export type FilesFolderCopy = "own" | "shared" | "moved";
 
 function treePath(value: unknown): string {
   return String(value ?? "").replace(/^\/+|\/+$/g, "");
+}
+
+function chosenFolder(config: Record<string, unknown>): string {
+  return config[FOLDER_SWITCH] === true ? treePath(config[FILES_FOLDER]) : "";
 }
 
 function isOwnFolder(folder: string, instance: string): boolean {
@@ -102,9 +107,11 @@ export function filesFolderCopy(
   fromInstance: string | null,
 ): { kind: FilesFolderCopy; from: string; to: string } | null {
   if (!source || !fromInstance) return null;
-  if (!(FILES_FOLDER in source) && !(FILES_FOLDER in values)) return null;
-  const from = treePath(source[FILES_FOLDER]);
-  const to = treePath(values[FILES_FOLDER]);
+  const offered = (c: Record<string, unknown>) =>
+    FILES_FOLDER in c || FOLDER_SWITCH in c;
+  if (!offered(source) && !offered(values)) return null;
+  const from = chosenFolder(source);
+  const to = chosenFolder(values);
   if (!from || isOwnFolder(from, fromInstance)) {
     return { kind: "own", from, to };
   }
@@ -141,6 +148,7 @@ export function stripInstanceId(instanceName: string): string {
 export interface BlockerInput {
   instanceName: string;
   requiredMissing: boolean;
+  folderProblem: string | null;
   withData: boolean;
   needsBackup: boolean;
   snapshot: string;
@@ -151,6 +159,7 @@ export interface BlockerInput {
 export function installBlocker(input: BlockerInput): string | null {
   if (!input.instanceName) return "This service has no name to install under.";
   if (input.requiredMissing) return "Fill in everything marked required.";
+  if (input.folderProblem) return input.folderProblem;
   if (input.withData && input.needsBackup) {
     if (input.snapshotsLoaded && input.snapshotCount === 0) {
       return "There is no backup to copy data from yet.";

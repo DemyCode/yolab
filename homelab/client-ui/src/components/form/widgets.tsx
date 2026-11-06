@@ -1,8 +1,17 @@
-import { useState } from "react";
+import { useEffect, useState, type KeyboardEvent, type ReactNode } from "react";
 import type { WidgetProps } from "@rjsf/utils";
-import { Eye, EyeOff, RefreshCw } from "lucide-react";
+import { Check, Eye, EyeOff, Folder, RefreshCw } from "lucide-react";
 import { Input, Toggle } from "@/components/ui/input";
+import { ApiError } from "@/lib/api";
 import { generateSecret } from "@/lib/format";
+import {
+  cleanFolder,
+  folderIn,
+  joinFolder,
+  listFolders,
+  rankFolders,
+  splitFolder,
+} from "@/lib/treeFolder";
 import { cn } from "@/lib/utils";
 
 export function TunnelWidget(props: WidgetProps) {
@@ -154,5 +163,145 @@ export function TextareaWidget(props: WidgetProps) {
         "text-fg placeholder:text-fg-subtle focus:border-primary focus:outline-none",
       )}
     />
+  );
+}
+
+export function TreeFolderWidget(props: WidgetProps) {
+  const { value, onChange, disabled, readonly, id, autofocus } = props;
+  const v = typeof value === "string" ? value : "";
+  const { parent, name } = splitFolder(v);
+  const [listing, setListing] = useState<{
+    parent: string;
+    folders: string[];
+    failure: string | null;
+  } | null>(null);
+  const [open, setOpen] = useState(false);
+  const [active, setActive] = useState(0);
+
+  useEffect(() => {
+    let live = true;
+    listFolders(parent).then(
+      (l) => {
+        if (live) setListing({ parent, folders: l.folders, failure: null });
+      },
+      (e: unknown) => {
+        if (!live) return;
+        const failure =
+          e instanceof ApiError && e.status === 404
+            ? `There is no folder ${parent} in your file tree.`
+            : `The file tree could not be read: ${e instanceof Error ? e.message : String(e)}`;
+        setListing({ parent, folders: [], failure });
+      },
+    );
+    return () => {
+      live = false;
+    };
+  }, [parent]);
+
+  const known = listing?.parent === parent ? listing : null;
+  const suggestions = known ? rankFolders(known.folders, name) : [];
+  const exists = known !== null && folderIn(known.folders, name);
+  const shown = open && suggestions.length > 0 && !(exists && suggestions.length === 1);
+
+  const pick = (folder: string) => {
+    onChange(joinFolder(parent, folder));
+    setActive(0);
+  };
+
+  const onKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
+    if (!shown) return;
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setActive((a) => (a + 1) % suggestions.length);
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setActive((a) => (a - 1 + suggestions.length) % suggestions.length);
+    } else if (e.key === "Enter" || e.key === "Tab") {
+      const chosen = suggestions[Math.min(active, suggestions.length - 1)];
+      if (chosen && chosen !== name) {
+        e.preventDefault();
+        pick(chosen);
+      }
+    } else if (e.key === "Escape") {
+      setOpen(false);
+    }
+  };
+
+  let status: ReactNode;
+  if (!v) {
+    status = (
+      <span className="text-fg-muted">
+        Start typing; add / to look inside a folder.
+      </span>
+    );
+  } else if (!known) {
+    status = <span className="text-fg-muted">Looking in your file tree…</span>;
+  } else if (known.failure) {
+    status = <span className="text-danger">{known.failure}</span>;
+  } else if (exists) {
+    status = (
+      <span className="inline-flex items-center gap-1 text-success">
+        <Check className="h-3.5 w-3.5" />
+        {cleanFolder(v)}
+      </span>
+    );
+  } else {
+    status = (
+      <span className="text-danger">
+        No folder named {name || "…"} {parent ? `in ${parent}` : "at the top of your file tree"}.
+      </span>
+    );
+  }
+
+  return (
+    <div className="relative space-y-1.5">
+      <Input
+        id={id}
+        value={v}
+        autoFocus={autofocus}
+        autoComplete="off"
+        spellCheck={false}
+        role="combobox"
+        aria-expanded={shown}
+        aria-autocomplete="list"
+        disabled={disabled || readonly}
+        onFocus={() => setOpen(true)}
+        onBlur={() => setOpen(false)}
+        onKeyDown={onKeyDown}
+        onChange={(e) => {
+          onChange(e.target.value.replace(/^\/+/, "").replace(/\/{2,}/g, "/"));
+          setActive(0);
+          setOpen(true);
+        }}
+        className="font-mono"
+      />
+      {shown && (
+        <ul
+          role="listbox"
+          className="absolute inset-x-0 top-12 z-20 max-h-64 overflow-auto rounded-control border border-border bg-surface py-1 shadow-pop"
+        >
+          {suggestions.map((folder, i) => (
+            <li
+              key={folder}
+              role="option"
+              aria-selected={i === active}
+              onMouseDown={(e) => {
+                e.preventDefault();
+                pick(folder);
+              }}
+              onMouseEnter={() => setActive(i)}
+              className={cn(
+                "flex cursor-pointer items-center gap-2 px-3 py-1.5 font-mono text-sm text-fg",
+                i === active && "bg-surface-2",
+              )}
+            >
+              <Folder className="h-4 w-4 shrink-0 text-fg-muted" />
+              <span className="truncate">{joinFolder(parent, folder)}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+      <p className="truncate text-sm">{status}</p>
+    </div>
   );
 }

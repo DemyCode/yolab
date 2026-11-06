@@ -37,6 +37,7 @@ import { NO_CHOICES, choicesFor, type RestoreChoices } from "@/lib/restore";
 import { useRestorePlan } from "@/lib/useRestorePlan";
 import { useRestorePoints } from "@/lib/useRestorePoints";
 import { configSchemaOf, generatedFields, uiSchemaFor } from "@/lib/schema";
+import { activeTreeFolders, folderProblem } from "@/lib/treeFolder";
 import { taglineFor } from "@/catalog/meta";
 import { AppComments, HeartButton } from "@/components/StoreCommunity";
 import { AppCard } from "@/components/AppCard";
@@ -226,9 +227,32 @@ export function InstallPage() {
 
   const generatedSecrets = useMemo(() => generatedFields(schema), [schema]);
 
+  const folderKey = JSON.stringify(activeTreeFolders(schema, values));
+  const [folderCheck, setFolderCheck] = useState<{
+    key: string;
+    problem: string | null;
+  } | null>(null);
+  useEffect(() => {
+    let live = true;
+    const fields = JSON.parse(folderKey) as { title: string; value: string }[];
+    folderProblem(fields).then((problem) => {
+      if (live) setFolderCheck({ key: folderKey, problem });
+    });
+    return () => {
+      live = false;
+    };
+  }, [folderKey]);
+  const folderBlock =
+    folderKey === "[]"
+      ? null
+      : folderCheck?.key === folderKey
+        ? folderCheck.problem
+        : "Checking the folder in your file tree…";
+
   const blocker = installBlocker({
     instanceName,
     requiredMissing: [...required].some((n) => !String(values[n] ?? "").trim()),
+    folderProblem: folderBlock,
     withData: copyData,
     needsBackup: origin.mode === "restore",
     snapshot,

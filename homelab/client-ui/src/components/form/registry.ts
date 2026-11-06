@@ -7,6 +7,7 @@ import {
   CheckboxWidget,
   PasswordWidget,
   TextareaWidget,
+  TreeFolderWidget,
   TunnelWidget,
   YolabTokenWidget,
 } from "./widgets";
@@ -23,4 +24,5 @@ export const widgets = {
   PasswordWidget,
   CheckboxWidget,
   TextareaWidget,
+  TreeFolderWidget,
 };

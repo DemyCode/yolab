@@ -104,8 +104,8 @@ describe("a copy's files folder", () => {
     ).toBe("own");
     expect(
       filesFolderCopy(
-        { files_folder: "jellyfin.files" },
-        { files_folder: "jellyfin.files" },
+        { files_folder_existing: true, files_folder: "jellyfin.files" },
+        { files_folder_existing: true, files_folder: "jellyfin.files" },
         "jellyfin",
       )?.kind,
     ).toBe("own");
@@ -114,8 +114,8 @@ describe("a copy's files folder", () => {
   it("is shared when it still points where the original points", () => {
     expect(
       filesFolderCopy(
-        { files_folder: "media" },
-        { files_folder: "/media/" },
+        { files_folder_existing: true, files_folder: "media" },
+        { files_folder_existing: true, files_folder: "/media/" },
         "jellyfin",
       ),
     ).toEqual({ kind: "shared", from: "media", to: "media" });
@@ -124,11 +124,21 @@ describe("a copy's files folder", () => {
   it("asks to be filled when it was pointed somewhere else", () => {
     expect(
       filesFolderCopy(
-        { files_folder: "media" },
-        { files_folder: "media2" },
+        { files_folder_existing: true, files_folder: "media" },
+        { files_folder_existing: true, files_folder: "media2" },
         "jellyfin",
       ),
     ).toEqual({ kind: "moved", from: "media", to: "media2" });
+  });
+
+  it("counts a folder left in the form with the switch off as its own", () => {
+    expect(
+      filesFolderCopy(
+        { files_folder_existing: false, files_folder: "media" },
+        { files_folder_existing: false, files_folder: "media" },
+        "jellyfin",
+      ),
+    ).toEqual({ kind: "own", from: "", to: "" });
   });
 
   it("does not apply to a service without a files folder", () => {
@@ -139,8 +149,8 @@ describe("a copy's files folder", () => {
   it("is not mistaken for the original's own by a name that only starts the same", () => {
     expect(
       filesFolderCopy(
-        { files_folder: "jellyfin-media" },
-        { files_folder: "other" },
+        { files_folder_existing: true, files_folder: "jellyfin-media" },
+        { files_folder_existing: true, files_folder: "other" },
         "jellyfin",
       )?.kind,
     ).toBe("moved");
@@ -311,6 +321,7 @@ describe("installBlocker", () => {
   const ok = {
     instanceName: "gitea",
     requiredMissing: false,
+    folderProblem: null,
     withData: false,
     needsBackup: true,
     snapshot: "",
@@ -320,6 +331,12 @@ describe("installBlocker", () => {
 
   it("lets a complete form through", () => {
     expect(installBlocker(ok)).toBeNull();
+  });
+
+  it("will not install onto a folder that is not in the tree", () => {
+    expect(
+      installBlocker({ ...ok, folderProblem: "There is no folder x in your file tree." }),
+    ).toBe("There is no folder x in your file tree.");
   });
 
   it("will not install something with no name", () => {

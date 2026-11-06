@@ -1900,19 +1900,83 @@ class FilesRules(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             values = Path(d, "values.yaml")
             values.write_text("yolab:\n  files: true\n")
-            asked = schema(config={"files_folder": {"type": "string"}})
             self.assertEqual(
-                collected(check_charts.check_files_folder_offer, "x", asked, values),
+                collected(
+                    check_charts.check_files_folder_offer, "x", folder_offer(), values
+                ),
                 [],
             )
             found = collected(
                 check_charts.check_files_folder_offer, "x", schema(), values
             )
-            self.assertTrue(any("files_folder" in f for f in found), found)
+            self.assertTrue(any("files_folder_existing" in f for f in found), found)
             values.write_text("yolab:\n  files: false\n")
             self.assertEqual(
                 collected(check_charts.check_files_folder_offer, "x", schema(), values),
                 [],
+            )
+
+
+def folder_offer(switch=None, chosen=None, required=("files_folder",)):
+    return {
+        "properties": {
+            "config": {
+                "properties": {
+                    "files_folder_existing": switch
+                    or {"type": "boolean", "default": False}
+                },
+                "dependencies": {
+                    "files_folder_existing": {
+                        "oneOf": [
+                            {"properties": {"files_folder_existing": {"const": False}}},
+                            {
+                                "properties": {
+                                    "files_folder_existing": {"const": True},
+                                    "files_folder": chosen
+                                    or {"type": "string", "format": "tree-folder"},
+                                },
+                                "required": list(required),
+                            },
+                        ]
+                    }
+                },
+            }
+        }
+    }
+
+
+class FilesFolderOffer(unittest.TestCase):
+    def test_the_switch_with_a_tree_folder_behind_it_passes(self):
+        self.assertIsNone(check_charts.files_folder_offer_problem(folder_offer()))
+
+    def test_a_folder_asked_outright_is_refused(self):
+        s = folder_offer()
+        s["properties"]["config"]["properties"]["files_folder"] = {"type": "string"}
+        self.assertIn("outright", check_charts.files_folder_offer_problem(s))
+
+    def test_a_switch_on_by_default_is_refused(self):
+        problem = check_charts.files_folder_offer_problem(
+            folder_offer(switch={"type": "boolean", "default": True})
+        )
+        self.assertIn("off by default", problem)
+
+    def test_a_free_text_folder_is_refused(self):
+        problem = check_charts.files_folder_offer_problem(
+            folder_offer(chosen={"type": "string"})
+        )
+        self.assertIn("tree-folder", problem)
+
+    def test_an_optional_folder_behind_the_switch_is_refused(self):
+        problem = check_charts.files_folder_offer_problem(folder_offer(required=()))
+        self.assertIn("must require files_folder", problem)
+
+    def test_every_catalog_chart_with_files_offers_its_folder_the_same_way(self):
+        for chart in sorted(Path(check_charts.HERE).glob("*/values.yaml")):
+            if not check_charts.uses_files(yaml.safe_load(chart.read_text()) or {}):
+                continue
+            s = json.loads((chart.parent / "values.schema.json").read_text())
+            self.assertIsNone(
+                check_charts.files_folder_offer_problem(s), chart.parent.name
             )
 
 
@@ -2441,7 +2505,9 @@ class PackRendered(RenderedChart):
         self.assertEqual(len(set(folders.values())), len(folders))
 
     def test_choosing_the_packs_files_folder_moves_every_app_to_it(self):
-        docs = self.docs({"config.files_folder": "media"})
+        docs = self.docs(
+            {"config.files_folder_existing": "true", "config.files_folder": "media"}
+        )
         claim = check_charts.files_claim("media")
         mounted = {
             v["persistentVolumeClaim"]["claimName"]
@@ -2703,7 +2769,12 @@ class FileBrowserOnAFolder(RenderedChart):
         self.assertEqual(claim, check_charts.files_claim("release.files"))
 
     def test_pointed_at_another_service_s_folder_it_browses_that_folder(self):
-        docs = self.docs({"config.files_folder": "movies-tv.files"})
+        docs = self.docs(
+            {
+                "config.files_folder_existing": "true",
+                "config.files_folder": "movies-tv.files",
+            }
+        )
         _, claim, _ = self.browsed(docs)
         files = [d for d in docs if check_charts.is_files_doc(d)]
         self.assertEqual(
@@ -2711,10 +2782,22 @@ class FileBrowserOnAFolder(RenderedChart):
         )
         self.assertEqual(claim, check_charts.files_claim("movies-tv.files"))
 
+    def test_a_folder_left_in_the_form_with_the_switch_off_is_not_used(self):
+        docs = self.docs(
+            {
+                "config.files_folder_existing": "false",
+                "config.files_folder": "movies-tv.files",
+            }
+        )
+        _, claim, _ = self.browsed(docs)
+        self.assertEqual(claim, check_charts.files_claim("release.files"))
+
     def test_it_never_re_owns_everything_in_the_folder_it_is_pointed_at(self):
-        spec = self.deployments(self.docs({"config.files_folder": "immich"}))[
-            "filebrowser"
-        ]
+        spec = self.deployments(
+            self.docs(
+                {"config.files_folder_existing": "true", "config.files_folder": "immich"}
+            )
+        )["filebrowser"]
         for c in spec.get("initContainers") or []:
             script = " ".join(c.get("command") or [])
             if "/files" in script:

@@ -12,12 +12,11 @@
         "subdomain"
       ],
       "properties": {
-        "files_folder": {
-          "type": "string",
-          "title": "Files folder",
-          "default": "",
-          "pattern": "^$|^/?[A-Za-z0-9_ -][A-Za-z0-9._ -]*(/[A-Za-z0-9_ -][A-Za-z0-9._ -]*)*/?$",
-          "description": "Where in your file tree this service keeps its files. Leave it empty for a folder named after the service. Set another service to the same folder and both see the same files."
+        "files_folder_existing": {
+          "type": "boolean",
+          "title": "Use an existing folder",
+          "default": false,
+          "description": "Off: the service gets a new folder of its own, named after it. On: pick a folder already in your file tree; every service set to the same folder sees the same files."
         },
         "subdomain": {
           "type": "string",
@@ -55,6 +54,35 @@
         }
       },
       "dependencies": {
+        "files_folder_existing": {
+          "oneOf": [
+            {
+              "properties": {
+                "files_folder_existing": {
+                  "const": false
+                }
+              }
+            },
+            {
+              "properties": {
+                "files_folder_existing": {
+                  "const": true
+                },
+                "files_folder": {
+                  "type": "string",
+                  "title": "Files folder",
+                  "format": "tree-folder",
+                  "minLength": 1,
+                  "pattern": "^$|^/?[A-Za-z0-9_ -][A-Za-z0-9._ -]*(/[A-Za-z0-9_ -][A-Za-z0-9._ -]*)*/?$",
+                  "description": "Start typing to see the folders in your file tree; only a folder that exists can be picked."
+                }
+              },
+              "required": [
+                "files_folder"
+              ]
+            }
+          ]
+        },
         "download_client": {
           "oneOf": [
             {

@@ -4,7 +4,12 @@
 
 
 {{- define "yolab-common.files.folder" -}}
-{{- $given := ((.Values.yolab).filesFolder) | default ((.Values.config | default dict).files_folder) | default "" -}}
+{{- $cfg := .Values.config | default dict -}}
+{{- $chosen := "" -}}
+{{- if eq (get $cfg "files_folder_existing" | toString) "true" -}}
+{{- $chosen = get $cfg "files_folder" | default "" -}}
+{{- end -}}
+{{- $given := ((.Values.yolab).filesFolder) | default $chosen | default "" -}}
 {{- if $given -}}
 {{- include "yolab-common.tree.path" $given -}}
 {{- else -}}

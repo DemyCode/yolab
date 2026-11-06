@@ -157,6 +157,7 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route("/api/apps/{id}/update", post(apps::update_app))
         .route("/api/apps/{id}/data", get(apps::app_data))
+        .route("/api/tree/folders", get(crate::tree_list::tree_folders))
         .route("/api/apps/{id}/definition", get(apps::app_definition))
         .route("/api/apps/{id}/schema", get(apps::app_settings_schema))
         .route("/api/apps/{id}/backup", put(apps::set_backup_policy))
