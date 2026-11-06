@@ -917,7 +917,15 @@ async fn reconcile_local_osds<H: Host + 'static>(
                 .await
                 .ok_or_warn(format!("{osd} ({disk_id}): safe-to-destroy did not answer"))
                 .flatten();
-            let safe_before = before.is_some();
+            let settled = if before.is_some() {
+                host.ceph_json(&["status"])
+                    .await
+                    .ok_or_warn(format!("{osd} ({disk_id}): ceph status did not answer"))
+                    .is_some_and(|status| cluster_settled(&status))
+            } else {
+                false
+            };
+            let safe_before = before.is_some() && settled;
             if safe_before {
                 set_phase(
                     disk_id,
@@ -943,6 +951,19 @@ async fn reconcile_local_osds<H: Host + 'static>(
             };
 
             match plan_purge(safe_before, safe_after, loss.as_ref()) {
+                PurgeVerdict::Wait if before.is_some() => {
+                    tracing::debug!(
+                        "{osd} ({disk_id}): empty, waiting for every placement group to be \
+                         active+clean before stopping it"
+                    );
+                    keep_running(host, osd_id).await;
+                    set_phase(
+                        disk_id,
+                        Phase::Draining,
+                        "Empty. Waiting for the other disks to finish moving data before it is removed.",
+                    );
+                    continue;
+                }
                 PurgeVerdict::Wait => {
                     tracing::debug!("{osd} ({disk_id}): out but not yet safe-to-destroy — waiting");
                     keep_running(host, osd_id).await;
@@ -1313,6 +1334,27 @@ enum PurgeVerdict {
     Recheck,
     RefuseDataAtRisk,
     Purge,
+}
+
+fn cluster_settled(status: &Value) -> bool {
+    let pgmap = &status["pgmap"];
+    let Some(total) = pgmap["num_pgs"].as_u64() else {
+        return false;
+    };
+    let clean: u64 = pgmap["pgs_by_state"]
+        .as_array()
+        .map(|states| {
+            states
+                .iter()
+                .filter(|s| {
+                    let parts: Vec<&str> = s["state_name"].as_str().unwrap_or("").split('+').collect();
+                    parts.contains(&"active") && parts.contains(&"clean")
+                })
+                .filter_map(|s| s["count"].as_u64())
+                .sum()
+        })
+        .unwrap_or(0);
+    total > 0 && clean == total
 }
 
 fn plan_purge(
@@ -2351,6 +2393,46 @@ mod tests {
         );
     }
 
+    const SETTLED: &str =
+        r#"{"pgmap":{"num_pgs":12,"pgs_by_state":[{"state_name":"active+clean","count":12}]}}"#;
+
+    #[tokio::test]
+    async fn an_empty_disk_keeps_running_while_another_disk_is_still_backfilling() {
+        let host = FakeHost::new()
+            .ok("ceph -s", "")
+            .ok(
+                "ceph osd df tree",
+                r#"{"nodes":[{"id":9307,"type":"osd","status":"up","crush_weight":0.5,"reweight":0.0,"kb":0}]}"#,
+            )
+            .ok("ceph osd ls", "[9307]")
+            .ok("ceph osd dump", r#"{"osds":[{"osd":9307,"up":1,"in":0,"up_from":4}],"pools":[]}"#)
+            .ok("ceph osd safe-to-destroy", r#"{"safe_to_destroy":[9307]}"#)
+            .ok(
+                "ceph status",
+                r#"{"pgmap":{"num_pgs":12,"pgs_by_state":[{"state_name":"active+clean","count":8},{"state_name":"active+remapped+backfill_wait","count":4}]}}"#,
+            )
+            .ok(
+                "systemctl show -p ActiveState --value yolab-ceph-osd@9307.service",
+                "active",
+            )
+            .ok("systemctl stop yolab-ceph-osd@9307.service", "");
+        let meta = HashMap::from([("disk-wait-9307".to_string(), disk(Ownership::Blank))]);
+        let desired = HashMap::from([("disk-wait-9307".to_string(), "OFF".to_string())]);
+        let disk_to_osd = HashMap::from([("disk-wait-9307".to_string(), 9307i64)]);
+
+        reconcile_local_osds(&host, "node1", &meta, &desired, Some(&disk_to_osd), true).await;
+
+        assert!(
+            !host.ran("systemctl stop yolab-ceph-osd@9307") && !host.ran("osd purge"),
+            "{:?}",
+            host.calls()
+        );
+        assert!(!is_stopped_for_removal(9307));
+        let progress = progress_of("disk-wait-9307");
+        assert_eq!(progress.phase, Phase::Draining);
+        assert!(progress.message.contains("Waiting for the other disks"), "{}", progress.message);
+    }
+
     #[tokio::test]
     async fn purge_wipes_the_disk_once_the_osd_is_confirmed_gone() {
         let host = FakeHost::new()
@@ -2362,6 +2444,7 @@ mod tests {
                 r#"{"nodes":[{"id":7,"type":"osd","status":"down","crush_weight":0.5,"reweight":0.0,"kb":0}]}"#,
             )
             .ok("ceph osd safe-to-destroy", r#"{"safe_to_destroy":[7]}"#)
+            .ok("ceph status", SETTLED)
             .ok(
                 "systemctl show -p ActiveState --value yolab-ceph-osd@7.service",
                 "inactive",
@@ -2500,6 +2583,7 @@ mod tests {
                 r#"{"nodes":[{"id":9,"type":"osd","status":"down","crush_weight":0.5,"reweight":0.0,"kb":0}]}"#,
             )
             .ok("ceph osd safe-to-destroy", r#"{"safe_to_destroy":[9]}"#)
+            .ok("ceph status", SETTLED)
             .ok(
                 "systemctl show -p ActiveState --value yolab-ceph-osd@9.service",
                 "inactive",
@@ -3254,6 +3338,7 @@ mod tests {
             .ok("ceph osd ls", "[9304]")
             .ok("ceph osd dump", r#"{"osds":[{"osd":9304,"up":0,"in":0,"up_from":4}],"pools":[]}"#)
             .ok("ceph osd safe-to-destroy", r#"{"safe_to_destroy":[9304]}"#)
+            .ok("ceph status", SETTLED)
             .ok(
                 "systemctl show -p ActiveState --value yolab-ceph-osd@9304.service",
                 "inactive",
@@ -4111,6 +4196,38 @@ mod tests {
             confirmed_lost: false,
             confirmed_lost_pools: vec![],
         }
+    }
+
+    fn status_with(states: &[(&str, u64)]) -> Value {
+        let total: u64 = states.iter().map(|(_, n)| n).sum();
+        json!({"pgmap": {
+            "num_pgs": total,
+            "pgs_by_state": states
+                .iter()
+                .map(|(name, n)| json!({"state_name": name, "count": n}))
+                .collect::<Vec<_>>(),
+        }})
+    }
+
+    #[test]
+    fn an_empty_disk_is_only_stopped_once_every_placement_group_is_clean() {
+        assert!(cluster_settled(&status_with(&[
+            ("active+clean", 170),
+            ("active+clean+scrubbing", 3),
+            ("active+clean+remapped", 4),
+        ])));
+        assert!(!cluster_settled(&status_with(&[
+            ("active+clean", 134),
+            ("active+remapped+backfill_wait", 39),
+            ("active+remapped+backfilling", 4),
+        ])));
+        assert!(!cluster_settled(&status_with(&[("active+clean", 10), ("peering", 1)])));
+    }
+
+    #[test]
+    fn a_status_without_placement_groups_never_counts_as_settled() {
+        assert!(!cluster_settled(&json!({})));
+        assert!(!cluster_settled(&status_with(&[])));
     }
 
     #[test]
