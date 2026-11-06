@@ -431,7 +431,6 @@ in let
         "routers/backups.rs" = 1;
         "routers/ceph.rs" = 3;
         "routers/ceph_join.rs" = 1;
-        "routers/copy.rs" = 1;
         "routers/custom_app.rs" = 8;
         "routers/disks.rs" = 4;
         "routers/logs.rs" = 1;
