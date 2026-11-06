@@ -501,7 +501,7 @@ async fn publish_local<H: Host + 'static>(host: &H, node: &str) -> Result<()> {
     } else {
         fetch_disk_to_osd(host, node, &meta).await
     };
-    let can_create = matches!(fetched, Some((_, OsdMapSource::CephVolume)));
+    let map_is_complete = matches!(fetched, Some((_, OsdMapSource::CephVolume)));
     let disk_to_osd: Option<HashMap<String, i64>> = fetched.map(|(map, _)| map);
     if let Some(map) = &disk_to_osd {
         mark_known_osds(&mut meta, map);
@@ -519,7 +519,15 @@ async fn publish_local<H: Host + 'static>(host: &H, node: &str) -> Result<()> {
             } else {
                 d.clone()
             };
-            reconcile_local_osds(host, node, &meta, &d, disk_to_osd.as_ref(), can_create).await;
+            reconcile_local_osds(
+                host,
+                node,
+                &meta,
+                &d,
+                disk_to_osd.as_ref(),
+                map_is_complete,
+            )
+            .await;
         }
         None => {
             tracing::warn!(
@@ -704,7 +712,7 @@ async fn reconcile_local_osds<H: Host + 'static>(
     meta: &HashMap<String, Disk>,
     desired: &HashMap<String, String>,
     disk_to_osd: Option<&HashMap<String, i64>>,
-    can_create: bool,
+    map_is_complete: bool,
 ) {
     match plan_tick(host.reachable().await, disk_to_osd.is_some()) {
         TickPlan::Unreachable => {
@@ -744,13 +752,14 @@ async fn reconcile_local_osds<H: Host + 'static>(
         .collect();
     let disk_to_osd = &live;
 
-    if !can_create {
+    if !map_is_complete {
         tracing::info!(
-            "reconcile_local_osds: this tick's OSD list is the mon's, which omits OSDs that never \
-             booted — creating nothing until ceph-volume answers"
+            "reconcile_local_osds: this tick's OSD list is the mon's, which may not match every \
+             disk to its OSD — creating, purging and calling nothing safe to unplug until \
+             ceph-volume answers"
         );
     }
-    for (disk_id, m) in meta.iter().filter(|_| can_create) {
+    for (disk_id, m) in meta.iter().filter(|_| map_is_complete) {
         if forgotten.contains(disk_id) {
             continue;
         }
@@ -857,7 +866,7 @@ async fn reconcile_local_osds<H: Host + 'static>(
     for (disk_id, m) in meta {
         let want_on = wants_on(desired, node, disk_id);
         let Some(&osd_id) = disk_to_osd.get(disk_id) else {
-            if !want_on {
+            if !want_on && map_is_complete {
                 set_phase(disk_id, Phase::Removable, "Not in use. Safe to unplug.");
             }
             continue;
@@ -1022,7 +1031,9 @@ async fn reconcile_local_osds<H: Host + 'static>(
 
     let unplugged_but_wanted = any_unplugged_but_wanted(desired, node, meta);
 
-    purge_drained_osds(host, node, &crush_nodes, disk_to_osd, unplugged_but_wanted).await;
+    if map_is_complete {
+        purge_drained_osds(host, node, &crush_nodes, disk_to_osd, unplugged_but_wanted).await;
+    }
 }
 
 fn any_unplugged_but_wanted(
@@ -3272,6 +3283,59 @@ mod tests {
         ensure_osd_unit_running(&osd_activate, 9304).await;
         assert!(!osd_activate.ran("systemctl start"));
         stopped_for_removal().remove(&9304);
+    }
+
+    fn mon_map_host() -> FakeHost {
+        FakeHost::new()
+            .ok("ceph -s", "")
+            .ok(
+                "ceph osd df tree",
+                r#"{"nodes":[{"id":-3,"type":"host","name":"node1","children":[9306]},{"id":9306,"type":"osd","status":"down","crush_weight":0.8,"reweight":0.0,"kb":0}]}"#,
+            )
+            .ok("ceph osd ls", "[9306]")
+            .ok("ceph osd dump", r#"{"osds":[{"osd":9306,"up":0,"in":0,"up_from":4}],"pools":[]}"#)
+            .ok("ceph osd safe-to-destroy", r#"{"safe_to_destroy":[]}"#)
+            .ok(
+                "systemctl show -p ActiveState --value yolab-ceph-osd@9306.service",
+                "inactive",
+            )
+            .ok("systemctl stop yolab-ceph-osd@9306.service", "")
+    }
+
+    #[tokio::test]
+    async fn an_osd_the_mons_list_cannot_match_to_its_disk_is_never_stopped_as_unplugged() {
+        let host = mon_map_host();
+        let meta = HashMap::from([("vdisk-9306".to_string(), disk(Ownership::Blank))]);
+        let desired = HashMap::from([("vdisk-9306".to_string(), "OFF".to_string())]);
+        let disk_to_osd: HashMap<String, i64> = HashMap::new();
+
+        reconcile_local_osds(&host, "node1", &meta, &desired, Some(&disk_to_osd), false).await;
+
+        assert!(!host.ran("systemctl stop yolab-ceph-osd@9306"), "{:?}", host.calls());
+    }
+
+    #[tokio::test]
+    async fn a_disk_the_mons_list_cannot_match_is_never_called_safe_to_unplug() {
+        let host = mon_map_host();
+        let meta = HashMap::from([("disk-unmatched-9306".to_string(), disk(Ownership::Blank))]);
+        let desired = HashMap::from([("disk-unmatched-9306".to_string(), "OFF".to_string())]);
+        let disk_to_osd: HashMap<String, i64> = HashMap::new();
+
+        reconcile_local_osds(&host, "node1", &meta, &desired, Some(&disk_to_osd), false).await;
+
+        assert_ne!(progress_of("disk-unmatched-9306").phase, Phase::Removable);
+    }
+
+    #[tokio::test]
+    async fn with_ceph_volumes_own_list_an_unmatched_drained_osd_is_still_stopped_for_purging() {
+        let host = mon_map_host();
+        let meta: HashMap<String, Disk> = HashMap::new();
+        let desired: HashMap<String, String> = HashMap::new();
+        let disk_to_osd: HashMap<String, i64> = HashMap::new();
+
+        reconcile_local_osds(&host, "node1", &meta, &desired, Some(&disk_to_osd), true).await;
+
+        assert!(host.ran("systemctl stop yolab-ceph-osd@9306"), "{:?}", host.calls());
     }
 
     #[tokio::test]
