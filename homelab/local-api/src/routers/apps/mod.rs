@@ -3400,7 +3400,9 @@ mod tests {
         async fn an_app_that_is_already_gone_may_be_uninstalled() {
             let (server, kube) = api_server().await;
             namespace_is(&server, 404, gone()).await;
-            assert!(claim_uninstall_lock(&kube, "yolab-notes", &[]).await.unwrap());
+            assert!(claim_uninstall_lock(&kube, "yolab-notes", &[])
+                .await
+                .unwrap());
         }
 
         #[tokio::test]
@@ -3413,7 +3415,9 @@ mod tests {
                 .expect(0)
                 .mount(&server)
                 .await;
-            assert!(!claim_uninstall_lock(&kube, "yolab-notes", &[]).await.unwrap());
+            assert!(!claim_uninstall_lock(&kube, "yolab-notes", &[])
+                .await
+                .unwrap());
         }
 
         #[tokio::test]
@@ -3429,7 +3433,9 @@ mod tests {
                 .expect(1)
                 .mount(&server)
                 .await;
-            assert!(claim_uninstall_lock(&kube, "yolab-notes", &[]).await.unwrap());
+            assert!(claim_uninstall_lock(&kube, "yolab-notes", &[])
+                .await
+                .unwrap());
         }
 
         #[tokio::test]
@@ -3440,14 +3446,18 @@ mod tests {
                 .respond_with(ResponseTemplate::new(409).set_body_json(status(409, "Conflict")))
                 .mount(&server)
                 .await;
-            assert!(!claim_uninstall_lock(&kube, "yolab-notes", &[]).await.unwrap());
+            assert!(!claim_uninstall_lock(&kube, "yolab-notes", &[])
+                .await
+                .unwrap());
         }
 
         #[tokio::test]
         async fn an_unreachable_cluster_blocks_the_uninstall_claim() {
             let (server, kube) = api_server().await;
             namespace_is(&server, 503, status(503, "ServiceUnavailable")).await;
-            assert!(claim_uninstall_lock(&kube, "yolab-notes", &[]).await.is_err());
+            assert!(claim_uninstall_lock(&kube, "yolab-notes", &[])
+                .await
+                .is_err());
         }
 
         #[tokio::test]
@@ -3530,7 +3540,10 @@ mod tests {
 
         #[test]
         fn the_folders_to_delete_are_read_back_from_the_namespace() {
-            let doomed = ns(json!({ ANN_DELETE_FOLDERS: "[\"notes\",\"media\"]" }), "Active");
+            let doomed = ns(
+                json!({ ANN_DELETE_FOLDERS: "[\"notes\",\"media\"]" }),
+                "Active",
+            );
             assert_eq!(folders_in(&doomed).unwrap(), vec!["notes", "media"]);
             assert!(folders_in(&ns(json!({}), "Active")).unwrap().is_empty());
             let garbled = ns(json!({ ANN_DELETE_FOLDERS: "notes" }), "Active");
@@ -3551,7 +3564,9 @@ mod tests {
                 .mount(&server)
                 .await;
             let doomed = vec!["notes".to_string(), "media".to_string()];
-            assert!(claim_uninstall_lock(&kube, "yolab-notes", &doomed).await.unwrap());
+            assert!(claim_uninstall_lock(&kube, "yolab-notes", &doomed)
+                .await
+                .unwrap());
         }
 
         #[tokio::test]
@@ -3567,7 +3582,9 @@ mod tests {
                 .expect(1)
                 .mount(&server)
                 .await;
-            assert!(claim_uninstall_lock(&kube, "yolab-notes", &[]).await.unwrap());
+            assert!(claim_uninstall_lock(&kube, "yolab-notes", &[])
+                .await
+                .unwrap());
         }
 
         async fn tree_ops_succeed(server: &MockServer) {
@@ -3580,7 +3597,9 @@ mod tests {
                 .mount(server)
                 .await;
             Mock::given(method("GET"))
-                .and(wiremock::matchers::path_regex("^/apis/batch/v1/namespaces/ceph-csi/jobs/"))
+                .and(wiremock::matchers::path_regex(
+                    "^/apis/batch/v1/namespaces/ceph-csi/jobs/",
+                ))
                 .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                     "apiVersion": "batch/v1", "kind": "Job", "metadata": { "name": "j" },
                     "status": { "succeeded": 1 }
@@ -3614,7 +3633,11 @@ mod tests {
                 .await;
             volumes_are(
                 &server,
-                vec![tree_pv("yolab-radarr.content", "yolab-radarr", "/tree/media/movies")],
+                vec![tree_pv(
+                    "yolab-radarr.content",
+                    "yolab-radarr",
+                    "/tree/media/movies",
+                )],
             )
             .await;
             no_saved_settings(&server).await;

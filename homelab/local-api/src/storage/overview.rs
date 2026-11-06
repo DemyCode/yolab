@@ -619,7 +619,9 @@ mod tests {
             }
         }});
         let pvs = vec![tree, pv("cephfs.csi.ceph.com", "yolab-gitea", "csi-vol-a")];
-        assert!(app_volumes(&pvs).iter().all(|v| v.namespace == "yolab-gitea"));
+        assert!(app_volumes(&pvs)
+            .iter()
+            .all(|v| v.namespace == "yolab-gitea"));
         assert_eq!(unsized_folders(&pvs), 1);
     }
 

@@ -547,7 +547,15 @@ mod tests {
     #[test]
     fn new_caps_for_a_key_take_every_remaining_word() {
         assert_eq!(
-            sent(&["auth", "caps", "client.csi-cephfs-node", "mon", "allow r", "mds", "allow rws"]),
+            sent(&[
+                "auth",
+                "caps",
+                "client.csi-cephfs-node",
+                "mon",
+                "allow r",
+                "mds",
+                "allow rws"
+            ]),
             json!({
                 "prefix": "auth caps",
                 "entity": "client.csi-cephfs-node",

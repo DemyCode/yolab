@@ -247,7 +247,10 @@ mod tests {
     }
 
     fn ceph_ok() -> FakeHost {
-        keys_readable().ok("ceph auth get client.csi-cephfs-node", &node_entity("allow rws"))
+        keys_readable().ok(
+            "ceph auth get client.csi-cephfs-node",
+            &node_entity("allow rws"),
+        )
     }
 
     fn keys_readable() -> FakeHost {
@@ -367,7 +370,10 @@ mod tests {
     async fn the_node_key_may_snapshot_a_folder_so_a_copy_reads_one_moment() {
         let (_server, kube) = cluster_up().await;
         let host = keys_readable()
-            .ok("ceph auth get client.csi-cephfs-node", &node_entity("allow rw"))
+            .ok(
+                "ceph auth get client.csi-cephfs-node",
+                &node_entity("allow rw"),
+            )
             .ok("ceph auth caps client.csi-cephfs-node", "");
         let b = Backend { kube, host };
         run(&b).await.unwrap();
@@ -401,7 +407,10 @@ mod tests {
             .ok("ceph auth get-key client.csi-cephfs-provisioner", "fresh")
             .ok("ceph auth get-or-create client.csi-cephfs-provisioner", "")
             .ok("ceph auth get-key client.csi-cephfs-node", "nodekey")
-            .ok("ceph auth get client.csi-cephfs-node", &node_entity("allow rws"));
+            .ok(
+                "ceph auth get client.csi-cephfs-node",
+                &node_entity("allow rws"),
+            );
         let b = Backend { kube, host };
         run(&b).await.unwrap();
         assert!(b.host.ran(

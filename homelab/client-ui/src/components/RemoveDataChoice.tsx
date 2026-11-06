@@ -66,8 +66,8 @@ export function RemoveDataChoice({
 
       {!deleteData && (
         <p className="text-xs text-fg-muted">
-          Its folders stay in your file tree. Installing it again under the
-          same name picks them up.
+          Its folders stay in your file tree. Installing it again under the same
+          name picks them up.
         </p>
       )}
     </div>

@@ -519,15 +519,8 @@ async fn publish_local<H: Host + 'static>(host: &H, node: &str) -> Result<()> {
             } else {
                 d.clone()
             };
-            reconcile_local_osds(
-                host,
-                node,
-                &meta,
-                &d,
-                disk_to_osd.as_ref(),
-                map_is_complete,
-            )
-            .await;
+            reconcile_local_osds(host, node, &meta, &d, disk_to_osd.as_ref(), map_is_complete)
+                .await;
         }
         None => {
             tracing::warn!(
@@ -3311,7 +3304,11 @@ mod tests {
 
         reconcile_local_osds(&host, "node1", &meta, &desired, Some(&disk_to_osd), false).await;
 
-        assert!(!host.ran("systemctl stop yolab-ceph-osd@9306"), "{:?}", host.calls());
+        assert!(
+            !host.ran("systemctl stop yolab-ceph-osd@9306"),
+            "{:?}",
+            host.calls()
+        );
     }
 
     #[tokio::test]
@@ -3335,7 +3332,11 @@ mod tests {
 
         reconcile_local_osds(&host, "node1", &meta, &desired, Some(&disk_to_osd), true).await;
 
-        assert!(host.ran("systemctl stop yolab-ceph-osd@9306"), "{:?}", host.calls());
+        assert!(
+            host.ran("systemctl stop yolab-ceph-osd@9306"),
+            "{:?}",
+            host.calls()
+        );
     }
 
     #[tokio::test]

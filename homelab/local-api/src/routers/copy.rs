@@ -225,10 +225,15 @@ mod tests {
 
     #[tokio::test]
     async fn a_copy_from_something_that_is_not_a_service_is_refused() {
-        let e = copy_live_folders(&crate::k8s::testing::unreachable(), "kube-system", &[], false)
-            .await
-            .unwrap_err()
-            .to_string();
+        let e = copy_live_folders(
+            &crate::k8s::testing::unreachable(),
+            "kube-system",
+            &[],
+            false,
+        )
+        .await
+        .unwrap_err()
+        .to_string();
         assert!(e.contains("not a service"), "{e}");
     }
 }

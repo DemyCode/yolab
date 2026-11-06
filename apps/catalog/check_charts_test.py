@@ -1721,9 +1721,7 @@ class FileExplorerWaysRendered(RenderedChart):
         self.assertIn("tor", mounts["tor"])
         self.assertIn("file-explorer-tor", mounts["file-explorer-tor"])
         self.assertIn("tailscale", mounts["tailscale"])
-        self.assertIn(
-            "file-explorer-tailscale", mounts["file-explorer-tailscale"]
-        )
+        self.assertIn("file-explorer-tailscale", mounts["file-explorer-tailscale"])
         self.assertNotEqual(
             self.env(spec, "tailscale")["TS_HOSTNAME"],
             self.env(spec, "file-explorer-tailscale")["TS_HOSTNAME"],
@@ -2427,7 +2425,6 @@ class OffersFileExplorer(unittest.TestCase):
             check_charts.offers_file_explorer({"properties": {"config": {}}})
         )
         self.assertFalse(check_charts.offers_file_explorer({}))
-
 
 
 def api_key_failures(s):

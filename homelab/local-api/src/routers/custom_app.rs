@@ -1149,9 +1149,12 @@ spec:
             ("yolab-x", "/tree/../volumes"),
             ("yolab-other", "/tree/x"),
         ] {
-            let err =
-                validate_rendered(&tree_volume(namespace, root_path), "yolab-x").unwrap_err();
-            assert!(err.reason.contains("whole cluster"), "{root_path}: {}", err.reason);
+            let err = validate_rendered(&tree_volume(namespace, root_path), "yolab-x").unwrap_err();
+            assert!(
+                err.reason.contains("whole cluster"),
+                "{root_path}: {}",
+                err.reason
+            );
         }
     }
 

@@ -105,14 +105,7 @@ pub(crate) fn claimed_in(volumes: &[Value], namespace: &str) -> Vec<Claimed> {
 }
 
 pub(crate) async fn volumes(client: &Client) -> anyhow::Result<Vec<Value>> {
-    crate::k8s::list(
-        client,
-        "v1",
-        "PersistentVolume",
-        None,
-        &Default::default(),
-    )
-    .await
+    crate::k8s::list(client, "v1", "PersistentVolume", None, &Default::default()).await
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -378,7 +371,12 @@ fn root_claim() -> Value {
 }
 
 fn job(name: &str, op: &Op) -> Value {
-    let mut command = vec!["sh".to_string(), "-c".to_string(), op.script(), "tree".to_string()];
+    let mut command = vec![
+        "sh".to_string(),
+        "-c".to_string(),
+        op.script(),
+        "tree".to_string(),
+    ];
     command.extend(op.args(name));
     json!({
         "apiVersion": "batch/v1",
@@ -482,25 +480,19 @@ pub(crate) async fn run(client: &Client, op: &Op) -> anyhow::Result<()> {
     let reference = crate::k8s::reference("batch/v1", "Job", crate::csi::NS, &name);
     let reference = &reference;
     let job_name = name.as_str();
-    let failure = crate::poll::until(
-        op.deadline() + WAIT_MARGIN,
-        POLL,
-        move || async move {
-            match crate::k8s::get(client, reference).await {
-                Ok(Some(found)) => match job_state(&found) {
-                    JobState::Succeeded => crate::poll::Step::Done(None),
-                    JobState::Failed(why) => crate::poll::Step::Done(Some(why)),
-                    JobState::Running => {
-                        crate::poll::Step::Pending(anyhow::anyhow!("it is still running"))
-                    }
-                },
-                Ok(None) => {
-                    crate::poll::Step::Failed(anyhow::anyhow!("its job {job_name} vanished"))
+    let failure = crate::poll::until(op.deadline() + WAIT_MARGIN, POLL, move || async move {
+        match crate::k8s::get(client, reference).await {
+            Ok(Some(found)) => match job_state(&found) {
+                JobState::Succeeded => crate::poll::Step::Done(None),
+                JobState::Failed(why) => crate::poll::Step::Done(Some(why)),
+                JobState::Running => {
+                    crate::poll::Step::Pending(anyhow::anyhow!("it is still running"))
                 }
-                Err(e) => crate::poll::Step::Pending(e),
-            }
-        },
-    )
+            },
+            Ok(None) => crate::poll::Step::Failed(anyhow::anyhow!("its job {job_name} vanished")),
+            Err(e) => crate::poll::Step::Pending(e),
+        }
+    })
     .await
     .map_err(|e| anyhow::anyhow!("could not {}: {e}", op.describe()))?;
     let Some(why) = failure else {
@@ -617,7 +609,10 @@ mod tests {
 
     #[test]
     fn a_folder_of_the_tree_is_read_from_its_volume() {
-        assert_eq!(folder_of(&volume("/tree/jellyfin")).as_deref(), Some("jellyfin"));
+        assert_eq!(
+            folder_of(&volume("/tree/jellyfin")).as_deref(),
+            Some("jellyfin")
+        );
         assert_eq!(
             folder_of(&volume("/tree/movies-tv.files")).as_deref(),
             Some("movies-tv.files")
@@ -660,7 +655,10 @@ mod tests {
     #[test]
     fn a_path_is_cleaned_of_its_slashes_and_refused_when_it_climbs() {
         assert_eq!(clean_path("/media/").as_deref(), Some("media"));
-        assert_eq!(clean_path("radarr/movies").as_deref(), Some("radarr/movies"));
+        assert_eq!(
+            clean_path("radarr/movies").as_deref(),
+            Some("radarr/movies")
+        );
         assert_eq!(clean_path("").as_deref(), Some(""));
         assert_eq!(clean_path("a/../b"), None);
         assert_eq!(clean_path(".."), None);
@@ -728,12 +726,19 @@ mod tests {
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].claimed.folder, "jellyfin");
         assert_eq!(found[0].request["metadata"]["name"], "jellyfin-data");
-        assert_eq!(found[0].volume["metadata"]["name"], "yolab-jellyfin.jellyfin-data");
+        assert_eq!(
+            found[0].volume["metadata"]["name"],
+            "yolab-jellyfin.jellyfin-data"
+        );
     }
 
     #[test]
     fn a_rendered_folder_without_its_claim_is_an_error() {
-        let docs = vec![volume_in("yolab-jellyfin", "jellyfin-data", "/tree/jellyfin")];
+        let docs = vec![volume_in(
+            "yolab-jellyfin",
+            "jellyfin-data",
+            "/tree/jellyfin",
+        )];
         let e = planned(&docs, "yolab-jellyfin").unwrap_err().to_string();
         assert!(e.contains("jellyfin-data"), "{e}");
     }
@@ -762,7 +767,15 @@ mod tests {
                 live["spec"]["volumeName"] = json!(name);
                 serve(&server, at, 200, live).await
             }
-            None => serve(&server, at, 404, crate::k8s::testing::status(404, "NotFound")).await,
+            None => {
+                serve(
+                    &server,
+                    at,
+                    404,
+                    crate::k8s::testing::status(404, "NotFound"),
+                )
+                .await
+            }
         }
         let docs = vec![
             volume_in("yolab-jellyfin", "jellyfin-data", "/tree/jellyfin"),
@@ -782,7 +795,10 @@ mod tests {
 
     #[tokio::test]
     async fn a_service_already_in_the_tree_or_not_yet_installed_goes_ahead() {
-        assert_eq!(live_claim(Some("yolab-jellyfin.jellyfin-data")).await, Ok(()));
+        assert_eq!(
+            live_claim(Some("yolab-jellyfin.jellyfin-data")).await,
+            Ok(())
+        );
         assert_eq!(live_claim(None).await, Ok(()));
     }
 
@@ -793,7 +809,10 @@ mod tests {
             "jellyfin",
             "yolab-jellyfin2",
         );
-        assert_eq!(owned["metadata"]["labels"]["app.kubernetes.io/managed-by"], "Helm");
+        assert_eq!(
+            owned["metadata"]["labels"]["app.kubernetes.io/managed-by"],
+            "Helm"
+        );
         assert_eq!(
             owned["metadata"]["annotations"]["meta.helm.sh/release-name"],
             "jellyfin"
@@ -857,7 +876,10 @@ mod tests {
         assert_eq!(v["spec"]["csi"]["volumeAttributes"]["rootPath"], "/");
         assert_eq!(v["spec"]["persistentVolumeReclaimPolicy"], "Retain");
         assert_eq!(v["spec"]["claimRef"]["namespace"], crate::csi::NS);
-        assert_eq!(v["spec"]["claimRef"]["name"], root_claim()["metadata"]["name"]);
+        assert_eq!(
+            v["spec"]["claimRef"]["name"],
+            root_claim()["metadata"]["name"]
+        );
         assert_eq!(root_claim()["spec"]["volumeName"], v["metadata"]["name"]);
         assert_eq!(folder_of(&v), None);
         assert!(claimed(&[v]).is_empty());
@@ -938,7 +960,10 @@ mod tests {
             volume_in("yolab-jellyfin", "everything", "/tree"),
             volume_in("yolab-radarr", "radarr-data", "/tree/radarr"),
         ];
-        assert_eq!(own_folders(&volumes, "yolab-jellyfin"), vec!["jellyfin", "media"]);
+        assert_eq!(
+            own_folders(&volumes, "yolab-jellyfin"),
+            vec!["jellyfin", "media"]
+        );
     }
 
     #[test]
@@ -975,10 +1000,7 @@ mod tests {
             volume_in("yolab-jellyfin", "jellyfin-data", "/tree/jellyfin"),
             volume_in("yolab-filebrowser", "filebrowser-data", "/tree"),
         ];
-        assert_eq!(
-            verdict(&volumes, "yolab-jellyfin").delete,
-            vec!["jellyfin"]
-        );
+        assert_eq!(verdict(&volumes, "yolab-jellyfin").delete, vec!["jellyfin"]);
     }
 
     #[test]
@@ -1030,12 +1052,16 @@ mod tests {
     async fn a_job_that_succeeds_is_the_op_done() {
         let (server, kube) = api_server().await;
         accepting(&server, json!({ "succeeded": 1 })).await;
-        run(&kube, &Op::Make(vec!["jellyfin".into()])).await.unwrap();
+        run(&kube, &Op::Make(vec!["jellyfin".into()]))
+            .await
+            .unwrap();
         let patched = crate::k8s::testing::patched(&server).await;
-        assert!(patched.iter().any(|p| p["metadata"]["name"] == ROOT_VOLUME
-            && p["kind"] == "PersistentVolume"));
-        assert!(patched.iter().any(|p| p["metadata"]["name"] == ROOT_VOLUME
-            && p["kind"] == "PersistentVolumeClaim"));
+        assert!(patched
+            .iter()
+            .any(|p| p["metadata"]["name"] == ROOT_VOLUME && p["kind"] == "PersistentVolume"));
+        assert!(patched
+            .iter()
+            .any(|p| p["metadata"]["name"] == ROOT_VOLUME && p["kind"] == "PersistentVolumeClaim"));
     }
 
     #[tokio::test]
@@ -1052,7 +1078,10 @@ mod tests {
             &server,
             "/api/v1/namespaces/ceph-csi/pods",
             200,
-            list("Pod", vec![json!({ "metadata": { "name": "yolab-tree-x-abcde" } })]),
+            list(
+                "Pod",
+                vec![json!({ "metadata": { "name": "yolab-tree-x-abcde" } })],
+            ),
         )
         .await;
         serve_logs(
@@ -1102,14 +1131,22 @@ mod tests {
     async fn nothing_to_make_starts_no_job() {
         let (server, kube) = api_server().await;
         run(&kube, &Op::Make(vec![])).await.unwrap();
-        assert!(server.received_requests().await.unwrap_or_default().is_empty());
+        assert!(server
+            .received_requests()
+            .await
+            .unwrap_or_default()
+            .is_empty());
     }
 
     #[tokio::test]
     async fn a_refused_op_starts_no_job() {
         let (server, kube) = api_server().await;
         assert!(run(&kube, &Op::Remove(vec![String::new()])).await.is_err());
-        assert!(server.received_requests().await.unwrap_or_default().is_empty());
+        assert!(server
+            .received_requests()
+            .await
+            .unwrap_or_default()
+            .is_empty());
     }
 
     #[tokio::test]
@@ -1126,9 +1163,15 @@ mod tests {
             serde_json::to_string(&request_in("yolab-jellyfin", "jellyfin-data")).unwrap(),
         );
         let host = FakeHost::new().ok("helm template", &rendered);
-        let found = render(&host, "jellyfin", "/charts/jellyfin", "yolab-jellyfin", "/v.yaml")
-            .await
-            .unwrap();
+        let found = render(
+            &host,
+            "jellyfin",
+            "/charts/jellyfin",
+            "yolab-jellyfin",
+            "/v.yaml",
+        )
+        .await
+        .unwrap();
         assert_eq!(found[0].claimed.folder, "jellyfin");
         assert!(host.ran(
             "helm template jellyfin /charts/jellyfin --dependency-update --namespace yolab-jellyfin --values /v.yaml"
@@ -1138,8 +1181,7 @@ mod tests {
     #[tokio::test]
     async fn a_chart_that_cannot_render_stops_the_install() {
         use crate::host::fake::FakeHost;
-        let host =
-            FakeHost::new().fail("helm template", "\"//\" is not a folder in the file tree");
+        let host = FakeHost::new().fail("helm template", "\"//\" is not a folder in the file tree");
         let e = render(&host, "jellyfin", "/c", "yolab-jellyfin", "/v.yaml")
             .await
             .unwrap_err()

@@ -651,11 +651,7 @@ export function InstallPage() {
           {copyData && filesCopy?.kind === "moved" && (
             <Row
               label={`Copy the contents of  there`}
-              detail={
-                copyFiles
-                  ? ` gets a copy of them.`
-                  : ` starts empty.`
-              }
+              detail={copyFiles ? ` gets a copy of them.` : ` starts empty.`}
               trailing={
                 <Switch
                   checked={copyFiles}
