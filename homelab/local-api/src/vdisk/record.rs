@@ -102,15 +102,6 @@ pub async fn list<H: Host>(host: &H) -> Result<Vec<VdiskRecord>, CmdError> {
         .collect()
 }
 
-pub async fn get<H: Host>(host: &H, id: i64) -> Result<Option<VdiskRecord>, CmdError> {
-    match settings::get(host, &record_key(id)).await? {
-        None => Ok(None),
-        Some(raw) => serde_json::from_str(&raw)
-            .map(Some)
-            .map_err(|e| CmdError::parse(format!("config-key {}", record_key(id)), e)),
-    }
-}
-
 pub async fn save<H: Host>(host: &H, record: &VdiskRecord) -> Result<(), CmdError> {
     let raw = serde_json::to_string(record)
         .map_err(|e| CmdError::parse(format!("config-key {}", record_key(record.id)), e))?;
