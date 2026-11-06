@@ -214,8 +214,9 @@ export function AppSources({ onChanged }: { onChanged?: () => void }) {
         >
           <FileCode2 className="h-4 w-4 shrink-0" />
           <span>
-            Not here at all? <span className="text-fg">Add your own service</span>{" "}
-            from Kubernetes YAML.
+            Not here at all?{" "}
+            <span className="text-fg">Add your own service</span> from
+            Kubernetes YAML.
           </span>
         </Link>
       </div>

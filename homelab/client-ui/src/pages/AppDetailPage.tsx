@@ -1157,8 +1157,8 @@ export function AppDetailPage() {
         busy={working === "remove"}
         body={
           <>
-            {name} stops and is removed with all of its data. Backups you already
-            have are kept.
+            {name} stops and is removed with all of its data. Backups you
+            already have are kept.
           </>
         }
       />
