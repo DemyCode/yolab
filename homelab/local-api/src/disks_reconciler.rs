@@ -3274,6 +3274,34 @@ mod tests {
         stopped_for_removal().remove(&9304);
     }
 
+    #[tokio::test]
+    async fn a_disk_switched_back_on_after_its_osd_was_stopped_for_removal_starts_again() {
+        let host = FakeHost::new()
+            .ok("ceph -s", "")
+            .ok(
+                "ceph osd df tree",
+                r#"{"nodes":[{"id":9305,"type":"osd","status":"down","crush_weight":0.5,"reweight":0.0,"kb":0}]}"#,
+            )
+            .ok("ceph osd ls", "[9305]")
+            .ok("ceph osd dump", r#"{"osds":[{"osd":9305,"up":0,"in":0,"up_from":4}],"pools":[]}"#)
+            .ok(
+                "systemctl show -p ActiveState --value yolab-ceph-osd@9305.service",
+                "inactive",
+            )
+            .ok("systemctl start yolab-ceph-osd@9305.service", "")
+            .ok("ceph osd in", "");
+        stopped_for_removal().insert(9305);
+        let meta = HashMap::from([("disk-back-9305".to_string(), disk(Ownership::Blank))]);
+        let desired = HashMap::from([("disk-back-9305".to_string(), "ON".to_string())]);
+        let disk_to_osd = HashMap::from([("disk-back-9305".to_string(), 9305i64)]);
+
+        reconcile_local_osds(&host, "node1", &meta, &desired, Some(&disk_to_osd), true).await;
+
+        assert!(!is_stopped_for_removal(9305));
+        assert!(host.ran("systemctl start yolab-ceph-osd@9305.service"));
+        assert!(!host.ran("purge-actual"));
+    }
+
     #[test]
     fn a_freshly_created_osd_is_activated_with_a_weight() {
         let steer = decide_steer(
