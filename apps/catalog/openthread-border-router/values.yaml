@@ -1,6 +1,5 @@
 config:
   subdomain: openthread-border-router
-  storage_size: 10Gi
   node: ''
 yolab:
   platformApiUrl: ''

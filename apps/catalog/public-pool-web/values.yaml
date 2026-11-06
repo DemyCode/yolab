@@ -1,6 +1,5 @@
 config:
   subdomain: public-pool-web
-  storage_size: 10Gi
 yolab:
   platformApiUrl: ''
   accountToken: ''

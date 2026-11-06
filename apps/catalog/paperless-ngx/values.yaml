@@ -6,7 +6,6 @@ config:
   office_documents: true
   admin_password: ""
   app_secret: ""
-  storage_size: 50Gi
 
 yolab:
   fileExplorer:

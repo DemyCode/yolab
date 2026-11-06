@@ -3,7 +3,6 @@ config:
   subdomain: nextcloud
   admin_user: "admin"
   admin_password: ""
-  storage_size: 50Gi
 
 yolab:
   fileExplorer:

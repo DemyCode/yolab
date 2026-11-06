@@ -1,6 +1,5 @@
 config:
   subdomain: thinkdashboard
-  storage_size: 10Gi
 yolab:
   platformApiUrl: ''
   accountToken: ''

@@ -1,6 +1,5 @@
 config:
   subdomain: owncloud
-  storage_size: 10Gi
 yolab:
   platformApiUrl: ''
   accountToken: ''

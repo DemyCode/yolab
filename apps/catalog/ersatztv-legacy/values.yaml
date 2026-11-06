@@ -1,6 +1,5 @@
 config:
   subdomain: ersatztv-legacy
-  storage_size: 10Gi
 yolab:
   platformApiUrl: ''
   accountToken: ''

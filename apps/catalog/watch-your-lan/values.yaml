@@ -1,6 +1,5 @@
 config:
   subdomain: watch-your-lan
-  storage_size: 10Gi
   node: ''
 yolab:
   platformApiUrl: ''

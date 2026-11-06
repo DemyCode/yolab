@@ -2,7 +2,6 @@
 config:
   subdomain: grafana
   admin_password: ""
-  storage_size: 10Gi
 
 yolab:
   platformApiUrl: ""

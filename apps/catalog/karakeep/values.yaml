@@ -2,7 +2,6 @@
 config:
   subdomain: karakeep
   app_secret: ""
-  storage_size: 20Gi
 
 yolab:
   platformApiUrl: ""

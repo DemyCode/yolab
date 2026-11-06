@@ -2,7 +2,6 @@
 config:
   subdomain: photoprism
   admin_password: ""
-  storage_size: 200Gi
 
 yolab:
   platformApiUrl: ""

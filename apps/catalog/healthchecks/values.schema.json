@@ -34,11 +34,6 @@
           "description": "At least 8 characters.",
           "writeOnly": true
         },
-        "storage_size": {
-          "type": "string",
-          "title": "Storage size",
-          "default": "2Gi"
-        },
         "file_explorer_enabled": {
           "type": "boolean",
           "title": "File explorer",

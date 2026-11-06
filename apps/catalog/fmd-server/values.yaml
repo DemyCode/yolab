@@ -1,6 +1,5 @@
 config:
   subdomain: fmd
-  storage_size: 5Gi
 yolab:
   platformApiUrl: ''
   accountToken: ''

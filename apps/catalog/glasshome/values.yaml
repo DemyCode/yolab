@@ -1,6 +1,5 @@
 config:
   subdomain: glasshome
-  storage_size: 10Gi
 yolab:
   platformApiUrl: ''
   accountToken: ''

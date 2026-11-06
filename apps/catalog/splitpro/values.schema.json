@@ -39,12 +39,6 @@
           "generate": true,
           "minLength": 32
         },
-        "storage_size": {
-          "type": "string",
-          "title": "Storage size",
-          "default": "5Gi",
-          "description": "How much CephFS storage to allocate (e.g. 20Gi, 100Gi, 500Gi)"
-        },
         "file_explorer_enabled": {
           "type": "boolean",
           "title": "File explorer",

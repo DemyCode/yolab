@@ -1,6 +1,5 @@
 config:
   subdomain: route96
-  storage_size: 10Gi
 yolab:
   platformApiUrl: ''
   accountToken: ''

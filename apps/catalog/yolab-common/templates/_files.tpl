@@ -35,7 +35,7 @@ spec:
   storageClassName: yolab-cephfs
   resources:
     requests:
-      storage: {{ ((.Values.yolab).filesSize) | default "1Ti" | quote }}
+      storage: {{ include "yolab-common.storageSize" . | quote }}
 {{- end }}
 {{- end -}}
 

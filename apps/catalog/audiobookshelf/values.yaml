@@ -1,7 +1,6 @@
 
 config:
   subdomain: audiobookshelf
-  storage_size: 100Gi
 
 yolab:
   platformApiUrl: ""

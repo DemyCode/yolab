@@ -3,7 +3,6 @@ config:
   subdomain: miniflux
   admin_username: admin
   admin_password: ""
-  storage_size: 1Gi
 
 yolab:
   fileExplorer:

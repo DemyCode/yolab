@@ -1,6 +1,5 @@
 config:
   subdomain: chatpad-ai
-  storage_size: 10Gi
 yolab:
   platformApiUrl: ''
   accountToken: ''

@@ -19,7 +19,7 @@ spec:
   storageClassName: yolab-cephfs
   resources:
     requests:
-      storage: {{ .Values.config.storage_size | default "100Gi" | quote }}
+      storage: {{ include "yolab-common.storageSize" $ | quote }}
 {{- $gpu := include "frigate.gpu" . | fromJson }}
 ---
 apiVersion: apps/v1

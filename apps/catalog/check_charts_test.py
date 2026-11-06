@@ -2096,6 +2096,7 @@ class FilesRules(unittest.TestCase):
         spec = {
             "accessModes": ["ReadWriteMany"],
             "storageClassName": check_charts.FILES_CLASS,
+            "resources": {"requests": {"storage": check_charts.VOLUME_SIZE}},
         }
         spec.update(spec_overrides)
         return {
@@ -2153,6 +2154,12 @@ class FilesRules(unittest.TestCase):
     def test_a_files_claim_bound_to_a_given_volume_is_refused(self):
         found = self.files(self.claim(volumeName="default.files"), self.deployment())
         self.assertTrue(any("volumeName" in f for f in found), found)
+
+    def test_a_files_claim_with_its_own_size_is_refused(self):
+        found = self.files(
+            self.claim(resources={"requests": {"storage": "1Ti"}}), self.deployment()
+        )
+        self.assertTrue(any("its size" in f for f in found), found)
 
     def test_a_files_claim_outside_cephfs_is_refused(self):
         found = self.files(self.claim(storageClassName=""), self.deployment())
@@ -2295,9 +2302,6 @@ class OffersFileExplorer(unittest.TestCase):
         )
         self.assertFalse(check_charts.offers_file_explorer({}))
 
-
-if __name__ == "__main__":
-    unittest.main()
 
 
 def api_key_failures(s):
@@ -2958,3 +2962,33 @@ class JellyfinSetup(RenderedChart):
         dirs = next(c for c in spec["initContainers"] if c["name"] == "files-dirs")
         self.assertIn('mkdir -p "/files/movies"', dirs["command"][2])
         self.assertIn('mkdir -p "/files/shows"', dirs["command"][2])
+
+
+class VolumeSizes(unittest.TestCase):
+    def claim(self, size):
+        return {
+            "kind": "PersistentVolumeClaim",
+            "metadata": {"name": "release-data"},
+            "spec": {"resources": {"requests": {"storage": size}}},
+        }
+
+    def test_a_volume_that_can_use_all_the_space_passes(self):
+        found = collected(
+            check_charts.check_volume_sizes,
+            "x",
+            [self.claim(check_charts.VOLUME_SIZE)],
+        )
+        self.assertEqual(found, [])
+
+    def test_a_volume_with_a_size_of_its_own_is_refused(self):
+        found = collected(check_charts.check_volume_sizes, "x", [self.claim("10Gi")])
+        self.assertTrue(any("'10Gi'" in f for f in found), found)
+
+    def test_a_storage_size_question_is_refused(self):
+        s = schema(config={"storage_size": {"type": "string", "title": "Storage size"}})
+        found = collected(check_charts.check_schema, "x", s, "")
+        self.assertTrue(any("storage_size is gone" in f for f in found), found)
+
+
+if __name__ == "__main__":
+    unittest.main()

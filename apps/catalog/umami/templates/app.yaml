@@ -17,7 +17,7 @@ spec:
   storageClassName: yolab-cephfs
   resources:
     requests:
-      storage: {{ .Values.config.storage_size | default "1Gi" | quote }}
+      storage: {{ include "yolab-common.storageSize" $ | quote }}
 ---
 apiVersion: v1
 kind: Secret

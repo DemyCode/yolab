@@ -15,19 +15,6 @@
           "default": true,
           "description": "Reachable from anywhere at https://<subdomain>.<your-number>.yolab.io, through your YoLab tunnel. Visitors need IPv6."
         },
-        "storage_size": {
-          "type": "string",
-          "title": "Storage size",
-          "description": "Size of the persistent volume for synced files",
-          "default": "20Gi",
-          "enum": [
-            "5Gi",
-            "10Gi",
-            "20Gi",
-            "50Gi",
-            "100Gi"
-          ]
-        },
         "file_explorer_enabled": {
           "type": "boolean",
           "title": "File explorer",

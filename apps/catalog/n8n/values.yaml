@@ -1,7 +1,6 @@
 
 config:
   subdomain: n8n
-  storage_size: 10Gi
 
 yolab:
   platformApiUrl: ""

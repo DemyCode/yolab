@@ -19,7 +19,7 @@ spec:
   storageClassName: yolab-cephfs
   resources:
     requests:
-      storage: 50Gi
+      storage: {{ include "yolab-common.storageSize" $ | quote }}
 {{- $onGpu := include "open-webui.onGpu" . }}
 {{- $external := (.Values.config.ollama | default dict).api | default .Values.config.ollama_url | default "" }}
 ---

@@ -63,12 +63,6 @@
           "default": "",
           "description": "The address invitations and confirmations appear to come from. Defaults to your email above."
         },
-        "storage_size": {
-          "type": "string",
-          "title": "Storage size",
-          "default": "30Gi",
-          "description": "Mastodon caches media from every account your users follow, so this fills faster than you would expect."
-        },
         "file_explorer_enabled": {
           "type": "boolean",
           "title": "File explorer",

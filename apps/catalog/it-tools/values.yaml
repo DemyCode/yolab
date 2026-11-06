@@ -1,7 +1,6 @@
 
 config:
   subdomain: it-tools
-  storage_size: 1Gi
 
 yolab:
   platformApiUrl: ""

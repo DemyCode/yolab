@@ -1,6 +1,5 @@
 config:
   subdomain: games
-  storage_size: 200Gi
   auth_enabled: true
   auth_users: []
 machine: {}

@@ -1,7 +1,6 @@
 
 config:
   subdomain: excalidraw
-  storage_size: 1Gi
   auth_enabled: false
   auth_users: []
 

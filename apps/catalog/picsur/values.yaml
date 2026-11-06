@@ -1,6 +1,5 @@
 config:
   subdomain: picsur
-  storage_size: 10Gi
 yolab:
   platformApiUrl: ''
   accountToken: ''

@@ -1,7 +1,6 @@
 
 config:
   subdomain: ghost
-  storage_size: 20Gi
 
 yolab:
   platformApiUrl: ""

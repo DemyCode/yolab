@@ -1,6 +1,5 @@
 config:
   subdomain: onlyoffice-nextcloud
-  storage_size: 10Gi
 yolab:
   platformApiUrl: ''
   accountToken: ''

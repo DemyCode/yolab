@@ -22,7 +22,7 @@ spec:
   storageClassName: yolab-cephfs
   resources:
     requests:
-      storage: 50Gi
+      storage: {{ include "yolab-common.storageSize" $ | quote }}
 ---
 {{ include "yolab-common.files" . }}
 ---

@@ -1,6 +1,5 @@
 config:
   subdomain: toshi-moto
-  storage_size: 10Gi
 yolab:
   platformApiUrl: ''
   accountToken: ''

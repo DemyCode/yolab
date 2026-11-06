@@ -1,6 +1,5 @@
 config:
   subdomain: syncthing
-  storage_size: 20Gi
 yolab:
   platformApiUrl: ''
   accountToken: ''

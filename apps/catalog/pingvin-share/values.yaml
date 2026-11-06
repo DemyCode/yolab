@@ -1,6 +1,5 @@
 config:
   subdomain: pingvin-share
-  storage_size: 10Gi
 yolab:
   platformApiUrl: ''
   accountToken: ''

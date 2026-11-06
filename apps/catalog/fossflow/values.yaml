@@ -1,6 +1,5 @@
 config:
   subdomain: fossflow
-  storage_size: 10Gi
 yolab:
   platformApiUrl: ''
   accountToken: ''

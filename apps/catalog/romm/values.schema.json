@@ -24,12 +24,6 @@
           "minLength": 32,
           "description": "Used to sign session cookies."
         },
-        "storage_size": {
-          "type": "string",
-          "title": "Storage size",
-          "default": "50Gi",
-          "description": "How much CephFS storage to allocate for your ROM library (e.g. 50Gi, 200Gi, 1Ti)"
-        },
         "file_explorer_enabled": {
           "type": "boolean",
           "title": "File explorer",

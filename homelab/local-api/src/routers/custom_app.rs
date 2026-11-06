@@ -213,7 +213,7 @@ spec:
   storageClassName: yolab-cephfs
   resources:
     requests:
-      storage: {{ .Values.config.storage_size | default "5Gi" | quote }}
+      storage: "100Ti"
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -263,7 +263,7 @@ async fn write_chart_at(root: &std::path::Path, app: &CustomApp, yaml: &str) -> 
     tokio::fs::write(dir.join("Chart.yaml"), chart_yaml).await?;
 
     let values = format!(
-        "config:\n  subdomain: {id}\n  storage_size: 5Gi\nyolab:\n  platformApiUrl: \"\"\n  accountToken: \"\"\n  serviceName: \"\"\n  gateway:\n    upstream: {upstream}\n",
+        "config:\n  subdomain: {id}\nyolab:\n  platformApiUrl: \"\"\n  accountToken: \"\"\n  serviceName: \"\"\n  gateway:\n    upstream: {upstream}\n",
         id = app.id,
         upstream = if upstream.is_empty() { "\"\"".to_string() } else { upstream.clone() },
     );
@@ -282,9 +282,6 @@ async fn write_chart_at(root: &std::path::Path, app: &CustomApp, yaml: &str) -> 
                     "subdomain": {
                         "type": "string", "title": "Subdomain",
                         "format": "tunnel", "default": app.id
-                    },
-                    "storage_size": {
-                        "type": "string", "title": "Storage size", "default": "5Gi"
                     }
                 }
             }

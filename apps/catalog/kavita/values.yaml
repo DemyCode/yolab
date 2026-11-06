@@ -1,7 +1,6 @@
 
 config:
   subdomain: kavita
-  storage_size: 100Gi
 
 yolab:
   platformApiUrl: ""

@@ -1,6 +1,5 @@
 config:
   subdomain: kan
-  storage_size: 10Gi
 yolab:
   platformApiUrl: ''
   accountToken: ''

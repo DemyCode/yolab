@@ -1,6 +1,5 @@
 config:
   subdomain: l-town
-  storage_size: 10Gi
 yolab:
   platformApiUrl: ''
   accountToken: ''

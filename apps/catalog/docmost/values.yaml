@@ -2,7 +2,6 @@
 config:
   subdomain: docmost
   app_secret: ""
-  storage_size: 20Gi
 
 yolab:
   fileExplorer:

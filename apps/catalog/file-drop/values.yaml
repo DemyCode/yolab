@@ -1,6 +1,5 @@
 config:
   subdomain: file-drop
-  storage_size: 10Gi
 yolab:
   platformApiUrl: ''
   accountToken: ''

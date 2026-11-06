@@ -1,6 +1,5 @@
 config:
   subdomain: portainer
-  storage_size: 10Gi
   node: ''
 yolab:
   platformApiUrl: ''

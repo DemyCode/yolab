@@ -1,7 +1,6 @@
 
 config:
   subdomain: babybuddy
-  storage_size: 2Gi
 
 yolab:
   platformApiUrl: ""

@@ -2,7 +2,6 @@
 config:
   subdomain: linkwarden
   app_secret: ""
-  storage_size: 20Gi
 
 yolab:
   fileExplorer:

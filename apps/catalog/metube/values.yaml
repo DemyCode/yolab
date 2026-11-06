@@ -1,7 +1,6 @@
 
 config:
   subdomain: metube
-  storage_size: 100Gi
 
 yolab:
   platformApiUrl: ""

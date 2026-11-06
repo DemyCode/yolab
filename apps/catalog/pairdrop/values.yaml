@@ -1,7 +1,6 @@
 
 config:
   subdomain: pairdrop
-  storage_size: 1Gi
 
 yolab:
   platformApiUrl: ""

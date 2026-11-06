@@ -32,11 +32,6 @@
           "description": "From the same page as the Client ID.",
           "writeOnly": true
         },
-        "storage_size": {
-          "type": "string",
-          "title": "Storage size",
-          "default": "5Gi"
-        },
         "file_explorer_enabled": {
           "type": "boolean",
           "title": "File explorer",

@@ -1,6 +1,5 @@
 config:
   subdomain: media
-  storage_size: 1Ti
   timezone: Etc/UTC
   vpn_private_key: ""
   vpn_addresses: ""

@@ -1,6 +1,5 @@
 config:
   subdomain: pi-hole
-  storage_size: 10Gi
   node: ''
 yolab:
   platformApiUrl: ''

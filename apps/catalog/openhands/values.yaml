@@ -1,6 +1,5 @@
 config:
   subdomain: openhands
-  storage_size: 10Gi
   node: ''
 yolab:
   platformApiUrl: ''

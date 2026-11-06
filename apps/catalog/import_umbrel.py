@@ -708,12 +708,6 @@ def build_schema(name, display, has_app_secret, has_admin_password, offer_node=F
             "default": True,
             "description": "Reachable from anywhere at https://<subdomain>.<your-number>.yolab.io, through your YoLab tunnel. Visitors need IPv6.",
         },
-        "storage_size": {
-            "type": "string",
-            "title": "Storage size",
-            "default": "10Gi",
-            "description": "How much CephFS storage to allocate (e.g. 20Gi, 100Gi, 500Gi)",
-        },
     }
     if offer_node:
         config["node"] = {
@@ -1107,7 +1101,7 @@ def build_chart(app_id, um, compose, out_dir, src_dir, seeds=()):
                         protect.append(rel)
 
     values = {
-        "config": {"subdomain": app_id, "storage_size": "10Gi"},
+        "config": {"subdomain": app_id},
         "yolab": {
             "platformApiUrl": "",
             "accountToken": "",
@@ -1146,7 +1140,7 @@ def build_chart(app_id, um, compose, out_dir, src_dir, seeds=()):
         "apiVersion: v1\nkind: PersistentVolumeClaim\n"
         "metadata:\n  name: {{ .Release.Name }}-data\n  namespace: {{ .Release.Namespace }}\n"
         "spec:\n  accessModes:\n    - ReadWriteMany\n  storageClassName: yolab-cephfs\n"
-        '  resources:\n    requests:\n      storage: {{ .Values.config.storage_size | default "10Gi" | quote }}\n'
+        '  resources:\n    requests:\n      storage: {{ include "yolab-common.storageSize" $ | quote }}\n'
     )
     if secret_entries:
         parts.append("---\n")

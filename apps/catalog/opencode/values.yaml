@@ -1,6 +1,5 @@
 config:
   subdomain: opencode
-  storage_size: 10Gi
 yolab:
   platformApiUrl: ''
   accountToken: ''

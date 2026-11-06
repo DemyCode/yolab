@@ -1,7 +1,6 @@
 
 config:
   subdomain: uptime-kuma
-  storage_size: 5Gi
 
 yolab:
   platformApiUrl: ""

@@ -15,12 +15,6 @@
           "default": true,
           "description": "Reachable from anywhere at https://<subdomain>.<your-number>.yolab.io, through your YoLab tunnel. Visitors need IPv6."
         },
-        "storage_size": {
-          "type": "string",
-          "title": "Storage size",
-          "default": "100Gi",
-          "description": "How much CephFS storage to allocate (e.g. 20Gi, 100Gi, 500Gi)"
-        },
         "file_explorer_enabled": {
           "type": "boolean",
           "title": "File explorer",

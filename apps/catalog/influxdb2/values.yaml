@@ -1,6 +1,5 @@
 config:
   subdomain: influxdb2
-  storage_size: 10Gi
 yolab:
   platformApiUrl: ''
   accountToken: ''

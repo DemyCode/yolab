@@ -2,7 +2,6 @@
 config:
   shows_path: shows
   subdomain: sonarr
-  storage_size: 50Gi
 
 yolab:
   files: true

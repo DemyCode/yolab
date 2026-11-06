@@ -5,7 +5,6 @@ config:
   admin_user: "admin"
   app_secret: ""
   admin_password: ""
-  storage_size: 20Gi
 
 yolab:
   fileExplorer:

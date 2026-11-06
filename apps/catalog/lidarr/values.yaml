@@ -1,7 +1,6 @@
 config:
   music_path: music
   subdomain: lidarr
-  storage_size: 10Gi
 yolab:
   files: true
   platformApiUrl: ''

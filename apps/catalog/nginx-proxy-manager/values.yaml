@@ -1,6 +1,5 @@
 config:
   subdomain: nginx-proxy-manager
-  storage_size: 10Gi
 yolab:
   platformApiUrl: ''
   accountToken: ''

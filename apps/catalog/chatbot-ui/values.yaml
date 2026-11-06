@@ -1,6 +1,5 @@
 config:
   subdomain: chatbot-ui
-  storage_size: 10Gi
 yolab:
   platformApiUrl: ''
   accountToken: ''

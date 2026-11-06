@@ -1,6 +1,5 @@
 config:
   subdomain: plex
-  storage_size: 10Gi
   node: ''
 yolab:
   files: true

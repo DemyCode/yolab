@@ -1,6 +1,5 @@
 config:
   subdomain: wallos
-  storage_size: 2Gi
 
 yolab:
   fileExplorer:

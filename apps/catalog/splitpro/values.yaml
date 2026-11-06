@@ -2,7 +2,6 @@ config:
   subdomain: splitpro
   app_secret: ""
   sign_in: oidc
-  storage_size: 5Gi
 yolab:
   fileExplorer:
     protect:

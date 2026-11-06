@@ -1,7 +1,6 @@
 config:
   subdomain: monica
   app_key: ""
-  storage_size: 5Gi
 
 yolab:
   fileExplorer:

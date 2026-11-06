@@ -1,7 +1,6 @@
 
 config:
   subdomain: freshrss
-  storage_size: 5Gi
 
 yolab:
   platformApiUrl: ""

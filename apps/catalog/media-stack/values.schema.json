@@ -20,12 +20,6 @@
           "default": true,
           "description": "Reachable from anywhere at https://<subdomain>.<your-number>.yolab.io, through your YoLab tunnel. Visitors need IPv6."
         },
-        "storage_size": {
-          "type": "string",
-          "title": "Library size",
-          "default": "1Ti",
-          "description": "One shared space for downloads and the finished library, so a finished download becomes a library file instantly instead of being copied (e.g. 500Gi, 1Ti, 4Ti)."
-        },
         "timezone": {
           "type": "string",
           "title": "Time zone",

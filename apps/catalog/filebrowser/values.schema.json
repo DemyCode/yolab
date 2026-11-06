@@ -26,12 +26,6 @@
           "writeOnly": true,
           "generate": true
         },
-        "storage_size": {
-          "type": "string",
-          "title": "Storage size",
-          "default": "50Gi",
-          "description": "How much CephFS storage to allocate (e.g. 20Gi, 100Gi, 500Gi)"
-        },
         "tor_enabled": {
           "type": "boolean",
           "title": "Tor",

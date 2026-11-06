@@ -397,11 +397,35 @@ def check_arch(app, workload, fail, arches):
         )
 
 
+VOLUME_SIZE = "100Ti"
+
+
+def claim_size(claim):
+    spec = claim.get("spec") or {}
+    requests = (spec.get("resources") or {}).get("requests") or {}
+    return requests.get("storage")
+
+
+def check_volume_sizes(app, docs, fail):
+    for d in docs:
+        if d.get("kind") != "PersistentVolumeClaim":
+            continue
+        size = claim_size(d)
+        if size != VOLUME_SIZE:
+            fail(
+                app,
+                f"claim {d['metadata'].get('name')} asks for {size!r}: every "
+                f"volume asks for {VOLUME_SIZE} through yolab-common.storageSize, "
+                f"so a service can use all the space the cluster has",
+            )
+
+
 def check(app, docs, fail, chart_yaml="", schema=None, arches=None):
     kinds = {}
     for d in docs:
         kinds.setdefault(d["kind"], []).append(d)
     check_containers(app, docs, fail)
+    check_volume_sizes(app, docs, fail)
 
     has_caddy = any(
         "Caddyfile" in (c.get("data") or {}) for c in kinds.get("ConfigMap", [])
@@ -1412,6 +1436,12 @@ def check_schema(app, schema, chart_yaml, fail):
         annotations = (yaml.safe_load(chart_yaml) or {}).get("annotations") or {}
     except yaml.YAMLError:
         annotations = {}
+    if "storage_size" in config_fields(schema, lambda _prop: True):
+        fail(
+            app,
+            "config.storage_size is gone: every volume can use all the space the "
+            "cluster has, so there is no size to ask for",
+        )
     check_store_annotations(app, annotations, fail)
     for legacy in LEGACY_ANNOTATIONS:
         if legacy in annotations:
@@ -1575,6 +1605,7 @@ def check_files(app, docs, wanted, fail):
     expected = {
         "its storageClassName": (spec.get("storageClassName"), FILES_CLASS),
         "its accessModes": (spec.get("accessModes"), ["ReadWriteMany"]),
+        "its size": (claim_size(claims[0]), VOLUME_SIZE),
         "its volumeName": (spec.get("volumeName"), None),
     }
     for what, (got, want) in expected.items():

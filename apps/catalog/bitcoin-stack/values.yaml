@@ -1,6 +1,5 @@
 config:
   subdomain: bitcoin
-  storage_size: 2Ti
   implementation: bitcoin
   rpc_user: umbrel
   rpc_password: ""

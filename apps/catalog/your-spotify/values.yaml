@@ -2,7 +2,6 @@ config:
   subdomain: spotify-stats
   spotify_public: ""
   spotify_secret: ""
-  storage_size: 5Gi
 yolab:
   fileExplorer:
     protect:

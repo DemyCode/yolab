@@ -2,7 +2,6 @@
 config:
   subdomain: umami
   app_secret: ""
-  storage_size: 1Gi
 
 yolab:
   fileExplorer:

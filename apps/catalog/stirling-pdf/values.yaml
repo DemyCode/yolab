@@ -1,7 +1,6 @@
 
 config:
   subdomain: stirling-pdf
-  storage_size: 5Gi
 
 yolab:
   platformApiUrl: ""

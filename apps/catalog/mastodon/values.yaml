@@ -8,7 +8,6 @@ config:
   smtp_login: ""
   smtp_password: ""
   smtp_from_address: ""
-  storage_size: 30Gi
 
 yolab:
   fileExplorer:

@@ -2,7 +2,6 @@
 config:
   subdomain: shlink
   api_key: ""
-  storage_size: 5Gi
 
 yolab:
   platformApiUrl: ""

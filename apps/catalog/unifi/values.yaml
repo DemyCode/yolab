@@ -1,6 +1,5 @@
 config:
   subdomain: unifi
-  storage_size: 10Gi
 yolab:
   fileExplorer:
     protect:

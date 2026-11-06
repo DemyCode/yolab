@@ -1,6 +1,5 @@
 config:
   subdomain: shopstr
-  storage_size: 10Gi
 yolab:
   platformApiUrl: ''
   accountToken: ''

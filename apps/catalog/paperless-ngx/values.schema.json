@@ -51,12 +51,6 @@
           "default": true,
           "description": "Word, Excel, PowerPoint, OpenDocument and .eml files are converted and made searchable like PDFs. Runs Apache Tika and Gotenberg next to Paperless."
         },
-        "storage_size": {
-          "type": "string",
-          "title": "Storage size",
-          "default": "50Gi",
-          "description": "How much CephFS storage to allocate (e.g. 20Gi, 100Gi, 500Gi)"
-        },
         "file_explorer_enabled": {
           "type": "boolean",
           "title": "File explorer",

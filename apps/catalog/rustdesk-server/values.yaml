@@ -1,6 +1,5 @@
 config:
   subdomain: rustdesk-server
-  storage_size: 10Gi
   node: ''
 yolab:
   platformApiUrl: ''

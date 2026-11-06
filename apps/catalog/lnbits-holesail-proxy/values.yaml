@@ -1,6 +1,5 @@
 config:
   subdomain: lnbits-holesail-proxy
-  storage_size: 10Gi
 yolab:
   platformApiUrl: ''
   accountToken: ''

@@ -1,6 +1,5 @@
 config:
   subdomain: neko
-  storage_size: 10Gi
 yolab:
   platformApiUrl: ''
   accountToken: ''

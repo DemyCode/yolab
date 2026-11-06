@@ -120,7 +120,7 @@ spec:
   storageClassName: yolab-cephfs
   resources:
     requests:
-      storage: {{ $cfg.storage_size | default "200Gi" | quote }}
+      storage: {{ include "yolab-common.storageSize" $ | quote }}
 ---
 {{ include "yolab-common.files" . }}
 ---

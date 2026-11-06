@@ -2,7 +2,6 @@
 config:
   subdomain: firefly-iii
   app_key: ""
-  storage_size: 10Gi
 
 yolab:
   fileExplorer:

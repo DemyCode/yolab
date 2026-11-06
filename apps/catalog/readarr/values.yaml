@@ -1,6 +1,5 @@
 config:
   subdomain: readarr
-  storage_size: 10Gi
 yolab:
   platformApiUrl: ''
   accountToken: ''

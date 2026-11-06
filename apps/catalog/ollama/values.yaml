@@ -1,6 +1,5 @@
 config:
   subdomain: ollama
-  storage_size: 10Gi
 machine: {}
 images:
   cuda: ollama/ollama:0.35.1@sha256:292ee7945dfc3d5840a181f3ab86fedb1e66703e02c8af98b50f4da56b7e278c

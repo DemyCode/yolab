@@ -1,7 +1,6 @@
 
 config:
   subdomain: calibre-web
-  storage_size: 50Gi
 
 yolab:
   platformApiUrl: ""

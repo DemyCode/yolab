@@ -2,7 +2,6 @@
 config:
   subdomain: vikunja
   app_secret: ""
-  storage_size: 5Gi
 
 yolab:
   fileExplorer:

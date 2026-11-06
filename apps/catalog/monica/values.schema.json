@@ -25,12 +25,6 @@
           "maxLength": 32,
           "description": "Exactly 32 random characters. Monica refuses to start otherwise."
         },
-        "storage_size": {
-          "type": "string",
-          "title": "Storage size",
-          "default": "5Gi",
-          "description": "How much CephFS storage to allocate (e.g. 5Gi, 20Gi)"
-        },
         "file_explorer_enabled": {
           "type": "boolean",
           "title": "File explorer",

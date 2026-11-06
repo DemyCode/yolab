@@ -2,7 +2,6 @@
 config:
   subdomain: bookstack
   app_key: ""
-  storage_size: 20Gi
 
 yolab:
   fileExplorer:

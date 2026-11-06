@@ -3,7 +3,6 @@ config:
   subdomain: healthchecks
   admin_email: admin@example.com
   admin_password: ""
-  storage_size: 2Gi
 
 yolab:
   platformApiUrl: ""

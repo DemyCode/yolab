@@ -20,12 +20,6 @@
           "default": true,
           "description": "Reachable from anywhere at https://<subdomain>.<your-number>.yolab.io, through your YoLab tunnel. Visitors need IPv6."
         },
-        "storage_size": {
-          "type": "string",
-          "title": "Storage for games",
-          "default": "200Gi",
-          "description": "Room for your Steam library and settings (e.g. 200Gi, 500Gi, 1Ti). Games are large."
-        },
         "auth_users": {
           "type": "array",
           "title": "Logins",

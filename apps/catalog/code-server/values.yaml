@@ -2,7 +2,6 @@
 config:
   subdomain: code-server
   password: ""
-  storage_size: 50Gi
 
 yolab:
   platformApiUrl: ""

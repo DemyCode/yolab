@@ -1,6 +1,5 @@
 config:
   subdomain: localai
-  storage_size: 10Gi
 yolab:
   platformApiUrl: ''
   accountToken: ''

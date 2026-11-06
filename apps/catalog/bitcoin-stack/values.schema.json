@@ -15,12 +15,6 @@
           "default": true,
           "description": "Reachable from anywhere at https://<subdomain>.<your-number>.yolab.io, through your YoLab tunnel. Visitors need IPv6."
         },
-        "storage_size": {
-          "type": "string",
-          "title": "Storage size",
-          "default": "2Ti",
-          "description": "Room for the whole blockchain and its indexes. A full mainnet node needs about 700Gi for the chain, more once it is pruned and indexed (e.g. 1Ti, 2Ti, 4Ti)."
-        },
         "implementation": {
           "type": "string",
           "title": "Node software",

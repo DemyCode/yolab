@@ -24,12 +24,6 @@
           "minLength": 32,
           "description": "Protects the OpenClaw web UI. Everything else — your AI provider key, and linking WhatsApp/Telegram/Discord — is set up from inside OpenClaw itself after install."
         },
-        "storage_size": {
-          "type": "string",
-          "title": "Storage size",
-          "default": "5Gi",
-          "description": "How much CephFS storage to allocate (e.g. 5Gi, 20Gi)"
-        },
         "file_explorer_enabled": {
           "type": "boolean",
           "title": "File explorer",
