@@ -8,7 +8,7 @@ apiVersion: yolab.io/v1
 registry: oci://ghcr.io/demycode/charts
 libraries:
   - name: yolab-common
-    version: "0.1.26"
+    version: "0.1.27"
   - name: yolab-stack
     version: "0.1.3"
 charts:
@@ -55,7 +55,7 @@ charts:
   - name: bark-wallet
     version: "0.1.14"
   - name: bazarr
-    version: "0.2.14"
+    version: "0.2.15"
   - name: bentopdf
     version: "0.1.13"
   - name: bffless
@@ -241,7 +241,7 @@ charts:
   - name: hortusfox
     version: "0.1.14"
   - name: immich
-    version: "0.2.27"
+    version: "0.2.28"
   - name: influxdb
     version: "0.1.15"
   - name: influxdb2
@@ -259,7 +259,7 @@ charts:
   - name: jackett
     version: "0.1.14"
   - name: jellyfin
-    version: "0.3.14"
+    version: "0.3.15"
   - name: jellyseerr
     version: "0.2.13"
   - name: jotty
@@ -303,7 +303,7 @@ charts:
   - name: libretranslate
     version: "0.1.15"
   - name: lidarr
-    version: "0.2.14"
+    version: "0.2.15"
   - name: linkstack
     version: "0.1.13"
   - name: linkwarden
@@ -363,7 +363,7 @@ charts:
   - name: mosquitto
     version: "0.1.13"
   - name: movies-tv
-    version: "0.2.14"
+    version: "0.2.15"
   - name: mqttx-web
     version: "0.1.13"
   - name: mstream
@@ -371,13 +371,13 @@ charts:
   - name: music-assistant
     version: "0.1.14"
   - name: music
-    version: "0.2.13"
+    version: "0.2.14"
   - name: myspeed
     version: "0.1.13"
   - name: n8n
     version: "0.1.28"
   - name: navidrome
-    version: "0.2.13"
+    version: "0.2.14"
   - name: neko
     version: "0.1.14"
   - name: netbird
@@ -401,7 +401,7 @@ charts:
   - name: nostrudel
     version: "0.1.14"
   - name: notediscovery
-    version: "0.2.12"
+    version: "0.2.13"
   - name: ntfy
     version: "0.1.28"
   - name: nutstash-wallet
@@ -485,7 +485,7 @@ charts:
   - name: plausible
     version: "0.1.14"
   - name: plex
-    version: "0.1.16"
+    version: "0.1.17"
   - name: pocketbase
     version: "0.1.13"
   - name: portainer
@@ -501,9 +501,9 @@ charts:
   - name: pyload-ng
     version: "0.1.14"
   - name: qbittorrent
-    version: "0.2.13"
-  - name: radarr
     version: "0.2.14"
+  - name: radarr
+    version: "0.2.15"
   - name: reactive-resume
     version: "0.1.30"
   - name: readarr
@@ -563,7 +563,7 @@ charts:
   - name: solidtime
     version: "0.1.14"
   - name: sonarr
-    version: "0.2.14"
+    version: "0.2.15"
   - name: spacebot
     version: "0.1.14"
   - name: speedtest-tracker
@@ -621,7 +621,7 @@ charts:
   - name: toshi-moto
     version: "0.1.14"
   - name: transmission
-    version: "0.1.16"
+    version: "0.1.17"
   - name: transmute
     version: "0.1.14"
   - name: trilium-notes
