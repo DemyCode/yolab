@@ -1,8 +1,4 @@
-use axum::{
-    extract::{Path, State},
-    http::StatusCode,
-    Json,
-};
+use axum::{extract::State, http::StatusCode, Json};
 use serde::{Deserialize, Serialize};
 
 use crate::error::Result;
@@ -21,7 +17,6 @@ pub struct VdiskInfo {
     pub box_type: String,
     pub size_gb: u64,
     pub ready: bool,
-    pub removing: bool,
     pub state: &'static str,
     pub status: String,
 }
@@ -40,7 +35,6 @@ fn info(rec: &VdiskRecord, status: Option<&String>) -> VdiskInfo {
         box_type: rec.box_type.clone(),
         size_gb: rec.size_gb,
         ready: rec.is_provisioned(),
-        removing: rec.removing,
         state: state_of(rec, status.map(String::as_str)),
         status: status.cloned().unwrap_or_default(),
     }
@@ -49,7 +43,6 @@ fn info(rec: &VdiskRecord, status: Option<&String>) -> VdiskInfo {
 pub(crate) fn state_of(rec: &VdiskRecord, status: Option<&str>) -> &'static str {
     use crate::vdisk::{CONNECTED, DRAINING, OFFLINE, PREPARING};
     match status {
-        _ if rec.removing => "removing",
         _ if !rec.is_provisioned() => "provisioning",
         Some(s) if s == OFFLINE => "offline",
         Some(s) if s == CONNECTED => "connected",
@@ -131,7 +124,6 @@ pub async fn add_vdisk(
         } else {
             String::new()
         },
-        removing: false,
         osd_id: None,
     };
     record::save(&s.host, &rec).await.map_err(|e| {
@@ -149,27 +141,6 @@ pub async fn add_vdisk(
         .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e))?;
     crate::runtime::wake(crate::vdisk::NAME);
     Ok(Json(info(&rec, None)))
-}
-
-pub async fn remove_vdisk(
-    State(s): State<AppState>,
-    Path(id): Path<i64>,
-) -> std::result::Result<Json<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
-    let bad = |code: StatusCode, msg: String| (code, Json(serde_json::json!({ "error": msg })));
-    let host = &s.host;
-    let mut rec = record::get(host, id)
-        .await
-        .map_err(|e| bad(StatusCode::SERVICE_UNAVAILABLE, e.to_string()))?
-        .ok_or_else(|| bad(StatusCode::NOT_FOUND, format!("no virtual disk {id}")))?;
-    rec.removing = true;
-    record::save(host, &rec)
-        .await
-        .map_err(|e| bad(StatusCode::SERVICE_UNAVAILABLE, e.to_string()))?;
-    crate::routers::disks::record_switch(&rec.node, &rec.disk_id(), "OFF")
-        .await
-        .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e))?;
-    crate::runtime::wake(crate::vdisk::NAME);
-    Ok(Json(serde_json::json!({ "ok": true })))
 }
 
 #[cfg(test)]
@@ -194,7 +165,6 @@ mod tests {
             host: String::new(),
             username: String::new(),
             password: String::new(),
-            removing: false,
             osd_id: None,
         };
         assert_eq!(state_of(&rec, None), "provisioning");
@@ -208,8 +178,7 @@ mod tests {
             state_of(&rec, Some("Could not connect yet, retrying: x")),
             "error"
         );
-        rec.removing = true;
-        assert_eq!(state_of(&rec, Some(crate::vdisk::OFFLINE)), "removing");
+        assert_eq!(state_of(&rec, Some(crate::vdisk::DRAINING)), "removing");
     }
 
     #[test]
@@ -222,7 +191,6 @@ mod tests {
             host: "u2.your-storagebox.de".into(),
             username: "u2".into(),
             password: "hunter2".into(),
-            removing: false,
             osd_id: None,
         };
         let json = serde_json::to_string(&info(&rec, Some(&"Connected".to_string()))).unwrap();

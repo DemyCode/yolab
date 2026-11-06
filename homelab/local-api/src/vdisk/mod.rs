@@ -224,8 +224,9 @@ async fn step<H: Host>(
     tunnel: &Tunnel,
     mut rec: VdiskRecord,
 ) -> Result<String> {
+    let off = switched_off(host, &rec).await?;
     if !rec.is_provisioned() {
-        if rec.removing {
+        if off {
             finish_removal(host, root, client, tunnel, &rec).await?;
             return Ok(String::new());
         }
@@ -245,7 +246,7 @@ async fn step<H: Host>(
         }
     }
 
-    if rec.removing {
+    if off {
         let known = host.osd_ids().await.context("list the cluster's OSDs")?;
         let tree = host
             .ceph_json(&["osd", "tree"])
@@ -282,7 +283,7 @@ async fn step<H: Host>(
         }
     }
 
-    if !rec.removing {
+    if !off {
         let tree = host
             .ceph_json(&["osd", "tree"])
             .await
@@ -295,7 +296,7 @@ async fn step<H: Host>(
         }
     }
 
-    if rec.removing {
+    if off {
         return Ok(DRAINING.into());
     }
     Ok(CONNECTED.into())
@@ -324,6 +325,36 @@ pub(crate) fn is_empty_bucket(tree: &serde_json::Value, bucket: &str) -> bool {
         .flatten()
         .find(|n| n["name"].as_str() == Some(bucket))
         .is_some_and(|n| n["children"].as_array().is_none_or(Vec::is_empty))
+}
+
+pub(crate) fn switch_setting<'a>(
+    claim: Option<&'a str>,
+    mirror: Option<&'a str>,
+) -> Option<&'a str> {
+    claim.or(mirror)
+}
+
+pub(crate) fn is_switched_off(setting: Option<&str>) -> bool {
+    setting == Some("OFF")
+}
+
+async fn switched_off<H: Host>(host: &H, rec: &VdiskRecord) -> Result<bool> {
+    let key = crate::disks_reconciler::record_key(&rec.node, &rec.disk_id());
+    let mirror = crate::storage::settings::dump(host, crate::storage::settings::DISKS)
+        .await
+        .context("read the disk switches")?;
+    let claim = match crate::store::locked().desired_records() {
+        Ok(claims) => claims.get(&key).cloned(),
+        Err(e) => {
+            tracing::warn!(
+                "virtual disk {}: the desired-state store is unreadable ({e}) — using the cluster settings",
+                rec.id
+            );
+            None
+        }
+    };
+    let setting = switch_setting(claim.as_deref(), mirror.get(&key).map(String::as_str));
+    Ok(is_switched_off(setting))
 }
 
 pub(crate) fn removal_must_wait(holding: &[i64], known: &[i64]) -> bool {
@@ -432,6 +463,21 @@ mod tests {
         assert!(removal_must_wait(&[5], &[1, 5]));
         assert!(!removal_must_wait(&[5], &[1, 2]));
         assert!(!removal_must_wait(&[], &[1, 2]));
+    }
+
+    #[test]
+    fn only_a_switch_set_off_lets_the_box_go() {
+        assert!(is_switched_off(Some("OFF")));
+        assert!(!is_switched_off(Some("ON")));
+        assert!(!is_switched_off(None));
+    }
+
+    #[test]
+    fn the_switch_follows_the_stored_choice_over_the_cluster_mirror() {
+        assert_eq!(switch_setting(Some("ON"), Some("OFF")), Some("ON"));
+        assert_eq!(switch_setting(Some("OFF"), Some("ON")), Some("OFF"));
+        assert_eq!(switch_setting(None, Some("OFF")), Some("OFF"));
+        assert_eq!(switch_setting(None, None), None);
     }
 
     #[test]

@@ -164,7 +164,6 @@ export interface VdiskInfo {
   box_type: string;
   size_gb: number;
   ready: boolean;
-  removing: boolean;
   state:
     | "provisioning"
     | "connecting"

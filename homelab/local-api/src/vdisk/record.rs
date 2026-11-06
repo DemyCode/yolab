@@ -26,8 +26,6 @@ pub struct VdiskRecord {
     #[serde(default)]
     pub password: String,
     #[serde(default)]
-    pub removing: bool,
-    #[serde(default)]
     pub osd_id: Option<i64>,
 }
 
@@ -190,12 +188,20 @@ mod tests {
     }
 
     #[test]
+    fn a_record_saved_with_the_old_removing_flag_still_reads() {
+        let r: VdiskRecord = serde_json::from_str(
+            r#"{"id":4,"node":"node1","box_type":"bx11","size_gb":900,"removing":true}"#,
+        )
+        .unwrap();
+        assert_eq!(r.id, 4);
+    }
+
+    #[test]
     fn a_record_written_before_the_box_was_ready_still_reads() {
         let r: VdiskRecord =
             serde_json::from_str(r#"{"id":4,"node":"node1","box_type":"bx11","size_gb":900}"#)
                 .unwrap();
         assert!(!r.is_provisioned());
-        assert!(!r.removing);
         assert_eq!(r.osd_id, None);
     }
 
@@ -209,7 +215,6 @@ mod tests {
             host: "u1.your-storagebox.de".into(),
             username: "u1".into(),
             password: "p".into(),
-            removing: false,
             osd_id: None,
         };
         assert_eq!(r.share(), "//u1.your-storagebox.de/backup");

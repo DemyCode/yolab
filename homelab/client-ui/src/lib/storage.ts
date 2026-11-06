@@ -308,3 +308,13 @@ export function usageRows(
   }
   return rows.sort((a, b) => b.bytes - a.bytes);
 }
+
+export function switchNeedsConfirm(
+  next: "ON" | "OFF",
+  disk: DiskInfo,
+  state: DiskState,
+  isVirtual: boolean,
+): boolean {
+  if (next === "OFF") return isVirtual || disk.is_our_osd;
+  return state === "foreign";
+}

@@ -9,6 +9,7 @@ import {
   protectionLine,
   rawPercent,
   statusLine,
+  switchNeedsConfirm,
   usageRows,
   vdiskPrice,
   vdiskSizeLabel,
@@ -435,7 +436,6 @@ function vdisk(over: Partial<VdiskInfo> = {}): VdiskInfo {
     box_type: "bx11",
     size_gb: 900,
     ready: true,
-    removing: false,
     state: "connected",
     status: "Connected",
     ...over,
@@ -470,17 +470,17 @@ describe("virtualDiskState", () => {
     ).toBe("active");
   });
 
-  it("a virtual disk being deleted shows its data moving off, then finishing", () => {
+  it("a virtual disk switched off shows its data moving off, then finishing", () => {
     expect(
       virtualDiskState(
         disk({ desired: "OFF", is_our_osd: true, phase: "draining" }),
-        vdisk({ removing: true, state: "removing" }),
+        vdisk({ state: "removing" }),
       ),
     ).toBe("draining");
     expect(
       virtualDiskState(
         disk({ desired: "OFF", connected: false }),
-        vdisk({ removing: true, state: "removing" }),
+        vdisk({ state: "removing" }),
       ),
     ).toBe("removing");
   });
@@ -498,5 +498,32 @@ describe("virtualDiskState", () => {
   it("no price is shown before the platform has sent one", () => {
     expect(vdiskPrice(undefined, "bx11")).toBeNull();
     expect(vdiskPrice([], "bx11")).toBeNull();
+  });
+});
+
+describe("switchNeedsConfirm", () => {
+  it("asks before switching off a virtual disk, which is deleted once empty", () => {
+    expect(
+      switchNeedsConfirm("OFF", disk({ is_our_osd: false }), "pending", true),
+    ).toBe(true);
+  });
+
+  it("asks before switching off a disk that holds data", () => {
+    expect(
+      switchNeedsConfirm("OFF", disk({ is_our_osd: true }), "active", false),
+    ).toBe(true);
+    expect(
+      switchNeedsConfirm("OFF", disk({ is_our_osd: false }), "pending", false),
+    ).toBe(false);
+  });
+
+  it("switching a virtual disk back on to keep it needs no question", () => {
+    expect(
+      switchNeedsConfirm("ON", disk({ is_our_osd: true }), "draining", true),
+    ).toBe(false);
+  });
+
+  it("asks before erasing a disk from another cluster", () => {
+    expect(switchNeedsConfirm("ON", disk(), "foreign", false)).toBe(true);
   });
 });

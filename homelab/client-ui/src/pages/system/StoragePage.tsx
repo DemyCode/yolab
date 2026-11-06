@@ -55,6 +55,7 @@ import {
   protectionLine,
   rawPercent,
   statusLine,
+  switchNeedsConfirm,
   usageRows,
   VDISK_SIZES,
   vdiskPrice,
@@ -381,31 +382,9 @@ function DiskRow({
   const message =
     disk.message || (vdisk?.state === "error" ? vdisk.status : "");
 
-  async function remove() {
-    if (!vdisk) return;
-    if (!confirm) {
-      setConfirm(true);
-      return;
-    }
-    setBusy(true);
-    setErr(null);
-    setConfirm(false);
-    try {
-      await api.del(`/api/vdisks/${vdisk.id}`);
-      onChanged();
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusy(false);
-    }
-  }
-
   async function toggle() {
     const next = isOn ? "OFF" : "ON";
-    const needsConfirm =
-      (next === "OFF" && disk.is_our_osd) ||
-      (next === "ON" && state === "foreign");
-    if (needsConfirm && !confirm) {
+    if (switchNeedsConfirm(next, disk, state, Boolean(vdisk)) && !confirm) {
       setConfirm(true);
       return;
     }
@@ -498,17 +477,7 @@ function DiskRow({
             </span>
           </p>
         </div>
-        {vdisk && !vdisk.removing && !confirm && (
-          <Button
-            size="sm"
-            variant="quiet"
-            loading={busy}
-            onClick={() => void remove()}
-          >
-            Delete
-          </Button>
-        )}
-        {!vdisk && state !== "unidentified" && !confirm && (
+        {state !== "unidentified" && !confirm && (
           <Switch
             checked={isOn}
             onChange={() => void toggle()}
@@ -526,8 +495,8 @@ function DiskRow({
       <Collapse open={confirm}>
         <div className="flex flex-wrap items-center gap-2 pl-8 pt-3">
           <span className="mr-auto text-sm text-fg-muted">
-            {vdisk
-              ? "Your data moves to your other disks first. Then the virtual disk is deleted and its billing stops."
+            {vdisk && isOn
+              ? "Its data moves to your other disks first. Once none is left on it, the virtual disk is deleted and its billing stops. Switch it back on before then to keep it."
               : isOn
                 ? "Its data moves to your other disks first. This can take a while."
                 : "Everything on it will be erased."}
@@ -539,13 +508,9 @@ function DiskRow({
             size="sm"
             variant="danger"
             loading={busy}
-            onClick={() => void (vdisk ? remove() : toggle())}
+            onClick={() => void toggle()}
           >
-            {vdisk
-              ? "Delete virtual disk"
-              : isOn
-                ? "Stop using it"
-                : "Erase and use"}
+            {isOn ? "Stop using it" : "Erase and use"}
           </Button>
         </div>
       </Collapse>
@@ -564,7 +529,7 @@ function placeholderDisk(v: VdiskInfo): DiskInfo {
     is_our_osd: false,
     foreign_ceph: false,
     osd_id: null,
-    desired: v.removing ? "OFF" : "ON",
+    desired: v.state === "removing" ? "OFF" : "ON",
     connected: false,
     has_partitions: false,
     mounted: false,

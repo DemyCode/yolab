@@ -576,7 +576,6 @@ mod tests {
             host: "u7.your-storagebox.de".into(),
             username: "u7".into(),
             password: "secret".into(),
-            removing: false,
             osd_id: None,
         }
     }
