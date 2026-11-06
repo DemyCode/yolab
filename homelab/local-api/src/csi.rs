@@ -7,6 +7,7 @@ pub const DRIVER: &str = "cephfs.csi.ceph.com";
 pub const CLUSTER_ID: &str = "yolab";
 pub const PROVISIONER_SECRET: &str = "csi-cephfs-provisioner";
 pub const NODE_SECRET: &str = "csi-cephfs-node";
+pub const STATIC_SECRET: &str = "yolab-cephfs-static";
 pub const CONFIG_MAP: &str = "ceph-csi-config";
 
 pub async fn restart_local_plugin(client: &Client) -> anyhow::Result<()> {

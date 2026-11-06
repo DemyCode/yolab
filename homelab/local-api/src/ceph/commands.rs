@@ -195,6 +195,7 @@ static SIGS: &[Sig] = &[
     sig(&["auth", "get"], &[req("entity", Str)]),
     sig(&["auth", "get-key"], &[req("entity", Str)]),
     sig(&["auth", "rm"], &[req("entity", Str)]),
+    sig(&["auth", "caps"], &[req("entity", Str), req("caps", List)]),
     sig(
         &["auth", "get-or-create"],
         &[req("entity", Str), opt("caps", List), opt("key_type", Str)],
@@ -539,6 +540,18 @@ mod tests {
                 "entity": "client.yolab-images",
                 "caps": ["mon", "profile rbd", "osd", "profile rbd pool=images"],
                 "key_type": "aes256k"
+            })
+        );
+    }
+
+    #[test]
+    fn new_caps_for_a_key_take_every_remaining_word() {
+        assert_eq!(
+            sent(&["auth", "caps", "client.csi-cephfs-node", "mon", "allow r", "mds", "allow rws"]),
+            json!({
+                "prefix": "auth caps",
+                "entity": "client.csi-cephfs-node",
+                "caps": ["mon", "allow r", "mds", "allow rws"]
             })
         );
     }

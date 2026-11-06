@@ -226,6 +226,7 @@ async fn restore_inner<H: Host>(
     let restore_as_of = Some(snapshot_time(&b.host, &repo, cfg, snapshot_id).await?);
 
     let pvcs = catalog_pvcs(&catalog, namespace);
+    let live = crate::tree::claimed_in(&crate::tree::volumes(&b.kube).await?, namespace);
     let mut backed_up = Vec::new();
     for pvc in &pvcs {
         let wanted = rf::step(
@@ -249,17 +250,27 @@ async fn restore_inner<H: Host>(
                 pvc.name
             ),
             VolumePlan::Refuse(why) => anyhow::bail!("{why}"),
-            VolumePlan::RestoreAsOf(as_of) => backed_up.push((pvc, as_of)),
+            VolumePlan::RestoreAsOf(as_of) => {
+                let into = live
+                    .iter()
+                    .find(|c| crate::tree::same_role(&pvc.name, &c.claim))
+                    .ok_or_else(|| no_longer_has(&pvc.name))?;
+                backed_up.push((pvc, as_of, into.claim.clone()))
+            }
         }
     }
-    for (pvc, as_of) in &backed_up {
-        restore_volume(
+    for (pvc, as_of, into) in &backed_up {
+        restore_into(
             b,
-            namespace,
-            &pvc.name,
-            &pvc.capacity,
             cfg,
-            as_of.as_deref(),
+            &VolumeRestore {
+                namespace,
+                source_namespace: namespace,
+                source_pvc: &pvc.name,
+                dest_pvc: into,
+                as_of: as_of.as_deref(),
+                replace: true,
+            },
         )
         .await?;
     }
@@ -619,9 +630,12 @@ impl BackupPayload {
         b: &Backend<H>,
         dest_namespace: &str,
         release: &str,
+        folders: &[crate::tree::Planned],
     ) -> anyhow::Result<()> {
         let (id, _, _guard) = begin(b, dest_namespace, &self.snapshot_id).await?;
-        let outcome = self.fill_volumes_inner(b, dest_namespace, release).await;
+        let outcome = self
+            .fill_volumes_inner(b, dest_namespace, release, folders)
+            .await;
         let recorded = match &outcome {
             Ok(_) => Ok(!self.volumes.is_empty()),
             Err(e) => Err(anyhow::anyhow!("{e}")),
@@ -635,6 +649,7 @@ impl BackupPayload {
         b: &Backend<H>,
         dest_namespace: &str,
         release: &str,
+        folders: &[crate::tree::Planned],
     ) -> anyhow::Result<()> {
         for (pvc, planned) in &self.volumes {
             let replace = match rf::step(
@@ -648,16 +663,20 @@ impl BackupPayload {
                 rf::Step::Keep | rf::Step::CreateEmpty => continue,
             };
             let as_of = planned.clone().map_err(|why| anyhow::anyhow!("{why}"))?;
+            let into = folders
+                .iter()
+                .find(|f| crate::tree::same_role(&pvc.name, &f.claimed.claim))
+                .ok_or_else(|| no_longer_has(&pvc.name))?;
             fill_volume(
                 b,
                 &self.cfg,
                 release,
-                pvc,
+                into,
                 &VolumeRestore {
                     namespace: dest_namespace,
                     source_namespace: &self.source_namespace,
                     source_pvc: &pvc.name,
-                    dest_pvc: &pvc.name,
+                    dest_pvc: &into.claimed.claim,
                     as_of: as_of.as_deref(),
                     replace,
                 },
@@ -825,65 +844,24 @@ fn objects_to_reapply(objects: &Value) -> Option<Value> {
     Some(json!({ "apiVersion": "v1", "kind": "List", "items": items }))
 }
 
+fn no_longer_has(claim: &str) -> anyhow::Error {
+    anyhow::anyhow!(
+        "the backup holds {claim}, which this service no longer has — leave it out to restore the rest"
+    )
+}
+
 async fn fill_volume<H: Host>(
     b: &Backend<H>,
     cfg: &BackupConfig,
     release: &str,
-    pvc: &CatalogPvc,
+    into: &crate::tree::Planned,
     restore: &VolumeRestore<'_>,
 ) -> anyhow::Result<()> {
-    let (namespace, dest_name) = (restore.namespace, restore.dest_pvc);
-    let manifest = json!({
-        "apiVersion": "v1",
-        "kind": "PersistentVolumeClaim",
-        "metadata": {
-            "name": dest_name,
-            "namespace": namespace,
-            "labels": { "app.kubernetes.io/managed-by": "Helm" },
-            "annotations": {
-                "meta.helm.sh/release-name": release,
-                "meta.helm.sh/release-namespace": namespace,
-            }
-        },
-        "spec": {
-            "accessModes": ["ReadWriteMany"],
-            "storageClassName": "yolab-cephfs",
-            "resources": { "requests": { "storage": pvc.capacity } }
-        }
-    });
-    crate::k8s::apply(&b.kube, &manifest).await?;
-    restore_into(b, cfg, restore).await
-}
-
-async fn restore_volume<H: Host>(
-    b: &Backend<H>,
-    namespace: &str,
-    pvc: &str,
-    capacity: &str,
-    cfg: &BackupConfig,
-    restore_as_of: Option<&str>,
-) -> anyhow::Result<()> {
-    let claim = crate::k8s::reference("v1", "PersistentVolumeClaim", namespace, pvc);
-    if !crate::k8s::exists(&b.kube, &claim).await? {
-        crate::k8s::apply(
-            &b.kube,
-            &destination_pvc(pvc, namespace, capacity, "yolab-cephfs", "ReadWriteMany"),
-        )
-        .await?;
+    for object in [&into.volume, &into.request] {
+        let owned = crate::tree::owned_by_release(object.clone(), release, restore.namespace);
+        crate::k8s::apply(&b.kube, &owned).await?;
     }
-    restore_into(
-        b,
-        cfg,
-        &VolumeRestore {
-            namespace,
-            source_namespace: namespace,
-            source_pvc: pvc,
-            dest_pvc: pvc,
-            as_of: restore_as_of,
-            replace: true,
-        },
-    )
-    .await
+    restore_into(b, cfg, restore).await
 }
 
 pub(crate) async fn restore_plan<H: Host>(

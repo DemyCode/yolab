@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   copiesDataByDefault,
+  filesFolderCopy,
   installBlocker,
   installOrigin,
   installSource,
@@ -95,6 +96,57 @@ describe("snapshotNamespace", () => {
   });
 });
 
+describe("a copy's files folder", () => {
+  it("is filled from the original when the original kept its own", () => {
+    expect(
+      filesFolderCopy({ files_folder: "" }, { files_folder: "" }, "jellyfin")
+        ?.kind,
+    ).toBe("own");
+    expect(
+      filesFolderCopy(
+        { files_folder: "jellyfin.files" },
+        { files_folder: "jellyfin.files" },
+        "jellyfin",
+      )?.kind,
+    ).toBe("own");
+  });
+
+  it("is shared when it still points where the original points", () => {
+    expect(
+      filesFolderCopy(
+        { files_folder: "media" },
+        { files_folder: "/media/" },
+        "jellyfin",
+      ),
+    ).toEqual({ kind: "shared", from: "media", to: "media" });
+  });
+
+  it("asks to be filled when it was pointed somewhere else", () => {
+    expect(
+      filesFolderCopy(
+        { files_folder: "media" },
+        { files_folder: "media2" },
+        "jellyfin",
+      ),
+    ).toEqual({ kind: "moved", from: "media", to: "media2" });
+  });
+
+  it("does not apply to a service without a files folder", () => {
+    expect(filesFolderCopy({ title: "x" }, {}, "notes")).toBeNull();
+    expect(filesFolderCopy(null, {}, "notes")).toBeNull();
+  });
+
+  it("is not mistaken for the original's own by a name that only starts the same", () => {
+    expect(
+      filesFolderCopy(
+        { files_folder: "jellyfin-media" },
+        { files_folder: "other" },
+        "jellyfin",
+      )?.kind,
+    ).toBe("moved");
+  });
+});
+
 describe("installSource", () => {
   it("sends nothing for a plain install", () => {
     expect(installSource(installOrigin(params("")), false, "")).toBeUndefined();
@@ -123,6 +175,21 @@ describe("installSource", () => {
       kind: "duplicate",
       from_instance: "gitea-ab12",
       with_data: true,
+    });
+  });
+
+  it("fills a moved files folder only when asked and only with the data", () => {
+    const origin = installOrigin(params("from=gitea-ab12"));
+    expect(installSource(origin, true, "", undefined, true)).toEqual({
+      kind: "duplicate",
+      from_instance: "gitea-ab12",
+      with_data: true,
+      copy_files: true,
+    });
+    expect(installSource(origin, false, "", undefined, true)).toEqual({
+      kind: "duplicate",
+      from_instance: "gitea-ab12",
+      with_data: false,
     });
   });
 

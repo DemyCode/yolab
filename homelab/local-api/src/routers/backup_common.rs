@@ -545,29 +545,6 @@ pub(crate) async fn hold_daemonsets(
     Ok(())
 }
 
-pub(crate) fn destination_pvc(
-    name: &str,
-    namespace: &str,
-    capacity: &str,
-    storage_class: &str,
-    access_mode: &str,
-) -> serde_json::Value {
-    serde_json::json!({
-        "apiVersion": "v1",
-        "kind": "PersistentVolumeClaim",
-        "metadata": {
-            "name": name,
-            "namespace": namespace,
-            "labels": { "app.kubernetes.io/managed-by": "yolab" }
-        },
-        "spec": {
-            "accessModes": [access_mode],
-            "storageClassName": storage_class,
-            "resources": { "requests": { "storage": capacity } }
-        }
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1459,18 +1436,6 @@ mod tests {
                 "a merge patch null removes only the hold, keeping the vendor selector"
             );
             assert_eq!(released.len(), 1);
-        }
-
-        #[test]
-        fn a_restore_volume_asks_for_the_size_class_and_access_it_needs() {
-            let pvc = destination_pvc("data", "yolab-a", "5Gi", "yolab-cephfs", "ReadWriteMany");
-            assert_eq!(pvc["spec"]["resources"]["requests"]["storage"], "5Gi");
-            assert_eq!(pvc["spec"]["storageClassName"], "yolab-cephfs");
-            assert_eq!(pvc["spec"]["accessModes"], json!(["ReadWriteMany"]));
-            assert_eq!(
-                pvc["metadata"]["labels"]["app.kubernetes.io/managed-by"],
-                "yolab"
-            );
         }
     }
 }

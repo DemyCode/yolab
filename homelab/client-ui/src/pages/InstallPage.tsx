@@ -22,6 +22,7 @@ import validator from "@rjsf/validator-ajv8";
 import { templates, widgets } from "@/components/form/registry";
 import {
   copiesDataByDefault,
+  filesFolderCopy,
   installBlocker,
   installOrigin,
   installSource,
@@ -119,6 +120,7 @@ export function InstallPage() {
   }
   const [sourceDef, setSourceDef] = useState<AppDefinition | null>(null);
   const [copyData, setCopyData] = useState(copiesDataByDefault(origin.mode));
+  const [copyFiles, setCopyFiles] = useState(false);
   const backupNamespace = snapshotNamespace(origin);
   const { points: snapshots } = useRestorePoints(
     backupNamespace && copyData ? backupNamespace : null,
@@ -213,6 +215,14 @@ export function InstallPage() {
   }, [appId, schema, sourceDef, origin.mode]);
 
   const values = formData;
+  const filesCopy =
+    origin.mode === "duplicate"
+      ? filesFolderCopy(
+          sourceDef ? (sourceDef.config as Record<string, unknown>) : null,
+          values,
+          origin.fromInstance,
+        )
+      : null;
 
   const generatedSecrets = useMemo(() => generatedFields(schema), [schema]);
 
@@ -269,6 +279,7 @@ export function InstallPage() {
             origin.mode === "restore" && restorePlan.plan
               ? choicesFor(restorePlan.plan, "reinstall", picked)
               : undefined,
+            filesCopy?.kind === "moved" && copyFiles,
           ),
         },
       );
@@ -620,7 +631,7 @@ export function InstallPage() {
             label="Copy this service’s files too"
             detail={
               copyData
-                ? "Copied straight from the app, as they are now."
+                ? "Copied straight from the service, as they are now."
                 : "It starts empty."
             }
             trailing={
@@ -631,6 +642,29 @@ export function InstallPage() {
               />
             }
           />
+          {copyData && filesCopy?.kind === "shared" && (
+            <Row
+              label="Files folder"
+              detail={`It shares  with the original, so nothing is copied there.`}
+            />
+          )}
+          {copyData && filesCopy?.kind === "moved" && (
+            <Row
+              label={`Copy the contents of  there`}
+              detail={
+                copyFiles
+                  ? ` gets a copy of them.`
+                  : ` starts empty.`
+              }
+              trailing={
+                <Switch
+                  checked={copyFiles}
+                  onChange={setCopyFiles}
+                  label={`Copy the contents of  there`}
+                />
+              }
+            />
+          )}
         </Section>
       )}
 

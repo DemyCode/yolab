@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use anyhow::{Context, Result};
 use kube::Client;
 use serde_json::{json, Value};
@@ -28,7 +30,7 @@ pub const NODE_CAPS: &[&str] = &[
     "osd",
     "allow rw tag cephfs *=*",
     "mds",
-    "allow rw",
+    "allow rws",
 ];
 
 fn mon_v2_addrs(dump: &Value) -> Vec<String> {
@@ -73,6 +75,41 @@ async fn ensure_key<H: Host>(host: &H, entity: &str, caps: &[&str]) -> Result<St
         .to_string())
 }
 
+fn caps_of(found: &Value) -> BTreeMap<String, String> {
+    found
+        .as_array()
+        .and_then(|entries| entries.first())
+        .and_then(|entry| entry["caps"].as_object())
+        .map(|caps| {
+            caps.iter()
+                .filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string())))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn wanted_caps(caps: &[&str]) -> BTreeMap<String, String> {
+    caps.chunks(2)
+        .filter_map(|pair| Some((pair.first()?.to_string(), pair.get(1)?.to_string())))
+        .collect()
+}
+
+async fn ensure_caps<H: Host>(host: &H, entity: &str, caps: &[&str]) -> Result<()> {
+    let found = host
+        .ceph_json(&["auth", "get", entity])
+        .await
+        .with_context(|| format!("read the caps of {entity}"))?;
+    if caps_of(&found) == wanted_caps(caps) {
+        return Ok(());
+    }
+    let mut args = vec!["auth", "caps", entity];
+    args.extend_from_slice(caps);
+    host.ceph(&args)
+        .await
+        .with_context(|| format!("give {entity} its caps"))?;
+    Ok(())
+}
+
 fn user_id(entity: &str) -> &str {
     entity.strip_prefix("client.").unwrap_or(entity)
 }
@@ -114,6 +151,7 @@ pub async fn run<H: Host>(b: &Backend<H>) -> Result<()> {
 
     let provisioner = ensure_key(host, PROVISIONER_ENTITY, PROVISIONER_CAPS).await?;
     let node = ensure_key(host, NODE_ENTITY, NODE_CAPS).await?;
+    ensure_caps(host, NODE_ENTITY, NODE_CAPS).await?;
 
     apply_secret(
         client,
@@ -125,6 +163,12 @@ pub async fn run<H: Host>(b: &Backend<H>) -> Result<()> {
         client,
         NODE_SECRET,
         json!({"adminID": user_id(NODE_ENTITY), "adminKey": node}),
+    )
+    .await?;
+    apply_secret(
+        client,
+        crate::csi::STATIC_SECRET,
+        json!({"userID": user_id(NODE_ENTITY), "userKey": node}),
     )
     .await?;
     crate::k8s::apply(
@@ -203,6 +247,10 @@ mod tests {
     }
 
     fn ceph_ok() -> FakeHost {
+        keys_readable().ok("ceph auth get client.csi-cephfs-node", &node_entity("allow rws"))
+    }
+
+    fn keys_readable() -> FakeHost {
         FakeHost::new()
             .ok("ceph -s", "")
             .ok(
@@ -211,6 +259,20 @@ mod tests {
             )
             .ok("ceph auth get-key client.csi-cephfs-provisioner", "provkey")
             .ok("ceph auth get-key client.csi-cephfs-node", "nodekey")
+    }
+
+    fn node_entity(mds: &str) -> String {
+        json!([{
+            "entity": "client.csi-cephfs-node",
+            "key": "nodekey",
+            "caps": {
+                "mds": mds,
+                "mgr": "allow rw",
+                "mon": "allow r",
+                "osd": "allow rw tag cephfs *=*",
+            },
+        }])
+        .to_string()
     }
 
     async fn cluster_up() -> (wiremock::MockServer, Client) {
@@ -272,7 +334,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn publishes_both_credentials_and_the_csi_config_and_no_static_volume_secret() {
+    async fn publishes_both_credentials_the_static_volume_secret_and_the_csi_config() {
         let (server, kube) = cluster_up().await;
         let b = Backend {
             kube,
@@ -288,15 +350,39 @@ mod tests {
         let node = named(&patches, "csi-cephfs-node");
         assert_eq!(node["stringData"]["adminID"], "csi-cephfs-node");
         assert_eq!(node["stringData"]["adminKey"], "nodekey");
-        assert!(patches
-            .iter()
-            .all(|p| p["metadata"]["name"] != "yolab-cephfs-static"));
+        let tree = named(&patches, "yolab-cephfs-static");
+        assert_eq!(tree["metadata"]["namespace"], "ceph-csi");
+        assert_eq!(tree["stringData"]["userID"], "csi-cephfs-node");
+        assert_eq!(tree["stringData"]["userKey"], "nodekey");
         let config = named(&patches, "ceph-csi-config");
         let parsed: Value =
             serde_json::from_str(config["data"]["config.json"].as_str().unwrap()).unwrap();
         assert_eq!(parsed[0]["monitors"][0], "[fd00:cafe::1]:3300");
         assert!(!b.host.ran("auth get-or-create"));
+        assert!(!b.host.ran("auth caps"));
         assert!(!b.host.ran("client.admin"));
+    }
+
+    #[tokio::test]
+    async fn the_node_key_may_snapshot_a_folder_so_a_copy_reads_one_moment() {
+        let (_server, kube) = cluster_up().await;
+        let host = keys_readable()
+            .ok("ceph auth get client.csi-cephfs-node", &node_entity("allow rw"))
+            .ok("ceph auth caps client.csi-cephfs-node", "");
+        let b = Backend { kube, host };
+        run(&b).await.unwrap();
+        assert!(b.host.ran(
+            "auth caps client.csi-cephfs-node mon allow r mgr allow rw osd allow rw tag cephfs *=* mds allow rws"
+        ));
+    }
+
+    #[tokio::test]
+    async fn unreadable_caps_are_an_error_not_a_rewrite() {
+        let (_server, kube) = cluster_up().await;
+        let host = keys_readable().fail("ceph auth get client.csi-cephfs-node", "RADOS timed out");
+        let b = Backend { kube, host };
+        assert!(run(&b).await.is_err());
+        assert!(!b.host.ran("auth caps"));
     }
 
     #[tokio::test]
@@ -314,7 +400,8 @@ mod tests {
             )
             .ok("ceph auth get-key client.csi-cephfs-provisioner", "fresh")
             .ok("ceph auth get-or-create client.csi-cephfs-provisioner", "")
-            .ok("ceph auth get-key client.csi-cephfs-node", "nodekey");
+            .ok("ceph auth get-key client.csi-cephfs-node", "nodekey")
+            .ok("ceph auth get client.csi-cephfs-node", &node_entity("allow rws"));
         let b = Backend { kube, host };
         run(&b).await.unwrap();
         assert!(b.host.ran(

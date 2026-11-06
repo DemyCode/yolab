@@ -311,6 +311,10 @@ pub struct Usage {
     pub unreadable: u32,
 }
 
+pub(crate) fn unsized_folders(pvs: &[Value]) -> u32 {
+    crate::tree::claimed(pvs).len() as u32
+}
+
 pub(crate) fn tally(sizes: Vec<(String, Option<u64>)>) -> Usage {
     let mut by_ns: BTreeMap<String, u64> = BTreeMap::new();
     let mut unreadable = 0;
@@ -366,7 +370,8 @@ pub async fn usage_handler(State(state): State<AppState>) -> (StatusCode, Json<V
         Ok(Err(e)) => return failed(e),
         Err(_) => return failed("the cluster did not list volumes in time"),
     };
-    let u = usage(&state.host, app_volumes(&pvs)).await;
+    let mut u = usage(&state.host, app_volumes(&pvs)).await;
+    u.unreadable += unsized_folders(&pvs);
     (StatusCode::OK, Json(json!(u)))
 }
 
@@ -601,6 +606,21 @@ mod tests {
                 subvolume: "csi-vol-a".into()
             }]
         );
+    }
+
+    #[test]
+    fn a_folder_of_the_tree_has_no_subvolume_to_size_so_it_is_counted_unreadable() {
+        let tree = json!({"kind": "PersistentVolume", "spec": {
+            "claimRef": {"namespace": "yolab-immich", "name": "immich-data"},
+            "csi": {
+                "driver": "cephfs.csi.ceph.com",
+                "nodeStageSecretRef": {"name": "yolab-cephfs-static", "namespace": "ceph-csi"},
+                "volumeAttributes": {"staticVolume": "true", "rootPath": "/tree/immich"}
+            }
+        }});
+        let pvs = vec![tree, pv("cephfs.csi.ceph.com", "yolab-gitea", "csi-vol-a")];
+        assert!(app_volumes(&pvs).iter().all(|v| v.namespace == "yolab-gitea"));
+        assert_eq!(unsized_folders(&pvs), 1);
     }
 
     #[test]

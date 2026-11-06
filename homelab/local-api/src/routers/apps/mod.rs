@@ -30,6 +30,7 @@ pub(crate) const ANN_CHART_REPO: &str = "yolab.io/chart-repo";
 const ANN_CONFIG: &str = "yolab.io/config";
 const ANN_BACKUP: &str = "yolab.io/backup";
 const ANN_UNINSTALLING: &str = "yolab.io/uninstalling";
+const ANN_DELETE_FOLDERS: &str = "yolab.io/delete-folders";
 const ANN_INSTALL_FAILED: &str = "yolab.io/install-failed";
 const UNINSTALL_LOCK_TTL: std::time::Duration = std::time::Duration::from_secs(600);
 const LOGS_FOLLOW_TAIL: u32 = 100;
@@ -3399,7 +3400,7 @@ mod tests {
         async fn an_app_that_is_already_gone_may_be_uninstalled() {
             let (server, kube) = api_server().await;
             namespace_is(&server, 404, gone()).await;
-            assert!(claim_uninstall_lock(&kube, "yolab-notes").await.unwrap());
+            assert!(claim_uninstall_lock(&kube, "yolab-notes", &[]).await.unwrap());
         }
 
         #[tokio::test]
@@ -3412,7 +3413,7 @@ mod tests {
                 .expect(0)
                 .mount(&server)
                 .await;
-            assert!(!claim_uninstall_lock(&kube, "yolab-notes").await.unwrap());
+            assert!(!claim_uninstall_lock(&kube, "yolab-notes", &[]).await.unwrap());
         }
 
         #[tokio::test]
@@ -3428,7 +3429,7 @@ mod tests {
                 .expect(1)
                 .mount(&server)
                 .await;
-            assert!(claim_uninstall_lock(&kube, "yolab-notes").await.unwrap());
+            assert!(claim_uninstall_lock(&kube, "yolab-notes", &[]).await.unwrap());
         }
 
         #[tokio::test]
@@ -3439,14 +3440,14 @@ mod tests {
                 .respond_with(ResponseTemplate::new(409).set_body_json(status(409, "Conflict")))
                 .mount(&server)
                 .await;
-            assert!(!claim_uninstall_lock(&kube, "yolab-notes").await.unwrap());
+            assert!(!claim_uninstall_lock(&kube, "yolab-notes", &[]).await.unwrap());
         }
 
         #[tokio::test]
         async fn an_unreachable_cluster_blocks_the_uninstall_claim() {
             let (server, kube) = api_server().await;
             namespace_is(&server, 503, status(503, "ServiceUnavailable")).await;
-            assert!(claim_uninstall_lock(&kube, "yolab-notes").await.is_err());
+            assert!(claim_uninstall_lock(&kube, "yolab-notes", &[]).await.is_err());
         }
 
         #[tokio::test]
@@ -3511,6 +3512,176 @@ mod tests {
                 host: FakeHost::new().fail("helm uninstall", "timed out"),
             };
             run_teardown(&b, "notes", "yolab-notes").await.unwrap();
+        }
+
+        fn tree_pv(name: &str, claim_namespace: &str, root_path: &str) -> Value {
+            json!({
+                "metadata": { "name": name },
+                "spec": {
+                    "claimRef": { "namespace": claim_namespace, "name": "data" },
+                    "csi": {
+                        "driver": "cephfs.csi.ceph.com",
+                        "nodeStageSecretRef": { "name": "yolab-cephfs-static", "namespace": "ceph-csi" },
+                        "volumeAttributes": { "staticVolume": "true", "rootPath": root_path },
+                    },
+                },
+            })
+        }
+
+        #[test]
+        fn the_folders_to_delete_are_read_back_from_the_namespace() {
+            let doomed = ns(json!({ ANN_DELETE_FOLDERS: "[\"notes\",\"media\"]" }), "Active");
+            assert_eq!(folders_in(&doomed).unwrap(), vec!["notes", "media"]);
+            assert!(folders_in(&ns(json!({}), "Active")).unwrap().is_empty());
+            let garbled = ns(json!({ ANN_DELETE_FOLDERS: "notes" }), "Active");
+            assert!(folders_in(&garbled).is_err());
+        }
+
+        #[tokio::test]
+        async fn asking_to_delete_the_data_remembers_which_folders_with_the_claim() {
+            let (server, kube) = api_server().await;
+            namespace_is(&server, 200, ns(json!({}), "Active")).await;
+            Mock::given(method("PATCH"))
+                .and(path(NS_PATH))
+                .and(body_partial_json(json!({ "metadata": { "annotations": {
+                    ANN_DELETE_FOLDERS: "[\"notes\",\"media\"]"
+                } } })))
+                .respond_with(ResponseTemplate::new(200).set_body_json(ns(json!({}), "Active")))
+                .expect(1)
+                .mount(&server)
+                .await;
+            let doomed = vec!["notes".to_string(), "media".to_string()];
+            assert!(claim_uninstall_lock(&kube, "yolab-notes", &doomed).await.unwrap());
+        }
+
+        #[tokio::test]
+        async fn keeping_the_data_clears_an_earlier_request_to_delete_it() {
+            let (server, kube) = api_server().await;
+            namespace_is(&server, 200, ns(json!({}), "Active")).await;
+            Mock::given(method("PATCH"))
+                .and(path(NS_PATH))
+                .and(body_partial_json(json!({ "metadata": { "annotations": {
+                    ANN_DELETE_FOLDERS: null
+                } } })))
+                .respond_with(ResponseTemplate::new(200).set_body_json(ns(json!({}), "Active")))
+                .expect(1)
+                .mount(&server)
+                .await;
+            assert!(claim_uninstall_lock(&kube, "yolab-notes", &[]).await.unwrap());
+        }
+
+        async fn tree_ops_succeed(server: &MockServer) {
+            crate::k8s::testing::accept_patches(server).await;
+            Mock::given(method("POST"))
+                .and(path("/apis/batch/v1/namespaces/ceph-csi/jobs"))
+                .respond_with(ResponseTemplate::new(201).set_body_json(json!({
+                    "apiVersion": "batch/v1", "kind": "Job", "metadata": { "name": "j" }
+                })))
+                .mount(server)
+                .await;
+            Mock::given(method("GET"))
+                .and(wiremock::matchers::path_regex("^/apis/batch/v1/namespaces/ceph-csi/jobs/"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "apiVersion": "batch/v1", "kind": "Job", "metadata": { "name": "j" },
+                    "status": { "succeeded": 1 }
+                })))
+                .mount(server)
+                .await;
+        }
+
+        async fn jobs_started(server: &MockServer) -> Vec<Value> {
+            server
+                .received_requests()
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|r| r.method.as_str() == "POST" && r.url.path().ends_with("/jobs"))
+                .filter_map(|r| serde_json::from_slice(&r.body).ok())
+                .collect()
+        }
+
+        #[tokio::test]
+        async fn teardown_deletes_the_remembered_folders_nobody_else_uses() {
+            let (server, kube) = api_server().await;
+            let doomed = json!({ ANN_DELETE_FOLDERS: "[\"notes\",\"media\"]" });
+            namespace_is(&server, 200, ns(doomed, "Active")).await;
+            Mock::given(method("DELETE"))
+                .and(path(NS_PATH))
+                .respond_with(
+                    ResponseTemplate::new(200).set_body_json(ns(json!({}), "Terminating")),
+                )
+                .mount(&server)
+                .await;
+            volumes_are(
+                &server,
+                vec![tree_pv("yolab-radarr.content", "yolab-radarr", "/tree/media/movies")],
+            )
+            .await;
+            no_saved_settings(&server).await;
+            tree_ops_succeed(&server).await;
+            let b = Backend {
+                kube,
+                host: FakeHost::new().ok("helm uninstall", ""),
+            };
+
+            run_teardown(&b, "notes", "yolab-notes").await.unwrap();
+            let jobs = jobs_started(&server).await;
+            assert_eq!(jobs.len(), 1, "{jobs:?}");
+            let command = &jobs[0]["spec"]["template"]["spec"]["containers"][0]["command"];
+            assert!(command[2].as_str().unwrap().contains("rm -rf"), "{command}");
+            assert_eq!(command.as_array().unwrap()[4..], [json!("notes")]);
+        }
+
+        #[tokio::test]
+        async fn teardown_without_a_request_to_delete_leaves_every_folder() {
+            let (server, kube) = api_server().await;
+            namespace_is(&server, 200, ns(json!({}), "Active")).await;
+            Mock::given(method("DELETE"))
+                .and(path(NS_PATH))
+                .respond_with(
+                    ResponseTemplate::new(200).set_body_json(ns(json!({}), "Terminating")),
+                )
+                .mount(&server)
+                .await;
+            volumes_are(&server, vec![]).await;
+            no_saved_settings(&server).await;
+            tree_ops_succeed(&server).await;
+            let b = Backend {
+                kube,
+                host: FakeHost::new().ok("helm uninstall", ""),
+            };
+            run_teardown(&b, "notes", "yolab-notes").await.unwrap();
+            assert!(jobs_started(&server).await.is_empty());
+        }
+
+        #[tokio::test]
+        async fn the_volumes_of_an_uninstalled_service_are_let_go_but_only_its_tree_ones() {
+            let (server, kube) = api_server().await;
+            volumes_are(
+                &server,
+                vec![
+                    tree_pv("yolab-notes.notes-data", "yolab-notes", "/tree/notes"),
+                    tree_pv("yolab-radarr.radarr-data", "yolab-radarr", "/tree/radarr"),
+                    pv("pvc-notes", "yolab-notes"),
+                ],
+            )
+            .await;
+            Mock::given(method("DELETE"))
+                .and(path("/api/v1/persistentvolumes/yolab-notes.notes-data"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "apiVersion": "v1", "kind": "PersistentVolume",
+                    "metadata": { "name": "yolab-notes.notes-data" }
+                })))
+                .expect(1)
+                .mount(&server)
+                .await;
+            Mock::given(method("DELETE"))
+                .and(wiremock::matchers::path_regex("radarr|pvc-notes"))
+                .respond_with(ResponseTemplate::new(200))
+                .expect(0)
+                .mount(&server)
+                .await;
+            release_tree_volumes(&kube, "yolab-notes").await.unwrap();
         }
 
         #[tokio::test]

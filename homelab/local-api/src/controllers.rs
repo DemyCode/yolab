@@ -8,7 +8,6 @@ pub const NAMES: &[&str] = &[
     "outputs",
     "store-sync",
     "backup-lock-sweeper",
-    "copy-sweeper",
     "disks",
     "cephfs",
     "topology",
@@ -61,7 +60,6 @@ pub fn spawn_all(leader: Leadership, state: &crate::AppState) {
     spawn(apps::UninstallWatchdogController, &leader);
     spawn(crate::outputs::OutputsController, &leader);
     spawn(backups::LockSweeperController, &leader);
-    spawn(crate::routers::copy::CopySweeperController, &leader);
 
     spawn(crate::store::sync::StoreSyncController, &leader);
     spawn(crate::disks_reconciler::DisksController, &leader);
@@ -150,7 +148,6 @@ pub async fn run_named(name: &str) -> anyhow::Result<runtime::Tick> {
         "outputs" => runtime::run_once(&crate::outputs::OutputsController).await,
         "store-sync" => runtime::run_once(&crate::store::sync::StoreSyncController).await,
         "backup-lock-sweeper" => runtime::run_once(&backups::LockSweeperController).await,
-        "copy-sweeper" => runtime::run_once(&crate::routers::copy::CopySweeperController).await,
         "disks" => runtime::run_once(&crate::disks_reconciler::DisksController).await,
         "cephfs" => runtime::run_once(&crate::cephfs::CephFsController).await,
         "topology" => runtime::run_once(&crate::topology::TopologyController).await,

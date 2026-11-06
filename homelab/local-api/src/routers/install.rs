@@ -32,6 +32,8 @@ pub struct InstallSource {
     #[serde(default)]
     pub with_data: bool,
     #[serde(default)]
+    pub copy_files: bool,
+    #[serde(default)]
     pub choices: crate::routers::restore_plan::Choices,
 }
 
@@ -63,6 +65,7 @@ pub(crate) enum DataOrigin {
     },
     Live {
         namespace: String,
+        copy_files: bool,
     },
 }
 
@@ -213,6 +216,7 @@ pub(crate) fn resolve_sources(source: Option<&InstallSource>) -> Result<Sources,
             let namespace = format!("yolab-{from}");
             let data = source.with_data.then(|| DataOrigin::Live {
                 namespace: namespace.clone(),
+                copy_files: source.copy_files,
             });
             Ok(Sources {
                 config: ConfigOrigin::LiveApp { namespace },
@@ -434,7 +438,10 @@ struct ChartJob<'a> {
 enum DataFill<'a> {
     None,
     Backup(Box<crate::routers::restore::BackupPayload>),
-    Live { source_namespace: &'a str },
+    Live {
+        source_namespace: &'a str,
+        copy_files: bool,
+    },
 }
 
 async fn apply_chart<H: Host + 'static>(
@@ -454,22 +461,36 @@ async fn apply_chart<H: Host + 'static>(
     )
     .await?;
 
-    match fill {
-        DataFill::Backup(payload) => {
-            log.say("Copying this app's files…");
-            payload.fill_volumes(b, &staged.ns, job.release).await?;
-        }
-        DataFill::Live { source_namespace } => {
-            log.say("Copying this app's files…");
-            crate::routers::copy::copy_live_volumes(
-                &b.kube,
-                source_namespace,
-                &staged.ns,
-                job.release,
-            )
+    let folders = crate::tree::render(
+        &b.host,
+        job.release,
+        &staged.chart_dir.to_string_lossy(),
+        &staged.ns,
+        &staged.values.path().to_string_lossy(),
+    )
+    .await?;
+    crate::tree::refuse_older_volumes(&b.kube, &staged.ns, &folders).await?;
+
+    if let DataFill::Live {
+        source_namespace,
+        copy_files,
+    } = fill
+    {
+        log.say("Copying this service's files…");
+        crate::routers::copy::copy_live_folders(&b.kube, source_namespace, &folders, *copy_files)
             .await?;
-        }
-        DataFill::None => {}
+    }
+    log.say("Making its folders…");
+    crate::tree::run(
+        &b.kube,
+        &crate::tree::Op::Make(folders.iter().map(|p| p.claimed.folder.clone()).collect()),
+    )
+    .await?;
+    if let DataFill::Backup(payload) = fill {
+        log.say("Copying this service's files…");
+        payload
+            .fill_volumes(b, &staged.ns, job.release, &folders)
+            .await?;
     }
 
     log.say(job.verb);
@@ -558,8 +579,12 @@ async fn install_inner<H: Host + 'static>(
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
             DataFill::Backup(Box::new(payload))
         }
-        Some(DataOrigin::Live { namespace }) => DataFill::Live {
+        Some(DataOrigin::Live {
+            namespace,
+            copy_files,
+        }) => DataFill::Live {
             source_namespace: namespace.as_str(),
+            copy_files: *copy_files,
         },
         None => DataFill::None,
     };
@@ -1047,6 +1072,24 @@ mod tests {
             sources.data,
             Some(DataOrigin::Live {
                 namespace: "yolab-gitea-ab12".into(),
+                copy_files: false,
+            })
+        );
+    }
+
+    #[test]
+    fn duplicating_may_ask_for_a_moved_files_folder_to_be_filled_too() {
+        let src = InstallSource {
+            from_instance: Some("gitea-ab12".into()),
+            with_data: true,
+            copy_files: true,
+            ..source("duplicate")
+        };
+        assert_eq!(
+            resolve_sources(Some(&src)).unwrap().data,
+            Some(DataOrigin::Live {
+                namespace: "yolab-gitea-ab12".into(),
+                copy_files: true,
             })
         );
     }

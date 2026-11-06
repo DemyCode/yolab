@@ -11,7 +11,11 @@ pub(crate) fn uninstall_lock_is_fresh(ann: &serde_json::Map<String, Value>) -> b
         .unwrap_or(false)
 }
 
-pub(crate) async fn claim_uninstall_lock(client: &Client, ns: &str) -> anyhow::Result<bool> {
+pub(crate) async fn claim_uninstall_lock(
+    client: &Client,
+    ns: &str,
+    delete: &[String],
+) -> anyhow::Result<bool> {
     let Some(existing) = namespace(client, ns).await? else {
         return Ok(true);
     };
@@ -27,8 +31,14 @@ pub(crate) async fn claim_uninstall_lock(client: &Client, ns: &str) -> anyhow::R
     }
     let mut claim = namespace_ref(ns);
     claim["metadata"]["resourceVersion"] = existing["metadata"]["resourceVersion"].clone();
-    claim["metadata"]["annotations"] =
-        serde_json::json!({ ANN_UNINSTALLING: chrono::Utc::now().to_rfc3339() });
+    let doomed = match delete {
+        [] => Value::Null,
+        folders => Value::String(serde_json::to_string(folders)?),
+    };
+    claim["metadata"]["annotations"] = serde_json::json!({
+        ANN_UNINSTALLING: chrono::Utc::now().to_rfc3339(),
+        ANN_DELETE_FOLDERS: doomed,
+    });
     match crate::k8s::merge_patch(client, &claim).await {
         Ok(()) => Ok(true),
         Err(e) if crate::k8s::refused_with(&e, 409) => Ok(false),
@@ -63,14 +73,26 @@ pub(crate) async fn delete_namespace_with_retry(client: &Client, ns: &str) {
     }
 }
 
+#[derive(Deserialize, Default)]
+pub struct UninstallQuery {
+    #[serde(default)]
+    pub delete_data: bool,
+}
+
 pub async fn uninstall_app(
     State(state): State<AppState>,
     Path(instance_name): Path<String>,
+    axum::extract::Query(query): axum::extract::Query<UninstallQuery>,
 ) -> Result<Json<serde_json::Value>> {
     let ns = format!("yolab-{instance_name}");
     let b = state.backend().await?;
 
-    if !claim_uninstall_lock(&b.kube, &ns).await? {
+    let doomed = if query.delete_data {
+        crate::tree::own_folders(&crate::tree::volumes(&b.kube).await?, &ns)
+    } else {
+        Vec::new()
+    };
+    if !claim_uninstall_lock(&b.kube, &ns, &doomed).await? {
         return Err(anyhow::anyhow!("uninstall for {instance_name} is already in progress").into());
     }
 
@@ -91,10 +113,58 @@ pub async fn uninstall_app(
     Ok(Json(serde_json::json!({"ok": true})))
 }
 
-pub(crate) async fn namespace_is_terminating(client: &Client, ns: &str) -> anyhow::Result<bool> {
-    Ok(namespace(client, ns)
-        .await?
-        .is_some_and(|v| v["status"]["phase"] == "Terminating"))
+pub async fn app_data(
+    State(state): State<AppState>,
+    Path(instance_name): Path<String>,
+) -> Result<Json<crate::tree::DataVerdict>> {
+    let ns = format!("yolab-{instance_name}");
+    let b = state.backend().await?;
+    let volumes = crate::tree::volumes(&b.kube).await?;
+    let own = crate::tree::own_folders(&volumes, &ns);
+    Ok(Json(crate::tree::data_verdict(&own, &volumes, &ns)))
+}
+
+pub(crate) fn folders_in(namespace: &Value) -> anyhow::Result<Vec<String>> {
+    match namespace["metadata"]["annotations"][ANN_DELETE_FOLDERS].as_str() {
+        None => Ok(Vec::new()),
+        Some(raw) => serde_json::from_str(raw)
+            .map_err(|e| anyhow::anyhow!("{ANN_DELETE_FOLDERS} is not a list of folders: {e}")),
+    }
+}
+
+async fn delete_data<H: crate::host::Host>(
+    b: &Backend<H>,
+    instance_name: &str,
+    ns: &str,
+    doomed: &[String],
+) -> anyhow::Result<()> {
+    if doomed.is_empty() {
+        return Ok(());
+    }
+    let volumes = crate::tree::volumes(&b.kube).await?;
+    let verdict = crate::tree::data_verdict(doomed, &volumes, ns);
+    for kept in &verdict.kept {
+        tracing::info!(
+            "uninstall {instance_name}: keeping {} because {} uses it",
+            kept.folder,
+            kept.used_by.join(", ")
+        );
+    }
+    crate::tree::run(&b.kube, &crate::tree::Op::Remove(verdict.delete)).await
+}
+
+pub(crate) async fn release_tree_volumes(client: &Client, ns: &str) -> anyhow::Result<()> {
+    let volumes = crate::tree::volumes(client).await?;
+    let names = volumes
+        .iter()
+        .filter(|v| v["spec"]["claimRef"]["namespace"].as_str() == Some(ns))
+        .filter(|v| crate::tree::folder_of(v).is_some())
+        .filter_map(|v| v["metadata"]["name"].as_str());
+    for name in names {
+        let volume = crate::k8s::cluster_reference("v1", "PersistentVolume", name);
+        crate::k8s::delete_if_present(client, &volume).await?;
+    }
+    Ok(())
 }
 
 pub(crate) const HELM_UNINSTALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
@@ -137,12 +207,19 @@ pub(crate) async fn run_teardown<H: crate::host::Host>(
     instance_name: &str,
     ns: &str,
 ) -> anyhow::Result<()> {
-    if namespace_is_terminating(&b.kube, ns).await? {
+    let found = namespace(&b.kube, ns).await?;
+    let doomed = match &found {
+        Some(v) => folders_in(v)?,
+        None => Vec::new(),
+    };
+    if found.is_some_and(|v| v["status"]["phase"] == "Terminating") {
         tracing::info!(
             "uninstall {instance_name}: namespace is already terminating — waiting for it \
              to finish rather than re-running helm"
         );
+        delete_data(b, instance_name, ns, &doomed).await?;
         delete_namespace_with_retry(&b.kube, ns).await;
+        release_tree_volumes(&b.kube, ns).await?;
         return wait_for_volumes_deleted(&b.kube, ns, VOLUME_DELETE_WAIT, VOLUME_DELETE_POLL).await;
     }
 
@@ -176,7 +253,9 @@ pub(crate) async fn run_teardown<H: crate::host::Host>(
         Ok(_) => {}
     }
 
+    delete_data(b, instance_name, ns, &doomed).await?;
     delete_namespace_with_retry(&b.kube, ns).await;
+    release_tree_volumes(&b.kube, ns).await?;
     wait_for_volumes_deleted(&b.kube, ns, VOLUME_DELETE_WAIT, VOLUME_DELETE_POLL).await
 }
 

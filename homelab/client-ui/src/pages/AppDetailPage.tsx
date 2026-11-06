@@ -12,6 +12,8 @@ import { useRestorePoints } from "@/lib/useRestorePoints";
 import { useNow } from "@/lib/useNow";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog, Sheet } from "@/components/ui/sheet";
+import { RemoveDataChoice } from "@/components/RemoveDataChoice";
+import { removePath } from "@/lib/removeData";
 import {
   Banner,
   ServiceTrouble,
@@ -706,6 +708,7 @@ export function AppDetailPage() {
   const domain = useApi<DomainResponse>("domain", "/api/tunnel/domain");
 
   const [confirmRemove, setConfirmRemove] = useState(false);
+  const [deleteData, setDeleteData] = useState(true);
   const [working, setWorking] = useState<null | "update" | "remove">(null);
   const [notice, setNotice] = useState<Notice | null>(null);
   const [restoreOpen, setRestoreOpen] = useState(false);
@@ -786,7 +789,7 @@ export function AppDetailPage() {
     setWorking("remove");
     setNotice(null);
     try {
-      await api.del(`/api/apps/${app.instance_name}`);
+      await api.del(removePath(app.instance_name, deleteData));
       navigate("/");
     } catch (e) {
       setNotice({
@@ -1157,8 +1160,13 @@ export function AppDetailPage() {
         busy={working === "remove"}
         body={
           <>
-            {name} stops and is removed with all of its data. Backups you
-            already have are kept.
+            {name} stops and is removed. Backups you already have are kept.
+            <RemoveDataChoice
+              instance={app.instance_name}
+              open={confirmRemove}
+              deleteData={deleteData}
+              onChange={setDeleteData}
+            />
           </>
         }
       />

@@ -198,22 +198,13 @@ pub struct SaveCustomReq {
     pub service: String,
 }
 
+const CUSTOM_LIBRARY_VERSION: &str = "0.1.29";
+
 const CHART_TEMPLATE: &str = r#"{{ include "yolab-common.caddyConfigMap" . }}
 ---
 {{ include "yolab-common.uninstallHook" . }}
 ---
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: {{ .Release.Name }}-data
-  namespace: {{ .Release.Namespace }}
-spec:
-  accessModes:
-    - ReadWriteMany
-  storageClassName: yolab-cephfs
-  resources:
-    requests:
-      storage: "100Ti"
+{{ include "yolab-common.homeVolume" . }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -254,7 +245,8 @@ async fn write_chart_at(root: &std::path::Path, app: &CustomApp, yaml: &str) -> 
     };
 
     let chart_yaml = format!(
-        "apiVersion: v2\nname: {id}\ndescription: {desc}\ntype: application\nversion: 0.1.0\n\ndependencies:\n  - name: yolab-common\n    version: \"0.1.1\"\n    repository: \"oci://ghcr.io/demycode/charts\"\n\nannotations:\n  yolab.io/display-name: {display}\n  yolab.io/icon: {icon}\n  yolab.io/category: \"custom\"\n",
+        "apiVersion: v2\nname: {id}\ndescription: {desc}\ntype: application\nversion: 0.1.0\n\ndependencies:\n  - name: yolab-common\n    version: \"{library}\"\n    repository: \"oci://ghcr.io/demycode/charts\"\n\nannotations:\n  yolab.io/display-name: {display}\n  yolab.io/icon: {icon}\n  yolab.io/category: \"custom\"\n",
+        library = CUSTOM_LIBRARY_VERSION,
         id = app.id,
         desc = serde_json::to_string(&app.description).unwrap_or_else(|_| "\"\"".into()),
         display = serde_json::to_string(&app.display_name).unwrap_or_else(|_| "\"\"".into()),
@@ -466,6 +458,12 @@ fn vendored(
         .collect()
 }
 
+fn is_own_tree_folder(v: &Value, release_ns: &str) -> bool {
+    v["kind"].as_str() == Some("PersistentVolume")
+        && v["spec"]["claimRef"]["namespace"].as_str() == Some(release_ns)
+        && crate::tree::folder_of(v).is_some()
+}
+
 fn validate_rendered(rendered: &str, release_ns: &str) -> Result<(), Rejection> {
     for doc in serde_norway::Deserializer::from_str(rendered) {
         let v: Value = match serde::Deserialize::deserialize(doc) {
@@ -480,7 +478,7 @@ fn validate_rendered(rendered: &str, release_ns: &str) -> Result<(), Rejection> 
             continue;
         }
         let kind = v["kind"].as_str().unwrap_or("object");
-        if CLUSTER_SCOPED.contains(&kind) {
+        if CLUSTER_SCOPED.contains(&kind) && !is_own_tree_folder(&v, release_ns) {
             return Err(reject(format!(
                 "this chart creates a {kind}, which applies to the whole cluster rather than to one app"
             )));
@@ -956,6 +954,21 @@ spec:
         }
     }
 
+    #[test]
+    fn a_custom_service_is_built_on_the_library_this_tree_ships() {
+        let chart = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../apps/catalog/yolab-common/Chart.yaml"),
+        )
+        .unwrap();
+        assert!(
+            chart
+                .lines()
+                .any(|l| l.trim() == format!("version: {CUSTOM_LIBRARY_VERSION}")),
+            "custom services pin yolab-common {CUSTOM_LIBRARY_VERSION}, not the one in this tree"
+        );
+    }
+
     #[tokio::test]
     async fn the_generated_chart_renders_and_ships_the_manifest_untouched() {
         let Ok(helm) = which("helm") else { return };
@@ -1023,6 +1036,10 @@ spec:
         assert!(
             rendered.contains("localhost:8080"),
             "upstream missing in:\n{rendered}"
+        );
+        assert!(
+            rendered.contains("rootPath: \"/tree/my-thing\""),
+            "its data is not its folder of the tree in:\n{rendered}"
         );
 
         let _ = tokio::fs::remove_dir_all(&tmp).await;
@@ -1107,6 +1124,40 @@ spec:
 
         let host = "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: x\nspec:\n  template:\n    spec:\n      volumes:\n        - name: v\n          hostPath:\n            path: /\n";
         assert!(validate_rendered(host, "yolab-x").is_err());
+    }
+
+    fn tree_volume(namespace: &str, root_path: &str) -> String {
+        format!(
+            "apiVersion: v1\nkind: PersistentVolume\nmetadata:\n  name: {namespace}.x-data\nspec:\n  claimRef:\n    namespace: {namespace}\n    name: x-data\n  csi:\n    driver: cephfs.csi.ceph.com\n    volumeHandle: {namespace}.x-data\n    nodeStageSecretRef:\n      name: yolab-cephfs-static\n      namespace: ceph-csi\n    volumeAttributes:\n      clusterID: yolab\n      fsName: yolab-fs\n      staticVolume: \"true\"\n      rootPath: {root_path}\n"
+        )
+    }
+
+    #[test]
+    fn a_chart_may_keep_its_data_in_a_folder_of_the_tree() {
+        assert!(validate_rendered(&tree_volume("yolab-x", "/tree/x"), "yolab-x").is_ok());
+        assert!(
+            validate_rendered(&tree_volume("yolab-x", "/tree/radarr/movies"), "yolab-x").is_ok()
+        );
+        assert!(validate_rendered(&tree_volume("yolab-x", "/tree"), "yolab-x").is_ok());
+    }
+
+    #[test]
+    fn a_volume_outside_the_tree_or_for_another_service_is_refused() {
+        for (namespace, root_path) in [
+            ("yolab-x", "/volumes/csi/csi-vol-1"),
+            ("yolab-x", "/"),
+            ("yolab-x", "/tree/../volumes"),
+            ("yolab-other", "/tree/x"),
+        ] {
+            let err =
+                validate_rendered(&tree_volume(namespace, root_path), "yolab-x").unwrap_err();
+            assert!(err.reason.contains("whole cluster"), "{root_path}: {}", err.reason);
+        }
+    }
+
+    #[test]
+    fn a_pasted_manifest_may_not_make_a_folder_of_the_tree() {
+        assert!(validate_manifest(&tree_volume("yolab-x", "/tree/x")).is_err());
     }
 
     #[tokio::test]

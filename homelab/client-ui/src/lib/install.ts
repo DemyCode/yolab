@@ -22,6 +22,7 @@ export interface InstallSourcePayload {
   namespace?: string;
   snapshot_id?: string;
   with_data: boolean;
+  copy_files?: boolean;
   choices?: RestoreChoices;
 }
 
@@ -60,12 +61,14 @@ export function installSource(
   withData: boolean,
   snapshot: string,
   choices?: RestoreChoices,
+  copyFiles = false,
 ): InstallSourcePayload | undefined {
   if (origin.mode === "duplicate") {
     return {
       kind: "duplicate",
       from_instance: origin.fromInstance ?? "",
       with_data: withData,
+      ...(withData && copyFiles ? { copy_files: true } : {}),
     };
   }
   if (origin.mode === "restore") {
@@ -78,6 +81,35 @@ export function installSource(
     };
   }
   return undefined;
+}
+
+export const FILES_FOLDER = "files_folder";
+
+export type FilesFolderCopy = "own" | "shared" | "moved";
+
+function treePath(value: unknown): string {
+  return String(value ?? "").replace(/^\/+|\/+$/g, "");
+}
+
+function isOwnFolder(folder: string, instance: string): boolean {
+  const first = folder.split("/")[0];
+  return first === instance || first.startsWith(`${instance}.`);
+}
+
+export function filesFolderCopy(
+  source: Record<string, unknown> | null,
+  values: Record<string, unknown>,
+  fromInstance: string | null,
+): { kind: FilesFolderCopy; from: string; to: string } | null {
+  if (!source || !fromInstance) return null;
+  if (!(FILES_FOLDER in source) && !(FILES_FOLDER in values)) return null;
+  const from = treePath(source[FILES_FOLDER]);
+  const to = treePath(values[FILES_FOLDER]);
+  if (!from || isOwnFolder(from, fromInstance)) {
+    return { kind: "own", from, to };
+  }
+  if (to === from) return { kind: "shared", from, to };
+  return { kind: "moved", from, to };
 }
 
 export function keepsSourceAddress(mode: InstallMode): boolean {

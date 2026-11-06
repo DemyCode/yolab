@@ -40,6 +40,7 @@ mod system;
 #[cfg(test)]
 mod testkit;
 mod topology;
+mod tree;
 mod vdisk;
 
 use std::sync::Arc;
