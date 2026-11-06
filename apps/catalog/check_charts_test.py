@@ -882,18 +882,25 @@ def env_part_failures(*containers):
     return found
 
 
-
-def caddy_dns_failures(caddyfile, caddy_env=("ACCOUNT_TOKEN", "PLATFORM_API_URL"), tunneled=True):
-    gateway = pod({"name": "caddy", "env": [{"name": n, "value": "x"} for n in caddy_env]})
+def caddy_dns_failures(
+    caddyfile, caddy_env=("ACCOUNT_TOKEN", "PLATFORM_API_URL"), tunneled=True
+):
+    gateway = pod(
+        {"name": "caddy", "env": [{"name": n, "value": "x"} for n in caddy_env]}
+    )
     if tunneled:
-        gateway["spec"]["template"]["spec"]["initContainers"] = [{"name": "wg-register"}]
+        gateway["spec"]["template"]["spec"]["initContainers"] = [
+            {"name": "wg-register"}
+        ]
     config = {
         "kind": "ConfigMap",
         "metadata": {"name": "demo-caddy"},
         "data": {"Caddyfile": caddyfile},
     }
     found = []
-    check_charts.check_caddy_dns("demo", [gateway, config], lambda app, msg: found.append(msg))
+    check_charts.check_caddy_dns(
+        "demo", [gateway, config], lambda app, msg: found.append(msg)
+    )
     return found
 
 
