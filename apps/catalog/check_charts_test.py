@@ -2159,9 +2159,7 @@ class FilesRules(unittest.TestCase):
         self.assertTrue(any("storageClassName" in f for f in found), found)
 
     def test_a_files_claim_one_pod_at_a_time_is_refused(self):
-        found = self.files(
-            self.claim(accessModes=["ReadWriteOnce"]), self.deployment()
-        )
+        found = self.files(self.claim(accessModes=["ReadWriteOnce"]), self.deployment())
         self.assertTrue(any("accessModes" in f for f in found), found)
 
     def test_files_mounted_somewhere_else_is_refused(self):
