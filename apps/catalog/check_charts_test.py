@@ -2119,9 +2119,7 @@ class NoFileExplorerOfItsOwn(unittest.TestCase):
             values_path = chart.parent / "values.yaml"
             self.assertEqual(
                 no_explorer_failures(
-                    json.loads(schema_path.read_text())
-                    if schema_path.exists()
-                    else {},
+                    json.loads(schema_path.read_text()) if schema_path.exists() else {},
                     yaml.safe_load(values_path.read_text())
                     if values_path.exists()
                     else {},
@@ -2520,9 +2518,7 @@ class PackRendered(RenderedChart):
         self.assertEqual({check_charts.tree_path(d) for d in files}, {"media"})
 
     def test_only_the_apps_that_use_files_mount_it_inside_the_pack(self):
-        pods = self.deployments(
-            self.docs()
-        )
+        pods = self.deployments(self.docs())
         mounted = {
             pod
             for pod, spec in pods.items()
@@ -2763,9 +2759,7 @@ class FileBrowserOnAFolder(RenderedChart):
         self.assertNotIn("subPath", mount)
         self.assertEqual([s["path"] for s in sources], ["/files"])
         files = [d for d in docs if check_charts.is_files_doc(d)]
-        self.assertEqual(
-            {check_charts.tree_path(d) for d in files}, {"release.files"}
-        )
+        self.assertEqual({check_charts.tree_path(d) for d in files}, {"release.files"})
         self.assertEqual(claim, check_charts.files_claim("release.files"))
 
     def test_pointed_at_another_service_s_folder_it_browses_that_folder(self):
@@ -2795,7 +2789,10 @@ class FileBrowserOnAFolder(RenderedChart):
     def test_it_never_re_owns_everything_in_the_folder_it_is_pointed_at(self):
         spec = self.deployments(
             self.docs(
-                {"config.files_folder_existing": "true", "config.files_folder": "immich"}
+                {
+                    "config.files_folder_existing": "true",
+                    "config.files_folder": "immich",
+                }
             )
         )["filebrowser"]
         for c in spec.get("initContainers") or []:

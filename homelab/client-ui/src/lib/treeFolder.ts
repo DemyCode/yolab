@@ -56,9 +56,7 @@ export function rankFolders(
     .filter(([, s]) => s >= 0)
     .sort(
       (a, b) =>
-        a[1] - b[1] ||
-        a[0].length - b[0].length ||
-        a[0].localeCompare(b[0]),
+        a[1] - b[1] || a[0].length - b[0].length || a[0].localeCompare(b[0]),
     )
     .slice(0, limit)
     .map(([f]) => f);

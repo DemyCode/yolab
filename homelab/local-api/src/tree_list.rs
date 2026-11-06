@@ -191,7 +191,9 @@ impl Session {
         let mut dir: Dir = ptr::null_mut();
         let ret = unsafe { (self.lib.opendir)(self.handle, c.as_ptr(), &mut dir) };
         if ret == -ENOENT || ret == -ENOTDIR {
-            return Err(ListError::Missing(format!("{path:?} is not a folder in the tree")));
+            return Err(ListError::Missing(format!(
+                "{path:?} is not a folder in the tree"
+            )));
         }
         if ret < 0 {
             return Err(failed("open the folder", ret));
@@ -294,9 +296,11 @@ pub(crate) struct FoldersQuery {
 pub(crate) fn answer(path: &str, result: Result<Listing, ListError>) -> Response {
     match result {
         Ok(listing) => Json(listing).into_response(),
-        Err(ListError::Missing(m)) => {
-            (StatusCode::NOT_FOUND, Json(serde_json::json!({ "error": m }))).into_response()
-        }
+        Err(ListError::Missing(m)) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": m })),
+        )
+            .into_response(),
         Err(ListError::Unavailable(m)) => {
             tracing::warn!("tree folders {path:?}: {m}");
             (
@@ -360,7 +364,9 @@ mod tests {
 
     #[test]
     fn a_huge_folder_is_cut_and_says_so() {
-        let many = (0..LIMIT + 5).map(|i| entry(&format!("d{i:05}"), DT_DIR)).collect();
+        let many = (0..LIMIT + 5)
+            .map(|i| entry(&format!("d{i:05}"), DT_DIR))
+            .collect();
         let l = listing("", many);
         assert_eq!(l.folders.len(), LIMIT);
         assert!(l.truncated);
@@ -383,7 +389,10 @@ mod tests {
             answer("x", Err(ListError::Unavailable("slow".into()))).status(),
             StatusCode::SERVICE_UNAVAILABLE
         );
-        assert_eq!(answer("x", Ok(listing("x", vec![]))).status(), StatusCode::OK);
+        assert_eq!(
+            answer("x", Ok(listing("x", vec![]))).status(),
+            StatusCode::OK
+        );
     }
 
     #[tokio::test]

@@ -335,7 +335,10 @@ describe("installBlocker", () => {
 
   it("will not install onto a folder that is not in the tree", () => {
     expect(
-      installBlocker({ ...ok, folderProblem: "There is no folder x in your file tree." }),
+      installBlocker({
+        ...ok,
+        folderProblem: "There is no folder x in your file tree.",
+      }),
     ).toBe("There is no folder x in your file tree.");
   });
 

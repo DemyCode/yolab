@@ -38,7 +38,8 @@ const FOLDER_SCHEMA: ConfigSchema = {
 function tree(folders: Record<string, string[]>) {
   return async (parent: string): Promise<FolderListing> => {
     const found = folders[parent];
-    if (!found) throw new ApiError(404, `"${parent}" is not a folder in the tree`);
+    if (!found)
+      throw new ApiError(404, `"${parent}" is not a folder in the tree`);
     return { path: parent, folders: found, truncated: false };
   };
 }
@@ -124,13 +125,19 @@ describe("checking the chosen folder", () => {
 
   it("lets an existing folder through", async () => {
     expect(
-      await folderProblem([{ title: "Folder", value: "immich-83uz/uploads" }], list),
+      await folderProblem(
+        [{ title: "Folder", value: "immich-83uz/uploads" }],
+        list,
+      ),
     ).toBeNull();
   });
 
   it("refuses a folder that is not there", async () => {
     expect(
-      await folderProblem([{ title: "Folder", value: "immich-83uz/photos" }], list),
+      await folderProblem(
+        [{ title: "Folder", value: "immich-83uz/photos" }],
+        list,
+      ),
     ).toMatch(/no folder immich-83uz\/photos/);
     expect(
       await folderProblem([{ title: "Folder", value: "gone/uploads" }], list),

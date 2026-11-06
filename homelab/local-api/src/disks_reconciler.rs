@@ -1347,7 +1347,8 @@ fn cluster_settled(status: &Value) -> bool {
             states
                 .iter()
                 .filter(|s| {
-                    let parts: Vec<&str> = s["state_name"].as_str().unwrap_or("").split('+').collect();
+                    let parts: Vec<&str> =
+                        s["state_name"].as_str().unwrap_or("").split('+').collect();
                     parts.contains(&"active") && parts.contains(&"clean")
                 })
                 .filter_map(|s| s["count"].as_u64())
@@ -2430,7 +2431,11 @@ mod tests {
         assert!(!is_stopped_for_removal(9307));
         let progress = progress_of("disk-wait-9307");
         assert_eq!(progress.phase, Phase::Draining);
-        assert!(progress.message.contains("Waiting for the other disks"), "{}", progress.message);
+        assert!(
+            progress.message.contains("Waiting for the other disks"),
+            "{}",
+            progress.message
+        );
     }
 
     #[tokio::test]
@@ -4221,7 +4226,10 @@ mod tests {
             ("active+remapped+backfill_wait", 39),
             ("active+remapped+backfilling", 4),
         ])));
-        assert!(!cluster_settled(&status_with(&[("active+clean", 10), ("peering", 1)])));
+        assert!(!cluster_settled(&status_with(&[
+            ("active+clean", 10),
+            ("peering", 1)
+        ])));
     }
 
     #[test]

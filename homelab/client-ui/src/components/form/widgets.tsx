@@ -201,7 +201,8 @@ export function TreeFolderWidget(props: WidgetProps) {
   const known = listing?.parent === parent ? listing : null;
   const suggestions = known ? rankFolders(known.folders, name) : [];
   const exists = known !== null && folderIn(known.folders, name);
-  const shown = open && suggestions.length > 0 && !(exists && suggestions.length === 1);
+  const shown =
+    open && suggestions.length > 0 && !(exists && suggestions.length === 1);
 
   const pick = (folder: string) => {
     onChange(joinFolder(parent, folder));
@@ -248,7 +249,8 @@ export function TreeFolderWidget(props: WidgetProps) {
   } else {
     status = (
       <span className="text-danger">
-        No folder named {name || "…"} {parent ? `in ${parent}` : "at the top of your file tree"}.
+        No folder named {name || "…"}{" "}
+        {parent ? `in ${parent}` : "at the top of your file tree"}.
       </span>
     );
   }
