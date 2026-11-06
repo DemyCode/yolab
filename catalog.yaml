@@ -363,7 +363,7 @@ charts:
   - name: mosquitto
     version: "0.1.13"
   - name: movies-tv
-    version: "0.2.13"
+    version: "0.2.14"
   - name: mqttx-web
     version: "0.1.13"
   - name: mstream
@@ -371,7 +371,7 @@ charts:
   - name: music-assistant
     version: "0.1.14"
   - name: music
-    version: "0.2.12"
+    version: "0.2.13"
   - name: myspeed
     version: "0.1.13"
   - name: n8n
