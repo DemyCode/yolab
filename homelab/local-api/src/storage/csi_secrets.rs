@@ -6,7 +6,7 @@ use crate::csi::{CLUSTER_ID, CONFIG_MAP, NODE_SECRET, NS, PROVISIONER_SECRET};
 use crate::host::Host;
 use crate::routers::backup_common::Backend;
 
-const KERNEL_MOUNT_OPTIONS: &str = "ms_mode=secure";
+const KERNEL_MOUNT_OPTIONS: &str = "ms_mode=secure,noquotadf";
 
 pub const PROVISIONER_ENTITY: &str = "client.csi-cephfs-provisioner";
 pub const NODE_ENTITY: &str = "client.csi-cephfs-node";
@@ -188,7 +188,18 @@ mod tests {
             serde_json::from_str(&csi_cluster_config_json(&["[fd00::1]:3300".into()])).unwrap();
         assert_eq!(cfg[0]["clusterID"], "yolab");
         assert_eq!(cfg[0]["monitors"][0], "[fd00::1]:3300");
-        assert_eq!(cfg[0]["cephFS"]["kernelMountOptions"], "ms_mode=secure");
+        assert_eq!(
+            cfg[0]["cephFS"]["kernelMountOptions"],
+            "ms_mode=secure,noquotadf"
+        );
+    }
+
+    #[test]
+    fn a_service_sees_the_storage_left_in_the_cluster_not_its_volumes_quota() {
+        let cfg: Value =
+            serde_json::from_str(&csi_cluster_config_json(&["[fd00::1]:3300".into()])).unwrap();
+        let options = cfg[0]["cephFS"]["kernelMountOptions"].as_str().unwrap();
+        assert!(options.split(',').any(|o| o == "noquotadf"), "{options}");
     }
 
     fn ceph_ok() -> FakeHost {
