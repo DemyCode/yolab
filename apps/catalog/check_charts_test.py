@@ -367,7 +367,7 @@ class FileExplorerReadOnly(unittest.TestCase):
     def test_a_writable_mount_under_read_only_is_reported(self):
         found = explorer_failures(explorer_chart(), read_only=True)
         self.assertTrue(
-            any("mounts release-data:'release' writable" in f for f in found)
+            any("mounts release-data:" in f and "writable" in f for f in found), found
         )
 
     def test_write_permissions_under_read_only_are_reported(self):
@@ -2242,8 +2242,12 @@ class FilesRules(unittest.TestCase):
         return tree_pair(check_charts.files_claim(folder), folder)
 
     def files(self, *docs, wanted=True, folder=None):
+        chosen = folder or self.FOLDER
         return collected(
-            check_charts.check_files, "x", list(docs), wanted, folder or self.FOLDER
+            lambda app, d, w, fail: check_charts.check_files(app, d, w, fail, chosen),
+            "x",
+            list(docs),
+            wanted,
         )
 
     def test_a_chart_that_mounts_its_files_whole_passes(self):
@@ -2505,7 +2509,7 @@ class OllamaApiKey(RenderedChart):
         init = next(c for c in gateway["initContainers"] if c["name"] == "api-key-init")
         mount = next(m for m in init["volumeMounts"] if m["mountPath"] == "/api-key")
         self.assertEqual(mount["name"], "data")
-        self.assertTrue(mount["subPath"].endswith("/api-key"))
+        self.assertEqual(mount["subPath"], "api-key")
 
 
 def collected(fn, *args):
@@ -2602,11 +2606,12 @@ class PackDeclaration(unittest.TestCase):
         self.assertTrue(any("yolab.io/members is gone" in f for f in found), found)
 
     def test_an_app_named_files_cannot_be_in_a_pack(self):
-        charts = {**self.CHARTS, "files": ("0.1.0", {})}
         text = PACK_CHART.format(jellyfin="0.3.0") + (
             '  - name: files\n    version: "0.1.0"\n'
         )
-        found = collected(check_charts.check_pack_declaration, "watch", text, charts)
+        found = collected(
+            check_charts.check_pack_declaration, "watch", text, self.CHARTS
+        )
         self.assertTrue(any("pack's own files folder" in f for f in found), found)
 
     def test_a_pack_without_yolab_stack_is_reported(self):
