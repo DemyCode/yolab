@@ -2509,7 +2509,7 @@ class PackMembers(unittest.TestCase):
             ("release-sonarr-data", "sonarr"),
             ("release-qbittorrent-uninstall", "qbittorrent"),
             ("release-keys", None),
-            (("content", None),
+            ("content", None),
         ]:
             self.assertEqual(check_charts.member_of(name, self.MEMBERS), owner, name)
 
