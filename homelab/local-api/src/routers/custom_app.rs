@@ -954,21 +954,6 @@ spec:
         }
     }
 
-    #[test]
-    fn a_custom_service_is_built_on_the_library_this_tree_ships() {
-        let chart = std::fs::read_to_string(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../apps/catalog/yolab-common/Chart.yaml"),
-        )
-        .unwrap();
-        assert!(
-            chart
-                .lines()
-                .any(|l| l.trim() == format!("version: {CUSTOM_LIBRARY_VERSION}")),
-            "custom services pin yolab-common {CUSTOM_LIBRARY_VERSION}, not the one in this tree"
-        );
-    }
-
     #[tokio::test]
     async fn the_generated_chart_renders_and_ships_the_manifest_untouched() {
         let Ok(helm) = which("helm") else { return };

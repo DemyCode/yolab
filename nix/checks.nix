@@ -414,6 +414,24 @@ in let
         touch $out
       '';
 
+    custom-services-use-the-library-this-tree-ships =
+      pkgs.runCommand "custom-services-use-the-library-this-tree-ships"
+      {
+        nativeBuildInputs = [pkgs.gnused];
+      }
+      ''
+        pinned=$(sed -n 's/^const CUSTOM_LIBRARY_VERSION: &str = "\(.*\)";$/\1/p' \
+          ${treeSrc}/homelab/local-api/src/routers/custom_app.rs)
+        shipped=$(sed -n 's/^version: *"\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' \
+          ${treeSrc}/apps/catalog/yolab-common/Chart.yaml)
+        if [ -z "$pinned" ] || [ "$pinned" != "$shipped" ]; then
+          echo "custom services pin yolab-common '$pinned', but apps/catalog ships '$shipped':" >&2
+          echo "set CUSTOM_LIBRARY_VERSION in homelab/local-api/src/routers/custom_app.rs" >&2
+          exit 1
+        fi
+        touch $out
+      '';
+
     host-seam-ratchet = let
       budget = {
         "boot/mod.rs" = 2;
