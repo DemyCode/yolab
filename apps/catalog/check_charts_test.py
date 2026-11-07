@@ -894,18 +894,11 @@ class ImmichFiles(RenderedChart):
         self.assertEqual(library["subPath"], "uploads")
         self.assertNotIn("UPLOAD_LOCATION", self.env(server, "immich-server"))
 
-    def test_its_files_claim_is_mounted_whole_so_a_library_there_can_be_added(self):
-        server = self.deployments(self.docs())["immich-server"]
-        files = next(v for v in server["volumes"] if v["name"] == "files")
-        self.assertEqual(
-            files["persistentVolumeClaim"]["claimName"],
-            check_charts.files_claim(check_charts.FILES_FOLDER),
-        )
-        mount = next(
-            m for m in server["containers"][0]["volumeMounts"] if m["name"] == "files"
-        )
-        self.assertEqual(mount["mountPath"], "/files")
-        self.assertNotIn("subPath", mount)
+    def test_it_gets_no_second_folder_it_would_never_look_in(self):
+        docs = self.docs()
+        self.assertEqual([d for d in docs if check_charts.is_files_doc(d)], [])
+        for _, spec in check_charts.pod_specs(docs):
+            self.assertNotIn("files", [v["name"] for v in spec.get("volumes") or []])
 
 
 class FrigateAcceleration(RenderedChart):

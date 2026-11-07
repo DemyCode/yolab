@@ -9,12 +9,6 @@
       "title": "Immich",
       "type": "object",
       "properties": {
-        "files_folder_existing": {
-          "type": "boolean",
-          "title": "Use an existing folder",
-          "default": false,
-          "description": "Off: the service gets a new folder of its own, named after it. On: pick a folder already in your file tree; every service set to the same folder sees the same files."
-        },
         "yolab_enabled": {
           "type": "boolean",
           "title": "YoLab address",
@@ -41,35 +35,6 @@
         }
       },
       "dependencies": {
-        "files_folder_existing": {
-          "oneOf": [
-            {
-              "properties": {
-                "files_folder_existing": {
-                  "const": false
-                }
-              }
-            },
-            {
-              "properties": {
-                "files_folder_existing": {
-                  "const": true
-                },
-                "files_folder": {
-                  "type": "string",
-                  "title": "Files folder",
-                  "format": "tree-folder",
-                  "minLength": 1,
-                  "pattern": "^/$|^$|^/?[A-Za-z0-9_ -][A-Za-z0-9._ -]*(/[A-Za-z0-9_ -][A-Za-z0-9._ -]*)*/?$",
-                  "description": "Open a folder to see the folders inside it, then pick one. / is the whole file tree, every service's data included."
-                }
-              },
-              "required": [
-                "files_folder"
-              ]
-            }
-          ]
-        },
         "yolab_enabled": {
           "oneOf": [
             {

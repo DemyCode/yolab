@@ -3,7 +3,6 @@ config:
   hardware_acceleration: true
 gpu: {}
 yolab:
-  files: true
   platformApiUrl: ''
   accountToken: ''
   serviceName: ''
