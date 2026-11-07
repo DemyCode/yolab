@@ -209,8 +209,13 @@ async fn delete_data<H: crate::host::Host>(
     if doomed.is_empty() {
         return Ok(());
     }
+    let own: Vec<String> = doomed
+        .iter()
+        .filter(|f| crate::tree::is_own(f, instance_name))
+        .cloned()
+        .collect();
     let volumes = crate::tree::volumes(&b.kube).await?;
-    let verdict = crate::tree::data_verdict(doomed, &volumes, ns);
+    let verdict = crate::tree::data_verdict(&own, &volumes, ns);
     for kept in &verdict.kept {
         tracing::info!(
             "uninstall {instance_name}: keeping {} because {} uses it",

@@ -169,8 +169,7 @@ fn connect(lib: &'static Lib) -> Result<Session, ListError> {
     if ret < 0 {
         return Err(failed("select the file system", ret));
     }
-    let root = CString::new(ROOT).expect("the tree root holds no NUL");
-    let ret = unsafe { (lib.mount)(handle, root.as_ptr()) };
+    let ret = unsafe { (lib.mount)(handle, c"/".as_ptr()) };
     if ret < 0 {
         return Err(failed("mount the file tree", ret));
     }
@@ -185,8 +184,7 @@ fn name_of(de: &Dirent) -> String {
 
 impl Session {
     fn entries(&self, path: &str) -> Result<Vec<(String, u8)>, ListError> {
-        let relative = if path.is_empty() { "/" } else { path };
-        let c = CString::new(relative)
+        let c = CString::new(in_tree(path))
             .map_err(|_| ListError::Missing(format!("{path:?} is not a folder name")))?;
         let mut dir: Dir = ptr::null_mut();
         let ret = unsafe { (self.lib.opendir)(self.handle, c.as_ptr(), &mut dir) };
@@ -218,6 +216,24 @@ impl Session {
         };
         unsafe { (self.lib.closedir)(self.handle, dir) };
         outcome.map(|()| found)
+    }
+}
+
+pub(crate) fn in_tree(path: &str) -> String {
+    if path.is_empty() {
+        ROOT.to_string()
+    } else {
+        format!("{ROOT}/{path}")
+    }
+}
+
+pub(crate) fn before_any_folder(
+    path: &str,
+    found: Result<Vec<(String, u8)>, ListError>,
+) -> Result<Vec<(String, u8)>, ListError> {
+    match found {
+        Err(ListError::Missing(_)) if path.is_empty() => Ok(Vec::new()),
+        other => other,
     }
 }
 
@@ -265,7 +281,7 @@ fn list_blocking(path: &str) -> Result<Vec<(String, u8)>, ListError> {
         *held = Some(connect(lib)?);
     }
     let session = held.as_ref().expect("a session was just set");
-    let result = session.entries(path);
+    let result = before_any_folder(path, session.entries(path));
     if matches!(result, Err(ListError::Unavailable(_))) {
         *held = None;
     }
@@ -401,6 +417,28 @@ mod tests {
             let r = tree_folders(Query(FoldersQuery { path: path.into() })).await;
             assert_eq!(r.status(), StatusCode::BAD_REQUEST, "{path}");
         }
+    }
+
+    #[test]
+    fn folders_are_looked_up_under_the_tree_root() {
+        assert_eq!(in_tree(""), "/tree");
+        assert_eq!(in_tree("immich-83uz/uploads"), "/tree/immich-83uz/uploads");
+    }
+
+    #[test]
+    fn a_tree_no_service_has_made_yet_is_empty_not_broken() {
+        assert_eq!(
+            before_any_folder("", Err(ListError::Missing("no /tree".into()))),
+            Ok(Vec::new())
+        );
+        assert_eq!(
+            before_any_folder("photos", Err(ListError::Missing("gone".into()))),
+            Err(ListError::Missing("gone".into()))
+        );
+        assert_eq!(
+            before_any_folder("", Err(ListError::Unavailable("slow".into()))),
+            Err(ListError::Unavailable("slow".into()))
+        );
     }
 
     #[test]

@@ -3737,6 +3737,33 @@ mod tests {
         }
 
         #[tokio::test]
+        async fn teardown_never_deletes_a_remembered_folder_that_is_not_the_services_own() {
+            let (server, kube) = api_server().await;
+            let doomed = json!({ ANN_DELETE_FOLDERS: "[\"notes\",\"immich-83uz/uploads\"]" });
+            namespace_is(&server, 200, ns(doomed, "Active")).await;
+            Mock::given(method("DELETE"))
+                .and(path(NS_PATH))
+                .respond_with(
+                    ResponseTemplate::new(200).set_body_json(ns(json!({}), "Terminating")),
+                )
+                .mount(&server)
+                .await;
+            volumes_are(&server, vec![]).await;
+            no_saved_settings(&server).await;
+            tree_ops_succeed(&server).await;
+            let b = Backend {
+                kube,
+                host: FakeHost::new().ok("helm uninstall", ""),
+            };
+
+            run_teardown(&b, "notes", "yolab-notes").await.unwrap();
+            let jobs = jobs_started(&server).await;
+            assert_eq!(jobs.len(), 1, "{jobs:?}");
+            let command = &jobs[0]["spec"]["template"]["spec"]["containers"][0]["command"];
+            assert_eq!(command.as_array().unwrap()[4..], [json!("notes")]);
+        }
+
+        #[tokio::test]
         async fn teardown_without_a_request_to_delete_leaves_every_folder() {
             let (server, kube) = api_server().await;
             namespace_is(&server, 200, ns(json!({}), "Active")).await;

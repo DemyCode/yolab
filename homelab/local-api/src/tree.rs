@@ -523,10 +523,11 @@ pub struct DataVerdict {
 }
 
 pub(crate) fn own_folders(volumes: &[Value], namespace: &str) -> Vec<String> {
+    let instance = namespace.strip_prefix("yolab-").unwrap_or(namespace);
     claimed_in(volumes, namespace)
         .into_iter()
         .map(|c| c.folder)
-        .filter(|f| !f.is_empty())
+        .filter(|f| is_own(f, instance))
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect()
@@ -956,14 +957,25 @@ mod tests {
         let volumes = vec![
             volume_in("yolab-jellyfin", "jellyfin-data", "/tree/jellyfin"),
             volume_in("yolab-jellyfin", "jellyfin-cache", "/tree/jellyfin"),
-            volume_in("yolab-jellyfin", "content-1a2b3c4d", "/tree/media"),
+            volume_in("yolab-jellyfin", "content-1a2b3c4d", "/tree/jellyfin.files"),
             volume_in("yolab-jellyfin", "everything", "/tree"),
             volume_in("yolab-radarr", "radarr-data", "/tree/radarr"),
         ];
         assert_eq!(
             own_folders(&volumes, "yolab-jellyfin"),
-            vec!["jellyfin", "media"]
+            vec!["jellyfin", "jellyfin.files"]
         );
+    }
+
+    #[test]
+    fn a_folder_a_service_was_pointed_at_is_never_its_to_delete() {
+        let volumes = vec![
+            volume_in("yolab-filebrowser", "filebrowser-data", "/tree/filebrowser"),
+            volume_in("yolab-filebrowser", "content-1a2b3c4d", "/tree/immich-83uz/uploads"),
+            volume_in("yolab-jellyfin", "content-99999999", "/tree/Movies"),
+        ];
+        assert_eq!(own_folders(&volumes, "yolab-filebrowser"), vec!["filebrowser"]);
+        assert_eq!(verdict(&volumes, "yolab-jellyfin"), DataVerdict::default());
     }
 
     #[test]
@@ -979,8 +991,8 @@ mod tests {
     fn deleting_a_service_deletes_the_folders_nobody_else_uses() {
         let volumes = vec![
             volume_in("yolab-jellyfin", "jellyfin-data", "/tree/jellyfin"),
-            volume_in("yolab-jellyfin", "content-1a2b3c4d", "/tree/media"),
-            volume_in("yolab-radarr", "content-1a2b3c4d", "/tree/media/movies"),
+            volume_in("yolab-jellyfin", "content-1a2b3c4d", "/tree/jellyfin.files"),
+            volume_in("yolab-radarr", "content-1a2b3c4d", "/tree/jellyfin.files/movies"),
             volume_in("yolab-radarr", "radarr-data", "/tree/radarr"),
         ];
         let verdict = verdict(&volumes, "yolab-jellyfin");
@@ -988,7 +1000,7 @@ mod tests {
         assert_eq!(
             verdict.kept,
             vec![Kept {
-                folder: "media".into(),
+                folder: "jellyfin.files".into(),
                 used_by: vec!["radarr".into()]
             }]
         );
@@ -1015,8 +1027,8 @@ mod tests {
     #[test]
     fn a_folder_inside_one_another_service_uses_is_kept_too() {
         let volumes = vec![
-            volume_in("yolab-radarr", "content-1a2b3c4d", "/tree/media/movies"),
-            volume_in("yolab-jellyfin", "content-1a2b3c4d", "/tree/media"),
+            volume_in("yolab-radarr", "content-1a2b3c4d", "/tree/radarr.files/movies"),
+            volume_in("yolab-jellyfin", "content-1a2b3c4d", "/tree/radarr.files"),
         ];
         let verdict = verdict(&volumes, "yolab-radarr");
         assert!(verdict.delete.is_empty());
