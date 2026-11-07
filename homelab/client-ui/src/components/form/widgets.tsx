@@ -15,6 +15,7 @@ import { generateSecret } from "@/lib/format";
 import {
   ROOT_FOLDER,
   cleanFolder,
+  folderAllowed,
   folderTrail,
   isRootFolder,
   joinFolder,
@@ -178,7 +179,7 @@ export function TextareaWidget(props: WidgetProps) {
 }
 
 export function TreeFolderWidget(props: WidgetProps) {
-  const { value, onChange, disabled, readonly, id, autofocus } = props;
+  const { value, onChange, disabled, readonly, id, autofocus, schema } = props;
   const v = typeof value === "string" ? value : "";
   const picked = v === "" ? null : isRootFolder(v) ? "" : cleanFolder(v);
   const [at, setAt] = useState(() =>
@@ -290,6 +291,8 @@ export function TreeFolderWidget(props: WidgetProps) {
 
   const here = shownFolder(at);
   const pickedHere = picked === at;
+  const choice = at === "" ? ROOT_FOLDER : here;
+  const allowed = folderAllowed(schema.pattern, choice);
 
   return (
     <div className="space-y-2">
@@ -357,8 +360,13 @@ export function TreeFolderWidget(props: WidgetProps) {
             type="button"
             size="sm"
             variant={pickedHere ? "secondary" : "primary"}
-            disabled={locked || pickedHere || Boolean(known?.failure)}
-            onClick={() => onChange(at === "" ? ROOT_FOLDER : shownFolder(at))}
+            disabled={
+              locked || pickedHere || !allowed || Boolean(known?.failure)
+            }
+            title={
+              allowed ? undefined : `This version of the service cannot use ${here}`
+            }
+            onClick={() => onChange(choice)}
             className="shrink-0 font-mono"
           >
             {pickedHere ? `Using ${here}` : `Use ${here}`}

@@ -4,6 +4,7 @@ import { uiSchemaFor, type ConfigSchema } from "./schema";
 import {
   activeTreeFolders,
   cleanFolder,
+  folderAllowed,
   folderIn,
   folderProblem,
   folderTrail,
@@ -217,5 +218,23 @@ describe("browsing the file tree", () => {
     expect(
       await folderProblem([{ title: "Folder", value: "/ok/a" }], list),
     ).toBeNull();
+  });
+});
+
+describe("what the chart accepts", () => {
+  const OLD = "^$|^/?[A-Za-z0-9_ -][A-Za-z0-9._ -]*(/[A-Za-z0-9_ -][A-Za-z0-9._ -]*)*/?$";
+  const NEW = `^/$|${OLD}`;
+
+  it("never offers / to a chart version that refuses it", () => {
+    expect(folderAllowed(OLD, ROOT_FOLDER)).toBe(false);
+    expect(folderAllowed(OLD, "/ok/a")).toBe(true);
+  });
+
+  it("offers / to a chart that takes it", () => {
+    expect(folderAllowed(NEW, ROOT_FOLDER)).toBe(true);
+  });
+
+  it("offers any folder when the chart sets no pattern", () => {
+    expect(folderAllowed(undefined, ROOT_FOLDER)).toBe(true);
   });
 });

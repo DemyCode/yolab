@@ -155,3 +155,13 @@ export async function folderProblem(
   }
   return null;
 }
+
+export function folderAllowed(pattern: unknown, value: string): boolean {
+  if (typeof pattern !== "string" || pattern === "") return true;
+  try {
+    return new RegExp(pattern, "u").test(value);
+  } catch (e) {
+    console.warn(`the chart's folder pattern ${pattern} is not one the browser reads`, e);
+    return true;
+  }
+}
