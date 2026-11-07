@@ -222,7 +222,8 @@ describe("browsing the file tree", () => {
 });
 
 describe("what the chart accepts", () => {
-  const OLD = "^$|^/?[A-Za-z0-9_ -][A-Za-z0-9._ -]*(/[A-Za-z0-9_ -][A-Za-z0-9._ -]*)*/?$";
+  const OLD =
+    "^$|^/?[A-Za-z0-9_ -][A-Za-z0-9._ -]*(/[A-Za-z0-9_ -][A-Za-z0-9._ -]*)*/?$";
   const NEW = `^/$|${OLD}`;
 
   it("never offers / to a chart version that refuses it", () => {
