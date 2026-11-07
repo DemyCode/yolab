@@ -1283,7 +1283,6 @@ pub async fn list_apps(State(state): State<AppState>) -> Result<Json<Vec<AppInfo
             .unwrap_or("")
             .trim_start_matches("yolab-")
             .to_string();
-        let phase = ns["status"]["phase"].as_str().unwrap_or("Active");
         let ns_full = format!("yolab-{name}");
         let mut detail = String::new();
         let mut technical = String::new();
