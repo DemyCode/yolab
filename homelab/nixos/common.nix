@@ -296,7 +296,7 @@ in {
       enable = true;
       package = pkgs.caddy.withPlugins {
         plugins = ["github.com/caddy-dns/acmedns@v0.7.0"];
-        hash = "sha256-hlu5ryAU9eUGVQmDrAF6tWKQ6wbJTwkVg8crx4497kU=";
+        hash = "sha256-gPOoyci0lQsDInBQgyjlSw4/N3MQjO/zDjgcYYTl7IE=";
       };
       configFile = pkgs.writeText "Caddyfile" ''
         (shared_tls) {
