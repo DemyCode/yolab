@@ -347,7 +347,9 @@ export function TreeFolderWidget(props: WidgetProps) {
             ) : (
               <span className="inline-flex min-w-0 items-center gap-1 text-success">
                 <Check className="h-3.5 w-3.5 shrink-0" />
-                <span className="truncate font-mono">{shownFolder(picked)}</span>
+                <span className="truncate font-mono">
+                  {shownFolder(picked)}
+                </span>
               </span>
             )}
           </span>
