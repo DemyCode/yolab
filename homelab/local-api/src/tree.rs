@@ -16,8 +16,7 @@ const IMAGE: &str =
 const FILES_CLAIM_PREFIX: &str = "content-";
 const VOLUME_SIZE: &str = "100Ti";
 const KEEP_FINISHED_SECS: u64 = 600;
-const MAKE_DEADLINE: Duration = Duration::from_secs(600);
-const LONG_DEADLINE: Duration = Duration::from_secs(6 * 3600);
+const DEADLINE: Duration = Duration::from_secs(6 * 3600);
 const WAIT_MARGIN: Duration = Duration::from_secs(300);
 const POLL: Duration = Duration::from_secs(3);
 const LOG_LINES: i64 = 20;
@@ -310,13 +309,6 @@ impl Op {
         }
     }
 
-    fn deadline(&self) -> Duration {
-        match self {
-            Op::Make(_) => MAKE_DEADLINE,
-            Op::Remove(_) | Op::Copy { .. } => LONG_DEADLINE,
-        }
-    }
-
     fn describe(&self) -> String {
         match self {
             Op::Make(paths) => format!("make the folders {}", paths.join(", ")),
@@ -388,7 +380,7 @@ fn job(name: &str, op: &Op) -> Value {
         },
         "spec": {
             "backoffLimit": 0,
-            "activeDeadlineSeconds": op.deadline().as_secs(),
+            "activeDeadlineSeconds": DEADLINE.as_secs(),
             "ttlSecondsAfterFinished": KEEP_FINISHED_SECS,
             "template": {
                 "spec": {
@@ -480,7 +472,7 @@ pub(crate) async fn run(client: &Client, op: &Op) -> anyhow::Result<()> {
     let reference = crate::k8s::reference("batch/v1", "Job", crate::csi::NS, &name);
     let reference = &reference;
     let job_name = name.as_str();
-    let failure = crate::poll::until(op.deadline() + WAIT_MARGIN, POLL, move || async move {
+    let failure = crate::poll::until(DEADLINE + WAIT_MARGIN, POLL, move || async move {
         match crate::k8s::get(client, reference).await {
             Ok(Some(found)) => match job_state(&found) {
                 JobState::Succeeded => crate::poll::Step::Done(None),
@@ -905,8 +897,26 @@ mod tests {
         assert_eq!(j["spec"]["backoffLimit"], 0);
         assert_eq!(j["spec"]["template"]["spec"]["restartPolicy"], "Never");
         assert_eq!(j["spec"]["ttlSecondsAfterFinished"], KEEP_FINISHED_SECS);
-        assert_eq!(j["spec"]["activeDeadlineSeconds"], LONG_DEADLINE.as_secs());
+        assert_eq!(j["spec"]["activeDeadlineSeconds"], DEADLINE.as_secs());
         assert_eq!(j["metadata"]["namespace"], crate::csi::NS);
+    }
+
+    #[test]
+    fn making_folders_waits_as_long_as_copying_them_so_a_slow_disk_only_slows_an_install() {
+        let make = job("yolab-tree-1", &Op::Make(vec!["immich".into()]));
+        let copy = job(
+            "yolab-tree-2",
+            &Op::Copy {
+                from: "immich".into(),
+                to: "immich-2".into(),
+                leave_out: vec![],
+            },
+        );
+        assert_eq!(
+            make["spec"]["activeDeadlineSeconds"],
+            copy["spec"]["activeDeadlineSeconds"]
+        );
+        assert!(DEADLINE >= Duration::from_secs(3600));
     }
 
     #[test]
