@@ -22,7 +22,10 @@ pub(crate) struct Removal {
     pub technical: String,
 }
 
-pub(crate) fn removal_of(namespace: &Value, ann: &serde_json::Map<String, Value>) -> Option<Removal> {
+pub(crate) fn removal_of(
+    namespace: &Value,
+    ann: &serde_json::Map<String, Value>,
+) -> Option<Removal> {
     let terminating = namespace["status"]["phase"] == "Terminating";
     if !terminating && !removal_registered(ann) {
         return None;
@@ -39,7 +42,11 @@ pub(crate) fn removal_of(namespace: &Value, ann: &serde_json::Map<String, Value>
         ),
         None => (String::new(), String::new()),
     };
-    Some(Removal { since, detail, technical })
+    Some(Removal {
+        since,
+        detail,
+        technical,
+    })
 }
 
 static DRIVING: std::sync::LazyLock<std::sync::Mutex<std::collections::HashSet<String>>> =
@@ -50,7 +57,9 @@ pub(crate) struct Driving(String);
 impl Driving {
     pub(crate) fn take(ns: &str) -> Option<Self> {
         let mut driving = DRIVING.lock().unwrap_or_else(|e| e.into_inner());
-        driving.insert(ns.to_string()).then(|| Driving(ns.to_string()))
+        driving
+            .insert(ns.to_string())
+            .then(|| Driving(ns.to_string()))
     }
 }
 

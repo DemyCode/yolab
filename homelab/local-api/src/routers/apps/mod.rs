@@ -3011,7 +3011,10 @@ mod tests {
         let namespace = serde_json::json!({ "status": { "phase": "Active" } });
         assert_eq!(
             removal_of(&namespace, &ann),
-            Some(Removal { since: Some(stale), ..Default::default() })
+            Some(Removal {
+                since: Some(stale),
+                ..Default::default()
+            })
         );
     }
 
@@ -3033,7 +3036,10 @@ mod tests {
             "status": { "phase": "Terminating" },
         });
         assert_eq!(
-            removal_of(&namespace, &serde_json::Map::new()).unwrap().since.as_deref(),
+            removal_of(&namespace, &serde_json::Map::new())
+                .unwrap()
+                .since
+                .as_deref(),
             Some("2026-11-07T10:00:00Z")
         );
     }
@@ -3041,7 +3047,13 @@ mod tests {
     #[test]
     fn a_service_nobody_asked_to_remove_is_not_removing() {
         let ann = map(serde_json::json!({ ANN_APP_ID: "notes" }));
-        assert_eq!(removal_of(&serde_json::json!({ "status": { "phase": "Active" } }), &ann), None);
+        assert_eq!(
+            removal_of(
+                &serde_json::json!({ "status": { "phase": "Active" } }),
+                &ann
+            ),
+            None
+        );
     }
 
     #[test]
