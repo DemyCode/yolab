@@ -32,6 +32,7 @@ const ANN_BACKUP: &str = "yolab.io/backup";
 const ANN_UNINSTALLING: &str = "yolab.io/uninstalling";
 const ANN_DELETE_FOLDERS: &str = "yolab.io/delete-folders";
 const ANN_INSTALL_FAILED: &str = "yolab.io/install-failed";
+const ANN_UNINSTALL_FAILED: &str = "yolab.io/uninstall-failed";
 const UNINSTALL_LOCK_TTL: std::time::Duration = std::time::Duration::from_secs(600);
 const LOGS_FOLLOW_TAIL: u32 = 100;
 
@@ -1289,10 +1290,10 @@ pub async fn list_apps(State(state): State<AppState>) -> Result<Json<Vec<AppInfo
         let mut since: Option<String> = None;
         let mut retry_at: Option<String> = None;
         let mut reason = String::new();
-        let status = if phase == "Terminating" || uninstall_lock_is_fresh(&ann) {
-            since = ns["metadata"]["deletionTimestamp"]
-                .as_str()
-                .map(str::to_string);
+        let status = if let Some(removal) = removal_of(ns, &ann) {
+            since = removal.since;
+            detail = removal.detail;
+            technical = removal.technical;
             "uninstalling".to_string()
         } else if let Some(why) = install_failure(&ann) {
             detail = install_failure_headline(&why);
@@ -1812,7 +1813,7 @@ pub(crate) async fn installed_apps(client: &Client) -> anyhow::Result<Vec<Instal
         .filter(|ns| ns["status"]["phase"].as_str() != Some("Terminating"))
         .filter_map(|ns| {
             let annotations = ns["metadata"]["annotations"].as_object().cloned()?;
-            if uninstall_lock_is_fresh(&annotations) {
+            if removal_registered(&annotations) {
                 return None;
             }
             Some(InstalledApp {
@@ -3002,6 +3003,56 @@ mod tests {
     }
 
     #[test]
+    fn a_registered_removal_shows_as_removing_even_after_its_claim_goes_stale() {
+        let stale = (chrono::Utc::now()
+            - chrono::Duration::seconds(UNINSTALL_LOCK_TTL.as_secs() as i64 + 1))
+        .to_rfc3339();
+        let ann = map(serde_json::json!({ ANN_UNINSTALLING: stale.clone() }));
+        let namespace = serde_json::json!({ "status": { "phase": "Active" } });
+        assert_eq!(
+            removal_of(&namespace, &ann),
+            Some(Removal { since: Some(stale), ..Default::default() })
+        );
+    }
+
+    #[test]
+    fn a_removal_that_failed_says_it_is_tried_again() {
+        let ann = map(serde_json::json!({
+            ANN_UNINSTALLING: chrono::Utc::now().to_rfc3339(),
+            ANN_UNINSTALL_FAILED: "helm uninstall timed out",
+        }));
+        let removal = removal_of(&serde_json::json!({}), &ann).unwrap();
+        assert!(removal.detail.contains("tried again"), "{}", removal.detail);
+        assert_eq!(removal.technical, "helm uninstall timed out");
+    }
+
+    #[test]
+    fn a_terminating_namespace_is_removing_since_its_deletion() {
+        let namespace = serde_json::json!({
+            "metadata": { "deletionTimestamp": "2026-11-07T10:00:00Z" },
+            "status": { "phase": "Terminating" },
+        });
+        assert_eq!(
+            removal_of(&namespace, &serde_json::Map::new()).unwrap().since.as_deref(),
+            Some("2026-11-07T10:00:00Z")
+        );
+    }
+
+    #[test]
+    fn a_service_nobody_asked_to_remove_is_not_removing() {
+        let ann = map(serde_json::json!({ ANN_APP_ID: "notes" }));
+        assert_eq!(removal_of(&serde_json::json!({ "status": { "phase": "Active" } }), &ann), None);
+    }
+
+    #[test]
+    fn one_teardown_at_a_time_per_service_on_this_machine() {
+        let first = Driving::take("yolab-driving-test").unwrap();
+        assert!(Driving::take("yolab-driving-test").is_none());
+        drop(first);
+        assert!(Driving::take("yolab-driving-test").is_some());
+    }
+
+    #[test]
     fn an_unparsable_lock_timestamp_is_not_fresh() {
         assert!(!uninstall_lock_is_fresh(&map(
             serde_json::json!({ ANN_UNINSTALLING: "not-a-timestamp" })
@@ -3501,6 +3552,36 @@ mod tests {
 
             run_teardown(&b, "notes", "yolab-notes").await.unwrap();
             assert!(b.host.calls().is_empty(), "{:?}", b.host.calls());
+        }
+
+        #[tokio::test]
+        async fn a_background_teardown_that_fails_is_recorded_on_the_service() {
+            let (server, kube) = api_server().await;
+            namespace_is(&server, 503, status(503, "ServiceUnavailable")).await;
+            Mock::given(method("PATCH"))
+                .and(path(NS_PATH))
+                .respond_with(ResponseTemplate::new(200))
+                .expect(1)
+                .mount(&server)
+                .await;
+            let b = Backend {
+                kube,
+                host: FakeHost::new(),
+            };
+
+            assert!(drive_teardown(&b, "notes", "yolab-notes").await.is_err());
+            let patched = server.received_requests().await.unwrap();
+            let body: Value = patched
+                .iter()
+                .find(|r| r.method.as_str() == "PATCH")
+                .map(|r| serde_json::from_slice(&r.body).unwrap())
+                .unwrap();
+            assert!(
+                body["metadata"]["annotations"][ANN_UNINSTALL_FAILED]
+                    .as_str()
+                    .is_some_and(|why| !why.is_empty()),
+                "{body}"
+            );
         }
 
         #[tokio::test]

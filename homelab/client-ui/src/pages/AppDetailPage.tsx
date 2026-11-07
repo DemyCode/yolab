@@ -843,8 +843,10 @@ export function AppDetailPage() {
     if (state === "removing") {
       return (
         <Banner tone="warning" title="Being removed">
-          It is being removed. A space no other service uses is deleted about an
-          hour after it is gone.
+          <WhatHappened
+            app={current}
+            fallback="Your request was saved and it is being removed in the background. You can leave this page."
+          />
           <WaitNote note={note} />
         </Banner>
       );

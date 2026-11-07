@@ -11,6 +11,77 @@ pub(crate) fn uninstall_lock_is_fresh(ann: &serde_json::Map<String, Value>) -> b
         .unwrap_or(false)
 }
 
+pub(crate) fn removal_registered(ann: &serde_json::Map<String, Value>) -> bool {
+    ann.contains_key(ANN_UNINSTALLING)
+}
+
+#[derive(Debug, Default, PartialEq)]
+pub(crate) struct Removal {
+    pub since: Option<String>,
+    pub detail: String,
+    pub technical: String,
+}
+
+pub(crate) fn removal_of(namespace: &Value, ann: &serde_json::Map<String, Value>) -> Option<Removal> {
+    let terminating = namespace["status"]["phase"] == "Terminating";
+    if !terminating && !removal_registered(ann) {
+        return None;
+    }
+    let since = namespace["metadata"]["deletionTimestamp"]
+        .as_str()
+        .or_else(|| ann.get(ANN_UNINSTALLING).and_then(Value::as_str))
+        .map(str::to_string);
+    let (detail, technical) = match ann.get(ANN_UNINSTALL_FAILED).and_then(Value::as_str) {
+        Some(why) => (
+            "The last try to remove it did not finish. It is tried again in the background."
+                .to_string(),
+            why.to_string(),
+        ),
+        None => (String::new(), String::new()),
+    };
+    Some(Removal { since, detail, technical })
+}
+
+static DRIVING: std::sync::LazyLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+    std::sync::LazyLock::new(Default::default);
+
+pub(crate) struct Driving(String);
+
+impl Driving {
+    pub(crate) fn take(ns: &str) -> Option<Self> {
+        let mut driving = DRIVING.lock().unwrap_or_else(|e| e.into_inner());
+        driving.insert(ns.to_string()).then(|| Driving(ns.to_string()))
+    }
+}
+
+impl Drop for Driving {
+    fn drop(&mut self) {
+        DRIVING
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&self.0);
+    }
+}
+
+pub(crate) async fn drive_teardown<H: crate::host::Host>(
+    b: &Backend<H>,
+    instance_name: &str,
+    ns: &str,
+) -> anyhow::Result<()> {
+    let Some(_driving) = Driving::take(ns) else {
+        tracing::info!("uninstall {instance_name}: already being torn down here");
+        return Ok(());
+    };
+    match run_teardown(b, instance_name, ns).await {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            tracing::error!("uninstall {instance_name}: {e:#}");
+            annotate_ns(&b.kube, ns, ANN_UNINSTALL_FAILED, &format!("{e:#}")).await;
+            Err(e)
+        }
+    }
+}
+
 pub(crate) async fn claim_uninstall_lock(
     client: &Client,
     ns: &str,
@@ -83,7 +154,7 @@ pub async fn uninstall_app(
     State(state): State<AppState>,
     Path(instance_name): Path<String>,
     axum::extract::Query(query): axum::extract::Query<UninstallQuery>,
-) -> Result<Json<serde_json::Value>> {
+) -> Result<(axum::http::StatusCode, Json<serde_json::Value>)> {
     let ns = format!("yolab-{instance_name}");
     let b = state.backend().await?;
 
@@ -92,25 +163,22 @@ pub async fn uninstall_app(
     } else {
         Vec::new()
     };
+    let accepted = (
+        axum::http::StatusCode::ACCEPTED,
+        Json(serde_json::json!({"ok": true})),
+    );
     if !claim_uninstall_lock(&b.kube, &ns, &doomed).await? {
-        return Err(anyhow::anyhow!("uninstall for {instance_name} is already in progress").into());
+        tracing::info!("uninstall {instance_name}: already registered");
+        return Ok(accepted);
     }
 
-    let instance_owned = instance_name.clone();
-    let task = tokio::spawn(async move { run_teardown(&b, &instance_owned, &ns).await });
-    match task.await {
-        Ok(Ok(())) => {}
-        Ok(Err(e)) => {
-            tracing::error!("uninstall {instance_name}: {e:#}");
-            return Err(e.into());
+    tokio::spawn(async move {
+        if drive_teardown(&b, &instance_name, &ns).await.is_ok() {
+            tracing::info!("uninstall {instance_name}: done");
         }
-        Err(e) => {
-            tracing::error!("uninstall {instance_name}: teardown task failed: {e}");
-            return Err(anyhow::anyhow!("the uninstall did not finish: {e}").into());
-        }
-    }
+    });
 
-    Ok(Json(serde_json::json!({"ok": true})))
+    Ok(accepted)
 }
 
 pub async fn app_data(
@@ -316,8 +384,8 @@ pub(crate) async fn finish_abandoned_uninstalls<H: crate::host::Host>(
             "uninstall {instance}: claim is stale and nothing is driving it — \
              finishing the teardown"
         );
-        if let Err(e) = run_teardown(b, &instance, &ns).await {
-            tracing::error!("uninstall {instance}: {e:#}");
+        if drive_teardown(b, &instance, &ns).await.is_ok() {
+            tracing::info!("uninstall {instance}: done");
         }
     }
     Ok(crate::runtime::Tick::Done)
