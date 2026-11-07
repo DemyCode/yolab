@@ -447,7 +447,7 @@ def check_tree_volumes(app, docs, fail):
                     f"volume is a folder of the file tree, made with "
                     f"yolab-common.tree.volume",
                 )
-        if not path:
+        if path is None:
             fail(app, f"claim {name} does not say which folder of the tree it is")
         volume = volumes.get(pv_name)
         if volume is None:
@@ -477,7 +477,7 @@ def check_tree_volumes(app, docs, fail):
                     "clusterID": "yolab",
                     "fsName": "yolab-fs",
                     "staticVolume": "true",
-                    "rootPath": f"{TREE_ROOT}/{path}",
+                    "rootPath": f"{TREE_ROOT}/{path}" if path else TREE_ROOT,
                 },
             ),
         }

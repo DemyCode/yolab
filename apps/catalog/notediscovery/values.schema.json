@@ -57,8 +57,8 @@
                   "title": "Files folder",
                   "format": "tree-folder",
                   "minLength": 1,
-                  "pattern": "^$|^/?[A-Za-z0-9_ -][A-Za-z0-9._ -]*(/[A-Za-z0-9_ -][A-Za-z0-9._ -]*)*/?$",
-                  "description": "Start typing to see the folders in your file tree; only a folder that exists can be picked."
+                  "pattern": "^/$|^$|^/?[A-Za-z0-9_ -][A-Za-z0-9._ -]*(/[A-Za-z0-9_ -][A-Za-z0-9._ -]*)*/?$",
+                  "description": "Open a folder to see the folders inside it, then pick one. / is the whole file tree, every service's data included."
                 }
               },
               "required": [

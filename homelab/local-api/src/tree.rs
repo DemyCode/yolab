@@ -850,6 +850,12 @@ mod tests {
     }
 
     #[test]
+    fn a_service_pointed_at_the_whole_tree_can_be_installed_but_never_deletes_it() {
+        assert!(Op::Make(vec![String::new()]).check().is_ok());
+        assert!(Op::Remove(vec![String::new()]).check().is_err());
+    }
+
+    #[test]
     fn only_clean_folders_reach_a_job() {
         for bad in ["/jellyfin", "jellyfin/", "a/../b", "a//b", "."] {
             assert!(Op::Make(vec![bad.into()]).check().is_err(), "{bad}");

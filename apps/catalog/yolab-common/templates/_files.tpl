@@ -10,7 +10,9 @@
 {{- $chosen = get $cfg "files_folder" | default "" -}}
 {{- end -}}
 {{- $given := ((.Values.yolab).filesFolder) | default $chosen | default "" -}}
-{{- if $given -}}
+{{- if and $given (not (trimAll "/" (toString $given))) -}}
+/
+{{- else if $given -}}
 {{- include "yolab-common.tree.path" $given -}}
 {{- else -}}
 {{- printf "%s.files" (include "yolab-common.instance" .) -}}

@@ -6,7 +6,11 @@ import {
   cleanFolder,
   folderIn,
   folderProblem,
+  folderTrail,
+  isRootFolder,
   joinFolder,
+  ROOT_FOLDER,
+  shownFolder,
   rankFolders,
   splitFolder,
   type FolderListing,
@@ -157,5 +161,61 @@ describe("checking the chosen folder", () => {
     expect(
       await folderProblem([{ title: "Folder", value: "immich-83uz" }], down),
     ).toMatch(/could not be read: the file tree did not answer/);
+  });
+});
+
+describe("the whole file tree", () => {
+  it("is picked as /, however many slashes were sent", () => {
+    expect(isRootFolder("/")).toBe(true);
+    expect(isRootFolder("//")).toBe(true);
+    expect(isRootFolder("")).toBe(false);
+    expect(isRootFolder("media")).toBe(false);
+  });
+
+  it("is a folder that is always there", async () => {
+    const down = async (): Promise<FolderListing> => {
+      throw new ApiError(503, "the file tree did not answer within 20s");
+    };
+    expect(
+      await folderProblem([{ title: "Folder", value: ROOT_FOLDER }], down),
+    ).toBeNull();
+  });
+
+  it("stays / in the form instead of turning into nothing picked", () => {
+    expect(
+      activeTreeFolders(FOLDER_SCHEMA, {
+        files_folder_existing: true,
+        files_folder: "/",
+      }),
+    ).toEqual([{ name: "files_folder", title: "Folder", value: "/" }]);
+  });
+});
+
+describe("browsing the file tree", () => {
+  it("shows every folder from the top of the tree", () => {
+    expect(shownFolder("")).toBe("/");
+    expect(shownFolder("ok/a")).toBe("/ok/a");
+    expect(shownFolder("/ok/")).toBe("/ok");
+  });
+
+  it("can go back up to any folder above the one being looked in", () => {
+    expect(folderTrail("")).toEqual([{ name: "/", path: "" }]);
+    expect(folderTrail("ok/a")).toEqual([
+      { name: "/", path: "" },
+      { name: "ok", path: "ok" },
+      { name: "a", path: "ok/a" },
+    ]);
+  });
+
+  it("lists every folder of a level, not only the first few", () => {
+    const many = Array.from({ length: 20 }, (_, i) => `f${i}`);
+    expect(rankFolders(many, "", many.length)).toHaveLength(20);
+  });
+
+  it("accepts a folder picked with a leading slash", async () => {
+    const list = tree({ "": ["ok"], ok: ["a", "b", "c"] });
+    expect(
+      await folderProblem([{ title: "Folder", value: "/ok/a" }], list),
+    ).toBeNull();
   });
 });

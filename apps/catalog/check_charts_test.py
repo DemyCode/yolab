@@ -2521,6 +2521,21 @@ class PackRendered(RenderedChart):
         files = [d for d in docs if check_charts.is_files_doc(d)]
         self.assertEqual({check_charts.tree_path(d) for d in files}, {"media"})
 
+    def test_choosing_the_root_for_the_pack_moves_every_app_to_the_whole_tree(self):
+        docs = self.docs(
+            {"config.files_folder_existing": "true", "config.files_folder": "/"}
+        )
+        claim = check_charts.files_claim("/")
+        mounted = {
+            v["persistentVolumeClaim"]["claimName"]
+            for _, spec in check_charts.pod_specs(docs)
+            for v in spec.get("volumes") or []
+            if v["name"] == "files"
+        }
+        self.assertEqual(mounted, {claim})
+        files = [d for d in docs if check_charts.is_files_doc(d)]
+        self.assertEqual({check_charts.tree_path(d) for d in files}, {""})
+
     def test_only_the_apps_that_use_files_mount_it_inside_the_pack(self):
         pods = self.deployments(self.docs())
         mounted = {
@@ -2779,6 +2794,36 @@ class FileBrowserOnAFolder(RenderedChart):
             {check_charts.tree_path(d) for d in files}, {"movies-tv.files"}
         )
         self.assertEqual(claim, check_charts.files_claim("movies-tv.files"))
+
+    def test_pointed_at_the_root_it_browses_the_whole_tree(self):
+        docs = self.docs(
+            {"config.files_folder_existing": "true", "config.files_folder": "/"}
+        )
+        _, claim, _ = self.browsed(docs)
+        files = [d for d in docs if check_charts.is_files_doc(d)]
+        self.assertEqual({check_charts.tree_path(d) for d in files}, {""})
+        self.assertEqual(claim, check_charts.files_claim("/"))
+        volume = next(d for d in files if d["kind"] == "PersistentVolume")
+        self.assertEqual(
+            volume["spec"]["csi"]["volumeAttributes"]["rootPath"],
+            check_charts.TREE_ROOT,
+        )
+        found = []
+        check_charts.check_tree_volumes(
+            self.CHART, docs, lambda _app, why: found.append(why)
+        )
+        self.assertEqual(found, [])
+
+    def test_the_root_is_never_the_folder_a_service_keeps_its_own_data_in(self):
+        docs = self.docs(
+            {"config.files_folder_existing": "true", "config.files_folder": "/"}
+        )
+        homes = {
+            check_charts.tree_path(d)
+            for d in docs
+            if d["kind"] == "PersistentVolumeClaim" and not check_charts.is_files_doc(d)
+        }
+        self.assertEqual(homes, {check_charts.RELEASE})
 
     def test_a_folder_left_in_the_form_with_the_switch_off_is_not_used(self):
         docs = self.docs(

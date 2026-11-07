@@ -19,8 +19,10 @@
 {{- define "yolab-common.tree.path" -}}
 {{- $raw := toString . -}}
 {{- $path := trimAll "/" $raw -}}
+{{- if ne $raw "/" -}}
 {{- if or (not $path) (contains "//" $path) (regexMatch "(^|/)\\.{1,2}(/|$)" $path) -}}
 {{- fail (printf "%q is not a folder in the file tree" $raw) -}}
+{{- end -}}
 {{- end -}}
 {{- $path -}}
 {{- end -}}
@@ -60,7 +62,7 @@ spec:
       clusterID: yolab
       fsName: yolab-fs
       staticVolume: "true"
-      rootPath: {{ printf "%s/%s" (include "yolab-common.tree.root" $ctx) $path | quote }}
+      rootPath: {{ printf "%s/%s" (include "yolab-common.tree.root" $ctx) $path | trimSuffix "/" | quote }}
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim

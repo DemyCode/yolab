@@ -28,6 +28,27 @@ export function joinFolder(parent: string, name: string): string {
   return parent ? `${parent}/${name}` : name;
 }
 
+export const ROOT_FOLDER = "/";
+
+export function isRootFolder(value: unknown): boolean {
+  return String(value ?? "") !== "" && cleanFolder(value) === "";
+}
+
+export function shownFolder(path: string): string {
+  return `/${cleanFolder(path)}`;
+}
+
+export function folderTrail(path: string): { name: string; path: string }[] {
+  const parts = cleanFolder(path).split("/").filter(Boolean);
+  return [
+    { name: ROOT_FOLDER, path: "" },
+    ...parts.map((name, i) => ({
+      name,
+      path: parts.slice(0, i + 1).join("/"),
+    })),
+  ];
+}
+
 function subsequence(needle: string, hay: string): boolean {
   let i = 0;
   for (const c of hay) {
@@ -104,7 +125,9 @@ export function activeTreeFolders(
     .map(([name, p]) => ({
       name,
       title: p.title ?? name,
-      value: cleanFolder(values[name]),
+      value: isRootFolder(values[name])
+        ? ROOT_FOLDER
+        : cleanFolder(values[name]),
     }));
 }
 
@@ -114,6 +137,7 @@ export async function folderProblem(
 ): Promise<string | null> {
   for (const f of fields) {
     if (!f.value) return `Pick the ${f.title.toLowerCase()}.`;
+    if (isRootFolder(f.value)) continue;
     const { parent, name } = splitFolder(f.value);
     let listing: FolderListing;
     try {

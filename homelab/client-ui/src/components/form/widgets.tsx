@@ -1,15 +1,26 @@
 import { useEffect, useState, type KeyboardEvent, type ReactNode } from "react";
 import type { WidgetProps } from "@rjsf/utils";
-import { Check, Eye, EyeOff, Folder, RefreshCw } from "lucide-react";
+import {
+  Check,
+  ChevronRight,
+  Eye,
+  EyeOff,
+  Folder,
+  RefreshCw,
+} from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { Input, Toggle } from "@/components/ui/input";
 import { ApiError } from "@/lib/api";
 import { generateSecret } from "@/lib/format";
 import {
+  ROOT_FOLDER,
   cleanFolder,
-  folderIn,
+  folderTrail,
+  isRootFolder,
   joinFolder,
   listFolders,
   rankFolders,
+  shownFolder,
   splitFolder,
 } from "@/lib/treeFolder";
 import { cn } from "@/lib/utils";
@@ -169,141 +180,189 @@ export function TextareaWidget(props: WidgetProps) {
 export function TreeFolderWidget(props: WidgetProps) {
   const { value, onChange, disabled, readonly, id, autofocus } = props;
   const v = typeof value === "string" ? value : "";
-  const { parent, name } = splitFolder(v);
+  const picked = v === "" ? null : isRootFolder(v) ? "" : cleanFolder(v);
+  const [at, setAt] = useState(() =>
+    picked ? splitFolder(picked).parent : "",
+  );
+  const [filter, setFilter] = useState("");
   const [listing, setListing] = useState<{
-    parent: string;
+    at: string;
     folders: string[];
+    truncated: boolean;
     failure: string | null;
   } | null>(null);
-  const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
+  const locked = disabled || readonly;
 
   useEffect(() => {
     let live = true;
-    listFolders(parent).then(
+    listFolders(at).then(
       (l) => {
-        if (live) setListing({ parent, folders: l.folders, failure: null });
+        if (live)
+          setListing({
+            at,
+            folders: l.folders,
+            truncated: l.truncated,
+            failure: null,
+          });
       },
       (e: unknown) => {
         if (!live) return;
         const failure =
           e instanceof ApiError && e.status === 404
-            ? `There is no folder ${parent} in your file tree.`
+            ? `There is no folder ${shownFolder(at)} in your file tree.`
             : `The file tree could not be read: ${e instanceof Error ? e.message : String(e)}`;
-        setListing({ parent, folders: [], failure });
+        setListing({ at, folders: [], truncated: false, failure });
       },
     );
     return () => {
       live = false;
     };
-  }, [parent]);
+  }, [at]);
 
-  const known = listing?.parent === parent ? listing : null;
-  const suggestions = known ? rankFolders(known.folders, name) : [];
-  const exists = known !== null && folderIn(known.folders, name);
-  const shown =
-    open && suggestions.length > 0 && !(exists && suggestions.length === 1);
+  const known = listing?.at === at ? listing : null;
+  const folders = known
+    ? rankFolders(known.folders, filter, known.folders.length)
+    : [];
 
-  const pick = (folder: string) => {
-    onChange(joinFolder(parent, folder));
+  const go = (path: string) => {
+    setAt(path);
+    setFilter("");
     setActive(0);
   };
 
   const onKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
-    if (!shown) return;
-    if (e.key === "ArrowDown") {
+    if (e.key === "ArrowDown" && folders.length > 0) {
       e.preventDefault();
-      setActive((a) => (a + 1) % suggestions.length);
-    } else if (e.key === "ArrowUp") {
+      setActive((a) => (a + 1) % folders.length);
+    } else if (e.key === "ArrowUp" && folders.length > 0) {
       e.preventDefault();
-      setActive((a) => (a - 1 + suggestions.length) % suggestions.length);
-    } else if (e.key === "Enter" || e.key === "Tab") {
-      const chosen = suggestions[Math.min(active, suggestions.length - 1)];
-      if (chosen && chosen !== name) {
-        e.preventDefault();
-        pick(chosen);
-      }
-    } else if (e.key === "Escape") {
-      setOpen(false);
+      setActive((a) => (a - 1 + folders.length) % folders.length);
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      const chosen = folders[Math.min(active, folders.length - 1)];
+      if (chosen) go(joinFolder(at, chosen));
+    } else if (e.key === "Backspace" && filter === "" && at !== "") {
+      e.preventDefault();
+      go(splitFolder(at).parent);
     }
   };
 
-  let status: ReactNode;
-  if (!v) {
-    status = (
-      <span className="text-fg-muted">
-        Start typing; add / to look inside a folder.
-      </span>
-    );
-  } else if (!known) {
-    status = <span className="text-fg-muted">Looking in your file tree…</span>;
+  let body: ReactNode;
+  if (!known) {
+    body = <p className="px-3 py-2 text-sm text-fg-muted">Looking…</p>;
   } else if (known.failure) {
-    status = <span className="text-danger">{known.failure}</span>;
-  } else if (exists) {
-    status = (
-      <span className="inline-flex items-center gap-1 text-success">
-        <Check className="h-3.5 w-3.5" />
-        {cleanFolder(v)}
-      </span>
+    body = <p className="px-3 py-2 text-sm text-danger">{known.failure}</p>;
+  } else if (folders.length === 0) {
+    body = (
+      <p className="px-3 py-2 text-sm text-fg-muted">
+        {filter
+          ? `No folder in ${shownFolder(at)} matches “${filter}”.`
+          : `${shownFolder(at)} has no folders inside it.`}
+      </p>
     );
   } else {
-    status = (
-      <span className="text-danger">
-        No folder named {name || "…"}{" "}
-        {parent ? `in ${parent}` : "at the top of your file tree"}.
-      </span>
+    body = (
+      <ul role="listbox" aria-label={`Folders in ${shownFolder(at)}`}>
+        {folders.map((folder, i) => (
+          <li
+            key={folder}
+            role="option"
+            aria-selected={i === active}
+            onMouseDown={(e) => {
+              e.preventDefault();
+              if (!locked) go(joinFolder(at, folder));
+            }}
+            onMouseEnter={() => setActive(i)}
+            className={cn(
+              "flex cursor-pointer items-center gap-2 px-3 py-2 font-mono text-sm text-fg",
+              i === active && "bg-surface-2",
+            )}
+          >
+            <Folder className="h-4 w-4 shrink-0 text-fg-muted" />
+            <span className="min-w-0 flex-1 truncate">{folder}</span>
+            <ChevronRight className="h-4 w-4 shrink-0 text-fg-subtle" />
+          </li>
+        ))}
+      </ul>
     );
   }
 
+  const here = shownFolder(at);
+  const pickedHere = picked === at;
+
   return (
-    <div className="relative space-y-1.5">
-      <Input
-        id={id}
-        value={v}
-        autoFocus={autofocus}
-        autoComplete="off"
-        spellCheck={false}
-        role="combobox"
-        aria-expanded={shown}
-        aria-autocomplete="list"
-        disabled={disabled || readonly}
-        onFocus={() => setOpen(true)}
-        onBlur={() => setOpen(false)}
-        onKeyDown={onKeyDown}
-        onChange={(e) => {
-          onChange(e.target.value.replace(/^\/+/, "").replace(/\/{2,}/g, "/"));
-          setActive(0);
-          setOpen(true);
-        }}
-        className="font-mono"
-      />
-      {shown && (
-        <ul
-          role="listbox"
-          className="absolute inset-x-0 top-12 z-20 max-h-64 overflow-auto rounded-control border border-border bg-surface py-1 shadow-pop"
+    <div className="space-y-2">
+      <div className="overflow-hidden rounded-control border border-border bg-surface">
+        <nav
+          aria-label="Folder you are looking in"
+          className="flex flex-wrap items-center gap-0.5 border-b border-border px-2 py-1.5 font-mono text-sm"
         >
-          {suggestions.map((folder, i) => (
-            <li
-              key={folder}
-              role="option"
-              aria-selected={i === active}
-              onMouseDown={(e) => {
-                e.preventDefault();
-                pick(folder);
-              }}
-              onMouseEnter={() => setActive(i)}
-              className={cn(
-                "flex cursor-pointer items-center gap-2 px-3 py-1.5 font-mono text-sm text-fg",
-                i === active && "bg-surface-2",
-              )}
-            >
-              <Folder className="h-4 w-4 shrink-0 text-fg-muted" />
-              <span className="truncate">{joinFolder(parent, folder)}</span>
-            </li>
+          {folderTrail(at).map((step, i, all) => (
+            <span key={step.path} className="inline-flex items-center gap-0.5">
+              {i > 1 && <ChevronRight className="h-3.5 w-3.5 text-fg-subtle" />}
+              <button
+                type="button"
+                disabled={locked || i === all.length - 1}
+                onClick={() => go(step.path)}
+                className={cn(
+                  "rounded px-1.5 py-0.5",
+                  i === all.length - 1
+                    ? "font-medium text-fg"
+                    : "text-fg-muted hover:bg-surface-2 hover:text-fg",
+                )}
+              >
+                {step.name}
+              </button>
+            </span>
           ))}
-        </ul>
-      )}
-      <p className="truncate text-sm">{status}</p>
+        </nav>
+        <div className="border-b border-border p-2">
+          <Input
+            id={id}
+            value={filter}
+            autoFocus={autofocus}
+            autoComplete="off"
+            spellCheck={false}
+            placeholder={`Filter the folders in ${here}`}
+            disabled={locked}
+            onKeyDown={onKeyDown}
+            onChange={(e) => {
+              setFilter(e.target.value.replace(/\//g, ""));
+              setActive(0);
+            }}
+            className="font-mono"
+          />
+        </div>
+        <div className="max-h-64 overflow-auto py-1">{body}</div>
+        {known?.truncated && !filter && (
+          <p className="border-t border-border px-3 py-1.5 text-xs text-fg-muted">
+            Only some folders are shown; type to find the others.
+          </p>
+        )}
+        <div className="flex items-center justify-between gap-2 border-t border-border px-2 py-2">
+          <span className="min-w-0 truncate text-sm">
+            {picked === null ? (
+              <span className="text-fg-muted">No folder picked yet.</span>
+            ) : (
+              <span className="inline-flex min-w-0 items-center gap-1 text-success">
+                <Check className="h-3.5 w-3.5 shrink-0" />
+                <span className="truncate font-mono">{shownFolder(picked)}</span>
+              </span>
+            )}
+          </span>
+          <Button
+            type="button"
+            size="sm"
+            variant={pickedHere ? "secondary" : "primary"}
+            disabled={locked || pickedHere || Boolean(known?.failure)}
+            onClick={() => onChange(at === "" ? ROOT_FOLDER : shownFolder(at))}
+            className="shrink-0 font-mono"
+          >
+            {pickedHere ? `Using ${here}` : `Use ${here}`}
+          </Button>
+        </div>
+      </div>
     </div>
   );
 }
