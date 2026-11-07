@@ -364,7 +364,9 @@ export function TreeFolderWidget(props: WidgetProps) {
               locked || pickedHere || !allowed || Boolean(known?.failure)
             }
             title={
-              allowed ? undefined : `This version of the service cannot use ${here}`
+              allowed
+                ? undefined
+                : `This version of the service cannot use ${here}`
             }
             onClick={() => onChange(choice)}
             className="shrink-0 font-mono"
