@@ -65,6 +65,11 @@ in {
     local-api = mkCrate {
       pname = "local-api";
       path = ../homelab/local-api;
+      src = pkgs.lib.cleanSourceWith {
+        src = craneLib.path ../homelab/local-api;
+        filter = path: type:
+          craneLib.filterCargoSources path type || pkgs.lib.hasSuffix ".sh" path;
+      };
       nativeBuildInputs = [pkgs.pkg-config pkgs.llvmPackages.bintools pkgs.gitMinimal];
       buildInputs = [pkgs.openssl];
     };
