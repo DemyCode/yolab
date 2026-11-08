@@ -3667,6 +3667,16 @@ class LoginDependency(unittest.TestCase):
             self.assertNotIn("yolab-common.authelia", template.read_text(), template)
 
 
+class EveryChartYaml(unittest.TestCase):
+    def test_every_app_chart_parses_and_is_built_on_a_yolab_library(self):
+        for path in sorted(Path(check_charts.HERE).glob("*/Chart.yaml")):
+            chart = yaml.safe_load(path.read_text())
+            if chart.get("type") == "library":
+                continue
+            names = [d["name"] for d in chart.get("dependencies") or []]
+            self.assertTrue(set(names) & set(check_charts.LIBRARIES), path.parent.name)
+
+
 class LintValues(unittest.TestCase):
     def test_the_ci_lint_file_is_what_the_checks_render_with(self):
         self.assertEqual(
