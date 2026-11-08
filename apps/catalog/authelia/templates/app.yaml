@@ -215,7 +215,7 @@ spec:
           - -c
           - |
             set -eu
-            until nc -z 127.0.0.1 3890; do
+            until nc -w 2 127.0.0.1 3890 </dev/null; do
               echo "waiting for the user directory on 127.0.0.1:3890"
               sleep 2
             done

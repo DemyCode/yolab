@@ -3331,6 +3331,11 @@ class AutheliaService(RenderedChart):
     def rules_for(self, config, domain):
         return [r for r in config["access_control"]["rules"] if r["domain"] == domain]
 
+    def test_it_waits_for_the_user_directory_with_what_busybox_nc_has(self):
+        script = container_of(self.gateway(), "authelia")["command"][2]
+        self.assertIn("nc -w 2 127.0.0.1 3890 </dev/null", script)
+        self.assertNotIn("nc -z", script)
+
     def test_nothing_is_reachable_unless_a_rule_says_so(self):
         self.assertEqual(self.access()["access_control"]["default_policy"], "deny")
 
