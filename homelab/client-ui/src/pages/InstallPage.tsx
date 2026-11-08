@@ -21,6 +21,7 @@ import type { RJSFSchema } from "@rjsf/utils";
 import validator from "@rjsf/validator-ajv8";
 import { templates, widgets } from "@/components/form/registry";
 import {
+  changesLiveApp,
   copiesDataByDefault,
   filesFolderCopy,
   installBlocker,
@@ -270,19 +271,27 @@ export function InstallPage() {
       }),
     );
 
-    if (origin.mode === "edit") {
+    if (changesLiveApp(origin.mode)) {
       const result = await streamEvents(
         `/api/apps/${instanceName}/update`,
         {
           method: "POST",
-          body: JSON.stringify({ config: payload, keep_version: true }),
+          body: JSON.stringify({
+            config: payload,
+            keep_version: origin.mode === "edit",
+          }),
         },
         () => {},
       );
       if (result.ok) {
         navigate(`/app/${instanceName}`);
       } else {
-        setError(result.error ?? "The new settings were not applied.");
+        setError(
+          result.error ??
+            (origin.mode === "update"
+              ? "It still runs the version it had."
+              : "The new settings were not applied."),
+        );
         setInstalling(false);
       }
       return;
@@ -392,9 +401,11 @@ export function InstallPage() {
     <Banner
       tone="error"
       title={
-        origin.mode === "edit"
-          ? "The new settings were not applied"
-          : "The install could not start"
+        origin.mode === "update"
+          ? "The update did not finish"
+          : origin.mode === "edit"
+            ? "The new settings were not applied"
+            : "The install could not start"
       }
     >
       {error}
@@ -580,7 +591,9 @@ export function InstallPage() {
         ? `Restore ${sourceName ?? app.name}`
         : origin.mode === "edit"
           ? `Settings of ${sourceName ?? app.name}`
-          : `Install ${app.name}`;
+          : origin.mode === "update"
+            ? `Update ${sourceName ?? app.name} to ${app.chart_version}`
+            : `Install ${app.name}`;
 
   const subtitle =
     origin.mode === "duplicate"
@@ -589,7 +602,9 @@ export function InstallPage() {
         ? "Its settings come back from the backup; change any of them before it is installed."
         : origin.mode === "edit"
           ? "Applied to the version it runs now. Its files stay as they are."
-          : "Choose how it is set up. You can change these settings later.";
+          : origin.mode === "update"
+            ? "The settings of the new version, filled in with the ones it has now. Check them, add anything new it asks for, then update. Its files stay as they are."
+            : "Choose how it is set up. You can change these settings later.";
 
   return (
     <Page>
@@ -598,7 +613,7 @@ export function InstallPage() {
           <ArrowLeft className="h-4 w-4" />
           {app.name}
         </button>
-      ) : origin.mode === "edit" ? (
+      ) : changesLiveApp(origin.mode) ? (
         <Link to={`/app/${origin.fromInstance}`} className={backLink}>
           <ArrowLeft className="h-4 w-4" />
           {sourceName ?? app.name}
@@ -728,14 +743,18 @@ export function InstallPage() {
           disabled={blocker !== null || installing}
         >
           {installing
-            ? origin.mode === "edit"
-              ? "Applying…"
-              : "Starting…"
+            ? origin.mode === "update"
+              ? "Updating…"
+              : origin.mode === "edit"
+                ? "Applying…"
+                : "Starting…"
             : origin.mode === "restore"
               ? `Restore ${app.name}`
               : origin.mode === "edit"
                 ? "Apply these settings"
-                : `Install ${app.name}`}
+                : origin.mode === "update"
+                  ? `Update to ${app.chart_version}`
+                  : `Install ${app.name}`}
         </Button>
         {blocker && (
           <p className="mt-2 text-center text-sm text-fg-muted" role="status">

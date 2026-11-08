@@ -7,7 +7,12 @@ import {
   type ConfigSchema,
 } from "./schema";
 
-export type InstallMode = "fresh" | "duplicate" | "restore" | "edit";
+export type InstallMode =
+  | "fresh"
+  | "duplicate"
+  | "restore"
+  | "edit"
+  | "update";
 
 export interface InstallOrigin {
   mode: InstallMode;
@@ -26,6 +31,15 @@ export interface InstallSourcePayload {
 }
 
 export function installOrigin(params: URLSearchParams): InstallOrigin {
+  const updating = params.get("update");
+  if (updating) {
+    return {
+      mode: "update",
+      fromInstance: updating,
+      namespace: null,
+      snapshot: null,
+    };
+  }
   const editing = params.get("edit");
   if (editing) {
     return {
@@ -109,11 +123,15 @@ export function filesFolderCopy(
 }
 
 export function keepsSourceAddress(mode: InstallMode): boolean {
-  return mode === "restore" || mode === "edit";
+  return mode === "restore" || changesLiveApp(mode);
 }
 
 export function readsLiveApp(mode: InstallMode): boolean {
-  return mode === "duplicate" || mode === "edit";
+  return mode === "duplicate" || changesLiveApp(mode);
+}
+
+export function changesLiveApp(mode: InstallMode): boolean {
+  return mode === "edit" || mode === "update";
 }
 
 export function instanceNameFor(
@@ -124,7 +142,7 @@ export function instanceNameFor(
   if (mode === "restore" && source?.instance_name) {
     return stripInstanceId(source.instance_name);
   }
-  if (mode === "edit") return source?.instance_name ?? "";
+  if (changesLiveApp(mode)) return source?.instance_name ?? "";
   return appId;
 }
 
@@ -167,7 +185,7 @@ export function seedForm(
   const seed: Record<string, unknown> = source ? { ...source } : {};
   for (const [name, prop] of Object.entries(schema.properties ?? {})) {
     if (prop.writeOnly) {
-      if (prop.generate && !source) {
+      if (prop.generate && seed[name] === undefined) {
         seed[name] = generate(Math.max(24, prop.minLength ?? 0));
       }
     } else if (seed[name] === undefined && prop.default !== undefined) {
@@ -175,7 +193,7 @@ export function seedForm(
     }
   }
   for (const [name, prop] of revealedFields(schema)) {
-    if (prop.writeOnly && prop.generate && !source) {
+    if (prop.writeOnly && prop.generate && seed[name] === undefined) {
       seed[name] = generate(Math.max(24, prop.minLength ?? 0));
     }
   }

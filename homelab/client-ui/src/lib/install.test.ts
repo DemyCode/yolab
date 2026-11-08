@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  changesLiveApp,
   copiesDataByDefault,
   filesFolderCopy,
   installBlocker,
@@ -552,5 +553,55 @@ describe("changing the settings of an installed app", () => {
     expect(
       installSource(installOrigin(params("edit=gitea-ab12")), false, ""),
     ).toBeUndefined();
+  });
+});
+
+describe("updating an installed app to the newest version", () => {
+  it("reads an update from the address", () => {
+    const origin = installOrigin(params("update=gitea-ab12"));
+    expect(origin.mode).toBe("update");
+    expect(origin.fromInstance).toBe("gitea-ab12");
+  });
+
+  it("changes the running app in place, as an edit does", () => {
+    expect(changesLiveApp("update")).toBe(true);
+    expect(changesLiveApp("edit")).toBe(true);
+    expect(changesLiveApp("duplicate")).toBe(false);
+    expect(instanceNameFor("update", "gitea", definition())).toBe(
+      "gitea-ab12",
+    );
+    expect(keepsSourceAddress("update")).toBe(true);
+    expect(readsLiveApp("update")).toBe(true);
+    expect(
+      installSource(installOrigin(params("update=gitea-ab12")), false, ""),
+    ).toBeUndefined();
+  });
+
+  it("keeps the settings it has and fills in what the new version adds", () => {
+    const schema = {
+      properties: {
+        subdomain: { type: "string", format: "tunnel", default: "files" },
+        password: { type: "string", writeOnly: true, generate: true },
+        api_key: { type: "string", writeOnly: true, generate: true },
+        auth_mode: { type: "string", default: "own" },
+      },
+    };
+    const lengths: number[] = [];
+    const seed = seedForm(
+      schema,
+      { subdomain: "notes", password: "__redacted__" },
+      "update",
+      (n) => {
+        lengths.push(n);
+        return "x".repeat(n);
+      },
+    );
+    expect(seed).toEqual({
+      subdomain: "notes",
+      password: "__redacted__",
+      api_key: "x".repeat(24),
+      auth_mode: "own",
+    });
+    expect(lengths).toEqual([24]);
   });
 });

@@ -1075,10 +1075,11 @@ export function AppDetailPage() {
           trailing={
             newer && actions.has("update") ? (
               <RowAction
-                onClick={() => void update()}
-                disabled={working === "update"}
+                onClick={() =>
+                  navigate(`/add/${app.app_id}?update=${app.instance_name}`)
+                }
               >
-                {working === "update" ? "Updating…" : `Update to ${newer}`}
+                {`Update to ${newer}`}
               </RowAction>
             ) : null
           }
