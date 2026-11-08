@@ -43,18 +43,6 @@ fn is_loopback(req: &Request<Body>) -> bool {
         .unwrap_or(false)
 }
 
-fn ct_eq(a: &str, b: &str) -> bool {
-    let (a, b) = (a.as_bytes(), b.as_bytes());
-    if a.is_empty() || b.is_empty() || a.len() != b.len() {
-        return false;
-    }
-    let mut diff = 0u8;
-    for (x, y) in a.iter().zip(b.iter()) {
-        diff |= x ^ y;
-    }
-    diff == 0
-}
-
 fn has_cluster_token(req: &Request<Body>, cfg: &Config) -> bool {
     let Some(presented) = req
         .headers()
@@ -63,7 +51,7 @@ fn has_cluster_token(req: &Request<Body>, cfg: &Config) -> bool {
     else {
         return false;
     };
-    ct_eq(presented, &cfg.cluster_token())
+    crate::session::ct_eq(presented, &cfg.cluster_token())
 }
 
 #[derive(Clone)]
@@ -356,24 +344,6 @@ mod tests {
     async fn reaches(state: &crate::AppState, token: &str) -> StatusCode {
         let req = with_session(request("/api/protected", OFF_BOX), token);
         status_of(state.auth.clone(), req).await
-    }
-
-    #[test]
-    fn ct_eq_matches_identical() {
-        assert!(ct_eq("s3cret-token", "s3cret-token"));
-    }
-
-    #[test]
-    fn ct_eq_rejects_different() {
-        assert!(!ct_eq("s3cret-token", "s3cret-tokeN"));
-        assert!(!ct_eq("short", "longer-value"));
-    }
-
-    #[test]
-    fn ct_eq_rejects_empty() {
-        assert!(!ct_eq("", ""));
-        assert!(!ct_eq("", "anything"));
-        assert!(!ct_eq("anything", ""));
     }
 
     #[test]

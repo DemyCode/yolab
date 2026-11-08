@@ -3472,7 +3472,7 @@ class AutheliaService(RenderedChart):
 
 class LoginChoice:
     CHART = None
-    BASE = {}
+    BASE: ClassVar[dict] = {}
 
     def gateway(self, extra=None):
         return self.deployments(self.docs({**self.BASE, **(extra or {})}))["gateway"]
@@ -3484,7 +3484,7 @@ class LoginChoice:
             **self.EXTRA_EXISTING,
         }
 
-    EXTRA_EXISTING = {}
+    EXTRA_EXISTING: ClassVar[dict] = {}
 
     def test_its_own_login_runs_authelia_next_to_it(self):
         gateway = self.gateway()
@@ -3536,7 +3536,7 @@ class LoginChoice:
 
 class GristLoginChoice(LoginChoice, RenderedChart):
     CHART = "grist"
-    EXTRA_EXISTING = {"config.owner": "alice"}
+    EXTRA_EXISTING: ClassVar[dict] = {"config.owner": "alice"}
 
     def test_with_an_existing_authelia_the_named_owner_owns_the_site(self):
         env = self.env(self.gateway(self.existing()), "grist")
@@ -3613,6 +3613,22 @@ class I2pLoginChoice(LoginChoice, RenderedChart):
 class MediaStackLoginChoice(LoginChoice, RenderedChart):
     CHART = "media-stack"
 
+    def test_every_admin_site_asks_for_the_login(self):
+        caddyfile = caddyfile_of(self.docs())
+        for site in (
+            "SONARR",
+            "RADARR",
+            "LIDARR",
+            "PROWLARR",
+            "BOOKS",
+            "TORRENTS",
+            "BAZARR",
+            "CLEANUPARR",
+        ):
+            block = caddyfile.split("{$" + site + "_FQDN} {", 1)[1].split("\n}", 1)[0]
+            self.assertIn("import signed_in", block, site)
+        self.assertIn("(signed_in) {\n  forward_auth localhost:9091", caddyfile)
+
 
 class SteamHeadlessLoginChoice(LoginChoice, RenderedChart):
     CHART = "steam-headless"
@@ -3620,7 +3636,7 @@ class SteamHeadlessLoginChoice(LoginChoice, RenderedChart):
 
 class ExcalidrawLoginChoice(LoginChoice, RenderedChart):
     CHART = "excalidraw"
-    BASE = {"config.auth_enabled": "true"}
+    BASE: ClassVar[dict] = {"config.auth_enabled": "true"}
 
     def test_without_a_login_no_authelia_runs(self):
         gateway = self.deployments(self.docs())["gateway"]
@@ -3649,6 +3665,23 @@ class LoginDependency(unittest.TestCase):
             if template.parts[-3] == "yolab-common":
                 continue
             self.assertNotIn("yolab-common.authelia", template.read_text(), template)
+
+
+class LintValues(unittest.TestCase):
+    def test_the_ci_lint_file_is_what_the_checks_render_with(self):
+        self.assertEqual(
+            check_charts.LINT_VALUES["config.auth_users[0].username"], "admin"
+        )
+        self.assertEqual(
+            check_charts.LINT_VALUES["config.firefly.api"],
+            "http://firefly-iii.yolab-firefly-iii.svc.cluster.local:8080",
+        )
+
+    def test_nested_lists_and_maps_become_helm_set_paths(self):
+        self.assertEqual(
+            check_charts.flatten({"a": [{"b": 1}, {"c": {"d": "x"}}], "e": "f"}),
+            {"a[0].b": "1", "a[1].c.d": "x", "e": "f"},
+        )
 
 
 if __name__ == "__main__":

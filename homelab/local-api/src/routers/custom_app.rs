@@ -198,7 +198,7 @@ pub struct SaveCustomReq {
     pub service: String,
 }
 
-const CUSTOM_LIBRARY_VERSION: &str = "0.1.32";
+const CUSTOM_LIBRARY_VERSION: &str = "0.1.33";
 
 const CHART_TEMPLATE: &str = r#"{{ include "yolab-common.caddyConfigMap" . }}
 ---
@@ -429,8 +429,6 @@ struct ChartDep {
     name: String,
 }
 
-const LIBRARIES: [&str; 2] = ["yolab-common", "yolab-stack"];
-
 fn shipped(charts_dir: &std::path::Path, name: &str) -> bool {
     charts_dir.join(name).join("Chart.yaml").is_file()
         || std::fs::read_dir(charts_dir).is_ok_and(|entries| {
@@ -452,7 +450,10 @@ fn vendored(
     meta.dependencies
         .iter()
         .filter(|d| valid_id(&d.name))
-        .filter(|d| LIBRARIES.contains(&d.name.as_str()) || !shipped(&charts_dir, &d.name))
+        .filter(|d| {
+            crate::routers::apps::LIBRARIES.contains(&d.name.as_str())
+                || !shipped(&charts_dir, &d.name)
+        })
         .map(|d| catalog_dir.join(&d.name))
         .filter(|dir| dir.join("Chart.yaml").is_file())
         .collect()

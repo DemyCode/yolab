@@ -41,7 +41,7 @@ fn fingerprint(hash: &str) -> String {
     hex::encode(&Sha256::digest(hash.as_bytes())[..8])
 }
 
-fn ct_eq(a: &str, b: &str) -> bool {
+pub fn ct_eq(a: &str, b: &str) -> bool {
     let (a, b) = (a.as_bytes(), b.as_bytes());
     if a.is_empty() || a.len() != b.len() {
         return false;
@@ -199,5 +199,23 @@ mod tests {
         let forged_body = format!("{body}.extra");
         let mac = hex::encode(hmac_sha256(KEY.as_bytes(), forged_body.as_bytes()));
         assert_eq!(parse(KEY, &format!("{forged_body}.{mac}")), None);
+    }
+
+    #[test]
+    fn ct_eq_matches_identical() {
+        assert!(ct_eq("s3cret-token", "s3cret-token"));
+    }
+
+    #[test]
+    fn ct_eq_rejects_different() {
+        assert!(!ct_eq("s3cret-token", "s3cret-tokeN"));
+        assert!(!ct_eq("short", "longer-value"));
+    }
+
+    #[test]
+    fn ct_eq_rejects_empty() {
+        assert!(!ct_eq("", ""));
+        assert!(!ct_eq("", "anything"));
+        assert!(!ct_eq("anything", ""));
     }
 }

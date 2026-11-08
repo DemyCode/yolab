@@ -3,7 +3,7 @@ name: media-stack
 description: "Jellyfin with the full *arr stack: requests, automatic downloads behind a Mullvad VPN, subtitles and clean-up, sharing one media library"
 home: https://wiki.servarr.com
 type: application
-version: 0.1.30
+version: 0.1.31
 appVersion: "1"
 
   - name: authelia

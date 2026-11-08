@@ -50,34 +50,25 @@ STACK_LIBRARY = os.path.join(HERE, "yolab-stack")
 RELEASE = "release"
 NAMESPACE = f"yolab-{RELEASE}"
 
-LINT_VALUES = {
-    "config.password": "PlaceholderPw2026",
-    "config.admin_password": "PlaceholderPw2026",
-    "config.admin_email": "admin@example.com",
-    "config.app_secret": "PlaceholderAppSecret2026Placeholder",
-    "config.rpc_password": "PlaceholderPw2026",
-    "config.explorer_password": "PlaceholderPw2026",
-    "config.app_key": "PlaceholderAppKey2026Placeholder",
-    "config.api_key": "PlaceholderApiKey2026",
-    "config.auth_secret_key": "PlaceholderAuthSecretKey2026Placeholder",
-    "config.gateway_token": "PlaceholderGatewayToken2026Placeholder",
-    "config.server_name": "example",
-    "config.server_pass": "PlaceholderPw2026",
-    "config.firefly.api": "http://firefly-iii.yolab-firefly-iii.svc.cluster.local:8080",
-    "config.tts.api": "http://kokoro.yolab-kokoro.svc.cluster.local:8880/v1",
-    "config.subdomain": "example",
-    "config.vpn_private_key": "PlaceholderVpnKey2026=",
-    "config.vpn_addresses": "10.64.0.2/32",
-    "config.auth_users[0].username": "admin",
-    "config.auth_users[0].password": "PlaceholderPw2026",
-    "config.accounts[0].username": "alice",
-    "config.accounts[0].password": "PlaceholderPw2026",
-    "config.desktop_password": "PlaceholderPw2026",
-    "config.registration_token": "PlaceholderRegistrationToken2026",
-    "config.oidc_well_known_url": "https://auth.example.com/.well-known/openid-configuration",
-    "config.oidc_client_id": "example",
-    "config.oidc_client_secret": "PlaceholderPw2026",
-}
+
+def flatten(value, prefix=""):
+    if isinstance(value, dict):
+        return {
+            k: v
+            for key, item in value.items()
+            for k, v in flatten(item, f"{prefix}{key}.").items()
+        }
+    if isinstance(value, list):
+        return {
+            k: v
+            for i, item in enumerate(value)
+            for k, v in flatten(item, f"{prefix[:-1]}[{i}].").items()
+        }
+    return {prefix[:-1]: str(value)}
+
+
+with open(os.path.join(HERE, "lint-values.yaml")) as f:
+    LINT_VALUES = flatten(yaml.safe_load(f))
 
 QBITTORRENT_LINK = {
     "internal_url": "http://qbittorrent.yolab-q.svc.cluster.local:8080",

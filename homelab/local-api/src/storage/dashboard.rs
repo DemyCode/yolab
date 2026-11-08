@@ -70,15 +70,6 @@ async fn cluster_password<H: Host>(host: &H) -> Result<Option<String>> {
     Ok(adopt_local_password(stored.as_deref()))
 }
 
-fn generate_password() -> String {
-    use rand::RngExt;
-    rand::rng()
-        .sample_iter(&rand::distr::Alphanumeric)
-        .take(20)
-        .map(char::from)
-        .collect()
-}
-
 fn trimmed(s: &str) -> String {
     s.chars().filter(|c| !c.is_whitespace()).collect()
 }
@@ -216,7 +207,7 @@ pub async fn run<H: Host>(host: &H, node: &str, policy: &DashboardPolicy) -> Res
             }
             None => {
                 tracing::info!("dashboard: generating the cluster-wide dashboard password");
-                generate_password()
+                crate::session::random_token(20)
             }
         };
         if let Err(e) = host.ceph(&["config-key", "set", PW_KEY, &candidate]).await {

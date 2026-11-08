@@ -417,7 +417,7 @@ struct ChartDependency {
     name: String,
 }
 
-const LIBRARIES: [&str; 2] = ["yolab-common", "yolab-stack"];
+pub const LIBRARIES: [&str; 2] = ["yolab-common", "yolab-stack"];
 const LOGIN_DEPENDENCIES: [&str; 1] = ["authelia"];
 
 struct ChartMeta {
