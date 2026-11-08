@@ -36,13 +36,7 @@ function LinkRow({ link }: { link: AppLink }) {
   );
 }
 
-function OutputValue({
-  output,
-  value,
-}: {
-  output: AppOutput;
-  value: string;
-}) {
+function OutputValue({ output, value }: { output: AppOutput; value: string }) {
   const [revealed, setRevealed] = useState(false);
 
   if (output.format === "multiline") {
