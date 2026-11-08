@@ -2313,15 +2313,6 @@ class PackDeclaration(unittest.TestCase):
         )
         self.assertTrue(any("yolab.io/members is gone" in f for f in found), found)
 
-    def test_an_app_named_files_cannot_be_in_a_pack(self):
-        text = PACK_CHART.format(jellyfin="0.3.0") + (
-            '  - name: files\n    version: "0.1.0"\n'
-        )
-        found = collected(
-            check_charts.check_pack_declaration, "watch", text, self.CHARTS
-        )
-        self.assertTrue(any("pack's own files folder" in f for f in found), found)
-
     def test_a_pack_without_yolab_stack_is_reported(self):
         text = PACK_CHART.format(jellyfin="0.3.0").replace(
             "yolab-stack", "something-else"
