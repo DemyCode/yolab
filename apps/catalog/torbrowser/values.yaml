@@ -1,8 +1,13 @@
 config:
   subdomain: torbrowser
+  auth_enabled: true
+  auth_mode: own
+  auth_users: []
 yolab:
   platformApiUrl: ''
   accountToken: ''
   serviceName: ''
   gateway:
     upstream: localhost:5800
+authelia:
+  embedded: true

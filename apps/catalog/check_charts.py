@@ -235,6 +235,8 @@ VARIANTS = {
     ],
     "grist": [{**EXISTING_AUTHELIA, "config.owner": "alice"}],
     "i2p": [EXISTING_AUTHELIA],
+    "jupyterlab": [EXISTING_AUTHELIA],
+    "torbrowser": [EXISTING_AUTHELIA],
     "media-stack": [EXISTING_AUTHELIA],
     "excalidraw": [
         {"config.auth_enabled": "true"},
@@ -1572,6 +1574,8 @@ ADDRESS_ONLY = {
     "authelia": "its sign-in page and cookie live on the YoLab address",
     "grist": "people sign in through Authelia, which needs the YoLab address",
     "i2p": "its console is behind Authelia, which needs the YoLab address",
+    "jupyterlab": "it runs any code, so it sits behind Authelia",
+    "torbrowser": "it browses from this box, so it sits behind Authelia",
     "matrix": "the YoLab address is the server name in every account",
 }
 RETIRED_MEMBERS = "yolab.io/members"

@@ -8,48 +8,96 @@
     "config": {
       "title": "JupyterLab",
       "type": "object",
+      "required": [
+        "subdomain",
+        "auth_mode"
+      ],
       "properties": {
-        "yolab_enabled": {
-          "type": "boolean",
-          "title": "YoLab address",
-          "default": true,
-          "description": "Reachable from anywhere at https://<subdomain>.<your-number>.yolab.io, through your YoLab tunnel. Visitors need IPv6."
+        "subdomain": {
+          "type": "string",
+          "title": "Subdomain",
+          "format": "tunnel",
+          "default": "jupyterlab",
+          "description": "JupyterLab, behind the login below."
+        },
+        "yolab_token": {
+          "type": "string",
+          "title": "YoLab token",
+          "format": "yolab-token",
+          "writeOnly": true,
+          "description": "Leave it as it is to use this box's YoLab account."
+        },
+        "auth_mode": {
+          "type": "string",
+          "title": "Sign-in",
+          "default": "own",
+          "oneOf": [
+            {
+              "const": "own",
+              "title": "Its own login, with the users below"
+            },
+            {
+              "const": "existing",
+              "title": "An Authelia you already run, with its users"
+            }
+          ]
         }
       },
       "dependencies": {
-        "yolab_enabled": {
+        "auth_mode": {
           "oneOf": [
             {
               "properties": {
-                "yolab_enabled": {
-                  "const": false
+                "auth_mode": {
+                  "const": "own"
+                },
+                "auth_users": {
+                  "type": "array",
+                  "title": "Logins",
+                  "description": "JupyterLab runs any code it is given on this box, so it is only reachable with one of these.",
+                  "minItems": 1,
+                  "default": [],
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "username",
+                      "password"
+                    ],
+                    "properties": {
+                      "username": {
+                        "type": "string",
+                        "title": "Username",
+                        "minLength": 1
+                      },
+                      "password": {
+                        "type": "string",
+                        "title": "Password",
+                        "minLength": 8,
+                        "writeOnly": true,
+                        "generate": true
+                      }
+                    }
+                  }
                 }
               },
               "required": [
-                "yolab_enabled"
+                "auth_users"
               ]
             },
             {
               "properties": {
-                "yolab_enabled": {
-                  "const": true
+                "auth_mode": {
+                  "const": "existing"
                 },
-                "subdomain": {
+                "auth_url": {
                   "type": "string",
-                  "title": "Subdomain",
-                  "format": "tunnel",
-                  "default": "jupyterlab"
-                },
-                "yolab_token": {
-                  "type": "string",
-                  "title": "YoLab token",
-                  "format": "yolab-token",
-                  "writeOnly": true,
-                  "description": "Leave it as it is to use this box's YoLab account."
+                  "title": "Authelia address",
+                  "format": "uri",
+                  "description": "Where this service asks who is signed in. For the Authelia service of this box, copy its \"Address for your other services\" output. People then sign in once, on that Authelia's page, for all your services that use it."
                 }
               },
               "required": [
-                "subdomain"
+                "auth_url"
               ]
             }
           ]

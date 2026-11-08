@@ -1,6 +1,6 @@
 {{ include "yolab-common.caddyConfigMap" . }}
 ---
-{{ include "yolab-common.privateAccessResources" . }}
+{{ include "authelia.embed.secret" . }}
 ---
 {{ include "yolab-common.uninstallHook" . }}
 ---
@@ -25,17 +25,17 @@ spec:
     spec:
       initContainers:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
-      {{- include "yolab-common.privateAccessInit" . | nindent 6 }}
+      {{- include "authelia.embed.init" . | nindent 6 }}
       containers:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
-      {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
+      {{- include "authelia.embed.container" . | nindent 6 }}
       - name: server
         image: quay.io/jupyter/base-notebook:lab-4.6.4@sha256:051915e06265cf8415b749dbb655b82611d76e0189ec85501a81fa2f52f481b9
         imagePullPolicy: IfNotPresent
         args:
         - /bin/sh
         - -c
-        - start-notebook.py --IdentityProvider.token=${APP_PASSWORD}
+        - start-notebook.py --IdentityProvider.token=''
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000
@@ -50,4 +50,4 @@ spec:
           subPath: 'data'
       volumes:
       {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
-      {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}
+      {{- include "authelia.embed.volumes" . | nindent 6 }}

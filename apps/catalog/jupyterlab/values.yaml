@@ -1,8 +1,13 @@
 config:
   subdomain: jupyterlab
+  auth_enabled: true
+  auth_mode: own
+  auth_users: []
 yolab:
   platformApiUrl: ''
   accountToken: ''
   serviceName: ''
   gateway:
     upstream: localhost:8888
+authelia:
+  embedded: true
