@@ -44,6 +44,8 @@ charts:
     version: "0.1.20"
   - name: audiobookshelf
     version: "0.1.34"
+  - name: authelia
+    version: "0.1.1"
   - name: autobrr
     version: "0.1.19"
   - name: babybuddy
@@ -158,6 +160,8 @@ charts:
     version: "0.1.20"
   - name: etherpad
     version: "0.1.20"
+  - name: excalidraw
+    version: "0.1.36"
   - name: file-drop
     version: "0.1.21"
   - name: filebrowser
@@ -204,6 +208,8 @@ charts:
     version: "0.1.20"
   - name: grafana
     version: "0.1.34"
+  - name: grist
+    version: "0.1.2"
   - name: grocy
     version: "0.1.34"
   - name: gupt
@@ -238,6 +244,8 @@ charts:
     version: "0.1.19"
   - name: hortusfox
     version: "0.1.20"
+  - name: i2p
+    version: "0.1.2"
   - name: immich
     version: "0.2.34"
   - name: influxdb
@@ -338,6 +346,8 @@ charts:
     version: "0.1.19"
   - name: mealie
     version: "0.1.34"
+  - name: media-stack
+    version: "0.1.32"
   - name: memos
     version: "0.1.34"
   - name: meshchatx
@@ -576,6 +586,8 @@ charts:
     version: "0.1.21"
   - name: stash
     version: "0.1.20"
+  - name: steam-headless
+    version: "0.1.32"
   - name: stirling-pdf
     version: "0.1.34"
   - name: strfry
