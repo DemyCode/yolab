@@ -62,14 +62,6 @@ pub(crate) fn overlaps(a: &str, b: &str) -> bool {
         || a.strip_prefix(b).is_some_and(|rest| rest.starts_with('/'))
 }
 
-pub(crate) fn is_own(folder: &str, instance: &str) -> bool {
-    let first = folder.split('/').next().unwrap_or_default();
-    first == instance
-        || first
-            .strip_prefix(instance)
-            .is_some_and(|rest| rest.starts_with('.'))
-}
-
 pub(crate) fn same_role(a: &str, b: &str) -> bool {
     a == b || (a.starts_with(FILES_CLAIM_PREFIX) && b.starts_with(FILES_CLAIM_PREFIX))
 }
@@ -327,7 +319,7 @@ impl Op {
                  shift 3\n\
                  if [ ! -d \"$src\" ]; then echo \"$from is not a folder\" >&2; exit 2; fi\n\
                  if [ -d \"$dst\" ] && [ -n \"$(ls -A \"$dst\")\" ]; then\n\
-                 echo \"$to already has files in it\" >&2; exit 3\n\
+                 echo \"$to already has files in it, so it is used as it is\"; exit 0\n\
                  fi\n\
                  mkdir \"$snap\"\n\
                  trap 'status=$?; rmdir \"$snap\"; exit $status' EXIT\n\
@@ -780,17 +772,6 @@ mod tests {
     }
 
     #[test]
-    fn a_services_own_folders_start_with_its_name() {
-        assert!(is_own("jellyfin", "jellyfin"));
-        assert!(is_own("jellyfin.files", "jellyfin"));
-        assert!(is_own("movies-tv.radarr/config", "movies-tv"));
-        assert!(!is_own("jellyfin2", "jellyfin"));
-        assert!(!is_own("jellyfin-old", "jellyfin"));
-        assert!(!is_own("media/jellyfin", "jellyfin"));
-        assert!(!is_own("", "jellyfin"));
-    }
-
-    #[test]
     fn a_files_folder_plays_the_same_part_whatever_folder_it_names() {
         assert!(same_role("jellyfin-data", "jellyfin-data"));
         assert!(same_role("content-1a2b3c4d", "content-99999999"));
@@ -1073,7 +1054,10 @@ mod tests {
         let script = command[2].as_str().unwrap();
         assert!(script.contains("snap=\"$src/.snap/$3\""), "{script}");
         assert!(script.contains("rmdir \"$snap\""), "{script}");
-        assert!(script.contains("already has files in it"), "{script}");
+        assert!(
+            script.contains("already has files in it, so it is used as it is"),
+            "{script}"
+        );
         assert!(script.contains("rm -rf -- \"$dst/$p\""), "{script}");
     }
 
