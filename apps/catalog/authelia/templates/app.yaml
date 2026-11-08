@@ -52,6 +52,7 @@ spec:
       annotations:
         yolab.io/access: {{ toJson (list $policy $config.rules $password) | sha256sum | trunc 16 | quote }}
     spec:
+      enableServiceLinks: false
       initContainers:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
       - name: authelia-config
