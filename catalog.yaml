@@ -271,7 +271,7 @@ charts:
   - name: jotty
     version: "0.1.20"
   - name: jupyterlab
-    version: "0.1.19"
+    version: "0.1.20"
   - name: just-download
     version: "0.1.20"
   - name: kan
@@ -627,7 +627,7 @@ charts:
   - name: threema
     version: "0.1.19"
   - name: torbrowser
-    version: "0.1.20"
+    version: "0.1.21"
   - name: toshi-moto
     version: "0.1.20"
   - name: transmission
