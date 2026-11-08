@@ -708,7 +708,7 @@ export function AppDetailPage() {
   const domain = useApi<DomainResponse>("domain", "/api/tunnel/domain");
 
   const [confirmRemove, setConfirmRemove] = useState(false);
-  const [deleteData, setDeleteData] = useState(true);
+  const [deleteShared, setDeleteShared] = useState(false);
   const [working, setWorking] = useState<null | "update" | "remove">(null);
   const [notice, setNotice] = useState<Notice | null>(null);
   const [restoreOpen, setRestoreOpen] = useState(false);
@@ -789,7 +789,7 @@ export function AppDetailPage() {
     setWorking("remove");
     setNotice(null);
     try {
-      await api.del(removePath(app.instance_name, deleteData));
+      await api.del(removePath(app.instance_name, deleteShared));
       navigate("/");
     } catch (e) {
       setNotice({
@@ -1166,8 +1166,8 @@ export function AppDetailPage() {
             <RemoveDataChoice
               instance={app.instance_name}
               open={confirmRemove}
-              deleteData={deleteData}
-              onChange={setDeleteData}
+              deleteShared={deleteShared}
+              onChange={setDeleteShared}
             />
           </>
         }

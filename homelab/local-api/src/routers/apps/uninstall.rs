@@ -156,7 +156,7 @@ pub(crate) async fn delete_namespace_with_retry(client: &Client, ns: &str) {
 #[derive(Deserialize, Default)]
 pub struct UninstallQuery {
     #[serde(default)]
-    pub delete_data: bool,
+    pub delete_shared: bool,
 }
 
 pub async fn uninstall_app(
@@ -167,11 +167,9 @@ pub async fn uninstall_app(
     let ns = format!("yolab-{instance_name}");
     let b = state.backend().await?;
 
-    let doomed = if query.delete_data {
-        crate::tree::own_folders(&crate::tree::volumes(&b.kube).await?, &ns)
-    } else {
-        Vec::new()
-    };
+    let volumes = crate::tree::volumes(&b.kube).await?;
+    let folders = crate::tree::service_folders(&volumes, &ns);
+    let doomed = crate::tree::data_verdict(&folders, &volumes, &ns).doomed(query.delete_shared);
     let accepted = (
         axum::http::StatusCode::ACCEPTED,
         Json(serde_json::json!({"ok": true})),
@@ -197,8 +195,8 @@ pub async fn app_data(
     let ns = format!("yolab-{instance_name}");
     let b = state.backend().await?;
     let volumes = crate::tree::volumes(&b.kube).await?;
-    let own = crate::tree::own_folders(&volumes, &ns);
-    Ok(Json(crate::tree::data_verdict(&own, &volumes, &ns)))
+    let folders = crate::tree::service_folders(&volumes, &ns);
+    Ok(Json(crate::tree::data_verdict(&folders, &volumes, &ns)))
 }
 
 pub(crate) fn folders_in(namespace: &Value) -> anyhow::Result<Vec<String>> {
@@ -218,13 +216,8 @@ async fn delete_data<H: crate::host::Host>(
     if doomed.is_empty() {
         return Ok(());
     }
-    let own: Vec<String> = doomed
-        .iter()
-        .filter(|f| crate::tree::is_own(f, instance_name))
-        .cloned()
-        .collect();
     let volumes = crate::tree::volumes(&b.kube).await?;
-    let verdict = crate::tree::data_verdict(&own, &volumes, ns);
+    let verdict = crate::tree::data_verdict(doomed, &volumes, ns);
     for kept in &verdict.kept {
         tracing::info!(
             "uninstall {instance_name}: keeping {} because {} uses it",
@@ -232,7 +225,7 @@ async fn delete_data<H: crate::host::Host>(
             kept.used_by.join(", ")
         );
     }
-    crate::tree::run(&b.kube, &crate::tree::Op::Remove(verdict.delete)).await
+    crate::tree::run(&b.kube, &verdict.removal(true)).await
 }
 
 pub(crate) async fn release_tree_volumes(client: &Client, ns: &str) -> anyhow::Result<()> {

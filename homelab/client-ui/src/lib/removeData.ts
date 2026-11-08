@@ -1,18 +1,27 @@
-export interface KeptFolder {
+export interface FolderUse {
   folder: string;
   used_by: string[];
 }
 
 export interface DataVerdict {
   delete: string[];
-  kept: KeptFolder[];
+  shared: FolderUse[];
+  kept: FolderUse[];
 }
 
-export function removePath(instance: string, deleteData: boolean): string {
-  const query = deleteData ? "?delete_data=true" : "";
+export function removePath(instance: string, deleteShared: boolean): string {
+  const query = deleteShared ? "?delete_shared=true" : "";
   return `/api/apps/${encodeURIComponent(instance)}${query}`;
 }
 
-export function keptReason(kept: KeptFolder): string {
-  return `${kept.folder}, used by ${kept.used_by.join(", ")}`;
+export function folderName(folder: string): string {
+  return folder === "" ? "/ (the whole file tree)" : `/${folder}`;
+}
+
+export function usedBy(use: FolderUse): string {
+  return `${folderName(use.folder)}, used by ${use.used_by.join(", ")}`;
+}
+
+export function sharedWith(shared: FolderUse[]): string[] {
+  return [...new Set(shared.flatMap((s) => s.used_by))].sort();
 }

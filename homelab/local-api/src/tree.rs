@@ -208,7 +208,10 @@ pub(crate) async fn render<H: Host>(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Op {
     Make(Vec<String>),
-    Remove(Vec<String>),
+    Remove {
+        paths: Vec<String>,
+        keep: Vec<String>,
+    },
     Copy {
         from: String,
         to: String,
@@ -219,7 +222,8 @@ pub(crate) enum Op {
 impl Op {
     fn paths(&self) -> Vec<&str> {
         match self {
-            Op::Make(paths) | Op::Remove(paths) => paths.iter().map(String::as_str).collect(),
+            Op::Make(paths) => paths.iter().map(String::as_str).collect(),
+            Op::Remove { paths, keep } => paths.iter().chain(keep).map(String::as_str).collect(),
             Op::Copy {
                 from,
                 to,
@@ -235,16 +239,16 @@ impl Op {
         if let Some(bad) = self
             .paths()
             .into_iter()
-            .find(|p| clean_path(p).as_deref() != Some(*p))
+            .find(|p| p.contains('\n') || clean_path(p).as_deref() != Some(*p))
         {
             return Err(format!("{bad:?} is not a folder in the file tree"));
         }
         match self {
             Op::Make(_) => Ok(()),
-            Op::Remove(paths) if paths.iter().any(String::is_empty) => {
-                Err("the whole file tree is never deleted".to_string())
+            Op::Remove { keep, .. } if keep.iter().any(String::is_empty) => {
+                Err("keeping the whole file tree deletes nothing".to_string())
             }
-            Op::Remove(_) => Ok(()),
+            Op::Remove { .. } => Ok(()),
             Op::Copy { from, to, .. } if overlaps(from, to) => {
                 Err(format!("{from:?} cannot be copied into {to:?}"))
             }
@@ -257,7 +261,7 @@ impl Op {
 
     fn is_empty(&self) -> bool {
         match self {
-            Op::Make(paths) | Op::Remove(paths) => paths.is_empty(),
+            Op::Make(paths) | Op::Remove { paths, .. } => paths.is_empty(),
             Op::Copy { .. } => false,
         }
     }
@@ -268,9 +272,51 @@ impl Op {
             Op::Make(_) => {
                 format!("set -eu\nfor p in \"$@\"; do mkdir -p \"{tree}/$p\"; done\n")
             }
-            Op::Remove(_) => {
-                format!("set -eu\nfor p in \"$@\"; do rm -rf -- \"{tree}/$p\"; done\n")
-            }
+            Op::Remove { .. } => format!(
+                "set -eu\n\
+                 tree=\"{tree}\"\n\
+                 n=\"$1\"\n\
+                 shift\n\
+                 doomed=\"\"\n\
+                 while [ \"$n\" -gt 0 ]; do\n\
+                 d=\"$tree/$1\"\n\
+                 doomed=\"$doomed${{d%/}}\n\"\n\
+                 shift\n\
+                 n=$((n - 1))\n\
+                 done\n\
+                 kept=\"\"\n\
+                 for k in \"$@\"; do kept=\"$kept$tree/$k\n\"; done\n\
+                 verdict() {{\n\
+                 local k v=delete\n\
+                 while IFS= read -r k; do\n\
+                 [ -n \"$k\" ] || continue\n\
+                 if [ \"$1\" = \"$k\" ]; then v=keep; break; fi\n\
+                 case \"$k\" in \"$1\"/*) v=descend ;; esac\n\
+                 done <<KEPT\n\
+                 $kept\n\
+                 KEPT\n\
+                 echo \"$v\"\n\
+                 }}\n\
+                 prune() {{\n\
+                 local e\n\
+                 for e in \"$1\"/* \"$1\"/.[!.]* \"$1\"/..?*; do\n\
+                 [ -e \"$e\" ] || [ -L \"$e\" ] || continue\n\
+                 case \"$(verdict \"$e\")\" in\n\
+                 delete) rm -rf -- \"$e\" ;;\n\
+                 descend) if [ -L \"$e\" ]; then rm -f -- \"$e\"; else prune \"$e\"; fi ;;\n\
+                 esac\n\
+                 done\n\
+                 }}\n\
+                 while IFS= read -r d; do\n\
+                 [ -n \"$d\" ] || continue\n\
+                 case \"$(verdict \"$d\")\" in\n\
+                 delete) if [ \"$d\" = \"$tree\" ]; then prune \"$d\"; else rm -rf -- \"$d\"; fi ;;\n\
+                 descend) prune \"$d\" ;;\n\
+                 esac\n\
+                 done <<DOOMED\n\
+                 $doomed\n\
+                 DOOMED\n"
+            ),
             Op::Copy { .. } => format!(
                 "set -eu\n\
                  from=\"$1\"\n\
@@ -297,7 +343,11 @@ impl Op {
 
     fn args(&self, name: &str) -> Vec<String> {
         match self {
-            Op::Make(paths) | Op::Remove(paths) => paths.clone(),
+            Op::Make(paths) => paths.clone(),
+            Op::Remove { paths, keep } => std::iter::once(paths.len().to_string())
+                .chain(paths.iter().cloned())
+                .chain(keep.iter().cloned())
+                .collect(),
             Op::Copy {
                 from,
                 to,
@@ -312,7 +362,14 @@ impl Op {
     fn describe(&self) -> String {
         match self {
             Op::Make(paths) => format!("make the folders {}", paths.join(", ")),
-            Op::Remove(paths) => format!("delete the folders {}", paths.join(", ")),
+            Op::Remove { paths, .. } => format!(
+                "delete the folders {}",
+                paths
+                    .iter()
+                    .map(|p| if p.is_empty() { "/" } else { p.as_str() })
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
             Op::Copy { from, to, .. } => format!("copy the folder {from} to {to}"),
         }
     }
@@ -511,52 +568,103 @@ pub struct Kept {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
 pub struct DataVerdict {
     pub delete: Vec<String>,
+    pub shared: Vec<Kept>,
     pub kept: Vec<Kept>,
 }
 
-pub(crate) fn own_folders(volumes: &[Value], namespace: &str) -> Vec<String> {
-    let instance = namespace.strip_prefix("yolab-").unwrap_or(namespace);
-    claimed_in(volumes, namespace)
+impl DataVerdict {
+    pub(crate) fn doomed(&self, with_shared: bool) -> Vec<String> {
+        let shared = self
+            .shared
+            .iter()
+            .filter(|_| with_shared)
+            .map(|s| &s.folder);
+        self.delete.iter().chain(shared).cloned().collect()
+    }
+
+    pub(crate) fn removal(&self, with_shared: bool) -> Op {
+        Op::Remove {
+            paths: self.doomed(with_shared),
+            keep: self
+                .kept
+                .iter()
+                .map(|k| k.folder.clone())
+                .filter(|k| !k.is_empty())
+                .collect(),
+        }
+    }
+}
+
+fn inside(inner: &str, outer: &str) -> bool {
+    inner != outer
+        && (outer.is_empty()
+            || inner
+                .strip_prefix(outer)
+                .is_some_and(|rest| rest.starts_with('/')))
+}
+
+pub(crate) fn service_folders(volumes: &[Value], namespace: &str) -> Vec<String> {
+    let folders: BTreeSet<String> = claimed_in(volumes, namespace)
         .into_iter()
         .map(|c| c.folder)
-        .filter(|f| is_own(f, instance))
-        .collect::<BTreeSet<_>>()
-        .into_iter()
+        .collect();
+    folders
+        .iter()
+        .filter(|f| !folders.iter().any(|outer| inside(f, outer)))
+        .cloned()
         .collect()
 }
 
-pub(crate) fn data_verdict(own: &[String], volumes: &[Value], namespace: &str) -> DataVerdict {
-    let all = claimed(volumes);
-    let own: BTreeSet<&str> = own
-        .iter()
-        .map(String::as_str)
-        .filter(|f| !f.is_empty())
+fn instance_of(namespace: &str) -> String {
+    namespace
+        .strip_prefix("yolab-")
+        .unwrap_or(namespace)
+        .to_string()
+}
+
+pub(crate) fn data_verdict(folders: &[String], volumes: &[Value], namespace: &str) -> DataVerdict {
+    let others: Vec<Claimed> = claimed(volumes)
+        .into_iter()
+        .filter(|c| c.namespace != namespace)
         .collect();
-    let others: Vec<&Claimed> = all
-        .iter()
-        .filter(|c| c.namespace != namespace && !c.folder.is_empty())
-        .collect();
-    let mut verdict = DataVerdict::default();
-    for folder in own {
-        let used_by: BTreeSet<String> = others
+    let users = |pick: &dyn Fn(&Claimed) -> bool| -> Vec<String> {
+        others
             .iter()
-            .filter(|c| overlaps(folder, &c.folder))
-            .map(|c| {
-                c.namespace
-                    .strip_prefix("yolab-")
-                    .unwrap_or(&c.namespace)
-                    .to_string()
-            })
-            .collect();
-        if used_by.is_empty() {
-            verdict.delete.push(folder.to_string());
+            .filter(|c| pick(c))
+            .map(|c| instance_of(&c.namespace))
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect()
+    };
+    let mut verdict = DataVerdict::default();
+    let mut kept: BTreeSet<String> = BTreeSet::new();
+    for folder in folders.iter().collect::<BTreeSet<_>>() {
+        for c in others
+            .iter()
+            .filter(|c| &c.folder == folder || inside(&c.folder, folder))
+        {
+            kept.insert(c.folder.clone());
+        }
+        if kept.contains(folder) {
+            continue;
+        }
+        let above = users(&|c| inside(folder, &c.folder));
+        if above.is_empty() {
+            verdict.delete.push(folder.clone());
         } else {
-            verdict.kept.push(Kept {
-                folder: folder.to_string(),
-                used_by: used_by.into_iter().collect(),
+            verdict.shared.push(Kept {
+                folder: folder.clone(),
+                used_by: above,
             });
         }
     }
+    verdict.kept = kept
+        .into_iter()
+        .map(|folder| Kept {
+            used_by: users(&|c| c.folder == folder),
+            folder,
+        })
+        .collect();
     verdict
 }
 
@@ -816,13 +924,18 @@ mod tests {
         );
     }
 
+    fn remove(paths: &[&str], keep: &[&str]) -> Op {
+        Op::Remove {
+            paths: paths.iter().map(|p| p.to_string()).collect(),
+            keep: keep.iter().map(|k| k.to_string()).collect(),
+        }
+    }
+
     #[test]
-    fn the_whole_tree_is_never_deleted() {
-        assert!(Op::Remove(vec![String::new()]).check().is_err());
-        assert!(Op::Remove(vec!["jellyfin".into(), String::new()])
-            .check()
-            .is_err());
-        assert!(Op::Remove(vec!["jellyfin".into()]).check().is_ok());
+    fn keeping_the_whole_tree_is_refused_and_a_newline_never_reaches_a_job() {
+        assert!(remove(&["jellyfin"], &[""]).check().is_err());
+        assert!(remove(&["jelly\nfin"], &[]).check().is_err());
+        assert!(remove(&[""], &["jellyfin"]).check().is_ok());
     }
 
     #[test]
@@ -850,16 +963,16 @@ mod tests {
     }
 
     #[test]
-    fn a_service_pointed_at_the_whole_tree_can_be_installed_but_never_deletes_it() {
+    fn a_service_pointed_at_the_whole_tree_can_be_installed() {
         assert!(Op::Make(vec![String::new()]).check().is_ok());
-        assert!(Op::Remove(vec![String::new()]).check().is_err());
     }
 
     #[test]
     fn only_clean_folders_reach_a_job() {
         for bad in ["/jellyfin", "jellyfin/", "a/../b", "a//b", "."] {
             assert!(Op::Make(vec![bad.into()]).check().is_err(), "{bad}");
-            assert!(Op::Remove(vec![bad.into()]).check().is_err(), "{bad}");
+            assert!(remove(&[bad], &[]).check().is_err(), "{bad}");
+            assert!(remove(&["jellyfin"], &[bad]).check().is_err(), "{bad}");
         }
         let op = Op::Copy {
             from: "jellyfin".into(),
@@ -899,7 +1012,7 @@ mod tests {
 
     #[test]
     fn a_job_runs_once_and_is_cleared_after_a_while() {
-        let j = job("yolab-tree-1", &Op::Remove(vec!["jellyfin".into()]));
+        let j = job("yolab-tree-1", &remove(&["jellyfin"], &[]));
         assert_eq!(j["spec"]["backoffLimit"], 0);
         assert_eq!(j["spec"]["template"]["spec"]["restartPolicy"], "Never");
         assert_eq!(j["spec"]["ttlSecondsAfterFinished"], KEEP_FINISHED_SECS);
@@ -965,105 +1078,228 @@ mod tests {
     }
 
     fn verdict(volumes: &[Value], namespace: &str) -> DataVerdict {
-        data_verdict(&own_folders(volumes, namespace), volumes, namespace)
+        data_verdict(&service_folders(volumes, namespace), volumes, namespace)
+    }
+
+    fn kept(folder: &str, used_by: &[&str]) -> Kept {
+        Kept {
+            folder: folder.into(),
+            used_by: used_by.iter().map(|u| u.to_string()).collect(),
+        }
     }
 
     #[test]
-    fn a_services_folders_are_listed_once_each_without_the_whole_tree() {
+    fn a_services_folders_are_listed_once_with_the_ones_inside_folded_in() {
         let volumes = vec![
             volume_in("yolab-jellyfin", "jellyfin-data", "/tree/jellyfin"),
             volume_in("yolab-jellyfin", "jellyfin-cache", "/tree/jellyfin"),
-            volume_in("yolab-jellyfin", "content-1a2b3c4d", "/tree/jellyfin.files"),
-            volume_in("yolab-jellyfin", "everything", "/tree"),
+            volume_in("yolab-jellyfin", "content-1a2b3c4d", "/tree/jellyfin/media"),
+            volume_in("yolab-jellyfin", "content-99999999", "/tree/Movies"),
             volume_in("yolab-radarr", "radarr-data", "/tree/radarr"),
         ];
         assert_eq!(
-            own_folders(&volumes, "yolab-jellyfin"),
-            vec!["jellyfin", "jellyfin.files"]
+            service_folders(&volumes, "yolab-jellyfin"),
+            vec!["Movies", "jellyfin"]
         );
     }
 
     #[test]
-    fn a_folder_a_service_was_pointed_at_is_never_its_to_delete() {
+    fn a_service_at_the_root_has_the_whole_tree_as_its_one_folder() {
         let volumes = vec![
             volume_in("yolab-filebrowser", "filebrowser-data", "/tree/filebrowser"),
-            volume_in(
-                "yolab-filebrowser",
-                "content-1a2b3c4d",
-                "/tree/immich-83uz/uploads",
-            ),
-            volume_in("yolab-jellyfin", "content-99999999", "/tree/Movies"),
+            volume_in("yolab-filebrowser", "content-1a2b3c4d", "/tree"),
+        ];
+        assert_eq!(service_folders(&volumes, "yolab-filebrowser"), vec![""]);
+    }
+
+    #[test]
+    fn data_nobody_else_sees_is_deleted_without_a_question() {
+        let volumes = vec![volume_in(
+            "yolab-jellyfin",
+            "jellyfin-data",
+            "/tree/jellyfin",
+        )];
+        assert_eq!(
+            verdict(&volumes, "yolab-jellyfin"),
+            DataVerdict {
+                delete: vec!["jellyfin".into()],
+                ..Default::default()
+            }
+        );
+    }
+
+    #[test]
+    fn data_another_service_sees_from_above_is_asked_about() {
+        let volumes = vec![
+            volume_in("yolab-jellyfin", "jellyfin-data", "/tree/jellyfin"),
+            volume_in("yolab-filebrowser", "content-1a2b3c4d", "/tree"),
         ];
         assert_eq!(
-            own_folders(&volumes, "yolab-filebrowser"),
-            vec!["filebrowser"]
+            verdict(&volumes, "yolab-jellyfin"),
+            DataVerdict {
+                shared: vec![kept("jellyfin", &["filebrowser"])],
+                ..Default::default()
+            }
         );
-        assert_eq!(verdict(&volumes, "yolab-jellyfin"), DataVerdict::default());
+    }
+
+    #[test]
+    fn a_folder_another_service_mounts_is_never_deleted() {
+        let volumes = vec![
+            volume_in("yolab-jellyfin", "jellyfin-data", "/tree/jellyfin"),
+            volume_in("yolab-jellyfin", "content-1a2b3c4d", "/tree/Movies"),
+            volume_in("yolab-radarr", "content-1a2b3c4d", "/tree/Movies"),
+        ];
+        assert_eq!(
+            verdict(&volumes, "yolab-jellyfin"),
+            DataVerdict {
+                delete: vec!["jellyfin".into()],
+                kept: vec![kept("Movies", &["radarr"])],
+                ..Default::default()
+            }
+        );
+    }
+
+    #[test]
+    fn a_folder_another_service_mounts_inside_survives_the_rest_being_deleted() {
+        let volumes = vec![
+            volume_in("yolab-jellyfin", "jellyfin-data", "/tree/jellyfin"),
+            volume_in(
+                "yolab-radarr",
+                "content-1a2b3c4d",
+                "/tree/jellyfin/media/movies",
+            ),
+        ];
+        let verdict = verdict(&volumes, "yolab-jellyfin");
+        assert_eq!(
+            verdict.kept,
+            vec![kept("jellyfin/media/movies", &["radarr"])]
+        );
+        assert_eq!(
+            verdict.removal(false),
+            Op::Remove {
+                paths: vec!["jellyfin".into()],
+                keep: vec!["jellyfin/media/movies".into()],
+            }
+        );
+    }
+
+    #[test]
+    fn shared_data_is_deleted_only_when_asked() {
+        let volumes = vec![
+            volume_in("yolab-jellyfin", "jellyfin-data", "/tree/jellyfin"),
+            volume_in("yolab-filebrowser", "content-1a2b3c4d", "/tree"),
+        ];
+        let verdict = verdict(&volumes, "yolab-jellyfin");
+        assert!(verdict.removal(false).is_empty());
+        assert_eq!(
+            verdict.removal(true),
+            Op::Remove {
+                paths: vec!["jellyfin".into()],
+                keep: vec![],
+            }
+        );
+    }
+
+    #[test]
+    fn a_service_at_the_root_takes_everything_only_it_sees() {
+        let volumes = vec![
+            volume_in("yolab-filebrowser", "content-1a2b3c4d", "/tree"),
+            volume_in("yolab-jellyfin", "jellyfin-data", "/tree/jellyfin"),
+        ];
+        let verdict = verdict(&volumes, "yolab-filebrowser");
+        assert_eq!(verdict.delete, vec![""]);
+        assert_eq!(verdict.kept, vec![kept("jellyfin", &["jellyfin"])]);
+    }
+
+    #[test]
+    fn two_services_at_the_root_never_delete_the_tree() {
+        let volumes = vec![
+            volume_in("yolab-filebrowser", "content-1a2b3c4d", "/tree"),
+            volume_in("yolab-filebrowser2", "content-1a2b3c4d", "/tree"),
+        ];
+        let verdict = verdict(&volumes, "yolab-filebrowser");
+        assert_eq!(verdict.kept, vec![kept("", &["filebrowser2"])]);
+        assert!(verdict.removal(true).is_empty());
     }
 
     #[test]
     fn folders_remembered_at_uninstall_are_judged_against_what_is_mounted_now() {
         let volumes = vec![volume_in("yolab-radarr", "content-1a2b3c4d", "/tree/media")];
-        let own = vec!["jellyfin".to_string(), "media".to_string()];
-        let verdict = data_verdict(&own, &volumes, "yolab-jellyfin");
+        let folders = vec!["jellyfin".to_string(), "media".to_string()];
+        let verdict = data_verdict(&folders, &volumes, "yolab-jellyfin");
         assert_eq!(verdict.delete, vec!["jellyfin"]);
-        assert_eq!(verdict.kept[0].folder, "media");
+        assert_eq!(verdict.kept, vec![kept("media", &["radarr"])]);
     }
 
-    #[test]
-    fn deleting_a_service_deletes_the_folders_nobody_else_uses() {
-        let volumes = vec![
-            volume_in("yolab-jellyfin", "jellyfin-data", "/tree/jellyfin"),
-            volume_in("yolab-jellyfin", "content-1a2b3c4d", "/tree/jellyfin.files"),
-            volume_in(
-                "yolab-radarr",
-                "content-1a2b3c4d",
-                "/tree/jellyfin.files/movies",
-            ),
-            volume_in("yolab-radarr", "radarr-data", "/tree/radarr"),
-        ];
-        let verdict = verdict(&volumes, "yolab-jellyfin");
-        assert_eq!(verdict.delete, vec!["jellyfin"]);
-        assert_eq!(
-            verdict.kept,
-            vec![Kept {
-                folder: "jellyfin.files".into(),
-                used_by: vec!["radarr".into()]
-            }]
+    fn remove_in(root: &std::path::Path, paths: &[&str], keep: &[&str]) {
+        let op = Op::Remove {
+            paths: paths.iter().map(|p| p.to_string()).collect(),
+            keep: keep.iter().map(|k| k.to_string()).collect(),
+        };
+        op.check().unwrap();
+        let script = op
+            .script()
+            .replace(&format!("{MOUNT}{ROOT}"), root.to_str().unwrap());
+        let out = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(script)
+            .arg("tree")
+            .args(op.args("yolab-tree-1"))
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
         );
     }
 
-    #[test]
-    fn a_service_that_mounts_the_whole_tree_keeps_nothing_alive() {
-        let volumes = vec![
-            volume_in("yolab-jellyfin", "jellyfin-data", "/tree/jellyfin"),
-            volume_in("yolab-filebrowser", "filebrowser-data", "/tree"),
-        ];
-        assert_eq!(verdict(&volumes, "yolab-jellyfin").delete, vec!["jellyfin"]);
+    fn tree_with(paths: &[&str]) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        for p in paths {
+            let path = dir.path().join(p);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, "x").unwrap();
+        }
+        dir
     }
 
     #[test]
-    fn a_service_mounting_the_whole_tree_never_has_it_deleted() {
-        let volumes = vec![volume_in("yolab-filebrowser", "filebrowser-data", "/tree")];
-        assert_eq!(
-            verdict(&volumes, "yolab-filebrowser"),
-            DataVerdict::default()
-        );
+    fn removing_a_folder_keeps_only_what_another_service_mounts_inside_it() {
+        let dir = tree_with(&[
+            "jellyfin/config/db",
+            "jellyfin/.hidden",
+            "jellyfin/media/movies/film",
+            "jellyfin/media/shows/episode",
+            "other/file",
+        ]);
+        remove_in(dir.path(), &["jellyfin"], &["jellyfin/media/movies"]);
+        let root = dir.path();
+        assert!(root.join("jellyfin/media/movies/film").exists());
+        assert!(!root.join("jellyfin/media/shows").exists());
+        assert!(!root.join("jellyfin/config").exists());
+        assert!(!root.join("jellyfin/.hidden").exists());
+        assert!(root.join("other/file").exists());
     }
 
     #[test]
-    fn a_folder_inside_one_another_service_uses_is_kept_too() {
-        let volumes = vec![
-            volume_in(
-                "yolab-radarr",
-                "content-1a2b3c4d",
-                "/tree/radarr.files/movies",
-            ),
-            volume_in("yolab-jellyfin", "content-1a2b3c4d", "/tree/radarr.files"),
-        ];
-        let verdict = verdict(&volumes, "yolab-radarr");
-        assert!(verdict.delete.is_empty());
-        assert_eq!(verdict.kept[0].used_by, vec!["jellyfin"]);
+    fn removing_the_root_empties_the_tree_but_what_others_mount() {
+        let dir = tree_with(&["test/file", "jellyfin/config/db", "filebrowser/state"]);
+        remove_in(dir.path(), &[""], &["jellyfin"]);
+        let root = dir.path();
+        assert!(root.exists());
+        assert!(root.join("jellyfin/config/db").exists());
+        assert!(!root.join("test").exists());
+        assert!(!root.join("filebrowser").exists());
+    }
+
+    #[test]
+    fn removing_folders_with_spaces_and_none_left_inside_deletes_them_whole() {
+        let dir = tree_with(&["my movies/film", "notes/a"]);
+        remove_in(dir.path(), &["my movies", "notes"], &[]);
+        assert!(!dir.path().join("my movies").exists());
+        assert!(!dir.path().join("notes").exists());
     }
 
     fn job_at(server_status: Value) -> Value {
@@ -1162,7 +1398,7 @@ mod tests {
             list("Pod", vec![]),
         )
         .await;
-        let e = run(&kube, &Op::Remove(vec!["jellyfin".into()]))
+        let e = run(&kube, &remove(&["jellyfin"], &[]))
             .await
             .unwrap_err()
             .to_string();
@@ -1184,7 +1420,7 @@ mod tests {
     #[tokio::test]
     async fn a_refused_op_starts_no_job() {
         let (server, kube) = api_server().await;
-        assert!(run(&kube, &Op::Remove(vec![String::new()])).await.is_err());
+        assert!(run(&kube, &remove(&["jellyfin"], &[""])).await.is_err());
         assert!(server
             .received_requests()
             .await
