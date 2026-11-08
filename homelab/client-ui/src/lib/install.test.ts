@@ -97,18 +97,16 @@ describe("snapshotNamespace", () => {
 });
 
 describe("a copy's files folder", () => {
-  it("is filled from the original when the original kept its own", () => {
+  it("is a new folder filled from the original unless one is picked", () => {
     expect(
-      filesFolderCopy({ files_folder: "" }, { files_folder: "" }, "jellyfin")
-        ?.kind,
-    ).toBe("own");
+      filesFolderCopy({ files_folder: "" }, { files_folder: "" })?.kind,
+    ).toBe("new");
     expect(
       filesFolderCopy(
-        { files_folder_existing: true, files_folder: "jellyfin.files" },
-        { files_folder_existing: true, files_folder: "jellyfin.files" },
-        "jellyfin",
+        { files_folder_existing: true, files_folder: "media" },
+        { files_folder_existing: false, files_folder: "media" },
       )?.kind,
-    ).toBe("own");
+    ).toBe("new");
   });
 
   it("is shared when it still points where the original points", () => {
@@ -116,44 +114,22 @@ describe("a copy's files folder", () => {
       filesFolderCopy(
         { files_folder_existing: true, files_folder: "media" },
         { files_folder_existing: true, files_folder: "/media/" },
-        "jellyfin",
       ),
     ).toEqual({ kind: "shared", from: "media", to: "media" });
   });
 
-  it("asks to be filled when it was pointed somewhere else", () => {
-    expect(
-      filesFolderCopy(
-        { files_folder_existing: true, files_folder: "media" },
-        { files_folder_existing: true, files_folder: "media2" },
-        "jellyfin",
-      ),
-    ).toEqual({ kind: "moved", from: "media", to: "media2" });
-  });
-
-  it("counts a folder left in the form with the switch off as its own", () => {
-    expect(
-      filesFolderCopy(
-        { files_folder_existing: false, files_folder: "media" },
-        { files_folder_existing: false, files_folder: "media" },
-        "jellyfin",
-      ),
-    ).toEqual({ kind: "own", from: "", to: "" });
-  });
-
-  it("does not apply to a service without a files folder", () => {
-    expect(filesFolderCopy({ title: "x" }, {}, "notes")).toBeNull();
-    expect(filesFolderCopy(null, {}, "notes")).toBeNull();
-  });
-
-  it("is not mistaken for the original's own by a name that only starts the same", () => {
+  it("is filled in the folder picked for it, whatever the folders are called", () => {
     expect(
       filesFolderCopy(
         { files_folder_existing: true, files_folder: "jellyfin-media" },
-        { files_folder_existing: true, files_folder: "other" },
-        "jellyfin",
-      )?.kind,
-    ).toBe("moved");
+        { files_folder_existing: true, files_folder: "media2" },
+      ),
+    ).toEqual({ kind: "existing", from: "jellyfin-media", to: "media2" });
+  });
+
+  it("does not apply to a service without a files folder", () => {
+    expect(filesFolderCopy({ title: "x" }, {})).toBeNull();
+    expect(filesFolderCopy(null, {})).toBeNull();
   });
 });
 
@@ -185,21 +161,6 @@ describe("installSource", () => {
       kind: "duplicate",
       from_instance: "gitea-ab12",
       with_data: true,
-    });
-  });
-
-  it("fills a moved files folder only when asked and only with the data", () => {
-    const origin = installOrigin(params("from=gitea-ab12"));
-    expect(installSource(origin, true, "", undefined, true)).toEqual({
-      kind: "duplicate",
-      from_instance: "gitea-ab12",
-      with_data: true,
-      copy_files: true,
-    });
-    expect(installSource(origin, false, "", undefined, true)).toEqual({
-      kind: "duplicate",
-      from_instance: "gitea-ab12",
-      with_data: false,
     });
   });
 

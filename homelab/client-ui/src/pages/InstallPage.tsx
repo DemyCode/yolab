@@ -121,7 +121,6 @@ export function InstallPage() {
   }
   const [sourceDef, setSourceDef] = useState<AppDefinition | null>(null);
   const [copyData, setCopyData] = useState(copiesDataByDefault(origin.mode));
-  const [copyFiles, setCopyFiles] = useState(false);
   const backupNamespace = snapshotNamespace(origin);
   const { points: snapshots } = useRestorePoints(
     backupNamespace && copyData ? backupNamespace : null,
@@ -221,7 +220,6 @@ export function InstallPage() {
       ? filesFolderCopy(
           sourceDef ? (sourceDef.config as Record<string, unknown>) : null,
           values,
-          origin.fromInstance,
         )
       : null;
 
@@ -303,7 +301,6 @@ export function InstallPage() {
             origin.mode === "restore" && restorePlan.plan
               ? choicesFor(restorePlan.plan, "reinstall", picked)
               : undefined,
-            filesCopy?.kind === "moved" && copyFiles,
           ),
         },
       );
@@ -669,20 +666,13 @@ export function InstallPage() {
           {copyData && filesCopy?.kind === "shared" && (
             <Row
               label="Files folder"
-              detail={`It shares  with the original, so nothing is copied there.`}
+              detail={`It shares /${filesCopy.to} with the original, so nothing is copied there.`}
             />
           )}
-          {copyData && filesCopy?.kind === "moved" && (
+          {copyData && filesCopy?.kind === "existing" && (
             <Row
-              label={`Copy the contents of  there`}
-              detail={copyFiles ? ` gets a copy of them.` : ` starts empty.`}
-              trailing={
-                <Switch
-                  checked={copyFiles}
-                  onChange={setCopyFiles}
-                  label={`Copy the contents of  there`}
-                />
-              }
+              label="Files folder"
+              detail={`The files are copied into /${filesCopy.to}. If it already has files in it, it is used as it is.`}
             />
           )}
         </Section>

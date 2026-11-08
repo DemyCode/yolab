@@ -22,7 +22,6 @@ export interface InstallSourcePayload {
   namespace?: string;
   snapshot_id?: string;
   with_data: boolean;
-  copy_files?: boolean;
   choices?: RestoreChoices;
 }
 
@@ -61,14 +60,12 @@ export function installSource(
   withData: boolean,
   snapshot: string,
   choices?: RestoreChoices,
-  copyFiles = false,
 ): InstallSourcePayload | undefined {
   if (origin.mode === "duplicate") {
     return {
       kind: "duplicate",
       from_instance: origin.fromInstance ?? "",
       with_data: withData,
-      ...(withData && copyFiles ? { copy_files: true } : {}),
     };
   }
   if (origin.mode === "restore") {
@@ -86,7 +83,7 @@ export function installSource(
 export const FILES_FOLDER = "files_folder";
 export const FOLDER_SWITCH = "files_folder_existing";
 
-export type FilesFolderCopy = "own" | "shared" | "moved";
+export type FilesFolderCopy = "new" | "shared" | "existing";
 
 function treePath(value: unknown): string {
   return String(value ?? "").replace(/^\/+|\/+$/g, "");
@@ -96,27 +93,19 @@ function chosenFolder(config: Record<string, unknown>): string {
   return config[FOLDER_SWITCH] === true ? treePath(config[FILES_FOLDER]) : "";
 }
 
-function isOwnFolder(folder: string, instance: string): boolean {
-  const first = folder.split("/")[0];
-  return first === instance || first.startsWith(`${instance}.`);
-}
-
 export function filesFolderCopy(
   source: Record<string, unknown> | null,
   values: Record<string, unknown>,
-  fromInstance: string | null,
 ): { kind: FilesFolderCopy; from: string; to: string } | null {
-  if (!source || !fromInstance) return null;
+  if (!source) return null;
   const offered = (c: Record<string, unknown>) =>
     FILES_FOLDER in c || FOLDER_SWITCH in c;
   if (!offered(source) && !offered(values)) return null;
   const from = chosenFolder(source);
   const to = chosenFolder(values);
-  if (!from || isOwnFolder(from, fromInstance)) {
-    return { kind: "own", from, to };
-  }
-  if (to === from) return { kind: "shared", from, to };
-  return { kind: "moved", from, to };
+  if (from && to === from) return { kind: "shared", from, to };
+  if (to) return { kind: "existing", from, to };
+  return { kind: "new", from, to };
 }
 
 export function keepsSourceAddress(mode: InstallMode): boolean {

@@ -11,7 +11,8 @@ pub(crate) fn copies(source: &[Claimed], dest: &[Planned]) -> Vec<Op> {
             let s = source
                 .iter()
                 .find(|s| tree::same_role(&s.claim, &d.claimed.claim))?;
-            (s.folder != d.claimed.folder).then_some((s.folder.as_str(), d.claimed.folder.as_str()))
+            (!s.folder.is_empty() && s.folder != d.claimed.folder)
+                .then_some((s.folder.as_str(), d.claimed.folder.as_str()))
         })
         .collect();
     pairs.sort_by(|a, b| a.0.len().cmp(&b.0.len()).then(a.cmp(b)));
@@ -212,6 +213,13 @@ mod tests {
             copies(&source, &dest),
             vec![copy("jellyfin-media", "jellyfin2-media", &[])]
         );
+    }
+
+    #[test]
+    fn a_copy_of_a_service_at_the_root_never_copies_the_whole_tree() {
+        let source = [claimed("content-1a2b3c4d", "")];
+        let dest = [planned("content-99999999", "browsed")];
+        assert!(copies(&source, &dest).is_empty());
     }
 
     #[tokio::test]
