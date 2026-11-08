@@ -7,12 +7,7 @@ import {
   type ConfigSchema,
 } from "./schema";
 
-export type InstallMode =
-  | "fresh"
-  | "duplicate"
-  | "restore"
-  | "edit"
-  | "update";
+export type InstallMode = "fresh" | "duplicate" | "restore" | "edit" | "update";
 
 export interface InstallOrigin {
   mode: InstallMode;

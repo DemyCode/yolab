@@ -567,9 +567,7 @@ describe("updating an installed app to the newest version", () => {
     expect(changesLiveApp("update")).toBe(true);
     expect(changesLiveApp("edit")).toBe(true);
     expect(changesLiveApp("duplicate")).toBe(false);
-    expect(instanceNameFor("update", "gitea", definition())).toBe(
-      "gitea-ab12",
-    );
+    expect(instanceNameFor("update", "gitea", definition())).toBe("gitea-ab12");
     expect(keepsSourceAddress("update")).toBe(true);
     expect(readsLiveApp("update")).toBe(true);
     expect(
