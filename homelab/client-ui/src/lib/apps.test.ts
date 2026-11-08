@@ -38,7 +38,7 @@ function app(over: Partial<AppInfo> = {}): AppInfo {
 
 const out = (
   key: string,
-  value: string,
+  value: string | null,
   format: AppOutput["format"] = "text",
   title = "",
 ): AppOutput => ({
@@ -46,7 +46,7 @@ const out = (
   title,
   format,
   value,
-  found_at: "2026-10-16T12:00:00Z",
+  found_at: value === null ? null : "2026-10-16T12:00:00Z",
 });
 
 describe("installedByChart", () => {
@@ -89,6 +89,12 @@ describe("appLinks", () => {
       "example",
     );
     expect(link.label).toBe("Open");
+  });
+
+  it("makes no link of an address not reported yet", () => {
+    expect(
+      appLinks(app({ outputs: [out("web", null, "uri", "Open")] }), "example"),
+    ).toEqual([]);
   });
 
   it("offers the derived address before any output has been scraped", () => {
@@ -158,6 +164,15 @@ describe("accessRows", () => {
       out("c", "line one\nline two", "multiline"),
     ]);
     expect(rows.map((r) => r.key)).toEqual(["b", "a", "c"]);
+  });
+
+  it("lists an output not reported yet, an address too, so it can wait with a spinner", () => {
+    const rows = accessRows([
+      out("web", null, "uri"),
+      out("password", null, "secret"),
+      out("onion", "http://x.onion/", "uri"),
+    ]);
+    expect(rows.map((r) => r.key)).toEqual(["web", "password"]);
   });
 });
 

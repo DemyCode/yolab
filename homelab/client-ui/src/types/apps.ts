@@ -4,8 +4,8 @@ export interface AppOutput {
   key: string;
   title: string;
   format: OutputFormat;
-  value: string;
-  found_at: string;
+  value: string | null;
+  found_at: string | null;
 }
 
 export interface AppInfo {

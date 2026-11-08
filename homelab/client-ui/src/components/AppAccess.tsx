@@ -36,9 +36,14 @@ function LinkRow({ link }: { link: AppLink }) {
   );
 }
 
-function OutputValue({ output }: { output: AppOutput }) {
+function OutputValue({
+  output,
+  value,
+}: {
+  output: AppOutput;
+  value: string;
+}) {
   const [revealed, setRevealed] = useState(false);
-  const value = output.value;
 
   if (output.format === "multiline") {
     return (
@@ -83,6 +88,14 @@ function OutputValue({ output }: { output: AppOutput }) {
 }
 
 function OutputRow({ output }: { output: AppOutput }) {
+  if (output.value === null || output.found_at === null) {
+    return (
+      <div className="flex items-center justify-between gap-3 px-5 py-4">
+        <span className="text-sm font-medium text-fg">{output.title}</span>
+        <Spinner className="h-4 w-4 shrink-0" />
+      </div>
+    );
+  }
   return (
     <div className="px-5 py-4">
       <div className="flex items-baseline justify-between gap-3">
@@ -91,7 +104,7 @@ function OutputRow({ output }: { output: AppOutput }) {
           Reported {relativeTime(output.found_at)}
         </span>
       </div>
-      <OutputValue output={output} />
+      <OutputValue output={output} value={output.value} />
     </div>
   );
 }

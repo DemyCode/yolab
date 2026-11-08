@@ -45,7 +45,7 @@ export function appLinks(
 }
 
 export function accessRows(outputs: AppOutput[]): AppOutput[] {
-  return outputs.filter((o) => o.format !== "uri");
+  return outputs.filter((o) => o.format !== "uri" || o.value === null);
 }
 
 export type AppState =

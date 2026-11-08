@@ -26,8 +26,8 @@ pub struct ShownOutput {
     pub key: String,
     pub title: String,
     pub format: Format,
-    pub value: String,
-    pub found_at: DateTime<Utc>,
+    pub value: Option<String>,
+    pub found_at: Option<DateTime<Utc>>,
 }
 
 pub fn latest_matches<'a>(
@@ -52,10 +52,6 @@ pub fn remember(
 ) -> bool {
     let mut changed = false;
     for (key, value) in fresh {
-        if value == NONE {
-            changed |= remembered.remove(&key).is_some();
-            continue;
-        }
         if remembered.get(&key).is_some_and(|f| f.value == value) {
             continue;
         }
@@ -75,13 +71,16 @@ pub fn shown(specs: &[OutputSpec], remembered: &Remembered) -> Vec<ShownOutput> 
     specs
         .iter()
         .filter_map(|spec| {
-            let found = remembered.get(&spec.key)?;
+            let found = remembered.get(&spec.key);
+            if found.is_some_and(|f| f.value == NONE) {
+                return None;
+            }
             Some(ShownOutput {
                 key: spec.key.clone(),
                 title: spec.title.clone(),
                 format: spec.format,
-                value: found.value.clone(),
-                found_at: found.found_at,
+                value: found.map(|f| f.value.clone()),
+                found_at: found.map(|f| f.found_at),
             })
         })
         .collect()
@@ -320,8 +319,12 @@ mod tests {
     }
 
     #[test]
-    fn an_output_never_printed_is_not_shown() {
-        assert!(shown(&[logs("onion_address")], &Remembered::new()).is_empty());
+    fn an_output_not_printed_yet_is_shown_waiting_for_its_value() {
+        let rows = shown(&[logs("onion_address")], &Remembered::new());
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].key, "onion_address");
+        assert_eq!(rows[0].value, None);
+        assert_eq!(rows[0].found_at, None);
     }
 
     #[test]
@@ -335,19 +338,22 @@ mod tests {
         let rows = shown(&[spec], &remembered);
         assert_eq!(rows[0].title, "Admin password");
         assert_eq!(rows[0].format, Format::Secret);
-        assert_eq!(rows[0].value, "abc");
-        assert_eq!(rows[0].found_at, at(1));
+        assert_eq!(rows[0].value.as_deref(), Some("abc"));
+        assert_eq!(rows[0].found_at, Some(at(1)));
     }
 
     #[test]
     fn a_printed_line_the_chart_does_not_declare_is_not_shown() {
         let mut remembered = Remembered::new();
         remember(&mut remembered, fresh(&[("tunnel_id", "t1")]), at(1));
-        assert!(shown(&[logs("url")], &remembered).is_empty());
+        let rows = shown(&[logs("url")], &remembered);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].key, "url");
+        assert_eq!(rows[0].value, None);
     }
 
     #[test]
-    fn none_forgets_a_remembered_value() {
+    fn none_replaces_a_remembered_value_and_hides_the_output() {
         let mut remembered = Remembered::new();
         remember(
             &mut remembered,
@@ -359,18 +365,40 @@ mod tests {
             fresh(&[("tor_url", NONE)]),
             at(2)
         ));
-        assert!(remembered.is_empty());
+        assert_eq!(remembered["tor_url"].value, NONE);
         assert!(shown(&[logs("tor_url")], &remembered).is_empty());
     }
 
     #[test]
-    fn none_for_a_value_never_seen_changes_nothing() {
+    fn none_for_a_value_never_seen_hides_the_waiting_output() {
         let mut remembered = Remembered::new();
-        assert!(!remember(
+        assert!(remember(
             &mut remembered,
             fresh(&[("tor_url", NONE)]),
             at(1)
         ));
+        assert!(shown(&[logs("tor_url")], &remembered).is_empty());
+    }
+
+    #[test]
+    fn none_is_remembered_after_the_logs_that_printed_it_are_gone() {
+        let mut remembered = Remembered::new();
+        remember(&mut remembered, fresh(&[("tor_url", NONE)]), at(1));
+        assert!(!remember(&mut remembered, BTreeMap::new(), at(2)));
+        assert!(shown(&[logs("tor_url")], &remembered).is_empty());
+    }
+
+    #[test]
+    fn a_value_printed_after_a_remembered_none_shows_again() {
+        let mut remembered = Remembered::new();
+        remember(&mut remembered, fresh(&[("tor_url", NONE)]), at(1));
+        remember(
+            &mut remembered,
+            fresh(&[("tor_url", "http://new.onion/")]),
+            at(2),
+        );
+        let rows = shown(&[logs("tor_url")], &remembered);
+        assert_eq!(rows[0].value.as_deref(), Some("http://new.onion/"));
     }
 
     #[test]
@@ -561,7 +589,7 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn none_in_the_logs_forgets_the_remembered_value() {
+        async fn none_in_the_logs_is_saved_over_the_remembered_value() {
             let (server, kube) = api_server().await;
             serve(
                 &server,
@@ -577,8 +605,11 @@ mod tests {
 
             let found = rescan(&kube, NS, &app()).await.unwrap();
 
-            assert!(found.is_empty());
-            assert!(saved(&patched(&server).await[0]).is_empty());
+            assert_eq!(found["file_explorer_password"].value, NONE);
+            assert_eq!(
+                saved(&patched(&server).await[0])["file_explorer_password"].value,
+                NONE
+            );
         }
 
         #[tokio::test]
