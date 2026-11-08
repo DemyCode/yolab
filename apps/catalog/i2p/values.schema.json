@@ -10,7 +10,7 @@
       "type": "object",
       "required": [
         "subdomain",
-        "auth_users",
+        "auth_mode",
         "bandwidth_kbps",
         "share_percent",
         "memory"
@@ -30,33 +30,20 @@
           "writeOnly": true,
           "description": "Leave it as it is to use this box's YoLab account."
         },
-        "auth_users": {
-          "type": "array",
-          "title": "Console logins",
-          "description": "The console controls the whole router, so it is only reachable with one of these.",
-          "minItems": 1,
-          "default": [],
-          "items": {
-            "type": "object",
-            "required": [
-              "username",
-              "password"
-            ],
-            "properties": {
-              "username": {
-                "type": "string",
-                "title": "Username",
-                "minLength": 1
-              },
-              "password": {
-                "type": "string",
-                "title": "Password",
-                "minLength": 8,
-                "writeOnly": true,
-                "generate": true
-              }
+        "auth_mode": {
+          "type": "string",
+          "title": "Sign-in",
+          "default": "own",
+          "oneOf": [
+            {
+              "const": "own",
+              "title": "Its own login, with the users below"
+            },
+            {
+              "const": "existing",
+              "title": "An Authelia you already run, with its users"
             }
-          }
+          ]
         },
         "bandwidth_kbps": {
           "type": "integer",
@@ -84,6 +71,66 @@
             "2048m"
           ],
           "description": "Java heap for the router. A router sharing a lot of bandwidth carries more tunnels and needs more."
+        }
+      },
+      "dependencies": {
+        "auth_mode": {
+          "oneOf": [
+            {
+              "properties": {
+                "auth_mode": {
+                  "const": "own"
+                },
+                "auth_users": {
+                  "type": "array",
+                  "title": "Console logins",
+                  "description": "The console controls the whole router, so it is only reachable with one of these.",
+                  "minItems": 1,
+                  "default": [],
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "username",
+                      "password"
+                    ],
+                    "properties": {
+                      "username": {
+                        "type": "string",
+                        "title": "Username",
+                        "minLength": 1
+                      },
+                      "password": {
+                        "type": "string",
+                        "title": "Password",
+                        "minLength": 8,
+                        "writeOnly": true,
+                        "generate": true
+                      }
+                    }
+                  }
+                }
+              },
+              "required": [
+                "auth_users"
+              ]
+            },
+            {
+              "properties": {
+                "auth_mode": {
+                  "const": "existing"
+                },
+                "auth_url": {
+                  "type": "string",
+                  "title": "Authelia address",
+                  "format": "uri",
+                  "description": "Where this service asks who is signed in. For the Authelia service of this box, copy its \"Address for your other services\" output. People then sign in once, on that Authelia's page, for all your services that use it."
+                }
+              },
+              "required": [
+                "auth_url"
+              ]
+            }
+          ]
         }
       }
     },

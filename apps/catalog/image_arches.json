@@ -191,6 +191,10 @@
     "amd64",
     "arm64"
   ],
+  "docker.io/lldap/lldap:2026-09-22-alpine@sha256:bb6e509b4a44e8e9985acfd95d83a85e252ed81879254d9751b9926e3ac26c62": [
+    "amd64",
+    "arm64"
+  ],
   "docker.io/osminogin/tor-simple:0.4.9.14@sha256:ea335859425375b3294b15a5df61ca317ca4fdd143cf7a8d568bb2cd48217774": [
     "amd64",
     "arm64"

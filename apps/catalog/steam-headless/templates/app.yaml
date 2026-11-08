@@ -2,7 +2,7 @@
 {{- $device := include "steam-headless.device" $machine }}
 {{ include "yolab-common.caddyConfigMap" . }}
 ---
-{{ include "yolab-common.autheliaSecret" . }}
+{{ include "authelia.embed.secret" . }}
 ---
 {{ include "yolab-common.uninstallHook" . }}
 ---
@@ -37,13 +37,13 @@ spec:
       initContainers:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
       {{- include "yolab-common.printOutputs" (list . (dict "desktop_username" (dict "value" "steamheadless") "desktop_password" (dict "secret" (printf "%s-passwords" .Release.Name) "key" "desktop"))) | nindent 6 }}
-      {{- include "yolab-common.autheliaInit" . | nindent 6 }}
+      {{- include "authelia.embed.init" . | nindent 6 }}
       containers:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
-      {{- include "yolab-common.autheliaContainer" . | nindent 6 }}
+      {{- include "authelia.embed.container" . | nindent 6 }}
       volumes:
       {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
-      {{- include "yolab-common.autheliaVolumes" . | nindent 6 }}
+      {{- include "authelia.embed.volumes" . | nindent 6 }}
 ---
 apiVersion: apps/v1
 kind: Deployment

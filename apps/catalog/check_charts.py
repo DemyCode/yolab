@@ -96,6 +96,11 @@ VPN_ON = {
     "config.vpn_addresses": "10.64.0.2/32",
 }
 
+EXISTING_AUTHELIA = {
+    "config.auth_mode": "existing",
+    "config.auth_url": "http://authelia.yolab-authelia.svc.cluster.local:9091",
+}
+
 VARIANTS = {
     "qbittorrent": [
         {"config.webui_password": "PlaceholderPw2026"},
@@ -221,10 +226,28 @@ VARIANTS = {
         {"machine.name": "gpu-box", "machine.accelerator": "nvidia"},
         {"machine.name": "nuc", "machine.accelerator": "intel"},
         {"machine.name": "gt710", "machine.accelerator": "nvidia-legacy"},
+        EXISTING_AUTHELIA,
     ],
     "matrix": [
         {"config.registration": "closed"},
         {"config.registration": "open"},
+    ],
+    "authelia": [
+        {
+            "config.policy": "two_factor",
+            "config.rules[0].subdomain": "grist",
+            "config.rules[0].groups[0]": "family",
+            "config.rules[0].policy": "two_factor",
+            "config.rules[1].subdomain": "media-sonarr",
+            "config.rules[1].policy": "deny",
+        }
+    ],
+    "grist": [{**EXISTING_AUTHELIA, "config.owner": "alice"}],
+    "i2p": [EXISTING_AUTHELIA],
+    "media-stack": [EXISTING_AUTHELIA],
+    "excalidraw": [
+        {"config.auth_enabled": "true"},
+        {"config.auth_enabled": "true", **EXISTING_AUTHELIA},
     ],
 }
 
@@ -1542,6 +1565,13 @@ def check_no_file_explorer(app, schema, values, fail):
 
 
 LIBRARIES = ("yolab-common", "yolab-stack")
+LOGIN_DEPENDENCIES = ("authelia",)
+ADDRESS_ONLY = {
+    "authelia": "its sign-in page and cookie live on the YoLab address",
+    "grist": "people sign in through Authelia, which needs the YoLab address",
+    "i2p": "its console is behind Authelia, which needs the YoLab address",
+    "matrix": "the YoLab address is the server name in every account",
+}
 RETIRED_MEMBERS = "yolab.io/members"
 MEMBER_LABEL = "yolab.io/member"
 PACK_SHARED_KINDS = ("Secret",)
@@ -1556,7 +1586,9 @@ def chart_annotations(chart_yaml):
 
 def pack_members(chart_yaml):
     return [
-        d["name"] for d in chart_dependencies(chart_yaml) if d["name"] not in LIBRARIES
+        d["name"]
+        for d in chart_dependencies(chart_yaml)
+        if d["name"] not in LIBRARIES + LOGIN_DEPENDENCIES
     ]
 
 
@@ -1577,7 +1609,7 @@ def catalog_charts(root=HERE):
 
 def check_pack_declaration(app, chart_yaml, charts, fail):
     deps = chart_dependencies(chart_yaml)
-    apps = [d for d in deps if d["name"] not in LIBRARIES]
+    apps = [d for d in deps if d["name"] not in LIBRARIES + LOGIN_DEPENDENCIES]
     members = pack_members(chart_yaml)
     if RETIRED_MEMBERS in chart_annotations(chart_yaml):
         fail(
@@ -1785,6 +1817,9 @@ def main(argv):
             "yolab-common": lib_version,
             "yolab-stack": chart_field(
                 Path(STACK_LIBRARY, "Chart.yaml").read_text(), "version"
+            ),
+            "authelia": chart_field(
+                Path(HERE, "authelia", "Chart.yaml").read_text(), "version"
             ),
         }
 

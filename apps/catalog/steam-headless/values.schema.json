@@ -10,7 +10,7 @@
       "description": "Runs Steam on your best graphics card. Play in a browser from anywhere, or with the free Moonlight app on a TV, phone or laptop at home. Moonlight connects to the machine's address on your home network.",
       "type": "object",
       "required": [
-        "auth_users",
+        "auth_mode",
         "desktop_password"
       ],
       "properties": {
@@ -20,37 +20,20 @@
           "default": true,
           "description": "Reachable from anywhere at https://<subdomain>.<your-number>.yolab.io, through your YoLab tunnel. Visitors need IPv6."
         },
-        "auth_users": {
-          "type": "array",
-          "title": "Logins",
-          "description": "Who can open the desktop in a browser. Each person gets their own username and password.",
-          "minItems": 1,
-          "default": [
+        "auth_mode": {
+          "type": "string",
+          "title": "Sign-in",
+          "default": "own",
+          "oneOf": [
             {
-              "username": "player"
+              "const": "own",
+              "title": "Its own login, with the users below"
+            },
+            {
+              "const": "existing",
+              "title": "An Authelia you already run, with its users"
             }
-          ],
-          "items": {
-            "type": "object",
-            "required": [
-              "username",
-              "password"
-            ],
-            "properties": {
-              "username": {
-                "type": "string",
-                "title": "Username",
-                "minLength": 1
-              },
-              "password": {
-                "type": "string",
-                "title": "Password",
-                "minLength": 8,
-                "writeOnly": true,
-                "generate": true
-              }
-            }
-          }
+          ]
         },
         "desktop_password": {
           "type": "string",
@@ -95,6 +78,68 @@
               },
               "required": [
                 "subdomain"
+              ]
+            }
+          ]
+        },
+        "auth_mode": {
+          "oneOf": [
+            {
+              "properties": {
+                "auth_mode": {
+                  "const": "own"
+                },
+                "auth_users": {
+                  "type": "array",
+                  "title": "Logins",
+                  "description": "Who can open the desktop in a browser. Each person gets their own username and password.",
+                  "minItems": 1,
+                  "default": [
+                    {
+                      "username": "player"
+                    }
+                  ],
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "username",
+                      "password"
+                    ],
+                    "properties": {
+                      "username": {
+                        "type": "string",
+                        "title": "Username",
+                        "minLength": 1
+                      },
+                      "password": {
+                        "type": "string",
+                        "title": "Password",
+                        "minLength": 8,
+                        "writeOnly": true,
+                        "generate": true
+                      }
+                    }
+                  }
+                }
+              },
+              "required": [
+                "auth_users"
+              ]
+            },
+            {
+              "properties": {
+                "auth_mode": {
+                  "const": "existing"
+                },
+                "auth_url": {
+                  "type": "string",
+                  "title": "Authelia address",
+                  "format": "uri",
+                  "description": "Where this service asks who is signed in. For the Authelia service of this box, copy its \"Address for your other services\" output. People then sign in once, on that Authelia's page, for all your services that use it."
+                }
+              },
+              "required": [
+                "auth_url"
               ]
             }
           ]

@@ -1,0 +1,301 @@
+{{- if not .Values.embedded }}
+{{- $config := .Values.config | default dict }}
+{{- $policy := $config.policy | default "one_factor" }}
+{{- if not (has $policy (list "one_factor" "two_factor")) }}
+{{- fail (printf "config.policy is %q, not one_factor or two_factor" $policy) }}
+{{- end }}
+{{- $password := required "config.admin_password is required: it signs in to the users page and to every service" $config.admin_password }}
+{{- range $config.rules | default list }}
+{{- if not (regexMatch "^[a-z0-9*][a-z0-9*.-]*$" (.subdomain | default "")) }}
+{{- fail (printf "config.rules: %q is not an address: lowercase letters, digits, dots, dashes and *" (.subdomain | default "")) }}
+{{- end }}
+{{- if not (has (.policy | default "one_factor") (list "one_factor" "two_factor" "deny")) }}
+{{- fail (printf "config.rules: %s has policy %q, not one_factor, two_factor or deny" .subdomain .policy) }}
+{{- end }}
+{{- range .groups | default list }}
+{{- if not (regexMatch "^[A-Za-z0-9_.-]+$" .) }}
+{{- fail (printf "config.rules: group %q may only hold letters, digits, dots, dashes and underscores" .) }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{ include "yolab-common.caddyConfigMap" . }}
+---
+{{ include "yolab-common.uninstallHook" . }}
+---
+{{ include "yolab-common.homeVolume" $ }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Release.Name }}-authelia
+  namespace: {{ .Release.Namespace }}
+type: Opaque
+stringData:
+  admin_password: {{ $password | quote }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+      annotations:
+        yolab.io/access: {{ toJson (list $policy $config.rules $password) | sha256sum | trunc 16 | quote }}
+    spec:
+      initContainers:
+      {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      - name: authelia-config
+        image: {{ include "authelia.image" . }}
+        imagePullPolicy: IfNotPresent
+        command:
+          - /bin/sh
+          - -c
+          - |
+            set -eu
+            . /yolab/env
+            if [ -z "${YOLAB_FQDN:-}" ] || [ -z "${USERS_FQDN:-}" ]; then
+              echo "no YOLAB_FQDN or USERS_FQDN: refusing to configure Authelia against a blank host" >&2
+              exit 1
+            fi
+            mkdir -p /data/secrets
+            for s in jwt session storage lldap-jwt lldap-key-seed; do
+              if [ ! -s "/data/secrets/$s" ]; then
+                tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 64 > "/data/secrets/$s.new"
+                mv "/data/secrets/$s.new" "/data/secrets/$s"
+              fi
+            done
+            JWT=$(cat /data/secrets/jwt)
+            SESSION=$(cat /data/secrets/session)
+            STORAGE=$(cat /data/secrets/storage)
+            COOKIE_DOMAIN="${YOLAB_FQDN#*.}"
+            cat > /authelia-config/configuration.yml <<EOF
+            theme: auto
+            server:
+              address: 'tcp://:9091/'
+            log:
+              level: info
+            authentication_backend:
+              password_reset:
+                disable: true
+              ldap:
+                implementation: lldap
+                address: 'ldap://127.0.0.1:3890'
+                base_dn: 'dc=yolab,dc=local'
+                user: 'uid=admin,ou=people,dc=yolab,dc=local'
+            access_control:
+              default_policy: deny
+              rules:
+                - domain: '${USERS_FQDN}'
+                  subject: 'group:lldap_admin'
+                  policy: {{ $policy }}
+                - domain: '${USERS_FQDN}'
+                  policy: deny
+            {{- range $config.rules | default list }}
+            {{- $domain := ternary .subdomain (printf "%s.${COOKIE_DOMAIN}" .subdomain) (contains "." .subdomain) }}
+            {{- $groups := .groups | default list }}
+            {{- if $groups }}
+                - domain: '{{ $domain }}'
+                  subject:
+                  {{- range $groups }}
+                    - 'group:{{ . }}'
+                  {{- end }}
+                  policy: {{ .policy | default "one_factor" }}
+                - domain: '{{ $domain }}'
+                  policy: deny
+            {{- else }}
+                - domain: '{{ $domain }}'
+                  policy: {{ .policy | default "one_factor" }}
+            {{- end }}
+            {{- end }}
+                - domain: '*.${COOKIE_DOMAIN}'
+                  policy: {{ $policy }}
+            session:
+              name: {{ include "authelia.cookieName" . }}
+              secret: '${SESSION}'
+              cookies:
+                - domain: '${COOKIE_DOMAIN}'
+                  authelia_url: 'https://${YOLAB_FQDN}'
+            regulation:
+              max_retries: 5
+              find_time: 2m
+              ban_time: 10m
+            storage:
+              encryption_key: '${STORAGE}'
+              local:
+                path: /data/db.sqlite3
+            notifier:
+              filesystem:
+                filename: /data/notification.txt
+            identity_validation:
+              reset_password:
+                jwt_secret: '${JWT}'
+            totp:
+              issuer: '${YOLAB_FQDN}'
+            webauthn:
+              display_name: '${YOLAB_FQDN}'
+            EOF
+            echo "configured Authelia for every service under ${COOKIE_DOMAIN}"
+        volumeMounts:
+          - name: yolab
+            mountPath: /yolab
+          - name: authelia-config
+            mountPath: /authelia-config
+          - name: data
+            mountPath: /data
+            subPath: authelia
+      containers:
+      {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      - name: lldap
+        image: {{ include "authelia.image.lldap" . }}
+        imagePullPolicy: IfNotPresent
+        command:
+          - /bin/sh
+          - -c
+          - |
+            set -eu
+            . /yolab/env
+            export LLDAP_HTTP_URL="https://$USERS_FQDN"
+            LLDAP_KEY_SEED=$(cat /state/lldap-key-seed)
+            export LLDAP_KEY_SEED
+            exec /docker-entrypoint.sh run --config-file /data/lldap_config.toml
+        env:
+          - name: LLDAP_LDAP_HOST
+            value: 127.0.0.1
+          - name: LLDAP_HTTP_HOST
+            value: 127.0.0.1
+          - name: LLDAP_LDAP_BASE_DN
+            value: dc=yolab,dc=local
+          - name: LLDAP_LDAP_USER_DN
+            value: admin
+          - name: LLDAP_LDAP_USER_PASS_FILE
+            value: /secret/admin_password
+          - name: LLDAP_FORCE_LDAP_USER_PASS_RESET
+            value: always
+          - name: LLDAP_JWT_SECRET_FILE
+            value: /state/lldap-jwt
+          - name: LLDAP_DATABASE_URL
+            value: sqlite:///data/users.db?mode=rwc
+        readinessProbe:
+          exec:
+            command:
+              - nc
+              - -z
+              - 127.0.0.1
+              - "3890"
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        volumeMounts:
+          - name: yolab
+            mountPath: /yolab
+          - name: data
+            mountPath: /data
+            subPath: lldap
+          - name: data
+            mountPath: /state
+            subPath: authelia/secrets
+            readOnly: true
+          - name: admin
+            mountPath: /secret
+            readOnly: true
+      - name: authelia
+        image: {{ include "authelia.image" . }}
+        imagePullPolicy: IfNotPresent
+        command:
+          - /bin/sh
+          - -c
+          - |
+            set -eu
+            until nc -z 127.0.0.1 3890; do
+              echo "waiting for the user directory on 127.0.0.1:3890"
+              sleep 2
+            done
+            exec authelia --config /authelia-config/configuration.yml
+        env:
+          - name: AUTHELIA_AUTHENTICATION_BACKEND_LDAP_PASSWORD_FILE
+            value: /secret/admin_password
+        ports:
+          - containerPort: 9091
+        readinessProbe:
+          httpGet:
+            path: /api/health
+            port: 9091
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        volumeMounts:
+          - name: authelia-config
+            mountPath: /authelia-config
+          - name: data
+            mountPath: /data
+            subPath: authelia
+          - name: admin
+            mountPath: /secret
+            readOnly: true
+      - name: codes
+        image: {{ include "authelia.image" . }}
+        imagePullPolicy: IfNotPresent
+        command:
+          - /bin/sh
+          - -c
+          - |
+            set -eu
+            . /yolab/env
+            echo "YOLAB_OUTPUT url https://$YOLAB_FQDN"
+            echo "YOLAB_OUTPUT users_url https://$USERS_FQDN"
+            echo "YOLAB_OUTPUT internal_url http://authelia.{{ .Release.Namespace }}.svc.cluster.local:9091"
+            echo "YOLAB_OUTPUT admin_username admin"
+            echo "YOLAB_OUTPUT admin_password $(cat /secret/admin_password)"
+            echo "YOLAB_OUTPUT confirmation_code NONE"
+            seen=""
+            while true; do
+              if [ -s /data/notification.txt ]; then
+                now=$(md5sum /data/notification.txt | cut -d' ' -f1)
+                if [ "$now" != "$seen" ]; then
+                  seen="$now"
+                  code=$(awk '/ONE-TIME CODE/ { otc = 1 } /^Hi .*,[ \t\r]*$/ && !who { who = substr($0, 4); sub(/,[ \t\r]*$/, "", who) } otc && after && code == "" { line = $0; gsub(/^[ \t\r]+|[ \t\r]+$/, "", line); if (line != "") code = line; next } otc && /^-----+[ \t\r]*$/ { after = 1 } END { if (code != "") print code " for " who }' /data/notification.txt)
+                  if [ -n "$code" ]; then
+                    echo "YOLAB_OUTPUT confirmation_code $code (asked $(date -u +'%Y-%m-%d %H:%M') UTC)"
+                  fi
+                fi
+              fi
+              sleep 3
+            done
+        volumeMounts:
+          - name: yolab
+            mountPath: /yolab
+          - name: data
+            mountPath: /data
+            subPath: authelia
+            readOnly: true
+          - name: admin
+            mountPath: /secret
+            readOnly: true
+      volumes:
+      {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+      - name: authelia-config
+        emptyDir: {}
+      - name: admin
+        secret:
+          secretName: {{ .Release.Name }}-authelia
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: authelia
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    app: gateway
+  ports:
+    - port: 9091
+      targetPort: 9091
+{{- end }}

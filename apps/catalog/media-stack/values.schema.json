@@ -11,7 +11,7 @@
       "required": [
         "vpn_private_key",
         "vpn_addresses",
-        "auth_users"
+        "auth_mode"
       ],
       "properties": {
         "yolab_enabled": {
@@ -45,33 +45,20 @@
           "default": "",
           "description": "Optional. Comma-separated, e.g. Netherlands,Switzerland. Empty lets the VPN pick."
         },
-        "auth_users": {
-          "type": "array",
-          "title": "Logins for the admin tools",
-          "description": "Sonarr, Radarr, Lidarr, Prowlarr, Bazarr, LazyLibrarian, qBittorrent and Cleanuparr sit behind this one login. Jellyfin and the request page keep their own accounts so TV and phone apps work.",
-          "minItems": 1,
-          "default": [],
-          "items": {
-            "type": "object",
-            "required": [
-              "username",
-              "password"
-            ],
-            "properties": {
-              "username": {
-                "type": "string",
-                "title": "Username",
-                "minLength": 1
-              },
-              "password": {
-                "type": "string",
-                "title": "Password",
-                "minLength": 8,
-                "writeOnly": true,
-                "generate": true
-              }
+        "auth_mode": {
+          "type": "string",
+          "title": "Sign-in",
+          "default": "own",
+          "oneOf": [
+            {
+              "const": "own",
+              "title": "Its own login, with the users below"
+            },
+            {
+              "const": "existing",
+              "title": "An Authelia you already run, with its users"
             }
-          }
+          ]
         }
       },
       "dependencies": {
@@ -109,6 +96,64 @@
               },
               "required": [
                 "subdomain"
+              ]
+            }
+          ]
+        },
+        "auth_mode": {
+          "oneOf": [
+            {
+              "properties": {
+                "auth_mode": {
+                  "const": "own"
+                },
+                "auth_users": {
+                  "type": "array",
+                  "title": "Logins for the admin tools",
+                  "description": "Sonarr, Radarr, Lidarr, Prowlarr, Bazarr, LazyLibrarian, qBittorrent and Cleanuparr sit behind this one login. Jellyfin and the request page keep their own accounts so TV and phone apps work.",
+                  "minItems": 1,
+                  "default": [],
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "username",
+                      "password"
+                    ],
+                    "properties": {
+                      "username": {
+                        "type": "string",
+                        "title": "Username",
+                        "minLength": 1
+                      },
+                      "password": {
+                        "type": "string",
+                        "title": "Password",
+                        "minLength": 8,
+                        "writeOnly": true,
+                        "generate": true
+                      }
+                    }
+                  }
+                }
+              },
+              "required": [
+                "auth_users"
+              ]
+            },
+            {
+              "properties": {
+                "auth_mode": {
+                  "const": "existing"
+                },
+                "auth_url": {
+                  "type": "string",
+                  "title": "Authelia address",
+                  "format": "uri",
+                  "description": "Where this service asks who is signed in. For the Authelia service of this box, copy its \"Address for your other services\" output. People then sign in once, on that Authelia's page, for all your services that use it."
+                }
+              },
+              "required": [
+                "auth_url"
               ]
             }
           ]

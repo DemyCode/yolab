@@ -9,7 +9,7 @@
       "title": "Grist",
       "type": "object",
       "required": [
-        "auth_users",
+        "auth_mode",
         "subdomain"
       ],
       "properties": {
@@ -26,35 +26,90 @@
           "writeOnly": true,
           "description": "Leave it as it is to use this box's YoLab account."
         },
-        "auth_users": {
-          "type": "array",
-          "title": "Logins",
-          "description": "Who can open Grist. The first one owns the site and can manage it. To share a document with someone, invite them as <username>@yolab.local.",
-          "minItems": 1,
-          "default": [],
-          "items": {
-            "type": "object",
-            "required": [
-              "username",
-              "password"
-            ],
-            "properties": {
-              "username": {
-                "type": "string",
-                "title": "Username",
-                "minLength": 1,
-                "pattern": "^[a-z0-9._-]+$",
-                "description": "Lowercase letters, digits, dots, dashes and underscores. It becomes the Grist identity <username>@yolab.local, so changing it later loses access to that person's documents."
-              },
-              "password": {
-                "type": "string",
-                "title": "Password",
-                "minLength": 8,
-                "writeOnly": true,
-                "generate": true
-              }
+        "auth_mode": {
+          "type": "string",
+          "title": "Sign-in",
+          "default": "own",
+          "oneOf": [
+            {
+              "const": "own",
+              "title": "Its own login, with the users below"
+            },
+            {
+              "const": "existing",
+              "title": "An Authelia you already run, with its users"
             }
-          }
+          ]
+        }
+      },
+      "dependencies": {
+        "auth_mode": {
+          "oneOf": [
+            {
+              "properties": {
+                "auth_mode": {
+                  "const": "own"
+                },
+                "auth_users": {
+                  "type": "array",
+                  "title": "Logins",
+                  "description": "Who can open Grist. The first one owns the site and can manage it. To share a document with someone, invite them as <username>@yolab.local.",
+                  "minItems": 1,
+                  "default": [],
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "username",
+                      "password"
+                    ],
+                    "properties": {
+                      "username": {
+                        "type": "string",
+                        "title": "Username",
+                        "minLength": 1,
+                        "pattern": "^[a-z0-9._-]+$",
+                        "description": "Lowercase letters, digits, dots, dashes and underscores. It becomes the Grist identity <username>@yolab.local, so changing it later loses access to that person's documents."
+                      },
+                      "password": {
+                        "type": "string",
+                        "title": "Password",
+                        "minLength": 8,
+                        "writeOnly": true,
+                        "generate": true
+                      }
+                    }
+                  }
+                }
+              },
+              "required": [
+                "auth_users"
+              ]
+            },
+            {
+              "properties": {
+                "auth_mode": {
+                  "const": "existing"
+                },
+                "auth_url": {
+                  "type": "string",
+                  "title": "Authelia address",
+                  "format": "uri",
+                  "description": "Where this service asks who is signed in. For the Authelia service of this box, copy its \"Address for your other services\" output. People then sign in once, on that Authelia's page, for all your services that use it."
+                },
+                "owner": {
+                  "type": "string",
+                  "title": "Owner",
+                  "minLength": 1,
+                  "pattern": "^[a-z0-9._-]+$",
+                  "description": "The username, at that Authelia, of whoever owns this Grist site and can manage it. Others are invited as <username>@yolab.local."
+                }
+              },
+              "required": [
+                "auth_url",
+                "owner"
+              ]
+            }
+          ]
         }
       }
     },

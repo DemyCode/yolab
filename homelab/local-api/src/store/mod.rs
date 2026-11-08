@@ -17,10 +17,14 @@ use entry::{resolve, Entry, Origin};
 use hlc::Clock;
 
 use crate::topology::StoragePolicy;
+use crate::users::Account;
 
 const DISK_CLAIM_PREFIX: &str = "disk_claim:";
 const MACHINE_PREFIX: &str = "machine:";
 const STORAGE_POLICY_KEY: &str = "policy:storage";
+const ACCOUNT_PREFIX: &str = "account:";
+const REVOKED_PREFIX: &str = "revoked:";
+const SESSION_KEY: &str = "secret:session";
 
 const DISKS_SEEDED_KEY: &str = "meta:disks_seeded";
 const MACHINES_SEEDED_KEY: &str = "meta:machines_seeded";
@@ -349,8 +353,45 @@ impl Store {
         self.flagged(MACHINES_SEEDED_KEY)
     }
 
+    pub fn set_account(&mut self, name: &str, account: &Account) -> Result<(), StoreError> {
+        self.write_at(&format!("{ACCOUNT_PREFIX}{name}"), account, Origin::User)
+    }
+
+    pub fn accounts(&self) -> Result<BTreeMap<String, Entry<Account>>, StoreError> {
+        self.collection(ACCOUNT_PREFIX)
+    }
+
+    pub fn revoke_session(&mut self, id: &str, expires: i64, now: i64) -> Result<(), StoreError> {
+        for (old, entry) in self.revoked_sessions()? {
+            if entry.value <= now {
+                self.doc
+                    .delete(ROOT, format!("{REVOKED_PREFIX}{old}").as_str())?;
+            }
+        }
+        self.write_at(&format!("{REVOKED_PREFIX}{id}"), &expires, Origin::User)
+    }
+
+    pub fn revoked_sessions(&self) -> Result<BTreeMap<String, Entry<i64>>, StoreError> {
+        self.collection(REVOKED_PREFIX)
+    }
+
+    pub fn session_key(&mut self) -> Result<String, StoreError> {
+        if let Some(found) = self.read_at::<String>(SESSION_KEY)? {
+            return Ok(found.value);
+        }
+        let key = crate::users::random_token(64);
+        self.write_at(SESSION_KEY, &key, Origin::User)?;
+        Ok(key)
+    }
+
     pub fn debug_json(&self) -> Result<Value, StoreError> {
         Ok(serde_json::json!({
+            "accounts": self
+                .accounts()?
+                .into_iter()
+                .map(|(name, e)| (name, matches!(e.value, Account::Active { .. })))
+                .collect::<BTreeMap<_, _>>(),
+            "revoked_sessions": self.revoked_sessions()?.len(),
             "disk_claims": self.disk_claims()?,
             "machines": self.machines()?,
             "storage_policy": self.read_at::<StoragePolicy>(STORAGE_POLICY_KEY)?,

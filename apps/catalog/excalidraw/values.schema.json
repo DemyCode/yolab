@@ -74,37 +74,84 @@
                 "auth_enabled": {
                   "const": true
                 },
-                "auth_users": {
-                  "type": "array",
-                  "title": "Logins",
-                  "description": "Who can open this app. Each person gets their own username and password.",
-                  "default": [],
-                  "items": {
-                    "type": "object",
-                    "required": [
-                      "username",
-                      "password"
-                    ],
-                    "properties": {
-                      "username": {
-                        "type": "string",
-                        "title": "Username",
-                        "minLength": 1
-                      },
-                      "password": {
-                        "type": "string",
-                        "title": "Password",
-                        "minLength": 8,
-                        "writeOnly": true,
-                        "generate": true
-                      }
+                "auth_mode": {
+                  "type": "string",
+                  "title": "Sign-in",
+                  "default": "own",
+                  "oneOf": [
+                    {
+                      "const": "own",
+                      "title": "Its own login, with the users below"
+                    },
+                    {
+                      "const": "existing",
+                      "title": "An Authelia you already run, with its users"
                     }
-                  }
+                  ]
                 }
               },
               "required": [
-                "auth_users"
-              ]
+                "auth_mode"
+              ],
+              "dependencies": {
+                "auth_mode": {
+                  "oneOf": [
+                    {
+                      "properties": {
+                        "auth_mode": {
+                          "const": "own"
+                        },
+                        "auth_users": {
+                          "type": "array",
+                          "title": "Logins",
+                          "description": "Who can open this app. Each person gets their own username and password.",
+                          "default": [],
+                          "items": {
+                            "type": "object",
+                            "required": [
+                              "username",
+                              "password"
+                            ],
+                            "properties": {
+                              "username": {
+                                "type": "string",
+                                "title": "Username",
+                                "minLength": 1
+                              },
+                              "password": {
+                                "type": "string",
+                                "title": "Password",
+                                "minLength": 8,
+                                "writeOnly": true,
+                                "generate": true
+                              }
+                            }
+                          }
+                        }
+                      },
+                      "required": [
+                        "auth_users"
+                      ]
+                    },
+                    {
+                      "properties": {
+                        "auth_mode": {
+                          "const": "existing"
+                        },
+                        "auth_url": {
+                          "type": "string",
+                          "title": "Authelia address",
+                          "format": "uri",
+                          "description": "Where this service asks who is signed in. For the Authelia service of this box, copy its \"Address for your other services\" output. People then sign in once, on that Authelia's page, for all your services that use it."
+                        }
+                      },
+                      "required": [
+                        "auth_url"
+                      ]
+                    }
+                  ]
+                }
+              }
             }
           ]
         }

@@ -8,7 +8,7 @@ use axum::Router;
 use serde_json::Value;
 use tower::ServiceExt as _;
 
-use crate::auth::{new_sessions, AuthState};
+use crate::auth::AuthState;
 use crate::config::Config;
 use crate::AppState;
 
@@ -63,10 +63,7 @@ impl TestApi {
         let path = dir.path().join("config.toml");
         std::fs::write(&path, body).expect("write config");
         let config = Arc::new(Config::for_test(&path));
-        let auth = AuthState {
-            sessions: new_sessions(),
-            config: Arc::clone(&config),
-        };
+        let auth = AuthState::isolated(Arc::clone(&config));
         Self {
             router: crate::router::build_router(AppState {
                 config,

@@ -1,0 +1,18 @@
+apiVersion: v2
+name: authelia
+description: One login for all your services, with users and groups you manage in a web page
+home: https://www.authelia.com
+type: application
+version: 0.1.0
+appVersion: 4.39.28
+dependencies:
+- name: yolab-common
+  version: "0.1.32"
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: Authelia
+  yolab.io/icon: 🔐
+  yolab.io/category: security
+  yolab.io/tagline: One login for all your services
+  yolab.io/github: authelia/authelia
+  yolab.io/collections: privacy

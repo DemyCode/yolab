@@ -1,13 +1,12 @@
 config:
   subdomain: grist
   auth_enabled: true
+  auth_mode: own
   auth_users: []
 yolab:
   platformApiUrl: ''
   accountToken: ''
   serviceName: ''
-  images:
-    authelia: docker.io/authelia/authelia:4.39.28@sha256:bd97cff4fcbf715b5ff1f9ae286afbe6033afce385302520b0368122d43a6f54
   gateway:
     caddyfile: |
       {$YOLAB_FQDN} {
@@ -29,3 +28,5 @@ yolab:
           }
         }
       }
+authelia:
+  embedded: true

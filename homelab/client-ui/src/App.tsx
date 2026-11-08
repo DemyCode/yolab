@@ -41,6 +41,9 @@ const UpdatesPage = lazy(() =>
 const LogsPage = lazy(() =>
   import("@/pages/system/LogsPage").then((m) => ({ default: m.LogsPage })),
 );
+const UsersPage = lazy(() =>
+  import("@/pages/system/UsersPage").then((m) => ({ default: m.UsersPage })),
+);
 
 function OldBoxPath() {
   const { pathname } = useLocation();
@@ -153,6 +156,19 @@ export default function App() {
                 >
                   <Suspense fallback={<Loading />}>
                     <LogsPage />
+                  </Suspense>
+                </SystemSubPage>
+              }
+            />
+            <Route
+              path="/system/users"
+              element={
+                <SystemSubPage
+                  title="Users"
+                  subtitle="Who can sign in to your server."
+                >
+                  <Suspense fallback={<Loading />}>
+                    <UsersPage />
                   </Suspense>
                 </SystemSubPage>
               }

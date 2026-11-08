@@ -42,6 +42,7 @@ UMBREL = (
 )
 
 LIBRARIES = {"yolab-common", "yolab-stack"}
+LOGIN_DEPENDENCIES = {"authelia"}
 
 ALIASES = {
     "actual": "actual-budget",
@@ -95,7 +96,11 @@ def candidates(app_id: str, chart: dict) -> list[str]:
 
 def is_pack(chart: dict) -> bool:
     deps = chart.get("dependencies") or []
-    return any(d.get("name") not in LIBRARIES for d in deps if isinstance(d, dict))
+    return any(
+        d.get("name") not in LIBRARIES | LOGIN_DEPENDENCIES
+        for d in deps
+        if isinstance(d, dict)
+    )
 
 
 def visible(path: str) -> bool:

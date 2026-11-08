@@ -418,6 +418,7 @@ struct ChartDependency {
 }
 
 const LIBRARIES: [&str; 2] = ["yolab-common", "yolab-stack"];
+const LOGIN_DEPENDENCIES: [&str; 1] = ["authelia"];
 
 struct ChartMeta {
     chart: ChartYaml,
@@ -441,6 +442,7 @@ impl ChartMeta {
             .iter()
             .map(|d| d.name.clone())
             .filter(|name| !LIBRARIES.contains(&name.as_str()))
+            .filter(|name| !LOGIN_DEPENDENCIES.contains(&name.as_str()))
             .collect()
     }
     fn display_name(&self) -> String {
@@ -2129,6 +2131,23 @@ mod tests {
         let app = entry("  - name: yolab-common\n    version: \"0.1.15\"\n");
         assert_eq!(app.kind, "app");
         assert!(app.members.is_empty());
+    }
+
+    #[test]
+    fn a_service_signing_in_through_the_authelia_chart_is_not_a_pack() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("Chart.yaml"),
+            "apiVersion: v2\nname: grist\nversion: 0.1.1\ndependencies:\n  - name: yolab-common\n    version: \"0.1.32\"\n  - name: authelia\n    version: \"0.1.0\"\n",
+        )
+        .unwrap();
+        let entry = super::catalog_entry_from(
+            "official".into(),
+            super::read_chart(dir.path()).unwrap(),
+            &Default::default(),
+        );
+        assert_eq!(entry.kind, "app");
+        assert!(entry.members.is_empty());
     }
 
     #[test]

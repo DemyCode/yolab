@@ -1,0 +1,140 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "config": {
+      "title": "Authelia",
+      "type": "object",
+      "required": [
+        "subdomain",
+        "admin_password",
+        "policy"
+      ],
+      "properties": {
+        "subdomain": {
+          "type": "string",
+          "title": "Subdomain",
+          "format": "tunnel",
+          "default": "auth",
+          "description": "The sign-in page. Users and groups are managed one address over, at <subdomain>-users. Every service of yours that signs in with this Authelia shares the login: sign in once, and the others know you."
+        },
+        "yolab_token": {
+          "type": "string",
+          "title": "YoLab token",
+          "format": "yolab-token",
+          "writeOnly": true,
+          "description": "Leave it as it is to use this box's YoLab account."
+        },
+        "admin_password": {
+          "type": "string",
+          "title": "Admin password",
+          "minLength": 12,
+          "writeOnly": true,
+          "generate": true,
+          "description": "For the user admin, who can add, remove and change users and groups on the users page. Changing it here changes it on the next start. Users you add sign in with the password you give them there: nothing is sent by email."
+        },
+        "policy": {
+          "type": "string",
+          "title": "Sign-in needs",
+          "default": "one_factor",
+          "oneOf": [
+            {
+              "const": "one_factor",
+              "title": "A password"
+            },
+            {
+              "const": "two_factor",
+              "title": "A password and a second step: an authenticator app code or a passkey"
+            }
+          ]
+        },
+        "rules": {
+          "type": "array",
+          "title": "Who can open what",
+          "description": "By default anyone with an account can open every service. A rule narrows one address to some groups, or asks it for more. Groups are made on the users page.",
+          "default": [],
+          "items": {
+            "type": "object",
+            "required": [
+              "subdomain",
+              "policy"
+            ],
+            "properties": {
+              "subdomain": {
+                "type": "string",
+                "title": "Address",
+                "pattern": "^[a-z0-9*][a-z0-9*.-]*$",
+                "description": "The service's subdomain, for example grist or media-sonarr. A full address works too."
+              },
+              "groups": {
+                "type": "array",
+                "title": "Groups",
+                "description": "Only people in one of these groups can open it. Leave it empty for everyone with an account.",
+                "default": [],
+                "items": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_.-]+$"
+                }
+              },
+              "policy": {
+                "type": "string",
+                "title": "Sign-in needs",
+                "default": "one_factor",
+                "oneOf": [
+                  {
+                    "const": "one_factor",
+                    "title": "A password"
+                  },
+                  {
+                    "const": "two_factor",
+                    "title": "A password and a second step"
+                  },
+                  {
+                    "const": "deny",
+                    "title": "Nobody can open it"
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "outputs": {
+      "type": "object",
+      "readOnly": true,
+      "properties": {
+        "url": {
+          "type": "string",
+          "title": "Sign-in page",
+          "format": "uri"
+        },
+        "users_url": {
+          "type": "string",
+          "title": "Users and groups",
+          "format": "uri"
+        },
+        "internal_url": {
+          "type": "string",
+          "title": "Address for your other services",
+          "format": "text"
+        },
+        "admin_username": {
+          "type": "string",
+          "title": "Admin account",
+          "format": "text"
+        },
+        "admin_password": {
+          "type": "string",
+          "title": "Admin password",
+          "format": "secret"
+        },
+        "confirmation_code": {
+          "type": "string",
+          "title": "Latest confirmation code",
+          "format": "text"
+        }
+      }
+    }
+  }
+}

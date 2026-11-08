@@ -15,6 +15,7 @@ export const CATALOG_ICONS: Record<string, string> = {
   arcane: "/icons/arcane.svg",
   archivebox: "/icons/archivebox.svg",
   audiobookshelf: "/icons/audiobookshelf.svg",
+  authelia: "/icons/authelia.svg",
   autobrr: "/icons/autobrr.svg",
   babybuddy: "/icons/babybuddy.svg",
   "back-that-mac-up": "/icons/back-that-mac-up.png",

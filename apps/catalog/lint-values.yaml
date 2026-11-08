@@ -1,0 +1,32 @@
+config:
+  password: PlaceholderPw2026
+  admin_password: PlaceholderPw2026
+  admin_email: admin@example.com
+  app_secret: PlaceholderAppSecret2026Placeholder
+  app_key: PlaceholderAppKey2026Placeholder
+  api_key: PlaceholderApiKey2026
+  auth_secret_key: PlaceholderAuthSecretKey2026Placeholder
+  gateway_token: PlaceholderGatewayToken2026Placeholder
+  rpc_password: PlaceholderPw2026
+  explorer_password: PlaceholderPw2026
+  server_name: example
+  server_pass: PlaceholderPw2026
+  vpn_private_key: PlaceholderVpnKey2026=
+  vpn_addresses: 10.64.0.2/32
+  auth_users:
+    - username: admin
+      password: PlaceholderPw2026
+  accounts:
+    - username: alice
+      password: PlaceholderPw2026
+  desktop_password: PlaceholderPw2026
+  sunshine_password: PlaceholderPw2026
+  registration_token: PlaceholderRegistrationToken2026
+  oidc_well_known_url: https://auth.example.com/.well-known/openid-configuration
+  oidc_client_id: example
+  oidc_client_secret: PlaceholderPw2026
+  firefly:
+    api: http://firefly-iii.yolab-firefly-iii.svc.cluster.local:8080
+  tts:
+    api: http://kokoro.yolab-kokoro.svc.cluster.local:8880/v1
+  subdomain: example

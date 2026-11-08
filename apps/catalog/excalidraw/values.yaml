@@ -2,6 +2,7 @@
 config:
   subdomain: excalidraw
   auth_enabled: false
+  auth_mode: own
   auth_users: []
 
 yolab:
@@ -10,3 +11,5 @@ yolab:
   serviceName: ""
   gateway:
     upstream: excalidraw:80
+authelia:
+  embedded: true

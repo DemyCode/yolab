@@ -1,11 +1,16 @@
+{{- $owner := "" }}
+{{- if eq (include "authelia.embed.mode" .) "existing" }}
+{{- $owner = printf "%s@yolab.local" (required "config.owner is required: Grist needs to know which Authelia user owns the site" ((.Values.config).owner)) }}
+{{- else }}
 {{- $users := ((.Values.config).auth_users) | default list }}
 {{- if not $users }}
 {{- fail "config.auth_users is required: Grist knows who you are only through this login" }}
 {{- end }}
-{{- $owner := printf "%s@yolab.local" (index $users 0).username }}
+{{- $owner = printf "%s@yolab.local" (index $users 0).username }}
+{{- end }}
 {{ include "yolab-common.caddyConfigMap" . }}
 ---
-{{ include "yolab-common.autheliaSecret" . }}
+{{ include "authelia.embed.secret" . }}
 ---
 {{ include "yolab-common.uninstallHook" . }}
 ---
@@ -43,7 +48,7 @@ spec:
     spec:
       initContainers:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
-      {{- include "yolab-common.autheliaInit" . | nindent 6 }}
+      {{- include "authelia.embed.init" . | nindent 6 }}
       - name: grist-secrets
         image: busybox:1.38@sha256:fd7dc98638c8e305f4dc34e979f1c0fdfdcaeb0fbf8fcff77ae834b6da3d7e6e
         imagePullPolicy: IfNotPresent
@@ -104,7 +109,7 @@ spec:
           subPath: widgets
       containers:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
-      {{- include "yolab-common.autheliaContainer" . | nindent 6 }}
+      {{- include "authelia.embed.container" . | nindent 6 }}
       - name: grist
         image: gristlabs/grist:1.7.22@sha256:c2221950675081c79a06a44c27f8c65cc96c43d93d76f2b3214d8dbdff709355
         imagePullPolicy: IfNotPresent
@@ -183,7 +188,7 @@ spec:
           readOnly: true
       volumes:
       {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
-      {{- include "yolab-common.autheliaVolumes" . | nindent 6 }}
+      {{- include "authelia.embed.volumes" . | nindent 6 }}
       - name: shipped
         configMap:
           name: {{ .Release.Name }}-widgets

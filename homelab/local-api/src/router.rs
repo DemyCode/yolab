@@ -24,6 +24,12 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/login", post(auth::login))
         .route("/api/logout", post(auth::logout))
         .route("/api/auth/check", get(auth::check))
+        .route("/api/auth/me", get(auth::me))
+        .route("/api/users", get(auth::list_users))
+        .route(
+            "/api/users/{name}",
+            put(auth::put_user).delete(auth::delete_user),
+        )
         .route("/api/status", get(status::handler))
         .route("/api/system/controllers", get(runtime::status::handler))
         .route("/api/console/link", get(status::console_link))

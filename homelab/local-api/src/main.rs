@@ -42,6 +42,7 @@ mod testkit;
 mod topology;
 mod tree;
 mod tree_list;
+mod users;
 mod vdisk;
 
 use std::sync::Arc;
@@ -106,12 +107,7 @@ async fn main() {
 
     let cfg = Arc::new(Config::from_env());
     let kube = k8s::Kube::from_environment();
-    let sessions = auth::new_sessions();
-    auth::init_sessions(&sessions, kube.clone()).await;
-    let auth_state = AuthState {
-        sessions,
-        config: Arc::clone(&cfg),
-    };
+    let auth_state = AuthState::new(Arc::clone(&cfg));
     let state = AppState {
         config: Arc::clone(&cfg),
         auth: auth_state,

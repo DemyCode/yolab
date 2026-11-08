@@ -1291,8 +1291,14 @@ class YolabSwitch(unittest.TestCase):
                 p.get("format") == "tunnel"
                 for p in (config.get("properties") or {}).values()
             )
-            if has_address:
+            if has_address and path.parent.name not in check_charts.ADDRESS_ONLY:
                 self.assertIn("yolab_enabled", config["properties"], path.parent.name)
+
+    def test_an_app_that_only_works_on_its_address_offers_no_switch(self):
+        for app in check_charts.ADDRESS_ONLY:
+            schema = Path(check_charts.HERE, app, "values.schema.json").read_text()
+            config = json.loads(schema)["properties"]["config"]
+            self.assertNotIn("yolab_enabled", config["properties"], app)
 
 
 YOLAB_OFF = {**PRIVATE_ON, "config.yolab_enabled": "false"}
@@ -2924,7 +2930,6 @@ class JellyfinSetup(RenderedChart):
         self.assertIn('mkdir -p "/files/shows"', dirs["command"][2])
 
 
-
 def caddyfile_of(docs):
     return next(
         d["data"]["Caddyfile"]
@@ -2969,7 +2974,9 @@ class RadicaleAccounts(RenderedChart):
 
     def test_changing_the_accounts_restarts_radicale_so_they_take_effect(self):
         before = self.deployments_annotations()
-        after = self.deployments_annotations({"config.accounts[0].password": "OtherPw2026x"})
+        after = self.deployments_annotations(
+            {"config.accounts[0].password": "OtherPw2026x"}
+        )
         self.assertNotEqual(before, after)
 
     def deployments_annotations(self, extra=None):
@@ -3062,7 +3069,10 @@ class GristLogin(RenderedChart):
         self.assertEqual(
             listed,
             {
-                "Binary ranker": ("https://grist.example.test/widgets/rank.html", "full"),
+                "Binary ranker": (
+                    "https://grist.example.test/widgets/rank.html",
+                    "full",
+                ),
                 "2D map": ("https://grist.example.test/widgets/map.html", "read table"),
             },
         )
@@ -3091,14 +3101,18 @@ class I2pRouter(RenderedChart):
         )
 
     def test_the_router_shares_the_tunnels_network_so_peers_reach_it(self):
-        names = [c["name"] for c in self.deployments(self.docs())["gateway"]["containers"]]
+        names = [
+            c["name"] for c in self.deployments(self.docs())["gateway"]["containers"]
+        ]
         self.assertIn("wireguard", names)
         self.assertIn("i2p", names)
 
     def test_udp_answers_from_the_tunnel_address_peers_wrote_to(self):
         script = self.router()["command"][2]
         self.assertIn('set_key i2np.udp.bindInterface "$YOLAB_IPV6"', script)
-        self.assertLess(script.index("until ip -6"), script.index("exec /entrypoint/entrypoint.sh"))
+        self.assertLess(
+            script.index("until ip -6"), script.index("exec /entrypoint/entrypoint.sh")
+        )
 
     def test_the_transport_port_is_not_the_images_default_and_stays_put(self):
         first = self.env(self.deployments(self.docs())["gateway"], "i2p")["EXT_PORT"]
@@ -3118,8 +3132,11 @@ class I2pRouter(RenderedChart):
                 [
                     "sh",
                     "-c",
-                    f'CONF="{conf}"\n{script[start:end]}\n'
-                    "set_key router.sharePercentage 80\nset_key router.sharePercentage 90\n",
+                    (
+                        f'CONF="{conf}"\n{script[start:end]}\n'
+                        "set_key router.sharePercentage 80\n"
+                        "set_key router.sharePercentage 90\n"
+                    ),
                 ],
                 check=True,
             )
@@ -3177,10 +3194,14 @@ class MatrixServer(RenderedChart):
         self.assertIn("enable_registration_without_verification: true", script)
 
     def test_without_an_invite_code_its_output_is_hidden(self):
-        outputs = container_of(self.gateway({"config.registration": "closed"}), "outputs")
+        outputs = container_of(
+            self.gateway({"config.registration": "closed"}), "outputs"
+        )
         env = {e["name"]: e for e in outputs["env"]}
         self.assertEqual(env["OUTPUT_REGISTRATION_TOKEN"]["value"], "")
-        admin = container_of(self.gateway({"config.registration": "closed"}), "matrix-admin")
+        admin = container_of(
+            self.gateway({"config.registration": "closed"}), "matrix-admin"
+        )
         self.assertNotIn("REGISTRATION_TOKEN", {e["name"] for e in admin["env"]})
 
     def test_the_invite_code_is_printed_from_its_secret(self):
@@ -3224,14 +3245,410 @@ class MatrixServer(RenderedChart):
             documented.update(part)
             documented.update(b"\x00")
         documented.update(b"admin")
-        ours = hmac.new(b"s", "\x00".join(("n", "u", "p", "admin")).encode(), hashlib.sha1)
+        parts = ("n", "u", "p", "admin")
+        ours = hmac.new(b"s", "\x00".join(parts).encode(), hashlib.sha1)
         self.assertEqual(ours.hexdigest(), documented.hexdigest())
 
-    def test_the_token_service_gets_a_shell_from_busybox_because_its_image_has_none(self):
+    def test_the_token_service_gets_a_shell_from_busybox_because_its_image_has_none(
+        self,
+    ):
         jwt = container_of(self.gateway(), "livekit-jwt")
         self.assertEqual(jwt["command"][:3], ["/rtc/busybox", "sh", "-c"])
         self.assertIn("cp /bin/busybox /rtc/busybox", self.script("matrix-secrets"))
 
+
+AUTHELIA_ONE_TIME_CODE_EMAIL = """Date: 2026-11-08 12:00:00.000000000 +0000 UTC
+Recipient: {Alice Example alice@example.com}
+Subject: Confirm your identity
+A ONE-TIME CODE HAS BEEN GENERATED TO COMPLETE A REQUESTED ACTION
+
+Hi Alice Example,
+
+This notification has been sent to you in order to verify your identity to change security details for your account at auth.example.test.
+
+Do not share this notification or the content of this notification with anyone.
+
+The following one-time code should only be used in the prompt displayed in your browser.
+
+----------------------------------------
+
+K7QF2MZP
+
+----------------------------------------
+
+If you did not initiate the process your credentials may have been compromised and you should:
+
+ 1. Revoke this code using the provided links below
+ 2. Reset your password or other login credentials
+ 3. Contact an Administrator
+
+To revoke the code, click the link below:
+
+https://auth.example.test/revoke/one-time-code?id=abc
+
+----------------------------------------
+
+This notification was intended for Alice Example. This one-time code was generated due to an action from 2001:db8::1. If you do not believe that your actions could have triggered this event or if you are concerned about your account's safety, please follow the explicit directions in this notification.
+
+Powered by Authelia https://www.authelia.com
+
+
+"""
+
+AUTHELIA_EVENT_EMAIL = """Date: 2026-11-08 12:00:00.000000000 +0000 UTC
+Recipient: {Alice Example alice@example.com}
+Subject: Second Factor Method Added
+Hi Alice Example,
+
+This notification has been sent to you in order to notify you that a new Second Factor Method was added to your account.
+
+----------------------------------------
+
+Powered by Authelia https://www.authelia.com
+"""
+
+
+class AutheliaService(RenderedChart):
+    CHART = "authelia"
+
+    def gateway(self, extra=None):
+        return self.deployments(self.docs(extra))["gateway"]
+
+    def access(self, extra=None):
+        script = container_of(self.gateway(extra), "authelia-config")["command"][2]
+        config = script.split("<<EOF\n", 1)[1].split("\nEOF\n", 1)[0]
+        return yaml.safe_load(config)
+
+    def rules_for(self, config, domain):
+        return [r for r in config["access_control"]["rules"] if r["domain"] == domain]
+
+    def test_nothing_is_reachable_unless_a_rule_says_so(self):
+        self.assertEqual(self.access()["access_control"]["default_policy"], "deny")
+
+    def test_the_users_page_is_only_for_directory_admins(self):
+        rules = self.rules_for(self.access(), "${USERS_FQDN}")
+        self.assertEqual(rules[0]["subject"], "group:lldap_admin")
+        self.assertEqual(rules[1]["policy"], "deny")
+
+    def test_every_service_under_the_shared_domain_needs_the_chosen_sign_in(self):
+        for extra, want in (
+            (None, "one_factor"),
+            ({"config.policy": "two_factor"}, "two_factor"),
+        ):
+            rules = self.access(extra)["access_control"]["rules"]
+            self.assertEqual(
+                rules[-1], {"domain": "*.${COOKIE_DOMAIN}", "policy": want}
+            )
+
+    def test_a_rule_with_groups_shuts_everyone_else_out_of_that_address(self):
+        config = self.access(check_charts.VARIANTS["authelia"][0])
+        grist = self.rules_for(config, "grist.${COOKIE_DOMAIN}")
+        self.assertEqual(grist[0]["subject"], ["group:family"])
+        self.assertEqual(grist[0]["policy"], "two_factor")
+        self.assertEqual(
+            grist[1], {"domain": "grist.${COOKIE_DOMAIN}", "policy": "deny"}
+        )
+        rules = config["access_control"]["rules"]
+        self.assertLess(rules.index(grist[1]), len(rules) - 1)
+
+    def test_a_rule_without_groups_only_changes_what_sign_in_needs(self):
+        config = self.access(check_charts.VARIANTS["authelia"][0])
+        self.assertEqual(
+            self.rules_for(config, "media-sonarr.${COOKIE_DOMAIN}"),
+            [{"domain": "media-sonarr.${COOKIE_DOMAIN}", "policy": "deny"}],
+        )
+
+    def test_a_full_address_in_a_rule_is_used_as_it_is(self):
+        config = self.access(
+            {
+                "config.rules[0].subdomain": "wiki.example.org",
+                "config.rules[0].policy": "one_factor",
+            }
+        )
+        self.assertTrue(self.rules_for(config, "wiki.example.org"))
+
+    def test_a_group_name_that_could_break_the_config_is_refused(self):
+        _, err = check_charts.render(
+            self.chart,
+            self.library,
+            self.tmp.name,
+            {
+                "config.rules[0].subdomain": "grist",
+                "config.rules[0].policy": "one_factor",
+                "config.rules[0].groups[0]": "a'b",
+            },
+        )
+        self.assertIsNotNone(err)
+
+    def test_people_sign_in_against_the_directory_next_to_it(self):
+        ldap = self.access()["authentication_backend"]["ldap"]
+        self.assertEqual(ldap["implementation"], "lldap")
+        self.assertEqual(ldap["address"], "ldap://127.0.0.1:3890")
+        env = self.env(self.gateway(), "authelia")
+        self.assertEqual(
+            env["AUTHELIA_AUTHENTICATION_BACKEND_LDAP_PASSWORD_FILE"],
+            "/secret/admin_password",
+        )
+        self.assertEqual(
+            self.env(self.gateway(), "lldap")["LLDAP_LDAP_USER_PASS_FILE"],
+            "/secret/admin_password",
+        )
+
+    def test_the_form_password_is_the_directory_admin_password_on_every_start(self):
+        env = self.env(self.gateway(), "lldap")
+        self.assertEqual(env["LLDAP_FORCE_LDAP_USER_PASS_RESET"], "always")
+
+    def test_changing_the_admin_password_restarts_the_pod(self):
+        def stamp(extra):
+            docs = self.docs(extra)
+            gateway = next(
+                d
+                for d in docs
+                if d["kind"] == "Deployment" and d["metadata"]["name"] == "gateway"
+            )
+            return gateway["spec"]["template"]["metadata"]["annotations"][
+                "yolab.io/access"
+            ]
+
+        self.assertNotEqual(
+            stamp(None), stamp({"config.admin_password": "AnotherPlaceholder2026"})
+        )
+
+    def test_the_directory_is_only_reachable_inside_the_pod(self):
+        env = self.env(self.gateway(), "lldap")
+        self.assertEqual(env["LLDAP_LDAP_HOST"], "127.0.0.1")
+        self.assertEqual(env["LLDAP_HTTP_HOST"], "127.0.0.1")
+
+    def test_other_services_reach_it_at_the_address_it_prints(self):
+        docs = self.docs()
+        service = next(
+            d
+            for d in docs
+            if d["kind"] == "Service" and d["metadata"]["name"] == "authelia"
+        )
+        self.assertEqual(service["spec"]["selector"], {"app": "gateway"})
+        self.assertEqual(service["spec"]["ports"][0]["port"], 9091)
+        script = container_of(self.gateway(), "codes")["command"][2]
+        self.assertIn(
+            f"YOLAB_OUTPUT internal_url http://authelia.{check_charts.NAMESPACE}.svc.cluster.local:9091",
+            script,
+        )
+
+    def test_its_cookie_is_not_the_one_a_services_own_login_sets(self):
+        self.assertEqual(self.access()["session"]["name"], "yolab_auth")
+
+    def run_code_reader(self, notification):
+        script = container_of(self.gateway(), "codes")["command"][2]
+        line = next(l for l in script.splitlines() if "code=$(awk" in l).strip()
+        program = line.split("code=$(", 1)[1].rsplit(")", 1)[0]
+        with tempfile.TemporaryDirectory() as root:
+            Path(root, "notification.txt").write_text(notification)
+            run = subprocess.run(
+                [
+                    "sh",
+                    "-c",
+                    program.replace(
+                        "/data/notification.txt", f"{root}/notification.txt"
+                    ),
+                ],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+        return run.stdout.strip()
+
+    def test_the_confirmation_code_is_the_one_in_authelias_notification(self):
+        self.assertEqual(
+            self.run_code_reader(AUTHELIA_ONE_TIME_CODE_EMAIL),
+            "K7QF2MZP for Alice Example",
+        )
+
+    def test_a_notification_without_a_code_shows_no_code(self):
+        self.assertEqual(self.run_code_reader(AUTHELIA_EVENT_EMAIL), "")
+
+    def test_as_a_dependency_it_renders_nothing_of_its_own(self):
+        self.assertEqual(self.docs({"embedded": "true"}), [])
+
+
+class LoginChoice:
+    CHART = None
+    BASE = {}
+
+    def gateway(self, extra=None):
+        return self.deployments(self.docs({**self.BASE, **(extra or {})}))["gateway"]
+
+    def existing(self, url="http://authelia.yolab-authelia.svc.cluster.local:9091"):
+        return {
+            **check_charts.EXISTING_AUTHELIA,
+            "config.auth_url": url,
+            **self.EXTRA_EXISTING,
+        }
+
+    EXTRA_EXISTING = {}
+
+    def test_its_own_login_runs_authelia_next_to_it(self):
+        gateway = self.gateway()
+        authelia = container_of(gateway, "authelia")
+        self.assertTrue(
+            authelia["image"].startswith("docker.io/authelia/authelia:4.39.28@sha256:")
+        )
+        container_of(gateway, "authelia-config")
+
+    def test_an_existing_authelia_is_reached_through_a_bridge_on_the_same_port(self):
+        gateway = self.gateway(self.existing())
+        bridge = container_of(gateway, "authelia")
+        self.assertIn("caddy", bridge["image"])
+        env = {e["name"]: e.get("value") for e in bridge["env"]}
+        self.assertEqual(
+            env["AUTH_UPSTREAM"],
+            "http://authelia.yolab-authelia.svc.cluster.local:9091",
+        )
+        self.assertEqual(env["AUTH_PATH"], "")
+        self.assertIn("http://:9091", bridge["command"][2])
+        names = [c["name"] for c in gateway.get("initContainers") or []]
+        self.assertNotIn("authelia-config", names)
+
+    def test_an_existing_authelia_needs_no_users_here(self):
+        docs = self.docs({**self.BASE, **self.existing()})
+        self.assertFalse(
+            [
+                d
+                for d in docs
+                if d["kind"] == "Secret" and d["metadata"]["name"].endswith("-auth")
+            ]
+        )
+
+    def test_the_caddyfile_is_the_same_whichever_authelia_signs_people_in(self):
+        own = caddyfile_of(self.docs(self.BASE))
+        existing = caddyfile_of(self.docs({**self.BASE, **self.existing()}))
+        self.assertEqual(own, existing)
+
+    def test_an_existing_authelia_without_an_address_is_refused(self):
+        _, err = check_charts.render(
+            self.chart,
+            self.library,
+            self.tmp.name,
+            {**self.BASE, "config.auth_mode": "existing"},
+        )
+        self.assertIsNotNone(err)
+        self.assertIn("auth_url", err)
+
+
+class GristLoginChoice(LoginChoice, RenderedChart):
+    CHART = "grist"
+    EXTRA_EXISTING = {"config.owner": "alice"}
+
+    def test_with_an_existing_authelia_the_named_owner_owns_the_site(self):
+        env = self.env(self.gateway(self.existing()), "grist")
+        self.assertEqual(env["GRIST_DEFAULT_EMAIL"], "alice@yolab.local")
+
+    def test_with_an_existing_authelia_an_owner_is_required(self):
+        _, err = check_charts.render(
+            self.chart,
+            self.library,
+            self.tmp.name,
+            dict(check_charts.EXISTING_AUTHELIA),
+        )
+        self.assertIsNotNone(err)
+        self.assertIn("owner", err)
+
+    def bridge(self, url):
+        return container_of(self.gateway(self.existing(url)), "authelia")
+
+    def test_a_path_in_the_address_is_put_in_front_of_every_request(self):
+        bridge = self.bridge("https://sso.example.com/authelia/")
+        env = {e["name"]: e.get("value") for e in bridge["env"]}
+        self.assertEqual(env["AUTH_UPSTREAM"], "https://sso.example.com")
+        self.assertEqual(env["AUTH_PATH"], "/authelia")
+        self.assertIn("rewrite * ${AUTH_PATH}{uri}", bridge["command"][2])
+
+    def test_an_https_authelia_is_asked_for_by_its_own_name(self):
+        self.assertIn(
+            "header_up Host {upstream_hostport}",
+            self.bridge("https://sso.example.com")["command"][2],
+        )
+        self.assertNotIn(
+            "header_up Host",
+            self.bridge("http://authelia.yolab-authelia.svc.cluster.local:9091")[
+                "command"
+            ][2],
+        )
+
+    def test_an_address_with_a_query_is_refused(self):
+        _, err = check_charts.render(
+            self.chart,
+            self.library,
+            self.tmp.name,
+            self.existing("http://a.example/?x=1"),
+        )
+        self.assertIsNotNone(err)
+
+    def test_the_bridge_keeps_the_forwarded_headers_only_from_inside_the_pod(self):
+        script = self.bridge("http://a.example")["command"][2]
+        self.assertIn("trusted_proxies static 127.0.0.1/32 ::1/128", script)
+        self.assertIn("bind 127.0.0.1 ::1", script)
+
+    def test_signing_out_clears_the_cookie_the_authelia_service_sets(self):
+        bridge = self.bridge("http://a.example")
+        env = {e["name"]: e.get("value") for e in bridge["env"]}
+        script = bridge["command"][2]
+        self.assertIn('COOKIE_DOMAIN="${YOLAB_FQDN#*.}"', script)
+        self.assertIn(
+            "${AUTH_COOKIE}=; Domain=${COOKIE_DOMAIN}; Path=/; Max-Age=0", script
+        )
+        self.assertEqual(env["AUTH_COOKIE"], "yolab_auth")
+
+    def test_grist_signs_out_where_the_bridge_clears_the_cookie(self):
+        env = self.env(self.gateway(self.existing()), "grist")
+        self.assertEqual(env["GRIST_FORWARD_AUTH_LOGOUT_PATH"], "authelia/logout")
+        self.assertIn(
+            "handle /authelia/logout", self.bridge("http://a.example")["command"][2]
+        )
+
+
+class I2pLoginChoice(LoginChoice, RenderedChart):
+    CHART = "i2p"
+
+
+class MediaStackLoginChoice(LoginChoice, RenderedChart):
+    CHART = "media-stack"
+
+
+class SteamHeadlessLoginChoice(LoginChoice, RenderedChart):
+    CHART = "steam-headless"
+
+
+class ExcalidrawLoginChoice(LoginChoice, RenderedChart):
+    CHART = "excalidraw"
+    BASE = {"config.auth_enabled": "true"}
+
+    def test_without_a_login_no_authelia_runs(self):
+        gateway = self.deployments(self.docs())["gateway"]
+        self.assertNotIn("authelia", [c["name"] for c in gateway["containers"]])
+
+
+class LoginDependency(unittest.TestCase):
+    def test_authelia_as_a_dependency_does_not_make_a_chart_a_pack(self):
+        chart = Path(check_charts.HERE, "grist", "Chart.yaml").read_text()
+        self.assertIn(
+            "authelia", [d["name"] for d in check_charts.chart_dependencies(chart)]
+        )
+        self.assertEqual(check_charts.pack_members(chart), [])
+
+    def test_every_chart_pins_the_authelia_of_this_tree(self):
+        tree = check_charts.chart_field(
+            Path(check_charts.HERE, "authelia", "Chart.yaml").read_text(), "version"
+        )
+        for chart_yaml in Path(check_charts.HERE).glob("*/Chart.yaml"):
+            for dep in check_charts.chart_dependencies(chart_yaml.read_text()):
+                if dep["name"] == "authelia":
+                    self.assertEqual(str(dep["version"]), tree, chart_yaml.parent.name)
+
+    def test_no_chart_uses_the_old_authelia_of_the_library(self):
+        for template in Path(check_charts.HERE).glob("*/templates/*"):
+            if template.parts[-3] == "yolab-common":
+                continue
+            self.assertNotIn("yolab-common.authelia", template.read_text(), template)
 
 
 if __name__ == "__main__":
