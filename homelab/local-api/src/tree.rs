@@ -264,51 +264,7 @@ impl Op {
             Op::Make(_) => {
                 format!("set -eu\nfor p in \"$@\"; do mkdir -p \"{tree}/$p\"; done\n")
             }
-            Op::Remove { .. } => format!(
-                "set -eu\n\
-                 tree=\"{tree}\"\n\
-                 n=\"$1\"\n\
-                 shift\n\
-                 doomed=\"\"\n\
-                 while [ \"$n\" -gt 0 ]; do\n\
-                 d=\"$tree/$1\"\n\
-                 doomed=\"$doomed${{d%/}}\n\"\n\
-                 shift\n\
-                 n=$((n - 1))\n\
-                 done\n\
-                 kept=\"\"\n\
-                 for k in \"$@\"; do kept=\"$kept$tree/$k\n\"; done\n\
-                 verdict() {{\n\
-                 local k v=delete\n\
-                 while IFS= read -r k; do\n\
-                 [ -n \"$k\" ] || continue\n\
-                 if [ \"$1\" = \"$k\" ]; then v=keep; break; fi\n\
-                 case \"$k\" in \"$1\"/*) v=descend ;; esac\n\
-                 done <<KEPT\n\
-                 $kept\n\
-                 KEPT\n\
-                 echo \"$v\"\n\
-                 }}\n\
-                 prune() {{\n\
-                 local e\n\
-                 for e in \"$1\"/* \"$1\"/.[!.]* \"$1\"/..?*; do\n\
-                 [ -e \"$e\" ] || [ -L \"$e\" ] || continue\n\
-                 case \"$(verdict \"$e\")\" in\n\
-                 delete) rm -rf -- \"$e\" ;;\n\
-                 descend) if [ -L \"$e\" ]; then rm -f -- \"$e\"; else prune \"$e\"; fi ;;\n\
-                 esac\n\
-                 done\n\
-                 }}\n\
-                 while IFS= read -r d; do\n\
-                 [ -n \"$d\" ] || continue\n\
-                 case \"$(verdict \"$d\")\" in\n\
-                 delete) if [ \"$d\" = \"$tree\" ]; then prune \"$d\"; else rm -rf -- \"$d\"; fi ;;\n\
-                 descend) prune \"$d\" ;;\n\
-                 esac\n\
-                 done <<DOOMED\n\
-                 $doomed\n\
-                 DOOMED\n"
-            ),
+            Op::Remove { .. } => include_str!("tree_remove.sh").to_string(),
             Op::Copy { .. } => format!(
                 "set -eu\n\
                  from=\"$1\"\n\
@@ -336,7 +292,8 @@ impl Op {
     fn args(&self, name: &str) -> Vec<String> {
         match self {
             Op::Make(paths) => paths.clone(),
-            Op::Remove { paths, keep } => std::iter::once(paths.len().to_string())
+            Op::Remove { paths, keep } => [format!("{MOUNT}{ROOT}"), paths.len().to_string()]
+                .into_iter()
                 .chain(paths.iter().cloned())
                 .chain(keep.iter().cloned())
                 .collect(),
@@ -1038,6 +995,27 @@ mod tests {
     }
 
     #[test]
+    fn a_removal_hands_its_script_the_tree_then_what_to_delete_then_what_to_keep() {
+        let j = job(
+            "yolab-tree-1",
+            &remove(&["jellyfin", "notes"], &["jellyfin/media"]),
+        );
+        let command = &j["spec"]["template"]["spec"]["containers"][0]["command"];
+        assert_eq!(command[2], include_str!("tree_remove.sh"));
+        assert_eq!(
+            command.as_array().unwrap()[3..],
+            [
+                json!("tree"),
+                json!("/fs/tree"),
+                json!("2"),
+                json!("jellyfin"),
+                json!("notes"),
+                json!("jellyfin/media")
+            ]
+        );
+    }
+
+    #[test]
     fn a_copy_reads_a_snapshot_named_after_its_job_and_leaves_out_what_it_was_told() {
         let op = Op::Copy {
             from: "jellyfin".into(),
@@ -1214,76 +1192,6 @@ mod tests {
         let verdict = data_verdict(&folders, &volumes, "yolab-jellyfin");
         assert_eq!(verdict.delete, vec!["jellyfin"]);
         assert_eq!(verdict.kept, vec![kept("media", &["radarr"])]);
-    }
-
-    fn remove_in(root: &std::path::Path, paths: &[&str], keep: &[&str]) {
-        let op = Op::Remove {
-            paths: paths.iter().map(|p| p.to_string()).collect(),
-            keep: keep.iter().map(|k| k.to_string()).collect(),
-        };
-        op.check().unwrap();
-        let script = op
-            .script()
-            .replace(&format!("{MOUNT}{ROOT}"), root.to_str().unwrap());
-        let out = std::process::Command::new("sh")
-            .arg("-c")
-            .arg(script)
-            .arg("tree")
-            .args(op.args("yolab-tree-1"))
-            .output()
-            .unwrap();
-        assert!(
-            out.status.success(),
-            "{}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-    }
-
-    fn tree_with(paths: &[&str]) -> tempfile::TempDir {
-        let dir = tempfile::tempdir().unwrap();
-        for p in paths {
-            let path = dir.path().join(p);
-            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-            std::fs::write(path, "x").unwrap();
-        }
-        dir
-    }
-
-    #[test]
-    fn removing_a_folder_keeps_only_what_another_service_mounts_inside_it() {
-        let dir = tree_with(&[
-            "jellyfin/config/db",
-            "jellyfin/.hidden",
-            "jellyfin/media/movies/film",
-            "jellyfin/media/shows/episode",
-            "other/file",
-        ]);
-        remove_in(dir.path(), &["jellyfin"], &["jellyfin/media/movies"]);
-        let root = dir.path();
-        assert!(root.join("jellyfin/media/movies/film").exists());
-        assert!(!root.join("jellyfin/media/shows").exists());
-        assert!(!root.join("jellyfin/config").exists());
-        assert!(!root.join("jellyfin/.hidden").exists());
-        assert!(root.join("other/file").exists());
-    }
-
-    #[test]
-    fn removing_the_root_empties_the_tree_but_what_others_mount() {
-        let dir = tree_with(&["test/file", "jellyfin/config/db", "filebrowser/state"]);
-        remove_in(dir.path(), &[""], &["jellyfin"]);
-        let root = dir.path();
-        assert!(root.exists());
-        assert!(root.join("jellyfin/config/db").exists());
-        assert!(!root.join("test").exists());
-        assert!(!root.join("filebrowser").exists());
-    }
-
-    #[test]
-    fn removing_folders_with_spaces_and_none_left_inside_deletes_them_whole() {
-        let dir = tree_with(&["my movies/film", "notes/a"]);
-        remove_in(dir.path(), &["my movies", "notes"], &[]);
-        assert!(!dir.path().join("my movies").exists());
-        assert!(!dir.path().join("notes").exists());
     }
 
     fn job_at(server_status: Value) -> Value {

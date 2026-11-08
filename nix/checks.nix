@@ -42,6 +42,17 @@ in let
         touch $out
       '';
 
+    tree-remove-tests =
+      pkgs.runCommand "tree-remove-tests"
+      {
+        nativeBuildInputs = [pkgs.busybox];
+        src = ../homelab/local-api/src;
+      }
+      ''
+        busybox sh "$src/tree_remove_test.sh"
+        touch $out
+      '';
+
     wg-register-tests =
       pkgs.runCommand "wg-register-tests"
       {

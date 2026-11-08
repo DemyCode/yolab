@@ -3766,6 +3766,7 @@ mod tests {
             assert_eq!(
                 command.as_array().unwrap()[4..],
                 [
+                    json!("/fs/tree"),
                     json!("2"),
                     json!("notes"),
                     json!("media"),
