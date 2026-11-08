@@ -5,7 +5,6 @@ import { Logo } from "@/components/Logo";
 import { api, ApiError } from "@/lib/api";
 
 export function LoginPage({ onLogin }: { onLogin: () => void }) {
-  const [username, setUsername] = useState("admin");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -15,12 +14,12 @@ export function LoginPage({ onLogin }: { onLogin: () => void }) {
     setLoading(true);
     setError("");
     try {
-      await api.post("/api/login", { username, password });
+      await api.post("/api/login", { password });
       onLogin();
     } catch (err) {
       setError(
         err instanceof ApiError && err.status === 401
-          ? "That username and password do not match."
+          ? "That password does not match."
           : err instanceof Error
             ? err.message
             : "Could not sign in.",
@@ -47,16 +46,6 @@ export function LoginPage({ onLogin }: { onLogin: () => void }) {
           onSubmit={submit}
           className="space-y-4 rounded-card border border-border bg-surface p-6 shadow-[var(--shadow-card)]"
         >
-          <Field label="Username" htmlFor="username">
-            <Input
-              id="username"
-              value={username}
-              onChange={(e) => setUsername(e.target.value.trim().toLowerCase())}
-              autoComplete="username"
-              autoCapitalize="none"
-            />
-          </Field>
-
           <Field label="Password" error={error || null} htmlFor="password">
             <Input
               id="password"
@@ -69,12 +58,7 @@ export function LoginPage({ onLogin }: { onLogin: () => void }) {
             />
           </Field>
 
-          <Button
-            type="submit"
-            full
-            loading={loading}
-            disabled={!username || !password}
-          >
+          <Button type="submit" full loading={loading} disabled={!password}>
             Sign in
           </Button>
         </form>

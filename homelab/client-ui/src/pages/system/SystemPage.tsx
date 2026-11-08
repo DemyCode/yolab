@@ -9,7 +9,6 @@ import {
   LogOut,
   Server,
   ScrollText,
-  Users,
   Wrench,
 } from "lucide-react";
 import { Page } from "@/components/AppShell";
@@ -224,12 +223,6 @@ export function SystemPage() {
           detail={nodesDetail}
         />
         <NavRow to="/system/updates" icon={Wrench} label="Updates" />
-        <NavRow
-          to="/system/users"
-          icon={Users}
-          label="Users"
-          detail="Who can sign in to your server"
-        />
         {status.data?.console_url && (
           <NavRow
             onClick={openConsole}

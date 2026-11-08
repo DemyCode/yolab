@@ -34,6 +34,7 @@ mod shared_names;
 mod storage;
 mod store;
 
+mod session;
 #[cfg(test)]
 mod surface;
 mod system;
@@ -42,7 +43,6 @@ mod testkit;
 mod topology;
 mod tree;
 mod tree_list;
-mod users;
 mod vdisk;
 
 use std::sync::Arc;

@@ -17,12 +17,10 @@ use entry::{resolve, Entry, Origin};
 use hlc::Clock;
 
 use crate::topology::StoragePolicy;
-use crate::users::Account;
 
 const DISK_CLAIM_PREFIX: &str = "disk_claim:";
 const MACHINE_PREFIX: &str = "machine:";
 const STORAGE_POLICY_KEY: &str = "policy:storage";
-const ACCOUNT_PREFIX: &str = "account:";
 const REVOKED_PREFIX: &str = "revoked:";
 const SESSION_KEY: &str = "secret:session";
 
@@ -353,14 +351,6 @@ impl Store {
         self.flagged(MACHINES_SEEDED_KEY)
     }
 
-    pub fn set_account(&mut self, name: &str, account: &Account) -> Result<(), StoreError> {
-        self.write_at(&format!("{ACCOUNT_PREFIX}{name}"), account, Origin::User)
-    }
-
-    pub fn accounts(&self) -> Result<BTreeMap<String, Entry<Account>>, StoreError> {
-        self.collection(ACCOUNT_PREFIX)
-    }
-
     pub fn revoke_session(&mut self, id: &str, expires: i64, now: i64) -> Result<(), StoreError> {
         for (old, entry) in self.revoked_sessions()? {
             if entry.value <= now {
@@ -379,18 +369,13 @@ impl Store {
         if let Some(found) = self.read_at::<String>(SESSION_KEY)? {
             return Ok(found.value);
         }
-        let key = crate::users::random_token(64);
+        let key = crate::session::random_token(64);
         self.write_at(SESSION_KEY, &key, Origin::User)?;
         Ok(key)
     }
 
     pub fn debug_json(&self) -> Result<Value, StoreError> {
         Ok(serde_json::json!({
-            "accounts": self
-                .accounts()?
-                .into_iter()
-                .map(|(name, e)| (name, matches!(e.value, Account::Active { .. })))
-                .collect::<BTreeMap<_, _>>(),
             "revoked_sessions": self.revoked_sessions()?.len(),
             "disk_claims": self.disk_claims()?,
             "machines": self.machines()?,
