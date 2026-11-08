@@ -3768,8 +3768,8 @@ mod tests {
                 [
                     json!("/fs/tree"),
                     json!("2"),
-                    json!("notes"),
                     json!("media"),
+                    json!("notes"),
                     json!("media/movies")
                 ]
             );
