@@ -1,0 +1,27 @@
+config:
+  subdomain: i2p
+  auth_enabled: true
+  auth_users: []
+  bandwidth_kbps: 512
+  share_percent: 80
+  memory: 512m
+yolab:
+  platformApiUrl: ''
+  accountToken: ''
+  serviceName: ''
+  images:
+    authelia: docker.io/authelia/authelia:4.39.28@sha256:bd97cff4fcbf715b5ff1f9ae286afbe6033afce385302520b0368122d43a6f54
+  gateway:
+    caddyfile: |
+      {$YOLAB_FQDN} {
+        handle /authelia/* {
+          reverse_proxy localhost:9091
+        }
+        handle {
+          forward_auth localhost:9091 {
+            uri /authelia/api/authz/forward-auth
+            copy_headers Remote-User Remote-Groups Remote-Email Remote-Name
+          }
+          reverse_proxy localhost:7657
+        }
+      }

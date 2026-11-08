@@ -291,6 +291,10 @@
     "amd64",
     "arm64"
   ],
+  "geti2p/i2p:i2p-2.14.1@sha256:a2569d38e31f56934c6b2c6842ad1b0f1435218645140532ddf5ec0a51dd1e29": [
+    "amd64",
+    "arm64"
+  ],
   "getmeili/meilisearch:v1.55.0@sha256:ff546679970126f8822e15d1b6a06bfbff1f2ce2e43f810cfb5258012f92de5c": [
     "amd64",
     "arm64"
@@ -455,6 +459,14 @@
     "arm64"
   ],
   "ghcr.io/egzola/telegrapho:1.0.1@sha256:9486b185b993398cc651158a9292c2fa54eb83254c83d610759988fb20b413b8": [
+    "amd64",
+    "arm64"
+  ],
+  "ghcr.io/element-hq/element-call:v0.28.2@sha256:c61fc9e4e04f75690c693d4556d01c09a2b9246f3fc8d35222d3aac36ba29906": [
+    "amd64",
+    "arm64"
+  ],
+  "ghcr.io/element-hq/lk-jwt-service:0.9.0@sha256:d210fd778ba38b7e42e6fc64e8a24a7d66ccc3b938fb20d73bd713224af2dfea": [
     "amd64",
     "arm64"
   ],
@@ -867,6 +879,10 @@
     "amd64",
     "arm64"
   ],
+  "gristlabs/grist:1.7.22@sha256:c2221950675081c79a06a44c27f8c65cc96c43d93d76f2b3214d8dbdff709355": [
+    "amd64",
+    "arm64"
+  ],
   "gtstef/filebrowser:2.1.2-beta@sha256:0ff80341ce8a9c1e3c5ac8ca319bdf9675092028b04ed97607bbfebc10810fff": [
     "amd64",
     "arm64"
@@ -1068,6 +1084,10 @@
     "amd64",
     "arm64"
   ],
+  "livekit/livekit-server:v1.13.11@sha256:25cd902de7cacbd5f1f779f6a6ac1eae20ba8f56b0935934ce6b0ab80d1e3d20": [
+    "amd64",
+    "arm64"
+  ],
   "lobehub/lobehub:2.2.20@sha256:8a46ff8c76aef731b6d228d92edfc384aa77335593187b670be23ce78a690716": [
     "amd64",
     "arm64"
@@ -1152,7 +1172,7 @@
     "amd64",
     "arm64"
   ],
-  "matrixdotorg/synapse:latest@sha256:97665cd4539dcf107c69fb6afdb720e1d1c9c09fb2b5701fb13d6c33b22cd8f0": [
+  "matrixdotorg/synapse:v1.164.2@sha256:f0df87cff259872637b4b5e5174b9977e5e3046dd421505407803b5e45c5f842": [
     "amd64",
     "arm64"
   ],
@@ -1504,6 +1524,10 @@
     "amd64",
     "arm64"
   ],
+  "tomsquest/docker-radicale:3.9.0.0@sha256:2f215d0e6a78ff68c280975af6ce580b05976f70c62b51640397e3eb5a7aa0e9": [
+    "amd64",
+    "arm64"
+  ],
   "toshimoto821/toshi-moto-api:1.8.4@sha256:750927ef2d0b0bbcffcbb57632d861e567a8b7243381c0285b2b2660dc31244a": [
     "amd64",
     "arm64"
@@ -1552,7 +1576,7 @@
     "amd64",
     "arm64"
   ],
-  "vectorim/element-web:latest@sha256:f8700633d4336258af7a05b53865a4f479e0d628cf2d9ca83d28b5939314d4ce": [
+  "vectorim/element-web:v1.12.33@sha256:b0aa4b5a4fc1afaaff62e2dbd0c92d57e2b20724f3ccb2fef53aae949088c3d2": [
     "amd64",
     "arm64"
   ],

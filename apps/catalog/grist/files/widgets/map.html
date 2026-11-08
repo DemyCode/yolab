@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>2D map</title>
+<script src="/grist-plugin-api.js"></script>
+<link rel="stylesheet" href="widgets.css">
+<style>
+  main { display: flex; flex-direction: column; height: 100%; padding: 8px; }
+  #controls { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; font-size: 12px; }
+  #controls label { display: flex; gap: 4px; align-items: center; cursor: pointer; }
+  #map { flex: 1; width: 100%; min-height: 220px; }
+  #map text { fill: var(--text); font-size: 11px; }
+  #map .axis-title { fill: var(--muted); font-size: 12px; font-weight: 600; }
+  #map .axis { stroke: var(--line); }
+  #map circle { cursor: pointer; stroke: var(--bg); stroke-width: 1.5; }
+  #map circle.selected { stroke: var(--text); stroke-width: 2.5; }
+  #legend { display: flex; flex-wrap: wrap; gap: 10px; font-size: 11px; }
+  #legend span::before { content: ""; display: inline-block; width: 9px; height: 9px; border-radius: 50%;
+    background: var(--c); margin-right: 4px; }
+</style>
+</head>
+<body>
+<main>
+  <div id="no-mapping" class="muted hidden">Map the <b>Label</b>, <b>X</b> and <b>Y</b> columns in the widget's settings panel (Creator panel → Widget).</div>
+  <div id="controls">
+    <label title="Place points by their order instead of their raw values"><input type="checkbox" id="spread"> Spread evenly</label>
+    <label><input type="checkbox" id="flip-x"> Flip X</label>
+    <label><input type="checkbox" id="flip-y"> Flip Y</label>
+  </div>
+  <div id="legend"></div>
+  <svg id="map"></svg>
+  <div class="muted" id="unmapped"></div>
+</main>
+<script>
+// Scatter of the rows this widget receives (its filters apply). By default the smallest X is on the
+// left and the smallest Y at the top, which suits rank columns where 1 comes first.
+const PALETTE = ["#4e79a7", "#f28e2b", "#e15759", "#76b7b2", "#59a14f", "#edc948", "#b07aa1", "#ff9da7", "#9c755f", "#bab0ac"];
+const DEFAULTS = { spread: true, flipX: false, flipY: false };
+
+let mappings = {};
+let rows = [];
+let currentId = null;
+let options = { ...DEFAULTS };
+let labels = {};
+
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const num = v => (typeof v === "number" && Number.isFinite(v) ? v : null);
+
+async function loadLabels() {
+  labels = {};
+  try {
+    const tableId = await grist.getSelectedTableId();
+    const tables = await grist.docApi.fetchTable("_grist_Tables");
+    const tableRef = tables.id[tables.tableId.indexOf(tableId)];
+    const cols = await grist.docApi.fetchTable("_grist_Tables_column");
+    for (const [key, colId] of Object.entries(mappings)) {
+      const i = cols.colId.findIndex((id, k) => id === colId && cols.parentId[k] === tableRef);
+      labels[key] = (i >= 0 && cols.label[i]) || String(colId).replace(/_/g, " ");
+    }
+  } catch {
+    for (const [key, colId] of Object.entries(mappings)) labels[key] = String(colId).replace(/_/g, " ");
+  }
+}
+
+// 0..1 position for each row, either by order or by value.
+function scale(points, key) {
+  const vals = points.map(p => p[key]);
+  if (options.spread) {
+    const order = [...points].sort((a, b) => a[key] - b[key] || a.id - b.id);
+    const pos = new Map(order.map((p, i) => [p.id, order.length > 1 ? i / (order.length - 1) : 0.5]));
+    return p => pos.get(p.id);
+  }
+  const min = Math.min(...vals), max = Math.max(...vals);
+  return p => (max === min ? 0.5 : (p[key] - min) / (max - min));
+}
+
+function render() {
+  const mapped = mappings.Label && mappings.X && mappings.Y;
+  $("no-mapping").classList.toggle("hidden", !!mapped);
+  const svg = $("map");
+  if (!mapped) { svg.innerHTML = ""; return; }
+  $("spread").checked = options.spread;
+  $("flip-x").checked = options.flipX;
+  $("flip-y").checked = options.flipY;
+
+  const points = [], missing = [];
+  for (const r of rows) {
+    const p = { id: r.id, label: r[mappings.Label] || `Row ${r.id}`, x: num(r[mappings.X]), y: num(r[mappings.Y]),
+                group: mappings.Color ? (r[mappings.Color] ?? "") : "" };
+    if (p.x === null || p.y === null) missing.push(p.label); else points.push(p);
+  }
+  const groups = [...new Set(points.map(p => String(p.group || "—")))].sort();
+  const color = g => PALETTE[groups.indexOf(String(g || "—")) % PALETTE.length];
+  const sx = scale(points, "x"), sy = scale(points, "y");
+
+  const W = svg.clientWidth || 400, H = svg.clientHeight || 300, pad = 30;
+  const X = p => { const v = sx(p); return pad + (options.flipX ? 1 - v : v) * (W - 2 * pad); };
+  const Y = p => { const v = sy(p); return pad + (options.flipY ? 1 - v : v) * (H - 2 * pad); };
+  let out = `
+    <line class="axis" x1="${W / 2}" y1="${pad / 2}" x2="${W / 2}" y2="${H - pad / 2}"/>
+    <line class="axis" x1="${pad / 2}" y1="${H / 2}" x2="${W - pad / 2}" y2="${H / 2}"/>
+    <text class="axis-title" x="${W / 2}" y="${H - 6}" text-anchor="middle">${esc(labels.X || "X")} (${options.flipX ? "largest" : "smallest"} on the left)</text>
+    <text class="axis-title" transform="translate(12 ${H / 2}) rotate(-90)" text-anchor="middle">${esc(labels.Y || "Y")} (${options.flipY ? "largest" : "smallest"} at the top)</text>`;
+  for (const p of points) {
+    const cx = X(p), cy = Y(p), right = cx < W - 120;
+    out += `<g data-id="${p.id}"><title>${esc(p.label)}</title>
+      <circle cx="${cx}" cy="${cy}" r="7" fill="${color(p.group)}" class="${p.id === currentId ? "selected" : ""}"/>
+      <text x="${cx + (right ? 10 : -10)}" y="${cy + 4}" text-anchor="${right ? "start" : "end"}">${esc(p.label)}</text></g>`;
+  }
+  svg.innerHTML = out;
+  svg.querySelectorAll("g[data-id]").forEach(g => g.addEventListener("click", () => grist.setCursorPos({ rowId: +g.dataset.id })));
+  $("legend").innerHTML = mappings.Color ? groups.map(g => `<span style="--c:${color(g)}">${esc(g)}</span>`).join("") : "";
+  $("unmapped").textContent = missing.length ? `Not on the map (empty ${labels.X || "X"} or ${labels.Y || "Y"}): ${missing.join(", ")}` : "";
+}
+
+function setOption(key, value) {
+  options[key] = value;
+  render();
+  grist.setOption(key, value).catch(() => {});  // viewers can't save options; the view still updates
+}
+$("spread").onchange = e => setOption("spread", e.target.checked);
+$("flip-x").onchange = e => setOption("flipX", e.target.checked);
+$("flip-y").onchange = e => setOption("flipY", e.target.checked);
+window.addEventListener("resize", render);
+
+grist.ready({
+  requiredAccess: "read table",
+  columns: [
+    { name: "Label", title: "Label" },
+    { name: "X", title: "X axis", type: "Numeric,Int" },
+    { name: "Y", title: "Y axis", type: "Numeric,Int" },
+    { name: "Color", title: "Color by", optional: true },
+  ],
+});
+grist.onOptions(opts => { options = { ...DEFAULTS, ...(opts || {}) }; render(); });
+grist.onRecords(async (raw, mapped) => {
+  const changed = JSON.stringify(mapped || {}) !== JSON.stringify(mappings);
+  mappings = mapped || {};
+  if (changed) await loadLabels();
+  rows = raw;
+  render();
+});
+grist.onRecord(raw => { currentId = raw ? raw.id : null; render(); });
+</script>
+</body>
+</html>

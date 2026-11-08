@@ -1,0 +1,26 @@
+/* Shared look for the Grist custom widgets; colors follow the Grist theme when it provides them. */
+:root {
+  --text: var(--grist-theme-text, #262633);
+  --muted: var(--grist-theme-text-light, #929299);
+  --bg: var(--grist-theme-page-bg, #ffffff);
+  --panel: var(--grist-theme-page-panels-main-panel-bg, #f7f7f7);
+  --line: var(--grist-theme-page-panels-border, #d9d9d9);
+  --accent: var(--grist-theme-control-primary-bg, #16b378);
+  --accent-text: var(--grist-theme-control-primary-fg, #ffffff);
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+  font: 13px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+main { height: 100%; overflow: auto; padding: 12px; }
+button { font: inherit; padding: 6px 10px; border-radius: 6px; border: 1px solid var(--line);
+  background: var(--panel); color: var(--text); cursor: pointer; }
+button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+button:disabled { opacity: .5; cursor: default; }
+.muted { color: var(--muted); }
+.hidden { display: none !important; }
+.task { font-size: 16px; font-weight: 600; margin: 4px 0 12px; }
+.row { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0; }
+.card { border: 1px solid var(--line); border-radius: 8px; padding: 12px; margin-bottom: 12px; background: var(--panel); }
+.question { font-size: 15px; margin-bottom: 12px; }
+.answers { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.answers button { padding: 14px 10px; font-size: 14px; white-space: normal; }

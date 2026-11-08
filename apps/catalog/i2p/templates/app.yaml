@@ -1,0 +1,101 @@
+{{- if not ((.Values.config).auth_users) }}
+{{- fail "config.auth_users is required: the router console is only reachable behind a login" }}
+{{- end }}
+{{- $port := add 20000 (mod (atoi (adler32sum .Release.Namespace)) 30000) }}
+{{- $bandwidth := int ((.Values.config).bandwidth_kbps | default 512) }}
+{{- $share := int ((.Values.config).share_percent | default 80) }}
+{{ include "yolab-common.caddyConfigMap" . }}
+---
+{{ include "yolab-common.autheliaSecret" . }}
+---
+{{ include "yolab-common.uninstallHook" . }}
+---
+{{ include "yolab-common.homeVolume" $ }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      initContainers:
+      {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      {{- include "yolab-common.autheliaInit" . | nindent 6 }}
+      containers:
+      {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      {{- include "yolab-common.autheliaContainer" . | nindent 6 }}
+      - name: i2p
+        image: geti2p/i2p:i2p-2.14.1@sha256:a2569d38e31f56934c6b2c6842ad1b0f1435218645140532ddf5ec0a51dd1e29
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - |
+          set -eu
+          . /yolab/env
+          until ip -6 -o addr show dev wg0 2>/dev/null | grep -q " $YOLAB_IPV6/"; do
+            echo "waiting for the tunnel address $YOLAB_IPV6 on wg0"
+            sleep 2
+          done
+          CONF=/i2p/.i2p/router.config
+          mkdir -p /i2p/.i2p
+          if [ ! -f "$CONF" ]; then
+            cp /entrypoint/i2p-config-templates/router.config "$CONF"
+          fi
+          set_key() {
+            awk -F= -v key="$1" '$1 != key' "$CONF" > "$CONF.new"
+            printf '%s=%s\n' "$1" "$2" >> "$CONF.new"
+            mv "$CONF.new" "$CONF"
+          }
+          set_key i2np.udp.bindInterface "$YOLAB_IPV6"
+          set_key i2np.ipv4.firewalled true
+          set_key routerconsole.allowedHosts "$YOLAB_FQDN"
+          set_key router.sharePercentage "$SHARE_PERCENT"
+          for direction in inbound outbound; do
+            set_key "i2np.bandwidth.${direction}KBytesPerSecond" "$BANDWIDTH_KBPS"
+            set_key "i2np.bandwidth.${direction}BurstKBytesPerSecond" "$BANDWIDTH_KBPS"
+          done
+          echo "I2P listens on [$YOLAB_IPV6]:$EXT_PORT (TCP and UDP), console only on 127.0.0.1:7657"
+          exec /entrypoint/entrypoint.sh
+        env:
+        - name: EXT_PORT
+          value: {{ $port | quote }}
+        - name: IP_ADDR
+          value: 127.0.0.1
+        - name: JVM_XMX
+          value: {{ (.Values.config).memory | default "512m" | quote }}
+        - name: BANDWIDTH_KBPS
+          value: {{ $bandwidth | quote }}
+        - name: SHARE_PERCENT
+          value: {{ $share | quote }}
+        readinessProbe:
+          exec:
+            command:
+            - bash
+            - -c
+            - exec 3<>/dev/tcp/127.0.0.1/7657
+          initialDelaySeconds: 30
+          periodSeconds: 15
+        volumeMounts:
+        - name: data
+          mountPath: /i2p/.i2p
+          subPath: i2p
+        - name: data
+          mountPath: /i2psnark
+          subPath: i2psnark
+        - name: yolab
+          mountPath: /yolab
+      volumes:
+      {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+      {{- include "yolab-common.autheliaVolumes" . | nindent 6 }}

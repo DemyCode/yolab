@@ -1,0 +1,18 @@
+apiVersion: v2
+name: radicale
+description: CalDAV and CardDAV server for calendars, task lists and contacts
+home: https://radicale.org
+type: application
+version: 0.1.0
+appVersion: 3.9.0
+dependencies:
+- name: yolab-common
+  version: "0.1.32"
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: Radicale
+  yolab.io/icon: 📅
+  yolab.io/category: productivity
+  yolab.io/tagline: Calendars, task lists and contacts that sync
+  yolab.io/github: Kozea/Radicale
+  yolab.io/collections: replace-google

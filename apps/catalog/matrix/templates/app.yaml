@@ -1,0 +1,515 @@
+{{- $registration := (.Values.config).registration | default "token" }}
+{{- if not (has $registration (list "token" "closed" "open")) }}
+{{- fail (printf "config.registration must be token, closed or open, not %q" $registration) }}
+{{- end }}
+{{- $admin := required "config.admin_username is required" (.Values.config).admin_username }}
+{{- $password := required "config.admin_password is required" (.Values.config).admin_password }}
+{{- $token := "" }}
+{{- if eq $registration "token" }}
+{{- $token = required "config.registration_token is required when sign-up needs an invite code" (.Values.config).registration_token }}
+{{- end }}
+{{ include "yolab-common.caddyConfigMap" . }}
+---
+{{ include "yolab-common.uninstallHook" . }}
+---
+{{ include "yolab-common.homeVolume" $ }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Release.Name }}-matrix
+  namespace: {{ .Release.Namespace }}
+type: Opaque
+stringData:
+  admin-password: {{ $password | quote }}
+  {{- if $token }}
+  registration-token: {{ $token | quote }}
+  {{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+      annotations:
+        yolab.io/registration: {{ printf "%s/%s" $registration $token | sha256sum | trunc 16 | quote }}
+    spec:
+      initContainers:
+      {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      {{- $outputs := dict "admin_username" (dict "value" $admin) "admin_password" (dict "secret" (printf "%s-matrix" .Release.Name) "key" "admin-password") }}
+      {{- if $token }}
+      {{- $_ := set $outputs "registration_token" (dict "secret" (printf "%s-matrix" .Release.Name) "key" "registration-token") }}
+      {{- else }}
+      {{- $_ := set $outputs "registration_token" (dict "value" "") }}
+      {{- end }}
+      {{- include "yolab-common.printOutputs" (list . $outputs) | nindent 6 }}
+      - name: matrix-secrets
+        image: busybox:1.38@sha256:fd7dc98638c8e305f4dc34e979f1c0fdfdcaeb0fbf8fcff77ae834b6da3d7e6e
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - |
+          set -eu
+          . /yolab/env
+          mkdir -p /state/matrix
+          for name in registration-shared-secret livekit-secret; do
+            if [ ! -s "/state/matrix/$name" ]; then
+              TMP=$(mktemp "/state/matrix/$name.XXXXXX")
+              tr -dc 'A-Za-z0-9' </dev/urandom | head -c 64 > "$TMP"
+              mv "$TMP" "/state/matrix/$name"
+            fi
+          done
+          printf 'export REGISTRATION_SHARED_SECRET=%s\n' "$(cat /state/matrix/registration-shared-secret)" > /yolab/matrix-secrets.env
+          printf 'yolab' > /rtc/key
+          cat /state/matrix/livekit-secret > /rtc/secret
+          cp /bin/busybox /rtc/busybox
+          cat > /rtc/livekit.yaml <<EOF
+          port: 7880
+          rtc:
+            tcp_port: 7881
+            port_range_start: 50000
+            port_range_end: 50100
+            use_external_ip: false
+            node_ip: "$YOLAB_IPV6"
+            interfaces:
+              includes:
+                - wg0
+          room:
+            auto_create: false
+          keys:
+            yolab: "$(cat /state/matrix/livekit-secret)"
+          logging:
+            level: info
+          EOF
+          cat > /rtc/element.json <<EOF
+          {
+            "default_server_config": {
+              "m.homeserver": {
+                "base_url": "https://$YOLAB_HOST",
+                "server_name": "$YOLAB_HOST"
+              }
+            },
+            "brand": "Element",
+            "features": {
+              "feature_video_rooms": true,
+              "feature_element_call_video_rooms": true,
+              "feature_group_calls": true
+            },
+            "element_call": {
+              "url": "https://$CALL_FQDN",
+              "use_exclusively": true,
+              "participant_limit": 8,
+              "brand": "Element Call"
+            },
+            "room_directory": {
+              "servers": ["$YOLAB_HOST", "matrix.org"]
+            },
+            "setting_defaults": {
+              "UIFeature.registration": {{ ne $registration "closed" }}
+            },
+            "bug_report_endpoint_url": "",
+            "show_labs_settings": false
+          }
+          EOF
+          cat > /rtc/call.json <<EOF
+          {
+            "default_server_config": {
+              "m.homeserver": {
+                "base_url": "https://$YOLAB_HOST",
+                "server_name": "$YOLAB_HOST"
+              }
+            },
+            "livekit": {
+              "livekit_service_url": "https://$RTC_FQDN/livekit/jwt"
+            }
+          }
+          EOF
+          printf '127.0.0.1 %s %s %s\n::1 %s %s %s\n' \
+            "$YOLAB_HOST" "$CALL_FQDN" "$RTC_FQDN" "$YOLAB_HOST" "$CALL_FQDN" "$RTC_FQDN" >> /etc/hosts
+          echo "YOLAB_OUTPUT server_name $YOLAB_HOST"
+          echo "YOLAB_OUTPUT call_url https://$CALL_FQDN"
+        volumeMounts:
+        - name: data
+          mountPath: /state
+          subPath: yolab-state
+        - name: yolab
+          mountPath: /yolab
+        - name: rtc
+          mountPath: /rtc
+      containers:
+      {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      - name: synapse
+        image: matrixdotorg/synapse:v1.164.2@sha256:f0df87cff259872637b4b5e5174b9977e5e3046dd421505407803b5e45c5f842
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - |
+          set -eu
+          . /yolab/env
+          . /yolab/matrix-secrets.env
+          if [ ! -f /data/homeserver.yaml ]; then
+            python -m synapse.app.homeserver \
+              --server-name "$YOLAB_HOST" \
+              --config-path /data/homeserver.yaml \
+              --data-directory /data \
+              --generate-config \
+              --report-stats=no
+          fi
+          SERVER_NAME=$(sed -n 's/^server_name: *"\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' /data/homeserver.yaml)
+          if [ "$SERVER_NAME" != "$YOLAB_HOST" ]; then
+            echo "this server was created as $SERVER_NAME and is now reached at $YOLAB_HOST; a Matrix server name can never change" >&2
+            exit 1
+          fi
+          cat > /tmp/yolab.yaml <<EOF
+          public_baseurl: "https://$YOLAB_HOST/"
+          serve_server_wellknown: false
+          suppress_key_server_warning: true
+          report_stats: false
+          database:
+            name: psycopg2
+            args:
+              user: synapse
+              password: synapse
+              database: synapse
+              host: postgres
+              cp_min: 5
+              cp_max: 10
+          registration_shared_secret: "$REGISTRATION_SHARED_SECRET"
+          enable_registration: {{ ne $registration "closed" }}
+          registration_requires_token: {{ eq $registration "token" }}
+          enable_registration_without_verification: {{ eq $registration "open" }}
+          max_upload_size: 100M
+          max_event_delay_duration: 24h
+          rc_message:
+            per_second: 0.5
+            burst_count: 30
+          rc_delayed_event_mgmt:
+            per_second: 1
+            burst_count: 20
+          experimental_features:
+            msc3266_enabled: true
+            msc4222_enabled: true
+          matrix_rtc:
+            transports:
+              - type: livekit
+                livekit_service_url: "https://$RTC_FQDN/livekit/jwt"
+          EOF
+          python - <<'PY'
+          import socket
+          import time
+
+          deadline = time.time() + 300
+          while True:
+              try:
+                  socket.create_connection(("postgres", 5432), timeout=5).close()
+                  break
+              except OSError as error:
+                  if time.time() > deadline:
+                      raise SystemExit(f"postgres is still unreachable: {error}")
+                  print(f"waiting for postgres: {error}", flush=True)
+                  time.sleep(3)
+          PY
+          exec python -m synapse.app.homeserver \
+            --config-path /data/homeserver.yaml \
+            --config-path /tmp/yolab.yaml
+        readinessProbe:
+          exec:
+            command:
+            - curl
+            - -fsS
+            - http://localhost:8008/health
+          initialDelaySeconds: 20
+          periodSeconds: 10
+        volumeMounts:
+        - name: data
+          mountPath: /data
+          subPath: synapse
+        - name: yolab
+          mountPath: /yolab
+      - name: matrix-admin
+        image: matrixdotorg/synapse:v1.164.2@sha256:f0df87cff259872637b4b5e5174b9977e5e3046dd421505407803b5e45c5f842
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - |
+          set -eu
+          . /yolab/matrix-secrets.env
+          python - <<'PY'
+          import hashlib
+          import hmac
+          import json
+          import os
+          import time
+          import urllib.error
+          import urllib.request
+
+          BASE = "http://localhost:8008"
+
+
+          def call(method, path, body=None, token=None):
+              data = None if body is None else json.dumps(body).encode()
+              request = urllib.request.Request(BASE + path, data=data, method=method)
+              request.add_header("Content-Type", "application/json")
+              if token:
+                  request.add_header("Authorization", f"Bearer {token}")
+              try:
+                  with urllib.request.urlopen(request, timeout=30) as response:
+                      return response.status, json.loads(response.read() or b"{}")
+              except urllib.error.HTTPError as error:
+                  return error.code, json.loads(error.read() or b"{}")
+
+
+          while True:
+              try:
+                  with urllib.request.urlopen(BASE + "/health", timeout=5) as response:
+                      if response.read() == b"OK":
+                          break
+              except OSError as error:
+                  print(f"waiting for synapse: {error}", flush=True)
+              time.sleep(3)
+
+          user = os.environ["ADMIN_USERNAME"]
+          password = os.environ["ADMIN_PASSWORD"]
+          secret = os.environ["REGISTRATION_SHARED_SECRET"].encode()
+          status, body = call("GET", "/_synapse/admin/v1/register")
+          if status != 200:
+              raise SystemExit(f"asking synapse for a registration nonce returned {status}: {body}")
+          nonce = body["nonce"]
+          digest = hmac.new(secret, "\x00".join((nonce, user, password, "admin")).encode(), hashlib.sha1).hexdigest()
+          status, body = call(
+              "POST",
+              "/_synapse/admin/v1/register",
+              {"nonce": nonce, "username": user, "password": password, "admin": True, "mac": digest},
+          )
+          if status == 200:
+              print(f"created the admin account {body['user_id']}", flush=True)
+          elif body.get("errcode") == "M_USER_IN_USE":
+              print(f"the admin account {user} already exists", flush=True)
+          else:
+              raise SystemExit(f"creating the admin account returned {status}: {body}")
+
+          wanted = os.environ.get("REGISTRATION_TOKEN", "")
+          if wanted:
+              status, body = call(
+                  "POST",
+                  "/_matrix/client/v3/login",
+                  {"type": "m.login.password", "identifier": {"type": "m.id.user", "user": user}, "password": password},
+              )
+              if status != 200:
+                  raise SystemExit(
+                      f"signing in as {user} to set the invite code returned {status}: {body}; "
+                      "if the admin password was changed in Element, the invite code is managed there now"
+                  )
+              access = body["access_token"]
+              status, body = call("GET", "/_synapse/admin/v1/registration_tokens", token=access)
+              if status != 200:
+                  raise SystemExit(f"listing invite codes returned {status}: {body}")
+              existing = {t["token"] for t in body.get("registration_tokens", [])}
+              for old in sorted(existing - {wanted}):
+                  status, body = call("DELETE", f"/_synapse/admin/v1/registration_tokens/{old}", token=access)
+                  if status != 200:
+                      raise SystemExit(f"removing an old invite code returned {status}: {body}")
+                  print("removed an old invite code", flush=True)
+              if wanted not in existing:
+                  status, body = call("POST", "/_synapse/admin/v1/registration_tokens/new", {"token": wanted}, token=access)
+                  if status != 200:
+                      raise SystemExit(f"creating the invite code returned {status}: {body}")
+                  print("created the invite code", flush=True)
+              call("POST", "/_matrix/client/v3/logout", {}, token=access)
+          print("matrix accounts are set up", flush=True)
+          PY
+          exec sleep infinity
+        env:
+        - name: ADMIN_USERNAME
+          value: {{ $admin | quote }}
+        - name: ADMIN_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: {{ .Release.Name }}-matrix
+              key: admin-password
+        {{- if $token }}
+        - name: REGISTRATION_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: {{ .Release.Name }}-matrix
+              key: registration-token
+        {{- end }}
+        volumeMounts:
+        - name: yolab
+          mountPath: /yolab
+      - name: element
+        image: vectorim/element-web:v1.12.33@sha256:b0aa4b5a4fc1afaaff62e2dbd0c92d57e2b20724f3ccb2fef53aae949088c3d2
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: ELEMENT_WEB_PORT
+          value: "8082"
+        ports:
+        - containerPort: 8082
+        readinessProbe:
+          tcpSocket:
+            port: 8082
+          periodSeconds: 10
+        volumeMounts:
+        - name: rtc
+          mountPath: /app/config.json
+          subPath: element.json
+          readOnly: true
+      - name: element-call
+        image: ghcr.io/element-hq/element-call:v0.28.2@sha256:c61fc9e4e04f75690c693d4556d01c09a2b9246f3fc8d35222d3aac36ba29906
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8080
+        readinessProbe:
+          exec:
+            command:
+            - wget
+            - -q
+            - -O
+            - /dev/null
+            - http://127.0.0.1:8080/config.json
+          periodSeconds: 10
+        volumeMounts:
+        - name: rtc
+          mountPath: /app/config.json
+          subPath: call.json
+          readOnly: true
+      - name: livekit
+        image: livekit/livekit-server:v1.13.11@sha256:25cd902de7cacbd5f1f779f6a6ac1eae20ba8f56b0935934ce6b0ab80d1e3d20
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - |
+          set -eu
+          . /yolab/env
+          until ip -6 -o addr show dev wg0 2>/dev/null | grep -q " $YOLAB_IPV6/"; do
+            echo "waiting for the tunnel address $YOLAB_IPV6 on wg0"
+            sleep 2
+          done
+          exec /livekit-server --config /rtc/livekit.yaml
+        ports:
+        - containerPort: 7880
+        - containerPort: 7881
+        readinessProbe:
+          tcpSocket:
+            port: 7880
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        volumeMounts:
+        - name: rtc
+          mountPath: /rtc
+          readOnly: true
+        - name: yolab
+          mountPath: /yolab
+      - name: livekit-jwt
+        image: ghcr.io/element-hq/lk-jwt-service:0.9.0@sha256:d210fd778ba38b7e42e6fc64e8a24a7d66ccc3b938fb20d73bd713224af2dfea
+        imagePullPolicy: IfNotPresent
+        command:
+        - /rtc/busybox
+        - sh
+        - -c
+        - |
+          set -eu
+          . /yolab/env
+          export LIVEKIT_URL="wss://$RTC_FQDN/livekit/sfu"
+          export LIVEKIT_FULL_ACCESS_HOMESERVERS="$YOLAB_HOST"
+          exec /lk-jwt-service
+        env:
+        - name: LIVEKIT_JWT_BIND
+          value: "[::]:8081"
+        - name: LIVEKIT_KEY_FROM_FILE
+          value: /rtc/key
+        - name: LIVEKIT_SECRET_FROM_FILE
+          value: /rtc/secret
+        ports:
+        - containerPort: 8081
+        readinessProbe:
+          tcpSocket:
+            port: 8081
+          periodSeconds: 10
+        volumeMounts:
+        - name: rtc
+          mountPath: /rtc
+          readOnly: true
+        - name: yolab
+          mountPath: /yolab
+      volumes:
+      {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+      - name: rtc
+        emptyDir: {}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      terminationGracePeriodSeconds: 120
+      containers:
+      - name: postgres
+        image: postgres:16-alpine@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea
+        imagePullPolicy: IfNotPresent
+        readinessProbe:
+          exec:
+            command:
+            - pg_isready
+            - -U
+            - synapse
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        env:
+        - name: POSTGRES_USER
+          value: synapse
+        - name: POSTGRES_PASSWORD
+          value: synapse
+        - name: POSTGRES_DB
+          value: synapse
+        - name: POSTGRES_INITDB_ARGS
+          value: --encoding=UTF-8 --lc-collate=C --lc-ctype=C
+        - name: PGDATA
+          value: /var/lib/postgresql/data/pgdata
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/postgresql/data
+          subPath: postgres
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: {{ include "yolab-common.home.claim" . }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    app: postgres
+  ports:
+  - port: 5432
+    targetPort: 5432

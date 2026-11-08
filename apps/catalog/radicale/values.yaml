@@ -1,0 +1,9 @@
+config:
+  subdomain: radicale
+  accounts: []
+yolab:
+  platformApiUrl: ''
+  accountToken: ''
+  serviceName: ''
+  gateway:
+    upstream: radicale:5232

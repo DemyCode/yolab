@@ -1,0 +1,189 @@
+{{- $users := ((.Values.config).auth_users) | default list }}
+{{- if not $users }}
+{{- fail "config.auth_users is required: Grist knows who you are only through this login" }}
+{{- end }}
+{{- $owner := printf "%s@yolab.local" (index $users 0).username }}
+{{ include "yolab-common.caddyConfigMap" . }}
+---
+{{ include "yolab-common.autheliaSecret" . }}
+---
+{{ include "yolab-common.uninstallHook" . }}
+---
+{{ include "yolab-common.homeVolume" $ }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-widgets
+  namespace: {{ .Release.Namespace }}
+data:
+{{- range $path, $_ := .Files.Glob "files/widgets/*" }}
+  {{ base $path }}: |
+{{ $.Files.Get $path | indent 4 }}
+{{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+      annotations:
+        yolab.io/widgets: {{ include "grist.widgetsDigest" . | quote }}
+    spec:
+      initContainers:
+      {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      {{- include "yolab-common.autheliaInit" . | nindent 6 }}
+      - name: grist-secrets
+        image: busybox:1.38@sha256:fd7dc98638c8e305f4dc34e979f1c0fdfdcaeb0fbf8fcff77ae834b6da3d7e6e
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - |
+          set -eu
+          SECRET=/state/grist-session-secret
+          if [ ! -s "$SECRET" ]; then
+            TMP=$(mktemp "$SECRET.XXXXXX")
+            tr -dc 'A-Za-z0-9' </dev/urandom | head -c 64 > "$TMP"
+            mv "$TMP" "$SECRET"
+          fi
+          printf 'export GRIST_SESSION_SECRET=%s\n' "$(cat "$SECRET")" > /yolab/grist-secrets.env
+        volumeMounts:
+        - name: data
+          mountPath: /state
+          subPath: yolab-state
+        - name: yolab
+          mountPath: /yolab
+      - name: widgets
+        image: busybox:1.38@sha256:fd7dc98638c8e305f4dc34e979f1c0fdfdcaeb0fbf8fcff77ae834b6da3d7e6e
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - |
+          set -eu
+          . /yolab/env
+          cp /shipped/* /widgets/
+          {
+            printf '['
+            sep=''
+            for page in /widgets/*.html; do
+              [ -f "$page" ] || continue
+              file=$(basename "$page")
+              id=${file%.html}
+              name=$(sed -n 's:.*<title>\([^<]*\)</title>.*:\1:p' "$page" | head -n 1)
+              access=$(sed -n 's/.*requiredAccess: *["'\'']\([a-z ]*\)["'\''].*/\1/p' "$page" | head -n 1)
+              name=$(printf '%s' "${name:-$id}" | sed 's/\\/\\\\/g; s/"/\\"/g')
+              printf '%s{"name":"%s","url":"https://%s/widgets/%s","widgetId":"yolab-%s","published":true,"accessLevel":"%s","renderAfterReady":true}' \
+                "$sep" "$name" "$YOLAB_FQDN" "$file" "$id" "${access:-none}"
+              sep=','
+            done
+            printf ']\n'
+          } > /widgets/manifest.json.tmp
+          mv /widgets/manifest.json.tmp /widgets/manifest.json
+          echo "YOLAB_OUTPUT widgets_url Put a widget's .html file in the widgets folder of this service and restart it: it then shows in Grist's custom widget list, served from https://$YOLAB_FQDN/widgets/"
+        volumeMounts:
+        - name: yolab
+          mountPath: /yolab
+        - name: shipped
+          mountPath: /shipped
+          readOnly: true
+        - name: data
+          mountPath: /widgets
+          subPath: widgets
+      containers:
+      {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      {{- include "yolab-common.autheliaContainer" . | nindent 6 }}
+      - name: grist
+        image: gristlabs/grist:1.7.22@sha256:c2221950675081c79a06a44c27f8c65cc96c43d93d76f2b3214d8dbdff709355
+        imagePullPolicy: IfNotPresent
+        workingDir: /grist
+        command:
+        - /bin/sh
+        - -c
+        - |
+          set -eu
+          . /yolab/env
+          . /yolab/grist-secrets.env
+          export APP_HOME_URL="https://$YOLAB_FQDN"
+          exec ./sandbox/docker_entrypoint.sh ./sandbox/run.sh
+        env:
+        - name: GRIST_HOST
+          value: 127.0.0.1
+        - name: PORT
+          value: "8484"
+        - name: GRIST_SINGLE_ORG
+          value: docs
+        - name: GRIST_FORWARD_AUTH_HEADER
+          value: X-Grist-Email
+        - name: GRIST_FORWARD_AUTH_LOGOUT_PATH
+          value: authelia/logout
+        - name: GRIST_DEFAULT_EMAIL
+          value: {{ $owner | quote }}
+        - name: GRIST_FORCE_LOGIN
+          value: "true"
+        - name: GRIST_IN_SERVICE
+          value: "true"
+        - name: GRIST_ANON_PLAYGROUND
+          value: "false"
+        - name: GRIST_TELEMETRY_LEVEL
+          value: "off"
+        - name: GRIST_ALLOW_AUTOMATIC_VERSION_CHECKING
+          value: "false"
+        - name: GRIST_WIDGET_LIST_URL
+          value: http://localhost:8485/manifest.json
+        readinessProbe:
+          exec:
+            command:
+            - bash
+            - -c
+            - exec 3<>/dev/tcp/127.0.0.1/8484
+          initialDelaySeconds: 15
+          periodSeconds: 10
+        volumeMounts:
+        - name: data
+          mountPath: /persist
+          subPath: grist
+        - name: yolab
+          mountPath: /yolab
+      - name: widget-server
+        image: busybox:1.38@sha256:fd7dc98638c8e305f4dc34e979f1c0fdfdcaeb0fbf8fcff77ae834b6da3d7e6e
+        imagePullPolicy: IfNotPresent
+        command:
+        - httpd
+        - -f
+        - -p
+        - 127.0.0.1:8485
+        - -h
+        - /widgets
+        readinessProbe:
+          exec:
+            command:
+            - wget
+            - -q
+            - -O
+            - /dev/null
+            - http://127.0.0.1:8485/manifest.json
+          periodSeconds: 10
+        volumeMounts:
+        - name: data
+          mountPath: /widgets
+          subPath: widgets
+          readOnly: true
+      volumes:
+      {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+      {{- include "yolab-common.autheliaVolumes" . | nindent 6 }}
+      - name: shipped
+        configMap:
+          name: {{ .Release.Name }}-widgets

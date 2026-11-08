@@ -1,0 +1,49 @@
+config:
+  subdomain: matrix
+  admin_username: admin
+  admin_password: ""
+  registration: token
+  registration_token: ""
+yolab:
+  platformApiUrl: ''
+  accountToken: ''
+  serviceName: ''
+  gateway:
+    aliases:
+      CALL_FQDN: call
+      RTC_FQDN: rtc
+    caddyfile: |
+      {$YOLAB_SITES} {
+        handle /.well-known/matrix/server {
+          header Content-Type application/json
+          header Access-Control-Allow-Origin *
+          respond `{"m.server":"{$YOLAB_HOST}:443"}`
+        }
+        handle /.well-known/matrix/client {
+          header Content-Type application/json
+          header Access-Control-Allow-Origin *
+          respond `{"m.homeserver":{"base_url":"https://{$YOLAB_HOST}"},"org.matrix.msc4143.rtc_foci":[{"type":"livekit","livekit_service_url":"https://{$RTC_FQDN}/livekit/jwt"}]}`
+        }
+        handle /_matrix/* {
+          reverse_proxy localhost:8008
+        }
+        handle /_synapse/client/* {
+          reverse_proxy localhost:8008
+        }
+        handle {
+          reverse_proxy localhost:8082
+        }
+      }
+
+      {$CALL_FQDN} {
+        reverse_proxy localhost:8080
+      }
+
+      {$RTC_FQDN} {
+        handle_path /livekit/jwt/* {
+          reverse_proxy localhost:8081
+        }
+        handle_path /livekit/sfu/* {
+          reverse_proxy localhost:7880
+        }
+      }

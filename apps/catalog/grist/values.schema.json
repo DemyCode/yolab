@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": [
+    "config"
+  ],
+  "properties": {
+    "config": {
+      "title": "Grist",
+      "type": "object",
+      "required": [
+        "auth_users",
+        "subdomain"
+      ],
+      "properties": {
+        "subdomain": {
+          "type": "string",
+          "title": "Subdomain",
+          "format": "tunnel",
+          "default": "grist"
+        },
+        "yolab_token": {
+          "type": "string",
+          "title": "YoLab token",
+          "format": "yolab-token",
+          "writeOnly": true,
+          "description": "Leave it as it is to use this box's YoLab account."
+        },
+        "auth_users": {
+          "type": "array",
+          "title": "Logins",
+          "description": "Who can open Grist. The first one owns the site and can manage it. To share a document with someone, invite them as <username>@yolab.local.",
+          "minItems": 1,
+          "default": [],
+          "items": {
+            "type": "object",
+            "required": [
+              "username",
+              "password"
+            ],
+            "properties": {
+              "username": {
+                "type": "string",
+                "title": "Username",
+                "minLength": 1,
+                "pattern": "^[a-z0-9._-]+$",
+                "description": "Lowercase letters, digits, dots, dashes and underscores. It becomes the Grist identity <username>@yolab.local, so changing it later loses access to that person's documents."
+              },
+              "password": {
+                "type": "string",
+                "title": "Password",
+                "minLength": 8,
+                "writeOnly": true,
+                "generate": true
+              }
+            }
+          }
+        }
+      }
+    },
+    "outputs": {
+      "type": "object",
+      "readOnly": true,
+      "properties": {
+        "url": {
+          "type": "string",
+          "title": "Web URL",
+          "format": "uri"
+        },
+        "widgets_url": {
+          "type": "string",
+          "title": "Custom widgets folder",
+          "format": "text"
+        }
+      }
+    }
+  }
+}

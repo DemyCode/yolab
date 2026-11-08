@@ -2924,5 +2924,315 @@ class JellyfinSetup(RenderedChart):
         self.assertIn('mkdir -p "/files/shows"', dirs["command"][2])
 
 
+
+def caddyfile_of(docs):
+    return next(
+        d["data"]["Caddyfile"]
+        for d in docs
+        if d["kind"] == "ConfigMap" and "Caddyfile" in (d.get("data") or {})
+    )
+
+
+def container_of(spec, name):
+    return next(
+        c
+        for c in (spec.get("initContainers") or []) + spec["containers"]
+        if c["name"] == name
+    )
+
+
+class RadicaleAccounts(RenderedChart):
+    CHART = "radicale"
+
+    def radicale(self, extra=None):
+        return self.deployments(self.docs(extra))["radicale"]
+
+    def config_script(self):
+        return container_of(self.radicale(), "radicale-config")["command"][2]
+
+    def test_every_account_is_kept_as_a_bcrypt_hash_and_sees_only_its_own_data(self):
+        script = self.config_script()
+        self.assertIn("htpasswd_encryption = bcrypt", script)
+        self.assertIn("type = owner_only", script)
+        self.assertIn("bcrypt.hashpw", script)
+
+    def test_it_answers_on_both_address_families_the_cluster_uses(self):
+        self.assertIn("hosts = 0.0.0.0:5232, [::]:5232", self.config_script())
+
+    def test_the_accounts_reach_the_hasher_one_per_line(self):
+        secret = next(
+            d
+            for d in self.docs()
+            if d["kind"] == "Secret" and d["metadata"]["name"] == "release-accounts"
+        )
+        self.assertEqual(secret["stringData"]["logins"], "alice\tPlaceholderPw2026\n")
+
+    def test_changing_the_accounts_restarts_radicale_so_they_take_effect(self):
+        before = self.deployments_annotations()
+        after = self.deployments_annotations({"config.accounts[0].password": "OtherPw2026x"})
+        self.assertNotEqual(before, after)
+
+    def deployments_annotations(self, extra=None):
+        doc = next(
+            d
+            for d in self.docs(extra)
+            if d["kind"] == "Deployment" and d["metadata"]["name"] == "radicale"
+        )
+        return doc["spec"]["template"]["metadata"]["annotations"]["yolab.io/accounts"]
+
+    def test_without_an_account_the_chart_refuses_to_render(self):
+        text, err = check_charts.render(
+            self.chart, self.library, self.tmp.name, {"config.accounts": "{}"}
+        )
+        self.assertIsNone(text)
+        self.assertIn("accounts", err)
+
+
+class GristLogin(RenderedChart):
+    CHART = "grist"
+
+    def gateway(self, extra=None):
+        return self.deployments(self.docs(extra))["gateway"]
+
+    def test_grist_trusts_only_the_identity_caddy_derives_from_the_login(self):
+        caddy = caddyfile_of(self.docs())
+        auth = caddy.index("forward_auth localhost:9091")
+        header = caddy.index(
+            "header_up X-Grist-Email {http.request.header.Remote-User}@yolab.local"
+        )
+        self.assertLess(auth, header)
+        env = self.env(self.gateway(), "grist")
+        self.assertEqual(env["GRIST_FORWARD_AUTH_HEADER"], "X-Grist-Email")
+        self.assertEqual(env["GRIST_HOST"], "127.0.0.1")
+
+    def test_the_first_login_owns_the_site(self):
+        env = self.env(self.gateway(), "grist")
+        self.assertEqual(env["GRIST_DEFAULT_EMAIL"], "admin@yolab.local")
+
+    def test_nobody_reaches_grist_or_its_widgets_without_signing_in(self):
+        caddy = caddyfile_of(self.docs())
+        auth = caddy.index("forward_auth localhost:9091")
+        self.assertLess(auth, caddy.index("reverse_proxy localhost:8485"))
+        self.assertLess(auth, caddy.index("reverse_proxy localhost:8484"))
+
+    def test_grist_lists_the_widgets_from_the_server_next_to_it(self):
+        env = self.env(self.gateway(), "grist")
+        self.assertEqual(
+            env["GRIST_WIDGET_LIST_URL"], "http://localhost:8485/manifest.json"
+        )
+
+    def test_the_homelab_widgets_ship_with_the_chart(self):
+        widgets = next(
+            d
+            for d in self.docs()
+            if d["kind"] == "ConfigMap" and d["metadata"]["name"] == "release-widgets"
+        )
+        self.assertEqual(
+            sorted(widgets["data"]), ["map.html", "rank.html", "widgets.css"]
+        )
+
+    def run_widgets(self, extra_pages):
+        script = container_of(self.gateway(), "widgets")["command"][2]
+        shipped = Path(check_charts.HERE, "grist", "files", "widgets")
+        with tempfile.TemporaryDirectory() as root:
+            for sub in ("yolab", "shipped", "widgets"):
+                Path(root, sub).mkdir()
+            Path(root, "yolab", "env").write_text(
+                "export YOLAB_FQDN=grist.example.test\n"
+            )
+            for page in shipped.iterdir():
+                Path(root, "shipped", page.name).write_bytes(page.read_bytes())
+            for name, body in extra_pages.items():
+                Path(root, "widgets", name).write_text(body)
+            local = (
+                script.replace("/yolab", f"{root}/yolab")
+                .replace("/shipped", f"{root}/shipped")
+                .replace("/widgets", f"{root}/widgets")
+                .replace(f"https://%s{root}/widgets/%s", "https://%s/widgets/%s")
+            )
+            out = subprocess.run(
+                ["sh", "-c", local], capture_output=True, text=True, check=True
+            )
+            manifest = json.loads(Path(root, "widgets", "manifest.json").read_text())
+        return manifest, out.stdout
+
+    def test_each_widget_page_is_listed_with_the_access_it_asks_for(self):
+        manifest, _ = self.run_widgets({})
+        listed = {w["name"]: (w["url"], w["accessLevel"]) for w in manifest}
+        self.assertEqual(
+            listed,
+            {
+                "Binary ranker": ("https://grist.example.test/widgets/rank.html", "full"),
+                "2D map": ("https://grist.example.test/widgets/map.html", "read table"),
+            },
+        )
+
+    def test_a_widget_someone_adds_to_the_folder_is_listed_too(self):
+        page = '<title>Mine "quoted"</title><script>grist.ready({requiredAccess: "none"});</script>'
+        manifest, _ = self.run_widgets({"mine.html": page})
+        mine = next(w for w in manifest if w["widgetId"] == "yolab-mine")
+        self.assertEqual(mine["name"], 'Mine "quoted"')
+        self.assertEqual(mine["accessLevel"], "none")
+
+
+class I2pRouter(RenderedChart):
+    CHART = "i2p"
+
+    def router(self, extra=None):
+        return container_of(self.deployments(self.docs(extra))["gateway"], "i2p")
+
+    def test_the_console_is_only_on_loopback_and_behind_the_login(self):
+        env = self.env(self.deployments(self.docs())["gateway"], "i2p")
+        self.assertEqual(env["IP_ADDR"], "127.0.0.1")
+        caddy = caddyfile_of(self.docs())
+        self.assertLess(
+            caddy.index("forward_auth localhost:9091"),
+            caddy.index("reverse_proxy localhost:7657"),
+        )
+
+    def test_the_router_shares_the_tunnels_network_so_peers_reach_it(self):
+        names = [c["name"] for c in self.deployments(self.docs())["gateway"]["containers"]]
+        self.assertIn("wireguard", names)
+        self.assertIn("i2p", names)
+
+    def test_udp_answers_from_the_tunnel_address_peers_wrote_to(self):
+        script = self.router()["command"][2]
+        self.assertIn('set_key i2np.udp.bindInterface "$YOLAB_IPV6"', script)
+        self.assertLess(script.index("until ip -6"), script.index("exec /entrypoint/entrypoint.sh"))
+
+    def test_the_transport_port_is_not_the_images_default_and_stays_put(self):
+        first = self.env(self.deployments(self.docs())["gateway"], "i2p")["EXT_PORT"]
+        again = self.env(self.deployments(self.docs())["gateway"], "i2p")["EXT_PORT"]
+        self.assertEqual(first, again)
+        self.assertNotEqual(first, "12345")
+        self.assertTrue(20000 <= int(first) < 50000)
+
+    def test_a_setting_is_replaced_not_repeated_in_router_config(self):
+        script = self.router()["command"][2]
+        start = script.index("set_key() {")
+        end = script.index("}\n", start) + 2
+        with tempfile.TemporaryDirectory() as root:
+            conf = Path(root, "router.config")
+            conf.write_text("i2np.udp.port=1\nrouter.sharePercentage=10\n")
+            subprocess.run(
+                [
+                    "sh",
+                    "-c",
+                    f'CONF="{conf}"\n{script[start:end]}\n'
+                    "set_key router.sharePercentage 80\nset_key router.sharePercentage 90\n",
+                ],
+                check=True,
+            )
+            self.assertEqual(
+                conf.read_text(), "i2np.udp.port=1\nrouter.sharePercentage=90\n"
+            )
+
+    def test_the_bandwidth_chosen_is_given_to_the_router(self):
+        env = self.env(
+            self.deployments(
+                self.docs({"config.bandwidth_kbps": 2048, "config.share_percent": 50})
+            )["gateway"],
+            "i2p",
+        )
+        self.assertEqual(env["BANDWIDTH_KBPS"], "2048")
+        self.assertEqual(env["SHARE_PERCENT"], "50")
+
+
+class MatrixServer(RenderedChart):
+    CHART = "matrix"
+
+    def gateway(self, extra=None):
+        return self.deployments(self.docs(extra))["gateway"]
+
+    def script(self, name, extra=None):
+        return container_of(self.gateway(extra), name)["command"][2]
+
+    def test_other_servers_and_clients_find_this_server_on_its_own_address(self):
+        caddy = caddyfile_of(self.docs())
+        self.assertIn('respond `{"m.server":"{$YOLAB_HOST}:443"}`', caddy)
+        self.assertIn('"livekit_service_url":"https://{$RTC_FQDN}/livekit/jwt"', caddy)
+        self.assertIn("handle /_matrix/* {\n    reverse_proxy localhost:8008", caddy)
+
+    def test_calls_get_their_own_two_addresses(self):
+        wg = container_of(self.gateway(), "wg-register")
+        aliases = next(e["value"] for e in wg["env"] if e["name"] == "ALIASES")
+        self.assertEqual(aliases, "CALL_FQDN=release-call RTC_FQDN=release-rtc")
+
+    def test_an_invite_code_is_required_to_sign_up_by_default(self):
+        script = self.script("synapse")
+        self.assertIn("enable_registration: true", script)
+        self.assertIn("registration_requires_token: true", script)
+        self.assertIn("enable_registration_without_verification: false", script)
+
+    def test_closed_means_nobody_can_sign_up_and_element_hides_it(self):
+        extra = {"config.registration": "closed"}
+        self.assertIn("enable_registration: false", self.script("synapse", extra))
+        self.assertIn(
+            '"UIFeature.registration": false', self.script("matrix-secrets", extra)
+        )
+
+    def test_open_lets_anyone_sign_up_without_a_code(self):
+        script = self.script("synapse", {"config.registration": "open"})
+        self.assertIn("registration_requires_token: false", script)
+        self.assertIn("enable_registration_without_verification: true", script)
+
+    def test_without_an_invite_code_its_output_is_hidden(self):
+        outputs = container_of(self.gateway({"config.registration": "closed"}), "outputs")
+        env = {e["name"]: e for e in outputs["env"]}
+        self.assertEqual(env["OUTPUT_REGISTRATION_TOKEN"]["value"], "")
+        admin = container_of(self.gateway({"config.registration": "closed"}), "matrix-admin")
+        self.assertNotIn("REGISTRATION_TOKEN", {e["name"] for e in admin["env"]})
+
+    def test_the_invite_code_is_printed_from_its_secret(self):
+        outputs = container_of(self.gateway(), "outputs")
+        env = {e["name"]: e for e in outputs["env"]}
+        self.assertEqual(
+            env["OUTPUT_REGISTRATION_TOKEN"]["valueFrom"]["secretKeyRef"],
+            {"name": "release-matrix", "key": "registration-token"},
+        )
+
+    def test_a_server_name_that_changed_stops_synapse_instead_of_forking_identity(self):
+        script = self.script("synapse")
+        self.assertLess(
+            script.index('if [ "$SERVER_NAME" != "$YOLAB_HOST" ]'),
+            script.index("exec python -m synapse.app.homeserver"),
+        )
+
+    def test_media_offers_only_the_tunnel_address_to_callers(self):
+        script = self.script("matrix-secrets")
+        self.assertIn("use_external_ip: false", script)
+        self.assertIn("includes:\n      - wg0", script)
+        self.assertLess(
+            self.script("livekit").index("until ip -6"),
+            self.script("livekit").index("exec /livekit-server"),
+        )
+
+    def test_the_service_reaches_its_own_names_inside_the_pod(self):
+        self.assertIn(">> /etc/hosts", self.script("matrix-secrets"))
+
+    def test_the_admin_sign_up_mac_is_the_one_synapse_checks(self):
+        import hashlib
+        import hmac
+
+        script = self.script("matrix-admin")
+        self.assertIn(
+            'hmac.new(secret, "\\x00".join((nonce, user, password, "admin")).encode(), hashlib.sha1)',
+            script,
+        )
+        documented = hmac.new(b"s", digestmod=hashlib.sha1)
+        for part in (b"n", b"u", b"p"):
+            documented.update(part)
+            documented.update(b"\x00")
+        documented.update(b"admin")
+        ours = hmac.new(b"s", "\x00".join(("n", "u", "p", "admin")).encode(), hashlib.sha1)
+        self.assertEqual(ours.hexdigest(), documented.hexdigest())
+
+    def test_the_token_service_gets_a_shell_from_busybox_because_its_image_has_none(self):
+        jwt = container_of(self.gateway(), "livekit-jwt")
+        self.assertEqual(jwt["command"][:3], ["/rtc/busybox", "sh", "-c"])
+        self.assertIn("cp /bin/busybox /rtc/busybox", self.script("matrix-secrets"))
+
+
+
 if __name__ == "__main__":
     unittest.main()

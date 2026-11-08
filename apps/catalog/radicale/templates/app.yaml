@@ -1,0 +1,155 @@
+{{- $accounts := ((.Values.config).accounts) | default list }}
+{{- if not $accounts }}
+{{- fail "config.accounts is required: Radicale has no account until one is given" }}
+{{- end }}
+{{ include "yolab-common.caddyConfigMap" . }}
+---
+{{ include "yolab-common.uninstallHook" . }}
+---
+{{ include "yolab-common.homeVolume" $ }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .Release.Name }}-accounts
+  namespace: {{ .Release.Namespace }}
+type: Opaque
+stringData:
+  logins: |
+{{- range $accounts }}
+    {{ .username }}{{ "\t" }}{{ .password }}
+{{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      initContainers:
+      {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      containers:
+      {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      volumes:
+      {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: radicale
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: radicale
+  template:
+    metadata:
+      labels:
+        app: radicale
+      annotations:
+        yolab.io/accounts: {{ toJson $accounts | sha256sum | trunc 16 | quote }}
+    spec:
+      initContainers:
+      - name: radicale-config
+        image: tomsquest/docker-radicale:3.9.0.0@sha256:2f215d0e6a78ff68c280975af6ce580b05976f70c62b51640397e3eb5a7aa0e9
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - |
+          set -eu
+          cat > /config/config <<'EOF'
+          [server]
+          hosts = 0.0.0.0:5232, [::]:5232
+
+          [auth]
+          type = htpasswd
+          htpasswd_filename = /config/users
+          htpasswd_encryption = bcrypt
+          delay = 3
+
+          [rights]
+          type = owner_only
+
+          [storage]
+          filesystem_folder = /data/collections
+
+          [web]
+          type = internal
+          EOF
+          /venv/bin/python - <<'PY'
+          import bcrypt
+
+          lines = []
+          with open("/accounts/logins", encoding="utf-8") as logins:
+              for line in logins:
+                  line = line.rstrip("\n")
+                  if not line:
+                      continue
+                  user, password = line.split("\t", 1)
+                  digest = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+                  lines.append(f"{user}:{digest}")
+          if not lines:
+              raise SystemExit("no Radicale account was given")
+          with open("/config/users", "w", encoding="utf-8") as users:
+              users.write("\n".join(lines) + "\n")
+          print(f"wrote {len(lines)} Radicale account(s)")
+          PY
+        volumeMounts:
+        - name: config
+          mountPath: /config
+        - name: accounts
+          mountPath: /accounts
+          readOnly: true
+      containers:
+      - name: radicale
+        image: tomsquest/docker-radicale:3.9.0.0@sha256:2f215d0e6a78ff68c280975af6ce580b05976f70c62b51640397e3eb5a7aa0e9
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 5232
+        readinessProbe:
+          tcpSocket:
+            port: 5232
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        volumeMounts:
+        - name: config
+          mountPath: /config
+        - name: data
+          mountPath: /data
+          subPath: radicale
+      volumes:
+      - name: config
+        emptyDir: {}
+      - name: accounts
+        secret:
+          secretName: {{ .Release.Name }}-accounts
+      - name: data
+        persistentVolumeClaim:
+          claimName: {{ include "yolab-common.home.claim" . }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: radicale
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    app: radicale
+  ports:
+  - port: 5232
+    targetPort: 5232

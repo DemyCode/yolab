@@ -70,6 +70,8 @@ LINT_VALUES = {
     "config.vpn_addresses": "10.64.0.2/32",
     "config.auth_users[0].username": "admin",
     "config.auth_users[0].password": "PlaceholderPw2026",
+    "config.accounts[0].username": "alice",
+    "config.accounts[0].password": "PlaceholderPw2026",
     "config.desktop_password": "PlaceholderPw2026",
     "config.registration_token": "PlaceholderRegistrationToken2026",
     "config.oidc_well_known_url": "https://auth.example.com/.well-known/openid-configuration",
@@ -219,6 +221,10 @@ VARIANTS = {
         {"machine.name": "gpu-box", "machine.accelerator": "nvidia"},
         {"machine.name": "nuc", "machine.accelerator": "intel"},
         {"machine.name": "gt710", "machine.accelerator": "nvidia-legacy"},
+    ],
+    "matrix": [
+        {"config.registration": "closed"},
+        {"config.registration": "open"},
     ],
 }
 

@@ -1,0 +1,107 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": [
+    "config"
+  ],
+  "properties": {
+    "config": {
+      "title": "I2P Router",
+      "type": "object",
+      "required": [
+        "subdomain",
+        "auth_users",
+        "bandwidth_kbps",
+        "share_percent",
+        "memory"
+      ],
+      "properties": {
+        "subdomain": {
+          "type": "string",
+          "title": "Subdomain",
+          "format": "tunnel",
+          "default": "i2p",
+          "description": "The router console, behind the login below. Other I2P routers reach this router directly on the same IPv6 address."
+        },
+        "yolab_token": {
+          "type": "string",
+          "title": "YoLab token",
+          "format": "yolab-token",
+          "writeOnly": true,
+          "description": "Leave it as it is to use this box's YoLab account."
+        },
+        "auth_users": {
+          "type": "array",
+          "title": "Console logins",
+          "description": "The console controls the whole router, so it is only reachable with one of these.",
+          "minItems": 1,
+          "default": [],
+          "items": {
+            "type": "object",
+            "required": [
+              "username",
+              "password"
+            ],
+            "properties": {
+              "username": {
+                "type": "string",
+                "title": "Username",
+                "minLength": 1
+              },
+              "password": {
+                "type": "string",
+                "title": "Password",
+                "minLength": 8,
+                "writeOnly": true,
+                "generate": true
+              }
+            }
+          }
+        },
+        "bandwidth_kbps": {
+          "type": "integer",
+          "title": "Bandwidth limit (KB/s)",
+          "default": 512,
+          "minimum": 16,
+          "description": "The most the router sends and receives per second, in each direction. Set it below your upload speed."
+        },
+        "share_percent": {
+          "type": "integer",
+          "title": "Share for other people (%)",
+          "default": 80,
+          "minimum": 10,
+          "maximum": 100,
+          "description": "How much of that bandwidth carries other people's traffic. More sharing makes the network faster and your own traffic harder to single out."
+        },
+        "memory": {
+          "type": "string",
+          "title": "Memory",
+          "default": "512m",
+          "enum": [
+            "256m",
+            "512m",
+            "1024m",
+            "2048m"
+          ],
+          "description": "Java heap for the router. A router sharing a lot of bandwidth carries more tunnels and needs more."
+        }
+      }
+    },
+    "outputs": {
+      "type": "object",
+      "readOnly": true,
+      "properties": {
+        "url": {
+          "type": "string",
+          "title": "Router console",
+          "format": "uri"
+        },
+        "ipv6": {
+          "type": "string",
+          "title": "Public IPv6 address",
+          "format": "text"
+        }
+      }
+    }
+  }
+}

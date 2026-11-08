@@ -1,0 +1,18 @@
+apiVersion: v2
+name: i2p
+description: An I2P router that relays traffic for the I2P anonymous network
+home: https://geti2p.net
+type: application
+version: 0.1.0
+appVersion: 2.14.1
+dependencies:
+- name: yolab-common
+  version: "0.1.32"
+  repository: oci://ghcr.io/demycode/charts
+annotations:
+  yolab.io/display-name: I2P Router
+  yolab.io/icon: 🧅
+  yolab.io/category: networking
+  yolab.io/tagline: Relay traffic for the I2P anonymous network
+  yolab.io/github: i2p/i2p.i2p
+  yolab.io/collections: privacy

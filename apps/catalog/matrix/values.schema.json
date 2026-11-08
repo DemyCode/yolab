@@ -1,0 +1,145 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": [
+    "config"
+  ],
+  "properties": {
+    "config": {
+      "title": "Matrix",
+      "type": "object",
+      "required": [
+        "subdomain",
+        "admin_username",
+        "admin_password",
+        "registration"
+      ],
+      "properties": {
+        "subdomain": {
+          "type": "string",
+          "title": "Subdomain",
+          "format": "tunnel",
+          "default": "matrix",
+          "description": "Element opens here, and this address is also your server name: accounts look like @you:<this address>. It cannot change after the first start. Calls use two more addresses starting with this name: <subdomain>-call and <subdomain>-rtc. Other servers and callers need IPv6 to reach you."
+        },
+        "yolab_token": {
+          "type": "string",
+          "title": "YoLab token",
+          "format": "yolab-token",
+          "writeOnly": true,
+          "description": "Leave it as it is to use this box's YoLab account."
+        },
+        "admin_username": {
+          "type": "string",
+          "title": "Admin username",
+          "default": "admin",
+          "minLength": 1,
+          "pattern": "^[a-z0-9._=/-]+$",
+          "description": "Created on the first start as a server admin. Lowercase letters, digits and . _ = - / only."
+        },
+        "admin_password": {
+          "type": "string",
+          "title": "Admin password",
+          "minLength": 12,
+          "writeOnly": true,
+          "generate": true,
+          "description": "Only used when the admin account is created. Change it later from Element's settings."
+        },
+        "registration": {
+          "type": "string",
+          "title": "Who can create an account",
+          "default": "token",
+          "oneOf": [
+            {
+              "const": "token",
+              "title": "People you give the invite code to"
+            },
+            {
+              "const": "closed",
+              "title": "Nobody: only the admin account exists"
+            },
+            {
+              "const": "open",
+              "title": "Anyone on the internet"
+            }
+          ]
+        }
+      },
+      "dependencies": {
+        "registration": {
+          "oneOf": [
+            {
+              "properties": {
+                "registration": {
+                  "const": "token"
+                },
+                "registration_token": {
+                  "type": "string",
+                  "title": "Invite code",
+                  "minLength": 8,
+                  "pattern": "^[A-Za-z0-9._~-]+$",
+                  "writeOnly": true,
+                  "generate": true,
+                  "description": "Anyone signing up in Element is asked for it. It works any number of times; change it here to stop the old one working for new sign-ups."
+                }
+              },
+              "required": [
+                "registration_token"
+              ]
+            },
+            {
+              "properties": {
+                "registration": {
+                  "const": "closed"
+                }
+              }
+            },
+            {
+              "properties": {
+                "registration": {
+                  "const": "open"
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "outputs": {
+      "type": "object",
+      "readOnly": true,
+      "properties": {
+        "url": {
+          "type": "string",
+          "title": "Element",
+          "format": "uri"
+        },
+        "server_name": {
+          "type": "string",
+          "title": "Server name",
+          "format": "text"
+        },
+        "call_url": {
+          "type": "string",
+          "title": "Element Call",
+          "format": "uri"
+        },
+        "admin_username": {
+          "type": "string",
+          "title": "Admin account",
+          "format": "text"
+        },
+        "admin_password": {
+          "type": "string",
+          "title": "Admin password",
+          "format": "secret"
+        },
+        "registration_token": {
+          "type": "string",
+          "title": "Invite code",
+          "format": "secret"
+        }
+      }
+    }
+  }
+}

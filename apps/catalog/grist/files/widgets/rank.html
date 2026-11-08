@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Binary ranker</title>
+<script src="/grist-plugin-api.js"></script>
+<link rel="stylesheet" href="widgets.css">
+<style>
+  main { display: flex; flex-direction: column; gap: 12px; }
+  .question { text-align: center; margin: 0; }
+  .answers { flex: 1; min-height: 120px; }
+  .answers button { font-size: 16px; font-weight: 600; padding: 20px 12px; }
+  #done { text-align: center; padding: 24px 12px; font-size: 15px; }
+</style>
+</head>
+<body>
+<main>
+  <div id="no-mapping" class="muted hidden">Pick the <b>Label</b> and <b>Rank</b> columns in the widget's settings (Creator panel → Widget).</div>
+
+  <section id="asking" class="hidden">
+    <p class="question" id="question"></p>
+    <div class="answers">
+      <button class="primary" id="left"></button>
+      <button class="primary" id="right"></button>
+    </div>
+    <p class="muted" id="progress"></p>
+  </section>
+
+  <div id="done" class="card hidden">
+    <b>Everything is ranked.</b><br>
+    <span class="muted">Clear a value in the rank column to re-rank it.</span>
+  </div>
+</main>
+<script>
+// Binary insertion into one numeric "Rank" column: 1 ranks highest, empty = unranked.
+// Only the rows this widget receives count, so its filters decide what gets ranked.
+// Unranked rows are placed one after the other until none are left.
+let tableId = null;
+let mappings = {};  // widget column name -> table column id
+let rankLabel = "Rank";
+let rows = [];      // { id, label, rank }
+let session = null; // placement of one unranked row
+let saving = false;
+
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const show = (id, on) => $(id).classList.toggle("hidden", !on);
+const normalize = raw => ({
+  id: raw.id,
+  label: raw[mappings.Label] || `Row ${raw.id}`,
+  rank: typeof raw[mappings.Rank] === "number" ? raw[mappings.Rank] : null,
+});
+const ranked = () => rows.filter(r => r.rank !== null).sort((a, b) => a.rank - b.rank);
+const unranked = () => rows.filter(r => r.rank === null);
+// Changes when the ranked rows change, so an ongoing placement can be restarted on fresh data.
+const signature = () => ranked().map(r => `${r.id}:${r.rank}`).join(",");
+
+async function loadLabel() {
+  rankLabel = mappings.Rank ? mappings.Rank.replace(/_/g, " ") : "Rank";
+  try {
+    const tables = await grist.docApi.fetchTable("_grist_Tables");
+    const tableRef = tables.id[tables.tableId.indexOf(tableId)];
+    const cols = await grist.docApi.fetchTable("_grist_Tables_column");
+    const i = cols.colId.findIndex((id, k) => id === mappings.Rank && cols.parentId[k] === tableRef);
+    if (i >= 0 && cols.label[i]) rankLabel = cols.label[i];
+  } catch { /* keep the column id */ }
+}
+
+async function save(row, rank) {
+  saving = true;
+  try {
+    await grist.docApi.applyUserActions([["UpdateRecord", tableId, row.id, { [mappings.Rank]: rank }]]);
+    // The update from Grist follows (or already replaced `rows`); keep going without waiting for it.
+    row.rank = rank;
+    const fresh = rows.find(r => r.id === row.id);
+    if (fresh) fresh.rank = rank;
+  } finally {
+    saving = false;
+  }
+}
+
+// Start placing the next unranked row, if any.
+async function next() {
+  session = null;
+  const todo = unranked();
+  if (!todo.length) return render();
+  const row = todo[0], l = ranked();
+  if (!l.length) {
+    await save(row, 1);
+    return next();
+  }
+  session = { row, l, lo: 0, hi: l.length, asked: 0, total: Math.ceil(Math.log2(l.length + 1)), sig: signature() };
+  ask();
+}
+
+function ask() {
+  const s = session;
+  if (s.lo >= s.hi) return place();
+  s.mid = (s.lo + s.hi) >> 1;
+  s.asked++;
+  // Random sides, so the new row isn't always on the same side.
+  s.newOnLeft = Math.random() < 0.5;
+  render();
+}
+
+function answer(clickedLeft) {
+  const s = session;
+  const newRanksHigher = clickedLeft === s.newOnLeft;
+  if (newRanksHigher) s.hi = s.mid; else s.lo = s.mid + 1;
+  ask();
+}
+
+async function place() {
+  const s = session;
+  const before = s.l[s.lo - 1]?.rank, after = s.l[s.lo]?.rank;
+  const rank = before == null ? after - 1 : after == null ? before + 1 : (before + after) / 2;
+  await save(s.row, rank);
+  next();
+}
+
+function render() {
+  const mapped = mappings.Label && mappings.Rank;
+  show("no-mapping", !mapped);
+  show("asking", mapped && !!session);
+  show("done", mapped && !session && !unranked().length);
+  if (!mapped || !session) return;
+  const s = session, other = s.l[s.mid];
+  const [left, right] = s.newOnLeft ? [s.row, other] : [other, s.row];
+  $("question").innerHTML = `Which ranks higher in <b>${esc(rankLabel)}</b>?`;
+  $("left").textContent = left.label;
+  $("right").textContent = right.label;
+  const left_ = unranked().length;
+  $("progress").textContent = `Placing “${s.row.label}”: question ${s.asked} of about ${s.total} · ${left_} left to rank · ${ranked().length} ranked`;
+}
+
+$("left").onclick = () => answer(true);
+$("right").onclick = () => answer(false);
+
+grist.ready({
+  requiredAccess: "full",
+  columns: [
+    { name: "Label", title: "Label", description: "Shown on the buttons." },
+    { name: "Rank", title: "Rank", type: "Numeric", description: "Number column the widget fills: 1 ranks highest, empty = not ranked yet." },
+  ],
+});
+grist.onRecords(async (raw, mapped) => {
+  const mappingChanged = JSON.stringify(mapped || {}) !== JSON.stringify(mappings);
+  mappings = mapped || {};
+  if (!tableId) tableId = await grist.getSelectedTableId();
+  if (mappingChanged) await loadLabel();
+  rows = raw.map(normalize);
+  if (!mappings.Label || !mappings.Rank) { session = null; return render(); }
+  if (saving) return;
+  const s = session;
+  const stillValid = s && !mappingChanged && s.sig === signature()
+    && rows.some(r => r.id === s.row.id && r.rank === null);
+  if (stillValid) {
+    s.row = rows.find(r => r.id === s.row.id);
+    return render();
+  }
+  next();
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,104 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": [
+    "config"
+  ],
+  "properties": {
+    "config": {
+      "title": "Radicale",
+      "type": "object",
+      "required": [
+        "accounts"
+      ],
+      "properties": {
+        "yolab_enabled": {
+          "type": "boolean",
+          "title": "YoLab address",
+          "default": true,
+          "description": "Reachable from anywhere at https://<subdomain>.<your-number>.yolab.io, through your YoLab tunnel. Visitors need IPv6."
+        },
+        "accounts": {
+          "type": "array",
+          "title": "Accounts",
+          "description": "Each person signs in to the web page and to their phone or computer sync app (DAVx5, Thunderbird, Apple Calendar…) with one of these. Everyone only sees their own calendars, task lists and address books.",
+          "minItems": 1,
+          "default": [],
+          "items": {
+            "type": "object",
+            "required": [
+              "username",
+              "password"
+            ],
+            "properties": {
+              "username": {
+                "type": "string",
+                "title": "Username",
+                "minLength": 1,
+                "pattern": "^[^:\\s]+$"
+              },
+              "password": {
+                "type": "string",
+                "title": "Password",
+                "minLength": 8,
+                "writeOnly": true,
+                "generate": true
+              }
+            }
+          }
+        }
+      },
+      "dependencies": {
+        "yolab_enabled": {
+          "oneOf": [
+            {
+              "properties": {
+                "yolab_enabled": {
+                  "const": false
+                }
+              },
+              "required": [
+                "yolab_enabled"
+              ]
+            },
+            {
+              "properties": {
+                "yolab_enabled": {
+                  "const": true
+                },
+                "subdomain": {
+                  "type": "string",
+                  "title": "Subdomain",
+                  "format": "tunnel",
+                  "default": "radicale",
+                  "description": "Sync apps take this address as the server. Most find the calendars and contacts on their own from it."
+                },
+                "yolab_token": {
+                  "type": "string",
+                  "title": "YoLab token",
+                  "format": "yolab-token",
+                  "writeOnly": true,
+                  "description": "Leave it as it is to use this box's YoLab account."
+                }
+              },
+              "required": [
+                "subdomain"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    "outputs": {
+      "type": "object",
+      "readOnly": true,
+      "properties": {
+        "url": {
+          "type": "string",
+          "title": "Server address",
+          "format": "uri"
+        }
+      }
+    }
+  }
+}
