@@ -4,7 +4,7 @@ config:
   subdomain: sonarr
 
 yolab:
-  files: true
+  files: media
   platformApiUrl: ""
   accountToken: ""
   serviceName: ""

@@ -1,7 +1,7 @@
 config:
   subdomain: bazarr
 yolab:
-  files: true
+  files: media
   platformApiUrl: ''
   accountToken: ''
   serviceName: ''

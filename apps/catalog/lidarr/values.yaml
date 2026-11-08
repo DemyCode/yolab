@@ -2,7 +2,7 @@ config:
   music_path: music
   subdomain: lidarr
 yolab:
-  files: true
+  files: music
   platformApiUrl: ''
   accountToken: ''
   serviceName: ''

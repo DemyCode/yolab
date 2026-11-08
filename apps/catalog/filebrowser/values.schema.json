@@ -30,7 +30,7 @@
           "type": "boolean",
           "title": "Use an existing folder",
           "default": false,
-          "description": "Off: File Browser gets an empty folder of its own. On: pick any folder of your file tree to browse and manage, like another service's photos."
+          "description": "Off: a new empty folder, files, inside File Browser's own folder. On: pick any folder of your file tree to browse and manage, like another service's photos."
         },
         "tor_enabled": {
           "type": "boolean",

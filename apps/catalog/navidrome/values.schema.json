@@ -13,7 +13,7 @@
           "type": "boolean",
           "title": "Use an existing folder",
           "default": false,
-          "description": "Off: the service gets a new folder of its own, named after it. On: pick a folder already in your file tree; every service set to the same folder sees the same files."
+          "description": "Off: a new folder, music, inside this service's own folder. On: pick a folder already in your file tree; every service set to the same folder sees the same files."
         },
         "music_path": {
           "type": "string",

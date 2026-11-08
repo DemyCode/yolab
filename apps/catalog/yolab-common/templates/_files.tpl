@@ -15,7 +15,7 @@
 {{- else if $given -}}
 {{- include "yolab-common.tree.path" $given -}}
 {{- else -}}
-{{- printf "%s.files" (include "yolab-common.instance" .) -}}
+{{- printf "%s/%s" (include "yolab-common.home" .) (toString .Values.yolab.files) -}}
 {{- end -}}
 {{- end -}}
 

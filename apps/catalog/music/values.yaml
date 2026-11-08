@@ -8,6 +8,6 @@ config:
   manage_anywhere: true
 
 yolab:
-  files: true
+  files: music
   platformApiUrl: ""
   serviceName: ""

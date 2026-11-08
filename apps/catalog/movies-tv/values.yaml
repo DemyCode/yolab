@@ -13,6 +13,6 @@ config:
   manage_anywhere: true
 
 yolab:
-  files: true
+  files: media
   platformApiUrl: ""
   serviceName: ""

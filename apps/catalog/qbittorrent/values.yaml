@@ -5,7 +5,7 @@ config:
   vpn_enabled: false
 
 yolab:
-  files: true
+  files: downloads
   platformApiUrl: ""
   accountToken: ""
   serviceName: ""

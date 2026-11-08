@@ -10,7 +10,7 @@ config:
   hardware_transcoding: true
 gpu: {}
 yolab:
-  files: true
+  files: media
   platformApiUrl: ''
   accountToken: ''
   serviceName: ''

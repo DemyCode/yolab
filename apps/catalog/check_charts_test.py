@@ -1806,7 +1806,7 @@ class TreeVolumes(unittest.TestCase):
 
 
 class FilesRules(unittest.TestCase):
-    FOLDER = check_charts.FILES_FOLDER
+    FOLDER = check_charts.files_folder("media")
 
     def deployment(self, claim=None, **mount_overrides):
         mount = {"name": "files", "mountPath": check_charts.FILES_MOUNT}
@@ -1838,7 +1838,7 @@ class FilesRules(unittest.TestCase):
         folder = folder or self.FOLDER
         return tree_pair(check_charts.files_claim(folder), folder)
 
-    def files(self, *docs, wanted=True, folder=None):
+    def files(self, *docs, wanted="media", folder=None):
         chosen = folder or self.FOLDER
         return collected(
             lambda app, d, w, fail: check_charts.check_files(app, d, w, fail, chosen),
@@ -1846,6 +1846,13 @@ class FilesRules(unittest.TestCase):
             list(docs),
             wanted,
         )
+
+    def test_the_files_folder_is_named_by_the_chart_not_switched_on(self):
+        found = self.files(*self.own_files(), self.deployment(), wanted=True)
+        self.assertTrue(any("names the folder" in f for f in found), found)
+
+    def test_by_default_the_files_folder_sits_inside_the_services_own(self):
+        self.assertEqual(check_charts.files_folder("media"), "release/media")
 
     def test_a_chart_that_mounts_its_files_whole_passes(self):
         self.assertEqual(self.files(*self.own_files(), self.deployment()), [])
@@ -1902,7 +1909,7 @@ class FilesRules(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as d:
             values = Path(d, "values.yaml")
-            values.write_text("yolab:\n  files: true\n")
+            values.write_text("yolab:\n  files: media\n")
             self.assertEqual(
                 collected(
                     check_charts.check_files_folder_offer, "x", folder_offer(), values
@@ -2368,10 +2375,10 @@ class PackMembers(unittest.TestCase):
     def test_something_no_app_owns_may_only_be_a_shared_secret_or_the_files_folder(
         self,
     ):
-        files = check_charts.files_claim(check_charts.FILES_FOLDER)
+        files = check_charts.files_claim(check_charts.files_folder("media"))
         docs = [
             {"kind": "Secret", "metadata": {"name": "release-keys"}},
-            *tree_pair(files, check_charts.FILES_FOLDER),
+            *tree_pair(files, check_charts.files_folder("media")),
             {"kind": "PersistentVolume", "metadata": {"name": "stray.volume"}},
             {"kind": "ConfigMap", "metadata": {"name": "stray"}},
         ]
@@ -2481,7 +2488,7 @@ class PackRendered(RenderedChart):
 
     def test_the_apps_share_one_files_folder_made_by_the_pack_itself(self):
         docs = self.docs()
-        claim = check_charts.files_claim(check_charts.FILES_FOLDER)
+        claim = check_charts.files_claim(check_charts.files_folder("media"))
         shared = sorted(
             (d["kind"], d["metadata"]["name"])
             for d in docs
@@ -2662,7 +2669,10 @@ class ServarrRendered(RenderedChart):
         ]
         self.assertEqual(
             claims,
-            ["release-data", check_charts.files_claim(check_charts.FILES_FOLDER)],
+            [
+                "release-data",
+                check_charts.files_claim(check_charts.files_folder("media")),
+            ],
         )
         claim = next(
             d
@@ -2777,8 +2787,8 @@ class FileBrowserOnAFolder(RenderedChart):
         self.assertNotIn("subPath", mount)
         self.assertEqual([s["path"] for s in sources], ["/files"])
         files = [d for d in docs if check_charts.is_files_doc(d)]
-        self.assertEqual({check_charts.tree_path(d) for d in files}, {"release.files"})
-        self.assertEqual(claim, check_charts.files_claim("release.files"))
+        self.assertEqual({check_charts.tree_path(d) for d in files}, {"release/files"})
+        self.assertEqual(claim, check_charts.files_claim("release/files"))
 
     def test_pointed_at_another_service_s_folder_it_browses_that_folder(self):
         docs = self.docs(
@@ -2832,7 +2842,7 @@ class FileBrowserOnAFolder(RenderedChart):
             }
         )
         _, claim, _ = self.browsed(docs)
-        self.assertEqual(claim, check_charts.files_claim("release.files"))
+        self.assertEqual(claim, check_charts.files_claim("release/files"))
 
     def test_it_never_re_owns_everything_in_the_folder_it_is_pointed_at(self):
         spec = self.deployments(
@@ -2900,6 +2910,14 @@ class PackReadyToUse(RenderedChart):
 
 class JellyfinSetup(RenderedChart):
     CHART = "jellyfin"
+
+    def test_its_media_is_a_folder_inside_its_own_and_nothing_is_named_files(self):
+        folders = {
+            check_charts.tree_path(d)
+            for d in self.docs()
+            if d["kind"] == "PersistentVolumeClaim"
+        }
+        self.assertEqual(folders, {"release", "release/media"})
 
     def test_an_install_from_before_is_left_to_its_own_setup(self):
         spec = self.deployments(self.docs({"config.admin_password": ""}))["gateway"]

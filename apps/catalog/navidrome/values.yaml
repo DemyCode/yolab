@@ -4,7 +4,7 @@ config:
   subdomain: navidrome
 
 yolab:
-  files: true
+  files: music
   platformApiUrl: ""
   accountToken: ""
   serviceName: ""

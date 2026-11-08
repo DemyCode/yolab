@@ -1382,8 +1382,11 @@ def check_no_links(app, schema, fail):
 
 FILES_CLAIM = "content"
 FILES_MOUNT = "/files"
-FILES_FOLDER = f"{RELEASE}.files"
-FILES_MEMBER = "files"
+FILES_NAME = re.compile(r"^[a-z][a-z0-9-]*$")
+
+
+def files_folder(name):
+    return f"{RELEASE}/{name}"
 
 
 def files_claim(folder):
@@ -1403,7 +1406,7 @@ def is_files_doc(doc):
 
 
 def uses_files(values):
-    return bool(((values or {}).get("yolab") or {}).get("files"))
+    return ((values or {}).get("yolab") or {}).get("files") or ""
 
 
 def files_mounts(docs):
@@ -1421,7 +1424,15 @@ def files_mounts(docs):
                     yield pod, c["name"], m
 
 
-def check_files(app, docs, wanted, fail, folder=FILES_FOLDER):
+def check_files(app, docs, wanted, fail, folder=None):
+    if wanted and not FILES_NAME.match(str(wanted)):
+        fail(
+            app,
+            f"yolab.files is {wanted!r}: it names the folder made inside the "
+            f"service's own folder, like media or downloads",
+        )
+        return
+    folder = folder or files_folder(wanted)
     claims = [
         d for d in docs if d.get("kind") == "PersistentVolumeClaim" and is_files_doc(d)
     ]
@@ -1431,7 +1442,7 @@ def check_files(app, docs, wanted, fail, folder=FILES_FOLDER):
             fail(
                 app,
                 f"renders or mounts a {FILES_CLAIM} claim but values.yaml does "
-                f"not set yolab.files: true",
+                f"not set yolab.files",
             )
         return
     if len(claims) != 1:
@@ -1610,12 +1621,6 @@ def check_pack_declaration(app, chart_yaml, charts, fail):
         )
     if len(set(members)) != len(members):
         fail(app, "depends on an app twice: a pack runs each chart once")
-    if FILES_MEMBER in members:
-        fail(
-            app,
-            f"is built from {FILES_MEMBER}, whose folder would be the pack's own "
-            f"files folder",
-        )
     if not any(d["name"] == "yolab-stack" for d in deps):
         fail(
             app, "a pack renders its apps through yolab-stack, so it must depend on it"
