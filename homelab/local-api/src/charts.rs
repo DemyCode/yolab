@@ -403,7 +403,10 @@ pub async fn sync_repo<H: Host>(
             usable
         })
         .collect();
-    Ok(pull_all(wanted, |entry| pull_into(host, &dir, &manifest.registry, entry)).await)
+    Ok(pull_all(wanted, |entry| {
+        pull_into(host, &dir, &manifest.registry, entry)
+    })
+    .await)
 }
 
 const PARALLEL_PULLS: usize = 8;
@@ -473,7 +476,8 @@ fn stars_due(last: &std::sync::atomic::AtomicU64, now: u64) -> bool {
     if before != 0 && now.saturating_sub(before) < STARS_EVERY_SECS {
         return false;
     }
-    last.compare_exchange(before, now, Ordering::Relaxed, Ordering::Relaxed).is_ok()
+    last.compare_exchange(before, now, Ordering::Relaxed, Ordering::Relaxed)
+        .is_ok()
 }
 
 pub struct ChartSyncController;
