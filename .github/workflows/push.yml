@@ -160,6 +160,14 @@ jobs:
           push: true
           tags: ghcr.io/demycode/wg-register:${{ steps.tag.outputs.value }}-latest
 
+      - name: Build and push radicle
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: apps/radicle
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ghcr.io/demycode/radicle:1.10.3-httpd-0.30.0
+
       - name: Build and push ollama-vulkan
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
