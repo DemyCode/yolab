@@ -192,15 +192,63 @@ fn http() -> crate::http::Client {
     crate::http::client()
 }
 
-async fn fetch_manifest(repo: &ChartRepo) -> anyhow::Result<CatalogManifest> {
-    let body = http()
-        .get(&repo.url)
-        .timeout(std::time::Duration::from_secs(30))
+const MANIFEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+fn github_contents_url(api: &str, url: &str) -> Option<String> {
+    let rest = url.strip_prefix("https://raw.githubusercontent.com/")?;
+    let mut parts = rest.splitn(3, '/');
+    let owner = parts.next()?;
+    let repo = parts.next()?;
+    let tail = parts.next()?;
+    let (git_ref, file) = tail
+        .strip_prefix("refs/heads/")
+        .or_else(|| tail.strip_prefix("refs/tags/"))
+        .unwrap_or(tail)
+        .split_once('/')?;
+    if [owner, repo, git_ref, file].iter().any(|s| s.is_empty()) {
+        return None;
+    }
+    Some(format!(
+        "{}/repos/{owner}/{repo}/contents/{file}?ref={git_ref}",
+        api.trim_end_matches('/')
+    ))
+}
+
+async fn body_of(request: crate::http::RequestBuilder) -> anyhow::Result<String> {
+    Ok(request
+        .timeout(MANIFEST_TIMEOUT)
         .send()
         .await?
         .error_for_status()?
         .text()
-        .await?;
+        .await?)
+}
+
+async fn manifest_text(repo: &ChartRepo, api: &str) -> anyhow::Result<String> {
+    if let Some(contents) = github_contents_url(api, &repo.url) {
+        let request = http()
+            .get(&contents)
+            .header("user-agent", "yolab")
+            .header("accept", "application/vnd.github.raw+json");
+        match body_of(request).await {
+            Ok(body) => return Ok(body),
+            Err(e) => tracing::warn!(
+                "{}: the GitHub API did not serve the catalog, reading {} instead, \
+                 which GitHub may serve up to 5 minutes old: {e:#}",
+                repo.name,
+                repo.url
+            ),
+        }
+    }
+    body_of(http().get(&repo.url)).await
+}
+
+async fn fetch_manifest(repo: &ChartRepo) -> anyhow::Result<CatalogManifest> {
+    fetch_manifest_via(repo, crate::github::API).await
+}
+
+async fn fetch_manifest_via(repo: &ChartRepo, api: &str) -> anyhow::Result<CatalogManifest> {
+    let body = manifest_text(repo, api).await?;
     let manifest: CatalogManifest = serde_norway::from_str(&body)
         .map_err(|e| anyhow::anyhow!("{}: catalog manifest is not valid: {e}", repo.name))?;
     if !valid_registry(&manifest.registry) {
@@ -339,22 +387,46 @@ pub async fn sync_repo<H: Host>(
         }
     }
 
-    let mut pulled = 0usize;
-    for entry in manifest.charts.iter().filter(|e| stale(e)) {
-        if !valid_chart_name(&entry.name) {
-            tracing::warn!(
-                "{}: skipping chart with unusable name {:?}",
-                repo.name,
-                entry.name
-            );
-            continue;
-        }
-        match pull_into(host, &dir, &manifest.registry, entry).await {
-            Ok(()) => pulled += 1,
-            Err(e) => tracing::warn!("{e}"),
-        }
-    }
-    Ok(pulled)
+    let wanted: Vec<&CatalogEntry> = manifest
+        .charts
+        .iter()
+        .filter(|e| stale(e))
+        .filter(|e| {
+            let usable = valid_chart_name(&e.name);
+            if !usable {
+                tracing::warn!(
+                    "{}: skipping chart with unusable name {:?}",
+                    repo.name,
+                    e.name
+                );
+            }
+            usable
+        })
+        .collect();
+    Ok(pull_all(wanted, |entry| pull_into(host, &dir, &manifest.registry, entry)).await)
+}
+
+const PARALLEL_PULLS: usize = 8;
+
+async fn pull_all<T, F, Fut>(items: Vec<T>, pull: F) -> usize
+where
+    F: Fn(T) -> Fut,
+    Fut: std::future::Future<Output = anyhow::Result<()>>,
+{
+    use futures::StreamExt;
+    futures::stream::iter(items)
+        .map(pull)
+        .buffer_unordered(PARALLEL_PULLS)
+        .fold(0usize, |pulled, result| async move {
+            match result {
+                Ok(()) => pulled + 1,
+                Err(e) => {
+                    tracing::warn!("{e:#}");
+                    pulled
+                }
+            }
+        })
+        .await
 }
 
 pub async fn chart_sources(client: &Client) -> Vec<(String, PathBuf)> {
@@ -391,6 +463,19 @@ pub async fn resolve_chart(
     None
 }
 
+const CHART_SYNC_EVERY: std::time::Duration = std::time::Duration::from_secs(600);
+const STARS_EVERY_SECS: u64 = 3600;
+static LAST_STARS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn stars_due(last: &std::sync::atomic::AtomicU64, now: u64) -> bool {
+    use std::sync::atomic::Ordering;
+    let before = last.load(Ordering::Relaxed);
+    if before != 0 && now.saturating_sub(before) < STARS_EVERY_SECS {
+        return false;
+    }
+    last.compare_exchange(before, now, Ordering::Relaxed, Ordering::Relaxed).is_ok()
+}
+
 pub struct ChartSyncController;
 
 impl crate::runtime::Controller for ChartSyncController {
@@ -401,7 +486,7 @@ impl crate::runtime::Controller for ChartSyncController {
         crate::runtime::Scope::Node
     }
     fn interval(&self) -> std::time::Duration {
-        std::time::Duration::from_secs(3600)
+        CHART_SYNC_EVERY
     }
     fn requires(&self) -> &'static [crate::runtime::Requirement] {
         &[crate::runtime::Requirement::KubeApi]
@@ -436,7 +521,9 @@ async fn sync_all<H: Host>(client: &Client, host: &H) -> anyhow::Result<crate::r
             Err(e) => failed.push(format!("{}: {e}", repo.name)),
         }
     }
-    refresh_github_stars(client).await;
+    if stars_due(&LAST_STARS, crate::system::now_secs()) {
+        refresh_github_stars(client).await;
+    }
     if failed.is_empty() {
         Ok(crate::runtime::Tick::Done)
     } else {
@@ -578,11 +665,92 @@ mod tests {
         assert_eq!(m.charts.len(), 1);
     }
 
+    #[test]
+    fn the_official_catalog_is_read_through_the_github_api_which_skips_the_raw_file_cache() {
+        assert_eq!(
+            github_contents_url("https://api.github.com", &official_url()).as_deref(),
+            Some("https://api.github.com/repos/DemyCode/yolab/contents/catalog.yaml?ref=main")
+        );
+    }
+
+    #[test]
+    fn a_raw_github_url_keeps_its_branch_and_nested_path() {
+        assert_eq!(
+            github_contents_url(
+                "https://api.github.com/",
+                "https://raw.githubusercontent.com/me/charts/dev/out/catalog.yaml"
+            )
+            .as_deref(),
+            Some("https://api.github.com/repos/me/charts/contents/out/catalog.yaml?ref=dev")
+        );
+        assert_eq!(
+            github_contents_url(
+                "https://api.github.com",
+                "https://raw.githubusercontent.com/me/charts/refs/tags/v1/catalog.yaml"
+            )
+            .as_deref(),
+            Some("https://api.github.com/repos/me/charts/contents/catalog.yaml?ref=v1")
+        );
+    }
+
+    #[test]
+    fn a_catalog_hosted_anywhere_but_raw_github_is_read_from_its_own_url() {
+        assert_eq!(
+            github_contents_url(
+                "https://api.github.com",
+                "https://charts.example.com/catalog.yaml"
+            ),
+            None
+        );
+        assert_eq!(
+            github_contents_url(
+                "https://api.github.com",
+                "https://raw.githubusercontent.com/me/charts/main"
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn new_charts_are_looked_for_every_ten_minutes_but_stars_only_hourly() {
+        assert_eq!(CHART_SYNC_EVERY, std::time::Duration::from_secs(600));
+        let last = std::sync::atomic::AtomicU64::new(0);
+        assert!(stars_due(&last, 10_000));
+        assert!(!stars_due(&last, 10_600));
+        assert!(!stars_due(&last, 13_599));
+        assert!(stars_due(&last, 13_600));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn stale_charts_are_pulled_several_at_a_time() {
+        let started = tokio::time::Instant::now();
+        let pulled = pull_all((0..PARALLEL_PULLS).collect(), |_| async {
+            tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+            Ok(())
+        })
+        .await;
+        assert_eq!(pulled, PARALLEL_PULLS);
+        assert!(started.elapsed() < std::time::Duration::from_secs(20));
+    }
+
+    #[tokio::test]
+    async fn a_failed_pull_is_not_counted_and_does_not_stop_the_others() {
+        let pulled = pull_all(vec![true, false, true], |ok| async move {
+            if ok {
+                Ok(())
+            } else {
+                Err(anyhow::anyhow!("not found"))
+            }
+        })
+        .await;
+        assert_eq!(pulled, 2);
+    }
+
     mod against_the_world {
         use super::*;
         use crate::host::fake::FakeHost;
         use crate::k8s::testing::{api_server, status};
-        use wiremock::matchers::{body_partial_json, method, path};
+        use wiremock::matchers::{body_partial_json, header, method, path, query_param};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
         const REPOS_PATH: &str = "/api/v1/namespaces/kube-system/configmaps/yolab-chart-repos";
@@ -600,6 +768,30 @@ mod tests {
                 removable: true,
             };
             (server, repo)
+        }
+
+        #[tokio::test]
+        async fn a_raw_github_catalog_is_fetched_from_the_api_as_raw_content() {
+            let api = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/repos/o/r/contents/catalog.yaml"))
+                .and(query_param("ref", "main"))
+                .and(header("user-agent", "yolab"))
+                .and(header("accept", "application/vnd.github.raw+json"))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_string("registry: oci://ghcr.io/x/charts\ncharts: []\n"),
+                )
+                .expect(1)
+                .mount(&api)
+                .await;
+            let repo = ChartRepo {
+                name: OFFICIAL.into(),
+                url: "https://raw.githubusercontent.com/o/r/refs/heads/main/catalog.yaml".into(),
+                removable: false,
+            };
+            let manifest = fetch_manifest_via(&repo, &api.uri()).await.unwrap();
+            assert_eq!(manifest.registry, "oci://ghcr.io/x/charts");
         }
 
         #[tokio::test]
