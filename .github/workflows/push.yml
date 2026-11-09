@@ -143,6 +143,8 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ghcr.io/demycode/wg-sidecar:${{ steps.tag.outputs.value }}-latest
+          cache-from: type=gha,scope=wg-sidecar
+          cache-to: type=gha,mode=max,scope=wg-sidecar
 
       - name: Build and push caddy
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
@@ -151,6 +153,8 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ghcr.io/demycode/caddy:${{ steps.tag.outputs.value }}-latest
+          cache-from: type=gha,scope=caddy
+          cache-to: type=gha,mode=max,scope=caddy
 
       - name: Build and push wg-register
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
@@ -159,6 +163,8 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ghcr.io/demycode/wg-register:${{ steps.tag.outputs.value }}-latest
+          cache-from: type=gha,scope=wg-register
+          cache-to: type=gha,mode=max,scope=wg-register
 
       - name: Build and push radicle
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
@@ -167,6 +173,8 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ghcr.io/demycode/radicle:1.10.3-httpd-0.30.0
+          cache-from: type=gha,scope=radicle
+          cache-to: type=gha,mode=max,scope=radicle
 
       - name: Build and push ollama-vulkan
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
@@ -175,6 +183,8 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ghcr.io/demycode/ollama-vulkan:0.35.1
+          cache-from: type=gha,scope=ollama-vulkan
+          cache-to: type=gha,mode=max,scope=ollama-vulkan
 
       - name: Build and push generic-cdi-plugin
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
@@ -183,6 +193,8 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ghcr.io/demycode/generic-cdi-plugin:7d12b0c
+          cache-from: type=gha,scope=generic-cdi-plugin
+          cache-to: type=gha,mode=max,scope=generic-cdi-plugin
 
   charts:
     runs-on: ubuntu-latest
