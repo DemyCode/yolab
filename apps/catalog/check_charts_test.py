@@ -3853,8 +3853,11 @@ class Registrar(unittest.TestCase):
             stdout=subprocess.PIPE,
             env=env,
         )
-        run.stdin.write(body.encode())
-        run.stdin.close()
+        try:
+            run.stdin.write(body.encode())
+            run.stdin.close()
+        except BrokenPipeError:
+            pass
         if authelia_restarts:
             for _ in range(200):
                 if run.poll() is not None or list(
