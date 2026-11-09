@@ -132,7 +132,7 @@ pub struct CatalogManifest {
     pub charts: Vec<CatalogEntry>,
 }
 
-#[derive(Deserialize, Debug, PartialEq)]
+#[derive(Deserialize, Debug, PartialEq, Clone)]
 pub struct CatalogEntry {
     pub name: String,
     pub version: String,
@@ -387,7 +387,7 @@ pub async fn sync_repo<H: Host>(
         }
     }
 
-    let wanted: Vec<&CatalogEntry> = manifest
+    let wanted: Vec<CatalogEntry> = manifest
         .charts
         .iter()
         .filter(|e| stale(e))
@@ -402,9 +402,12 @@ pub async fn sync_repo<H: Host>(
             }
             usable
         })
+        .cloned()
         .collect();
-    Ok(pull_all(wanted, |entry| {
-        pull_into(host, &dir, &manifest.registry, entry)
+    let dir = dir.as_path();
+    let registry = manifest.registry.as_str();
+    Ok(pull_all(wanted, |entry: CatalogEntry| async move {
+        pull_into(host, dir, registry, &entry).await
     })
     .await)
 }
