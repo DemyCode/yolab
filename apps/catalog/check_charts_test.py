@@ -4449,5 +4449,19 @@ class ClientsGetPastTheLogin(RenderedChart):
         self.assertIn("keys", check_charts.ENV_PARTS)
 
 
+class ActualStarts(RenderedChart):
+    CHART = "actual"
+
+    def test_the_server_starts_with_the_command_its_image_ships(self):
+        for extra in (None, check_charts.OIDC_OWN):
+            with self.subTest(extra):
+                spec = self.deployments(self.docs(extra))["gateway"]
+                script = container_of(spec, "actual")["command"][-1]
+                self.assertEqual(
+                    script.strip().splitlines()[-1],
+                    "exec /usr/bin/tini -g -- node app.js",
+                )
+
+
 if __name__ == "__main__":
     unittest.main()

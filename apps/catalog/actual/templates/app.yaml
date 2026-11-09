@@ -54,7 +54,7 @@ spec:
             export ACTUAL_OPENID_PROVIDER_NAME="$OIDC_PROVIDER_NAME"
             {{- end }}
             cd /app
-            exec /usr/bin/tini -g -- node build/app.js
+            exec /usr/bin/tini -g -- node app.js
         readinessProbe:
           tcpSocket:
             port: 5006
