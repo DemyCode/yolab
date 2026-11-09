@@ -176,10 +176,10 @@ jobs:
           push: true
           tags: ghcr.io/demycode/generic-cdi-plugin:7d12b0c
 
-  charts-library:
+  charts:
     runs-on: ubuntu-latest
     concurrency:
-      group: charts-library-${{ github.ref }}
+      group: charts-${{ github.ref }}
       cancel-in-progress: false
     permissions:
       contents: read
@@ -189,9 +189,7 @@ jobs:
       suffix: ${{ steps.registry.outputs.suffix }}
       lib_version: ${{ steps.library.outputs.lib_version }}
       stack_version: ${{ steps.library.outputs.stack_version }}
-      charts_first: ${{ steps.pending.outputs.charts_first }}
-      charts_rest: ${{ steps.pending.outputs.charts_rest }}
-      packs: ${{ steps.pending.outputs.packs }}
+      published: ${{ steps.publish.outputs.done }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -293,146 +291,77 @@ jobs:
             }
           done
 
-      - name: List the charts whose version is not published yet
-        id: pending
+      - name: Publish every chart not in the registry yet, dependencies first
+        id: publish
         run: |
-          set -euo pipefail
-          pending=()
-          packs=()
+          set -uo pipefail
+          declare -A seen
+          order=()
+          deps_of() {
+            awk '/^dependencies:/{d=1;next} d && /^[^ ]/{d=0} d && /- name:/ {print $3}' "apps/catalog/$1/Chart.yaml"
+          }
+          visit() {
+            local chart=$1 dep
+            [ "${seen[$chart]:-}" = done ] && return 0
+            if [ "${seen[$chart]:-}" = visiting ]; then
+              echo "::error::${chart} depends on itself through its dependencies"
+              exit 1
+            fi
+            seen[$chart]=visiting
+            for dep in $(deps_of "$chart"); do
+              [ -f "apps/catalog/${dep}/Chart.yaml" ] || continue
+              grep -q '^type: library' "apps/catalog/${dep}/Chart.yaml" && continue
+              visit "$dep"
+            done
+            seen[$chart]=done
+            order+=("$chart")
+          }
           for chart in apps/catalog/*/; do
-            [ -f "$chart/Chart.yaml" ] || continue
-            grep -q '^type: library' "$chart/Chart.yaml" && continue
-            name=$(grep '^name:' "$chart/Chart.yaml" | head -1 | awk '{print $2}')
-            base=$(grep '^version:' "$chart/Chart.yaml" | head -1 | awk '{print $2}' | tr -d '"')
-            if helm show chart "${REGISTRY}/${name}" --version "${base}${SUFFIX}" >/dev/null 2>&1; then
+            chart=$(basename "$chart")
+            [ -f "apps/catalog/${chart}/Chart.yaml" ] || continue
+            grep -q '^type: library' "apps/catalog/${chart}/Chart.yaml" && continue
+            visit "$chart"
+          done
+
+          failed=()
+          published=0
+          for chart in "${order[@]}"; do
+            base=$(grep '^version:' "apps/catalog/${chart}/Chart.yaml" | head -1 | awk '{print $2}' | tr -d '"')
+            if helm show chart "${REGISTRY}/${chart}" --version "${base}${SUFFIX}" >/dev/null 2>&1; then
               continue
             fi
-            apps_inside=$(awk '/^dependencies:/{d=1;next} d && /^[^ ]/{d=0} d && /- name:/ && $3 != "yolab-common" && $3 != "yolab-stack" {print $3}' "$chart/Chart.yaml")
-            if [ -n "$apps_inside" ]; then
-              packs+=("$(basename "$chart")")
-            else
-              pending+=("$(basename "$chart")")
+            broken=""
+            for dep in $(deps_of "$chart"); do
+              for f in "${failed[@]}"; do
+                [ "$f" = "$dep" ] && broken=$dep
+              done
+            done
+            if [ -n "$broken" ]; then
+              echo "::error::${chart} is not published: it is built from ${broken}, which did not publish"
+              failed+=("$chart")
+              continue
             fi
+            echo "::group::${chart} ${base}${SUFFIX}"
+            if CHART="apps/catalog/${chart}" bash scripts/publish-chart.sh; then
+              published=$((published + 1))
+            else
+              failed+=("$chart")
+            fi
+            echo "::endgroup::"
           done
-          echo "${#pending[@]} chart(s) to publish: ${pending[*]:-none}"
-          echo "${#packs[@]} pack(s) to publish after them: ${packs[*]:-none}"
-          echo "packs=$(printf '%s\n' "${packs[@]}" | jq -R . | jq -sc 'map(select(. != ""))')" >> "$GITHUB_OUTPUT"
-          charts=$(printf '%s\n' "${pending[@]}" | jq -R . | jq -sc 'map(select(. != ""))')
-          echo "charts_first=$(echo "$charts" | jq -c '.[:256]')" >> "$GITHUB_OUTPUT"
-          echo "charts_rest=$(echo "$charts" | jq -c '.[256:]')" >> "$GITHUB_OUTPUT"
-          [ "$(echo "$charts" | jq length)" -le 512 ] || { echo "::error::more than 512 charts to publish at once"; exit 1; }
+          echo "published ${published} chart(s)"
+          echo "failed=${failed[*]:-}" >> "$GITHUB_OUTPUT"
+          echo "done=true" >> "$GITHUB_OUTPUT"
 
-  charts-first:
-    name: chart ${{ matrix.chart }}
-    needs: charts-library
-    if: needs.charts-library.outputs.charts_first != '[]'
-    runs-on: ubuntu-latest
-    concurrency:
-      group: chart-${{ github.ref }}-${{ matrix.chart }}
-      cancel-in-progress: false
-    permissions:
-      contents: read
-      packages: write
-    strategy:
-      fail-fast: false
-      max-parallel: 20
-      matrix:
-        chart: ${{ fromJSON(needs.charts-library.outputs.charts_first) }}
-    env:
-      REGISTRY: ${{ needs.charts-library.outputs.registry }}
-      SUFFIX: ${{ needs.charts-library.outputs.suffix }}
-      LIB_VERSION: ${{ needs.charts-library.outputs.lib_version }}
-      STACK_VERSION: ${{ needs.charts-library.outputs.stack_version }}
-      CHART: apps/catalog/${{ matrix.chart }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Install Helm
-        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
-        with:
-          version: v3.16.3
-
-      - name: Log in to GHCR
-        run: echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
-
-      - name: Lint, package and push
-        run: bash scripts/publish-chart.sh
-
-  charts-rest:
-    name: chart ${{ matrix.chart }}
-    needs: charts-library
-    if: needs.charts-library.outputs.charts_rest != '[]'
-    runs-on: ubuntu-latest
-    concurrency:
-      group: chart-${{ github.ref }}-${{ matrix.chart }}
-      cancel-in-progress: false
-    permissions:
-      contents: read
-      packages: write
-    strategy:
-      fail-fast: false
-      max-parallel: 20
-      matrix:
-        chart: ${{ fromJSON(needs.charts-library.outputs.charts_rest) }}
-    env:
-      REGISTRY: ${{ needs.charts-library.outputs.registry }}
-      SUFFIX: ${{ needs.charts-library.outputs.suffix }}
-      LIB_VERSION: ${{ needs.charts-library.outputs.lib_version }}
-      STACK_VERSION: ${{ needs.charts-library.outputs.stack_version }}
-      CHART: apps/catalog/${{ matrix.chart }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Install Helm
-        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
-        with:
-          version: v3.16.3
-
-      - name: Log in to GHCR
-        run: echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
-
-      - name: Lint, package and push
-        run: bash scripts/publish-chart.sh
-
-  charts-packs:
-    name: pack ${{ matrix.chart }}
-    needs: [charts-library, charts-first, charts-rest]
-    if: always() && needs.charts-library.result == 'success' && needs.charts-library.outputs.packs != '[]' && needs.charts-first.result != 'failure' && needs.charts-rest.result != 'failure'
-    runs-on: ubuntu-latest
-    concurrency:
-      group: chart-${{ github.ref }}-${{ matrix.chart }}
-      cancel-in-progress: false
-    permissions:
-      contents: read
-      packages: write
-    strategy:
-      fail-fast: false
-      max-parallel: 20
-      matrix:
-        chart: ${{ fromJSON(needs.charts-library.outputs.packs) }}
-    env:
-      REGISTRY: ${{ needs.charts-library.outputs.registry }}
-      SUFFIX: ${{ needs.charts-library.outputs.suffix }}
-      LIB_VERSION: ${{ needs.charts-library.outputs.lib_version }}
-      STACK_VERSION: ${{ needs.charts-library.outputs.stack_version }}
-      CHART: apps/catalog/${{ matrix.chart }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Install Helm
-        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
-        with:
-          version: v3.16.3
-
-      - name: Log in to GHCR
-        run: echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
-
-      - name: Lint, package and push
-        run: bash scripts/publish-chart.sh
+      - name: Fail if a chart did not publish
+        if: steps.publish.outputs.failed != ''
+        run: |
+          echo "::error::not published: ${{ steps.publish.outputs.failed }}; the catalog leaves them out until a run publishes them"
+          exit 1
 
   charts-catalog:
-    needs: [charts-library, charts-first, charts-rest, charts-packs]
-    if: always() && needs.charts-library.result == 'success'
+    needs: charts
+    if: always() && needs.charts.outputs.published == 'true'
     runs-on: ubuntu-latest
     concurrency:
       group: charts-catalog-${{ github.ref }}
@@ -440,10 +369,10 @@ jobs:
     permissions:
       contents: write
     env:
-      REGISTRY: ${{ needs.charts-library.outputs.registry }}
-      SUFFIX: ${{ needs.charts-library.outputs.suffix }}
-      LIB_VERSION: ${{ needs.charts-library.outputs.lib_version }}
-      STACK_VERSION: ${{ needs.charts-library.outputs.stack_version }}
+      REGISTRY: ${{ needs.charts.outputs.registry }}
+      SUFFIX: ${{ needs.charts.outputs.suffix }}
+      LIB_VERSION: ${{ needs.charts.outputs.lib_version }}
+      STACK_VERSION: ${{ needs.charts.outputs.stack_version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -546,12 +475,6 @@ jobs:
             sleep $((attempt * 5))
           done
           [ -n "$pushed" ] || { echo "::error::could not push the catalog manifest"; exit 1; }
-
-      - name: Report unpublished charts
-        if: contains(fromJSON('["failure", "cancelled"]'), needs.charts-first.result) || contains(fromJSON('["failure", "cancelled"]'), needs.charts-rest.result)
-        run: |
-          echo "some charts did not publish; they are left out of the catalog until a run publishes them"
-          exit 1
 
   build-iso:
     name: build-iso (${{ matrix.iso.system }})
