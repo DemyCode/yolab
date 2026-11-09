@@ -589,7 +589,7 @@ charts:
   - name: stash
     version: "0.1.26"
   - name: steam-headless
-    version: "0.1.41"
+    version: "0.1.42"
   - name: stirling-pdf
     version: "0.1.39"
   - name: strfry
