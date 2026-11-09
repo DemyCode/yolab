@@ -3337,9 +3337,7 @@ class AutheliaService(RenderedChart):
         self.assertNotIn("nc -z", script)
 
     def test_its_service_named_authelia_is_not_handed_to_authelia_as_settings(self):
-        self.assertIs(
-            self.gateway()["spec"]["template"]["spec"]["enableServiceLinks"], False
-        )
+        self.assertIs(self.gateway()["enableServiceLinks"], False)
 
     def test_nothing_is_reachable_unless_a_rule_says_so(self):
         self.assertEqual(self.access()["access_control"]["default_policy"], "deny")
