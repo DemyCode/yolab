@@ -1,5 +1,7 @@
 {{ include "yolab-common.caddyConfigMap" . }}
 ---
+{{ include "authelia.embed.secret" . }}
+---
 {{ include "yolab-common.uninstallHook" . }}
 ---
 {{ include "yolab-common.homeVolume" $ }}
@@ -23,8 +25,10 @@ spec:
     spec:
       initContainers:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      {{- include "authelia.embed.init" . | nindent 6 }}
       containers:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      {{- include "authelia.embed.container" . | nindent 6 }}
       - name: emulatorjs
         image: linuxserver/emulatorjs:version-1.9.2@sha256:b7003f7d4f383dd32d210ba08f24c840276fdf92c211bd18a798d47647311290
         imagePullPolicy: IfNotPresent
@@ -50,3 +54,4 @@ spec:
             subPath: roms
       volumes:
       {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+      {{- include "authelia.embed.volumes" . | nindent 6 }}

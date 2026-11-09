@@ -1,4 +1,5 @@
 config:
+  auth_enabled: true
   subdomain: mazanoke
 yolab:
   platformApiUrl: ''
@@ -6,3 +7,6 @@ yolab:
   serviceName: ''
   gateway:
     upstream: web:80
+
+authelia:
+  embedded: true

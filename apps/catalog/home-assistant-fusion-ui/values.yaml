@@ -1,4 +1,5 @@
 config:
+  auth_enabled: true
   subdomain: home-assistant-fusion-ui
 yolab:
   platformApiUrl: ''
@@ -6,3 +7,6 @@ yolab:
   serviceName: ''
   gateway:
     upstream: localhost:5050
+
+authelia:
+  embedded: true

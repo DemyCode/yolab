@@ -2,12 +2,15 @@ apiVersion: v2
 name: chatbot-ui
 description: ChatGPT but better
 type: application
-version: 0.1.21
+version: 0.1.22
 appVersion: 2023.04.20
 dependencies:
-- name: yolab-common
-  version: "0.1.34"
-  repository: oci://ghcr.io/demycode/charts
+  - name: yolab-common
+    version: "0.1.35"
+    repository: oci://ghcr.io/demycode/charts
+  - name: authelia
+    version: "0.2.0"
+    repository: oci://ghcr.io/demycode/charts
 annotations:
   yolab.io/disabled: "Upstream stale since 2024; open-webui covers it"
   yolab.io/display-name: ChatBot UI

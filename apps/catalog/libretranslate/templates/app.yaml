@@ -1,5 +1,7 @@
 {{ include "yolab-common.caddyConfigMap" . }}
 ---
+{{ include "authelia.embed.secret" . }}
+---
 {{ include "yolab-common.privateAccessResources" . }}
 ---
 {{ include "yolab-common.uninstallHook" . }}
@@ -25,6 +27,7 @@ spec:
     spec:
       initContainers:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      {{- include "authelia.embed.init" . | nindent 6 }}
       {{- include "yolab-common.privateAccessInit" . | nindent 6 }}
       - name: fix-perms
         image: busybox:1.38@sha256:fd7dc98638c8e305f4dc34e979f1c0fdfdcaeb0fbf8fcff77ae834b6da3d7e6e
@@ -42,6 +45,7 @@ spec:
           subPath: data/models
       containers:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      {{- include "authelia.embed.container" . | nindent 6 }}
       {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
       - name: main
         image: libretranslate/libretranslate:v1.9.6@sha256:1de2d7056bb8ad607a412f4563d9abe324ff632b43b5be9428bcc8e213aebb32
@@ -70,4 +74,5 @@ spec:
           subPath: 'data/models'
       volumes:
       {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+      {{- include "authelia.embed.volumes" . | nindent 6 }}
       {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}

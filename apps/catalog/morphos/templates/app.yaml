@@ -1,5 +1,7 @@
 {{ include "yolab-common.caddyConfigMap" . }}
 ---
+{{ include "authelia.embed.secret" . }}
+---
 {{ include "yolab-common.privateAccessResources" . }}
 ---
 {{ include "yolab-common.uninstallHook" . }}
@@ -25,9 +27,11 @@ spec:
     spec:
       initContainers:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      {{- include "authelia.embed.init" . | nindent 6 }}
       {{- include "yolab-common.privateAccessInit" . | nindent 6 }}
       containers:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      {{- include "authelia.embed.container" . | nindent 6 }}
       {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
       - name: web
         image: ghcr.io/danvergara/morphos-server:0.6.0@sha256:3d6f64ef386cbb6a7c5d55526e1a69da2d3661a1996d757897e92bf4369088f5
@@ -39,4 +43,5 @@ spec:
             port: 8080
       volumes:
       {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+      {{- include "authelia.embed.volumes" . | nindent 6 }}
       {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}

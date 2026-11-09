@@ -1,4 +1,5 @@
 config:
+  auth_enabled: true
   subdomain: whoogle-search
 yolab:
   platformApiUrl: ''
@@ -6,3 +7,6 @@ yolab:
   serviceName: ''
   gateway:
     upstream: localhost:6420
+
+authelia:
+  embedded: true

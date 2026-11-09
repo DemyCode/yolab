@@ -1,5 +1,9 @@
 {{ include "yolab-common.caddyConfigMap" . }}
 ---
+{{ include "authelia.embed.secret" . }}
+---
+{{ include "authelia.embed.service" . }}
+---
 {{ include "yolab-common.uninstallHook" . }}
 ---
 apiVersion: v1
@@ -33,6 +37,8 @@ spec:
     spec:
       initContainers:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      {{- include "authelia.embed.init" . | nindent 6 }}
+      {{- include "authelia.oidc.clientInit" . | nindent 6 }}
       {{- include "yolab-common.printOutputs" (list . (dict "admin_password" (dict "secret" (printf "%s-admin" .Release.Name) "key" "admin_password"))) | nindent 6 }}
       - name: gen-secrets
         image: busybox:1.38@sha256:fd7dc98638c8e305f4dc34e979f1c0fdfdcaeb0fbf8fcff77ae834b6da3d7e6e
@@ -49,6 +55,7 @@ spec:
           mountPath: /yolab
       containers:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      {{- include "authelia.embed.container" . | nindent 6 }}
       - name: app
         image: freikin/dawarich:latest@sha256:b533e6eac4464d55479d030229cf9487f338972cdb88924e8060ca759d0e28b8
         imagePullPolicy: IfNotPresent
@@ -71,6 +78,12 @@ spec:
           . /yolab/secrets.env
           set +a
           export APPLICATION_HOSTS="localhost,$YOLAB_FQDN,127.0.0.1,::1"
+          {{- if eq (include "authelia.embed.oidc" .) "true" }}
+          . /yolab/oidc.env
+          export OIDC_CLIENT_ID OIDC_CLIENT_SECRET OIDC_ISSUER OIDC_PROVIDER_NAME
+          export OIDC_REDIRECT_URI="$YOLAB_URL/users/auth/openid_connect/callback"
+          export OIDC_AUTO_REGISTER=true
+          {{- end }}
           exec web-entrypoint.sh sh -c 'bin/rails runner "u = User.find_by(email: %q(demo@dawarich.app)); u.update!(email: ENV.fetch(%q(YOLAB_ADMIN_EMAIL)), password: ENV.fetch(%q(YOLAB_ADMIN_PASSWORD))) if u&.valid_password?(%q(safepassword))" && exec bin/rails server -p 3000 -b ::'
         env:
         - name: RAILS_ENV
@@ -121,6 +134,7 @@ spec:
           mountPath: /yolab
       volumes:
       {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+      {{- include "authelia.embed.volumes" . | nindent 6 }}
 ---
 apiVersion: apps/v1
 kind: Deployment

@@ -1,5 +1,7 @@
 {{ include "yolab-common.caddyConfigMap" . }}
 ---
+{{ include "authelia.embed.secret" . }}
+---
 {{ include "yolab-common.uninstallHook" . }}
 ---
 {{ include "yolab-common.homeVolume" $ }}
@@ -23,8 +25,10 @@ spec:
     spec:
       initContainers:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      {{- include "authelia.embed.init" . | nindent 6 }}
       containers:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      {{- include "authelia.embed.container" . | nindent 6 }}
       - name: homepage
         image: ghcr.io/gethomepage/homepage:latest@sha256:3e38fe788223cb46a3ce1f046ef11667b40f7707fdca0dcbfa3f86c5c42bf1e8
         imagePullPolicy: IfNotPresent
@@ -42,3 +46,4 @@ spec:
             subPath: homepage
       volumes:
       {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+      {{- include "authelia.embed.volumes" . | nindent 6 }}

@@ -1,4 +1,5 @@
 config:
+  auth_enabled: true
   subdomain: hermes-agent
 yolab:
   platformApiUrl: ''
@@ -6,3 +7,6 @@ yolab:
   serviceName: ''
   gateway:
     upstream: localhost:18789
+
+authelia:
+  embedded: true

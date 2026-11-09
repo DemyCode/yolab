@@ -96,10 +96,13 @@ EXISTING_AUTHELIA = {
 
 OIDC_CHARTS = (
     "actual",
+    "dawarich",
+    "gitea",
     "grafana",
     "homarr",
     "karakeep",
     "kitchenowl",
+    "librechat",
     "linkwarden",
     "mealie",
     "miniflux",
@@ -926,13 +929,14 @@ def check_private_access_offer(app, schema, values_text, fail):
         return
     props = schema.get("properties") or {}
     config = (props.get("config") or {}).get("properties") or {}
-    if "auth_enabled" in config:
+    values = yaml.safe_load(values_text or "") or {}
+    gated = ((values.get("config") or {}).get("auth_enabled")) is True
+    if "auth_enabled" in config or gated:
         fail(
             app,
             "offers Tor or Tailscale next to an Authelia login: those addresses "
             "reach the app directly and would skip the login",
         )
-    values = yaml.safe_load(values_text or "") or {}
     gateway = ((values.get("yolab") or {}).get("gateway")) or {}
     if gateway.get("caddyfile"):
         fail(

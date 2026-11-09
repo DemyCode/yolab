@@ -1,5 +1,7 @@
 {{ include "yolab-common.caddyConfigMap" . }}
 ---
+{{ include "authelia.embed.secret" . }}
+---
 {{ include "yolab-common.privateAccessResources" . }}
 ---
 {{ include "yolab-common.uninstallHook" . }}
@@ -38,6 +40,7 @@ spec:
       {{- end }}
       initContainers:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      {{- include "authelia.embed.init" . | nindent 6 }}
       {{- include "yolab-common.privateAccessInit" . | nindent 6 }}
       - name: seed
         image: busybox:1.38@sha256:fd7dc98638c8e305f4dc34e979f1c0fdfdcaeb0fbf8fcff77ae834b6da3d7e6e
@@ -60,6 +63,7 @@ spec:
           mountPath: /data
       containers:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      {{- include "authelia.embed.container" . | nindent 6 }}
       {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
       - name: web
         image: ghcr.io/openhands/openhands:1.13.1@sha256:bb3eabbe1149a07d2a85276c594a99845906764f6b4f1015074850d4a1c501d4
@@ -99,6 +103,7 @@ spec:
           subPath: 'data/workspace'
       volumes:
       {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+      {{- include "authelia.embed.volumes" . | nindent 6 }}
       {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}
       - name: seed
         configMap:

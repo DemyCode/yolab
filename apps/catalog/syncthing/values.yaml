@@ -1,4 +1,5 @@
 config:
+  auth_enabled: true
   subdomain: syncthing
 yolab:
   platformApiUrl: ''
@@ -6,3 +7,6 @@ yolab:
   serviceName: ''
   gateway:
     upstream: localhost:8384
+
+authelia:
+  embedded: true

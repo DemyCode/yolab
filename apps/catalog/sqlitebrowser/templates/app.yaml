@@ -1,5 +1,7 @@
 {{ include "yolab-common.caddyConfigMap" . }}
 ---
+{{ include "authelia.embed.secret" . }}
+---
 {{ include "yolab-common.privateAccessResources" . }}
 ---
 {{ include "yolab-common.uninstallHook" . }}
@@ -25,9 +27,11 @@ spec:
     spec:
       initContainers:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      {{- include "authelia.embed.init" . | nindent 6 }}
       {{- include "yolab-common.privateAccessInit" . | nindent 6 }}
       containers:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      {{- include "authelia.embed.container" . | nindent 6 }}
       {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
       - name: app
         image: linuxserver/sqlitebrowser:3.13.1@sha256:822ed9f8966d57a78e6ccff2008b253d0f9db5032909702aea0fe7236668cd4b
@@ -50,4 +54,5 @@ spec:
           subPath: 'data/config'
       volumes:
       {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+      {{- include "authelia.embed.volumes" . | nindent 6 }}
       {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}

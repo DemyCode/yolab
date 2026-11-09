@@ -1,4 +1,5 @@
 config:
+  auth_enabled: true
   subdomain: llama-gpt
 yolab:
   platformApiUrl: ''
@@ -6,3 +7,6 @@ yolab:
   serviceName: ''
   gateway:
     upstream: localhost:3000
+
+authelia:
+  embedded: true

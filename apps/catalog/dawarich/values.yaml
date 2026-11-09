@@ -1,11 +1,21 @@
 config:
+  oidc_enabled: false
   subdomain: dawarich
   time_zone: UTC
   admin_email: ""
   admin_password: ""
 yolab:
+  auth:
+    oidc:
+      method: client_secret_basic
+      scopes: [openid, profile, email]
+      redirects:
+        - /users/auth/openid_connect/callback
   platformApiUrl: ''
   accountToken: ''
   serviceName: ''
   gateway:
     upstream: localhost:3000
+
+authelia:
+  embedded: true

@@ -1,5 +1,7 @@
 {{ include "yolab-common.caddyConfigMap" . }}
 ---
+{{ include "authelia.embed.secret" . }}
+---
 {{ include "yolab-common.privateAccessResources" . }}
 ---
 {{ include "yolab-common.uninstallHook" . }}
@@ -25,9 +27,11 @@ spec:
     spec:
       initContainers:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      {{- include "authelia.embed.init" . | nindent 6 }}
       {{- include "yolab-common.privateAccessInit" . | nindent 6 }}
       containers:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      {{- include "authelia.embed.container" . | nindent 6 }}
       {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
       - name: server
         image: ghcr.io/spacedriveapp/spacebot:v0.5.0@sha256:ccd9411f72def62b192e44aed23446b94e6e4774d55d7100a94de1531029f6ed
@@ -49,4 +53,5 @@ spec:
           subPath: 'data'
       volumes:
       {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+      {{- include "authelia.embed.volumes" . | nindent 6 }}
       {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}

@@ -4048,7 +4048,8 @@ class OidcCharts(RenderedChart):
                     readers = [
                         c
                         for c in spec["containers"]
-                        if ". /yolab/oidc.env" in " ".join(c.get("command") or [])
+                        if ". /yolab/oidc.env"
+                        in " ".join((c.get("command") or []) + (c.get("args") or []))
                     ]
                     self.assertTrue(readers, chart)
                     for c in readers:
@@ -4184,6 +4185,100 @@ class OidcOffer(unittest.TestCase):
             ),
             [],
         )
+
+
+def gated_charts():
+    found = []
+    for path in sorted(Path(check_charts.HERE).glob("*/values.yaml")):
+        values = yaml.safe_load(path.read_text()) or {}
+        if ((values.get("config") or {}).get("auth_enabled")) is True:
+            found.append(path.parent.name)
+    return found
+
+
+class LoginGate(RenderedChart):
+    CHART = "authelia"
+
+    def render(self, chart, extra=None):
+        text, err = check_charts.render(
+            os.path.join(check_charts.HERE, chart), self.library, self.tmp.name, extra
+        )
+        self.assertIsNone(err, f"{chart}: {err}")
+        return [d for d in yaml.safe_load_all(text) if d]
+
+    def test_no_login_services_are_behind_authelia(self):
+        for chart in (
+            "chromium",
+            "firefox",
+            "homepage",
+            "jupyterlab",
+            "openhands",
+            "syncthing",
+            "torbrowser",
+            "transmission",
+        ):
+            self.assertIn(chart, gated_charts())
+
+    def test_every_gated_service_asks_authelia_before_anything_else(self):
+        for chart in gated_charts():
+            with self.subTest(chart):
+                docs = self.render(chart)
+                caddyfile = caddyfile_of(docs)
+                self.assertIn("forward_auth localhost:9091", caddyfile)
+                self.assertIn("handle /authelia/* {", caddyfile)
+                gateway = self.deployments(docs)["gateway"]
+                self.assertIn(
+                    "authelia", [c["name"] for c in gateway["containers"]], chart
+                )
+
+    def test_a_gated_service_runs_no_authelia_without_its_yolab_address(self):
+        for chart in gated_charts():
+            schema = json.loads(
+                Path(check_charts.HERE, chart, "values.schema.json").read_text()
+            )
+            if "yolab_enabled" not in schema["properties"]["config"]["properties"]:
+                continue
+            with self.subTest(chart):
+                docs = self.render(chart, {"config.yolab_enabled": "false"})
+                gateway = self.deployments(docs)["gateway"]
+                names = [
+                    c["name"]
+                    for c in (gateway.get("initContainers") or [])
+                    + gateway["containers"]
+                ]
+                self.assertNotIn("authelia", names)
+                self.assertNotIn("authelia-config", names)
+
+    def test_a_gated_service_offers_the_choice_of_authelia_with_its_address(self):
+        for chart in gated_charts():
+            schema = json.loads(
+                Path(check_charts.HERE, chart, "values.schema.json").read_text()
+            )
+            config = schema["properties"]["config"]
+            with self.subTest(chart):
+                holder = config
+                if "auth_mode" not in config["properties"]:
+                    holder = next(
+                        b
+                        for b in config["dependencies"]["yolab_enabled"]["oneOf"]
+                        if b["properties"]["yolab_enabled"] == {"const": True}
+                    )
+                self.assertIn("auth_mode", holder["required"])
+                modes = holder["dependencies"]["auth_mode"]["oneOf"]
+                self.assertEqual(
+                    sorted(m["properties"]["auth_mode"]["const"] for m in modes),
+                    ["existing", "own"],
+                )
+
+    def test_a_fixed_login_refuses_tor_and_tailscale_offers(self):
+        found = []
+        check_charts.check_private_access_offer(
+            "demo",
+            schema(config={"tor_enabled": {"type": "boolean"}}),
+            "config:\n  auth_enabled: true\n",
+            lambda app, msg: found.append(msg),
+        )
+        self.assertTrue(any("skip the login" in f for f in found))
 
 
 if __name__ == "__main__":

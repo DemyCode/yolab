@@ -1,5 +1,6 @@
 
 config:
+  auth_enabled: true
   subdomain: homepage
 
 yolab:
@@ -10,7 +11,19 @@ yolab:
     upstream: localhost:3000
     caddyfile: |-
       {$YOLAB_SITES} {
-        reverse_proxy localhost:3000 {
-          header_up Host homepage.yolab.internal
+        handle /authelia/* {
+          reverse_proxy localhost:9091
+        }
+        handle {
+          forward_auth localhost:9091 {
+            uri /authelia/api/authz/forward-auth
+            copy_headers Remote-User Remote-Groups Remote-Email Remote-Name
+          }
+          reverse_proxy localhost:3000 {
+            header_up Host homepage.yolab.internal
+          }
         }
       }
+
+authelia:
+  embedded: true

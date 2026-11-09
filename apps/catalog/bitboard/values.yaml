@@ -1,4 +1,5 @@
 config:
+  auth_enabled: true
   subdomain: bitboard
 yolab:
   platformApiUrl: ''
@@ -6,3 +7,6 @@ yolab:
   serviceName: ''
   gateway:
     upstream: localhost:3711
+
+authelia:
+  embedded: true

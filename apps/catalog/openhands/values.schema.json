@@ -52,11 +52,88 @@
                   "format": "yolab-token",
                   "writeOnly": true,
                   "description": "Leave it as it is to use this box's YoLab account."
+                },
+                "auth_mode": {
+                  "type": "string",
+                  "title": "Login",
+                  "default": "existing",
+                  "description": "OpenHands has no login of its own, so Authelia asks who you are before anyone reaches it on the YoLab address.",
+                  "oneOf": [
+                    {
+                      "const": "existing",
+                      "title": "The Authelia service you already run, with its users"
+                    },
+                    {
+                      "const": "own",
+                      "title": "Its own Authelia, with the users below"
+                    }
+                  ]
                 }
               },
               "required": [
-                "subdomain"
-              ]
+                "subdomain",
+                "auth_mode"
+              ],
+              "dependencies": {
+                "auth_mode": {
+                  "oneOf": [
+                    {
+                      "properties": {
+                        "auth_mode": {
+                          "const": "own"
+                        },
+                        "auth_users": {
+                          "type": "array",
+                          "title": "Logins",
+                          "description": "Who can open it. Each person gets their own username and password.",
+                          "default": [],
+                          "minItems": 1,
+                          "items": {
+                            "type": "object",
+                            "required": [
+                              "username",
+                              "password"
+                            ],
+                            "properties": {
+                              "username": {
+                                "type": "string",
+                                "title": "Username",
+                                "pattern": "^[a-z0-9][a-z0-9._-]*$"
+                              },
+                              "password": {
+                                "type": "string",
+                                "title": "Password",
+                                "minLength": 8,
+                                "writeOnly": true,
+                                "generate": true
+                              }
+                            }
+                          }
+                        }
+                      },
+                      "required": [
+                        "auth_users"
+                      ]
+                    },
+                    {
+                      "properties": {
+                        "auth_mode": {
+                          "const": "existing"
+                        },
+                        "auth_url": {
+                          "type": "string",
+                          "title": "Authelia address",
+                          "format": "uri",
+                          "description": "Copy the Authelia service's \"Address for your other services\" output. People then sign in once, on that Authelia's page, for all your services that use it."
+                        }
+                      },
+                      "required": [
+                        "auth_url"
+                      ]
+                    }
+                  ]
+                }
+              }
             }
           ]
         }

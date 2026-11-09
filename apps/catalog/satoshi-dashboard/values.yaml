@@ -1,4 +1,5 @@
 config:
+  auth_enabled: true
   subdomain: satoshi-dashboard
 yolab:
   platformApiUrl: ''
@@ -6,3 +7,6 @@ yolab:
   serviceName: ''
   gateway:
     upstream: localhost:8410
+
+authelia:
+  embedded: true

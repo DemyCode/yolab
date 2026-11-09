@@ -1,4 +1,5 @@
 config:
+  auth_enabled: true
   subdomain: ersatztv-legacy
 yolab:
   platformApiUrl: ''
@@ -6,3 +7,6 @@ yolab:
   serviceName: ''
   gateway:
     upstream: localhost:8409
+
+authelia:
+  embedded: true

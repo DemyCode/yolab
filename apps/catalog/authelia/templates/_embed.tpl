@@ -13,7 +13,8 @@
 {{- define "authelia.cookieName" -}}yolab_auth{{- end -}}
 
 {{- define "authelia.embed.mode" -}}
-{{- if or ((.Values.config).auth_enabled) ((.Values.config).oidc_enabled) -}}
+{{- $gate := and ((.Values.config).auth_enabled) (eq (include "yolab-common.yolab.enabled" .) "true") -}}
+{{- if or $gate ((.Values.config).oidc_enabled) -}}
 {{- $mode := ((.Values.config).auth_mode) | default "own" -}}
 {{- if not (has $mode (list "own" "existing")) -}}
 {{- fail (printf "config.auth_mode is %q, not own or existing" $mode) -}}
@@ -390,7 +391,7 @@ metadata:
   namespace: {{ .Release.Namespace }}
 spec:
   selector:
-    app: gateway
+    {{- (((.Values.yolab).auth).portalSelector) | default (dict "app" "gateway") | toYaml | nindent 4 }}
   ports:
     - name: https
       port: 443

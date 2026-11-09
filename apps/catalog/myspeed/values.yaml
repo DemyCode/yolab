@@ -1,4 +1,5 @@
 config:
+  auth_enabled: true
   subdomain: myspeed
 yolab:
   platformApiUrl: ''
@@ -6,3 +7,6 @@ yolab:
   serviceName: ''
   gateway:
     upstream: localhost:5216
+
+authelia:
+  embedded: true

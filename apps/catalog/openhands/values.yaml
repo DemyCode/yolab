@@ -1,4 +1,5 @@
 config:
+  auth_enabled: true
   subdomain: openhands
   node: ''
 yolab:
@@ -7,3 +8,6 @@ yolab:
   serviceName: ''
   gateway:
     upstream: localhost:3000
+
+authelia:
+  embedded: true

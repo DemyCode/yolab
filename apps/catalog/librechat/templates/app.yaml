@@ -1,5 +1,9 @@
 {{ include "yolab-common.caddyConfigMap" . }}
 ---
+{{ include "authelia.embed.secret" . }}
+---
+{{ include "authelia.embed.service" . }}
+---
 {{ include "yolab-common.privateAccessResources" . }}
 ---
 {{ include "yolab-common.uninstallHook" . }}
@@ -33,6 +37,8 @@ spec:
     spec:
       initContainers:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      {{- include "authelia.embed.init" . | nindent 6 }}
+      {{- include "authelia.oidc.clientInit" . | nindent 6 }}
       {{- include "yolab-common.privateAccessInit" . | nindent 6 }}
       - name: seed
         image: busybox:1.38@sha256:fd7dc98638c8e305f4dc34e979f1c0fdfdcaeb0fbf8fcff77ae834b6da3d7e6e
@@ -57,14 +63,34 @@ spec:
           mountPath: /data
       containers:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      {{- include "authelia.embed.container" . | nindent 6 }}
       {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
       - name: api
         image: ghcr.io/danny-avila/librechat:v0.8.7@sha256:c5db3331b845e1f289f8d04c0c77936c4bbe372f76730a804abc1c37e44d23a9
         imagePullPolicy: IfNotPresent
-        args:
-        - npm
-        - run
-        - backend
+        command:
+        - /bin/sh
+        - -c
+        - |
+          set -eu
+          . /yolab/env
+          if [ -n "${YOLAB_URL:-}" ]; then
+            export DOMAIN_CLIENT="$YOLAB_URL"
+            export DOMAIN_SERVER="$YOLAB_URL"
+          fi
+          {{- if eq (include "authelia.embed.oidc" .) "true" }}
+          . /yolab/oidc.env
+          export ALLOW_SOCIAL_LOGIN=true
+          export ALLOW_SOCIAL_REGISTRATION=true
+          export OPENID_CLIENT_ID="$OIDC_CLIENT_ID"
+          export OPENID_CLIENT_SECRET="$OIDC_CLIENT_SECRET"
+          export OPENID_ISSUER="$OIDC_ISSUER"
+          export OPENID_SESSION_SECRET="$OIDC_CLIENT_SECRET"
+          export OPENID_SCOPE="openid profile email"
+          export OPENID_CALLBACK_URL=/oauth/openid/callback
+          export OPENID_BUTTON_LABEL="Sign in with $OIDC_PROVIDER_NAME"
+          {{- end }}
+          exec npm run backend
         env:
         - name: HOST
           value: 0.0.0.0
@@ -113,8 +139,11 @@ spec:
         - name: data
           mountPath: /app/api/logs
           subPath: 'data/api/logs'
+        - name: yolab
+          mountPath: /yolab
       volumes:
       {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+      {{- include "authelia.embed.volumes" . | nindent 6 }}
       {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}
       - name: seed
         configMap:
