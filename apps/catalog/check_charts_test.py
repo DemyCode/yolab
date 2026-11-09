@@ -477,6 +477,18 @@ class SteamHeadless(RenderedChart):
     def game(self, extra=None):
         return self.deployments(self.docs(extra))["steam-headless"]
 
+    def test_the_desktop_is_reached_over_http1_so_its_websockets_are_plain_upgrades(self):
+        caddyfile = next(
+            d["data"]["Caddyfile"]
+            for d in self.docs()
+            if d["kind"] == "ConfigMap" and d["metadata"]["name"].endswith("-caddy")
+        )
+        self.assertRegex(
+            caddyfile,
+            r"reverse_proxy steam-headless:8483 \{\s*transport http \{"
+            r"\s*tls_insecure_skip_verify\s*versions 1\.1\s*\}\s*\}",
+        )
+
     def test_an_nvidia_machine_is_used_through_its_cdi_device(self):
         spec = self.game(check_charts.VARIANTS["steam-headless"][0])
         self.assertEqual(
@@ -682,7 +694,8 @@ def caddy_dns_failures(
 
 DNS_CADDYFILE = (
     "\n{\n  cert_issuer acme {\n    dns acmedns {\n      subdomain apps\n    }\n  }\n"
-    "  cert_issuer acme\n}\n{$YOLAB_SITES} {\n  reverse_proxy app:80\n}\n"
+    "  cert_issuer acme\n  servers {\n    protocols h1 h2\n  }\n}\n"
+    "{$YOLAB_SITES} {\n  reverse_proxy app:80\n}\n"
 )
 
 
@@ -691,9 +704,19 @@ class CaddyDns(unittest.TestCase):
         self.assertEqual(caddy_dns_failures(DNS_CADDYFILE), [])
 
     def test_a_gateway_waiting_for_let_s_encrypt_to_reach_it_is_reported(self):
-        found = caddy_dns_failures("{$YOLAB_SITES} {\n  reverse_proxy app:80\n}\n")
+        found = caddy_dns_failures(
+            "{\n  servers {\n    protocols h1 h2\n  }\n}\n"
+            "{$YOLAB_SITES} {\n  reverse_proxy app:80\n}\n"
+        )
         self.assertEqual(len(found), 1)
         self.assertIn("demo-caddy", found[0])
+
+    def test_a_gateway_offering_http3_is_reported(self):
+        found = caddy_dns_failures(
+            DNS_CADDYFILE.replace("  servers {\n    protocols h1 h2\n  }\n", "")
+        )
+        self.assertEqual(len(found), 1)
+        self.assertIn("HTTP/3", found[0])
 
     def test_caddy_without_the_account_token_is_reported(self):
         found = caddy_dns_failures(DNS_CADDYFILE, caddy_env=("PLATFORM_API_URL",))
@@ -726,6 +749,15 @@ class GatewayProvesNamesThroughDns(RenderedChart):
         self.assertTrue(caddyfile.lstrip().startswith(check_charts.CADDY_DNS_GLOBAL))
         self.assertIn("subdomain apps", caddyfile)
         self.assertIn("password {env.ACCOUNT_TOKEN}", caddyfile)
+
+    def test_no_gateway_offers_http3_so_empty_gets_never_reach_the_app_as_bodies(self):
+        caddyfile = next(
+            d["data"]["Caddyfile"]
+            for d in self.docs()
+            if d["kind"] == "ConfigMap" and d["metadata"]["name"].endswith("-caddy")
+        )
+        self.assertIn(check_charts.CADDY_NO_HTTP3, caddyfile)
+        self.assertNotIn("h3", caddyfile)
 
 
 class EnvParts(unittest.TestCase):

@@ -323,8 +323,8 @@ printf 'export YOLAB_HOST=%s\nexport YOLAB_URL=https://%s\nexport YOLAB_SITES="%
 
 
 {{- define "yolab-common.caddyGlobal" -}}
-{{- if eq (include "yolab-common.tunnel.enabled" .) "true" }}
 {
+{{- if eq (include "yolab-common.tunnel.enabled" .) "true" }}
   cert_issuer acme {
     dns acmedns {
       username yolab
@@ -334,8 +334,11 @@ printf 'export YOLAB_HOST=%s\nexport YOLAB_URL=https://%s\nexport YOLAB_SITES="%
     }
   }
   cert_issuer acme
-}
 {{- end }}
+  servers {
+    protocols h1 h2
+  }
+}
 {{- end -}}
 
 
@@ -472,6 +475,7 @@ reverse_proxy {{ $upstream }}
 {{- if $tls }}
   transport http {
     tls_insecure_skip_verify
+    versions 1.1
   }
 {{- end }}
 }

@@ -1170,6 +1170,7 @@ def check_env_parts(app, docs, fail):
 
 
 CADDY_DNS_GLOBAL = "{\n  cert_issuer acme {\n    dns acmedns {"
+CADDY_NO_HTTP3 = "  servers {\n    protocols h1 h2\n  }\n}"
 
 
 def check_caddy_dns(app, docs, fail):
@@ -1189,6 +1190,12 @@ def check_caddy_dns(app, docs, fail):
                 app,
                 f"{d['metadata']['name']} does not start with yolab-common.caddyGlobal, "
                 f"so its certificates depend on Let's Encrypt reaching this machine",
+            )
+        if text is not None and CADDY_NO_HTTP3 not in text:
+            fail(
+                app,
+                f"{d['metadata']['name']} offers HTTP/3, where Caddy forwards a "
+                f"browser's empty GET as a chunked body that strict apps refuse",
             )
     for pod_name, spec in pod_specs(docs):
         for c in spec.get("containers") or []:

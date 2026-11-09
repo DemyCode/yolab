@@ -3,14 +3,14 @@ name: excalidraw
 description: "Virtual whiteboard for hand-drawn style diagrams"
 home: https://excalidraw.com
 type: application
-version: 0.1.41
+version: 0.1.42
 appVersion: "0"
 dependencies:
   - name: yolab-common
-    version: "0.1.36"
+    version: "0.1.37"
     repository: "oci://ghcr.io/demycode/charts"
   - name: authelia
-    version: "0.2.1"
+    version: "0.2.2"
     repository: "oci://ghcr.io/demycode/charts"
 
 annotations:
