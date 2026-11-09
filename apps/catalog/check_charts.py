@@ -704,7 +704,7 @@ def check(app, docs, fail, chart_yaml="", schema=None, arches=None, home=RELEASE
             if "Caddyfile" in (c.get("data") or {})
         )
         ups = re.findall(r"reverse_proxy\s+(\S+)", caddyfile)
-        if not ups and caddyfile.strip():
+        if not ups and caddy_sites(caddyfile):
             fail(app, "Caddyfile has no reverse_proxy directive")
         svcs = {s["metadata"]["name"]: s for s in kinds.get("Service", [])}
         for up in ups:
@@ -1171,6 +1171,11 @@ def check_env_parts(app, docs, fail):
 
 CADDY_DNS_GLOBAL = "{\n  cert_issuer acme {\n    dns acmedns {"
 CADDY_NO_HTTP3 = "  servers {\n    protocols h1 h2\n  }\n}"
+CADDY_GLOBAL_BLOCK = re.compile(r"\A\s*\{\n.*?^\}[ \t]*(\n|\Z)", re.DOTALL | re.MULTILINE)
+
+
+def caddy_sites(caddyfile):
+    return CADDY_GLOBAL_BLOCK.sub("", caddyfile, count=1).strip()
 
 
 def check_caddy_dns(app, docs, fail):

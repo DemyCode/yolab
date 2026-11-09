@@ -347,6 +347,18 @@ def bump_chart(root, chart_yaml, summary):
     return text, new
 
 
+CUSTOM_LIBRARY = re.compile(r'^(const CUSTOM_LIBRARY_VERSION: &str = )"[^"]+";', re.MULTILINE)
+
+
+def pin_custom_library(text, lib):
+    new, count = CUSTOM_LIBRARY.subn(lambda m: f'{m.group(1)}"{lib}";', text)
+    if count != 1:
+        raise RuntimeError(
+            f"custom_app.rs has {count} CUSTOM_LIBRARY_VERSION lines, expected 1"
+        )
+    return new
+
+
 def bump_charts(root, touched, summary):
     catalog = os.path.join(root, "apps", "catalog")
     if not os.path.isdir(catalog):
@@ -370,17 +382,10 @@ def bump_charts(root, touched, summary):
             if new != text:
                 write(chart_yaml, new)
                 charts.add(name)
-        importer = os.path.join(catalog, "import_umbrel.py")
-        if os.path.isfile(importer):
-            write(
-                importer,
-                re.sub(
-                    r'^LIB_VERSION = "[^"]+"',
-                    f'LIB_VERSION = "{lib}"',
-                    read(importer),
-                    flags=re.MULTILINE,
-                ),
-            )
+        custom = os.path.join(
+            root, "homelab", "local-api", "src", "routers", "custom_app.rs"
+        )
+        write(custom, pin_custom_library(read(custom), lib))
         summary.moved.append(f"chart yolab-common -> {lib} (every app chart follows)")
     for name in sorted(charts):
         _, v = bump_chart(root, os.path.join(catalog, name, "Chart.yaml"), summary)

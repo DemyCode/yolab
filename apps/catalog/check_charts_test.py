@@ -713,6 +713,23 @@ class CaddyDns(unittest.TestCase):
         self.assertEqual(len(found), 1)
         self.assertIn("demo-caddy", found[0])
 
+    def test_a_caddyfile_of_only_global_options_serves_no_site(self):
+        self.assertEqual(
+            check_charts.caddy_sites("{\n  servers {\n    protocols h1 h2\n  }\n}\n"), ""
+        )
+
+    def test_the_sites_after_the_global_options_are_kept(self):
+        self.assertEqual(
+            check_charts.caddy_sites(DNS_CADDYFILE),
+            "{$YOLAB_SITES} {\n  reverse_proxy app:80\n}",
+        )
+
+    def test_a_caddyfile_without_global_options_is_all_sites(self):
+        self.assertEqual(
+            check_charts.caddy_sites("http://:8080 {\n  respond 200\n}\n"),
+            "http://:8080 {\n  respond 200\n}",
+        )
+
     def test_a_gateway_offering_http3_is_reported(self):
         found = caddy_dns_failures(
             DNS_CADDYFILE.replace("  servers {\n    protocols h1 h2\n  }\n", "")
@@ -1434,98 +1451,6 @@ class ValheimPasswordOutput(RenderedChart):
         env = {e["name"]: e.get("value") for e in outputs["env"]}
         self.assertEqual(env["OUTPUT_SERVER_PASS"], "")
         self.assertIn("${OUTPUT_SERVER_PASS:-NONE}", outputs["command"][2])
-
-
-class ImportedEnvironment(unittest.TestCase):
-    def env(self, svc, env_file_vars=None):
-        import import_umbrel
-
-        c = import_umbrel.build_container(
-            "app", svc, "tdex", set(), [], env_file_vars=env_file_vars
-        )
-        return {e["name"]: e.get("value") for e in c.get("env") or []}
-
-    def test_a_compose_mapping_keeps_each_name_and_value(self):
-        env = self.env(
-            {
-                "image": "x",
-                "environment": {"OCEAN_LOG_LEVEL": 5, "OCEAN_NO_TLS": "true"},
-            }
-        )
-        self.assertEqual(env, {"OCEAN_LOG_LEVEL": "5", "OCEAN_NO_TLS": "true"})
-
-    def test_a_compose_list_keeps_each_name_and_value(self):
-        env = self.env({"image": "x", "environment": ["A=1", "B=two=2"]})
-        self.assertEqual(env, {"A": "1", "B": "two=2"})
-
-    def test_env_file_pairs_come_first_so_compose_overrides_them(self):
-        import import_umbrel
-
-        c = import_umbrel.build_container(
-            "app",
-            {"image": "x", "environment": {"A": "compose"}},
-            "tdex",
-            set(),
-            [],
-            env_file_vars=[("A", "file"), ("B", "file")],
-        )
-        self.assertEqual(
-            [(e["name"], e["value"]) for e in c["env"]],
-            [("A", "file"), ("B", "file"), ("A", "compose")],
-        )
-
-    def test_a_compose_hostname_in_a_command_becomes_the_service_name(self):
-        import import_umbrel
-
-        c = import_umbrel.build_container(
-            "init",
-            {
-                "image": "x",
-                "command": 'sh -c "mc alias set s http://lobe-chat_rustfs_1:9000"',
-            },
-            "lobe-chat",
-            set(),
-            [],
-        )
-        self.assertIn("http://rustfs:9000", " ".join(c["args"]))
-        self.assertNotIn("_1:", " ".join(c["args"]))
-
-    def test_a_cross_service_hostname_becomes_the_service_name(self):
-        env = self.env({"image": "x", "environment": {"WALLET": "tdex_oceand_1:18000"}})
-        self.assertEqual(env, {"WALLET": "oceand:18000"})
-
-
-class Regenerated(unittest.TestCase):
-    def test_a_regenerated_chart_keeps_its_curated_annotations_and_moves_up(self):
-        import import_umbrel
-
-        chart = import_umbrel.carry_over(
-            {
-                "version": "0.1.9",
-                "annotations": {
-                    "yolab.io/tagline": "Curated",
-                    "yolab.io/github": "a/b",
-                },
-            },
-            {
-                "version": "0.1.0",
-                "annotations": {"yolab.io/tagline": "Generated", "yolab.io/icon": "x"},
-            },
-        )
-        self.assertEqual(chart["version"], "0.1.10")
-        self.assertEqual(
-            chart["annotations"],
-            {
-                "yolab.io/tagline": "Curated",
-                "yolab.io/icon": "x",
-                "yolab.io/github": "a/b",
-            },
-        )
-
-    def test_tdex_is_never_imported(self):
-        import import_umbrel
-
-        self.assertIn("Liquid", import_umbrel.skip_reason("tdex", {}, set()))
 
 
 class Containers(unittest.TestCase):

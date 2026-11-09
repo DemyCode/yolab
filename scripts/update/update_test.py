@@ -253,5 +253,18 @@ class NpmTargets(unittest.TestCase):
         self.assertIn("minor: no minor", str(caught.exception))
 
 
+class CustomLibrary(unittest.TestCase):
+    def test_custom_services_follow_a_yolab_common_bump(self):
+        text = 'use x;\nconst CUSTOM_LIBRARY_VERSION: &str = "0.1.36";\nfn f() {}\n'
+        self.assertEqual(
+            update.pin_custom_library(text, "0.1.37"),
+            'use x;\nconst CUSTOM_LIBRARY_VERSION: &str = "0.1.37";\nfn f() {}\n',
+        )
+
+    def test_a_file_without_the_pin_stops_the_update(self):
+        with self.assertRaises(RuntimeError):
+            update.pin_custom_library("fn f() {}\n", "0.1.37")
+
+
 if __name__ == "__main__":
     unittest.main()
