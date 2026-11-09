@@ -121,6 +121,8 @@ spec:
           value: "1000"
         - name: SUNSHINE_NAME
           value: {{ .Release.Name | quote }}
+        - name: STEAM_HEADLESS_SESSION_MODE
+          value: gaming
         - name: NVIDIA_DRIVER_CAPABILITIES
           value: all
         - name: NVIDIA_VISIBLE_DEVICES

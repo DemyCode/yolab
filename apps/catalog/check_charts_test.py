@@ -494,6 +494,11 @@ class SteamHeadless(RenderedChart):
     def test_the_desktop_is_told_the_visitors_address_so_its_origin_check_passes(self):
         self.assertIn("header_up Host {host}", self.caddyfile())
 
+    def test_it_always_opens_straight_into_big_picture(self):
+        container = self.game()["containers"][0]
+        env = {e["name"]: e.get("value") for e in container["env"]}
+        self.assertEqual(env["STEAM_HEADLESS_SESSION_MODE"], "gaming")
+
     def test_an_nvidia_machine_is_used_through_its_cdi_device(self):
         spec = self.game(check_charts.VARIANTS["steam-headless"][0])
         self.assertEqual(
