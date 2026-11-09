@@ -1107,7 +1107,7 @@ def check_api_key(app, docs, upstream, fail):
     ]
     if "api-key-init" not in inits:
         fail(app, "the API key is on but no api-key-init container creates it")
-    gated = caddyfile.count("forward_auth ")
+    gated = len(re.findall(r"(?m)^\s*forward_auth ", caddyfile))
     if gated:
         let_in = caddyfile.count(API_KEY_BYPASS)
         if let_in < gated:
