@@ -3053,7 +3053,11 @@ class GristLogin(RenderedChart):
         caddy = caddyfile_of(self.docs())
         auth = caddy.index("forward_auth localhost:9091")
         self.assertLess(auth, caddy.index("reverse_proxy localhost:8485"))
-        self.assertLess(auth, caddy.index("reverse_proxy localhost:8484"))
+        before = caddy[:auth]
+        api = before.index("handle @grist_api_key {")
+        self.assertEqual(before.count("reverse_proxy localhost:8484"), 1)
+        self.assertLess(api, before.index("reverse_proxy localhost:8484"))
+        self.assertIn('@grist_api_key header Authorization "Bearer *"', before)
 
     def test_grist_lists_the_widgets_from_the_server_next_to_it(self):
         env = self.env(self.gateway(), "grist")
