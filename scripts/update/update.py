@@ -347,7 +347,9 @@ def bump_chart(root, chart_yaml, summary):
     return text, new
 
 
-CUSTOM_LIBRARY = re.compile(r'^(const CUSTOM_LIBRARY_VERSION: &str = )"[^"]+";', re.MULTILINE)
+CUSTOM_LIBRARY = re.compile(
+    r'^(const CUSTOM_LIBRARY_VERSION: &str = )"[^"]+";', re.MULTILINE
+)
 
 
 def pin_custom_library(text, lib):
