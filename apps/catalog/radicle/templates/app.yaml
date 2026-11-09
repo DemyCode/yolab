@@ -1,0 +1,134 @@
+{{- $image := "ghcr.io/demycode/radicle:1.10.3-httpd-0.30.0@sha256:PENDING" }}
+{{- $seeding := (.Values.config).seeding | default "all" }}
+{{- if not (has $seeding (list "all" "chosen")) }}
+{{- fail (printf "config.seeding is %q, not all or chosen" $seeding) }}
+{{- end }}
+{{ include "yolab-common.caddyConfigMap" . }}
+---
+{{ include "yolab-common.uninstallHook" . }}
+---
+{{ include "yolab-common.homeVolume" $ }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      initContainers:
+      {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      - name: radicle-setup
+        image: {{ $image }}
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - |
+          set -eu
+          . /yolab/env
+          if [ ! -f "$RAD_HOME/keys/radicle" ]; then
+            RAD_PASSPHRASE= rad auth --alias "$YOLAB_FQDN"
+          fi
+          if [ "$SEEDING" = all ]; then
+            policy='{"default":"allow","scope":"all"}'
+          else
+            policy='{"default":"block"}'
+          fi
+          jq --arg alias "$YOLAB_FQDN" \
+             --arg external "$YOLAB_FQDN:8776" \
+             --argjson policy "$policy" \
+             '.node.alias = $alias
+              | .node.listen = ["[::]:8776"]
+              | .node.externalAddresses = [$external]
+              | .node.seedingPolicy = $policy' \
+             "$RAD_HOME/config.json" > "$RAD_HOME/config.json.new"
+          mv "$RAD_HOME/config.json.new" "$RAD_HOME/config.json"
+          applied="$RAD_HOME/yolab-seeded"
+          touch "$applied"
+          while IFS= read -r rid; do
+            [ -n "$rid" ] || continue
+            printf '%s\n' "$REPOSITORIES" | grep -qxF "$rid" || rad unseed "$rid"
+          done < "$applied"
+          printf '%s\n' "$REPOSITORIES" | while IFS= read -r rid; do
+            [ -n "$rid" ] || continue
+            rad seed "$rid" --no-fetch
+          done
+          printf '%s\n' "$REPOSITORIES" | grep -v '^$' > "$applied" || true
+          nid=$(rad node status --only nid)
+          echo "YOLAB_OUTPUT node ${nid}@${YOLAB_FQDN}:8776"
+          echo "YOLAB_OUTPUT explorer https://radicle.network/nodes/${YOLAB_FQDN}"
+        env:
+        - name: RAD_HOME
+          value: /radicle
+        - name: SEEDING
+          value: {{ $seeding | quote }}
+        - name: REPOSITORIES
+          value: {{ ternary (join "\n" ((.Values.config).repositories | default list)) "" (eq $seeding "chosen") | quote }}
+        volumeMounts:
+        - name: data
+          mountPath: /radicle
+          subPath: radicle
+        - name: yolab
+          mountPath: /yolab
+      containers:
+      {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      - name: node
+        image: {{ $image }}
+        imagePullPolicy: IfNotPresent
+        command:
+        - radicle-node
+        - --listen
+        - "[::]:8776"
+        - --force
+        env:
+        - name: RAD_HOME
+          value: /radicle
+        - name: RAD_PASSPHRASE
+          value: ""
+        ports:
+        - containerPort: 8776
+        readinessProbe:
+          exec:
+            command:
+            - test
+            - -S
+            - /radicle/node/control.sock
+          initialDelaySeconds: 5
+          periodSeconds: 15
+        volumeMounts:
+        - name: data
+          mountPath: /radicle
+          subPath: radicle
+      - name: httpd
+        image: {{ $image }}
+        imagePullPolicy: IfNotPresent
+        command:
+        - radicle-httpd
+        - --listen
+        - 127.0.0.1:8080
+        env:
+        - name: RAD_HOME
+          value: /radicle
+        ports:
+        - containerPort: 8080
+        readinessProbe:
+          tcpSocket:
+            port: 8080
+          periodSeconds: 15
+        volumeMounts:
+        - name: data
+          mountPath: /radicle
+          subPath: radicle
+      volumes:
+      {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}

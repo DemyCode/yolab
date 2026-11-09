@@ -1,0 +1,103 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": [
+    "config"
+  ],
+  "properties": {
+    "config": {
+      "title": "Radicle",
+      "type": "object",
+      "required": [
+        "subdomain",
+        "seeding"
+      ],
+      "properties": {
+        "subdomain": {
+          "type": "string",
+          "title": "Subdomain",
+          "format": "tunnel",
+          "default": "radicle",
+          "description": "The node's name on the Radicle network. Other nodes reach it on this address, port 8776, and the explorer reads repositories from it."
+        },
+        "yolab_token": {
+          "type": "string",
+          "title": "YoLab token",
+          "format": "yolab-token",
+          "writeOnly": true,
+          "description": "Leave it as it is to use this box's YoLab account."
+        },
+        "seeding": {
+          "type": "string",
+          "title": "Repositories it keeps",
+          "default": "all",
+          "oneOf": [
+            {
+              "const": "all",
+              "title": "Every public repository it hears about"
+            },
+            {
+              "const": "chosen",
+              "title": "Only the repositories listed below"
+            }
+          ]
+        }
+      },
+      "dependencies": {
+        "seeding": {
+          "oneOf": [
+            {
+              "properties": {
+                "seeding": {
+                  "const": "all"
+                }
+              }
+            },
+            {
+              "properties": {
+                "seeding": {
+                  "const": "chosen"
+                },
+                "repositories": {
+                  "type": "array",
+                  "title": "Repositories",
+                  "description": "Their Repository IDs, as `rad .` prints them in a clone, like rad:z3gqcJUoA1n9HaHKufZs5FCSGazv5. Removing one here stops keeping it.",
+                  "default": [],
+                  "items": {
+                    "type": "string",
+                    "title": "Repository ID",
+                    "pattern": "^rad:z[1-9A-HJ-NP-Za-km-z]+$"
+                  }
+                }
+              },
+              "required": [
+                "repositories"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    "outputs": {
+      "type": "object",
+      "readOnly": true,
+      "properties": {
+        "explorer": {
+          "type": "string",
+          "title": "Browse its repositories",
+          "format": "uri"
+        },
+        "node": {
+          "type": "string",
+          "title": "Node address",
+          "format": "text"
+        },
+        "url": {
+          "type": "string",
+          "title": "Node API",
+          "format": "uri"
+        }
+      }
+    }
+  }
+}
