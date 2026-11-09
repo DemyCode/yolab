@@ -2,14 +2,14 @@ apiVersion: v2
 name: kiwix
 description: Access knowledge anytime, anywhere without an internet connection
 type: application
-version: 0.1.21
+version: 0.1.22
 appVersion: 3.8.2-patch.1
 dependencies:
   - name: yolab-common
-    version: "0.1.35"
+    version: "0.1.36"
     repository: oci://ghcr.io/demycode/charts
   - name: authelia
-    version: "0.2.0"
+    version: "0.2.1"
     repository: oci://ghcr.io/demycode/charts
 annotations:
   yolab.io/display-name: Kiwix

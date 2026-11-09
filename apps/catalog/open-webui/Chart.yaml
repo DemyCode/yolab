@@ -3,14 +3,14 @@ name: open-webui
 description: "AI chat interface powered by Ollama — run LLMs locally"
 home: https://openwebui.com
 type: application
-version: 0.2.35
+version: 0.2.36
 
 dependencies:
   - name: yolab-common
-    version: "0.1.35"
+    version: "0.1.36"
     repository: "oci://ghcr.io/demycode/charts"
   - name: authelia
-    version: "0.2.0"
+    version: "0.2.1"
     repository: oci://ghcr.io/demycode/charts
 
 annotations:
