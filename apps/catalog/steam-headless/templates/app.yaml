@@ -15,6 +15,17 @@ type: Opaque
 stringData:
   desktop: {{ required "config.desktop_password is required" .Values.config.desktop_password | quote }}
 ---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-steam
+  namespace: {{ .Release.Namespace }}
+data:
+  {{- range $file := list "steam-supervisor.sh" "steam.conf" "sunshine-ipv6.sh" "sunshine.conf" "shui.conf" }}
+  {{ $file }}: |
+    {{- $.Files.Get (printf "files/%s" $file) | nindent 4 }}
+  {{- end }}
+---
 {{ include "yolab-common.homeVolume" $ }}
 ---
 apiVersion: apps/v1
@@ -34,6 +45,12 @@ spec:
       labels:
         app: gateway
     spec:
+      nodeSelector:
+        yolab.io/game-input: "true"
+        kubernetes.io/arch: amd64
+        {{- if $machine.name }}
+        kubernetes.io/hostname: {{ $machine.name | quote }}
+        {{- end }}
       initContainers:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
       {{- include "yolab-common.printOutputs" (list . (dict "desktop_username" (dict "value" "steamheadless") "desktop_password" (dict "secret" (printf "%s-passwords" .Release.Name) "key" "desktop"))) | nindent 6 }}
@@ -41,34 +58,6 @@ spec:
       containers:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
       {{- include "authelia.embed.container" . | nindent 6 }}
-      volumes:
-      {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
-      {{- include "authelia.embed.volumes" . | nindent 6 }}
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: steam-headless
-  namespace: {{ .Release.Namespace }}
-spec:
-  replicas: 1
-  strategy:
-    type: Recreate
-  selector:
-    matchLabels:
-      app: steam-headless
-  template:
-    metadata:
-      labels:
-        app: steam-headless
-    spec:
-      nodeSelector:
-        yolab.io/game-input: "true"
-        kubernetes.io/arch: amd64
-        {{- if $machine.name }}
-        kubernetes.io/hostname: {{ $machine.name | quote }}
-        {{- end }}
-      containers:
       - name: steam-headless
         image: josh5/steam-headless:2.44.20261004.1@sha256:28acbee506844b60fe0a49f1f2a85f4a0a8dbccf8a83db7af73aacbb08d20f74
         imagePullPolicy: IfNotPresent
@@ -103,13 +92,13 @@ spec:
           containerPort: 48000
           hostPort: 48000
           protocol: UDP
-        - name: desktop
-          containerPort: 8483
-          protocol: TCP
         readinessProbe:
           timeoutSeconds: 5
-          tcpSocket:
-            port: 8483
+          exec:
+            command:
+            - bash
+            - -c
+            - exec 3<>/dev/tcp/127.0.0.1/8483
           initialDelaySeconds: 60
           periodSeconds: 15
         env:
@@ -156,10 +145,27 @@ spec:
           mountPath: /dev/input
         - name: shm
           mountPath: /dev/shm
+        - name: yolab-steam
+          mountPath: /etc/yolab-steam
+          readOnly: true
+        - name: yolab-steam
+          mountPath: /etc/systemd/system/steam-headless-steam.service.d/50-yolab.conf
+          subPath: steam.conf
+          readOnly: true
+        - name: yolab-steam
+          mountPath: /etc/systemd/system/steam-headless-sunshine.service.d/50-yolab.conf
+          subPath: sunshine.conf
+          readOnly: true
+        - name: yolab-steam
+          mountPath: /etc/systemd/system/steam-headless-shui.service.d/50-yolab.conf
+          subPath: shui.conf
+          readOnly: true
       volumes:
-      - name: data
-        persistentVolumeClaim:
-          claimName: {{ include "yolab-common.gateway.pvcName" . }}
+      {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+      {{- include "authelia.embed.volumes" . | nindent 6 }}
+      - name: yolab-steam
+        configMap:
+          name: {{ .Release.Name }}-steam
       - name: input
         hostPath:
           path: /dev/input
@@ -179,16 +185,3 @@ spec:
           - key: desktop
             path: password
             mode: 0400
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: steam-headless
-  namespace: {{ .Release.Namespace }}
-spec:
-  selector:
-    app: steam-headless
-  ports:
-  - name: desktop
-    port: 8483
-    targetPort: 8483

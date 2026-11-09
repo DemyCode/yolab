@@ -475,7 +475,10 @@ class SteamHeadless(RenderedChart):
     CHART = "steam-headless"
 
     def game(self, extra=None):
-        return self.deployments(self.docs(extra))["steam-headless"]
+        return self.deployments(self.docs(extra))["gateway"]
+
+    def steam(self, extra=None):
+        return container_of(self.game(extra), "steam-headless")
 
     def test_the_desktop_is_reached_over_http1_so_its_websockets_are_plain_upgrades(
         self,
@@ -487,7 +490,7 @@ class SteamHeadless(RenderedChart):
         )
         self.assertRegex(
             caddyfile,
-            r"reverse_proxy steam-headless:8483 \{\s*header_up Host \{host\}\s*transport http \{"
+            r"reverse_proxy localhost:8483 \{\s*header_up Host \{host\}\s*transport http \{"
             r"\s*tls_insecure_skip_verify\s*versions 1\.1\s*\}\s*\}",
         )
 
@@ -495,9 +498,117 @@ class SteamHeadless(RenderedChart):
         self.assertIn("header_up Host {host}", self.caddyfile())
 
     def test_it_always_opens_straight_into_big_picture(self):
-        container = self.game()["containers"][0]
-        env = {e["name"]: e.get("value") for e in container["env"]}
+        env = {e["name"]: e.get("value") for e in self.steam()["env"]}
         self.assertEqual(env["STEAM_HEADLESS_SESSION_MODE"], "gaming")
+
+    def test_steam_shares_the_tunnel_pod_so_moonlight_reaches_sunshine_from_anywhere(
+        self,
+    ):
+        docs = self.docs()
+        self.assertEqual(set(self.deployments(docs)), {"gateway"})
+        names = [c["name"] for c in self.game()["containers"]]
+        self.assertIn("wireguard", names)
+        self.assertIn("steam-headless", names)
+        services = [d["metadata"]["name"] for d in docs if d["kind"] == "Service"]
+        self.assertNotIn("steam-headless", services)
+
+    def unit_file(self, name):
+        steam = next(
+            d["data"]
+            for d in self.docs()
+            if d["kind"] == "ConfigMap" and d["metadata"]["name"].endswith("-steam")
+        )
+        return steam[name]
+
+    def drop_in(self, unit):
+        mount = self.mounts()[f"/etc/systemd/system/{unit}.service.d/50-yolab.conf"]
+        self.assertEqual(mount["name"], "yolab-steam")
+        return self.unit_file(mount["subPath"])
+
+    def test_the_desktop_listens_only_on_loopback_so_the_open_address_cannot_skip_the_login(
+        self,
+    ):
+        self.assertIn(
+            "ExecStart=\nExecStart=/opt/steam-headless/shui/bin/shui-server "
+            "-listen 127.0.0.1:8483 -webrtc-listen 127.0.0.1:8483\n",
+            self.drop_in("steam-headless-shui"),
+        )
+
+    def test_steam_and_sunshine_run_the_scripts_this_chart_ships(self):
+        self.assertIn(
+            "ExecStart=/usr/bin/env bash /etc/yolab-steam/steam-supervisor.sh",
+            self.drop_in("steam-headless-steam"),
+        )
+        self.assertIn(
+            "ExecStartPre=/bin/sh /etc/yolab-steam/sunshine-ipv6.sh",
+            self.drop_in("steam-headless-sunshine"),
+        )
+        self.assertEqual(self.mounts()["/etc/yolab-steam"]["name"], "yolab-steam")
+        for name in ("steam-supervisor.sh", "sunshine-ipv6.sh"):
+            shipped = Path(check_charts.HERE, "steam-headless", "files", name)
+            self.assertEqual(self.unit_file(name).strip(), shipped.read_text().strip())
+
+    def run_script(self, name, env):
+        script = Path(check_charts.HERE, "steam-headless", "files", name)
+        return subprocess.run(
+            ["bash", str(script)],
+            env={**os.environ, **env},
+            capture_output=True,
+            text=True,
+        )
+
+    def test_sunshine_listens_on_ipv6_because_the_tunnel_carries_nothing_else(self):
+        with tempfile.TemporaryDirectory() as d:
+            conf = Path(d, "sunshine", "sunshine.conf")
+            done = self.run_script(
+                "sunshine-ipv6.sh", {"SUNSHINE_CONF": str(conf), "SUNSHINE_NAME": "games"}
+            )
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertEqual(
+                conf.read_text(),
+                "sunshine_name = games\nupnp = disabled\naddress_family = both\n",
+            )
+            conf.write_text("capture = kwin\naddress_family = ipv4\n")
+            self.run_script("sunshine-ipv6.sh", {"SUNSHINE_CONF": str(conf)})
+            self.assertEqual(conf.read_text(), "capture = kwin\naddress_family = both\n")
+
+    LIVENESS = (
+        "    if pgrep -x steam >/dev/null 2>&1; then\n"
+        "        missing_steam_checks=0\n"
+    )
+
+    def supervise(self, body):
+        with tempfile.TemporaryDirectory() as d:
+            original = Path(d, "steam-headless-steam")
+            original.write_text(body)
+            return self.run_script(
+                "steam-supervisor.sh", {"STEAM_SUPERVISOR": str(original)}
+            )
+
+    def test_steam_is_not_killed_while_its_launcher_still_unpacks_the_runtime(self):
+        ready = "    if pgrep -x steam >/dev/null 2>&1; then\n        touch ready\n"
+        done = self.supervise(
+            "#!/usr/bin/env bash\n"
+            "steam_launcher_pid=$$\n"
+            "steam_launcher_running && echo launcher-counts\n"
+            "steam_launcher_pid=999999999\n"
+            "steam_launcher_running || echo gone-launcher-does-not\n"
+            'cat "$0"\n' + ready + "fi\n" + self.LIVENESS + "fi\n"
+        )
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn("launcher-counts\ngone-launcher-does-not\n", done.stdout)
+        self.assertIn(ready, done.stdout)
+        self.assertIn(
+            "    if pgrep -x steam >/dev/null 2>&1 || steam_launcher_running; then\n"
+            "        missing_steam_checks=0\n",
+            done.stdout,
+        )
+
+    def test_an_image_whose_supervisor_changed_refuses_to_start_instead_of_guessing(self):
+        for body in ("#!/usr/bin/env bash\n", self.LIVENESS + self.LIVENESS):
+            done = self.supervise(body)
+            self.assertEqual(done.returncode, 1)
+            self.assertIn("no longer has exactly one Steam liveness loop", done.stderr)
 
     def test_an_nvidia_machine_is_used_through_its_cdi_device(self):
         spec = self.game(check_charts.VARIANTS["steam-headless"][0])
@@ -510,14 +621,14 @@ class SteamHeadless(RenderedChart):
             },
         )
         self.assertEqual(
-            spec["containers"][0]["resources"]["limits"],
+            container_of(spec, "steam-headless")["resources"]["limits"],
             {"yolab.io/uinput": "1", "nvidia.com/gpu-all": "1"},
         )
 
     def test_an_intel_or_amd_machine_is_used_through_dev_dri(self):
         spec = self.game(check_charts.VARIANTS["steam-headless"][1])
         self.assertEqual(
-            spec["containers"][0]["resources"]["limits"],
+            container_of(spec, "steam-headless")["resources"]["limits"],
             {"yolab.io/uinput": "1", "yolab.io/dri": "1"},
         )
 
@@ -525,7 +636,7 @@ class SteamHeadless(RenderedChart):
         spec = self.game(check_charts.VARIANTS["steam-headless"][2])
         self.assertEqual(spec["nodeSelector"]["kubernetes.io/hostname"], "gt710")
         self.assertEqual(
-            spec["containers"][0]["resources"]["limits"],
+            container_of(spec, "steam-headless")["resources"]["limits"],
             {"yolab.io/uinput": "1", "nvidia.com/gpu-all": "1"},
         )
 
@@ -536,7 +647,8 @@ class SteamHeadless(RenderedChart):
             {"yolab.io/game-input": "true", "kubernetes.io/arch": "amd64"},
         )
         self.assertEqual(
-            spec["containers"][0]["resources"]["limits"], {"yolab.io/uinput": "1"}
+            container_of(spec, "steam-headless")["resources"]["limits"],
+            {"yolab.io/uinput": "1"},
         )
 
     def test_the_desktop_is_reachable_only_through_the_login(self):
@@ -544,7 +656,7 @@ class SteamHeadless(RenderedChart):
         self.assertFalse(spec.get("hostNetwork", False))
         published = {
             p["containerPort"]
-            for p in spec["containers"][0]["ports"]
+            for p in container_of(spec, "steam-headless")["ports"]
             if "hostPort" in p
         }
         self.assertNotIn(8483, published)
@@ -559,17 +671,17 @@ class SteamHeadless(RenderedChart):
         )
 
     def mounts(self):
-        return {m["mountPath"]: m for m in self.game()["containers"][0]["volumeMounts"]}
+        return {m["mountPath"]: m for m in self.steam()["volumeMounts"]}
 
     def volumes(self):
         return {v["name"]: v for v in self.game()["volumes"]}
 
     def test_its_page_is_reached_over_the_https_it_serves(self):
         caddy = self.caddyfile()
-        self.assertIn("reverse_proxy steam-headless:8483 {", caddy)
+        self.assertIn("reverse_proxy localhost:8483 {", caddy)
         self.assertIn("tls_insecure_skip_verify", caddy)
-        probe = self.game()["containers"][0]["readinessProbe"]["tcpSocket"]
-        self.assertEqual(probe["port"], 8483)
+        probe = self.steam()["readinessProbe"]["exec"]["command"]
+        self.assertEqual(probe[-1], "exec 3<>/dev/tcp/127.0.0.1/8483")
 
     def test_systemd_keeps_what_the_image_prepares_in_run(self):
         self.assertEqual(self.mounts()["/run"]["name"], "run")
@@ -1570,7 +1682,7 @@ class OpenWebUiOllama(RenderedChart):
         self.assertIn("ollama-vulkan", engines)
         spec = engines["ollama-vulkan"]
         self.assertEqual(spec["nodeSelector"]["yolab.io/accelerator"], "vulkan")
-        limits = spec["containers"][0]["resources"]["limits"]
+        limits = container_of(spec, "steam-headless")["resources"]["limits"]
         self.assertEqual(limits, {"yolab.io/dri": "1"})
 
     def test_it_listens_on_ipv6_where_the_readiness_probe_knocks(self):

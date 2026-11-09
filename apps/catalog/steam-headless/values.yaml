@@ -9,7 +9,7 @@ yolab:
   accountToken: ''
   serviceName: ''
   gateway:
-    upstream: steam-headless:8483
+    upstream: localhost:8483
     upstreamTls: true
 authelia:
   embedded: true

@@ -11,7 +11,8 @@ So the question here is not "does it render" but "does the rendered thing
 describe a workload that can actually run":
 
   - the gateway wiring is intact (wg-register + wireguard + caddy, in one pod)
-  - only the tunnel sidecar is privileged, and it alone has a readinessProbe
+  - only the tunnel sidecar is privileged (apart from PRIVILEGED_IN_GATEWAY apps),
+    and it alone has a readinessProbe
   - no two containers in a pod claim the same port
   - every volumeMount resolves to a declared volume
   - every reverse_proxy upstream resolves to a local container or a real Service
@@ -625,8 +626,9 @@ def check(app, docs, fail, chart_yaml="", schema=None, arches=None, home=RELEASE
         ):
             fail(app, "wireguard sidecar is not privileged (the tunnel cannot come up)")
 
+    allowed = {"wireguard"} | ({app} if app in PRIVILEGED_IN_GATEWAY else set())
     for name, c in conts.items():
-        if name != "wireguard" and c.get("securityContext", {}).get("privileged"):
+        if name not in allowed and c.get("securityContext", {}).get("privileged"):
             fail(app, f"container {name} is privileged but is not the tunnel sidecar")
 
     for dname, d in deploys.items():
@@ -1677,6 +1679,10 @@ ADDRESS_ONLY = {
     "torbrowser": "it browses from this box, so it sits behind Authelia",
     "matrix": "the YoLab address is the server name in every account",
     "radicle": "other nodes reach it on its YoLab address, the one it announces",
+}
+PRIVILEGED_IN_GATEWAY = {
+    "steam-headless": "it boots a whole systemd desktop that owns its GPU and input "
+    "devices, and shares the tunnel address so Moonlight reaches Sunshine from anywhere",
 }
 RETIRED_MEMBERS = "yolab.io/members"
 MEMBER_LABEL = "yolab.io/member"
