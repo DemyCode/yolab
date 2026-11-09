@@ -198,7 +198,7 @@ pub struct SaveCustomReq {
     pub service: String,
 }
 
-const CUSTOM_LIBRARY_VERSION: &str = "0.1.36";
+const CUSTOM_LIBRARY_VERSION: &str = "0.1.37";
 
 const CHART_TEMPLATE: &str = r#"{{ include "yolab-common.caddyConfigMap" . }}
 ---
