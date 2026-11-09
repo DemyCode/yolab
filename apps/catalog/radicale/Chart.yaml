@@ -3,11 +3,11 @@ name: radicale
 description: CalDAV and CardDAV server for calendars, task lists and contacts
 home: https://radicale.org
 type: application
-version: 0.1.4
+version: 0.1.5
 appVersion: 3.9.0
 dependencies:
 - name: yolab-common
-  version: "0.1.38"
+  version: "0.1.39"
   repository: oci://ghcr.io/demycode/charts
 annotations:
   yolab.io/display-name: Radicale

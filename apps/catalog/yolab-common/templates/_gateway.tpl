@@ -474,6 +474,7 @@ reverse_proxy {{ $upstream }}
   {{ . }}
 {{- end }}
 {{- if $tls }}
+  header_up Host {host}
   transport http {
     tls_insecure_skip_verify
     versions 1.1

@@ -487,9 +487,12 @@ class SteamHeadless(RenderedChart):
         )
         self.assertRegex(
             caddyfile,
-            r"reverse_proxy steam-headless:8483 \{\s*transport http \{"
+            r"reverse_proxy steam-headless:8483 \{\s*header_up Host \{host\}\s*transport http \{"
             r"\s*tls_insecure_skip_verify\s*versions 1\.1\s*\}\s*\}",
         )
+
+    def test_the_desktop_is_told_the_visitors_address_so_its_origin_check_passes(self):
+        self.assertIn("header_up Host {host}", self.caddyfile())
 
     def test_an_nvidia_machine_is_used_through_its_cdi_device(self):
         spec = self.game(check_charts.VARIANTS["steam-headless"][0])
