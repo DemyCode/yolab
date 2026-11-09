@@ -9,6 +9,9 @@ on:
 jobs:
   configure:
     runs-on: ubuntu-latest
+    concurrency:
+      group: configure-${{ github.ref }}
+      cancel-in-progress: false
     outputs:
       jobs: ${{ steps.list.outputs.jobs }}
     steps:
@@ -42,6 +45,9 @@ jobs:
     name: ${{ matrix.job.target }}
     needs: configure
     runs-on: ${{ matrix.job.runner }}
+    concurrency:
+      group: build-${{ github.ref }}-${{ matrix.job.target }}
+      cancel-in-progress: false
     strategy:
       fail-fast: false
       matrix:
