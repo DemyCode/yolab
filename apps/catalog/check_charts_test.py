@@ -477,7 +477,9 @@ class SteamHeadless(RenderedChart):
     def game(self, extra=None):
         return self.deployments(self.docs(extra))["steam-headless"]
 
-    def test_the_desktop_is_reached_over_http1_so_its_websockets_are_plain_upgrades(self):
+    def test_the_desktop_is_reached_over_http1_so_its_websockets_are_plain_upgrades(
+        self,
+    ):
         caddyfile = next(
             d["data"]["Caddyfile"]
             for d in self.docs()
