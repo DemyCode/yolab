@@ -7,6 +7,13 @@ yolab:
   serviceName: ''
   gateway:
     upstream: localhost:9117
+  auth:
+    openPaths:
+      - /api/v2.0/indexers/*/results
+      - /api/v2.0/indexers/*/results/torznab
+      - /api/v2.0/indexers/*/results/torznab/
+      - /api/v2.0/indexers/*/results/torznab/api
+      - /dl/*
 
 authelia:
   embedded: true

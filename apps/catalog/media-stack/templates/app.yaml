@@ -81,6 +81,7 @@ spec:
         volumeMounts:
           - name: yolab
             mountPath: /yolab
+      {{- include "media-stack.arrKeys" (dict "name" "arr-keys" "env" true) | nindent 6 }}
       - name: seerr-config-owner
         image: ghcr.io/seerr-team/seerr:v3.5.0@sha256:27602401178d54f1964442287b9f23f67a3fa2252645ee8065839ea1c3f69e45
         imagePullPolicy: IfNotPresent
@@ -242,6 +243,7 @@ spec:
           - name: data
             mountPath: /data
             subPath: data
+      {{- include "media-stack.arrKeys" (dict "name" "arr-keys" "env" false) | nindent 6 }}
       - name: torrents-login
         image: python:3.15-alpine@sha256:2699b90f4d562a22e2dd076c82f964032f64814204bff36d271a54ba4cc2c7e2
         imagePullPolicy: IfNotPresent
@@ -259,7 +261,12 @@ spec:
             conf.read(path)
             if not conf.has_section("Preferences"):
                 conf.add_section("Preferences")
+            conf.set("Preferences", "WebUI\\AuthSubnetWhitelistEnabled", "false")
+            conf.set("Preferences", "WebUI\\LocalHostAuth", "true")
             if conf.has_option("Preferences", "WebUI\\Password_PBKDF2") and not os.path.exists(ours):
+                with open(path, "w") as f:
+                    conf.write(f, space_around_delimiters=False)
+                os.chown(path, 1000, 1000)
                 print("YOLAB_OUTPUT torrents_username NONE")
                 print("YOLAB_OUTPUT torrents_password NONE")
                 raise SystemExit(0)

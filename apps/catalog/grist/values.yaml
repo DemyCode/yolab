@@ -13,6 +13,12 @@ yolab:
         handle /authelia/* {
           reverse_proxy localhost:9091
         }
+        @grist_api_key header Authorization "Bearer *"
+        handle @grist_api_key {
+          reverse_proxy localhost:8484 {
+            header_up -X-Grist-Email
+          }
+        }
         handle {
           forward_auth localhost:9091 {
             uri /authelia/api/authz/forward-auth

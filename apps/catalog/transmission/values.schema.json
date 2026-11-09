@@ -183,6 +183,16 @@
           "type": "string",
           "title": "Web URL",
           "format": "uri"
+        },
+        "rpc_username": {
+          "type": "string",
+          "title": "Transmission username",
+          "description": "Transmission asks for it after the Authelia login, and remote apps such as Transmission Remote on your phone use it to reach the YoLab address."
+        },
+        "rpc_password": {
+          "type": "string",
+          "title": "Transmission password",
+          "format": "secret"
         }
       }
     }

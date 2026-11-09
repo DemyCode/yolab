@@ -1050,6 +1050,7 @@ def check_private_access(app, docs, offered, fail):
 API_KEY_GUARD = (
     '@yolab_without_api_key not header Authorization "Bearer {$YOLAB_API_KEY}"'
 )
+API_KEY_BYPASS = '@yolab_api_key header Authorization "Bearer {$YOLAB_API_KEY}"'
 
 
 def offers_api_key(schema):
@@ -1089,13 +1090,6 @@ def check_api_key_offer(app, schema, fail):
     if not offers_api_key(schema):
         return
     props = schema.get("properties") or {}
-    config = (props.get("config") or {}).get("properties") or {}
-    if "auth_enabled" in config:
-        fail(
-            app,
-            "offers an API key next to an Authelia login: the login's site has "
-            "no API key guard",
-        )
     out = ((props.get("outputs") or {}).get("properties") or {}).get("api_key")
     if out is None:
         fail(app, "offers an API key but has no api_key output, so nobody can read it")
@@ -1106,8 +1100,6 @@ def check_api_key_offer(app, schema, fail):
 
 def check_api_key(app, docs, upstream, fail):
     caddyfile = configmap_data(docs, "-caddy", "Caddyfile") or ""
-    sites = len(re.findall(rf"reverse_proxy {re.escape(upstream)}(\s|$)", caddyfile))
-    guarded = caddyfile.count(API_KEY_GUARD)
     inits = [
         c["name"]
         for _, spec in pod_specs(docs)
@@ -1115,6 +1107,18 @@ def check_api_key(app, docs, upstream, fail):
     ]
     if "api-key-init" not in inits:
         fail(app, "the API key is on but no api-key-init container creates it")
+    gated = caddyfile.count("forward_auth ")
+    if gated:
+        let_in = caddyfile.count(API_KEY_BYPASS)
+        if let_in < gated:
+            fail(
+                app,
+                f"the API key is on but only {let_in} of the {gated} Authelia "
+                f"logins let a request with the key through",
+            )
+        return
+    sites = len(re.findall(rf"reverse_proxy {re.escape(upstream)}(\s|$)", caddyfile))
+    guarded = caddyfile.count(API_KEY_GUARD)
     if sites == 0 or guarded < sites:
         fail(
             app,
@@ -1123,7 +1127,7 @@ def check_api_key(app, docs, upstream, fail):
         )
 
 
-ENV_PARTS = ("env", "host", "apikey")
+ENV_PARTS = ("env", "host", "apikey", "keys")
 ENV_LOADER_WRITE = "cat > /yolab/env <<'YOLAB_ENV'"
 WRITES_ENV = re.compile(r"(?m)^.*>>?\s*/yolab/env(?![.\w/]).*$")
 WRITES_ENV_PART = re.compile(r">>?\s*/yolab/env\.d/([\w.-]+)")

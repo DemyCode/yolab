@@ -14,6 +14,12 @@
           "title": "YoLab address",
           "default": true,
           "description": "Reachable from anywhere at https://<subdomain>.<your-number>.yolab.io, through your YoLab tunnel. Visitors need IPv6."
+        },
+        "api_key_enabled": {
+          "type": "boolean",
+          "title": "API key",
+          "default": true,
+          "description": "Programs that cannot sign in to Authelia, such as an OpenAI-compatible client, an app on your phone or another machine, reach Kokoro on its YoLab address by sending this key as the header Authorization: Bearer <key>. People in a browser still sign in. The key is shown below once installed."
         }
       },
       "dependencies": {
@@ -140,6 +146,16 @@
         "url": {
           "type": "string",
           "title": "Web URL",
+          "format": "uri"
+        },
+        "api_key": {
+          "type": "string",
+          "title": "API key",
+          "format": "secret"
+        },
+        "api_url": {
+          "type": "string",
+          "title": "API base URL",
           "format": "uri"
         }
       }

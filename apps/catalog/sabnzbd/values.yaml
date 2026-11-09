@@ -7,6 +7,10 @@ yolab:
   serviceName: ''
   gateway:
     upstream: localhost:8080
+  auth:
+    openPaths:
+      - /api
+      - /sabnzbd/api
 
 authelia:
   embedded: true

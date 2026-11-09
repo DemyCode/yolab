@@ -2158,7 +2158,7 @@ class ApiKeyOffer(unittest.TestCase):
         shown = dict(API_KEY_OUTPUT, format="text")
         self.assertTrue(api_key_failures(schema(config=on, outputs={"api_key": shown})))
 
-    def test_a_key_next_to_an_authelia_login_is_refused(self):
+    def test_a_key_next_to_an_authelia_login_is_allowed(self):
         config = {
             "api_key_enabled": {"type": "boolean", "default": True},
             "auth_enabled": {"type": "boolean", "default": False},
@@ -2166,7 +2166,31 @@ class ApiKeyOffer(unittest.TestCase):
         found = api_key_failures(
             schema(config=config, outputs={"api_key": API_KEY_OUTPUT})
         )
-        self.assertTrue(any("Authelia" in f for f in found))
+        self.assertEqual(found, [])
+
+    def test_a_login_that_lets_no_key_through_is_reported(self):
+        caddy = "{$YOLAB_FQDN} {\n  handle {\n    forward_auth localhost:9091 {\n    }\n  }\n}\n"
+        docs = [
+            {
+                "kind": "ConfigMap",
+                "metadata": {"name": "release-caddy"},
+                "data": {"Caddyfile": caddy},
+            },
+            {
+                "kind": "Deployment",
+                "metadata": {"name": "gateway"},
+                "spec": {
+                    "template": {
+                        "spec": {
+                            "initContainers": [{"name": "api-key-init"}],
+                            "containers": [],
+                        }
+                    }
+                },
+            },
+        ]
+        found = collected(check_charts.check_api_key, "demo", docs, "localhost:1")
+        self.assertTrue(any("let a request with the key through" in f for f in found))
 
 
 class OllamaApiKey(RenderedChart):
@@ -4279,6 +4303,181 @@ class LoginGate(RenderedChart):
             lambda app, msg: found.append(msg),
         )
         self.assertTrue(any("skip the login" in f for f in found))
+
+
+def site_block(caddyfile, site):
+    start = caddyfile.index(site + " {") + len(site) + 1
+    depth = 0
+    for i in range(start, len(caddyfile)):
+        if caddyfile[i] == "{":
+            depth += 1
+        elif caddyfile[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return caddyfile[start : i + 1]
+    raise AssertionError(f"{site} never closes")
+
+
+class ClientsGetPastTheLogin(RenderedChart):
+    CHART = "authelia"
+    render = LoginGate.render
+
+    def gate(self, chart, extra=None):
+        return caddyfile_of(self.render(chart, extra))
+
+    def test_no_gated_service_listens_where_its_authelia_does(self):
+        for chart in gated_charts():
+            values = yaml.safe_load(
+                Path(check_charts.HERE, chart, "values.yaml").read_text()
+            )
+            upstream = (values["yolab"].get("gateway") or {}).get("upstream") or ""
+            with self.subTest(chart):
+                self.assertFalse(upstream.endswith(":9091"), upstream)
+
+    def test_paths_an_app_checks_itself_skip_the_login_before_it(self):
+        caddy = self.gate("sabnzbd")
+        bypass = caddy.index("@yolab_app_checks_itself path /api /sabnzbd/api")
+        self.assertLess(bypass, caddy.index("forward_auth localhost:9091"))
+        handle = caddy[caddy.index("handle @yolab_app_checks_itself {") :]
+        handle = handle[: handle.index("}")]
+        self.assertIn("request_header -Remote-User", handle)
+        self.assertIn("reverse_proxy localhost:8080", handle)
+
+    def test_a_service_without_open_paths_has_no_bypass(self):
+        caddy = self.gate("chromium")
+        self.assertNotIn("@yolab_app_checks_itself", caddy)
+        self.assertNotIn("@yolab_brings_credentials", caddy)
+        self.assertNotIn("@yolab_api_key", caddy)
+
+    def test_an_open_path_that_is_not_a_plain_path_is_refused(self):
+        for bad in ("api", "/a b"):
+            with self.subTest(bad):
+                text, err = check_charts.render(
+                    os.path.join(check_charts.HERE, "sabnzbd"),
+                    self.library,
+                    self.tmp.name,
+                    {"yolab.auth.openPaths": "{" + bad + "}"},
+                )
+                self.assertIsNone(text)
+                self.assertIn("openPaths", err)
+
+    def test_jackett_opens_only_its_key_checked_feeds_not_its_admin_api(self):
+        values = yaml.safe_load(
+            Path(check_charts.HERE, "jackett", "values.yaml").read_text()
+        )
+        for path in values["yolab"]["auth"]["openPaths"]:
+            with self.subTest(path):
+                self.assertTrue(
+                    path.startswith("/api/v2.0/indexers/*/results") or path == "/dl/*",
+                    path,
+                )
+
+    def test_tautulli_opens_only_its_api(self):
+        values = yaml.safe_load(
+            Path(check_charts.HERE, "tautulli", "values.yaml").read_text()
+        )
+        self.assertEqual(values["yolab"]["auth"]["openPaths"], ["/api/*"])
+
+    def test_transmission_lets_its_own_login_answer_remote_apps(self):
+        caddy = self.gate("transmission")
+        self.assertIn("@yolab_brings_credentials header Authorization *", caddy)
+        self.assertIn("reverse_proxy localhost:9095", caddy)
+        self.assertLess(
+            caddy.index("@yolab_brings_credentials"),
+            caddy.index("forward_auth localhost:9091"),
+        )
+
+    def test_transmission_never_starts_without_its_password(self):
+        gateway = self.deployments(self.render("transmission"))["gateway"]
+        server = container_of(gateway, "server")
+        script = server["command"][2]
+        self.assertIn("PASS=$(cat /config/yolab-rpc-password)", script)
+        self.assertIn('if [ -z "$PASS" ]; then', script)
+        self.assertIn("export USER=yolab PASS", script)
+        self.assertIn("exec /init", script)
+        self.assertEqual(server["readinessProbe"]["tcpSocket"]["port"], 9095)
+        settings = container_of(gateway, "settings")["command"][2]
+        self.assertIn('.["rpc-port"] = 9095', settings)
+        self.assertIn("YOLAB_OUTPUT rpc_password", settings)
+
+    def test_an_openai_client_with_the_key_gets_past_the_login(self):
+        for chart in ("localai", "kokoro"):
+            with self.subTest(chart):
+                docs = self.render(chart)
+                caddy = caddyfile_of(docs)
+                self.assertIn(check_charts.API_KEY_BYPASS, caddy)
+                self.assertLess(
+                    caddy.index(check_charts.API_KEY_BYPASS),
+                    caddy.index("forward_auth localhost:9091"),
+                )
+                self.assertEqual(
+                    collected(check_charts.check_api_key, chart, docs, ""), []
+                )
+
+    def test_switching_the_key_off_leaves_only_the_login(self):
+        docs = self.render("localai", {"config.api_key_enabled": "false"})
+        self.assertNotIn("@yolab_api_key", caddyfile_of(docs))
+        self.assertIn("forward_auth localhost:9091", caddyfile_of(docs))
+
+    def test_grist_api_keys_reach_grist_without_a_borrowed_identity(self):
+        caddy = self.gate("grist")
+        self.assertIn('@grist_api_key header Authorization "Bearer *"', caddy)
+        handle = caddy[caddy.index("handle @grist_api_key {") :]
+        handle = handle[: handle.index("handle {")]
+        self.assertIn("header_up -X-Grist-Email", handle)
+        self.assertLess(
+            caddy.index("handle @grist_api_key"), caddy.index("forward_auth")
+        )
+
+    def test_each_arr_lets_its_own_key_through_and_nothing_else(self):
+        caddy = self.gate("media-stack")
+        for name, port in (
+            ("SONARR", 8989),
+            ("RADARR", 7878),
+            ("LIDARR", 8686),
+            ("PROWLARR", 9696),
+        ):
+            with self.subTest(name):
+                site = site_block(caddy, "{$%s_FQDN}" % name)
+                self.assertIn(
+                    "import app_key {$%s_API_KEY} downloads:%d" % (name, port), site
+                )
+                self.assertIn("import signed_in", site)
+        self.assertIn("@app_key_header header X-Api-Key {args[0]}", caddy)
+        self.assertIn("@app_key_query query apikey={args[0]}", caddy)
+
+    def test_qbittorrent_api_is_open_because_its_login_is_pinned_on(self):
+        caddy = self.gate("media-stack")
+        site = site_block(caddy, "{$TORRENTS_FQDN}")
+        self.assertIn("handle /api/v2/* {", site)
+        downloads = self.deployments(self.render("media-stack"))["downloads"]
+        login = container_of(downloads, "torrents-login")["command"][2]
+        pinned = login.index('"WebUI\\\\AuthSubnetWhitelistEnabled", "false"')
+        self.assertIn('"WebUI\\\\LocalHostAuth", "true"', login)
+        self.assertLess(pinned, login.index("raise SystemExit(0)"))
+
+    def test_the_sites_without_a_key_of_their_own_stay_behind_the_login(self):
+        caddy = self.gate("media-stack")
+        for name in ("BOOKS", "BAZARR", "CLEANUPARR"):
+            with self.subTest(name):
+                site = site_block(caddy, "{$%s_FQDN}" % name)
+                self.assertIn("import signed_in", site)
+                self.assertNotIn("handle", site)
+
+    def test_the_gateway_reads_the_arr_keys_the_downloads_pod_pins(self):
+        docs = self.render("media-stack")
+        pods = self.deployments(docs)
+        gateway = container_of(pods["gateway"], "arr-keys")
+        downloads = container_of(pods["downloads"], "arr-keys")
+        self.assertIn('open("/yolab/env.d/keys", "w")', gateway["command"][2])
+        self.assertNotIn("/yolab/env.d/keys", downloads["command"][2])
+        for c in (gateway, downloads):
+            mount = next(m for m in c["volumeMounts"] if m["mountPath"] == "/arr")
+            self.assertEqual((mount["name"], mount["subPath"]), ("data", "config"))
+            script = c["command"][2]
+            self.assertIn("os.link(tmp, path)", script)
+            self.assertIn("return secrets.token_hex(32)", script)
+        self.assertIn("keys", check_charts.ENV_PARTS)
 
 
 if __name__ == "__main__":

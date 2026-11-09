@@ -147,7 +147,7 @@ yolab-tunnel-credentials
 {{- define "yolab-common.envLoader" -}}
 mkdir -p /yolab/env.d
 cat > /yolab/env <<'YOLAB_ENV'
-for yolab_env_part in env host apikey; do
+for yolab_env_part in env host apikey keys; do
   if [ -f "/yolab/env.d/$yolab_env_part" ]; then . "/yolab/env.d/$yolab_env_part"; fi
 done
 YOLAB_ENV
@@ -358,6 +358,7 @@ data:
       handle /authelia/* {
         reverse_proxy localhost:9091
       }
+      {{- include "yolab-common.auth.skipGate" . | nindent 6 }}
       handle {
         forward_auth localhost:9091 {
           uri /authelia/api/authz/forward-auth

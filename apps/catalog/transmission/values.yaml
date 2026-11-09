@@ -8,7 +8,9 @@ yolab:
   accountToken: ''
   serviceName: ''
   gateway:
-    upstream: localhost:9091
+    upstream: localhost:9095
+  auth:
+    openWhenAuthorized: true
 
 authelia:
   embedded: true
