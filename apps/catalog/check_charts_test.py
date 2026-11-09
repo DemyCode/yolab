@@ -3867,7 +3867,8 @@ class Registrar(unittest.TestCase):
                 subprocess.run(["sleep", "0.05"], check=True)
             if list((self.root / "clients").glob("*.yml")):
                 self.live()
-        out = run.stdout.read().decode()
+        with run.stdout:
+            out = run.stdout.read().decode()
         self.assertEqual(run.wait(timeout=30), 0)
         return out
 
@@ -4446,12 +4447,13 @@ class ClientsGetPastTheLogin(RenderedChart):
         ):
             with self.subTest(name):
                 site = site_block(caddy, f"{{${name}_FQDN}}")
-                self.assertIn(
-                    f"import app_key {{${name}_API_KEY}} downloads:{port}", site
-                )
-                self.assertIn("import signed_in", site)
-        self.assertIn("@app_key_header header X-Api-Key {args[0]}", caddy)
-        self.assertIn("@app_key_query query apikey={args[0]}", caddy)
+                self.assertIn(f"@key_header header X-Api-Key {{${name}_API_KEY}}", site)
+                self.assertIn(f"@key_query query apikey={{${name}_API_KEY}}", site)
+                self.assertEqual(site.count(f"reverse_proxy downloads:{port}"), 3)
+                gate = site.index("import signed_in")
+                self.assertLess(site.index("handle @key_header {"), gate)
+                self.assertLess(site.index("handle @key_query {"), gate)
+                self.assertEqual(site.count("handle {"), 1)
 
     def test_qbittorrent_api_is_open_because_its_login_is_pinned_on(self):
         caddy = self.gate("media-stack")

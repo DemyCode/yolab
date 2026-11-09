@@ -33,17 +33,6 @@ yolab:
         }
       }
 
-      (app_key) {
-        @app_key_header header X-Api-Key {args[0]}
-        @app_key_query query apikey={args[0]}
-        handle @app_key_header {
-          reverse_proxy {args[1]}
-        }
-        handle @app_key_query {
-          reverse_proxy {args[1]}
-        }
-      }
-
       {$YOLAB_FQDN} {
         handle /authelia/* {
           reverse_proxy localhost:9091
@@ -58,7 +47,14 @@ yolab:
       }
 
       {$SONARR_FQDN} {
-        import app_key {$SONARR_API_KEY} downloads:8989
+        @key_header header X-Api-Key {$SONARR_API_KEY}
+        @key_query query apikey={$SONARR_API_KEY}
+        handle @key_header {
+          reverse_proxy downloads:8989
+        }
+        handle @key_query {
+          reverse_proxy downloads:8989
+        }
         handle {
           import signed_in
           reverse_proxy downloads:8989
@@ -66,7 +62,14 @@ yolab:
       }
 
       {$RADARR_FQDN} {
-        import app_key {$RADARR_API_KEY} downloads:7878
+        @key_header header X-Api-Key {$RADARR_API_KEY}
+        @key_query query apikey={$RADARR_API_KEY}
+        handle @key_header {
+          reverse_proxy downloads:7878
+        }
+        handle @key_query {
+          reverse_proxy downloads:7878
+        }
         handle {
           import signed_in
           reverse_proxy downloads:7878
@@ -74,7 +77,14 @@ yolab:
       }
 
       {$LIDARR_FQDN} {
-        import app_key {$LIDARR_API_KEY} downloads:8686
+        @key_header header X-Api-Key {$LIDARR_API_KEY}
+        @key_query query apikey={$LIDARR_API_KEY}
+        handle @key_header {
+          reverse_proxy downloads:8686
+        }
+        handle @key_query {
+          reverse_proxy downloads:8686
+        }
         handle {
           import signed_in
           reverse_proxy downloads:8686
@@ -82,7 +92,14 @@ yolab:
       }
 
       {$PROWLARR_FQDN} {
-        import app_key {$PROWLARR_API_KEY} downloads:9696
+        @key_header header X-Api-Key {$PROWLARR_API_KEY}
+        @key_query query apikey={$PROWLARR_API_KEY}
+        handle @key_header {
+          reverse_proxy downloads:9696
+        }
+        handle @key_query {
+          reverse_proxy downloads:9696
+        }
         handle {
           import signed_in
           reverse_proxy downloads:9696
