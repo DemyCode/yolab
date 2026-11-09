@@ -347,7 +347,7 @@ class RenderedChart(unittest.TestCase):
         }
 
     def env(self, spec, container):
-        c = next(c for c in spec["containers"] if c["name"] == container)
+        c = container_of(spec, container)
         return {e["name"]: e.get("value") for e in c.get("env") or []}
 
 
