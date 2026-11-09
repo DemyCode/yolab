@@ -4438,9 +4438,9 @@ class ClientsGetPastTheLogin(RenderedChart):
             ("PROWLARR", 9696),
         ):
             with self.subTest(name):
-                site = site_block(caddy, "{$%s_FQDN}" % name)
+                site = site_block(caddy, f"{{${name}_FQDN}}")
                 self.assertIn(
-                    "import app_key {$%s_API_KEY} downloads:%d" % (name, port), site
+                    f"import app_key {{${name}_API_KEY}} downloads:{port}", site
                 )
                 self.assertIn("import signed_in", site)
         self.assertIn("@app_key_header header X-Api-Key {args[0]}", caddy)
@@ -4460,7 +4460,7 @@ class ClientsGetPastTheLogin(RenderedChart):
         caddy = self.gate("media-stack")
         for name in ("BOOKS", "BAZARR", "CLEANUPARR"):
             with self.subTest(name):
-                site = site_block(caddy, "{$%s_FQDN}" % name)
+                site = site_block(caddy, f"{{${name}_FQDN}}")
                 self.assertIn("import signed_in", site)
                 self.assertNotIn("handle", site)
 
