@@ -3711,5 +3711,62 @@ class LintValues(unittest.TestCase):
         )
 
 
+class RadicleNode(RenderedChart):
+    CHART = "radicle"
+    RID = "rad:z3gqcJUoA1n9HaHKufZs5FCSGazv5"
+
+    def gateway(self, extra=None):
+        return self.deployments(self.docs(extra))["gateway"]
+
+    def test_other_nodes_reach_it_on_every_address_of_the_pod(self):
+        node = container_of(self.gateway(), "node")
+        self.assertEqual(node["command"][1:3], ["--listen", "[::]:8776"])
+
+    def test_its_api_is_only_on_loopback_behind_the_gateway(self):
+        httpd = container_of(self.gateway(), "httpd")
+        self.assertEqual(httpd["command"][1:3], ["--listen", "127.0.0.1:8080"])
+        self.assertIn(
+            "http://127.0.0.1:8080/api/v1", httpd["readinessProbe"]["exec"]["command"]
+        )
+
+    def test_by_default_it_keeps_every_repository_and_lists_none(self):
+        env = self.env(self.gateway(), "radicle-setup")
+        self.assertEqual(env["SEEDING"], "all")
+        self.assertEqual(env["REPOSITORIES"], "")
+
+    def test_chosen_repositories_are_handed_to_the_setup_one_per_line(self):
+        env = self.env(
+            self.gateway(
+                {
+                    "config.seeding": "chosen",
+                    "config.repositories[0]": self.RID,
+                    "config.repositories[1]": "rad:z4V1sjrXqjvFdnCUbxPFqd5p4DtH5",
+                }
+            ),
+            "radicle-setup",
+        )
+        self.assertEqual(env["SEEDING"], "chosen")
+        self.assertEqual(
+            env["REPOSITORIES"].split("\n"),
+            [self.RID, "rad:z4V1sjrXqjvFdnCUbxPFqd5p4DtH5"],
+        )
+
+    def test_a_list_left_over_from_chosen_is_ignored_when_it_keeps_everything(self):
+        env = self.env(
+            self.gateway({"config.seeding": "all", "config.repositories[0]": self.RID}),
+            "radicle-setup",
+        )
+        self.assertEqual(env["REPOSITORIES"], "")
+
+    def test_its_identity_and_config_live_in_its_own_folder(self):
+        spec = self.gateway()
+        for name in ("radicle-setup", "node", "httpd"):
+            mounts = {
+                m["mountPath"]: m for m in container_of(spec, name)["volumeMounts"]
+            }
+            self.assertEqual(mounts["/radicle"]["name"], "data", name)
+            self.assertEqual(mounts["/radicle"]["subPath"], "radicle", name)
+
+
 if __name__ == "__main__":
     unittest.main()

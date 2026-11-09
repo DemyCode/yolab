@@ -3,7 +3,7 @@ name: radicle
 description: A Radicle seed node that keeps your git repositories, issues and patches on the peer-to-peer network
 home: https://radicle.dev
 type: application
-version: 0.1.0
+version: 0.1.1
 appVersion: 1.10.3
 dependencies:
   - name: yolab-common

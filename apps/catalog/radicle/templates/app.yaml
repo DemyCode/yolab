@@ -49,7 +49,6 @@ spec:
              --arg external "$YOLAB_FQDN:8776" \
              --argjson policy "$policy" \
              '.node.alias = $alias
-              | .node.listen = ["[::]:8776"]
               | .node.externalAddresses = [$external]
               | .node.seedingPolicy = $policy' \
              "$RAD_HOME/config.json" > "$RAD_HOME/config.json.new"
@@ -64,7 +63,7 @@ spec:
             [ -n "$rid" ] || continue
             rad seed "$rid" --no-fetch
           done
-          printf '%s\n' "$REPOSITORIES" | grep -v '^$' > "$applied" || true
+          printf '%s\n' "$REPOSITORIES" | sed '/^$/d' > "$applied"
           nid=$(rad node status --only nid)
           echo "YOLAB_OUTPUT node ${nid}@${YOLAB_FQDN}:8776"
           echo "YOLAB_OUTPUT explorer https://radicle.network/nodes/${YOLAB_FQDN}"
@@ -123,8 +122,13 @@ spec:
         ports:
         - containerPort: 8080
         readinessProbe:
-          tcpSocket:
-            port: 8080
+          exec:
+            command:
+            - wget
+            - -q
+            - -O
+            - /dev/null
+            - http://127.0.0.1:8080/api/v1
           periodSeconds: 15
         volumeMounts:
         - name: data

@@ -235,6 +235,12 @@ VARIANTS = {
     ],
     "grist": [{**EXISTING_AUTHELIA, "config.owner": "alice"}],
     "i2p": [EXISTING_AUTHELIA],
+    "radicle": [
+        {
+            "config.seeding": "chosen",
+            "config.repositories[0]": "rad:z3gqcJUoA1n9HaHKufZs5FCSGazv5",
+        }
+    ],
     "jupyterlab": [EXISTING_AUTHELIA],
     "torbrowser": [EXISTING_AUTHELIA],
     "media-stack": [EXISTING_AUTHELIA],
@@ -1577,6 +1583,7 @@ ADDRESS_ONLY = {
     "jupyterlab": "it runs any code, so it sits behind Authelia",
     "torbrowser": "it browses from this box, so it sits behind Authelia",
     "matrix": "the YoLab address is the server name in every account",
+    "radicle": "other nodes reach it on its YoLab address, the one it announces",
 }
 RETIRED_MEMBERS = "yolab.io/members"
 MEMBER_LABEL = "yolab.io/member"
