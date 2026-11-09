@@ -1,5 +1,9 @@
 {{ include "yolab-common.caddyConfigMap" . }}
 ---
+{{ include "authelia.embed.secret" . }}
+---
+{{ include "authelia.embed.service" . }}
+---
 {{ include "yolab-common.uninstallHook" . }}
 ---
 {{ include "yolab-common.homeVolume" $ }}
@@ -33,12 +37,35 @@ spec:
     spec:
       initContainers:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      {{- include "authelia.embed.init" . | nindent 6 }}
+      {{- include "authelia.oidc.clientInit" . | nindent 6 }}
       {{- include "yolab-common.printOutputs" (list . (dict "admin_password" (dict "secret" (printf "%s-secrets" .Release.Name) "key" "admin_password"))) | nindent 6 }}
       containers:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      {{- include "authelia.embed.container" . | nindent 6 }}
       - name: miniflux
         image: miniflux/miniflux:latest@sha256:49d7b60987616387c306a8023087b31f2c9b7b21288b523026cb04058e8b6dbb
         imagePullPolicy: IfNotPresent
+        command:
+          - /bin/sh
+          - -c
+          - |
+            set -eu
+            . /yolab/env
+            if [ -n "${YOLAB_URL:-}" ]; then
+              export BASE_URL="$YOLAB_URL"
+            fi
+            {{- if eq (include "authelia.embed.oidc" .) "true" }}
+            . /yolab/oidc.env
+            export OAUTH2_PROVIDER=oidc
+            export OAUTH2_CLIENT_ID="$OIDC_CLIENT_ID"
+            export OAUTH2_CLIENT_SECRET="$OIDC_CLIENT_SECRET"
+            export OAUTH2_OIDC_DISCOVERY_ENDPOINT="$OIDC_ISSUER"
+            export OAUTH2_OIDC_PROVIDER_NAME="$OIDC_PROVIDER_NAME"
+            export OAUTH2_REDIRECT_URL="$YOLAB_URL/oauth2/oidc/callback"
+            export OAUTH2_USER_CREATION=1
+            {{- end }}
+            exec /usr/bin/miniflux
         env:
           - name: DATABASE_URL
             value: "postgres://miniflux:miniflux@postgres.{{ .Release.Namespace }}.svc.cluster.local/miniflux?sslmode=disable"
@@ -61,8 +88,12 @@ spec:
             port: 8080
           initialDelaySeconds: 10
           periodSeconds: 10
+        volumeMounts:
+          - name: yolab
+            mountPath: /yolab
       volumes:
       {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+      {{- include "authelia.embed.volumes" . | nindent 6 }}
 ---
 apiVersion: apps/v1
 kind: Deployment

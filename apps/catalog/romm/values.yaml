@@ -1,9 +1,19 @@
 config:
+  oidc_enabled: false
   subdomain: romm
 
 yolab:
+  auth:
+    oidc:
+      method: client_secret_basic
+      scopes: [openid, profile, email]
+      redirects:
+        - /api/oauth/openid
   platformApiUrl: ""
   accountToken: ""
   serviceName: ""
   gateway:
     upstream: localhost:8080
+
+authelia:
+  embedded: true

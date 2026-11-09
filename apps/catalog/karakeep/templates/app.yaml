@@ -1,5 +1,9 @@
 {{ include "yolab-common.caddyConfigMap" . }}
 ---
+{{ include "authelia.embed.secret" . }}
+---
+{{ include "authelia.embed.service" . }}
+---
 {{ include "yolab-common.uninstallHook" . }}
 ---
 {{ include "yolab-common.homeVolume" $ }}
@@ -32,9 +36,12 @@ spec:
     spec:
       initContainers:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      {{- include "authelia.embed.init" . | nindent 6 }}
+      {{- include "authelia.oidc.clientInit" . | nindent 6 }}
       {{- include "yolab-common.printOutputs" (list . (dict "app_secret" (dict "secret" (printf "%s-secrets" .Release.Name) "key" "app_secret"))) | nindent 6 }}
       containers:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      {{- include "authelia.embed.container" . | nindent 6 }}
       - name: karakeep
         image: ghcr.io/karakeep-app/karakeep:release@sha256:151cdd6b5f2e21635645983e126f411675bfa35becb02c028c1a727f45f899c6
         imagePullPolicy: IfNotPresent
@@ -44,6 +51,14 @@ spec:
           - |
             . /yolab/env
             export NEXTAUTH_URL="$YOLAB_URL"
+            {{- if eq (include "authelia.embed.oidc" .) "true" }}
+            . /yolab/oidc.env
+            export OAUTH_WELLKNOWN_URL="$OIDC_DISCOVERY_URL"
+            export OAUTH_CLIENT_ID="$OIDC_CLIENT_ID"
+            export OAUTH_CLIENT_SECRET="$OIDC_CLIENT_SECRET"
+            export OAUTH_PROVIDER_NAME="$OIDC_PROVIDER_NAME"
+            export OAUTH_SCOPE="openid email profile"
+            {{- end }}
             exec /init
         env:
           - name: DATA_DIR
@@ -68,3 +83,4 @@ spec:
             mountPath: /yolab
       volumes:
       {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+      {{- include "authelia.embed.volumes" . | nindent 6 }}

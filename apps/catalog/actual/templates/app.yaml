@@ -1,5 +1,9 @@
 {{ include "yolab-common.caddyConfigMap" . }}
 ---
+{{ include "authelia.embed.secret" . }}
+---
+{{ include "authelia.embed.service" . }}
+---
 {{ include "yolab-common.privateAccessResources" . }}
 ---
 {{ include "yolab-common.uninstallHook" . }}
@@ -25,13 +29,32 @@ spec:
     spec:
       initContainers:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      {{- include "authelia.embed.init" . | nindent 6 }}
+      {{- include "authelia.oidc.clientInit" . | nindent 6 }}
       {{- include "yolab-common.privateAccessInit" . | nindent 6 }}
       containers:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      {{- include "authelia.embed.container" . | nindent 6 }}
       {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
       - name: actual
         image: ghcr.io/actualbudget/actual-server:latest@sha256:24645e971da6bb1a1f953d6859e307a0b29be1e8b4130a35b3220c209b5b860c
         imagePullPolicy: IfNotPresent
+        command:
+          - /bin/sh
+          - -c
+          - |
+            set -eu
+            {{- if eq (include "authelia.embed.oidc" .) "true" }}
+            . /yolab/env
+            . /yolab/oidc.env
+            export ACTUAL_OPENID_DISCOVERY_URL="$OIDC_ISSUER"
+            export ACTUAL_OPENID_CLIENT_ID="$OIDC_CLIENT_ID"
+            export ACTUAL_OPENID_CLIENT_SECRET="$OIDC_CLIENT_SECRET"
+            export ACTUAL_OPENID_SERVER_HOSTNAME="$YOLAB_URL"
+            export ACTUAL_OPENID_PROVIDER_NAME="$OIDC_PROVIDER_NAME"
+            {{- end }}
+            cd /app
+            exec /usr/bin/tini -g -- node build/app.js
         readinessProbe:
           tcpSocket:
             port: 5006
@@ -41,6 +64,9 @@ spec:
           - name: data
             mountPath: /data
             subPath: actual
+          - name: yolab
+            mountPath: /yolab
       volumes:
       {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+      {{- include "authelia.embed.volumes" . | nindent 6 }}
       {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}

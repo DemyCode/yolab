@@ -89,8 +89,29 @@ VPN_ON = {
 
 EXISTING_AUTHELIA = {
     "config.auth_mode": "existing",
-    "config.auth_url": "http://authelia.yolab-authelia.svc.cluster.local:9091",
+    "config.auth_url": (
+        "http://PlaceholderKey2026@authelia.yolab-authelia.svc.cluster.local:9091"
+    ),
 }
+
+OIDC_CHARTS = (
+    "actual",
+    "grafana",
+    "homarr",
+    "karakeep",
+    "kitchenowl",
+    "linkwarden",
+    "mealie",
+    "miniflux",
+    "open-webui",
+    "opengist",
+    "paperless-ngx",
+    "planka",
+    "romm",
+)
+OIDC_OWN = {"config.oidc_enabled": "true", "config.auth_mode": "own"}
+OIDC_EXISTING = {"config.oidc_enabled": "true", **EXISTING_AUTHELIA}
+
 
 VARIANTS = {
     "qbittorrent": [
@@ -249,6 +270,8 @@ VARIANTS = {
         {"config.auth_enabled": "true", **EXISTING_AUTHELIA},
     ],
 }
+for _chart in OIDC_CHARTS:
+    VARIANTS.setdefault(_chart, []).extend([OIDC_OWN, OIDC_EXISTING])
 
 GATEWAY_CONTAINERS = ("wireguard", "caddy")
 WORKLOAD_KINDS = ("Deployment", "DaemonSet", "StatefulSet")
@@ -1030,6 +1053,32 @@ def offers_api_key(schema):
         "properties"
     ) or {}
     return "api_key_enabled" in config
+
+
+def check_oidc_offer(app, schema, values, chart_yaml, fail):
+    config = ((schema.get("properties") or {}).get("config") or {}).get(
+        "properties"
+    ) or {}
+    if "oidc_enabled" not in config:
+        return
+    oidc = (((values or {}).get("yolab") or {}).get("auth") or {}).get("oidc") or {}
+    if not oidc.get("redirects"):
+        fail(
+            app,
+            "offers Sign in with Authelia but values.yaml has no "
+            "yolab.auth.oidc.redirects: Authelia only sends people back to those paths",
+        )
+    if "authelia" not in [d["name"] for d in chart_dependencies(chart_yaml)]:
+        fail(
+            app,
+            "offers Sign in with Authelia but does not depend on the authelia chart",
+        )
+    if not ((values or {}).get("authelia") or {}).get("embedded"):
+        fail(
+            app,
+            "depends on authelia without authelia.embedded: true, so the subchart "
+            "would run a whole Authelia service of its own",
+        )
 
 
 def check_api_key_offer(app, schema, fail):
@@ -1885,6 +1934,7 @@ def main(argv):
                 fail,
             )
             check_api_key_offer(app, schema, fail)
+            check_oidc_offer(app, schema, values, text, fail)
             upstream = (((values or {}).get("yolab") or {}).get("gateway") or {}).get(
                 "upstream"
             ) or ""

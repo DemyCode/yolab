@@ -1,5 +1,9 @@
 {{ include "yolab-common.caddyConfigMap" . }}
 ---
+{{ include "authelia.embed.secret" . }}
+---
+{{ include "authelia.embed.service" . }}
+---
 {{ include "yolab-common.privateAccessResources" . }}
 ---
 {{ include "yolab-common.uninstallHook" . }}
@@ -25,13 +29,33 @@ spec:
     spec:
       initContainers:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      {{- include "authelia.embed.init" . | nindent 6 }}
+      {{- include "authelia.oidc.clientInit" . | nindent 6 }}
       {{- include "yolab-common.privateAccessInit" . | nindent 6 }}
       containers:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      {{- include "authelia.embed.container" . | nindent 6 }}
       {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
       - name: mealie
         image: ghcr.io/mealie-recipes/mealie:latest@sha256:78eb28b8776d0bad40c5e605c72b3f4f5976793e491558c7dcbdfc04c835d4bc
         imagePullPolicy: IfNotPresent
+        command:
+          - /bin/sh
+          - -c
+          - |
+            set -eu
+            . /yolab/env
+            if [ -n "${YOLAB_URL:-}" ]; then
+              export BASE_URL="$YOLAB_URL"
+            fi
+            {{- if eq (include "authelia.embed.oidc" .) "true" }}
+            . /yolab/oidc.env
+            export OIDC_AUTH_ENABLED=true
+            export OIDC_CONFIGURATION_URL="$OIDC_DISCOVERY_URL"
+            export OIDC_CLIENT_ID OIDC_CLIENT_SECRET OIDC_PROVIDER_NAME
+            export OIDC_SIGNUP_ENABLED=true
+            {{- end }}
+            exec /app/run.sh
         env:
           - name: ALLOW_SIGNUP
             value: "false"
@@ -44,6 +68,9 @@ spec:
           - name: data
             mountPath: /app/data
             subPath: mealie
+          - name: yolab
+            mountPath: /yolab
       volumes:
       {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+      {{- include "authelia.embed.volumes" . | nindent 6 }}
       {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}

@@ -51,6 +51,7 @@ spec:
         app: gateway
       annotations:
         yolab.io/access: {{ toJson (list $policy $config.rules $password) | sha256sum | trunc 16 | quote }}
+        yolab.io/registrar: {{ .Files.Get "files/register.cgi" | sha256sum | trunc 16 | quote }}
     spec:
       enableServiceLinks: false
       initContainers:
@@ -69,17 +70,25 @@ spec:
               exit 1
             fi
             mkdir -p /data/secrets
-            for s in jwt session storage lldap-jwt lldap-key-seed; do
+            for s in jwt session storage lldap-jwt lldap-key-seed oidc-hmac registrar-key; do
               if [ ! -s "/data/secrets/$s" ]; then
                 tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 64 > "/data/secrets/$s.new"
                 mv "/data/secrets/$s.new" "/data/secrets/$s"
               fi
             done
+            if [ ! -s /data/secrets/oidc/private.pem ]; then
+              rm -rf /data/secrets/oidc.new
+              mkdir -p /data/secrets/oidc.new
+              authelia crypto pair rsa generate --bits 2048 --directory /data/secrets/oidc.new
+              rm -rf /data/secrets/oidc
+              mv /data/secrets/oidc.new /data/secrets/oidc
+            fi
+            mkdir -p /data/clients
             JWT=$(cat /data/secrets/jwt)
             SESSION=$(cat /data/secrets/session)
             STORAGE=$(cat /data/secrets/storage)
             COOKIE_DOMAIN="${YOLAB_FQDN#*.}"
-            cat > /authelia-config/configuration.yml <<EOF
+            cat > /authelia-config/base.yml <<EOF
             theme: auto
             server:
               address: 'tcp://:9091/'
@@ -126,6 +135,9 @@ spec:
               cookies:
                 - domain: '${COOKIE_DOMAIN}'
                   authelia_url: 'https://${YOLAB_FQDN}'
+              redis:
+                host: 127.0.0.1
+                port: 6379
             regulation:
               max_retries: 5
               find_time: 2m
@@ -220,7 +232,47 @@ spec:
               echo "waiting for the user directory on 127.0.0.1:3890"
               sleep 2
             done
-            exec authelia --config /authelia-config/configuration.yml
+            {{- include "authelia.oidc.provider" . | nindent 12 }}
+            clients() {
+              cat /data/clients/*.yml 2>/dev/null | md5sum | cut -d' ' -f1
+            }
+            compose() {
+              {
+                cat /authelia-config/base.yml
+                if ls /data/clients/*.yml >/dev/null 2>&1; then
+                  oidc_provider /data/secrets
+                  cat /data/clients/*.yml
+                fi
+              } > /tmp/configuration.yml.new
+              mv /tmp/configuration.yml.new /tmp/configuration.yml
+            }
+            while true; do
+              now=$(clients)
+              compose
+              authelia --config /tmp/configuration.yml &
+              pid=$!
+              until wget -q -O /dev/null http://127.0.0.1:9091/api/health; do
+                if ! kill -0 "$pid" 2>/dev/null; then
+                  wait "$pid" && rc=0 || rc=$?
+                  echo "Authelia stopped before it was healthy (exit $rc)" >&2
+                  exit 1
+                fi
+                sleep 1
+              done
+              echo "$now" > /data/clients.live
+              while kill -0 "$pid" 2>/dev/null && [ "$(clients)" = "$now" ]; do
+                sleep 2
+              done
+              if ! kill -0 "$pid" 2>/dev/null; then
+                wait "$pid" && rc=0 || rc=$?
+                echo "Authelia exited on its own (exit $rc)" >&2
+                exit 1
+              fi
+              echo "the OpenID services changed: restarting Authelia with them"
+              kill "$pid"
+              wait "$pid" && rc=0 || rc=$?
+              echo "Authelia stopped (exit $rc)"
+            done
         env:
           - name: AUTHELIA_AUTHENTICATION_BACKEND_LDAP_PASSWORD_FILE
             value: /secret/admin_password
@@ -252,7 +304,7 @@ spec:
             . /yolab/env
             echo "YOLAB_OUTPUT url https://$YOLAB_FQDN"
             echo "YOLAB_OUTPUT users_url https://$USERS_FQDN"
-            echo "YOLAB_OUTPUT internal_url http://authelia.{{ .Release.Namespace }}.svc.cluster.local:9091"
+            echo "YOLAB_OUTPUT internal_url http://$(cat /data/secrets/registrar-key)@authelia.{{ .Release.Namespace }}.svc.cluster.local:9091"
             echo "YOLAB_OUTPUT admin_username admin"
             echo "YOLAB_OUTPUT admin_password $(cat /secret/admin_password)"
             echo "YOLAB_OUTPUT confirmation_code NONE"
@@ -280,6 +332,50 @@ spec:
           - name: admin
             mountPath: /secret
             readOnly: true
+      - name: sessions
+        image: {{ include "authelia.image.redis" . }}
+        imagePullPolicy: IfNotPresent
+        args: ["--bind", "127.0.0.1", "--port", "6379", "--save", "", "--appendonly", "no"]
+        readinessProbe:
+          exec:
+            command: ["redis-cli", "-h", "127.0.0.1", "ping"]
+          initialDelaySeconds: 3
+          periodSeconds: 10
+      - name: registrar
+        image: {{ include "authelia.image.busybox" . }}
+        imagePullPolicy: IfNotPresent
+        env:
+          - name: POLICY
+            value: {{ $policy | quote }}
+        command:
+          - /bin/sh
+          - -c
+          - |
+            set -eu
+            . /yolab/env
+            mkdir -p /run/registrar
+            {
+              printf 'PARENT=%s\n' "${YOLAB_FQDN#*.}"
+              printf 'ISSUER=https://%s\n' "$YOLAB_FQDN"
+              printf 'POLICY=%s\n' "$POLICY"
+            } > /run/registrar/env
+            echo "services under ${YOLAB_FQDN#*.} can sign up for OpenID on :9092"
+            exec httpd -f -v -p 9092 -h /www
+        ports:
+          - containerPort: 9092
+        readinessProbe:
+          tcpSocket:
+            port: 9092
+          periodSeconds: 10
+        volumeMounts:
+          - name: yolab
+            mountPath: /yolab
+          - name: registrar
+            mountPath: /www/cgi-bin
+            readOnly: true
+          - name: data
+            mountPath: /state
+            subPath: authelia
       volumes:
       {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
       - name: authelia-config
@@ -287,6 +383,19 @@ spec:
       - name: admin
         secret:
           secretName: {{ .Release.Name }}-authelia
+      - name: registrar
+        configMap:
+          name: {{ .Release.Name }}-registrar
+          defaultMode: 0555
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-registrar
+  namespace: {{ .Release.Namespace }}
+data:
+  register: |
+{{ .Files.Get "files/register.cgi" | indent 4 }}
 ---
 apiVersion: v1
 kind: Service
@@ -297,6 +406,13 @@ spec:
   selector:
     app: gateway
   ports:
-    - port: 9091
+    - name: authelia
+      port: 9091
       targetPort: 9091
+    - name: https
+      port: 443
+      targetPort: 443
+    - name: registrar
+      port: 9092
+      targetPort: 9092
 {{- end }}

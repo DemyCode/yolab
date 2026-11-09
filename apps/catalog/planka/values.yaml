@@ -1,5 +1,6 @@
 
 config:
+  oidc_enabled: false
   subdomain: planka
   admin_email: "admin@example.com"
   admin_user: "admin"
@@ -7,8 +8,17 @@ config:
   admin_password: ""
 
 yolab:
+  auth:
+    oidc:
+      method: client_secret_basic
+      scopes: [openid, profile, email, groups]
+      redirects:
+        - /oidc-callback
   platformApiUrl: ""
   accountToken: ""
   serviceName: ""
   gateway:
     upstream: localhost:1337
+
+authelia:
+  embedded: true

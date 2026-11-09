@@ -1,5 +1,9 @@
 {{ include "yolab-common.caddyConfigMap" . }}
 ---
+{{ include "authelia.embed.secret" . }}
+---
+{{ include "authelia.embed.service" . }}
+---
 {{ include "yolab-common.uninstallHook" . }}
 ---
 {{ include "yolab-common.homeVolume" $ }}
@@ -32,9 +36,12 @@ spec:
     spec:
       initContainers:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      {{- include "authelia.embed.init" . | nindent 6 }}
+      {{- include "authelia.oidc.clientInit" . | nindent 6 }}
       {{- include "yolab-common.printOutputs" (list . (dict "app_secret" (dict "secret" (printf "%s-secrets" .Release.Name) "key" "app_secret"))) | nindent 6 }}
       containers:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      {{- include "authelia.embed.container" . | nindent 6 }}
       - name: linkwarden
         image: ghcr.io/linkwarden/linkwarden:latest@sha256:0664c28a039bda8ffa6663389e8536b2fc717219e329f85b83faca7efed3b144
         imagePullPolicy: IfNotPresent
@@ -44,6 +51,13 @@ spec:
           - |
             . /yolab/env
             export NEXTAUTH_URL="$YOLAB_URL/api/v1/auth"
+            {{- if eq (include "authelia.embed.oidc" .) "true" }}
+            . /yolab/oidc.env
+            export NEXT_PUBLIC_AUTHELIA_ENABLED=true
+            export AUTHELIA_WELLKNOWN_URL="$OIDC_DISCOVERY_URL"
+            export AUTHELIA_CLIENT_ID="$OIDC_CLIENT_ID"
+            export AUTHELIA_CLIENT_SECRET="$OIDC_CLIENT_SECRET"
+            {{- end }}
             exec docker-entrypoint.sh sh -c 'export PATH=/data/node_modules/.bin:$PATH && prisma migrate deploy --schema=/data/packages/prisma/schema.prisma && exec concurrently -k -n web,worker "cd /data/apps/web && exec next start" "cd /data/apps/worker && exec tsx worker.ts"'
         env:
           - name: DATABASE_URL
@@ -66,6 +80,7 @@ spec:
             mountPath: /yolab
       volumes:
       {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+      {{- include "authelia.embed.volumes" . | nindent 6 }}
 ---
 apiVersion: apps/v1
 kind: Deployment

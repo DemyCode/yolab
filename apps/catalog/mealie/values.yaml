@@ -1,10 +1,20 @@
 
 config:
+  oidc_enabled: false
   subdomain: mealie
 
 yolab:
+  auth:
+    oidc:
+      method: client_secret_basic
+      scopes: [openid, profile, email, groups]
+      redirects:
+        - /login
   platformApiUrl: ""
   accountToken: ""
   serviceName: ""
   gateway:
     upstream: localhost:9000
+
+authelia:
+  embedded: true

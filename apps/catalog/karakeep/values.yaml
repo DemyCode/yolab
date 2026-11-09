@@ -1,11 +1,21 @@
 
 config:
+  oidc_enabled: false
   subdomain: karakeep
   app_secret: ""
 
 yolab:
+  auth:
+    oidc:
+      method: client_secret_basic
+      scopes: [openid, profile, email]
+      redirects:
+        - /api/auth/callback/custom
   platformApiUrl: ""
   accountToken: ""
   serviceName: ""
   gateway:
     upstream: localhost:3000
+
+authelia:
+  embedded: true

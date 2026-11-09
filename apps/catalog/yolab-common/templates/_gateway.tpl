@@ -370,6 +370,11 @@ data:
     }
     {{- else }}
     {$YOLAB_SITES} {
+      {{- if eq (include "yolab-common.oidc.ownPortal" .) "true" }}
+      handle /authelia/* {
+        reverse_proxy localhost:9091
+      }
+      {{- end }}
       {{- include "yolab-common.apiKey.guard" . | nindent 6 }}
       {{- include "yolab-common.reverseProxy" (list . (list)) | nindent 6 }}
     }

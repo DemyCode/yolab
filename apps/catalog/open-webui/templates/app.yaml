@@ -1,5 +1,9 @@
 {{ include "yolab-common.caddyConfigMap" . }}
 ---
+{{ include "authelia.embed.secret" . }}
+---
+{{ include "authelia.embed.service" . }}
+---
 {{ include "yolab-common.privateAccessResources" . }}
 ---
 {{ include "yolab-common.uninstallHook" . }}
@@ -27,6 +31,8 @@ spec:
     spec:
       initContainers:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      {{- include "authelia.embed.init" . | nindent 6 }}
+      {{- include "authelia.oidc.clientInit" . | nindent 6 }}
       {{- include "yolab-common.privateAccessInit" . | nindent 6 }}
       - name: ollama-connections
         image: ghcr.io/open-webui/open-webui:main@sha256:4860ba005ae8f19f08d1e12b0868855b7b339ea0dad9927f196820fc0de04575
@@ -55,6 +61,7 @@ spec:
           subPath: open-webui
       containers:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      {{- include "authelia.embed.container" . | nindent 6 }}
       {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
       {{- if and (not $external) (not $onGpu) }}
       - name: ollama
@@ -76,6 +83,27 @@ spec:
       - name: open-webui
         image: ghcr.io/open-webui/open-webui:main@sha256:4860ba005ae8f19f08d1e12b0868855b7b339ea0dad9927f196820fc0de04575
         imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - |
+          set -eu
+          . /yolab/env
+          if [ -n "${YOLAB_URL:-}" ]; then
+            export WEBUI_URL="$YOLAB_URL"
+          fi
+          {{- if eq (include "authelia.embed.oidc" .) "true" }}
+          . /yolab/oidc.env
+          export OAUTH_CLIENT_ID="$OIDC_CLIENT_ID"
+          export OAUTH_CLIENT_SECRET="$OIDC_CLIENT_SECRET"
+          export OPENID_PROVIDER_URL="$OIDC_DISCOVERY_URL"
+          export OAUTH_PROVIDER_NAME="$OIDC_PROVIDER_NAME"
+          export OAUTH_SCOPES="openid email profile groups"
+          export ENABLE_OAUTH_SIGNUP=true
+          export OAUTH_MERGE_ACCOUNTS_BY_EMAIL=true
+          {{- end }}
+          cd /app/backend
+          exec bash start.sh
         readinessProbe:
           httpGet:
             path: /
@@ -91,8 +119,11 @@ spec:
         - name: data
           mountPath: /app/backend/data
           subPath: open-webui
+        - name: yolab
+          mountPath: /yolab
       volumes:
       {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+      {{- include "authelia.embed.volumes" . | nindent 6 }}
       {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}
 {{- if and (not $external) $onGpu }}
 {{- range (include "open-webui.engines" . | fromJsonArray) }}

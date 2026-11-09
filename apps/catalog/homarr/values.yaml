@@ -1,8 +1,18 @@
 config:
+  oidc_enabled: false
   subdomain: homarr
 yolab:
+  auth:
+    oidc:
+      method: client_secret_basic
+      scopes: [openid, profile, email, groups]
+      redirects:
+        - /api/auth/callback/oidc
   platformApiUrl: ''
   accountToken: ''
   serviceName: ''
   gateway:
     upstream: localhost:7575
+
+authelia:
+  embedded: true

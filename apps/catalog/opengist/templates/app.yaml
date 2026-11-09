@@ -1,5 +1,9 @@
 {{ include "yolab-common.caddyConfigMap" . }}
 ---
+{{ include "authelia.embed.secret" . }}
+---
+{{ include "authelia.embed.service" . }}
+---
 {{ include "yolab-common.privateAccessResources" . }}
 ---
 {{ include "yolab-common.uninstallHook" . }}
@@ -25,13 +29,35 @@ spec:
     spec:
       initContainers:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      {{- include "authelia.embed.init" . | nindent 6 }}
+      {{- include "authelia.oidc.clientInit" . | nindent 6 }}
       {{- include "yolab-common.privateAccessInit" . | nindent 6 }}
       containers:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      {{- include "authelia.embed.container" . | nindent 6 }}
       {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
       - name: server
         image: ghcr.io/thomiceli/opengist:1.15.2@sha256:7edc91273ee7d10a17406da8a08c803158baaff984c39b789c1313473d068f21
         imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - |
+          set -eu
+          . /yolab/env
+          if [ -n "${YOLAB_URL:-}" ]; then
+            export OG_EXTERNAL_URL="$YOLAB_URL"
+          fi
+          {{- if eq (include "authelia.embed.oidc" .) "true" }}
+          . /yolab/oidc.env
+          export OG_OIDC_PROVIDER_NAME="$OIDC_PROVIDER_NAME"
+          export OG_OIDC_CLIENT_KEY="$OIDC_CLIENT_ID"
+          export OG_OIDC_SECRET="$OIDC_CLIENT_SECRET"
+          export OG_OIDC_DISCOVERY_URL="$OIDC_DISCOVERY_URL"
+          export OG_OIDC_GROUP_CLAIM_NAME=groups
+          {{- end }}
+          cd /app/opengist
+          exec ./docker/entrypoint.sh
         env:
         - name: OG_SSH_PORT
           value: '2224'
@@ -47,6 +73,9 @@ spec:
         - name: data
           mountPath: /opengist
           subPath: 'data'
+        - name: yolab
+          mountPath: /yolab
       volumes:
       {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+      {{- include "authelia.embed.volumes" . | nindent 6 }}
       {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}

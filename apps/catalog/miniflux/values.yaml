@@ -1,12 +1,22 @@
 
 config:
+  oidc_enabled: false
   subdomain: miniflux
   admin_username: admin
   admin_password: ""
 
 yolab:
+  auth:
+    oidc:
+      method: client_secret_basic
+      scopes: [openid, profile, email]
+      redirects:
+        - /oauth2/oidc/callback
   platformApiUrl: ""
   accountToken: ""
   serviceName: ""
   gateway:
     upstream: localhost:8080
+
+authelia:
+  embedded: true

@@ -3447,7 +3447,8 @@ class AutheliaService(RenderedChart):
         self.assertEqual(service["spec"]["ports"][0]["port"], 9091)
         script = container_of(self.gateway(), "codes")["command"][2]
         self.assertIn(
-            f"YOLAB_OUTPUT internal_url http://authelia.{check_charts.NAMESPACE}.svc.cluster.local:9091",
+            "YOLAB_OUTPUT internal_url http://$(cat /data/secrets/registrar-key)"
+            f"@authelia.{check_charts.NAMESPACE}.svc.cluster.local:9091",
             script,
         )
 
@@ -3766,6 +3767,423 @@ class RadicleNode(RenderedChart):
             }
             self.assertEqual(mounts["/radicle"]["name"], "data", name)
             self.assertEqual(mounts["/radicle"]["subPath"], "radicle", name)
+
+
+REGISTRAR = Path(check_charts.HERE, "authelia", "files", "register.cgi")
+KEY = "K" * 64
+SECRET = "S" * 64
+
+
+class Registrar(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        (self.root / "secrets").mkdir()
+        (self.root / "secrets" / "registrar-key").write_text(KEY)
+        (self.root / "settings").write_text(
+            "PARENT=7.yolab.io\nISSUER=https://auth.7.yolab.io\nPOLICY=two_factor\n"
+        )
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def body(self, **over):
+        fields = {
+            "key": KEY,
+            "client": "mealie.7.yolab.io",
+            "secret": SECRET,
+            "name": "Mealie",
+            "method": "client_secret_basic",
+            "scopes": "openid,profile,email",
+            "redirects": "https://mealie.7.yolab.io/login",
+            **over,
+        }
+        return "&".join(f"{k}={v}" for k, v in fields.items())
+
+    def live(self):
+        clients = sorted((self.root / "clients").glob("*.yml"))
+        digest = subprocess.run(
+            ["md5sum"],
+            input=b"".join(p.read_bytes() for p in clients),
+            capture_output=True,
+            check=True,
+        ).stdout.split()[0]
+        (self.root / "clients.live").write_bytes(digest + b"\n")
+
+    def register(self, body, method="POST", authelia_restarts=True):
+        env = {
+            "PATH": os.environ["PATH"],
+            "REQUEST_METHOD": method,
+            "CONTENT_LENGTH": str(len(body)),
+            "REGISTRAR_STATE": str(self.root),
+            "REGISTRAR_SETTINGS": str(self.root / "settings"),
+            "REGISTRAR_WAIT": "20",
+        }
+        run = subprocess.Popen(
+            ["sh", str(REGISTRAR)],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            env=env,
+        )
+        run.stdin.write(body.encode())
+        run.stdin.close()
+        if authelia_restarts:
+            for _ in range(200):
+                if run.poll() is not None or list(
+                    (self.root / "clients").glob("*.yml")
+                ):
+                    break
+                subprocess.run(["sleep", "0.05"], check=True)
+            if list((self.root / "clients").glob("*.yml")):
+                self.live()
+        out = run.stdout.read().decode()
+        self.assertEqual(run.wait(timeout=30), 0)
+        return out
+
+    def client(self, host="mealie.7.yolab.io"):
+        text = (self.root / "clients" / f"{host}.yml").read_text()
+        return yaml.safe_load("clients:\n" + text)["clients"][0]
+
+    def test_a_service_under_the_parent_is_signed_up_and_told_the_issuer(self):
+        out = self.register(self.body())
+        self.assertTrue(out.startswith("HTTP/1.0 200 OK\r\n"), out)
+        self.assertIn("issuer https://auth.7.yolab.io", out)
+        client = self.client()
+        self.assertEqual(client["client_id"], "mealie.7.yolab.io")
+        self.assertEqual(client["client_secret"], f"$plaintext${SECRET}")
+        self.assertEqual(client["redirect_uris"], ["https://mealie.7.yolab.io/login"])
+        self.assertEqual(client["scopes"], ["openid", "profile", "email"])
+        self.assertEqual(client["grant_types"], ["authorization_code"])
+        self.assertEqual(client["token_endpoint_auth_method"], "client_secret_basic")
+        self.assertEqual(client["consent_mode"], "implicit")
+
+    def test_it_asks_for_what_the_central_authelia_asks_for(self):
+        self.register(self.body())
+        self.assertEqual(self.client()["authorization_policy"], "two_factor")
+
+    def test_a_name_with_spaces_comes_through_with_its_spaces(self):
+        self.register(self.body(name="Open+WebUI"))
+        self.assertEqual(self.client()["client_name"], "Open WebUI")
+
+    def test_offline_access_also_allows_refresh_tokens(self):
+        self.register(self.body(scopes="openid,offline_access"))
+        self.assertEqual(
+            self.client()["grant_types"], ["authorization_code", "refresh_token"]
+        )
+
+    def refused(self, body, status, method="POST"):
+        out = self.register(body, method=method, authelia_restarts=False)
+        self.assertTrue(out.startswith(f"HTTP/1.0 {status}"), out)
+        self.assertFalse(list((self.root / "clients").glob("*.yml")))
+        return out
+
+    def test_a_wrong_key_is_refused(self):
+        self.refused(self.body(key="nope"), "403")
+
+    def test_no_key_is_refused(self):
+        self.refused(self.body(key=""), "403")
+
+    def test_only_services_under_its_own_parent_can_sign_up(self):
+        self.refused(self.body(client="mealie.8.yolab.io"), "403")
+        self.refused(
+            self.body(
+                client="evil.example.com",
+                redirects="https://evil.example.com/login",
+            ),
+            "403",
+        )
+
+    def test_a_service_cannot_send_people_back_to_another_address(self):
+        self.refused(self.body(redirects="https://grist.7.yolab.io/login"), "403")
+        self.refused(self.body(redirects="http://mealie.7.yolab.io/login"), "403")
+
+    def test_a_redirect_that_could_break_the_config_is_refused(self):
+        self.refused(self.body(redirects="https://mealie.7.yolab.io/a'b"), "403")
+
+    def test_a_scope_authelia_does_not_know_is_refused(self):
+        self.refused(self.body(scopes="openid,admin"), "400")
+
+    def test_a_sign_up_without_openid_is_refused(self):
+        self.refused(self.body(scopes="profile,email"), "400")
+
+    def test_a_short_secret_is_refused(self):
+        self.refused(self.body(secret="short"), "400")
+
+    def test_an_unknown_client_authentication_is_refused(self):
+        self.refused(self.body(method="none"), "400")
+
+    def test_only_a_post_signs_up(self):
+        self.refused(self.body(), "405", method="GET")
+
+    def test_signing_up_again_unchanged_does_not_restart_authelia(self):
+        self.register(self.body())
+        path = self.root / "clients" / "mealie.7.yolab.io.yml"
+        before = path.stat().st_mtime_ns
+        out = self.register(self.body(), authelia_restarts=False)
+        self.assertIn("200 OK", out)
+        self.assertEqual(path.stat().st_mtime_ns, before)
+
+    def test_it_answers_only_once_authelia_runs_with_the_new_client(self):
+        self.register(self.body())
+        (self.root / "clients.live").write_text("stale\n")
+        env = {
+            "PATH": os.environ["PATH"],
+            "REQUEST_METHOD": "POST",
+            "CONTENT_LENGTH": str(len(self.body())),
+            "REGISTRAR_STATE": str(self.root),
+            "REGISTRAR_SETTINGS": str(self.root / "settings"),
+            "REGISTRAR_WAIT": "1",
+        }
+        out = subprocess.run(
+            ["sh", str(REGISTRAR)],
+            input=self.body().encode(),
+            capture_output=True,
+            env=env,
+            check=True,
+        ).stdout.decode()
+        self.assertTrue(out.startswith("HTTP/1.0 504"), out)
+
+
+class AutheliaProvider(RenderedChart):
+    CHART = "authelia"
+
+    def gateway(self):
+        return self.deployments(self.docs())["gateway"]
+
+    def test_its_https_site_and_registrar_are_reachable_from_other_services(self):
+        service = next(
+            d
+            for d in self.docs()
+            if d["kind"] == "Service" and d["metadata"]["name"] == "authelia"
+        )
+        ports = {
+            p["name"]: (p["port"], p["targetPort"]) for p in service["spec"]["ports"]
+        }
+        self.assertEqual(ports["https"], (443, 443))
+        self.assertEqual(ports["registrar"], (9092, 9092))
+
+    def test_the_registrar_runs_the_shipped_script(self):
+        docs = self.docs()
+        config = next(
+            d
+            for d in docs
+            if d["kind"] == "ConfigMap" and d["metadata"]["name"].endswith("-registrar")
+        )
+        self.assertEqual(config["data"]["register"], REGISTRAR.read_text())
+        registrar = container_of(self.gateway(), "registrar")
+        self.assertIn("httpd -f -v -p 9092 -h /www", registrar["command"][2])
+        mounts = {m["mountPath"]: m for m in registrar["volumeMounts"]}
+        self.assertEqual(mounts["/www/cgi-bin"]["name"], "registrar")
+        self.assertEqual(mounts["/state"]["subPath"], "authelia")
+
+    def test_sessions_outlive_an_authelia_restart(self):
+        sessions = container_of(self.gateway(), "sessions")
+        self.assertEqual(sessions["args"][:2], ["--bind", "127.0.0.1"])
+        script = container_of(self.gateway(), "authelia-config")["command"][2]
+        heredoc = script.split("<<EOF\n", 1)[1].split("\nEOF\n", 1)[0]
+        config = yaml.safe_load(heredoc)
+        self.assertEqual(
+            config["session"]["redis"], {"host": "127.0.0.1", "port": 6379}
+        )
+
+    def test_authelia_restarts_with_the_clients_when_they_change(self):
+        script = container_of(self.gateway(), "authelia")["command"][2]
+        self.assertIn('echo "$now" > /data/clients.live', script)
+        self.assertIn('[ "$(clients)" = "$now" ]', script)
+        self.assertIn("oidc_provider /data/secrets", script)
+
+    def test_changing_the_registrar_script_restarts_the_pod(self):
+        annotations = self.docs_gateway_annotations()
+        self.assertIn("yolab.io/registrar", annotations)
+
+    def docs_gateway_annotations(self):
+        gateway = next(
+            d
+            for d in self.docs()
+            if d["kind"] == "Deployment" and d["metadata"]["name"] == "gateway"
+        )
+        return gateway["spec"]["template"]["metadata"]["annotations"]
+
+
+def pod_with(docs, init):
+    for d in docs:
+        if d["kind"] not in check_charts.WORKLOAD_KINDS:
+            continue
+        spec = d["spec"]["template"]["spec"]
+        if init in [c["name"] for c in spec.get("initContainers") or []]:
+            return spec
+    return None
+
+
+class OidcCharts(RenderedChart):
+    CHART = "authelia"
+
+    def render(self, chart, extra=None):
+        text, err = check_charts.render(
+            os.path.join(check_charts.HERE, chart), self.library, self.tmp.name, extra
+        )
+        self.assertIsNone(err, f"{chart}: {err}")
+        return [d for d in yaml.safe_load_all(text) if d]
+
+    def refused(self, chart, extra):
+        _, err = check_charts.render(
+            os.path.join(check_charts.HERE, chart), self.library, self.tmp.name, extra
+        )
+        self.assertIsNotNone(err, chart)
+        return err
+
+    def test_off_by_default_nothing_of_authelia_runs(self):
+        for chart in check_charts.OIDC_CHARTS:
+            with self.subTest(chart):
+                docs = self.render(chart)
+                self.assertIsNone(pod_with(docs, "oidc-client"))
+                self.assertIsNone(pod_with(docs, "authelia-config"))
+
+    def test_the_service_reads_its_openid_settings_where_the_client_init_writes(self):
+        for chart in check_charts.OIDC_CHARTS:
+            for variant in (check_charts.OIDC_OWN, check_charts.OIDC_EXISTING):
+                with self.subTest(chart=chart, mode=variant["config.auth_mode"]):
+                    spec = pod_with(self.render(chart, variant), "oidc-client")
+                    self.assertIsNotNone(spec)
+                    readers = [
+                        c
+                        for c in spec["containers"]
+                        if ". /yolab/oidc.env" in " ".join(c.get("command") or [])
+                    ]
+                    self.assertTrue(readers, chart)
+                    for c in readers:
+                        mounts = [m["mountPath"] for m in c.get("volumeMounts") or []]
+                        self.assertIn("/yolab", mounts, f"{chart}/{c['name']}")
+
+    def test_its_own_authelia_registers_exactly_the_declared_callbacks(self):
+        for chart in check_charts.OIDC_CHARTS:
+            with self.subTest(chart):
+                values = yaml.safe_load(
+                    Path(check_charts.HERE, chart, "values.yaml").read_text()
+                )
+                docs = self.render(chart, check_charts.OIDC_OWN)
+                script = container_of(
+                    pod_with(docs, "authelia-config"), "authelia-config"
+                )["command"][2]
+                self.assertIn("echo \"      - client_id: '${YOLAB_FQDN}'\"", script)
+                for path in values["yolab"]["auth"]["oidc"]["redirects"]:
+                    self.assertIn(f"- 'https://${{YOLAB_FQDN}}{path}'", script)
+
+    def test_its_own_authelia_portal_is_served_on_the_service_address(self):
+        for chart in check_charts.OIDC_CHARTS:
+            with self.subTest(chart):
+                own = self.render(chart, check_charts.OIDC_OWN)
+                self.assertIn("handle /authelia/* {", caddyfile_of(own))
+                self.assertTrue(
+                    [
+                        d
+                        for d in own
+                        if d["kind"] == "Service"
+                        and d["metadata"]["name"] == "authelia-portal"
+                    ]
+                )
+                existing = self.render(chart, check_charts.OIDC_EXISTING)
+                self.assertNotIn("handle /authelia/*", caddyfile_of(existing))
+
+    def test_an_existing_authelia_is_signed_up_with_through_its_key(self):
+        for chart in check_charts.OIDC_CHARTS:
+            with self.subTest(chart):
+                docs = self.render(chart, check_charts.OIDC_EXISTING)
+                spec = pod_with(docs, "oidc-client")
+                env = {
+                    e["name"]: e.get("value")
+                    for e in container_of(spec, "oidc-client")["env"]
+                }
+                self.assertEqual(env["REGISTRAR_KEY"], "PlaceholderKey2026")
+                self.assertEqual(
+                    env["REGISTRAR_HOST"],
+                    "authelia.yolab-authelia.svc.cluster.local",
+                )
+                self.assertIsNone(pod_with(docs, "authelia-config"))
+
+    def test_an_authelia_address_without_a_key_is_refused(self):
+        for chart in check_charts.OIDC_CHARTS:
+            with self.subTest(chart):
+                err = self.refused(
+                    chart,
+                    {
+                        **check_charts.OIDC_EXISTING,
+                        "config.auth_url": "http://authelia.x.svc.cluster.local:9091",
+                    },
+                )
+                self.assertIn("carries no key", err)
+
+    def test_it_is_refused_without_the_yolab_address(self):
+        for chart in check_charts.OIDC_CHARTS:
+            schema = json.loads(
+                Path(check_charts.HERE, chart, "values.schema.json").read_text()
+            )
+            if "yolab_enabled" not in schema["properties"]["config"]["properties"]:
+                continue
+            with self.subTest(chart):
+                err = self.refused(
+                    chart, {**check_charts.OIDC_OWN, "config.yolab_enabled": "false"}
+                )
+                self.assertIn("needs the YoLab address", err)
+
+    def test_every_chart_offering_it_is_checked_here(self):
+        offering = sorted(
+            p.parent.name
+            for p in Path(check_charts.HERE).glob("*/values.schema.json")
+            if "oidc_enabled"
+            in (json.loads(p.read_text())["properties"].get("config") or {}).get(
+                "properties", {}
+            )
+        )
+        self.assertEqual(offering, sorted(check_charts.OIDC_CHARTS))
+
+
+class OidcOffer(unittest.TestCase):
+    CONFIG: ClassVar[dict] = {"oidc_enabled": {"type": "boolean"}}
+    CHART = (
+        "apiVersion: v2\nname: demo\ndependencies:\n"
+        "  - name: authelia\n    version: 0.2.0\n"
+    )
+
+    def failures(self, values, chart=None):
+        found = []
+        check_charts.check_oidc_offer(
+            "demo",
+            schema(config=self.CONFIG),
+            values,
+            chart or self.CHART,
+            lambda app, msg: found.append(msg),
+        )
+        return found
+
+    def test_a_chart_without_callback_paths_is_refused(self):
+        found = self.failures({"authelia": {"embedded": True}})
+        self.assertTrue(any("redirects" in f for f in found))
+
+    def test_a_chart_without_the_authelia_dependency_is_refused(self):
+        found = self.failures(
+            {
+                "authelia": {"embedded": True},
+                "yolab": {"auth": {"oidc": {"redirects": ["/cb"]}}},
+            },
+            chart="apiVersion: v2\nname: demo\n",
+        )
+        self.assertTrue(any("depend" in f for f in found))
+
+    def test_a_dependency_that_is_not_embedded_is_refused(self):
+        found = self.failures({"yolab": {"auth": {"oidc": {"redirects": ["/cb"]}}}})
+        self.assertTrue(any("embedded" in f for f in found))
+
+    def test_a_complete_offer_passes(self):
+        self.assertEqual(
+            self.failures(
+                {
+                    "authelia": {"embedded": True},
+                    "yolab": {"auth": {"oidc": {"redirects": ["/cb"]}}},
+                }
+            ),
+            [],
+        )
 
 
 if __name__ == "__main__":

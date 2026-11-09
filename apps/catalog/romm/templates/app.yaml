@@ -1,5 +1,9 @@
 {{ include "yolab-common.caddyConfigMap" . }}
 ---
+{{ include "authelia.embed.secret" . }}
+---
+{{ include "authelia.embed.service" . }}
+---
 {{ include "yolab-common.privateAccessResources" . }}
 ---
 {{ include "yolab-common.uninstallHook" . }}
@@ -34,13 +38,32 @@ spec:
     spec:
       initContainers:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      {{- include "authelia.embed.init" . | nindent 6 }}
+      {{- include "authelia.oidc.clientInit" . | nindent 6 }}
       {{- include "yolab-common.privateAccessInit" . | nindent 6 }}
       containers:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      {{- include "authelia.embed.container" . | nindent 6 }}
       {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
       - name: romm
         image: rommapp/romm:latest@sha256:03295f95a6290e752641f9553ac4198b0e5b71b879d57f7b2371b98f608feb54
         imagePullPolicy: IfNotPresent
+        command:
+          - /bin/sh
+          - -c
+          - |
+            set -eu
+            {{- if eq (include "authelia.embed.oidc" .) "true" }}
+            . /yolab/env
+            . /yolab/oidc.env
+            export OIDC_ENABLED=true
+            export OIDC_PROVIDER=authelia
+            export OIDC_CLIENT_ID OIDC_CLIENT_SECRET
+            export OIDC_SERVER_APPLICATION_URL="$OIDC_ISSUER"
+            export OIDC_REDIRECT_URI="$YOLAB_URL/api/oauth/openid"
+            {{- end }}
+            cd /romm
+            exec /docker-entrypoint.sh /init
         env:
           - name: DB_HOST
             value: "mariadb.{{ .Release.Namespace }}.svc.cluster.local"
@@ -78,8 +101,11 @@ spec:
           - name: data
             mountPath: /redis-data
             subPath: romm/redis
+          - name: yolab
+            mountPath: /yolab
       volumes:
       {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+      {{- include "authelia.embed.volumes" . | nindent 6 }}
       {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}
 ---
 apiVersion: apps/v1

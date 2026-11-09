@@ -1,11 +1,21 @@
 config:
+  oidc_enabled: false
   subdomain: open-webui
   unload_after: 5m
 machines: []
 vulkanImage: ghcr.io/demycode/ollama-vulkan:0.35.1@sha256:e30ea10bce7e4893749d9194d6c0f85d6df55ccd55263d974510a7ad492012d9
 yolab:
+  auth:
+    oidc:
+      method: client_secret_basic
+      scopes: [openid, profile, email, groups]
+      redirects:
+        - /oauth/oidc/callback
   platformApiUrl: ''
   accountToken: ''
   serviceName: ''
   gateway:
     upstream: localhost:8080
+
+authelia:
+  embedded: true

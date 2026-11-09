@@ -1,5 +1,9 @@
 {{ include "yolab-common.caddyConfigMap" . }}
 ---
+{{ include "authelia.embed.secret" . }}
+---
+{{ include "authelia.embed.service" . }}
+---
 {{ include "yolab-common.privateAccessResources" . }}
 ---
 {{ include "yolab-common.uninstallHook" . }}
@@ -34,13 +38,32 @@ spec:
     spec:
       initContainers:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      {{- include "authelia.embed.init" . | nindent 6 }}
+      {{- include "authelia.oidc.clientInit" . | nindent 6 }}
       {{- include "yolab-common.privateAccessInit" . | nindent 6 }}
       containers:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
+      {{- include "authelia.embed.container" . | nindent 6 }}
       {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
       - name: web
         image: ghcr.io/homarr-labs/homarr:v2.6.0@sha256:1e077fc77d3ad7482376bab964b89cfc8c1f31fe2ddeb5154cf2a1058d40b32d
         imagePullPolicy: IfNotPresent
+        command:
+        - /bin/sh
+        - -c
+        - |
+          set -eu
+          {{- if eq (include "authelia.embed.oidc" .) "true" }}
+          . /yolab/oidc.env
+          export AUTH_PROVIDERS="credentials,oidc"
+          export AUTH_OIDC_ISSUER="$OIDC_ISSUER"
+          export AUTH_OIDC_CLIENT_ID="$OIDC_CLIENT_ID"
+          export AUTH_OIDC_CLIENT_SECRET="$OIDC_CLIENT_SECRET"
+          export AUTH_OIDC_CLIENT_NAME="$OIDC_PROVIDER_NAME"
+          export AUTH_OIDC_FORCE_USERINFO=true
+          {{- end }}
+          cd /app
+          exec /app/entrypoint.sh sh run.sh
         env:
         - name: APP_SEED
           valueFrom:
@@ -60,6 +83,9 @@ spec:
         - name: data
           mountPath: /appdata
           subPath: 'data'
+        - name: yolab
+          mountPath: /yolab
       volumes:
       {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
+      {{- include "authelia.embed.volumes" . | nindent 6 }}
       {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}

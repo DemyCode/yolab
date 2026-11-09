@@ -26,6 +26,12 @@
           "title": "Tailscale",
           "default": false,
           "description": "Also reachable from your own devices in your Tailscale network, at https://<name>.<your-tailnet>.ts.net, from any network and without IPv6. Turn on HTTPS certificates in the Tailscale admin console (DNS page) first."
+        },
+        "oidc_enabled": {
+          "type": "boolean",
+          "title": "Sign in with Authelia",
+          "default": false,
+          "description": "Mealie shows a \"Sign in with Authelia\" button. People use their Authelia account, and Mealie knows who they are. Its own logins keep working."
         }
       },
       "dependencies": {
@@ -97,6 +103,101 @@
               "required": [
                 "tailscale_auth_key"
               ]
+            }
+          ]
+        },
+        "oidc_enabled": {
+          "oneOf": [
+            {
+              "properties": {
+                "oidc_enabled": {
+                  "const": false
+                }
+              }
+            },
+            {
+              "properties": {
+                "oidc_enabled": {
+                  "const": true
+                },
+                "auth_mode": {
+                  "type": "string",
+                  "title": "Which Authelia",
+                  "default": "existing",
+                  "oneOf": [
+                    {
+                      "const": "existing",
+                      "title": "The Authelia service you already run, with its users"
+                    },
+                    {
+                      "const": "own",
+                      "title": "Its own Authelia, with the users below"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "auth_mode"
+              ],
+              "dependencies": {
+                "auth_mode": {
+                  "oneOf": [
+                    {
+                      "properties": {
+                        "auth_mode": {
+                          "const": "own"
+                        },
+                        "auth_users": {
+                          "type": "array",
+                          "title": "Logins",
+                          "description": "Who can sign in with Authelia here. Each person gets their own username and password.",
+                          "default": [],
+                          "items": {
+                            "type": "object",
+                            "required": [
+                              "username",
+                              "password"
+                            ],
+                            "properties": {
+                              "username": {
+                                "type": "string",
+                                "title": "Username",
+                                "pattern": "^[a-z0-9][a-z0-9._-]*$"
+                              },
+                              "password": {
+                                "type": "string",
+                                "title": "Password",
+                                "minLength": 8,
+                                "writeOnly": true,
+                                "generate": true
+                              }
+                            }
+                          }
+                        }
+                      },
+                      "required": [
+                        "auth_users"
+                      ]
+                    },
+                    {
+                      "properties": {
+                        "auth_mode": {
+                          "const": "existing"
+                        },
+                        "auth_url": {
+                          "type": "string",
+                          "title": "Authelia address",
+                          "format": "uri",
+                          "description": "Copy the Authelia service's \"Address for your other services\" output. This service then signs itself up with that Authelia, and people sign in once for all your services that use it."
+                        }
+                      },
+                      "required": [
+                        "auth_url"
+                      ]
+                    }
+                  ]
+                }
+              }
             }
           ]
         }

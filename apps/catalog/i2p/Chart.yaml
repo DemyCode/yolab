@@ -3,14 +3,14 @@ name: i2p
 description: An I2P router that relays traffic for the I2P anonymous network
 home: https://geti2p.net
 type: application
-version: 0.1.5
+version: 0.1.6
 appVersion: 2.14.1
 dependencies:
   - name: yolab-common
-    version: "0.1.34"
+    version: "0.1.35"
     repository: oci://ghcr.io/demycode/charts
   - name: authelia
-    version: "0.1.4"
+    version: "0.2.0"
     repository: oci://ghcr.io/demycode/charts
 annotations:
   yolab.io/display-name: I2P Router

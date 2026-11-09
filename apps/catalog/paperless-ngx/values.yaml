@@ -1,5 +1,6 @@
 
 config:
+  oidc_enabled: false
   subdomain: paperless-ngx
   admin_user: "admin"
   ocr_language: "eng"
@@ -8,8 +9,17 @@ config:
   app_secret: ""
 
 yolab:
+  auth:
+    oidc:
+      method: client_secret_basic
+      scopes: [openid, profile, email]
+      redirects:
+        - /accounts/oidc/authelia/login/callback/
   platformApiUrl: ""
   accountToken: ""
   serviceName: ""
   gateway:
     upstream: localhost:8000
+
+authelia:
+  embedded: true

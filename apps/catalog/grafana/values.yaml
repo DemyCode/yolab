@@ -1,11 +1,21 @@
 
 config:
+  oidc_enabled: false
   subdomain: grafana
   admin_password: ""
 
 yolab:
+  auth:
+    oidc:
+      method: client_secret_basic
+      scopes: [openid, profile, email, groups]
+      redirects:
+        - /login/generic_oauth
   platformApiUrl: ""
   accountToken: ""
   serviceName: ""
   gateway:
     upstream: localhost:3000
+
+authelia:
+  embedded: true

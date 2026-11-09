@@ -1,11 +1,21 @@
 
 config:
+  oidc_enabled: false
   subdomain: linkwarden
   app_secret: ""
 
 yolab:
+  auth:
+    oidc:
+      method: client_secret_basic
+      scopes: [openid, profile, email]
+      redirects:
+        - /api/v1/auth/callback/authelia
   platformApiUrl: ""
   accountToken: ""
   serviceName: ""
   gateway:
     upstream: localhost:3000
+
+authelia:
+  embedded: true
