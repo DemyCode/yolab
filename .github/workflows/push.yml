@@ -6,10 +6,6 @@ on:
       - master
       - main
 
-concurrency:
-  group: push-${{ github.ref }}
-  cancel-in-progress: false
-
 jobs:
   configure:
     runs-on: ubuntu-latest
@@ -107,6 +103,9 @@ jobs:
 
   build-images:
     runs-on: ubuntu-latest
+    concurrency:
+      group: images-${{ github.ref }}
+      cancel-in-progress: false
     permissions:
       contents: read
       packages: write
@@ -173,6 +172,9 @@ jobs:
 
   charts-library:
     runs-on: ubuntu-latest
+    concurrency:
+      group: charts-library-${{ github.ref }}
+      cancel-in-progress: false
     permissions:
       contents: read
       packages: write
@@ -319,6 +321,9 @@ jobs:
     needs: charts-library
     if: needs.charts-library.outputs.charts_first != '[]'
     runs-on: ubuntu-latest
+    concurrency:
+      group: chart-${{ github.ref }}-${{ matrix.chart }}
+      cancel-in-progress: false
     permissions:
       contents: read
       packages: write
@@ -352,6 +357,9 @@ jobs:
     needs: charts-library
     if: needs.charts-library.outputs.charts_rest != '[]'
     runs-on: ubuntu-latest
+    concurrency:
+      group: chart-${{ github.ref }}-${{ matrix.chart }}
+      cancel-in-progress: false
     permissions:
       contents: read
       packages: write
@@ -385,6 +393,9 @@ jobs:
     needs: [charts-library, charts-first, charts-rest]
     if: always() && needs.charts-library.result == 'success' && needs.charts-library.outputs.packs != '[]' && needs.charts-first.result != 'failure' && needs.charts-rest.result != 'failure'
     runs-on: ubuntu-latest
+    concurrency:
+      group: chart-${{ github.ref }}-${{ matrix.chart }}
+      cancel-in-progress: false
     permissions:
       contents: read
       packages: write
@@ -417,6 +428,9 @@ jobs:
     needs: [charts-library, charts-first, charts-rest, charts-packs]
     if: always() && needs.charts-library.result == 'success'
     runs-on: ubuntu-latest
+    concurrency:
+      group: charts-catalog-${{ github.ref }}
+      cancel-in-progress: false
     permissions:
       contents: write
     env:
@@ -499,6 +513,14 @@ jobs:
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          newer_charts() {
+            git fetch -q origin "${GITHUB_REF_NAME}"
+            [ -n "$(git rev-list "${GITHUB_SHA}..origin/${GITHUB_REF_NAME}" -- apps/catalog)" ]
+          }
+          if newer_charts; then
+            echo "a newer push changed the charts; its own run writes the catalog"
+            exit 0
+          fi
           git add catalog.yaml
           if git diff --cached --quiet; then
             echo "catalog unchanged"
@@ -510,7 +532,10 @@ jobs:
           pushed=""
           for attempt in 1 2 3 4 5; do
             if git push origin "HEAD:${GITHUB_REF_NAME}"; then pushed=1; break; fi
-            git fetch origin "${GITHUB_REF_NAME}"
+            if newer_charts; then
+              echo "a newer push changed the charts; its own run writes the catalog"
+              exit 0
+            fi
             git rebase -X theirs "origin/${GITHUB_REF_NAME}" || { git rebase --abort; exit 1; }
             sleep $((attempt * 5))
           done
@@ -525,6 +550,9 @@ jobs:
   build-iso:
     name: build-iso (${{ matrix.iso.system }})
     runs-on: ${{ matrix.iso.runner }}
+    concurrency:
+      group: iso-${{ github.ref }}-${{ matrix.iso.system }}
+      cancel-in-progress: false
     strategy:
       fail-fast: false
       matrix:
@@ -633,6 +661,9 @@ jobs:
   format:
     if: startsWith(github.ref, 'refs/heads/')
     runs-on: ubuntu-latest
+    concurrency:
+      group: format-${{ github.ref }}
+      cancel-in-progress: false
     permissions:
       contents: write
       pull-requests: write
