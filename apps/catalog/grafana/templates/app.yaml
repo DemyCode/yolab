@@ -85,6 +85,7 @@ spec:
                 name: {{ .Release.Name }}-secrets
                 key: admin_password
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 3000
           initialDelaySeconds: 10

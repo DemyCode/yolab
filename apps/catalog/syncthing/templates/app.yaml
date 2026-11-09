@@ -35,6 +35,7 @@ spec:
         image: syncthing/syncthing:latest@sha256:4d0281bdcb4ed9baf503d251d0544ddd856f49fce3f114056257ae172b7fb670
         imagePullPolicy: IfNotPresent
         readinessProbe:
+          timeoutSeconds: 5
           httpGet:
             path: /rest/noauth/health
             port: 8384

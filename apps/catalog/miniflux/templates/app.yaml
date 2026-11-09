@@ -84,6 +84,7 @@ spec:
                 name: {{ .Release.Name }}-secrets
                 key: admin_password
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 8080
           initialDelaySeconds: 10
@@ -126,6 +127,7 @@ spec:
             - name: PGDATA
               value: /var/lib/postgresql/data/pgdata
           readinessProbe:
+            timeoutSeconds: 5
             exec:
               command: ["pg_isready", "-U", "miniflux"]
             initialDelaySeconds: 10

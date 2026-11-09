@@ -2,11 +2,11 @@ apiVersion: v2
 name: librephotos
 description: A photo management service
 type: application
-version: 0.1.24
+version: 0.1.25
 appVersion: 2026w14-patch.1
 dependencies:
 - name: yolab-common
-  version: "0.1.37"
+  version: "0.1.38"
   repository: oci://ghcr.io/demycode/charts
 annotations:
   yolab.io/disabled: "Upstream repository is archived"

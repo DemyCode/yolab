@@ -55,6 +55,7 @@ spec:
           image: ghcr.io/corentinth/it-tools:latest@sha256:8b8128748339583ca951af03dfe02a9a4d7363f61a216226fc28030731a5a61f
           imagePullPolicy: IfNotPresent
           readinessProbe:
+            timeoutSeconds: 5
             tcpSocket:
               port: 80
             initialDelaySeconds: 10

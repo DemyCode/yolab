@@ -60,6 +60,7 @@ spec:
         ports:
         - containerPort: 5000
         readinessProbe:
+          timeoutSeconds: 5
           exec:
             command:
             - /bin/sh

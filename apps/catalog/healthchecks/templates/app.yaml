@@ -65,6 +65,7 @@ spec:
           - name: REGENERATE_SETTINGS
             value: "True"
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 8000
           initialDelaySeconds: 15

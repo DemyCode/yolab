@@ -64,6 +64,7 @@ spec:
         image: ghcr.io/seerr-team/seerr:v3.5.0@sha256:27602401178d54f1964442287b9f23f67a3fa2252645ee8065839ea1c3f69e45
         imagePullPolicy: IfNotPresent
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 5055
           initialDelaySeconds: 10

@@ -51,6 +51,7 @@ spec:
         ports:
         - containerPort: 4096
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 4096
         volumeMounts:

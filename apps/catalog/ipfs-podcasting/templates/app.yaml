@@ -38,6 +38,7 @@ spec:
         ports:
         - containerPort: 8675
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 8675
         volumeMounts:

@@ -69,6 +69,7 @@ spec:
         ports:
         - containerPort: 8286
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 8286
       volumes:
@@ -109,6 +110,7 @@ spec:
         ports:
         - containerPort: 5432
         readinessProbe:
+          timeoutSeconds: 5
           exec:
             command:
             - pg_isready

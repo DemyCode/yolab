@@ -149,6 +149,7 @@ spec:
         - name: GRIST_WIDGET_LIST_URL
           value: http://localhost:8485/manifest.json
         readinessProbe:
+          timeoutSeconds: 5
           exec:
             command:
             - bash
@@ -173,6 +174,7 @@ spec:
         - -h
         - /widgets
         readinessProbe:
+          timeoutSeconds: 5
           exec:
             command:
             - wget

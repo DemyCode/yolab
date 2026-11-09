@@ -106,6 +106,7 @@ spec:
         ports:
         - containerPort: 21115
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 21115
         volumeMounts:
@@ -192,6 +193,7 @@ spec:
         ports:
         - containerPort: 21117
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 21117
         volumeMounts:
@@ -276,6 +278,7 @@ spec:
         ports:
         - containerPort: 80
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 80
         volumeMounts:

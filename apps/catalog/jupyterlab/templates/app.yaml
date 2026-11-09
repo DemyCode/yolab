@@ -35,13 +35,14 @@ spec:
         args:
         - /bin/sh
         - -c
-        - start-notebook.py --IdentityProvider.token=''
+        - start-notebook.py --IdentityProvider.token='' --ServerApp.root_dir=/home/jovyan/work
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000
         ports:
         - containerPort: 8888
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 8888
         volumeMounts:

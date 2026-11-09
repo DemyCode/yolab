@@ -83,6 +83,7 @@ spec:
         ports:
         - containerPort: 8896
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 8896
         volumeMounts:

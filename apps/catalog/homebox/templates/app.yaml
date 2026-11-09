@@ -61,6 +61,7 @@ spec:
         ports:
         - containerPort: 7745
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 7745
         volumeMounts:

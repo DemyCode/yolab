@@ -240,7 +240,15 @@ in {
             exec timeout 120 ceph-volume lvm activate --no-systemd "$OSD_ID" "$FSID"
           ''
           + " %i";
-        ExecStart = "${pkgs.ceph}/bin/ceph-osd -f -i %i --setuser ceph --setgroup ceph";
+        ExecStart =
+          pkgs.writeShellScript "yolab-ceph-osd-start" ''
+            set -euo pipefail
+            export PATH=${lib.makeBinPath (with pkgs; [gawk coreutils])}:$PATH
+            TARGET=$(${pkgs.bash}/bin/sh ${./osd-memory-target.sh})
+            exec ${pkgs.ceph}/bin/ceph-osd -f -i "$1" --setuser ceph --setgroup ceph \
+              --osd_memory_target="$TARGET"
+          ''
+          + " %i";
       };
     };
 

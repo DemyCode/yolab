@@ -57,6 +57,7 @@ spec:
         ports:
         - containerPort: 1221
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 1221
         volumeMounts:

@@ -75,6 +75,7 @@ spec:
         image: ghcr.io/9001/copyparty-ac:1.20.26@sha256:7f77459160a4bf34fdca79f2965dff4f0c1d7069a3d9cdfb3632acb041dd2f6a
         imagePullPolicy: IfNotPresent
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 3923
           initialDelaySeconds: 5

@@ -43,6 +43,7 @@ spec:
         ports:
         - containerPort: 3232
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 3232
         volumeMounts:

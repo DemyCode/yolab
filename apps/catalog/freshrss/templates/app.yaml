@@ -60,6 +60,7 @@ spec:
             - name: TRUSTED_PROXY
               value: "::1,127.0.0.1"
           readinessProbe:
+            timeoutSeconds: 5
             tcpSocket:
               port: 80
             initialDelaySeconds: 10

@@ -80,6 +80,7 @@ spec:
             - name: MONGO_ENDPOINT
               value: "mongodb://mongo.{{ .Release.Namespace }}.svc.cluster.local:27017/your_spotify"
           readinessProbe:
+            timeoutSeconds: 5
             tcpSocket:
               port: 80
             initialDelaySeconds: 20
@@ -125,6 +126,7 @@ spec:
           image: mongo:7.0@sha256:c53852c00c23ca9f23fc39690350ffa9a80e3642fe8f96879726d8da0abe80a7
           imagePullPolicy: IfNotPresent
           readinessProbe:
+            timeoutSeconds: 5
             tcpSocket:
               port: 27017
             initialDelaySeconds: 10

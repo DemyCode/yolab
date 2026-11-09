@@ -57,6 +57,7 @@ spec:
         ports:
         - containerPort: 8095
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 8095
         volumeMounts:

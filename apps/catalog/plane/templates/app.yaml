@@ -77,6 +77,7 @@ spec:
         ports:
         - containerPort: 8762
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 8762
         volumeMounts:
@@ -209,6 +210,7 @@ spec:
         ports:
         - containerPort: 5432
         readinessProbe:
+          timeoutSeconds: 5
           exec:
             command:
             - /bin/sh
@@ -298,6 +300,7 @@ spec:
         ports:
         - containerPort: 6379
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 6379
         volumeMounts:
@@ -466,6 +469,7 @@ spec:
         ports:
         - containerPort: 5672
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 5672
         volumeMounts:
@@ -641,6 +645,7 @@ spec:
         ports:
         - containerPort: 8763
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 8763
         volumeMounts:
@@ -1698,6 +1703,7 @@ spec:
           runAsUser: 1000
           runAsGroup: 1000
         readinessProbe:
+          timeoutSeconds: 5
           exec:
             command:
             - /bin/sh

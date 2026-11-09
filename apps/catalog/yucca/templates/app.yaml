@@ -42,6 +42,7 @@ spec:
         ports:
         - containerPort: 9910
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 9910
         volumeMounts:

@@ -53,6 +53,17 @@ in let
         touch $out
       '';
 
+    osd-memory-target-tests =
+      pkgs.runCommand "osd-memory-target-tests"
+      {
+        nativeBuildInputs = [pkgs.busybox];
+        src = ../homelab/nixos/ceph;
+      }
+      ''
+        busybox sh "$src/osd_memory_target_test.sh"
+        touch $out
+      '';
+
     wg-register-tests =
       pkgs.runCommand "wg-register-tests"
       {

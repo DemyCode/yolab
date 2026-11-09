@@ -47,6 +47,7 @@ spec:
           - name: database__useNullAsDefault
             value: "true"
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 2368
           initialDelaySeconds: 15

@@ -93,6 +93,7 @@ spec:
             value: "http://gotenberg.{{ .Release.Namespace }}.svc.cluster.local:3000"
           {{- end }}
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 8000
           initialDelaySeconds: 15
@@ -147,6 +148,7 @@ spec:
             - name: PGDATA
               value: "/var/lib/postgresql/data/pgdata"
           readinessProbe:
+            timeoutSeconds: 5
             exec:
               command: ["pg_isready", "-U", "paperless"]
             initialDelaySeconds: 10
@@ -196,6 +198,7 @@ spec:
           image: redis:7-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
           imagePullPolicy: IfNotPresent
           readinessProbe:
+            timeoutSeconds: 5
             exec:
               command: ["redis-cli", "ping"]
             initialDelaySeconds: 10
@@ -244,6 +247,7 @@ spec:
           image: apache/tika:3.3.1.0@sha256:90b7fa1dc018434075fce9e1d9b88b1e3d0ea6979d0cf86e116c79a8073ae973
           imagePullPolicy: IfNotPresent
           readinessProbe:
+            timeoutSeconds: 5
             tcpSocket:
               port: 9998
             initialDelaySeconds: 10
@@ -290,6 +294,7 @@ spec:
             runAsUser: 1000
             runAsGroup: 1000
           readinessProbe:
+            timeoutSeconds: 5
             exec:
               command:
                 - curl

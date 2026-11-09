@@ -4449,6 +4449,45 @@ class ClientsGetPastTheLogin(RenderedChart):
         self.assertIn("keys", check_charts.ENV_PARTS)
 
 
+def probe_timeout_failures(probe):
+    deployment = {
+        "kind": "Deployment",
+        "metadata": {"name": "web"},
+        "spec": {
+            "template": {
+                "spec": {"containers": [{"name": "app", "readinessProbe": probe}]}
+            }
+        },
+    }
+    found = []
+    check_charts.check_probe_timeouts(
+        "demo", [deployment], lambda app, msg: found.append(msg)
+    )
+    return found
+
+
+class ProbeTimeouts(unittest.TestCase):
+    def test_a_probe_on_the_one_second_default_is_reported(self):
+        found = probe_timeout_failures({"tcpSocket": {"port": 80}})
+        self.assertEqual(len(found), 1)
+        self.assertIn("after 1s", found[0])
+
+    def test_a_probe_waiting_five_seconds_passes(self):
+        self.assertEqual(
+            probe_timeout_failures({"tcpSocket": {"port": 80}, "timeoutSeconds": 5}), []
+        )
+
+
+class JupyterLabKeepsWhatItShows(RenderedChart):
+    CHART = "jupyterlab"
+
+    def test_the_file_browser_opens_on_the_saved_volume_and_nowhere_above_it(self):
+        spec = self.deployments(self.docs())["gateway"]
+        server = container_of(spec, "server")
+        saved = next(m for m in server["volumeMounts"] if m["name"] == "data")
+        self.assertIn(f"--ServerApp.root_dir={saved['mountPath']}", server["args"][-1])
+
+
 class ActualStarts(RenderedChart):
     CHART = "actual"
 

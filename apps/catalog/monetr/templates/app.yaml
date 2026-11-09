@@ -67,6 +67,7 @@ spec:
         ports:
         - containerPort: 4000
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 4000
         volumeMounts:
@@ -111,6 +112,7 @@ spec:
         ports:
         - containerPort: 5432
         readinessProbe:
+          timeoutSeconds: 5
           exec:
             command:
             - /bin/sh
@@ -165,6 +167,7 @@ spec:
         ports:
         - containerPort: 6379
         readinessProbe:
+          timeoutSeconds: 5
           exec:
             command:
             - valkey-cli

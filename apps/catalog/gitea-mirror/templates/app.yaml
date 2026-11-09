@@ -73,6 +73,7 @@ spec:
         ports:
         - containerPort: 4321
         readinessProbe:
+          timeoutSeconds: 5
           exec:
             command:
             - wget

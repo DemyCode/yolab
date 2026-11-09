@@ -42,6 +42,7 @@ spec:
           - name: GENERIC_TIMEZONE
             value: "Etc/UTC"
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 5678
           initialDelaySeconds: 10

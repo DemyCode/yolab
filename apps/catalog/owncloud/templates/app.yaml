@@ -76,6 +76,7 @@ spec:
         ports:
         - containerPort: 8080
         readinessProbe:
+          timeoutSeconds: 5
           exec:
             command:
             - /usr/bin/healthcheck
@@ -137,6 +138,7 @@ spec:
         ports:
         - containerPort: 3306
         readinessProbe:
+          timeoutSeconds: 5
           exec:
             command:
             - mysqladmin
@@ -202,6 +204,7 @@ spec:
         ports:
         - containerPort: 6379
         readinessProbe:
+          timeoutSeconds: 5
           exec:
             command:
             - redis-cli

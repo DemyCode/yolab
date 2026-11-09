@@ -72,6 +72,7 @@ spec:
         ports:
         - containerPort: 8021
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 8021
         volumeMounts:
@@ -177,6 +178,7 @@ spec:
         ports:
         - containerPort: 27017
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 27017
         volumeMounts:

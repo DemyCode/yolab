@@ -60,6 +60,7 @@ spec:
         image: freikin/dawarich:latest@sha256:b533e6eac4464d55479d030229cf9487f338972cdb88924e8060ca759d0e28b8
         imagePullPolicy: IfNotPresent
         readinessProbe:
+          timeoutSeconds: 5
           httpGet:
             path: /api/v1/health
             port: 3000
@@ -236,6 +237,7 @@ spec:
         image: postgis/postgis:17-3.5-alpine@sha256:894f570c0cf0664ed5576a8fd5d5bfb8fb1b19d592885b686c3a88c8bd90c41f
         imagePullPolicy: IfNotPresent
         readinessProbe:
+          timeoutSeconds: 5
           exec:
             command:
             - pg_isready
@@ -295,6 +297,7 @@ spec:
         image: redis:7.4-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
         imagePullPolicy: IfNotPresent
         readinessProbe:
+          timeoutSeconds: 5
           exec:
             command:
             - redis-cli

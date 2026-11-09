@@ -168,6 +168,7 @@ spec:
           - containerPort: {{ add $zmqPort 3 }}
           - containerPort: {{ add $zmqPort 4 }}
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 3000
           initialDelaySeconds: 20
@@ -291,6 +292,7 @@ spec:
         ports:
           - containerPort: 50001
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 50001
           initialDelaySeconds: 20
@@ -365,6 +367,7 @@ spec:
         ports:
           - containerPort: 3006
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 3006
           initialDelaySeconds: 20
@@ -427,6 +430,7 @@ spec:
         ports:
           - containerPort: 8999
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 8999
           initialDelaySeconds: 30
@@ -453,6 +457,7 @@ spec:
         ports:
           - containerPort: 3306
         readinessProbe:
+          timeoutSeconds: 5
           exec:
             command: ["healthcheck.sh", "--connect", "--innodb_initialized"]
           initialDelaySeconds: 20
@@ -543,6 +548,7 @@ spec:
         ports:
           - containerPort: 8080
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 8080
           initialDelaySeconds: 15
@@ -612,6 +618,7 @@ spec:
         ports:
           - containerPort: 25441
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 25441
           initialDelaySeconds: 20
@@ -695,6 +702,7 @@ spec:
         ports:
           - containerPort: 80
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 80
           initialDelaySeconds: 30

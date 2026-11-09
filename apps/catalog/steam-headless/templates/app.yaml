@@ -107,6 +107,7 @@ spec:
           containerPort: 8483
           protocol: TCP
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 8483
           initialDelaySeconds: 60

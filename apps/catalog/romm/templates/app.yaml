@@ -81,6 +81,7 @@ spec:
                 name: {{ .Release.Name }}-secrets
                 key: auth_secret_key
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 8080
           initialDelaySeconds: 20
@@ -139,6 +140,7 @@ spec:
             - name: MARIADB_ROOT_PASSWORD
               value: "romm-root"
           readinessProbe:
+            timeoutSeconds: 5
             exec:
               command: ["healthcheck.sh", "--connect", "--innodb_initialized"]
             initialDelaySeconds: 10

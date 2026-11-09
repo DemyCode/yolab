@@ -63,6 +63,7 @@ spec:
           image: gtstef/filebrowser:2.1.2-beta@sha256:0ff80341ce8a9c1e3c5ac8ca319bdf9675092028b04ed97607bbfebc10810fff
           imagePullPolicy: IfNotPresent
           readinessProbe:
+            timeoutSeconds: 5
             httpGet:
               path: /health
               port: 8080

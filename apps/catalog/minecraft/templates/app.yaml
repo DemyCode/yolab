@@ -31,6 +31,7 @@ spec:
           tty: true
           
           readinessProbe:
+            timeoutSeconds: 5
             tcpSocket:
               port: 25565
             initialDelaySeconds: 60

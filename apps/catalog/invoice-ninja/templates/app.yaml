@@ -98,6 +98,7 @@ spec:
         ports:
         - containerPort: 80
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 80
         volumeMounts:
@@ -300,6 +301,7 @@ spec:
         ports:
         - containerPort: 3306
         readinessProbe:
+          timeoutSeconds: 5
           exec:
             command:
             - healthcheck.sh
@@ -386,6 +388,7 @@ spec:
         ports:
         - containerPort: 6379
         readinessProbe:
+          timeoutSeconds: 5
           exec:
             command:
             - redis-cli

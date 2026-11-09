@@ -51,6 +51,7 @@ spec:
         image: lscr.io/linuxserver/librespeed:latest@sha256:05c1ca8215f958b674e8fa1c2ea43483efa54dae8f1dbe40c907af66821fdcae
         imagePullPolicy: IfNotPresent
         readinessProbe:
+          timeoutSeconds: 5
           httpGet:
             path: /
             port: 80
@@ -122,6 +123,7 @@ spec:
         image: postgres:17-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
         imagePullPolicy: IfNotPresent
         readinessProbe:
+          timeoutSeconds: 5
           exec:
             command:
             - pg_isready

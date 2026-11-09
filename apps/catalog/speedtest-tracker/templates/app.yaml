@@ -112,6 +112,7 @@ spec:
             - name: SPEEDTEST_SCHEDULE
               value: {{ .Values.config.schedule | default "0 * * * *" | quote }}
           readinessProbe:
+            timeoutSeconds: 5
             tcpSocket:
               port: 80
             initialDelaySeconds: 20

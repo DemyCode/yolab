@@ -38,6 +38,7 @@ spec:
         ports:
         - containerPort: 8000
         readinessProbe:
+          timeoutSeconds: 5
           exec:
             command:
             - curl

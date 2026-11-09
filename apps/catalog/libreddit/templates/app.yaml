@@ -45,6 +45,7 @@ spec:
         ports:
         - containerPort: 7420
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 7420
       volumes:

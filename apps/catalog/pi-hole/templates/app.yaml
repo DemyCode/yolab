@@ -67,6 +67,7 @@ spec:
         ports:
         - containerPort: 8082
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 8082
         volumeMounts:

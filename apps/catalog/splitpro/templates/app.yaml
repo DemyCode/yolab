@@ -88,6 +88,7 @@ spec:
           - name: DEFAULT_HOMEPAGE
             value: /balances
         readinessProbe:
+          timeoutSeconds: 5
           httpGet:
             path: /api/healthz
             port: 3000
@@ -142,6 +143,7 @@ spec:
             - name: PGDATA
               value: "/var/lib/postgresql/data/pgdata"
           readinessProbe:
+            timeoutSeconds: 5
             exec:
               command: ["pg_isready", "-U", "splitpro", "-d", "splitpro"]
             initialDelaySeconds: 10

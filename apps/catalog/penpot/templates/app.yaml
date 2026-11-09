@@ -47,6 +47,7 @@ spec:
         ports:
         - containerPort: 8080
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 8080
         volumeMounts:
@@ -236,6 +237,7 @@ spec:
         ports:
         - containerPort: 5432
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 5432
         volumeMounts:
@@ -292,6 +294,7 @@ spec:
         ports:
         - containerPort: 6379
         readinessProbe:
+          timeoutSeconds: 5
           exec:
             command:
             - /bin/sh

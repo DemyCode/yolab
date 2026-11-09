@@ -66,6 +66,7 @@ spec:
         ports:
         - containerPort: 80
         readinessProbe:
+          timeoutSeconds: 5
           exec:
             command:
             - /bin/sh
@@ -156,6 +157,7 @@ spec:
         - name: TRUST_PROXY_HOPS
           value: '2'
         readinessProbe:
+          timeoutSeconds: 5
           exec:
             command:
             - /bin/sh
@@ -207,6 +209,7 @@ spec:
         ports:
         - containerPort: 5432
         readinessProbe:
+          timeoutSeconds: 5
           exec:
             command:
             - /bin/sh
@@ -275,6 +278,7 @@ spec:
         ports:
         - containerPort: 6379
         readinessProbe:
+          timeoutSeconds: 5
           exec:
             command:
             - redis-cli

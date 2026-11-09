@@ -199,6 +199,7 @@ spec:
           - name: LLDAP_DATABASE_URL
             value: sqlite:///data/users.db?mode=rwc
         readinessProbe:
+          timeoutSeconds: 5
           exec:
             command:
               - nc
@@ -279,6 +280,7 @@ spec:
         ports:
           - containerPort: 9091
         readinessProbe:
+          timeoutSeconds: 5
           httpGet:
             path: /api/health
             port: 9091
@@ -337,6 +339,7 @@ spec:
         imagePullPolicy: IfNotPresent
         args: ["--bind", "127.0.0.1", "--port", "6379", "--save", "", "--appendonly", "no"]
         readinessProbe:
+          timeoutSeconds: 5
           exec:
             command: ["redis-cli", "-h", "127.0.0.1", "ping"]
           initialDelaySeconds: 3
@@ -364,6 +367,7 @@ spec:
         ports:
           - containerPort: 9092
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 9092
           periodSeconds: 10

@@ -35,6 +35,7 @@ spec:
         ports:
         - containerPort: 4321
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 4321
       volumes:
@@ -65,6 +66,7 @@ spec:
         ports:
         - containerPort: 16110
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 16110
         volumeMounts:

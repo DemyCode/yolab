@@ -96,6 +96,7 @@ spec:
         ports:
         - containerPort: 6610
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 6610
         volumeMounts:
@@ -223,6 +224,7 @@ spec:
         ports:
         - containerPort: 5432
         readinessProbe:
+          timeoutSeconds: 5
           exec:
             command:
             - /bin/sh

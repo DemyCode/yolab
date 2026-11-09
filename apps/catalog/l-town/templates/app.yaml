@@ -40,6 +40,7 @@ spec:
         ports:
         - containerPort: 30300
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 30300
       volumes:

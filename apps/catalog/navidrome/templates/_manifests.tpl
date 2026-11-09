@@ -57,6 +57,7 @@ spec:
           - name: ND_DATAFOLDER
             value: "/data"
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 4533
           initialDelaySeconds: 10

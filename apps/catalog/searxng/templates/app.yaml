@@ -33,6 +33,7 @@ spec:
         image: searxng/searxng:latest@sha256:d81e14a4328ba7a57f297dff0472be629d30bf29580406c0d5b3bdab563c9bed
         imagePullPolicy: IfNotPresent
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 8080
           initialDelaySeconds: 10

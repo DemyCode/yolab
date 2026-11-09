@@ -82,6 +82,7 @@
     - name: WEBUI_PORT
       value: "8080"
   readinessProbe:
+    timeoutSeconds: 5
     tcpSocket:
       port: 8080
     initialDelaySeconds: 10

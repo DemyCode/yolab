@@ -37,6 +37,7 @@ spec:
         ports:
         - containerPort: 81
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 81
         volumeMounts:

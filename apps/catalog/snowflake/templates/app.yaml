@@ -70,6 +70,7 @@ spec:
         ports:
         - containerPort: 3800
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 3800
         volumeMounts:

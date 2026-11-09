@@ -409,6 +409,7 @@ spec:
   ports:
     - containerPort: 9091
   readinessProbe:
+    timeoutSeconds: 5
     httpGet:
       path: /authelia/api/health
       port: 9091
@@ -471,6 +472,7 @@ spec:
       echo "signing people in with the Authelia at ${AUTH_UPSTREAM}${AUTH_PATH}"
       exec caddy run --config /tmp/Caddyfile --adapter caddyfile
   readinessProbe:
+    timeoutSeconds: 5
     exec:
       command:
         - wget

@@ -55,6 +55,7 @@ spec:
             value: "Etc/UTC"
           {{- include "yolab-stack.servarrKeyEnv" (list . "radarr") | nindent 10 }}
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 7878
           initialDelaySeconds: 15

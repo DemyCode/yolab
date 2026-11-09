@@ -64,6 +64,7 @@ spec:
         ports:
         - containerPort: 9011
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 9011
         volumeMounts:

@@ -30,6 +30,7 @@ spec:
         image: ghcr.io/community-valheim-tools/valheim-server:latest@sha256:f34d67ba8023e343b10ffda0144759a8c8d986f276510460315a01051bed8a6d
         imagePullPolicy: IfNotPresent
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 2456
           initialDelaySeconds: 120

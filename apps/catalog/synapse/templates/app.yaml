@@ -44,6 +44,7 @@ spec:
         image: matrixdotorg/synapse:latest@sha256:97665cd4539dcf107c69fb6afdb720e1d1c9c09fb2b5701fb13d6c33b22cd8f0
         imagePullPolicy: IfNotPresent
         readinessProbe:
+          timeoutSeconds: 5
           httpGet:
             path: /_matrix/client/versions
             port: 8008
@@ -66,6 +67,7 @@ spec:
         image: vectorim/element-web:latest@sha256:f8700633d4336258af7a05b53865a4f479e0d628cf2d9ca83d28b5939314d4ce
         imagePullPolicy: IfNotPresent
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 80
           initialDelaySeconds: 5
@@ -103,6 +105,7 @@ spec:
         image: postgres:16-alpine@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea
         imagePullPolicy: IfNotPresent
         readinessProbe:
+          timeoutSeconds: 5
           exec:
             command:
             - pg_isready

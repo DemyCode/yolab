@@ -124,6 +124,7 @@ spec:
         ports:
         - containerPort: 3080
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 3080
         volumeMounts:
@@ -179,6 +180,7 @@ spec:
         ports:
         - containerPort: 27017
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 27017
         volumeMounts:
@@ -323,6 +325,7 @@ spec:
         ports:
         - containerPort: 5432
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 5432
         volumeMounts:

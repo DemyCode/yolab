@@ -230,6 +230,7 @@ spec:
           runAsUser: 1000
           runAsGroup: 1000
         readinessProbe:
+          timeoutSeconds: 5
           exec:
             command:
             - wget
@@ -578,6 +579,7 @@ spec:
         ports:
         - containerPort: 80
         readinessProbe:
+          timeoutSeconds: 5
           exec:
             command:
             - wget
@@ -701,6 +703,7 @@ spec:
         ports:
         - containerPort: 5432
         readinessProbe:
+          timeoutSeconds: 5
           exec:
             command:
             - /bin/sh
@@ -791,6 +794,7 @@ spec:
         ports:
         - containerPort: 6379
         readinessProbe:
+          timeoutSeconds: 5
           exec:
             command:
             - /bin/sh
@@ -995,6 +999,7 @@ spec:
           runAsUser: 1000
           runAsGroup: 1000
         readinessProbe:
+          timeoutSeconds: 5
           exec:
             command:
             - /bin/sh

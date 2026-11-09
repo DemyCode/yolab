@@ -46,6 +46,7 @@ spec:
         ports:
         - containerPort: 3010
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 3010
         volumeMounts:
@@ -131,6 +132,7 @@ spec:
         ports:
         - containerPort: 6379
         readinessProbe:
+          timeoutSeconds: 5
           exec:
             command:
             - redis-cli
@@ -194,6 +196,7 @@ spec:
         ports:
         - containerPort: 5432
         readinessProbe:
+          timeoutSeconds: 5
           exec:
             command:
             - /bin/sh

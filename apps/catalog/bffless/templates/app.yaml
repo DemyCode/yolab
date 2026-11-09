@@ -72,6 +72,7 @@ spec:
         ports:
         - containerPort: 5537
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 5537
         volumeMounts:
@@ -138,6 +139,7 @@ spec:
         ports:
         - containerPort: 5432
         readinessProbe:
+          timeoutSeconds: 5
           exec:
             command:
             - /bin/sh
@@ -235,6 +237,7 @@ spec:
         - name: POSTGRESQL_CONNECTION_POOL_SIZE
           value: '3'
         readinessProbe:
+          timeoutSeconds: 5
           exec:
             command:
             - curl

@@ -286,6 +286,7 @@ printf 'export YOLAB_HOST=%s\nexport YOLAB_URL=https://%s\nexport YOLAB_SITES="%
     - containerPort: 443
   {{- if eq (include "yolab-common.tunnel.enabled" .) "true" }}
   readinessProbe:
+    timeoutSeconds: 5
     tcpSocket:
       port: 80
     initialDelaySeconds: 5

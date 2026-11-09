@@ -54,6 +54,7 @@ spec:
         ports:
         - containerPort: 8000
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 8000
         volumeMounts:
@@ -97,6 +98,7 @@ spec:
         ports:
         - containerPort: 6379
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 6379
         volumeMounts:

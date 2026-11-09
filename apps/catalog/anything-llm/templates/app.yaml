@@ -101,6 +101,7 @@ spec:
         ports:
         - containerPort: 3001
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 3001
         volumeMounts:

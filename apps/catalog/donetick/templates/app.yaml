@@ -72,6 +72,7 @@ spec:
         ports:
         - containerPort: 2021
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 2021
         volumeMounts:

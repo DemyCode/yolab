@@ -42,6 +42,7 @@ spec:
         image: amruthpillai/reactive-resume:latest@sha256:42c9ce52943b360f463be95f08a6e900c264bda5847d03f14a910254ca8cd2cd
         imagePullPolicy: IfNotPresent
         readinessProbe:
+          timeoutSeconds: 5
           httpGet:
             path: /
             port: 3000
@@ -114,6 +115,7 @@ spec:
         image: postgres:16-alpine@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea
         imagePullPolicy: IfNotPresent
         readinessProbe:
+          timeoutSeconds: 5
           exec:
             command:
             - pg_isready
@@ -174,6 +176,7 @@ spec:
           runAsUser: 0
           runAsGroup: 0
         readinessProbe:
+          timeoutSeconds: 5
           httpGet:
             path: /minio/health/live
             port: 9000

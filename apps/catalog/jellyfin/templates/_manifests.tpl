@@ -58,6 +58,7 @@ spec:
         image: lscr.io/linuxserver/jellyfin:latest@sha256:799509f8ef3be7037478699cc6fd14d19dd75faac5e474ed219e98ae78a5b3e4
         imagePullPolicy: IfNotPresent
         readinessProbe:
+          timeoutSeconds: 5
           httpGet:
             path: /health
             port: 8096

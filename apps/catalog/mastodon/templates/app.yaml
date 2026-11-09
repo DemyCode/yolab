@@ -151,6 +151,7 @@ spec:
             - name: SMTP_FROM_ADDRESS
               value: {{ .Values.config.smtp_from_address | default .Values.config.owner_email | quote }}
           readinessProbe:
+            timeoutSeconds: 5
             tcpSocket:
               port: 80
             initialDelaySeconds: 30
@@ -347,6 +348,7 @@ spec:
           image: postgres:17-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
           imagePullPolicy: IfNotPresent
           readinessProbe:
+            timeoutSeconds: 5
             exec:
               command: ["pg_isready", "-U", "{{ $db }}"]
             initialDelaySeconds: 10
@@ -405,6 +407,7 @@ spec:
           image: redis:7.4-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
           imagePullPolicy: IfNotPresent
           readinessProbe:
+            timeoutSeconds: 5
             exec:
               command: ["redis-cli", "ping"]
             initialDelaySeconds: 5

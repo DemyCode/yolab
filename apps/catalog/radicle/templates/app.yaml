@@ -98,6 +98,7 @@ spec:
         ports:
         - containerPort: 8776
         readinessProbe:
+          timeoutSeconds: 5
           exec:
             command:
             - test
@@ -122,6 +123,7 @@ spec:
         ports:
         - containerPort: 8080
         readinessProbe:
+          timeoutSeconds: 5
           exec:
             command:
             - wget

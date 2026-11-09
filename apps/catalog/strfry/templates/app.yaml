@@ -29,6 +29,7 @@ spec:
         image: dockurr/strfry:latest@sha256:599ab3500dbfbe6cb78c668e1892cd9802c192d066df4660e8e3175034a8344d
         imagePullPolicy: IfNotPresent
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 7777
           initialDelaySeconds: 5

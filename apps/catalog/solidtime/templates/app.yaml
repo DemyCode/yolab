@@ -132,6 +132,7 @@ spec:
         ports:
         - containerPort: 8000
         readinessProbe:
+          timeoutSeconds: 5
           exec:
             command:
             - /bin/sh
@@ -236,6 +237,7 @@ spec:
           runAsUser: 1000
           runAsGroup: 1000
         readinessProbe:
+          timeoutSeconds: 5
           exec:
             command:
             - healthcheck
@@ -363,6 +365,7 @@ spec:
           runAsUser: 1000
           runAsGroup: 1000
         readinessProbe:
+          timeoutSeconds: 5
           exec:
             command:
             - healthcheck
@@ -436,6 +439,7 @@ spec:
         ports:
         - containerPort: 5432
         readinessProbe:
+          timeoutSeconds: 5
           exec:
             command:
             - pg_isready
@@ -513,6 +517,7 @@ spec:
           runAsUser: 1000
           runAsGroup: 1000
         readinessProbe:
+          timeoutSeconds: 5
           exec:
             command:
             - curl

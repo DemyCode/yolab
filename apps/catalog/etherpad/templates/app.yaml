@@ -93,6 +93,7 @@ spec:
         ports:
         - containerPort: 9001
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 9001
         volumeMounts:
@@ -149,6 +150,7 @@ spec:
         ports:
         - containerPort: 5432
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 5432
         volumeMounts:

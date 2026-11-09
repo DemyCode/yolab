@@ -67,6 +67,7 @@ spec:
         ports:
         - containerPort: 3000
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 3000
       volumes:
@@ -107,6 +108,7 @@ spec:
         - name: POSTGRES_DB
           value: $(APP_PUBLIC_POOL_WEB_POSTGRES_DBNAME)
         readinessProbe:
+          timeoutSeconds: 5
           exec:
             command:
             - /bin/sh
@@ -157,6 +159,7 @@ spec:
         ports:
         - containerPort: 6379
         readinessProbe:
+          timeoutSeconds: 5
           exec:
             command:
             - /bin/sh

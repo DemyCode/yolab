@@ -122,6 +122,7 @@ spec:
         ports:
         - containerPort: 5232
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 5232
           initialDelaySeconds: 5

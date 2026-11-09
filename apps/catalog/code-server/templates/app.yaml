@@ -55,6 +55,7 @@ spec:
                 name: {{ .Release.Name }}-secrets
                 key: password
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 8443
           initialDelaySeconds: 10

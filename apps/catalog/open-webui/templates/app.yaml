@@ -71,6 +71,7 @@ spec:
         - name: OLLAMA_KEEP_ALIVE
           value: {{ .Values.config.unload_after | default "5m" | quote }}
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 11434
           initialDelaySeconds: 10
@@ -105,6 +106,7 @@ spec:
           cd /app/backend
           exec bash start.sh
         readinessProbe:
+          timeoutSeconds: 5
           httpGet:
             path: /
             port: 8080
@@ -159,6 +161,7 @@ spec:
         - name: OLLAMA_KEEP_ALIVE
           value: {{ $.Values.config.unload_after | default "5m" | quote }}
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 11434
           initialDelaySeconds: 10

@@ -63,6 +63,7 @@ spec:
         ports:
         - containerPort: 1111
         readinessProbe:
+          timeoutSeconds: 5
           exec:
             command:
             - curl
@@ -112,6 +113,7 @@ spec:
         ports:
         - containerPort: 5432
         readinessProbe:
+          timeoutSeconds: 5
           exec:
             command:
             - pg_isready

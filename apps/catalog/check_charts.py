@@ -779,6 +779,7 @@ def check(app, docs, fail, chart_yaml="", schema=None, arches=None, home=RELEASE
     check_sourced_secrets_reach_the_program(app, docs, fail)
     check_env_parts(app, docs, fail)
     check_caddy_dns(app, docs, fail)
+    check_probe_timeouts(app, docs, fail)
 
     for d in docs:
         spec = (d.get("spec", {}).get("template", {}) or {}).get("spec", {})
@@ -796,6 +797,27 @@ def pod_specs(docs):
         if d.get("kind") != "Deployment":
             continue
         yield d["metadata"]["name"], d["spec"]["template"]["spec"]
+
+
+PROBES = ("readinessProbe", "livenessProbe", "startupProbe")
+PROBE_TIMEOUT_FLOOR = 5
+
+
+def check_probe_timeouts(app, docs, fail):
+    for pod_name, spec in pod_specs(docs):
+        for c in (spec.get("containers") or []) + (spec.get("initContainers") or []):
+            for kind in PROBES:
+                probe = c.get(kind)
+                if probe is None:
+                    continue
+                timeout = probe.get("timeoutSeconds", 1)
+                if timeout < PROBE_TIMEOUT_FLOOR:
+                    fail(
+                        app,
+                        f"pod {pod_name}: {c['name']} {kind} times out after "
+                        f"{timeout}s; a busy small machine answers slower, so "
+                        f"set timeoutSeconds to at least {PROBE_TIMEOUT_FLOOR}",
+                    )
 
 
 ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]*$")

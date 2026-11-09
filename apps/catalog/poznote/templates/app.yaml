@@ -62,6 +62,7 @@ spec:
         ports:
         - containerPort: 80
         readinessProbe:
+          timeoutSeconds: 5
           exec:
             command:
             - wget
@@ -129,6 +130,7 @@ spec:
         ports:
         - containerPort: 8045
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 8045
         volumeMounts:

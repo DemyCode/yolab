@@ -52,6 +52,7 @@ spec:
         ports:
         - containerPort: 7070
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 7070
         volumeMounts:

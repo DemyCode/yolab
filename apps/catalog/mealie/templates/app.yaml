@@ -60,6 +60,7 @@ spec:
           - name: ALLOW_SIGNUP
             value: "false"
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 9000
           initialDelaySeconds: 10

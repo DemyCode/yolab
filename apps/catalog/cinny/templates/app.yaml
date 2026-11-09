@@ -56,6 +56,7 @@ spec:
         image: ghcr.io/cinnyapp/cinny:latest@sha256:83de4bd62b0684c536afd1af22f8eb11216f0ae52209e170b56cdae02498a97f
         imagePullPolicy: IfNotPresent
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 80
           initialDelaySeconds: 5

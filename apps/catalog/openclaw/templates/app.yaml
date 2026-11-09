@@ -57,6 +57,7 @@ spec:
                 name: {{ .Release.Name }}-secrets
                 key: gateway_token
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 18789
           initialDelaySeconds: 15

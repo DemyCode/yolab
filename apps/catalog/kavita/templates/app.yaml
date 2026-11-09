@@ -33,6 +33,7 @@ spec:
         image: jvmilazz0/kavita:latest@sha256:31181a32f0dda73cae68721867028a7253d57881b58bea5754cd9e578e75421a
         imagePullPolicy: IfNotPresent
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 5000
           initialDelaySeconds: 10

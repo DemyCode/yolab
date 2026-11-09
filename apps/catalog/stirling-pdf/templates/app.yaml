@@ -33,6 +33,7 @@ spec:
         image: ghcr.io/stirling-tools/stirling-pdf:latest@sha256:10164ffe04961b02ebc9fa4da12064eeacb8d3bc3e09ceb059f78ce7aaa83207
         imagePullPolicy: IfNotPresent
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 8080
           initialDelaySeconds: 10

@@ -59,6 +59,7 @@ spec:
           - name: TZ
             value: Etc/UTC
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 80
           initialDelaySeconds: 15

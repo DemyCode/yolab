@@ -42,6 +42,7 @@ spec:
         image: 2fauth/2fauth:latest@sha256:50421b873c7e5060e2560290bee39e0ff32ffed76949cdb8c12cd76a2d85fde7
         imagePullPolicy: IfNotPresent
         readinessProbe:
+          timeoutSeconds: 5
           httpGet:
             path: /
             port: 8000
@@ -109,6 +110,7 @@ spec:
         image: postgres:17-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
         imagePullPolicy: IfNotPresent
         readinessProbe:
+          timeoutSeconds: 5
           exec:
             command:
             - pg_isready

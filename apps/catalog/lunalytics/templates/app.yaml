@@ -38,6 +38,7 @@ spec:
         ports:
         - containerPort: 2308
         readinessProbe:
+          timeoutSeconds: 5
           exec:
             command:
             - /bin/sh

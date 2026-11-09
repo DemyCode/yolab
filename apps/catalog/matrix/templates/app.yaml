@@ -226,6 +226,7 @@ spec:
             --config-path /data/homeserver.yaml \
             --config-path /tmp/yolab.yaml
         readinessProbe:
+          timeoutSeconds: 5
           exec:
             command:
             - curl
@@ -360,6 +361,7 @@ spec:
         ports:
         - containerPort: 8082
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 8082
           periodSeconds: 10
@@ -374,6 +376,7 @@ spec:
         ports:
         - containerPort: 8080
         readinessProbe:
+          timeoutSeconds: 5
           exec:
             command:
             - wget
@@ -405,6 +408,7 @@ spec:
         - containerPort: 7880
         - containerPort: 7881
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 7880
           initialDelaySeconds: 5
@@ -438,6 +442,7 @@ spec:
         ports:
         - containerPort: 8081
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 8081
           periodSeconds: 10
@@ -475,6 +480,7 @@ spec:
         image: postgres:16-alpine@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea
         imagePullPolicy: IfNotPresent
         readinessProbe:
+          timeoutSeconds: 5
           exec:
             command:
             - pg_isready

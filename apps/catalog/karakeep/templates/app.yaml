@@ -71,6 +71,7 @@ spec:
                 name: {{ .Release.Name }}-secrets
                 key: app_secret
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 3000
           initialDelaySeconds: 15

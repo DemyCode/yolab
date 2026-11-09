@@ -47,6 +47,7 @@ spec:
           - name: HOST
             value: "::"
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 8081
           initialDelaySeconds: 10

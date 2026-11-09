@@ -118,6 +118,7 @@ spec:
           - name: TZ
             value: {{ .Values.config.timezone | default "Etc/UTC" | quote }}
         readinessProbe:
+          timeoutSeconds: 5
           httpGet:
             path: /health
             port: 8096
@@ -140,6 +141,7 @@ spec:
           - name: TZ
             value: {{ .Values.config.timezone | default "Etc/UTC" | quote }}
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 5055
           initialDelaySeconds: 10
@@ -159,6 +161,7 @@ spec:
           - name: TZ
             value: {{ .Values.config.timezone | default "Etc/UTC" | quote }}
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 6767
           initialDelaySeconds: 15
@@ -181,6 +184,7 @@ spec:
           - name: TZ
             value: {{ .Values.config.timezone | default "Etc/UTC" | quote }}
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 11011
           initialDelaySeconds: 15
@@ -334,6 +338,7 @@ spec:
           - name: WEBUI_PORT
             value: "8080"
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 8080
           initialDelaySeconds: 10
@@ -356,6 +361,7 @@ spec:
           - name: TZ
             value: {{ .Values.config.timezone | default "Etc/UTC" | quote }}
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 9696
           initialDelaySeconds: 15
@@ -373,6 +379,7 @@ spec:
           - name: TZ
             value: {{ .Values.config.timezone | default "Etc/UTC" | quote }}
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 8191
           initialDelaySeconds: 15
@@ -388,6 +395,7 @@ spec:
           - name: TZ
             value: {{ .Values.config.timezone | default "Etc/UTC" | quote }}
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 8989
           initialDelaySeconds: 15
@@ -410,6 +418,7 @@ spec:
           - name: TZ
             value: {{ .Values.config.timezone | default "Etc/UTC" | quote }}
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 7878
           initialDelaySeconds: 15
@@ -432,6 +441,7 @@ spec:
           - name: TZ
             value: {{ .Values.config.timezone | default "Etc/UTC" | quote }}
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 8686
           initialDelaySeconds: 15
@@ -454,6 +464,7 @@ spec:
           - name: TZ
             value: {{ .Values.config.timezone | default "Etc/UTC" | quote }}
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 5299
           initialDelaySeconds: 15

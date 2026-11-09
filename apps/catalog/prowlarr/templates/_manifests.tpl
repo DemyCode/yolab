@@ -53,6 +53,7 @@ spec:
             value: "Etc/UTC"
           {{- include "yolab-stack.servarrKeyEnv" (list . "prowlarr") | nindent 10 }}
         readinessProbe:
+          timeoutSeconds: 5
           tcpSocket:
             port: 9696
           initialDelaySeconds: 15
