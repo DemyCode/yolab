@@ -715,7 +715,8 @@ class CaddyDns(unittest.TestCase):
 
     def test_a_caddyfile_of_only_global_options_serves_no_site(self):
         self.assertEqual(
-            check_charts.caddy_sites("{\n  servers {\n    protocols h1 h2\n  }\n}\n"), ""
+            check_charts.caddy_sites("{\n  servers {\n    protocols h1 h2\n  }\n}\n"),
+            "",
         )
 
     def test_the_sites_after_the_global_options_are_kept(self):
