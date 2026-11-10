@@ -8,703 +8,703 @@ apiVersion: yolab.io/v1
 registry: oci://ghcr.io/demycode/charts
 libraries:
   - name: yolab-common
-    version: "0.1.39"
+    version: "0.1.40"
   - name: yolab-stack
     version: "0.1.4"
 charts:
   - name: 2fauth
-    version: "0.1.39"
+    version: "0.1.40"
   - name: activepieces
-    version: "0.1.25"
+    version: "0.1.26"
   - name: actual
-    version: "0.1.41"
+    version: "0.1.43"
   - name: adguard-home
-    version: "0.1.25"
+    version: "0.1.26"
   - name: adventurelog
-    version: "0.1.25"
+    version: "0.1.26"
   - name: affine
-    version: "0.1.25"
+    version: "0.1.26"
   - name: agent-zero
-    version: "0.1.26"
-  - name: airtrail
-    version: "0.1.25"
-  - name: akaunting
-    version: "0.1.25"
-  - name: albyhub
-    version: "0.1.25"
-  - name: anything-llm
-    version: "0.1.25"
-  - name: appflowy
-    version: "0.2.40"
-  - name: appsmith
-    version: "0.1.25"
-  - name: arcane
-    version: "0.1.26"
-  - name: archivebox
-    version: "0.1.25"
-  - name: audiobookshelf
-    version: "0.1.39"
-  - name: authelia
-    version: "0.2.4"
-  - name: autobrr
-    version: "0.1.24"
-  - name: babybuddy
-    version: "0.1.39"
-  - name: back-that-mac-up
-    version: "0.1.26"
-  - name: baikal
-    version: "0.1.24"
-  - name: bark-wallet
-    version: "0.1.25"
-  - name: bazarr
-    version: "0.2.26"
-  - name: bentopdf
-    version: "0.1.25"
-  - name: bffless
-    version: "0.1.25"
-  - name: bitaxe-sentry
-    version: "0.1.25"
-  - name: bitboard
-    version: "0.1.26"
-  - name: bitcoin-stack
-    version: "0.1.24"
-  - name: bitmagnet
-    version: "0.1.25"
-  - name: bitwatch
-    version: "0.1.25"
-  - name: blinko
-    version: "0.1.25"
-  - name: blockstream-blind-oracle
-    version: "0.1.25"
-  - name: booklore
-    version: "0.1.25"
-  - name: bookstack
-    version: "0.1.39"
-  - name: btctracker
-    version: "0.1.25"
-  - name: budibase
-    version: "0.1.25"
-  - name: calibre-web
-    version: "0.1.39"
-  - name: campfire
-    version: "0.1.25"
-  - name: cashu-me
-    version: "0.1.24"
-  - name: changedetection
-    version: "0.1.39"
-  - name: chantools
-    version: "0.1.25"
-  - name: chatbot-ui
-    version: "0.1.26"
-  - name: chatpad-ai
-    version: "0.1.26"
-  - name: chromium
-    version: "0.1.26"
-  - name: cinny
-    version: "0.1.39"
-  - name: cloudflared
-    version: "0.1.26"
-  - name: cobalt
-    version: "0.1.26"
-  - name: code-server
-    version: "0.1.39"
-  - name: convertx
-    version: "0.1.25"
-  - name: copyparty
-    version: "0.1.24"
-  - name: databag
-    version: "0.1.25"
-  - name: datum
-    version: "0.1.24"
-  - name: dawarich
-    version: "0.1.43"
-  - name: dcrdex
-    version: "0.1.24"
-  - name: deepsea
-    version: "0.1.25"
-  - name: dispatcharr
-    version: "0.1.21"
-  - name: docmost
-    version: "0.1.39"
-  - name: docuseal
-    version: "0.1.25"
-  - name: domain-locker
-    version: "0.1.25"
-  - name: donetick
-    version: "0.1.25"
-  - name: downtify
-    version: "0.1.26"
-  - name: dropgate-server
-    version: "0.1.25"
-  - name: dtan-server
-    version: "0.1.25"
-  - name: dumbpad
-    version: "0.1.26"
-  - name: duplicati
-    version: "0.1.25"
-  - name: ee-gateway
-    version: "0.1.26"
-  - name: element
-    version: "0.1.26"
-  - name: emby
-    version: "0.1.25"
-  - name: emulatorjs
-    version: "0.1.41"
-  - name: enclosed
-    version: "0.1.24"
-  - name: endurain
-    version: "0.1.25"
-  - name: ersatztv-legacy
-    version: "0.1.26"
-  - name: esphome
-    version: "0.1.25"
-  - name: etherpad
-    version: "0.1.25"
-  - name: excalidraw
-    version: "0.1.44"
-  - name: file-drop
-    version: "0.1.26"
-  - name: filebrowser
-    version: "0.1.42"
-  - name: firefly-iii-importer
-    version: "0.1.29"
-  - name: firefly-iii
-    version: "0.1.43"
-  - name: firefox
-    version: "0.1.26"
-  - name: fizzy
-    version: "0.1.25"
-  - name: flaresolverr
-    version: "0.1.25"
-  - name: flatnotes
-    version: "0.1.25"
-  - name: fmd-server
-    version: "0.1.21"
-  - name: foldergram
-    version: "0.1.26"
-  - name: forgejo
-    version: "0.1.25"
-  - name: formicaio
-    version: "0.1.25"
-  - name: fossflow
-    version: "0.1.26"
-  - name: freshrss
-    version: "0.1.39"
-  - name: frigate
-    version: "0.2.33"
-  - name: ghost
-    version: "0.1.39"
-  - name: ghostfolio
-    version: "0.1.25"
-  - name: gitea-mirror
-    version: "0.1.25"
-  - name: gitea
-    version: "0.1.40"
-  - name: gitingest
-    version: "0.1.26"
-  - name: gitlab
-    version: "0.1.25"
-  - name: glasshome
-    version: "0.1.26"
-  - name: grafana
-    version: "0.1.40"
-  - name: grist
-    version: "0.1.11"
-  - name: grocy
-    version: "0.1.39"
-  - name: gupt
-    version: "0.1.24"
-  - name: habitica
-    version: "0.1.26"
-  - name: healthchecks
-    version: "0.1.39"
-  - name: heimdall
-    version: "0.1.26"
-  - name: hermes-agent
-    version: "0.1.26"
-  - name: hermitstash
-    version: "0.1.25"
-  - name: holesail-switchboard
-    version: "0.1.26"
-  - name: homarr
-    version: "0.1.26"
-  - name: home-assistant-fusion-ui
-    version: "0.1.26"
-  - name: home-assistant
-    version: "0.1.40"
-  - name: homebox
-    version: "0.1.25"
-  - name: homebridge
-    version: "0.1.25"
-  - name: homehub
-    version: "0.1.25"
-  - name: homepage
-    version: "0.1.40"
-  - name: homey
-    version: "0.1.24"
-  - name: hortusfox
-    version: "0.1.25"
-  - name: i2p
-    version: "0.1.10"
-  - name: immich
-    version: "0.2.39"
-  - name: influxdb
-    version: "0.1.26"
-  - name: influxdb2
-    version: "0.1.24"
-  - name: invidious
-    version: "0.1.26"
-  - name: invio
-    version: "0.1.25"
-  - name: invoice-ninja
-    version: "0.1.25"
-  - name: ipfs-podcasting
-    version: "0.1.25"
-  - name: it-tools
-    version: "0.1.39"
-  - name: jackett
-    version: "0.1.27"
-  - name: jellyfin
-    version: "0.3.26"
-  - name: jellyseerr
-    version: "0.2.25"
-  - name: jotty
-    version: "0.1.25"
-  - name: jupyterlab
     version: "0.1.28"
-  - name: just-download
-    version: "0.1.25"
-  - name: kan
-    version: "0.1.25"
-  - name: karakeep
-    version: "0.1.40"
-  - name: kavita
-    version: "0.1.39"
-  - name: kimai
-    version: "0.1.39"
-  - name: kitchenowl
+  - name: airtrail
     version: "0.1.26"
-  - name: kiwix
+  - name: akaunting
+    version: "0.1.26"
+  - name: albyhub
+    version: "0.1.26"
+  - name: anything-llm
+    version: "0.1.26"
+  - name: appflowy
+    version: "0.2.41"
+  - name: appsmith
+    version: "0.1.26"
+  - name: arcane
+    version: "0.1.27"
+  - name: archivebox
+    version: "0.1.26"
+  - name: audiobookshelf
+    version: "0.1.40"
+  - name: authelia
+    version: "0.2.5"
+  - name: autobrr
     version: "0.1.25"
-  - name: kokoro
+  - name: babybuddy
+    version: "0.1.40"
+  - name: back-that-mac-up
+    version: "0.1.27"
+  - name: baikal
+    version: "0.1.25"
+  - name: bark-wallet
+    version: "0.1.26"
+  - name: bazarr
+    version: "0.2.27"
+  - name: bentopdf
+    version: "0.1.27"
+  - name: bffless
+    version: "0.1.26"
+  - name: bitaxe-sentry
+    version: "0.1.26"
+  - name: bitboard
+    version: "0.1.28"
+  - name: bitcoin-stack
+    version: "0.1.25"
+  - name: bitmagnet
+    version: "0.1.26"
+  - name: bitwatch
+    version: "0.1.27"
+  - name: blinko
+    version: "0.1.26"
+  - name: blockstream-blind-oracle
+    version: "0.1.26"
+  - name: booklore
+    version: "0.1.26"
+  - name: bookstack
+    version: "0.1.40"
+  - name: btctracker
+    version: "0.1.26"
+  - name: budibase
+    version: "0.1.26"
+  - name: calibre-web
+    version: "0.1.40"
+  - name: campfire
+    version: "0.1.26"
+  - name: cashu-me
+    version: "0.1.25"
+  - name: changedetection
+    version: "0.1.40"
+  - name: chantools
+    version: "0.1.26"
+  - name: chatbot-ui
+    version: "0.1.28"
+  - name: chatpad-ai
+    version: "0.1.28"
+  - name: chromium
+    version: "0.1.28"
+  - name: cinny
+    version: "0.1.40"
+  - name: cloudflared
+    version: "0.1.27"
+  - name: cobalt
+    version: "0.1.28"
+  - name: code-server
+    version: "0.1.40"
+  - name: convertx
+    version: "0.1.26"
+  - name: copyparty
+    version: "0.1.25"
+  - name: databag
+    version: "0.1.26"
+  - name: datum
+    version: "0.1.25"
+  - name: dawarich
+    version: "0.1.45"
+  - name: dcrdex
+    version: "0.1.25"
+  - name: deepsea
+    version: "0.1.27"
+  - name: dispatcharr
+    version: "0.1.22"
+  - name: docmost
+    version: "0.1.40"
+  - name: docuseal
+    version: "0.1.26"
+  - name: domain-locker
+    version: "0.1.26"
+  - name: donetick
+    version: "0.1.26"
+  - name: downtify
+    version: "0.1.28"
+  - name: dropgate-server
+    version: "0.1.26"
+  - name: dtan-server
+    version: "0.1.26"
+  - name: dumbpad
+    version: "0.1.28"
+  - name: duplicati
+    version: "0.1.26"
+  - name: ee-gateway
+    version: "0.1.27"
+  - name: element
+    version: "0.1.27"
+  - name: emby
+    version: "0.1.26"
+  - name: emulatorjs
+    version: "0.1.43"
+  - name: enclosed
+    version: "0.1.25"
+  - name: endurain
+    version: "0.1.26"
+  - name: ersatztv-legacy
+    version: "0.1.28"
+  - name: esphome
+    version: "0.1.26"
+  - name: etherpad
+    version: "0.1.26"
+  - name: excalidraw
+    version: "0.1.46"
+  - name: file-drop
+    version: "0.1.27"
+  - name: filebrowser
+    version: "0.1.43"
+  - name: firefly-iii-importer
     version: "0.1.30"
+  - name: firefly-iii
+    version: "0.1.44"
+  - name: firefox
+    version: "0.1.28"
+  - name: fizzy
+    version: "0.1.26"
+  - name: flaresolverr
+    version: "0.1.26"
+  - name: flatnotes
+    version: "0.1.26"
+  - name: fmd-server
+    version: "0.1.22"
+  - name: foldergram
+    version: "0.1.28"
+  - name: forgejo
+    version: "0.1.26"
+  - name: formicaio
+    version: "0.1.26"
+  - name: fossflow
+    version: "0.1.28"
+  - name: freshrss
+    version: "0.1.40"
+  - name: frigate
+    version: "0.2.34"
+  - name: ghost
+    version: "0.1.40"
+  - name: ghostfolio
+    version: "0.1.26"
+  - name: gitea-mirror
+    version: "0.1.26"
+  - name: gitea
+    version: "0.1.42"
+  - name: gitingest
+    version: "0.1.28"
+  - name: gitlab
+    version: "0.1.26"
+  - name: glasshome
+    version: "0.1.28"
+  - name: grafana
+    version: "0.1.42"
+  - name: grist
+    version: "0.1.13"
+  - name: grocy
+    version: "0.1.40"
+  - name: gupt
+    version: "0.1.25"
+  - name: habitica
+    version: "0.1.27"
+  - name: healthchecks
+    version: "0.1.40"
+  - name: heimdall
+    version: "0.1.28"
+  - name: hermes-agent
+    version: "0.1.28"
+  - name: hermitstash
+    version: "0.1.26"
+  - name: holesail-switchboard
+    version: "0.1.27"
+  - name: homarr
+    version: "0.1.28"
+  - name: home-assistant-fusion-ui
+    version: "0.1.28"
+  - name: home-assistant
+    version: "0.1.41"
+  - name: homebox
+    version: "0.1.26"
+  - name: homebridge
+    version: "0.1.26"
+  - name: homehub
+    version: "0.1.26"
+  - name: homepage
+    version: "0.1.42"
+  - name: homey
+    version: "0.1.25"
+  - name: hortusfox
+    version: "0.1.26"
+  - name: i2p
+    version: "0.1.12"
+  - name: immich
+    version: "0.2.40"
+  - name: influxdb
+    version: "0.1.27"
+  - name: influxdb2
+    version: "0.1.25"
+  - name: invidious
+    version: "0.1.27"
+  - name: invio
+    version: "0.1.26"
+  - name: invoice-ninja
+    version: "0.1.26"
+  - name: ipfs-podcasting
+    version: "0.1.26"
+  - name: it-tools
+    version: "0.1.40"
+  - name: jackett
+    version: "0.1.29"
+  - name: jellyfin
+    version: "0.3.27"
+  - name: jellyseerr
+    version: "0.2.26"
+  - name: jotty
+    version: "0.1.26"
+  - name: jupyterlab
+    version: "0.1.30"
+  - name: just-download
+    version: "0.1.26"
+  - name: kan
+    version: "0.1.26"
+  - name: karakeep
+    version: "0.1.42"
+  - name: kavita
+    version: "0.1.40"
+  - name: kimai
+    version: "0.1.40"
+  - name: kitchenowl
+    version: "0.1.28"
+  - name: kiwix
+    version: "0.1.27"
+  - name: kokoro
+    version: "0.1.32"
   - name: komodo
-    version: "0.1.26"
+    version: "0.1.27"
   - name: l-town
-    version: "0.1.25"
+    version: "0.1.26"
   - name: langflow
-    version: "0.1.25"
+    version: "0.1.26"
   - name: leafwiki
-    version: "0.1.25"
+    version: "0.1.26"
   - name: librechat
-    version: "0.1.26"
+    version: "0.1.28"
   - name: libreddit
-    version: "0.1.27"
+    version: "0.1.29"
   - name: libreoffice
-    version: "0.1.26"
+    version: "0.1.28"
   - name: librephotos
-    version: "0.1.26"
+    version: "0.1.27"
   - name: librespeed
-    version: "0.1.39"
+    version: "0.1.40"
   - name: libretranslate
-    version: "0.1.27"
+    version: "0.1.29"
   - name: lidarr
-    version: "0.2.26"
+    version: "0.2.27"
   - name: linkstack
-    version: "0.1.24"
+    version: "0.1.25"
   - name: linkwarden
-    version: "0.1.40"
+    version: "0.1.42"
   - name: llama-gpt
-    version: "0.1.27"
+    version: "0.1.29"
   - name: lnbits-holesail-proxy
-    version: "0.1.26"
+    version: "0.1.27"
   - name: lobe-chat
-    version: "0.1.27"
+    version: "0.1.28"
   - name: localai
-    version: "0.1.27"
+    version: "0.1.29"
   - name: lubelogger
-    version: "0.1.25"
+    version: "0.1.27"
   - name: lunalytics
-    version: "0.1.24"
+    version: "0.1.25"
   - name: mailarchiver
-    version: "0.1.25"
+    version: "0.1.26"
   - name: mailflow
-    version: "0.1.25"
+    version: "0.1.26"
   - name: mainsail
-    version: "0.1.25"
+    version: "0.1.27"
   - name: mastodon
-    version: "0.1.39"
+    version: "0.1.40"
   - name: matrix
-    version: "0.1.5"
+    version: "0.1.6"
   - name: matter-server
-    version: "0.1.25"
+    version: "0.1.26"
   - name: mattermost
-    version: "0.1.25"
+    version: "0.1.26"
   - name: maybe
-    version: "0.1.26"
+    version: "0.1.27"
   - name: mazanoke
-    version: "0.1.25"
+    version: "0.1.27"
   - name: mealie
-    version: "0.1.40"
+    version: "0.1.42"
   - name: media-stack
-    version: "0.1.42"
+    version: "0.1.44"
   - name: memos
-    version: "0.1.39"
+    version: "0.1.40"
   - name: meshchatx
-    version: "0.1.25"
+    version: "0.1.26"
   - name: metube
-    version: "0.1.40"
-  - name: minecraft
-    version: "0.1.38"
-  - name: miner-sentinel
-    version: "0.1.25"
-  - name: miniflux
-    version: "0.1.40"
-  - name: minio
-    version: "0.1.26"
-  - name: monetr
-    version: "0.1.25"
-  - name: monica
-    version: "0.1.40"
-  - name: morphos
-    version: "0.1.26"
-  - name: mosquitto
-    version: "0.1.24"
-  - name: movies-tv
-    version: "0.2.27"
-  - name: mqttx-web
-    version: "0.1.25"
-  - name: mstream
-    version: "0.1.25"
-  - name: music-assistant
-    version: "0.1.25"
-  - name: music
-    version: "0.2.26"
-  - name: myspeed
-    version: "0.1.25"
-  - name: n8n
-    version: "0.1.39"
-  - name: navidrome
-    version: "0.2.25"
-  - name: neko
-    version: "0.1.25"
-  - name: netbird
-    version: "0.1.25"
-  - name: networkingtoolbox
-    version: "0.1.26"
-  - name: nextcloud
-    version: "0.1.39"
-  - name: nginx-proxy-manager
-    version: "0.1.25"
-  - name: nitter
-    version: "0.1.26"
-  - name: nocodb
-    version: "0.1.25"
-  - name: node-red-standalone
-    version: "0.1.25"
-  - name: nostr-relay
-    version: "0.1.26"
-  - name: nostr-vpn
-    version: "0.1.26"
-  - name: nostrudel
-    version: "0.1.25"
-  - name: notediscovery
-    version: "0.2.23"
-  - name: ntfy
-    version: "0.1.39"
-  - name: nutstash-wallet
-    version: "0.1.24"
-  - name: obsidian
-    version: "0.1.26"
-  - name: octoprint
-    version: "0.1.25"
-  - name: ollama
-    version: "0.2.27"
-  - name: omnitools
-    version: "0.1.25"
-  - name: onedev
-    version: "0.1.26"
-  - name: onlyoffice-nextcloud
-    version: "0.1.26"
-  - name: onlyoffice
-    version: "0.1.40"
-  - name: open-webui
-    version: "0.2.39"
-  - name: openclaw
-    version: "0.1.39"
-  - name: opencode
-    version: "0.1.26"
-  - name: opengist
-    version: "0.1.26"
-  - name: openhands
-    version: "0.1.27"
-  - name: openreader
-    version: "0.1.29"
-  - name: openresty-manager
-    version: "0.1.26"
-  - name: openthread-border-router
-    version: "0.1.27"
-  - name: originless
-    version: "0.1.25"
-  - name: outline
-    version: "0.1.25"
-  - name: overseerr
-    version: "0.1.26"
-  - name: owncloud
-    version: "0.1.25"
-  - name: pairdrop
-    version: "0.1.39"
-  - name: palmr
-    version: "0.1.25"
-  - name: paperclip
-    version: "0.1.25"
-  - name: paperless-ngx
-    version: "0.1.40"
-  - name: papra
-    version: "0.1.25"
-  - name: passky-client
-    version: "0.1.24"
-  - name: passky-server
-    version: "0.1.25"
-  - name: pastefy
-    version: "0.1.26"
-  - name: pearcircle-seeder
-    version: "0.1.25"
-  - name: penpot
-    version: "0.1.25"
-  - name: perplexica
-    version: "0.1.25"
-  - name: photoprism
-    version: "0.1.40"
-  - name: pi-hole
-    version: "0.1.26"
-  - name: picoclaw
-    version: "0.1.26"
-  - name: picsur
-    version: "0.1.25"
-  - name: pinchflat
-    version: "0.1.25"
-  - name: pingvin-share
-    version: "0.1.25"
-  - name: plane
-    version: "0.1.25"
-  - name: planka
-    version: "0.1.40"
-  - name: plausible
-    version: "0.1.25"
-  - name: plex
-    version: "0.1.27"
-  - name: pocketbase
-    version: "0.1.24"
-  - name: portainer
-    version: "0.1.26"
-  - name: poznote
-    version: "0.1.25"
-  - name: privatebin
-    version: "0.1.24"
-  - name: prowlarr
-    version: "0.2.25"
-  - name: public-pool-web
-    version: "0.1.25"
-  - name: pyload-ng
-    version: "0.1.25"
-  - name: qbittorrent
-    version: "0.2.25"
-  - name: radarr
-    version: "0.2.26"
-  - name: radicale
-    version: "0.1.5"
-  - name: radicle
-    version: "0.1.5"
-  - name: reactive-resume
-    version: "0.1.41"
-  - name: readarr
-    version: "0.1.26"
-  - name: readeck
-    version: "0.1.25"
-  - name: readur
-    version: "0.1.25"
-  - name: reitti
-    version: "0.1.25"
-  - name: remmina
-    version: "0.1.26"
-  - name: restreamer
-    version: "0.1.25"
-  - name: romm
-    version: "0.1.40"
-  - name: rotki
-    version: "0.1.24"
-  - name: route96
-    version: "0.1.25"
-  - name: rustdesk-server
-    version: "0.1.24"
-  - name: rusty-kaspad
-    version: "0.1.24"
-  - name: sabnzbd
-    version: "0.1.27"
-  - name: samba
-    version: "0.1.26"
-  - name: satoshi-dashboard
-    version: "0.1.26"
-  - name: scanservjs
-    version: "0.1.26"
-  - name: seafile
-    version: "0.1.25"
-  - name: searxng
-    version: "0.1.39"
-  - name: seedtool
-    version: "0.1.25"
-  - name: shlink
-    version: "0.1.40"
-  - name: shopstr
-    version: "0.1.25"
-  - name: sikka
-    version: "0.1.25"
-  - name: simple-torrent
-    version: "0.1.26"
-  - name: skybro
-    version: "0.1.25"
-  - name: slink
-    version: "0.1.25"
-  - name: snapdrop
-    version: "0.1.26"
-  - name: snort
-    version: "0.1.24"
-  - name: snowflake
-    version: "0.1.24"
-  - name: solidtime
-    version: "0.1.25"
-  - name: sonarr
-    version: "0.2.26"
-  - name: spacebot
-    version: "0.1.26"
-  - name: speedtest-tracker
-    version: "0.1.40"
-  - name: splitpro
-    version: "0.1.21"
-  - name: sqlitebrowser
-    version: "0.1.26"
-  - name: stalwart
-    version: "0.1.26"
-  - name: stash
-    version: "0.1.26"
-  - name: steam-headless
     version: "0.1.42"
-  - name: stirling-pdf
+  - name: minecraft
     version: "0.1.39"
-  - name: strfry
-    version: "0.1.39"
-  - name: strix
-    version: "0.1.25"
-  - name: super-productivity
-    version: "0.1.25"
-  - name: sure
-    version: "0.1.25"
-  - name: swingmusic
-    version: "0.1.25"
-  - name: synapse
+  - name: miner-sentinel
+    version: "0.1.26"
+  - name: miniflux
+    version: "0.1.42"
+  - name: minio
+    version: "0.1.27"
+  - name: monetr
+    version: "0.1.26"
+  - name: monica
     version: "0.1.41"
-  - name: syncthing
+  - name: morphos
+    version: "0.1.28"
+  - name: mosquitto
+    version: "0.1.25"
+  - name: movies-tv
+    version: "0.2.28"
+  - name: mqttx-web
+    version: "0.1.27"
+  - name: mstream
+    version: "0.1.26"
+  - name: music-assistant
+    version: "0.1.26"
+  - name: music
+    version: "0.2.27"
+  - name: myspeed
+    version: "0.1.27"
+  - name: n8n
     version: "0.1.40"
-  - name: syslog-ng
-    version: "0.1.25"
-  - name: tailscale
+  - name: navidrome
+    version: "0.2.26"
+  - name: neko
     version: "0.1.26"
-  - name: tandoor
-    version: "0.1.25"
-  - name: tautulli
+  - name: netbird
+    version: "0.1.26"
+  - name: networkingtoolbox
+    version: "0.1.28"
+  - name: nextcloud
+    version: "0.1.40"
+  - name: nginx-proxy-manager
+    version: "0.1.26"
+  - name: nitter
+    version: "0.1.28"
+  - name: nocodb
+    version: "0.1.26"
+  - name: node-red-standalone
+    version: "0.1.26"
+  - name: nostr-relay
     version: "0.1.27"
-  - name: teamspeak
-    version: "0.1.25"
-  - name: technitium-dns
+  - name: nostr-vpn
+    version: "0.1.27"
+  - name: nostrudel
     version: "0.1.26"
-  - name: telegrapho
+  - name: notediscovery
+    version: "0.2.24"
+  - name: ntfy
+    version: "0.1.40"
+  - name: nutstash-wallet
     version: "0.1.25"
-  - name: termix
-    version: "0.1.25"
-  - name: thelounge
-    version: "0.1.24"
-  - name: thinkdashboard
+  - name: obsidian
+    version: "0.1.28"
+  - name: octoprint
     version: "0.1.26"
-  - name: threema
-    version: "0.1.24"
-  - name: torbrowser
-    version: "0.1.29"
-  - name: toshi-moto
-    version: "0.1.25"
-  - name: transmission
-    version: "0.1.29"
-  - name: transmute
-    version: "0.1.25"
-  - name: trilium-notes
-    version: "0.1.25"
-  - name: trip
-    version: "0.1.24"
-  - name: tubearchivist
-    version: "0.1.25"
-  - name: twenty
-    version: "0.1.25"
-  - name: umami
-    version: "0.1.39"
-  - name: unifi
-    version: "0.1.39"
-  - name: uptime-kuma
-    version: "0.1.39"
-  - name: urbit
-    version: "0.1.25"
-  - name: valheim
-    version: "0.1.39"
-  - name: valorgrid
-    version: "0.1.25"
-  - name: vaultwarden
+  - name: ollama
+    version: "0.2.28"
+  - name: omnitools
+    version: "0.1.27"
+  - name: onedev
+    version: "0.1.27"
+  - name: onlyoffice-nextcloud
+    version: "0.1.27"
+  - name: onlyoffice
     version: "0.1.41"
+  - name: open-webui
+    version: "0.2.41"
+  - name: openclaw
+    version: "0.1.40"
+  - name: opencode
+    version: "0.1.28"
+  - name: opengist
+    version: "0.1.28"
+  - name: openhands
+    version: "0.1.29"
+  - name: openreader
+    version: "0.1.30"
+  - name: openresty-manager
+    version: "0.1.27"
+  - name: openthread-border-router
+    version: "0.1.28"
+  - name: originless
+    version: "0.1.26"
+  - name: outline
+    version: "0.1.26"
+  - name: overseerr
+    version: "0.1.27"
+  - name: owncloud
+    version: "0.1.26"
+  - name: pairdrop
+    version: "0.1.40"
+  - name: palmr
+    version: "0.1.26"
+  - name: paperclip
+    version: "0.1.26"
+  - name: paperless-ngx
+    version: "0.1.42"
+  - name: papra
+    version: "0.1.26"
+  - name: passky-client
+    version: "0.1.25"
+  - name: passky-server
+    version: "0.1.26"
+  - name: pastefy
+    version: "0.1.27"
+  - name: pearcircle-seeder
+    version: "0.1.26"
+  - name: penpot
+    version: "0.1.26"
+  - name: perplexica
+    version: "0.1.27"
+  - name: photoprism
+    version: "0.1.41"
+  - name: pi-hole
+    version: "0.1.27"
+  - name: picoclaw
+    version: "0.1.28"
+  - name: picsur
+    version: "0.1.26"
+  - name: pinchflat
+    version: "0.1.26"
+  - name: pingvin-share
+    version: "0.1.26"
+  - name: plane
+    version: "0.1.26"
+  - name: planka
+    version: "0.1.42"
+  - name: plausible
+    version: "0.1.26"
+  - name: plex
+    version: "0.1.28"
+  - name: pocketbase
+    version: "0.1.25"
+  - name: portainer
+    version: "0.1.27"
+  - name: poznote
+    version: "0.1.26"
+  - name: privatebin
+    version: "0.1.25"
+  - name: prowlarr
+    version: "0.2.26"
+  - name: public-pool-web
+    version: "0.1.26"
+  - name: pyload-ng
+    version: "0.1.26"
+  - name: qbittorrent
+    version: "0.2.26"
+  - name: radarr
+    version: "0.2.27"
+  - name: radicale
+    version: "0.1.6"
+  - name: radicle
+    version: "0.1.6"
+  - name: reactive-resume
+    version: "0.1.42"
+  - name: readarr
+    version: "0.1.27"
+  - name: readeck
+    version: "0.1.26"
+  - name: readur
+    version: "0.1.26"
+  - name: reitti
+    version: "0.1.26"
+  - name: remmina
+    version: "0.1.28"
+  - name: restreamer
+    version: "0.1.26"
+  - name: romm
+    version: "0.1.42"
+  - name: rotki
+    version: "0.1.25"
+  - name: route96
+    version: "0.1.26"
+  - name: rustdesk-server
+    version: "0.1.25"
+  - name: rusty-kaspad
+    version: "0.1.25"
+  - name: sabnzbd
+    version: "0.1.29"
+  - name: samba
+    version: "0.1.27"
+  - name: satoshi-dashboard
+    version: "0.1.28"
+  - name: scanservjs
+    version: "0.1.28"
+  - name: seafile
+    version: "0.1.26"
+  - name: searxng
+    version: "0.1.40"
+  - name: seedtool
+    version: "0.1.26"
+  - name: shlink
+    version: "0.1.41"
+  - name: shopstr
+    version: "0.1.26"
+  - name: sikka
+    version: "0.1.26"
+  - name: simple-torrent
+    version: "0.1.28"
+  - name: skybro
+    version: "0.1.27"
+  - name: slink
+    version: "0.1.26"
+  - name: snapdrop
+    version: "0.1.27"
+  - name: snort
+    version: "0.1.25"
+  - name: snowflake
+    version: "0.1.25"
+  - name: solidtime
+    version: "0.1.26"
+  - name: sonarr
+    version: "0.2.27"
+  - name: spacebot
+    version: "0.1.28"
+  - name: speedtest-tracker
+    version: "0.1.41"
+  - name: splitpro
+    version: "0.1.22"
+  - name: sqlitebrowser
+    version: "0.1.28"
+  - name: stalwart
+    version: "0.1.27"
+  - name: stash
+    version: "0.1.28"
+  - name: steam-headless
+    version: "0.1.45"
+  - name: stirling-pdf
+    version: "0.1.40"
+  - name: strfry
+    version: "0.1.40"
+  - name: strix
+    version: "0.1.27"
+  - name: super-productivity
+    version: "0.1.27"
+  - name: sure
+    version: "0.1.26"
+  - name: swingmusic
+    version: "0.1.26"
+  - name: synapse
+    version: "0.1.42"
+  - name: syncthing
+    version: "0.1.42"
+  - name: syslog-ng
+    version: "0.1.26"
+  - name: tailscale
+    version: "0.1.27"
+  - name: tandoor
+    version: "0.1.26"
+  - name: tautulli
+    version: "0.1.29"
+  - name: teamspeak
+    version: "0.1.26"
+  - name: technitium-dns
+    version: "0.1.27"
+  - name: telegrapho
+    version: "0.1.26"
+  - name: termix
+    version: "0.1.26"
+  - name: thelounge
+    version: "0.1.25"
+  - name: thinkdashboard
+    version: "0.1.28"
+  - name: threema
+    version: "0.1.25"
+  - name: torbrowser
+    version: "0.1.31"
+  - name: toshi-moto
+    version: "0.1.26"
+  - name: transmission
+    version: "0.1.31"
+  - name: transmute
+    version: "0.1.26"
+  - name: trilium-notes
+    version: "0.1.26"
+  - name: trip
+    version: "0.1.25"
+  - name: tubearchivist
+    version: "0.1.26"
+  - name: twenty
+    version: "0.1.26"
+  - name: umami
+    version: "0.1.40"
+  - name: unifi
+    version: "0.1.40"
+  - name: uptime-kuma
+    version: "0.1.40"
+  - name: urbit
+    version: "0.1.26"
+  - name: valheim
+    version: "0.1.40"
+  - name: valorgrid
+    version: "0.1.26"
+  - name: vaultwarden
+    version: "0.1.42"
   - name: vert
-    version: "0.1.26"
+    version: "0.1.28"
   - name: vikunja
-    version: "0.1.39"
+    version: "0.1.40"
   - name: wallabag
-    version: "0.1.39"
+    version: "0.1.40"
   - name: wallos
-    version: "0.1.39"
+    version: "0.1.40"
   - name: wanderer
-    version: "0.1.25"
+    version: "0.1.26"
   - name: watch-your-lan
-    version: "0.1.26"
+    version: "0.1.27"
   - name: wavelog
-    version: "0.1.25"
+    version: "0.1.26"
   - name: wealthfolio
-    version: "0.1.25"
+    version: "0.1.26"
   - name: webcheck
-    version: "0.1.25"
+    version: "0.1.27"
   - name: wger
-    version: "0.1.26"
+    version: "0.1.27"
   - name: whoogle-search
-    version: "0.1.27"
+    version: "0.1.29"
   - name: wikijs
-    version: "0.1.24"
+    version: "0.1.25"
   - name: wingfit
-    version: "0.1.24"
+    version: "0.1.25"
   - name: wizarr
-    version: "0.1.25"
+    version: "0.1.26"
   - name: wordpress
-    version: "0.1.25"
+    version: "0.1.26"
   - name: yamtrack
-    version: "0.1.25"
+    version: "0.1.26"
   - name: your-spotify
-    version: "0.1.39"
+    version: "0.1.40"
   - name: yucca
-    version: "0.1.25"
+    version: "0.1.26"
   - name: yuvomi
-    version: "0.1.25"
+    version: "0.1.26"
   - name: zabbix
-    version: "0.1.25"
+    version: "0.1.26"
   - name: zen
-    version: "0.1.24"
+    version: "0.1.25"
   - name: zeronote
-    version: "0.1.26"
-  - name: zerotier
-    version: "0.1.26"
-  - name: zigbee2mqtt
     version: "0.1.27"
+  - name: zerotier
+    version: "0.1.27"
+  - name: zigbee2mqtt
+    version: "0.1.29"
   - name: zoraxy
-    version: "0.1.26"
+    version: "0.1.27"
