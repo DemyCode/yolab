@@ -114,17 +114,6 @@ export function AppAccess({
   const [checking, setChecking] = useState(false);
   const [failed, setFailed] = useState(false);
 
-  const load = useCallback(async () => {
-    try {
-      const r = await api.get<OutputsResponse>(
-        `/api/apps/${instanceName}/outputs`,
-      );
-      setOutputs(r.outputs);
-      setFailed(false);
-    } catch {
-      setFailed(true);
-    }
-  }, [instanceName]);
 
   const checkNow = useCallback(async () => {
     setChecking(true);
@@ -141,14 +130,28 @@ export function AppAccess({
     }
   }, [instanceName]);
 
+  // Load now and every POLL_MS; state is only set from the request's
+  // callbacks, and a response for an app we left is dropped.
   useEffect(() => {
+    let live = true;
+    const load = () =>
+      api
+        .get<OutputsResponse>(`/api/apps/${instanceName}/outputs`)
+        .then((r) => {
+          if (!live) return;
+          setOutputs(r.outputs);
+          setFailed(false);
+        })
+        .catch(() => {
+          if (live) setFailed(true);
+        });
     void load();
-  }, [load]);
-
-  useEffect(() => {
     const id = window.setInterval(() => void load(), POLL_MS);
-    return () => clearInterval(id);
-  }, [load]);
+    return () => {
+      live = false;
+      clearInterval(id);
+    };
+  }, [instanceName]);
 
   const rows = accessRows(outputs ?? []);
   const unreadable = failed && outputs === null;

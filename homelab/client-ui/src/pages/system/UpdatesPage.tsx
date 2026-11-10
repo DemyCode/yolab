@@ -70,11 +70,18 @@ export function UpdatesPage() {
   const [editUrl, setEditUrl] = useState("");
   const [editRef, setEditRef] = useState("");
 
-  useEffect(() => {
-    if (!channel || channelOpen) return;
-    setEditUrl(channel.url);
-    setEditRef(channel.ref);
-  }, [channel, channelOpen]);
+  // While the editor is closed, the fields follow the saved channel; once it
+  // is open they hold what the user types. Adjusted during render rather than
+  // in an effect, so there is no extra render with stale values.
+  const following = channelOpen ? null : (channel ?? null);
+  const [followed, setFollowed] = useState<ChannelInfo | null>(null);
+  if (following !== followed) {
+    setFollowed(following);
+    if (following) {
+      setEditUrl(following.url);
+      setEditRef(following.ref);
+    }
+  }
   const [channelSaving, setChannelSaving] = useState(false);
 
   const [rebootConfirm, setRebootConfirm] = useState(false);

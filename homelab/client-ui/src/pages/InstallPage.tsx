@@ -211,7 +211,6 @@ export function InstallPage() {
       origin.mode,
       generateSecret,
     );
-    // eslint-disable-next-line react-hooks/set-state-in-effect
     setFormData(seed);
   }, [appId, schema, sourceDef, origin.mode]);
 
