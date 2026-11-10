@@ -37,7 +37,7 @@ FROM_LINE = re.compile(r"^(FROM\s+(?:--platform=\S+\s+)?)(\S+)(.*)$")
 USES_LINE = re.compile(
     r"^(\s*-?\s*uses:\s*)([A-Za-z0-9_.\-]+/[A-Za-z0-9_.\-]+)((?:/[^@\s]+)?)@(\S+)(\s*#.*)?$"
 )
-TAG_SHAPE = re.compile(r"^(v?)(\d+(?:\.\d+)*)([^.\d].*)?$")
+TAG_SHAPE = re.compile(r"^((?:[A-Za-z][A-Za-z0-9_]*-)*v?)(\d+(?:\.\d+)*)([^.\d].*)?$")
 SEMVER = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)$")
 
 
@@ -63,7 +63,7 @@ def log(msg):
     print(msg, file=sys.stderr, flush=True)
 
 
-def run(cmd, cwd=None, timeout=1800, capture=True):
+def run(cmd, cwd=None, timeout=1800, capture=True, env=None, stderr=False):
     log(f"$ {' '.join(cmd)}" + (f"   (in {cwd})" if cwd else ""))
     out = subprocess.run(
         cmd,
@@ -71,10 +71,13 @@ def run(cmd, cwd=None, timeout=1800, capture=True):
         capture_output=capture,
         timeout=timeout,
         check=False,
+        env={**os.environ, **env} if env else None,
     )
     if out.returncode != 0:
         tail = (out.stderr or b"").decode(errors="replace").strip().splitlines()[-3:]
         raise RuntimeError(f"{' '.join(cmd[:3])} failed: {' / '.join(tail)}")
+    if stderr:
+        return out.stdout or b"", out.stderr or b""
     return out.stdout or b""
 
 
@@ -605,32 +608,102 @@ def update_cargo(root, summary):
 
         rel = os.path.relpath(crate, root)
 
-        def go(crate=crate, rel=rel, lock=lock, manifests=manifests):
-            def attempt(target, crate=crate):
-                run(
-                    ["cargo", "upgrade", *CARGO_TARGETS[target]],
-                    cwd=crate,
-                    capture=False,
-                )
-                run(["cargo", "update"], cwd=crate, capture=False)
-
-            landed = first_that_works(tuple(CARGO_TARGETS), attempt, [lock, *manifests])
+        def go(crate=crate, rel=rel, lock=lock):
+            gate = verify_checks(root, rel)
+            # Semver-compatible moves only: `cargo update` never crosses a
+            # major, and Cargo.toml is left exactly as written.
+            _, notes = run(
+                ["cargo", "update", "--verbose"], cwd=crate, stderr=True
+            )
+            run(["cargo", "metadata", "--locked", "--format-version", "1"],
+                cwd=crate)
+            build_checks(root, gate)
             summary.moved.append(f"cargo {rel}")
-            if landed != "every":
+            majors = cargo_majors(notes.decode(errors="replace"))
+            if majors:
                 summary.held.append(
-                    f"cargo {rel}: the newest majors do not resolve together; took compatible upgrades only"
+                    f"cargo {rel}: new majors left for a person: {', '.join(majors)}"
                 )
 
         step(summary, f"cargo {rel}", [lock, *manifests], go)
 
 
-CARGO_TARGETS = {
-    "every": ["--incompatible", "allow", "--pinned", "allow"],
-    "compatible": [],
+CARGO_UNCHANGED = re.compile(
+    r"Unchanged (\S+) v(\d+)\.(\d+)\S* \(available: v(\d+)\.(\d+)\S*\)"
+)
+
+
+def cargo_majors(notes):
+    """Direct or transitive crates cargo could not move because only an
+    incompatible release is newer (cargo update --verbose says so)."""
+    found = []
+    for name, maj, mnr, new_maj, new_mnr in CARGO_UNCHANGED.findall(notes):
+        old = (int(maj), int(mnr) if maj == "0" else 0)
+        new = (int(new_maj), int(new_mnr) if new_maj == "0" else 0)
+        if new != old and name not in found:
+            found.append(name)
+    return found
+
+
+# The flake outputs that build and test each lockfile's package. An update
+# lands only when they all build with the new lock; a lockfile not listed here
+# is never updated, so nothing moves without being built and tested.
+VERIFY = {
+    ("yolab", "homelab/client-ui"): [
+        "checks.{system}.client-ui",
+        "checks.{system}.client-ui-tests",
+        "checks.{system}.client-ui-lint",
+    ],
+    ("yolab", "homelab/local-api"): [
+        "checks.{system}.local-api-tests",
+        "checks.{system}.clippy-local-api",
+    ],
+    ("yolab", "installer/nixos/backend-rs"): [
+        "checks.{system}.installer-tests",
+        "checks.{system}.clippy-installer",
+    ],
+    ("yolab", "shells/desktop"): [
+        "checks.{system}.desktop-client-tests",
+        "checks.{system}.clippy-desktop-client",
+    ],
+    ("yolab-external", "."): ["checks.{system}.tests", "checks.{system}.clippy"],
+    ("yolab-external", "frontend"): ["packages.{system}.frontend"],
 }
 
 
-NPM_TARGETS = ("latest", "minor", "patch")
+def verify_checks(root, rel):
+    attrs = VERIFY.get((os.path.basename(root), rel))
+    if not attrs:
+        raise RuntimeError(
+            f"no flake check is listed in VERIFY for {rel}; add the ones that "
+            "build and test it before it can be updated"
+        )
+    return attrs
+
+
+def current_system():
+    return run(
+        ["nix", "eval", "--raw", "--impure", "--expr", "builtins.currentSystem"]
+    ).decode().strip()
+
+
+def build_checks(root, attrs):
+    system = current_system()
+    run(
+        [
+            "nix",
+            "build",
+            "--no-link",
+            "--impure",
+            *(f"{root}#{a.format(system=system)}" for a in attrs),
+        ],
+        timeout=7200,
+        capture=False,
+    )
+
+
+# Stability over novelty: majors are reported, never taken.
+NPM_TARGETS = ("minor", "patch")
 
 
 def first_that_works(targets, attempt, paths):
@@ -646,8 +719,23 @@ def first_that_works(targets, attempt, paths):
     raise RuntimeError("; ".join(errors))
 
 
-def npm_deps_hash(lock):
-    return run(["prefetch-npm-deps", lock], timeout=1800).decode().strip()
+NPM_FETCHER_VERSIONS = ("1", "2")
+
+
+def npm_deps_hash(lock, version):
+    env = {"NPM_FETCHER_VERSION": version}
+    return run(["prefetch-npm-deps", lock], timeout=1800, env=env).decode().strip()
+
+
+def pinned_npm_hash(root, lock):
+    """The npmDepsHash a .nix file pins for this lock, and the fetcher
+    version (npmDepsFetcherVersion) that produced it."""
+    texts = [read(p) for p in walk(root, lambda p: p.endswith(".nix"))]
+    for version in NPM_FETCHER_VERSIONS:
+        h = npm_deps_hash(lock, version)
+        if any(h in t for t in texts):
+            return h, version
+    return None, None
 
 
 def replace_in_nix(root, old, new):
@@ -660,27 +748,50 @@ def replace_in_nix(root, old, new):
     return hits
 
 
+def npm_upgrades(pkg_dir, target):
+    out = run(["ncu", "--jsonUpgraded", "--target", target], cwd=pkg_dir)
+    return json.loads(out or b"{}")
+
+
+def npm_majors(pkg_dir):
+    """Dependencies whose newest release is a major the minor target skips."""
+    latest = npm_upgrades(pkg_dir, "latest")
+    minor = npm_upgrades(pkg_dir, "minor")
+    return sorted(n for n, v in latest.items() if minor.get(n) != v)
+
+
 def update_npm(root, summary):
     for lock in walk(root, lambda p: os.path.basename(p) == "package-lock.json"):
         pkg_dir = os.path.dirname(lock)
         rel = os.path.relpath(pkg_dir, root)
         nix_files = list(walk(root, lambda p: p.endswith(".nix")))
+        manifest = os.path.join(pkg_dir, "package.json")
 
-        def go(pkg_dir=pkg_dir, lock=lock, rel=rel):
-            old_hash = npm_deps_hash(lock)
-            manifest = os.path.join(pkg_dir, "package.json")
+        def go(pkg_dir=pkg_dir, lock=lock, rel=rel, manifest=manifest,
+               nix_files=nix_files):
+            gate = verify_checks(root, rel)
+            old_hash, version = pinned_npm_hash(root, lock)
+            if old_hash is None:
+                raise RuntimeError(
+                    f"no .nix file holds the npmDepsHash of {rel}/package-lock.json "
+                    "as it stands; fix the pin first"
+                )
+            majors = npm_majors(pkg_dir)
 
-            def attempt(target, pkg_dir=pkg_dir):
+            def attempt(target):
                 run(
                     ["ncu", "--upgrade", "--peer", "--target", target],
                     cwd=pkg_dir,
                     capture=False,
                 )
+                # --strict-peer-deps: a peer conflict is a failure, never
+                # papered over.
                 run(
                     [
                         "npm",
                         "install",
                         "--package-lock-only",
+                        "--strict-peer-deps",
                         "--ignore-scripts",
                         "--no-audit",
                         "--no-fund",
@@ -688,25 +799,29 @@ def update_npm(root, summary):
                     cwd=pkg_dir,
                     capture=False,
                 )
+                # Every package in the tree satisfies every range that asks
+                # for it, peers included.
+                run(["npm", "ls", "--all", "--package-lock-only"], cwd=pkg_dir)
+                new_hash = npm_deps_hash(lock, version)
+                if new_hash != old_hash:
+                    replace_in_nix(root, old_hash, new_hash)
+                build_checks(root, gate)
 
-            landed = first_that_works(NPM_TARGETS, attempt, [manifest, lock])
+            landed = first_that_works(
+                NPM_TARGETS, attempt, [manifest, lock, *nix_files]
+            )
             if landed != NPM_TARGETS[0]:
                 summary.held.append(
-                    f"npm {rel}: the newest versions conflict with each other; took {landed} updates only"
+                    f"npm {rel}: minor updates did not build and test together; "
+                    f"took {landed} updates only"
                 )
-            new_hash = npm_deps_hash(lock)
-            if new_hash != old_hash and not replace_in_nix(root, old_hash, new_hash):
-                raise RuntimeError(
-                    f"no .nix file holds npmDepsHash {old_hash} for {rel}"
+            if majors:
+                summary.held.append(
+                    f"npm {rel}: new majors left for a person: {', '.join(majors)}"
                 )
             summary.moved.append(f"npm {rel}")
 
-        step(
-            summary,
-            f"npm {rel}",
-            [lock, os.path.join(pkg_dir, "package.json"), *nix_files],
-            go,
-        )
+        step(summary, f"npm {rel}", [lock, manifest, *nix_files], go)
 
 
 def update_tofu(root, summary):

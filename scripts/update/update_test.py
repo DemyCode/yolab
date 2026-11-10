@@ -38,6 +38,10 @@ class Tags(unittest.TestCase):
         self.assertIsNone(update.newer_tag("latest", ["latest", "1.0"]))
         self.assertIsNone(update.newer_tag("alpine", ["alpine", "1.27-alpine"]))
 
+    def test_a_word_prefix_is_kept(self):
+        tags = ["smb-amd64", "smb-debian-20261110", "smb-20261109", "smb-20261110"]
+        self.assertEqual(update.newer_tag("smb-20231122", tags), "smb-20261110")
+
     def test_a_single_number_tag_stays(self):
         self.assertIsNone(update.newer_tag("2", ["2", "3"]))
 
@@ -206,51 +210,71 @@ class Rollback(unittest.TestCase):
 
 
 class Cargo(unittest.TestCase):
-    def test_every_upgrade_is_tried_first_majors_and_pins_included(self):
-        self.assertEqual(next(iter(update.CARGO_TARGETS)), "every")
-        self.assertEqual(
-            update.CARGO_TARGETS["every"],
-            ["--incompatible", "allow", "--pinned", "allow"],
-        )
+    def test_only_majors_are_reported_as_held(self):
+        notes = """
+    Updating crates.io index
+     Locking 0 packages to highest compatible versions
+   Unchanged tauri v2.9.1 (available: v3.0.0)
+   Unchanged rand v0.8.5 (available: v0.9.2)
+   Unchanged url v2.5.4 (available: v2.5.7)
+   Unchanged tinyvec v0.3.1 (available: v0.3.4)
+"""
+        self.assertEqual(update.cargo_majors(notes), ["tauri", "rand"])
 
-    def test_a_graph_that_does_not_resolve_falls_back_to_compatible(self):
-        def attempt(target):
-            if target == "every":
-                raise RuntimeError("failed to select a version")
+    def test_a_lock_without_checks_is_never_updated(self):
+        with self.assertRaises(RuntimeError):
+            update.verify_checks("/x/yolab", "some/new/crate")
 
-        landed = update.first_that_works(tuple(update.CARGO_TARGETS), attempt, [])
-        self.assertEqual(landed, "compatible")
+    def test_every_lock_in_yolab_is_built_and_tested(self):
+        for rel in ("homelab/local-api", "shells/desktop", "installer/nixos/backend-rs"):
+            self.assertTrue(update.verify_checks("/x/yolab", rel))
 
 
 class NpmTargets(unittest.TestCase):
-    def test_the_newest_versions_win_when_they_install(self):
+    def test_a_major_is_never_taken(self):
+        self.assertNotIn("latest", update.NPM_TARGETS)
+        self.assertEqual(update.NPM_TARGETS[0], "minor")
+
+    def test_minor_wins_when_it_builds(self):
         tried = []
         landed = update.first_that_works(update.NPM_TARGETS, tried.append, [])
-        self.assertEqual(landed, "latest")
-        self.assertEqual(tried, ["latest"])
+        self.assertEqual(landed, "minor")
+        self.assertEqual(tried, ["minor"])
 
-    def test_a_conflict_falls_back_to_minor_with_the_files_as_they_were(self):
+    def test_a_broken_minor_falls_back_to_patch_with_the_files_as_they_were(self):
         with tempfile.TemporaryDirectory() as tmp:
             manifest = os.path.join(tmp, "package.json")
+            nix = os.path.join(tmp, "builds.nix")
             update.write(manifest, "before")
+            update.write(nix, "hash-before")
 
             def attempt(target):
                 update.write(manifest, target)
-                if target == "latest":
+                update.write(nix, f"hash-{target}")
+                if target == "minor":
                     raise RuntimeError("ERESOLVE")
 
-            landed = update.first_that_works(update.NPM_TARGETS, attempt, [manifest])
-            self.assertEqual(landed, "minor")
-            self.assertEqual(update.read(manifest), "minor")
+            landed = update.first_that_works(
+                update.NPM_TARGETS, attempt, [manifest, nix]
+            )
+            self.assertEqual(landed, "patch")
+            self.assertEqual(update.read(manifest), "patch")
+            self.assertEqual(update.read(nix), "hash-patch")
 
     def test_when_nothing_installs_every_reason_is_kept(self):
         def attempt(target):
             raise RuntimeError(f"no {target}")
 
         with self.assertRaises(RuntimeError) as caught:
-            update.first_that_works(("latest", "minor"), attempt, [])
-        self.assertIn("latest: no latest", str(caught.exception))
+            update.first_that_works(("minor", "patch"), attempt, [])
         self.assertIn("minor: no minor", str(caught.exception))
+        self.assertIn("patch: no patch", str(caught.exception))
+
+    def test_majors_are_those_the_minor_target_skips(self):
+        found = {"latest": {"react": "^20.0.0", "clsx": "^2.1.2"},
+                 "minor": {"clsx": "^2.1.2"}}
+        with mock.patch.object(update, "npm_upgrades", lambda _d, t: found[t]):
+            self.assertEqual(update.npm_majors("."), ["react"])
 
 
 class CustomLibrary(unittest.TestCase):
@@ -264,6 +288,25 @@ class CustomLibrary(unittest.TestCase):
     def test_a_file_without_the_pin_stops_the_update(self):
         with self.assertRaises(RuntimeError):
             update.pin_custom_library("fn f() {}\n", "0.1.37")
+
+
+
+class NpmPin(unittest.TestCase):
+    def test_the_pin_is_matched_under_the_fetcher_version_that_made_it(self):
+        with tempfile.TemporaryDirectory() as root:
+            with open(os.path.join(root, "builds.nix"), "w") as f:
+                f.write('npmDepsFetcherVersion = 2;\nnpmDepsHash = "sha256-v2";\n')
+            lock = os.path.join(root, "package-lock.json")
+            with mock.patch.object(
+                update, "npm_deps_hash", side_effect=lambda _l, v: f"sha256-v{v}"
+            ):
+                self.assertEqual(update.pinned_npm_hash(root, lock), ("sha256-v2", "2"))
+
+    def test_an_unpinned_lock_is_reported(self):
+        with tempfile.TemporaryDirectory() as root:
+            lock = os.path.join(root, "package-lock.json")
+            with mock.patch.object(update, "npm_deps_hash", return_value="sha256-x"):
+                self.assertEqual(update.pinned_npm_hash(root, lock), (None, None))
 
 
 if __name__ == "__main__":
