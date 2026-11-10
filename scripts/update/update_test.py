@@ -283,6 +283,20 @@ class NpmTargets(unittest.TestCase):
             self.assertEqual(update.npm_majors("."), ["react"])
 
 
+class DisabledCharts(unittest.TestCase):
+    def test_a_disabled_charts_images_are_not_followed(self):
+        with tempfile.TemporaryDirectory() as root:
+            for name, ann in (("on", ""), ("off", '  yolab.io/disabled: "gone"\n')):
+                d = os.path.join(root, "apps", "catalog", name)
+                os.makedirs(os.path.join(d, "templates"))
+                update.write(os.path.join(d, "Chart.yaml"),
+                             f"name: {name}\nannotations:\n{ann}  yolab.io/icon: x\n")
+                update.write(os.path.join(d, "templates", "app.yaml"), "image: a:1\n")
+            files = [os.path.relpath(p, root) for p in update.image_files(root)]
+            self.assertIn("apps/catalog/on/templates/app.yaml", files)
+            self.assertFalse([f for f in files if "/off/" in f])
+
+
 class CustomLibrary(unittest.TestCase):
     def test_custom_services_follow_a_yolab_common_bump(self):
         text = 'use x;\nconst CUSTOM_LIBRARY_VERSION: &str = "0.1.36";\nfn f() {}\n'

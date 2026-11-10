@@ -219,10 +219,28 @@ def join_ref(name, tag, digest):
     return f"{name}{':' + tag if tag else ''}@{digest}"
 
 
+DISABLED = re.compile(r"^\s+yolab\.io/disabled:\s*\S", re.MULTILINE)
+
+
+def disabled_chart_dirs(root):
+    """Charts switched off with a yolab.io/disabled annotation. Users cannot
+    install them, so their images are not followed (often they are disabled
+    precisely because the image is gone)."""
+    return [
+        os.path.dirname(p) + os.sep
+        for p in walk(root, lambda p: os.path.basename(p) == "Chart.yaml")
+        if DISABLED.search(read(p))
+    ]
+
+
 def image_files(root):
+    disabled = disabled_chart_dirs(root)
+
     def keep(path):
         base = os.path.basename(path)
         if "/.github/" in path or base in ("image_arches.json", "catalog.yaml"):
+            return False
+        if any(path.startswith(d) for d in disabled):
             return False
         return base.startswith("Dockerfile") or base.endswith((".yaml", ".yml", ".tpl"))
 
