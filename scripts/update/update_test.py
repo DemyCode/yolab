@@ -340,8 +340,11 @@ class ChartPins(unittest.TestCase):
         os.makedirs(d, exist_ok=True)
         lines = [f"name: {name}", f"version: {version}", "dependencies:"]
         for dep, pin in deps:
-            lines += [f"  - name: {dep}", f'    version: "{pin}"',
-                      "    repository: oci://ghcr.io/demycode/charts"]
+            lines += [
+                f"  - name: {dep}",
+                f'    version: "{pin}"',
+                "    repository: oci://ghcr.io/demycode/charts",
+            ]
         update.write(os.path.join(d, "Chart.yaml"), "\n".join(lines) + "\n")
 
     def test_a_pin_follows_the_catalog_and_the_pinning_chart_is_bumped(self):
@@ -349,9 +352,22 @@ class ChartPins(unittest.TestCase):
             cat = os.path.join(root, "apps", "catalog")
             self.chart(cat, "authelia", "0.2.5")
             self.chart(cat, "jellyfin", "0.3.27", [("authelia", "0.2.4")])
-            self.chart(cat, "movies-tv", "0.2.27", [("jellyfin", "0.3.26"), ("external", "1.0.0")])
+            self.chart(
+                cat,
+                "movies-tv",
+                "0.2.27",
+                [("jellyfin", "0.3.26"), ("external", "1.0.0")],
+            )
             summary = update.Summary()
-            with mock.patch.object(update, "head_version", side_effect=lambda r, p: update.TOP_VERSION.search(update.read(p)).group(1) if "jellyfin" not in p else "0.3.26"):
+            with mock.patch.object(
+                update,
+                "head_version",
+                side_effect=lambda r, p: (
+                    update.TOP_VERSION.search(update.read(p)).group(1)
+                    if "jellyfin" not in p
+                    else "0.3.26"
+                ),
+            ):
                 update.sync_pins(root, cat, summary)
             jelly = update.read(os.path.join(cat, "jellyfin", "Chart.yaml"))
             pack = update.read(os.path.join(cat, "movies-tv", "Chart.yaml"))

@@ -561,8 +561,9 @@ def newest_in_major(tags, major):
     """Newest release on this major; any release when the major is unknown."""
     if major is None:
         return newest_release(tags)
-    return newest_release([t for t in tags if SEMVER.match(t)
-                           and int(SEMVER.match(t).group(1)) == major])
+    return newest_release(
+        [t for t in tags if SEMVER.match(t) and int(SEMVER.match(t).group(1)) == major]
+    )
 
 
 def pin_uses(line, resolve):
@@ -602,8 +603,11 @@ def update_actions(root, summary):
             tag = newest_in_major(tags, major)
             cache[key] = (tag, tags[tag]) if tag else None
             newest = newest_release(tags)
-            if major is not None and newest and tag != newest and (
-                int(SEMVER.match(newest).group(1)) > major
+            if (
+                major is not None
+                and newest
+                and tag != newest
+                and (int(SEMVER.match(newest).group(1)) > major)
             ):
                 summary.held.append(
                     f"action {repo}: {newest} exists, a new major line, left for a person"
