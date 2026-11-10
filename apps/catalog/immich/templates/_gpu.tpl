@@ -24,10 +24,10 @@
 
 {{- define "immich.mlImage" -}}
 {{- $images := dict
-  "nvidia" "ghcr.io/immich-app/immich-machine-learning:release-cuda@sha256:1bbdd544178fbd5702fba7f2932505a78ec98d6a0f90e0ae87caaa2696228f5c"
-  "amd" "ghcr.io/immich-app/immich-machine-learning:release-rocm@sha256:cea1ff8726bffa6ebe8b08607ccafd996670965aeb195dbbdcdc6e0ac93ea15b"
-  "intel" "ghcr.io/immich-app/immich-machine-learning:release-openvino@sha256:43b6b964c6cc458b624ec9b7ed2af0231e19e3bcfaaa68fba8a2668353c48251" -}}
-{{- get $images (.accelerator | default "") | default "ghcr.io/immich-app/immich-machine-learning:release@sha256:73915f07e1f4289ba45b174c58443db74cef47ddf502613f475fc5e52458ea42" -}}
+  "nvidia" "ghcr.io/immich-app/immich-machine-learning:release-cuda@sha256:2c2721c54c5e245b095eea3eb0cda743d112a3f537555b39e2e9a112879a50c1"
+  "amd" "ghcr.io/immich-app/immich-machine-learning:release-rocm@sha256:03b4105bdd486a08c762a5da7cb9432cf0b0cd5d5309c9180a8d88f723218be9"
+  "intel" "ghcr.io/immich-app/immich-machine-learning:release-openvino@sha256:035c30de002da9d4d4ae3872107bb9d8e195ead1c1f9fd470a2b0149ed37aec1" -}}
+{{- get $images (.accelerator | default "") | default "ghcr.io/immich-app/immich-machine-learning:release@sha256:14367bfb374b8576ddf49abd67c5ca0190a4c7fcf6303cdad65d7f7bf1a50bc2" -}}
 {{- end -}}
 
 {{- define "immich.mlDevice" -}}

@@ -32,7 +32,7 @@ spec:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
       {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
       - name: zabbix-frontend
-        image: zabbix/zabbix-web-nginx-pgsql:7.4.15-alpine@sha256:8c139abe303577c1dc49983f81d272ec832835c370912a681f2695803f342be0
+        image: zabbix/zabbix-web-nginx-pgsql:7.4.16-alpine@sha256:62ffffb395b9ecd63e9260263dcd9bb4038668fd691e0be1e396bc0182bf77ba
         imagePullPolicy: IfNotPresent
         env:
         - name: DB_SERVER_HOST
@@ -74,7 +74,7 @@ spec:
     spec:
       containers:
       - name: zabbix-server
-        image: zabbix/zabbix-server-pgsql:7.4.15-alpine@sha256:777870429c94636f2396fd414a259080d167926552543c31b20ae9d0c9f2847f
+        image: zabbix/zabbix-server-pgsql:7.4.16-alpine@sha256:546f7cae8f04b287ab4ffd3cc81193f2ea99f2da1d0564217b65d93438f44454
         imagePullPolicy: IfNotPresent
         env:
         - name: DB_SERVER_HOST
@@ -127,7 +127,7 @@ spec:
     spec:
       containers:
       - name: zabbix-agent
-        image: zabbix/zabbix-agent2:7.4.15-alpine@sha256:a4641f733827aa13af61bf3ccd3b11f61129b2635726b38ad231ac3c42229a0e
+        image: zabbix/zabbix-agent2:7.4.16-alpine@sha256:0719e7814cdb14f0b5a0ad8f77938935004298ffeceb669716385d3af423c733
         imagePullPolicy: IfNotPresent
         env:
         - name: ZBX_HOSTNAME

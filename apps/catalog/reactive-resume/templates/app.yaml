@@ -24,7 +24,7 @@ spec:
       initContainers:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
       - name: gen-secrets
-        image: busybox:1.38@sha256:fd7dc98638c8e305f4dc34e979f1c0fdfdcaeb0fbf8fcff77ae834b6da3d7e6e
+        image: busybox:1.38@sha256:a46257e06c82ad85242d0d38077d0a52d9896389ca60a1a59d3463db586e5fa4
         imagePullPolicy: IfNotPresent
         command:
         - /bin/sh
@@ -39,7 +39,7 @@ spec:
       containers:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
       - name: app
-        image: amruthpillai/reactive-resume:latest@sha256:42c9ce52943b360f463be95f08a6e900c264bda5847d03f14a910254ca8cd2cd
+        image: amruthpillai/reactive-resume:latest@sha256:0dcd0c372e78935ba04c9bb04fa0811177ee7fc4b961ce08acce49e13a1ac2a2
         imagePullPolicy: IfNotPresent
         readinessProbe:
           timeoutSeconds: 5
@@ -112,7 +112,7 @@ spec:
     spec:
       containers:
       - name: postgres
-        image: postgres:16-alpine@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea
+        image: postgres:16-alpine@sha256:aa6cb33cf4c19c765cefcf48d96176258800870a9a1e930ad126200f9d825139
         imagePullPolicy: IfNotPresent
         readinessProbe:
           timeoutSeconds: 5
@@ -170,7 +170,7 @@ spec:
     spec:
       containers:
       - name: minio
-        image: cgr.dev/chainguard/minio:latest@sha256:709099319add48dfb44aa596a7070d3ddd8dd04d7ae881765719aec29df9e510
+        image: cgr.dev/chainguard/minio:latest@sha256:fb893e36fc369d41e92f678b17ec27378fa5bf0576aeef7ac15460c13629ab5a
         imagePullPolicy: IfNotPresent
         securityContext:
           runAsUser: 0
@@ -231,7 +231,7 @@ spec:
     spec:
       containers:
       - name: chrome
-        image: ghcr.io/browserless/chromium:v2.57.1@sha256:93dc614e2532ee66bac78f68b6229c33392309293c626d2a0899ccdf0c8aac67
+        image: ghcr.io/browserless/chromium:v2.61.0@sha256:bacd4022297429ff64f5e4d67b062263139a4fee4d5b49a480a022a072fb22d4
         imagePullPolicy: IfNotPresent
         env:
         - name: TIMEOUT

@@ -44,7 +44,7 @@ spec:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
       {{- include "authelia.embed.container" . | nindent 6 }}
       - name: paperless-ngx
-        image: ghcr.io/paperless-ngx/paperless-ngx:latest@sha256:d232cba37cc0bab0d6c6581ecd320383b7a6f49f33e0fd16adda4d009eb600dd
+        image: ghcr.io/paperless-ngx/paperless-ngx:latest@sha256:d704e84f88300eb6ab001ab15720a2330ff99169cf9f94d6b8fcc44b63a84c84
         imagePullPolicy: IfNotPresent
         command:
           - /bin/sh
@@ -136,7 +136,7 @@ spec:
     spec:
       containers:
         - name: postgres
-          image: postgres:17-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
+          image: postgres:17-alpine@sha256:3540c0362c809df084ffac0ae69fe794515f9de92692f02178bcdce0ef0302ac
           imagePullPolicy: IfNotPresent
           env:
             - name: POSTGRES_USER
@@ -195,7 +195,7 @@ spec:
         kubernetes.io/arch: amd64
       containers:
         - name: redis
-          image: redis:7-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
+          image: redis:7-alpine@sha256:7b1753b4c5ad8458906c272a8132b8c15f5557b000379eb115fb239706a384b7
           imagePullPolicy: IfNotPresent
           readinessProbe:
             timeoutSeconds: 5
@@ -244,7 +244,7 @@ spec:
     spec:
       containers:
         - name: tika
-          image: apache/tika:3.3.1.0@sha256:90b7fa1dc018434075fce9e1d9b88b1e3d0ea6979d0cf86e116c79a8073ae973
+          image: apache/tika:3.3.3.0@sha256:326b238b37904c94ff61fed87afe0af72e6a29fa715933b10af97b7d56f1d4cb
           imagePullPolicy: IfNotPresent
           readinessProbe:
             timeoutSeconds: 5
@@ -284,7 +284,7 @@ spec:
     spec:
       containers:
         - name: gotenberg
-          image: gotenberg/gotenberg:8.38.1@sha256:aa552cc115db488e0f0bcb07446aac13071ad51505b642c84bb894500907b42b
+          image: gotenberg/gotenberg:8.40.0@sha256:53073e798c8ef39ea2187e44cb67bab77894ea2509100b94c4fe3b461f7b2996
           imagePullPolicy: IfNotPresent
           args:
             - gotenberg

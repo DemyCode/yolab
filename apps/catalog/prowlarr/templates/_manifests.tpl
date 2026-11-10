@@ -42,7 +42,7 @@ spec:
       containers:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
       - name: prowlarr
-        image: linuxserver/prowlarr:version-2.5.2.5491@sha256:aaa16ba7d66e413db6d0358d3b6c68d833578ba7f176f24a51807181e7637fce
+        image: linuxserver/prowlarr:version-2.7.0.5723@sha256:431d7efebcef466e56adaa40a7a2fa2b0e85159a037b8bf465eaadbf0cf5bedf
         imagePullPolicy: IfNotPresent
         env:
           - name: PUID

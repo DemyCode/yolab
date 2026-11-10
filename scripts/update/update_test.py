@@ -226,7 +226,11 @@ class Cargo(unittest.TestCase):
             update.verify_checks("/x/yolab", "some/new/crate")
 
     def test_every_lock_in_yolab_is_built_and_tested(self):
-        for rel in ("homelab/local-api", "shells/desktop", "installer/nixos/backend-rs"):
+        for rel in (
+            "homelab/local-api",
+            "shells/desktop",
+            "installer/nixos/backend-rs",
+        ):
             self.assertTrue(update.verify_checks("/x/yolab", rel))
 
 
@@ -271,8 +275,10 @@ class NpmTargets(unittest.TestCase):
         self.assertIn("patch: no patch", str(caught.exception))
 
     def test_majors_are_those_the_minor_target_skips(self):
-        found = {"latest": {"react": "^20.0.0", "clsx": "^2.1.2"},
-                 "minor": {"clsx": "^2.1.2"}}
+        found = {
+            "latest": {"react": "^20.0.0", "clsx": "^2.1.2"},
+            "minor": {"clsx": "^2.1.2"},
+        }
         with mock.patch.object(update, "npm_upgrades", lambda _d, t: found[t]):
             self.assertEqual(update.npm_majors("."), ["react"])
 
@@ -288,7 +294,6 @@ class CustomLibrary(unittest.TestCase):
     def test_a_file_without_the_pin_stops_the_update(self):
         with self.assertRaises(RuntimeError):
             update.pin_custom_library("fn f() {}\n", "0.1.37")
-
 
 
 class NpmPin(unittest.TestCase):

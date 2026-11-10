@@ -561,7 +561,8 @@ class SteamHeadless(RenderedChart):
         with tempfile.TemporaryDirectory() as d:
             conf = Path(d, "sunshine", "sunshine.conf")
             done = self.run_script(
-                "sunshine-ipv6.sh", {"SUNSHINE_CONF": str(conf), "SUNSHINE_NAME": "games"}
+                "sunshine-ipv6.sh",
+                {"SUNSHINE_CONF": str(conf), "SUNSHINE_NAME": "games"},
             )
             self.assertEqual(done.returncode, 0, done.stderr)
             self.assertEqual(
@@ -570,11 +571,12 @@ class SteamHeadless(RenderedChart):
             )
             conf.write_text("capture = kwin\naddress_family = ipv4\n")
             self.run_script("sunshine-ipv6.sh", {"SUNSHINE_CONF": str(conf)})
-            self.assertEqual(conf.read_text(), "capture = kwin\naddress_family = both\n")
+            self.assertEqual(
+                conf.read_text(), "capture = kwin\naddress_family = both\n"
+            )
 
     LIVENESS = (
-        "    if pgrep -x steam >/dev/null 2>&1; then\n"
-        "        missing_steam_checks=0\n"
+        "    if pgrep -x steam >/dev/null 2>&1; then\n        missing_steam_checks=0\n"
     )
 
     def supervise(self, body):
@@ -604,7 +606,9 @@ class SteamHeadless(RenderedChart):
             done.stdout,
         )
 
-    def test_an_image_whose_supervisor_changed_refuses_to_start_instead_of_guessing(self):
+    def test_an_image_whose_supervisor_changed_refuses_to_start_instead_of_guessing(
+        self,
+    ):
         for body in ("#!/usr/bin/env bash\n", self.LIVENESS + self.LIVENESS):
             done = self.supervise(body)
             self.assertEqual(done.returncode, 1)

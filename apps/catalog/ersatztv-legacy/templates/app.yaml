@@ -34,7 +34,7 @@ spec:
       {{- include "authelia.embed.container" . | nindent 6 }}
       {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
       - name: web
-        image: ghcr.io/ersatztv/legacy:v26.11.3@sha256:cb0383fdb22050bdaff19e94974e86151d289e56355ca77cde8f15c3b49895d7
+        image: ghcr.io/ersatztv/legacy:v26.12.0@sha256:cfe78ee1148f90d96582dcc58196f4b2153f9e6f70c1bcf6baab3b375d675a47
         imagePullPolicy: IfNotPresent
         securityContext:
           runAsUser: 1000

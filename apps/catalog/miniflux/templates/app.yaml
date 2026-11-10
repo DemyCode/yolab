@@ -44,7 +44,7 @@ spec:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
       {{- include "authelia.embed.container" . | nindent 6 }}
       - name: miniflux
-        image: miniflux/miniflux:latest@sha256:49d7b60987616387c306a8023087b31f2c9b7b21288b523026cb04058e8b6dbb
+        image: miniflux/miniflux:latest@sha256:8fd6c3c434ecc3d4083306f83e03c0bb74c632e0f8378da5ead7e1773b0b89c9
         imagePullPolicy: IfNotPresent
         command:
           - /bin/sh
@@ -115,7 +115,7 @@ spec:
     spec:
       containers:
         - name: postgres
-          image: postgres:17-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
+          image: postgres:17-alpine@sha256:3540c0362c809df084ffac0ae69fe794515f9de92692f02178bcdce0ef0302ac
           imagePullPolicy: IfNotPresent
           env:
             - name: POSTGRES_USER

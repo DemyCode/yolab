@@ -24,7 +24,7 @@ spec:
       initContainers:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
       - name: gen-secrets
-        image: busybox:1.38@sha256:fd7dc98638c8e305f4dc34e979f1c0fdfdcaeb0fbf8fcff77ae834b6da3d7e6e
+        image: busybox:1.38@sha256:a46257e06c82ad85242d0d38077d0a52d9896389ca60a1a59d3463db586e5fa4
         imagePullPolicy: IfNotPresent
         command:
         - /bin/sh
@@ -39,7 +39,7 @@ spec:
       containers:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
       - name: 2fauth
-        image: 2fauth/2fauth:latest@sha256:50421b873c7e5060e2560290bee39e0ff32ffed76949cdb8c12cd76a2d85fde7
+        image: 2fauth/2fauth:latest@sha256:9cd2d70937980c77d34f03b2f57a2b8f626adeb8f35b6b5c8ecc0525c073ae57
         imagePullPolicy: IfNotPresent
         readinessProbe:
           timeoutSeconds: 5
@@ -107,7 +107,7 @@ spec:
     spec:
       containers:
       - name: postgres
-        image: postgres:17-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
+        image: postgres:17-alpine@sha256:3540c0362c809df084ffac0ae69fe794515f9de92692f02178bcdce0ef0302ac
         imagePullPolicy: IfNotPresent
         readinessProbe:
           timeoutSeconds: 5

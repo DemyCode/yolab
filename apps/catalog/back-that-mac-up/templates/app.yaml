@@ -103,7 +103,7 @@ spec:
     spec:
       containers:
       - name: timemachine
-        image: mbentley/timemachine:smb-20231122@sha256:861560184a5c9f3b4f2a8bef4549ef4168d80c57a9de81b16bc5e6eead24ff3f
+        image: mbentley/timemachine:smb-20261110@sha256:825e66871bcc74b272e3bbce8a7b9419611902a73514feccca149b2a0c541e74
         imagePullPolicy: IfNotPresent
         env:
         - name: ADVERTISED_HOSTNAME

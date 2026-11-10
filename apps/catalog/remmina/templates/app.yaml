@@ -34,7 +34,7 @@ spec:
       {{- include "authelia.embed.container" . | nindent 6 }}
       {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
       - name: server
-        image: linuxserver/remmina:1.4.43@sha256:46d855c0eabe231edeaec9b138514e484d4b19f412dc4ae90076ca2d488d98b3
+        image: linuxserver/remmina:1.4.43@sha256:6e9b9238da570521b82f0d7b8ec8cc899df433c73f4d461446b54a714d51bbd4
         imagePullPolicy: IfNotPresent
         env:
         - name: PUID

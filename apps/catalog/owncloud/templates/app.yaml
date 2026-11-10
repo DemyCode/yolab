@@ -39,7 +39,7 @@ spec:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
       {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
       - name: server
-        image: owncloud/server:11.0.1@sha256:b35658c86270d496c7eef6ca7df31b7c4547ccb79d29ecdbd310f665e855e453
+        image: owncloud/server:11.1.0@sha256:60f13cb41959d9a4abc44535409d113107efb64b83764efbcc3530c12c4de98d
         imagePullPolicy: IfNotPresent
         env:
         - name: APP_PASSWORD
@@ -111,7 +111,7 @@ spec:
     spec:
       containers:
       - name: mariadb
-        image: mariadb:10.11@sha256:0d0945c57f75b3a3b9ebe71aedaaad005fa5305054e8fca3d2e42a8c92b43b5e
+        image: mariadb:10.11@sha256:d769e37960821dfdcf096954f6e7ac89f747e116c1bba98e48edd265dfc7deae
         imagePullPolicy: IfNotPresent
         args:
         - --max-allowed-packet=128M
@@ -187,7 +187,7 @@ spec:
     spec:
       containers:
       - name: redis
-        image: redis:6-alpine@sha256:b362b5dff9d14d961dc3352db4776aba6a8c53ca2661d7c74ad2c121f82cdaea
+        image: redis:6-alpine@sha256:bb3686b504e6780e6878f187f1b8275236183d7ef514a248802f60106adf571a
         imagePullPolicy: IfNotPresent
         args:
         - --databases

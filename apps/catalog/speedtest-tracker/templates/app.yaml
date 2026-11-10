@@ -60,7 +60,7 @@ spec:
       # Laravel refuses to boot without APP_KEY, and rotating it makes every value it
       # has already encrypted unreadable — so it is generated once and kept.
       - name: gen-secrets
-        image: busybox:1.38@sha256:fd7dc98638c8e305f4dc34e979f1c0fdfdcaeb0fbf8fcff77ae834b6da3d7e6e
+        image: busybox:1.38@sha256:a46257e06c82ad85242d0d38077d0a52d9896389ca60a1a59d3463db586e5fa4
         imagePullPolicy: IfNotPresent
         command: ["/bin/sh", "-c"]
         args:
@@ -77,7 +77,7 @@ spec:
             subPath: yolab-state
       containers:
         - name: speedtest-tracker
-          image: linuxserver/speedtest-tracker:version-v1.15.0@sha256:1eeed2307699c083407bd4c1eb86f14d5179f9e1cd960f57d4cbab6f1f8b8a42
+          image: linuxserver/speedtest-tracker:version-v1.15.1@sha256:3851956ddff5b230a096c5414bfdf005e91aff3af48da9bcb4327dc41eff49e4
           imagePullPolicy: IfNotPresent
           command: ["/bin/sh", "-c"]
           args:

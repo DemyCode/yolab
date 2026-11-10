@@ -1,6 +1,6 @@
 {{- define "media-stack.arrKeys" -}}
 - name: {{ .name }}
-  image: python:3.15-alpine@sha256:2699b90f4d562a22e2dd076c82f964032f64814204bff36d271a54ba4cc2c7e2
+  image: python:3.15-alpine@sha256:a0f2e268f2ce8f3709611a90054ec6a8ae31f6251f5896b8648b9bb99835e30a
   imagePullPolicy: IfNotPresent
   command:
     - python3

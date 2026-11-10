@@ -26,7 +26,7 @@ spec:
       containers:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
       - name: babybuddy
-        image: linuxserver/babybuddy:version-v2.10.0@sha256:db17c797d8035ea71c3c5adeee112c829a34dc343f18523b3faa00f7bfc58b6a
+        image: linuxserver/babybuddy:version-v2.11.0@sha256:4ffb1fdb8d284f5928394086e9d83d989930942af3786962bde7696100df78e2
         imagePullPolicy: IfNotPresent
         # Django rejects any POST whose Origin is not in CSRF_TRUSTED_ORIGINS, so
         # without the real hostname here every login and every logged feed would fail

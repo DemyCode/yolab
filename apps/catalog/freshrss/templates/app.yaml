@@ -52,7 +52,7 @@ spec:
     spec:
       containers:
         - name: freshrss
-          image: freshrss/freshrss:latest@sha256:48b63b9bc3d042a1301c32971b01af8841c7f059b452589c5bf77f475ba44c61
+          image: freshrss/freshrss:latest@sha256:af44385229541bee24aa9148d0ff8f3b40e095373c63a2c0f74e09a27d3c59df
           imagePullPolicy: IfNotPresent
           env:
             - name: CRON_MIN

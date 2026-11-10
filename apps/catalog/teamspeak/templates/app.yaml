@@ -82,7 +82,7 @@ spec:
     spec:
       containers:
       - name: server
-        image: teamspeak:3.13.8@sha256:6dfdfb22869adf50e1b66d024b360b786d57a85ea09e8e8fdb6cca23949b2813
+        image: teamspeak:3.13.9@sha256:88335936d0969ffb7182c292f72319167db3722770a8db0c175b4e6fb8bc03ad
         imagePullPolicy: IfNotPresent
         env:
         - name: APP_PASSWORD

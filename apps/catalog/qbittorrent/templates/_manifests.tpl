@@ -1,7 +1,7 @@
 {{- define "qbittorrent.login" -}}
 {{- $cfg := .Values.config -}}
 - name: login
-  image: python:3.15-alpine@sha256:2699b90f4d562a22e2dd076c82f964032f64814204bff36d271a54ba4cc2c7e2
+  image: python:3.15-alpine@sha256:a0f2e268f2ce8f3709611a90054ec6a8ae31f6251f5896b8648b9bb99835e30a
   imagePullPolicy: IfNotPresent
   env:
     - name: PASSWORD
@@ -70,7 +70,7 @@
 
 {{- define "qbittorrent.container" -}}
 - name: qbittorrent
-  image: ghcr.io/linuxserver/qbittorrent:latest@sha256:1ea873647c43d566f251a7122aee330b184509c57ee3257ed19f62dac0f8f24b
+  image: ghcr.io/linuxserver/qbittorrent:latest@sha256:3d4c4545d51a690a0df15a2ff99038823a88a9822df8e794526447b9afbd7384
   imagePullPolicy: IfNotPresent
   env:
     - name: PUID

@@ -3,11 +3,11 @@
 {{- end -}}
 
 {{- define "authelia.image.redis" -}}
-{{- (((.Values.yolab).images).authelia_sessions) | default "redis:7.4-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499" -}}
+{{- (((.Values.yolab).images).authelia_sessions) | default "redis:7.4-alpine@sha256:7b1753b4c5ad8458906c272a8132b8c15f5557b000379eb115fb239706a384b7" -}}
 {{- end -}}
 
 {{- define "authelia.image.busybox" -}}
-{{- (((.Values.yolab).images).authelia_busybox) | default "busybox:1.38@sha256:fd7dc98638c8e305f4dc34e979f1c0fdfdcaeb0fbf8fcff77ae834b6da3d7e6e" -}}
+{{- (((.Values.yolab).images).authelia_busybox) | default "busybox:1.38@sha256:a46257e06c82ad85242d0d38077d0a52d9896389ca60a1a59d3463db586e5fa4" -}}
 {{- end -}}
 
 {{- define "authelia.cookieName" -}}yolab_auth{{- end -}}

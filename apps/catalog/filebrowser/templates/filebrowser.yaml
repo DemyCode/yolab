@@ -50,7 +50,7 @@ spec:
     spec:
       initContainers:
         - name: fix-perms
-          image: busybox:1@sha256:fd7dc98638c8e305f4dc34e979f1c0fdfdcaeb0fbf8fcff77ae834b6da3d7e6e
+          image: busybox:1@sha256:a46257e06c82ad85242d0d38077d0a52d9896389ca60a1a59d3463db586e5fa4
           imagePullPolicy: IfNotPresent
           command: ["sh", "-c", "chown -R 1000:1000 /state"]
           volumeMounts:
@@ -60,7 +60,7 @@ spec:
         {{- include "yolab-common.filesDirs" (list . (list)) | nindent 8 }}
       containers:
         - name: filebrowser
-          image: gtstef/filebrowser:2.1.2-beta@sha256:0ff80341ce8a9c1e3c5ac8ca319bdf9675092028b04ed97607bbfebc10810fff
+          image: gtstef/filebrowser:2.1.4-beta@sha256:d7ae18aa7e8ff81695a35a2c1af399f0c437339241ad90be446c5e71314c0c31
           imagePullPolicy: IfNotPresent
           readinessProbe:
             timeoutSeconds: 5

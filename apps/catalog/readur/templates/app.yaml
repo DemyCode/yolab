@@ -39,7 +39,7 @@ spec:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
       {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
       - name: app
-        image: ghcr.io/readur/readur:3.1.0@sha256:8d8fdacffc8a60f74fe64b204a9012e15a4f5c5d96caf26b17ca5fd55ffa667c
+        image: ghcr.io/readur/readur:3.1.2@sha256:6883b5cf1528b374b2e3b3026f5f28e76e487811783beaeb495f539208a5406b
         imagePullPolicy: IfNotPresent
         env:
         - name: APP_SEED
@@ -123,7 +123,7 @@ spec:
     spec:
       containers:
       - name: postgres
-        image: postgres:17.11@sha256:2d2b8998d31037bf721cfdf764d76ba74171b4fab3431b7f72c27c56ddbdf9e3
+        image: postgres:17.11@sha256:ff87138949ad9a46f32ff23bd6852b52ce024a13dffe9b4087be98292cdd3b4f
         imagePullPolicy: IfNotPresent
         env:
         - name: APP_SEED

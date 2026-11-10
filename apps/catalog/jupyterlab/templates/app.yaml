@@ -30,7 +30,7 @@ spec:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
       {{- include "authelia.embed.container" . | nindent 6 }}
       - name: server
-        image: quay.io/jupyter/base-notebook:lab-4.6.4@sha256:051915e06265cf8415b749dbb655b82611d76e0189ec85501a81fa2f52f481b9
+        image: quay.io/jupyter/base-notebook:lab-4.6.6@sha256:bee24ca0a6bea91a88951184582af54360e1d4ededf12d08817cbb49d8831781
         imagePullPolicy: IfNotPresent
         args:
         - /bin/sh

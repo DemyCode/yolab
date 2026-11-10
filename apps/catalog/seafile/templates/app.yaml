@@ -62,7 +62,7 @@ spec:
     spec:
       containers:
       - name: db
-        image: mariadb:10.11.19@sha256:0d0945c57f75b3a3b9ebe71aedaaad005fa5305054e8fca3d2e42a8c92b43b5e
+        image: mariadb:10.11.19@sha256:d769e37960821dfdcf096954f6e7ac89f747e116c1bba98e48edd265dfc7deae
         imagePullPolicy: IfNotPresent
         env:
         - name: MYSQL_ROOT_PASSWORD
@@ -117,7 +117,7 @@ spec:
     spec:
       containers:
       - name: memcached
-        image: memcached:1.6.45@sha256:2046d6d2eb7cbd59470b533a101cbd67def3e718b04eb72478306dbc804a3171
+        image: memcached:1.6.45@sha256:a395a1bcf5e0e2b0fa4a0142e12b4e24a2320ba4b7c6ffa8655a1a86e8f29dee
         imagePullPolicy: IfNotPresent
         command:
         - memcached
@@ -165,7 +165,7 @@ spec:
     spec:
       containers:
       - name: seafile
-        image: seafileltd/seafile-mc:13.0.28@sha256:b0c90832126bf432db908449f1bb450211e6bbf75a2193bab3399e2a9636eccf
+        image: seafileltd/seafile-mc:13.0.29@sha256:9506f49d5e5065082c134e6348498eed5a5866ddbd94bd5a3e479a6c285bc61a
         imagePullPolicy: IfNotPresent
         env:
         - name: APP_PASSWORD
@@ -252,7 +252,7 @@ spec:
     spec:
       containers:
       - name: seadoc
-        image: seafileltd/sdoc-server:2.0.9@sha256:5b1bf5a8bfdb8bc5db957e7faee2220111fd6eff00795eaaf172e2f80bb999a5
+        image: seafileltd/sdoc-server:2.0.11@sha256:ec9a7d0baa61835b903a8815baca00e63cebfc5a63577ab167181a37aa93c7c3
         imagePullPolicy: IfNotPresent
         env:
         - name: APP_PASSWORD

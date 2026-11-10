@@ -41,7 +41,7 @@ spec:
       {{- include "authelia.oidc.clientInit" . | nindent 6 }}
       {{- include "yolab-common.printOutputs" (list . (dict "admin_password" (dict "secret" (printf "%s-admin" .Release.Name) "key" "admin_password"))) | nindent 6 }}
       - name: gen-secrets
-        image: busybox:1.38@sha256:fd7dc98638c8e305f4dc34e979f1c0fdfdcaeb0fbf8fcff77ae834b6da3d7e6e
+        image: busybox:1.38@sha256:a46257e06c82ad85242d0d38077d0a52d9896389ca60a1a59d3463db586e5fa4
         imagePullPolicy: IfNotPresent
         command:
         - /bin/sh
@@ -57,7 +57,7 @@ spec:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
       {{- include "authelia.embed.container" . | nindent 6 }}
       - name: app
-        image: freikin/dawarich:latest@sha256:b533e6eac4464d55479d030229cf9487f338972cdb88924e8060ca759d0e28b8
+        image: freikin/dawarich:latest@sha256:b8ee8d9fdff92a9d6ca570f98e0e875624f4bfb24b61363f8246bba124d5849d
         imagePullPolicy: IfNotPresent
         readinessProbe:
           timeoutSeconds: 5
@@ -156,7 +156,7 @@ spec:
     spec:
       containers:
       - name: sidekiq
-        image: freikin/dawarich:latest@sha256:b533e6eac4464d55479d030229cf9487f338972cdb88924e8060ca759d0e28b8
+        image: freikin/dawarich:latest@sha256:b8ee8d9fdff92a9d6ca570f98e0e875624f4bfb24b61363f8246bba124d5849d
         imagePullPolicy: IfNotPresent
         command:
         - /bin/sh
@@ -294,7 +294,7 @@ spec:
         kubernetes.io/arch: amd64
       containers:
       - name: redis
-        image: redis:7.4-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
+        image: redis:7.4-alpine@sha256:7b1753b4c5ad8458906c272a8132b8c15f5557b000379eb115fb239706a384b7
         imagePullPolicy: IfNotPresent
         readinessProbe:
           timeoutSeconds: 5

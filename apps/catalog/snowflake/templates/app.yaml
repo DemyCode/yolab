@@ -37,7 +37,7 @@ spec:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
       {{- include "yolab-common.privateAccessInit" . | nindent 6 }}
       - name: seed
-        image: busybox:1.38@sha256:fd7dc98638c8e305f4dc34e979f1c0fdfdcaeb0fbf8fcff77ae834b6da3d7e6e
+        image: busybox:1.38@sha256:a46257e06c82ad85242d0d38077d0a52d9896389ca60a1a59d3463db586e5fa4
         imagePullPolicy: IfNotPresent
         command:
         - /bin/sh
@@ -61,7 +61,7 @@ spec:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
       {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
       - name: web
-        image: sorenisanerd/gotty:v1.10.0@sha256:4d8f45263010491719678ebe9497d0943e57cdd2cc762b78a63abc4d09610c97
+        image: sorenisanerd/gotty:v1.11.0@sha256:52899aff3c4986cf2db9d092173dac7077f650292b38bc4a3ba0e2f1eeb203c2
         imagePullPolicy: IfNotPresent
         args:
         - /bin/sh
@@ -103,7 +103,7 @@ spec:
     spec:
       containers:
       - name: proxy
-        image: thetorproject/snowflake-proxy:v2.15.1@sha256:a040427f567692d1ffd23a99f419f7e7b4557ff6c9555dedea35702affd996ae
+        image: thetorproject/snowflake-proxy:v2.15.3@sha256:045186c89b7b97e2a6c5d0f463583750ece9ccdf3461ed4f92f063f5ad65e958
         imagePullPolicy: IfNotPresent
         args:
         - -log
@@ -122,7 +122,7 @@ spec:
           name: '{{ .Release.Name }}-seed'
       initContainers:
       - name: seed
-        image: busybox:1.38@sha256:fd7dc98638c8e305f4dc34e979f1c0fdfdcaeb0fbf8fcff77ae834b6da3d7e6e
+        image: busybox:1.38@sha256:a46257e06c82ad85242d0d38077d0a52d9896389ca60a1a59d3463db586e5fa4
         imagePullPolicy: IfNotPresent
         command:
         - /bin/sh

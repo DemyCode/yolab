@@ -238,7 +238,7 @@ spec:
             - name: registration-dir
               mountPath: /registration
         - name: csi-cephfsplugin
-          image: quay.io/cephcsi/cephcsi:v3.18.1@sha256:a8c0653a9565049ee7b36a585753e5e0e8fe2e4e5a67e9db3a5f8d9d7e890635
+          image: quay.io/cephcsi/cephcsi:v3.18.2@sha256:55eac6e7afc3e48c545bb4f4686ddd068a9db9528726e1aed2babd85de861544
           args:
             - --nodeid=$(NODE_ID)
             - --type=cephfs
@@ -471,7 +471,7 @@ spec:
             - name: socket-dir
               mountPath: /csi
         - name: csi-cephfsplugin
-          image: quay.io/cephcsi/cephcsi:v3.18.1@sha256:a8c0653a9565049ee7b36a585753e5e0e8fe2e4e5a67e9db3a5f8d9d7e890635
+          image: quay.io/cephcsi/cephcsi:v3.18.2@sha256:55eac6e7afc3e48c545bb4f4686ddd068a9db9528726e1aed2babd85de861544
           args:
             - --nodeid=$(NODE_ID)
             - --type=cephfs

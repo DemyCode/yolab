@@ -30,7 +30,7 @@ spec:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
       {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
       - name: web
-        image: ghcr.io/fccview/jotty:1.28.0@sha256:df965e56fe2e3ce056351425b8ff5d7df991a6596dfa807c73c91cf5eaa30c86
+        image: ghcr.io/fccview/jotty:1.29.2@sha256:5295d8a85aada46519ed6a1822d5989a373583f42017a346e8a62b44d75af71a
         imagePullPolicy: IfNotPresent
         env:
         - name: NODE_ENV

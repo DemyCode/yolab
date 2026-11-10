@@ -8,7 +8,7 @@
 {{- $yolabOn := eq (include "yolab-common.yolab.enabled" .) "true" -}}
 {{- $electrs := .Values.config.electrs_enabled -}}
 {{- $mempool := and $electrs .Values.config.mempool_enabled -}}
-{{- $nodeImage := ternary "ghcr.io/retropex/umbrel-bitcoin-knots:1.2.19@sha256:075e50f5e74ac290137de9a5972c70d7f8e6fe00aabfdad0ed222c2939c00cbe" "ghcr.io/getumbrel/umbrel-bitcoin:v1.4.0@sha256:13a24256cdd7b1cead36c2e4dcedc699b31fc235a0e4179c8c4527f0c361e6bf" $isKnots -}}
+{{- $nodeImage := ternary "ghcr.io/retropex/umbrel-bitcoin-knots:1.2.19@sha256:075e50f5e74ac290137de9a5972c70d7f8e6fe00aabfdad0ed222c2939c00cbe" "ghcr.io/getumbrel/umbrel-bitcoin:v1.5.0@sha256:2bf5f6c1612abcbd050bef98f839ee3489f589bb46fbb50fd5f0340d9cc1bd3c" $isKnots -}}
 {{ include "yolab-common.uninstallHook" . }}
 ---
 apiVersion: v1
@@ -178,7 +178,7 @@ spec:
             mountPath: /data
             subPath: "bitcoin-node"
       - name: tor
-        image: ghcr.io/getumbrel/tor:0.4.9.11@sha256:e382b8629c0dfef6ceb396b062622d4e4e955b19d6f16b883fd2c0723ad5671a
+        image: ghcr.io/getumbrel/tor:0.4.9.14@sha256:7663d18fe37b3edd97c859aa36bb5eeaa328d86c57729db0433dff430e8abd8d
         imagePullPolicy: IfNotPresent
         securityContext:
           runAsUser: 1000
@@ -197,7 +197,7 @@ spec:
             mountPath: /data
             subPath: "tor"
       - name: i2pd
-        image: purplei2p/i2pd:release-2.59.0@sha256:257653c18ce0b127ef480e3d8373b3ddbf1495e842674c8cfc59909be0015979
+        image: purplei2p/i2pd:release-2.61.0@sha256:422f6715f635d1af0a6ae4937447471477deb6e6719bf5935029be674e4f4cdd
         imagePullPolicy: IfNotPresent
         command:
           - i2pd
@@ -346,7 +346,7 @@ spec:
         fsGroup: 1000
       containers:
       - name: web
-        image: mempool/frontend:v3.3.1@sha256:0a162e7e0d26a01e9686ddf69c96c4beae5fe10b0daa1020f3d392e033c058f1
+        image: mempool/frontend:v3.3.2@sha256:83c5d1e20cd4fad358584f5921ca547d69ab80162d0e2f3138c2d142a91dbadd
         imagePullPolicy: IfNotPresent
         securityContext:
           runAsUser: 1000
@@ -373,7 +373,7 @@ spec:
           initialDelaySeconds: 20
           periodSeconds: 10
       - name: api
-        image: mempool/backend:v3.3.1@sha256:358c0a517c8dcf26e7f5c02447de5bab33ec7e3fa6318685cf8012ce36098e3a
+        image: mempool/backend:v3.3.2@sha256:c358a20591285f77fb11e6f2502441e6b15bc7dd8282433e09bfd948b8ab0aa8
         imagePullPolicy: IfNotPresent
         securityContext:
           runAsUser: 1000
@@ -440,7 +440,7 @@ spec:
             mountPath: /backend/cache
             subPath: "mempool"
       - name: db
-        image: mariadb:10.11.19@sha256:0d0945c57f75b3a3b9ebe71aedaaad005fa5305054e8fca3d2e42a8c92b43b5e
+        image: mariadb:10.11.19@sha256:d769e37960821dfdcf096954f6e7ac89f747e116c1bba98e48edd265dfc7deae
         imagePullPolicy: IfNotPresent
         securityContext:
           runAsUser: 1000

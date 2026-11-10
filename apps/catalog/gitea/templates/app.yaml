@@ -151,7 +151,7 @@ spec:
         - name: yolab
           mountPath: /yolab
       - name: anubis
-        image: ghcr.io/techarohq/anubis:latest@sha256:1744c03a918160a28b0d2e8c1656de6585f4071b30b4c3b0d51d02282c9b7c25
+        image: ghcr.io/techarohq/anubis:latest@sha256:5fcbce70ee6168be5b226d19bec90111d0acd0daf13028fa06b044cf3ebbbd5f
         imagePullPolicy: IfNotPresent
         env:
         - name: BIND
@@ -187,7 +187,7 @@ spec:
     spec:
       containers:
       - name: postgres
-        image: postgres:17-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
+        image: postgres:17-alpine@sha256:3540c0362c809df084ffac0ae69fe794515f9de92692f02178bcdce0ef0302ac
         imagePullPolicy: IfNotPresent
         readinessProbe:
           timeoutSeconds: 5

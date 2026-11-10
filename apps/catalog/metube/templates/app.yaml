@@ -30,7 +30,7 @@ spec:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
       {{- include "authelia.embed.container" . | nindent 6 }}
       - name: metube
-        image: ghcr.io/alexta69/metube:latest@sha256:df929ef2453fd75c1f1cbd8dafb309ee03ff18d8705c7c1e01642b1202d4a650
+        image: ghcr.io/alexta69/metube:latest@sha256:96dfbf0d5b2944e4ee38f6ce1b34bb0e75a1a3c74eaefd93424ed11284cb72b2
         imagePullPolicy: IfNotPresent
         env:
           # MeTube defaults to HOST=0.0.0.0, the IPv4 wildcard, which does not

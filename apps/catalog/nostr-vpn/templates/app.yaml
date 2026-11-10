@@ -35,7 +35,7 @@ spec:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
       {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
       - name: web
-        image: ghcr.io/mmalmi/nostr-vpn-umbrel:v4.1.17@sha256:3cb353aa496ddc466ed485d7c05a426d64da773de03e56463eed47458e30bbb6
+        image: ghcr.io/mmalmi/nostr-vpn-umbrel:v4.1.20@sha256:efd210787468120fbec95586cb9dc11c3642ced1c104cd7a15c044995530e45f
         imagePullPolicy: IfNotPresent
         args:
         - --listen
@@ -89,7 +89,7 @@ spec:
     spec:
       containers:
       - name: daemon
-        image: ghcr.io/mmalmi/nostr-vpn-umbrel:v4.1.17@sha256:3cb353aa496ddc466ed485d7c05a426d64da773de03e56463eed47458e30bbb6
+        image: ghcr.io/mmalmi/nostr-vpn-umbrel:v4.1.20@sha256:efd210787468120fbec95586cb9dc11c3642ced1c104cd7a15c044995530e45f
         imagePullPolicy: IfNotPresent
         command:
         - /usr/local/bin/nvpn

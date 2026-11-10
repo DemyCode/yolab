@@ -3,11 +3,11 @@ name: grist
 description: Spreadsheets that work like a database, with Python formulas and custom widgets
 home: https://www.getgrist.com
 type: application
-version: 0.1.11
+version: 0.1.12
 appVersion: 1.7.22
 dependencies:
   - name: yolab-common
-    version: "0.1.39"
+    version: "0.1.40"
     repository: oci://ghcr.io/demycode/charts
   - name: authelia
     version: "0.2.4"

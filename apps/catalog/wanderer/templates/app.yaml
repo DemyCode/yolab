@@ -40,7 +40,7 @@ spec:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
       {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
       - name: web
-        image: flomp/wanderer-web:v0.21.0@sha256:af721ffac56fd33243043211fc49e4d5c5651f784551ae7b5b05d845c7c41147
+        image: flomp/wanderer-web:v0.21.2@sha256:849f63732d3e751f077c1567bda77aebc68c8b5691271cb418e10efbcf2f364f
         imagePullPolicy: IfNotPresent
         env:
         - name: APP_PASSWORD
@@ -117,7 +117,7 @@ spec:
     spec:
       containers:
       - name: search
-        image: getmeili/meilisearch:v1.55.0@sha256:ff546679970126f8822e15d1b6a06bfbff1f2ce2e43f810cfb5258012f92de5c
+        image: getmeili/meilisearch:v1.56.2@sha256:9600db22be3fcbf3d506176d3a73dd70a65c5719d9aa1d2837355b75afb8f4fb
         imagePullPolicy: IfNotPresent
         env:
         - name: APP_PASSWORD
@@ -173,7 +173,7 @@ spec:
     spec:
       containers:
       - name: db
-        image: flomp/wanderer-db:v0.21.0@sha256:ba7bd45b8177fec7a31d297ecaf3c98e94aabb4fc043f167df35aeba8b93468c
+        image: flomp/wanderer-db:v0.21.2@sha256:2f8d7f29c2a473dce8e84b1a33ac3a692a21238c39b6757fa0e0162542d85865
         imagePullPolicy: IfNotPresent
         env:
         - name: APP_PASSWORD

@@ -114,7 +114,6 @@ export function AppAccess({
   const [checking, setChecking] = useState(false);
   const [failed, setFailed] = useState(false);
 
-
   const checkNow = useCallback(async () => {
     setChecking(true);
     try {

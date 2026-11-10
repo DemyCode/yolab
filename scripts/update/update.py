@@ -612,11 +612,8 @@ def update_cargo(root, summary):
             gate = verify_checks(root, rel)
             # Semver-compatible moves only: `cargo update` never crosses a
             # major, and Cargo.toml is left exactly as written.
-            _, notes = run(
-                ["cargo", "update", "--verbose"], cwd=crate, stderr=True
-            )
-            run(["cargo", "metadata", "--locked", "--format-version", "1"],
-                cwd=crate)
+            _, notes = run(["cargo", "update", "--verbose"], cwd=crate, stderr=True)
+            run(["cargo", "metadata", "--locked", "--format-version", "1"], cwd=crate)
             build_checks(root, gate)
             summary.moved.append(f"cargo {rel}")
             majors = cargo_majors(notes.decode(errors="replace"))
@@ -682,9 +679,11 @@ def verify_checks(root, rel):
 
 
 def current_system():
-    return run(
-        ["nix", "eval", "--raw", "--impure", "--expr", "builtins.currentSystem"]
-    ).decode().strip()
+    return (
+        run(["nix", "eval", "--raw", "--impure", "--expr", "builtins.currentSystem"])
+        .decode()
+        .strip()
+    )
 
 
 def build_checks(root, attrs):
@@ -767,8 +766,9 @@ def update_npm(root, summary):
         nix_files = list(walk(root, lambda p: p.endswith(".nix")))
         manifest = os.path.join(pkg_dir, "package.json")
 
-        def go(pkg_dir=pkg_dir, lock=lock, rel=rel, manifest=manifest,
-               nix_files=nix_files):
+        def go(
+            pkg_dir=pkg_dir, lock=lock, rel=rel, manifest=manifest, nix_files=nix_files
+        ):
             gate = verify_checks(root, rel)
             old_hash, version = pinned_npm_hash(root, lock)
             if old_hash is None:

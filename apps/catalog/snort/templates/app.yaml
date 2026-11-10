@@ -32,7 +32,7 @@ spec:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
       {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
       - name: web
-        image: voidic/snort:v0.5.3@sha256:410778efd4d74f001bb20e91e9f752bda8bb2e5d5f796a2020b253be8b9ca099
+        image: voidic/snort:v0.5.4@sha256:9ea5f2d60108984cb56992c7842950e02a3b31d610a6cb79ca9c43b46cbc1057
         imagePullPolicy: IfNotPresent
         ports:
         - containerPort: 8080

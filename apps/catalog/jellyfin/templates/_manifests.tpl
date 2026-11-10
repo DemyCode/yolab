@@ -55,7 +55,7 @@ spec:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
       {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
       - name: jellyfin
-        image: lscr.io/linuxserver/jellyfin:latest@sha256:799509f8ef3be7037478699cc6fd14d19dd75faac5e474ed219e98ae78a5b3e4
+        image: lscr.io/linuxserver/jellyfin:latest@sha256:b7eabe1f098f4e850bfd63d6721369117195410a471db1a41748ab768b81a639
         imagePullPolicy: IfNotPresent
         readinessProbe:
           timeoutSeconds: 5

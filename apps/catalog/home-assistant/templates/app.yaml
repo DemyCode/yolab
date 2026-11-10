@@ -35,7 +35,7 @@ spec:
       {{- include "yolab-common.privateAccessInit" . | nindent 6 }}
       
       - name: seed-config
-        image: busybox:1.38@sha256:fd7dc98638c8e305f4dc34e979f1c0fdfdcaeb0fbf8fcff77ae834b6da3d7e6e
+        image: busybox:1.38@sha256:a46257e06c82ad85242d0d38077d0a52d9896389ca60a1a59d3463db586e5fa4
         imagePullPolicy: IfNotPresent
         command:
           - /bin/sh
@@ -62,7 +62,7 @@ spec:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
       {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
       - name: home-assistant
-        image: ghcr.io/home-assistant/home-assistant:stable@sha256:33afb0659d786213264c2211f8d91c5fe87461c56eba6a3a546eb05fc71e89f4
+        image: ghcr.io/home-assistant/home-assistant:stable@sha256:6785d1eca68747a524c156faae1b139ed415c07357386ae6fe17291986e59e82
         imagePullPolicy: IfNotPresent
         readinessProbe:
           timeoutSeconds: 5

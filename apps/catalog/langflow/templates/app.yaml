@@ -39,7 +39,7 @@ spec:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
       {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
       - name: app
-        image: langflowai/langflow:1.12.6@sha256:a0396e089eb97fa471ef8affc492b8c56abb3758040a5ddaa80814b0abad15bf
+        image: langflowai/langflow:1.13.1@sha256:9f5220634256d243756d9a59a7210f3e71010eb2dfb20841ccbaae56a22a4267
         imagePullPolicy: IfNotPresent
         env:
         - name: APP_PASSWORD
@@ -95,7 +95,7 @@ spec:
     spec:
       containers:
       - name: db
-        image: postgres:16.15-trixie@sha256:ca0bd484cb98bf4b24eb1010e73fb3fcbd6714d240fbc1a10eea5b7dbecb641d
+        image: postgres:16.15-trixie@sha256:f9a7b9ebf6f56201f949db745e47bc423c0f0f8294bafe991cc10bf74b029657
         imagePullPolicy: IfNotPresent
         env:
         - name: APP_PASSWORD

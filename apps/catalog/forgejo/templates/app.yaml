@@ -30,7 +30,7 @@ spec:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
       {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
       - name: server
-        image: codeberg.org/forgejo/forgejo:16.0.6-rootless@sha256:51b47921660e1ec7127f094208fe06901ba57df4fe6d59fcccc3a2419514a77f
+        image: codeberg.org/forgejo/forgejo:16.0.7-rootless@sha256:85c09de612c60347d3d44582ca8cb32e7ac46309a544e35b2cb27dad2e5ad5bd
         imagePullPolicy: IfNotPresent
         env:
         - name: FORGEJO__security__INSTALL_LOCK
@@ -96,7 +96,7 @@ spec:
     spec:
       containers:
       - name: db
-        image: postgres:17.11@sha256:2d2b8998d31037bf721cfdf764d76ba74171b4fab3431b7f72c27c56ddbdf9e3
+        image: postgres:17.11@sha256:ff87138949ad9a46f32ff23bd6852b52ce024a13dffe9b4087be98292cdd3b4f
         imagePullPolicy: IfNotPresent
         env:
         - name: POSTGRES_USER

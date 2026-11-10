@@ -39,7 +39,7 @@ spec:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
       {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
       - name: chronograf
-        image: chronograf:1.11.6@sha256:e01a840ecaf467e5b058faf985d945a1ace75a950e6064fa0218948a6e0ba069
+        image: chronograf:1.11.7@sha256:973b10204ba70249c4f778611d398d47f861984be037ee52c8320a953c7a4956
         imagePullPolicy: IfNotPresent
         env:
         - name: APP_PASSWORD
@@ -89,7 +89,7 @@ spec:
     spec:
       containers:
       - name: influxdb
-        image: influxdb:1.13.1@sha256:1126a8335b2dd106c5360b9f493c365d9b548100ad68791b4b421dc9f408f8d3
+        image: influxdb:1.13.2@sha256:ffa96366d916545608b8ae8dcc09d1efb5d792e4139096dfdcb1daf8789b211a
         imagePullPolicy: IfNotPresent
         env:
         - name: APP_PASSWORD

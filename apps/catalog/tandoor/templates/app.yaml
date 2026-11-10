@@ -61,7 +61,7 @@ spec:
     spec:
       containers:
       - name: web
-        image: vabene1111/recipes:2.6.15@sha256:2e759dd1478a2ed119ee474e28522079fb1cfa50b3fd25cba89f6b9a67abad72
+        image: vabene1111/recipes:2.7.2@sha256:1b6d43c3c0f5d2888aa564d9daf29883212b79ad496f59f3c684c099eb1a57b9
         imagePullPolicy: IfNotPresent
         env:
         - name: APP_SEED
@@ -144,7 +144,7 @@ spec:
     spec:
       containers:
       - name: db
-        image: postgres:16-alpine@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea
+        image: postgres:16-alpine@sha256:aa6cb33cf4c19c765cefcf48d96176258800870a9a1e930ad126200f9d825139
         imagePullPolicy: IfNotPresent
         env:
         - name: APP_SEED
