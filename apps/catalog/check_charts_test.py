@@ -552,6 +552,7 @@ class SteamHeadless(RenderedChart):
         script = Path(check_charts.HERE, "steam-headless", "files", name)
         return subprocess.run(
             ["bash", str(script)],
+            check=False,
             env={**os.environ, **env},
             capture_output=True,
             text=True,
