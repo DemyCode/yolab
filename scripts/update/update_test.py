@@ -391,17 +391,23 @@ class HashRepair(unittest.TestCase):
             nix = os.path.join(root, "common.nix")
             update.write(nix, 'hash = "sha256-OLD=";\n')
             results = iter([(False, self.MISMATCH), (True, "")])
-            with mock.patch.object(update, "current_system", return_value="x"), \
-                    mock.patch.object(update, "nix_build", lambda cmd: next(results)):
+            with (
+                mock.patch.object(update, "current_system", return_value="x"),
+                mock.patch.object(update, "nix_build", lambda cmd: next(results)),
+            ):
                 update.build_checks(root, ["checks.{system}.a"])
             self.assertEqual(update.read(nix), 'hash = "sha256-NEW=";\n')
 
     def test_a_mismatch_on_a_hash_this_repo_does_not_pin_fails(self):
         with tempfile.TemporaryDirectory() as root:
             update.write(os.path.join(root, "common.nix"), "x\n")
-            with mock.patch.object(update, "current_system", return_value="x"), \
-                    mock.patch.object(update, "nix_build", lambda cmd: (False, self.MISMATCH)), \
-                    self.assertRaises(RuntimeError):
+            with (
+                mock.patch.object(update, "current_system", return_value="x"),
+                mock.patch.object(
+                    update, "nix_build", lambda cmd: (False, self.MISMATCH)
+                ),
+                self.assertRaises(RuntimeError),
+            ):
                 update.build_checks(root, ["checks.{system}.a"])
 
     def test_yolabs_flake_update_also_builds_its_caddy(self):
