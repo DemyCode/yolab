@@ -117,14 +117,14 @@ class Actions(unittest.TestCase):
     def test_an_action_is_pinned_to_a_commit_with_its_tag_beside_it(self):
         line = "      - uses: actions/checkout@v5"
         self.assertEqual(
-            update.pin_uses(line, lambda repo: ("v5.0.1", "f" * 40)),
+            update.pin_uses(line, lambda repo, major: ("v5.0.1", "f" * 40)),
             f"      - uses: actions/checkout@{'f' * 40} # v5.0.1",
         )
 
     def test_a_pinned_action_moves_and_its_comment_follows(self):
         line = f"        uses: github/codeql-action/init@{'a' * 40} # v3.1.0"
         self.assertEqual(
-            update.pin_uses(line, lambda repo: ("v3.2.0", "b" * 40)),
+            update.pin_uses(line, lambda repo, major: ("v3.2.0", "b" * 40)),
             f"        uses: github/codeql-action/init@{'b' * 40} # v3.2.0",
         )
 
@@ -134,8 +134,43 @@ class Actions(unittest.TestCase):
             "      - uses: docker://alpine:3",
         ):
             self.assertEqual(
-                update.pin_uses(line, lambda repo: ("v1.0.0", "a" * 40)), line
+                update.pin_uses(line, lambda repo, major: ("v1.0.0", "a" * 40)), line
             )
+
+
+class ActionMajor(unittest.TestCase):
+    def test_the_major_comes_from_the_tag_or_the_comment_beside_a_commit(self):
+        self.assertEqual(update.action_major("v5", None), 5)
+        self.assertEqual(update.action_major("v4.2.1", None), 4)
+        self.assertEqual(update.action_major("a" * 40, " # v7.0.1"), 7)
+        self.assertIsNone(update.action_major("a" * 40, None))
+        self.assertIsNone(update.action_major("main", None))
+
+    def test_an_action_stays_on_its_major(self):
+        tags = ["v4.2.0", "v4.3.1", "v5.0.0", "v5.1.0-rc.1"]
+        self.assertEqual(update.newest_in_major(tags, 4), "v4.3.1")
+        self.assertEqual(update.newest_in_major(tags, None), "v5.0.0")
+
+    def test_the_line_is_resolved_with_its_own_major(self):
+        seen = []
+        update.pin_uses(
+            f"      - uses: actions/checkout@{'a' * 40} # v4.1.0",
+            lambda repo, major: seen.append((repo, major)),
+        )
+        self.assertEqual(seen, [("actions/checkout", 4)])
+
+
+class RepoChecks(unittest.TestCase):
+    def test_a_flake_update_must_build_every_check_of_its_repo(self):
+        checks = update.repo_checks("/x/yolab-external")
+        self.assertIn("checks.{system}.tests", checks)
+        self.assertIn("packages.{system}.frontend", checks)
+        self.assertNotIn("checks.{system}.client-ui", checks)
+
+    def test_nothing_listed_builds_nothing(self):
+        with mock.patch.object(update, "run") as run:
+            update.build_checks("/x/other", [])
+        run.assert_not_called()
 
 
 class Flake(unittest.TestCase):
@@ -297,6 +332,35 @@ class DisabledCharts(unittest.TestCase):
             files = [os.path.relpath(p, root) for p in update.image_files(root)]
             self.assertIn("apps/catalog/on/templates/app.yaml", files)
             self.assertFalse([f for f in files if "/off/" in f])
+
+
+class ChartPins(unittest.TestCase):
+    def chart(self, catalog, name, version, deps=()):
+        d = os.path.join(catalog, name)
+        os.makedirs(d, exist_ok=True)
+        lines = [f"name: {name}", f"version: {version}", "dependencies:"]
+        for dep, pin in deps:
+            lines += [f"  - name: {dep}", f'    version: "{pin}"',
+                      "    repository: oci://ghcr.io/demycode/charts"]
+        update.write(os.path.join(d, "Chart.yaml"), "\n".join(lines) + "\n")
+
+    def test_a_pin_follows_the_catalog_and_the_pinning_chart_is_bumped(self):
+        with tempfile.TemporaryDirectory() as root:
+            cat = os.path.join(root, "apps", "catalog")
+            self.chart(cat, "authelia", "0.2.5")
+            self.chart(cat, "jellyfin", "0.3.27", [("authelia", "0.2.4")])
+            self.chart(cat, "movies-tv", "0.2.27", [("jellyfin", "0.3.26"), ("external", "1.0.0")])
+            summary = update.Summary()
+            with mock.patch.object(update, "head_version", side_effect=lambda r, p: update.TOP_VERSION.search(update.read(p)).group(1) if "jellyfin" not in p else "0.3.26"):
+                update.sync_pins(root, cat, summary)
+            jelly = update.read(os.path.join(cat, "jellyfin", "Chart.yaml"))
+            pack = update.read(os.path.join(cat, "movies-tv", "Chart.yaml"))
+            self.assertIn('version: "0.2.5"', jelly)
+            self.assertIn("version: 0.3.27", jelly)  # bumped since HEAD already
+            self.assertIn('version: "0.3.27"', pack)
+            self.assertIn('version: "1.0.0"', pack)  # not a chart of this catalog
+            self.assertIn("version: 0.2.28", pack)
+            self.assertEqual(summary.failed, [])
 
 
 class CustomLibrary(unittest.TestCase):

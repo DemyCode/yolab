@@ -3,7 +3,7 @@ name: actual
 description: "Local-first envelope budgeting with multi-device sync"
 home: https://actualbudget.org
 type: application
-version: 0.1.42
+version: 0.1.43
 appVersion: "25"
 
 dependencies:
@@ -11,7 +11,7 @@ dependencies:
     version: "0.1.40"
     repository: "oci://ghcr.io/demycode/charts"
   - name: authelia
-    version: "0.2.4"
+    version: "0.2.5"
     repository: oci://ghcr.io/demycode/charts
 
 annotations:

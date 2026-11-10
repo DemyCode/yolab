@@ -1687,7 +1687,7 @@ class OpenWebUiOllama(RenderedChart):
         self.assertIn("ollama-vulkan", engines)
         spec = engines["ollama-vulkan"]
         self.assertEqual(spec["nodeSelector"]["yolab.io/accelerator"], "vulkan")
-        limits = container_of(spec, "steam-headless")["resources"]["limits"]
+        limits = container_of(spec, "ollama")["resources"]["limits"]
         self.assertEqual(limits, {"yolab.io/dri": "1"})
 
     def test_it_listens_on_ipv6_where_the_readiness_probe_knocks(self):

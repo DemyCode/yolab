@@ -3,7 +3,7 @@ name: homepage
 description: "Configurable start page and dashboard for your services"
 home: https://gethomepage.dev
 type: application
-version: 0.1.41
+version: 0.1.42
 appVersion: "1"
 
 dependencies:
@@ -11,7 +11,7 @@ dependencies:
     version: "0.1.40"
     repository: "oci://ghcr.io/demycode/charts"
   - name: authelia
-    version: "0.2.4"
+    version: "0.2.5"
     repository: oci://ghcr.io/demycode/charts
 
 annotations:

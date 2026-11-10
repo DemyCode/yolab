@@ -368,6 +368,59 @@ def bump_chart(root, chart_yaml, summary):
     return text, new
 
 
+DEP_PIN = re.compile(
+    r"^(\s*-\s*name:\s*[\"']?([\w.-]+)[\"']?\s*\n\s+version:\s*)([\"']?)([^\"'\n]+)\3",
+    re.MULTILINE,
+)
+
+
+def catalog_versions(catalog):
+    found = {}
+    for name in os.listdir(catalog):
+        chart_yaml = os.path.join(catalog, name, "Chart.yaml")
+        if os.path.isfile(chart_yaml):
+            m = TOP_VERSION.search(read(chart_yaml))
+            if m:
+                found[name] = m.group(1)
+    return found
+
+
+def repin(text, versions):
+    """Point every dependency on a chart of this catalog at the version the
+    catalog has now."""
+    return DEP_PIN.sub(
+        lambda m: (
+            f"{m.group(1)}{m.group(3)}{versions[m.group(2)]}{m.group(3)}"
+            if m.group(2) in versions
+            else m.group(0)
+        ),
+        text,
+    )
+
+
+def sync_pins(root, catalog, summary):
+    """A chart that pins another chart of the catalog (authelia, the apps of a
+    pack, the library) moves with it: its pin follows and it is bumped, which
+    can in turn move the charts that pin it, until nothing changes."""
+    for _ in range(10):
+        versions = catalog_versions(catalog)
+        repinned = []
+        for name in sorted(versions):
+            chart_yaml = os.path.join(catalog, name, "Chart.yaml")
+            text = read(chart_yaml)
+            new = repin(text, versions)
+            if new != text:
+                write(chart_yaml, new)
+                repinned.append(name)
+        if not repinned:
+            return
+        for name in repinned:
+            _, v = bump_chart(root, os.path.join(catalog, name, "Chart.yaml"), summary)
+            if v:
+                summary.moved.append(f"chart {name} -> {v} (follows what it pins)")
+    summary.failed.append("chart pins did not settle after 10 rounds")
+
+
 CUSTOM_LIBRARY = re.compile(
     r'^(const CUSTOM_LIBRARY_VERSION: &str = )"[^"]+";', re.MULTILINE
 )
@@ -389,8 +442,6 @@ def bump_charts(root, touched, summary):
     charts = {
         c for c in (chart_of(catalog, p) for p in touched if p.startswith(catalog)) if c
     }
-    if not charts:
-        return
     if "yolab-common" in charts:
         _, lib = bump_chart(
             root, os.path.join(catalog, "yolab-common", "Chart.yaml"), summary
@@ -414,8 +465,9 @@ def bump_charts(root, touched, summary):
         _, v = bump_chart(root, os.path.join(catalog, name, "Chart.yaml"), summary)
         if v:
             summary.moved.append(f"chart {name} -> {v}")
+    sync_pins(root, catalog, summary)
     arches = os.path.join(catalog, "image_arches.py")
-    if os.path.isfile(arches):
+    if charts and os.path.isfile(arches):
         step(
             summary,
             "image_arches.json",
@@ -491,12 +543,34 @@ def parse_ls_remote(text):
     return out
 
 
+COMMIT = re.compile(r"^[0-9a-f]{40}$")
+MAJOR = re.compile(r"^v?(\d+)(?:\.|$)")
+
+
+def action_major(ref, comment):
+    """The major an action is on: from the tag it names, or for a pinned
+    commit from the tag written beside it."""
+    tag = ref
+    if COMMIT.match(ref):
+        tag = (comment or "").lstrip(" #").strip()
+    m = MAJOR.match(tag)
+    return int(m.group(1)) if m else None
+
+
+def newest_in_major(tags, major):
+    """Newest release on this major; any release when the major is unknown."""
+    if major is None:
+        return newest_release(tags)
+    return newest_release([t for t in tags if SEMVER.match(t)
+                           and int(SEMVER.match(t).group(1)) == major])
+
+
 def pin_uses(line, resolve):
     m = USES_LINE.match(line)
     if not m:
         return line
-    lead, repo, sub, _, _ = m.groups()
-    found = resolve(repo)
+    lead, repo, sub, ref, comment = m.groups()
+    found = resolve(repo, action_major(ref, comment))
     if not found:
         return line
     tag, sha = found
@@ -507,21 +581,34 @@ def update_actions(root, summary):
     files = list(
         walk(os.path.join(root, ".github"), lambda p: p.endswith((".yml", ".yaml")))
     )
+    remote = {}
     cache = {}
 
-    def resolve(repo):
-        if repo not in cache:
+    def resolve(repo, major):
+        if repo not in remote:
             try:
                 text = run(
                     ["git", "ls-remote", "--tags", f"https://github.com/{repo}"]
                 ).decode()
-                tags = parse_ls_remote(text)
-                tag = newest_release(tags)
-                cache[repo] = (tag, tags[tag]) if tag else None
+                remote[repo] = parse_ls_remote(text)
             except Exception as e:  # noqa: BLE001
                 summary.failed.append(f"action {repo}: {e}")
-                cache[repo] = None
-        return cache[repo]
+                remote[repo] = None
+        tags = remote[repo]
+        if tags is None:
+            return None
+        key = (repo, major)
+        if key not in cache:
+            tag = newest_in_major(tags, major)
+            cache[key] = (tag, tags[tag]) if tag else None
+            newest = newest_release(tags)
+            if major is not None and newest and tag != newest and (
+                int(SEMVER.match(newest).group(1)) > major
+            ):
+                summary.held.append(
+                    f"action {repo}: {newest} exists, a new major line, left for a person"
+                )
+        return cache[key]
 
     touched = []
     for path in files:
@@ -530,7 +617,7 @@ def update_actions(root, summary):
         if new_text != text:
             write(path, new_text)
             touched.append(path)
-    for repo, found in sorted(cache.items()):
+    for (repo, _), found in sorted(cache.items(), key=lambda kv: str(kv[0])):
         if found:
             summary.moved.append(f"action {repo} -> {found[0]}")
     return touched
@@ -610,6 +697,10 @@ def update_flake(root, summary):
             summary.held.append(
                 f"nixpkgs in {os.path.basename(root)} stays at {old_rev[:7]}: {problem}"
             )
+    if json.loads(read(path)) != before:
+        # The new inputs (nixpkgs above all) must still build and test
+        # everything listed for this repo, or the step puts flake.lock back.
+        build_checks(root, repo_checks(root))
     for name, node in after["nodes"].items():
         old = (before["nodes"].get(name, {}).get("locked") or {}).get("rev")
         new = (node.get("locked") or {}).get("rev")
@@ -696,6 +787,15 @@ def verify_checks(root, rel):
     return attrs
 
 
+def repo_checks(root):
+    repo = os.path.basename(root)
+    attrs = []
+    for (r, _), listed in VERIFY.items():
+        if r == repo:
+            attrs += [a for a in listed if a not in attrs]
+    return attrs
+
+
 def current_system():
     return (
         run(["nix", "eval", "--raw", "--impure", "--expr", "builtins.currentSystem"])
@@ -705,6 +805,8 @@ def current_system():
 
 
 def build_checks(root, attrs):
+    if not attrs:
+        return
     system = current_system()
     run(
         [
