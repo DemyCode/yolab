@@ -379,6 +379,38 @@ class ChartPins(unittest.TestCase):
             self.assertEqual(summary.failed, [])
 
 
+class HashRepair(unittest.TestCase):
+    MISMATCH = (
+        "error: hash mismatch in fixed-output derivation 'caddy-src.drv':\n"
+        "         specified: sha256-OLD=\n"
+        "            got:    sha256-NEW=\n"
+    )
+
+    def test_a_moved_fixed_output_hash_is_repinned_and_built_again(self):
+        with tempfile.TemporaryDirectory() as root:
+            nix = os.path.join(root, "common.nix")
+            update.write(nix, 'hash = "sha256-OLD=";\n')
+            results = iter([(False, self.MISMATCH), (True, "")])
+            with mock.patch.object(update, "current_system", return_value="x"), \
+                    mock.patch.object(update, "nix_build", lambda cmd: next(results)):
+                update.build_checks(root, ["checks.{system}.a"])
+            self.assertEqual(update.read(nix), 'hash = "sha256-NEW=";\n')
+
+    def test_a_mismatch_on_a_hash_this_repo_does_not_pin_fails(self):
+        with tempfile.TemporaryDirectory() as root:
+            update.write(os.path.join(root, "common.nix"), "x\n")
+            with mock.patch.object(update, "current_system", return_value="x"), \
+                    mock.patch.object(update, "nix_build", lambda cmd: (False, self.MISMATCH)), \
+                    self.assertRaises(RuntimeError):
+                update.build_checks(root, ["checks.{system}.a"])
+
+    def test_yolabs_flake_update_also_builds_its_caddy(self):
+        self.assertIn(
+            "nixosConfigurations.yolab.config.services.caddy.package",
+            update.repo_checks("/x/yolab"),
+        )
+
+
 class CustomLibrary(unittest.TestCase):
     def test_custom_services_follow_a_yolab_common_bump(self):
         text = 'use x;\nconst CUSTOM_LIBRARY_VERSION: &str = "0.1.36";\nfn f() {}\n'

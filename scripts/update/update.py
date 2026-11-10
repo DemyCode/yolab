@@ -791,9 +791,16 @@ def verify_checks(root, rel):
     return attrs
 
 
+# Built on top of VERIFY when a repo's flake inputs move: what nixpkgs can
+# break that no package check covers.
+FLAKE_VERIFY = {
+    "yolab": ["nixosConfigurations.yolab.config.services.caddy.package"],
+}
+
+
 def repo_checks(root):
     repo = os.path.basename(root)
-    attrs = []
+    attrs = list(FLAKE_VERIFY.get(repo, []))
     for (r, _), listed in VERIFY.items():
         if r == repo:
             attrs += [a for a in listed if a not in attrs]
@@ -808,21 +815,52 @@ def current_system():
     )
 
 
+HASH_MISMATCH = re.compile(
+    r"specified:\s*(sha256-[A-Za-z0-9+/=]+)\s+got:\s*(sha256-[A-Za-z0-9+/=]+)"
+)
+HASH_REPAIRS = 5
+
+
+def nix_build(cmd):
+    """nix build with its log shown live; returns (ok, log)."""
+    log(f"$ {' '.join(cmd)}")
+    proc = subprocess.Popen(cmd, stderr=subprocess.PIPE, text=True)
+    lines = []
+    for line in proc.stderr:
+        sys.stderr.write(line)
+        lines.append(line)
+    proc.wait(timeout=7200)
+    return proc.returncode == 0, "".join(lines)
+
+
 def build_checks(root, attrs):
+    """Build every attr. A fixed-output hash pinned in this repo that the new
+    inputs changed (a Caddy with plugins after nixpkgs moves Caddy) is
+    re-pinned and the build tried again; any other failure stops the step."""
     if not attrs:
         return
     system = current_system()
-    run(
-        [
-            "nix",
-            "build",
-            "--no-link",
-            "--impure",
-            *(f"{root}#{a.format(system=system)}" for a in attrs),
-        ],
-        timeout=7200,
-        capture=False,
-    )
+    cmd = [
+        "nix",
+        "build",
+        "--no-link",
+        "--impure",
+        *(f"{root}#{a.format(system=system)}" for a in attrs),
+    ]
+    for _ in range(HASH_REPAIRS + 1):
+        ok, out = nix_build(cmd)
+        if ok:
+            return
+        repaired = [
+            old
+            for old, new in HASH_MISMATCH.findall(out)
+            if replace_in_nix(root, old, new)
+        ]
+        if not repaired:
+            tail = " / ".join(out.strip().splitlines()[-3:])
+            raise RuntimeError(f"nix build failed: {tail}")
+        log(f"re-pinned {len(repaired)} fixed-output hash(es); building again")
+    raise RuntimeError(f"hashes still moving after {HASH_REPAIRS} re-pins")
 
 
 # Stability over novelty: majors are reported, never taken.
@@ -1003,7 +1041,10 @@ def main(argv=None):
             step(
                 summary,
                 f"flake {os.path.basename(root)}",
-                [os.path.join(root, "flake.lock")],
+                [
+                    os.path.join(root, "flake.lock"),
+                    *walk(root, lambda p: p.endswith(".nix")),
+                ],
                 lambda root=root: update_flake(root, summary),
             )
         if "cargo" in only:
