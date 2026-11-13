@@ -78,6 +78,11 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/heal/peer/prepare", post(heal::post_peer_prepare))
         .route("/api/heal/peer/arm", post(heal::post_peer_arm))
         .route("/api/heal/peer/undo", post(heal::post_peer_undo))
+        .route(
+            "/api/ssh/keys",
+            get(crate::ssh_keys::list).post(crate::ssh_keys::add),
+        )
+        .route("/api/ssh/keys/remove", post(crate::ssh_keys::remove))
         .route("/api/notifications", get(notify::get_subscription))
         .route("/api/notifications/test", post(notify::post_test))
         .route("/api/notifications/deliver", post(notify::post_deliver))

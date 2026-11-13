@@ -23,6 +23,7 @@ const MACHINE_PREFIX: &str = "machine:";
 const STORAGE_POLICY_KEY: &str = "policy:storage";
 const REVOKED_PREFIX: &str = "revoked:";
 const SESSION_KEY: &str = "secret:session";
+const SSH_KEY_PREFIX: &str = "ssh_key:";
 
 const DISKS_SEEDED_KEY: &str = "meta:disks_seeded";
 const MACHINES_SEEDED_KEY: &str = "meta:machines_seeded";
@@ -88,6 +89,13 @@ impl From<MachineState> for String {
             MachineState::Unknown(raw) => raw,
         }
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SshKey {
+    pub line: String,
+    pub label: String,
+    pub removed: bool,
 }
 
 #[derive(Debug)]
@@ -374,9 +382,18 @@ impl Store {
         Ok(key)
     }
 
+    pub fn set_ssh_key(&mut self, id: &str, key: &SshKey) -> Result<(), StoreError> {
+        self.write_at(&format!("{SSH_KEY_PREFIX}{id}"), key, Origin::User)
+    }
+
+    pub fn ssh_keys(&self) -> Result<BTreeMap<String, Entry<SshKey>>, StoreError> {
+        self.collection(SSH_KEY_PREFIX)
+    }
+
     pub fn debug_json(&self) -> Result<Value, StoreError> {
         Ok(serde_json::json!({
             "revoked_sessions": self.revoked_sessions()?.len(),
+            "ssh_keys": self.ssh_keys()?,
             "disk_claims": self.disk_claims()?,
             "machines": self.machines()?,
             "storage_policy": self.read_at::<StoragePolicy>(STORAGE_POLICY_KEY)?,

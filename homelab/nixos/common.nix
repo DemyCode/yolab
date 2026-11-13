@@ -130,8 +130,10 @@ in {
           iptables -A nixos-fw -p udp --dport ${toString flannelVxlanPort} -m set --match-set ${lanSet4} src -j nixos-fw-accept
           ip6tables -A nixos-fw -p udp --dport ${toString flannelVxlanPort} -m set --match-set ${lanSet6} src -j nixos-fw-accept
           for pods in cni0 flannel.1 flannel-v6.1; do
-            iptables -I nixos-fw 1 -i "$pods" -p tcp --dport ${toString localApiPort} -j nixos-fw-refuse
-            ip6tables -I nixos-fw 1 -i "$pods" -p tcp --dport ${toString localApiPort} -j nixos-fw-refuse
+            for port in ${toString localApiPort} ${toString s.sshPort} 2379 2380; do
+              iptables -I nixos-fw 1 -i "$pods" -p tcp --dport "$port" -j nixos-fw-refuse
+              ip6tables -I nixos-fw 1 -i "$pods" -p tcp --dport "$port" -j nixos-fw-refuse
+            done
           done
         '';
       };
@@ -191,6 +193,7 @@ in {
     services.openssh = {
       enable = true;
       ports = [s.sshPort];
+      authorizedKeysFiles = ["/var/lib/yolab-ssh/%u.keys"];
       settings = {
         PermitRootLogin = "prohibit-password";
         PasswordAuthentication = false;
@@ -501,11 +504,7 @@ in {
       };
     };
 
-    users.users.root.openssh.authorizedKeys.keys =
-      lib.optional (s.rootSshKey != "") s.rootSshKey
-      ++ [
-        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIK4KqHP17dqZURgVG7NwJ4sRoPVpmmNb3fMhGiWD529z nixos@nixos"
-      ];
+    users.users.root.openssh.authorizedKeys.keys = lib.optional (s.rootSshKey != "") s.rootSshKey;
 
     users.users.homelab = {
       isNormalUser = true;
@@ -564,6 +563,7 @@ in {
 
     systemd.tmpfiles.rules = [
       "d ${config.yolab.machineDir} 0700 root root -"
+      "d /var/lib/yolab-ssh 0755 root root -"
       "d /var/lib/rancher/k3s/agent/etc/kubelet.conf.d 0700 root root -"
       "L+ /var/lib/rancher/k3s/agent/etc/kubelet.conf.d/10-yolab-image-gc.conf     - - - - ${./k3s/kubelet-image-gc.yaml}"
       "L+ /var/lib/rancher/k3s/server/manifests/snap-1-crds-rbac.yaml                - - - - ${./external-snapshotter/crds-rbac.yaml}"

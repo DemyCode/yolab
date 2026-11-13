@@ -285,8 +285,15 @@ in let
 
     ssh-takes-only-keys = let
       ssh = nixosSystems.yolab-ci.config.services.openssh.settings;
+      keyFiles = nixosSystems.yolab-ci.config.services.openssh.authorizedKeysFiles;
+      rootKeys = nixosSystems.yolab-ci.config.users.users.root.openssh.authorizedKeys.keys;
       fail2ban = nixosSystems.yolab-ci.config.services.fail2ban.enable;
       wrong =
+        (lib.optional (builtins.length rootKeys > 1)
+          "root may hold only the key this machine's own config.toml names, never one baked into every machine")
+        ++ (lib.optional (!(builtins.elem "/var/lib/yolab-ssh/%u.keys" keyFiles))
+          "sshd must read /var/lib/yolab-ssh/%u.keys, the keys added from the Machines page")
+        ++
         (lib.optional (ssh.PasswordAuthentication != false) "PasswordAuthentication must be false")
         ++ (lib.optional (ssh.KbdInteractiveAuthentication != false)
           "KbdInteractiveAuthentication must be false: through PAM it asks for the homelab user's password, which is the UI password, and that user is in wheel")
@@ -305,10 +312,12 @@ in let
 
     pods-cannot-reach-the-local-api = let
       rules = nixosSystems.yolab-ci.config.networking.firewall.extraCommands;
+      sshPort = toString (builtins.head nixosSystems.yolab-ci.config.services.openssh.ports);
       wanted = [
         "for pods in cni0 flannel.1 flannel-v6.1; do"
-        "iptables -I nixos-fw 1 -i \"$pods\" -p tcp --dport 3001 -j nixos-fw-refuse"
-        "ip6tables -I nixos-fw 1 -i \"$pods\" -p tcp --dport 3001 -j nixos-fw-refuse"
+        "for port in 3001 ${sshPort} 2379 2380; do"
+        "iptables -I nixos-fw 1 -i \"$pods\" -p tcp --dport \"$port\" -j nixos-fw-refuse"
+        "ip6tables -I nixos-fw 1 -i \"$pods\" -p tcp --dport \"$port\" -j nixos-fw-refuse"
       ];
       missing = builtins.filter (r: !(lib.hasInfix r rules)) wanted;
     in

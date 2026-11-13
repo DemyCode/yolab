@@ -31,6 +31,7 @@ mod routers;
 mod runtime;
 mod saved_chart;
 mod shared_names;
+mod ssh_keys;
 mod storage;
 mod store;
 
