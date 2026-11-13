@@ -253,7 +253,10 @@ impl Config {
 
     pub fn private_subnet(&self) -> Option<(std::net::Ipv6Addr, u8)> {
         let table = self.toml()?;
-        let cidr = table.get("node")?.get("sub_ipv6_private_subnet")?.as_str()?;
+        let cidr = table
+            .get("node")?
+            .get("sub_ipv6_private_subnet")?
+            .as_str()?;
         parse_subnet(cidr)
     }
 
