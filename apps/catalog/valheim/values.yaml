@@ -8,4 +8,6 @@ yolab:
   accountToken: ''
   serviceName: ''
   gateway:
+    publicPorts:
+      - udp/2456-2458
     upstream: ''

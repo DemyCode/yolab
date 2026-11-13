@@ -5,7 +5,7 @@
 {{- end -}}
 
 {{- define "yolab-common.image.wgSidecar" -}}
-{{- (((.Values.yolab).images).wgSidecar) | default "ghcr.io/demycode/wg-sidecar:main-latest@sha256:ec53881e1fb804129706a7dc1bbe129b2c9baed610bb527bc80673baeea37e25" -}}
+{{- (((.Values.yolab).images).wgSidecar) | default "ghcr.io/demycode/wg-sidecar:main-latest@sha256:8b3b00ba5cf07e2f9827de5565709c53bf31f9d2dc603d31fe57ebc241e8c6fd" -}}
 {{- end -}}
 
 {{- define "yolab-common.image.caddy" -}}

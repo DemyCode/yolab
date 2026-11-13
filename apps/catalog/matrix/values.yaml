@@ -9,6 +9,9 @@ yolab:
   accountToken: ''
   serviceName: ''
   gateway:
+    publicPorts:
+      - tcp/7881
+      - udp/50000-50100
     aliases:
       CALL_FQDN: call
       RTC_FQDN: rtc

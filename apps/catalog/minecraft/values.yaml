@@ -8,3 +8,6 @@ yolab:
   platformApiUrl: ""
   accountToken: ""
   serviceName: ""
+  gateway:
+    publicPorts:
+      - tcp/25565

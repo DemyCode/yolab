@@ -9,6 +9,11 @@ yolab:
   accountToken: ''
   serviceName: ''
   gateway:
+    publicPorts:
+      - tcp/47984
+      - tcp/47989
+      - tcp/48010
+      - udp/47998-48010
     upstream: localhost:8483
     upstreamTls: true
 authelia:

@@ -1,4 +1,5 @@
 {{- $port := add 20000 (mod (atoi (adler32sum .Release.Namespace)) 30000) }}
+{{- $_ := set .Values.yolab.gateway "publicPorts" (list (printf "tcp/%d" $port) (printf "udp/%d" $port)) }}
 {{- $bandwidth := int ((.Values.config).bandwidth_kbps | default 512) }}
 {{- $share := int ((.Values.config).share_percent | default 80) }}
 {{ include "yolab-common.caddyConfigMap" . }}

@@ -6,4 +6,6 @@ yolab:
   accountToken: ''
   serviceName: ''
   gateway:
+    publicPorts:
+      - tcp/8776
     upstream: localhost:8080

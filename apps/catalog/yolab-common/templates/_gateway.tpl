@@ -222,6 +222,17 @@ printf 'export YOLAB_HOST=%s\nexport YOLAB_URL=https://%s\nexport YOLAB_SITES="%
   imagePullPolicy: IfNotPresent
   securityContext:
     privileged: true
+  {{- $public := (((.Values.yolab).gateway).publicPorts) | default list }}
+  {{- range $public }}
+  {{- if not (regexMatch "^(tcp|udp)/[0-9]{1,5}(-[0-9]{1,5})?$" .) }}
+  {{- fail (printf "yolab.gateway.publicPorts: %q is not tcp/PORT or udp/PORT-PORT" .) }}
+  {{- end }}
+  {{- end }}
+  {{- if $public }}
+  env:
+    - name: PUBLIC_PORTS
+      value: {{ join " " $public | quote }}
+  {{- end }}
   readinessProbe:
     exec:
       command:
@@ -336,6 +347,7 @@ printf 'export YOLAB_HOST=%s\nexport YOLAB_URL=https://%s\nexport YOLAB_SITES="%
   }
   cert_issuer acme
 {{- end }}
+  admin off
   servers {
     protocols h1 h2
   }
