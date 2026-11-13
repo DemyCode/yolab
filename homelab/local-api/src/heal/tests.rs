@@ -822,7 +822,7 @@ mod real_network {
         let unknown = network(1, "", crate::k8s::testing::unreachable());
         assert_eq!(unknown.platform_nodes().await.unwrap(), None);
         let mut anonymous = network(1, &server.uri(), crate::k8s::testing::unreachable());
-        anonymous.token = String::new();
+        anonymous.account_token = String::new();
         assert_eq!(anonymous.platform_nodes().await.unwrap(), None);
         assert!(server.received_requests().await.unwrap().is_empty());
     }
