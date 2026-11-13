@@ -7,7 +7,10 @@ PASS=0
 FAIL=0
 
 ok() { PASS=$((PASS + 1)); }
-bad() { FAIL=$((FAIL + 1)); echo "FAIL: $1"; }
+bad() {
+    FAIL=$((FAIL + 1))
+    echo "FAIL: $1"
+}
 
 contains() {
     case "$1" in *"$2"*) ok ;; *) bad "$3: expected to contain [$2], got:

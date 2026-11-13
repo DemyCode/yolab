@@ -129,7 +129,10 @@ impl LoginFailures {
     }
 
     pub fn failed(&mut self, client: &str, now: i64) {
-        self.by_client.entry(client.to_string()).or_default().push(now);
+        self.by_client
+            .entry(client.to_string())
+            .or_default()
+            .push(now);
     }
 
     pub fn succeeded(&mut self, client: &str) {
@@ -735,7 +738,10 @@ mod tests {
 
     #[test]
     fn the_login_client_is_the_visitor_caddy_names_not_caddy_itself() {
-        assert_eq!(client_of(Some("[::1]:5000"), Some("203.0.113.9")), "203.0.113.9");
+        assert_eq!(
+            client_of(Some("[::1]:5000"), Some("203.0.113.9")),
+            "203.0.113.9"
+        );
         assert_eq!(
             client_of(Some("[::1]:5000"), Some("2001:db8:aa:bb:1:2:3:4, 10.0.0.1")),
             "2001:db8:aa:bb::/64"
@@ -760,12 +766,18 @@ mod tests {
             client_of(Some("[2001:db8:1:2::1]:1"), None),
             client_of(Some("[2001:db8:1:3::1]:1"), None)
         );
-        assert_eq!(client_of(Some("[::ffff:198.51.100.7]:1"), None), "198.51.100.7");
+        assert_eq!(
+            client_of(Some("[::ffff:198.51.100.7]:1"), None),
+            "198.51.100.7"
+        );
     }
 
     #[test]
     fn a_garbled_forwarded_for_falls_back_to_the_peer() {
-        assert_eq!(client_of(Some("127.0.0.1:5000"), Some("not-an-ip")), "127.0.0.1");
+        assert_eq!(
+            client_of(Some("127.0.0.1:5000"), Some("not-an-ip")),
+            "127.0.0.1"
+        );
     }
 
     #[tokio::test]
@@ -829,7 +841,10 @@ mod tests {
         assert!(f.retry_after("a", 1_000).is_some());
         assert!(f.retry_after("a", 1_000 + LOGIN_WINDOW_SECS - 1).is_some());
         assert_eq!(f.retry_after("a", 1_000 + LOGIN_WINDOW_SECS), None);
-        assert!(f.by_client.is_empty(), "expired entries do not pile up in memory");
+        assert!(
+            f.by_client.is_empty(),
+            "expired entries do not pile up in memory"
+        );
     }
 
     #[test]

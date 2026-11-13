@@ -6,19 +6,19 @@ render() {
     udp=""
     for entry in ${PUBLIC_PORTS:-}; do
         case "$entry" in
-            tcp/* | udp/*) ;;
-            *)
-                echo "PUBLIC_PORTS entry '$entry' is not tcp/PORT or udp/PORT[-PORT]" >&2
-                return 1
-                ;;
+        tcp/* | udp/*) ;;
+        *)
+            echo "PUBLIC_PORTS entry '$entry' is not tcp/PORT or udp/PORT[-PORT]" >&2
+            return 1
+            ;;
         esac
         proto=${entry%%/*}
         ports=${entry#*/}
         case "$ports" in
-            "" | *[!0-9-]* | -* | *- | *-*-*)
-                echo "PUBLIC_PORTS entry '$entry' has no valid port or range" >&2
-                return 1
-                ;;
+        "" | *[!0-9-]* | -* | *- | *-*-*)
+            echo "PUBLIC_PORTS entry '$entry' has no valid port or range" >&2
+            return 1
+            ;;
         esac
         low=${ports%-*}
         high=${ports#*-}
