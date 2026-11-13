@@ -92,7 +92,9 @@ pub fn parse_key(text: &str) -> Result<ParsedKey, String> {
     let blob = parts
         .next()
         .and_then(|b64| base64::engine::general_purpose::STANDARD.decode(b64).ok())
-        .ok_or_else(|| "The key itself is missing or damaged; copy the whole line again".to_string())?;
+        .ok_or_else(|| {
+            "The key itself is missing or damaged; copy the whole line again".to_string()
+        })?;
     if embedded_type(&blob) != Some(kind.as_bytes()) {
         return Err(format!(
             "The key does not match its type {kind}; copy the whole line again"
@@ -126,7 +128,9 @@ pub struct KeyView {
     pub label: String,
 }
 
-pub fn active(keys: &std::collections::BTreeMap<String, crate::store::entry::Entry<SshKey>>) -> Vec<(String, ParsedKey, String)> {
+pub fn active(
+    keys: &std::collections::BTreeMap<String, crate::store::entry::Entry<SshKey>>,
+) -> Vec<(String, ParsedKey, String)> {
     keys.iter()
         .filter(|(_, e)| !e.value.removed)
         .filter_map(|(id, e)| match parse_key(&e.value.line) {
@@ -140,7 +144,9 @@ pub fn active(keys: &std::collections::BTreeMap<String, crate::store::entry::Ent
 }
 
 pub fn render(keys: &[(String, ParsedKey, String)]) -> String {
-    keys.iter().map(|(_, k, _)| format!("{}\n", k.line())).collect()
+    keys.iter()
+        .map(|(_, k, _)| format!("{}\n", k.line()))
+        .collect()
 }
 
 pub fn views(keys: &[(String, ParsedKey, String)]) -> Vec<KeyView> {
@@ -215,7 +221,9 @@ impl Controller for SshKeysController {
         if apply()? {
             Ok(Tick::Done)
         } else {
-            Ok(Tick::Idle("the SSH keys on this machine are current".into()))
+            Ok(Tick::Idle(
+                "the SSH keys on this machine are current".into(),
+            ))
         }
     }
 }
@@ -249,7 +257,9 @@ fn saved(store: &mut crate::store::Store) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub async fn list(State(state): State<crate::AppState>) -> crate::error::Result<Json<KeysResponse>> {
+pub async fn list(
+    State(state): State<crate::AppState>,
+) -> crate::error::Result<Json<KeysResponse>> {
     listing(&state.config)
 }
 
@@ -366,7 +376,10 @@ mod tests {
 
     #[test]
     fn surrounding_space_and_a_trailing_newline_are_forgiven() {
-        assert_eq!(parse_key(&format!("  {}\n", ed25519())).unwrap().line(), ed25519());
+        assert_eq!(
+            parse_key(&format!("  {}\n", ed25519())).unwrap().line(),
+            ed25519()
+        );
     }
 
     #[test]
@@ -397,7 +410,14 @@ mod tests {
 
     #[test]
     fn junk_is_refused() {
-        for junk in ["", "   ", "hello", "ssh-ed25519", "ssh-ed25519 !!!notbase64", "ssh-dss AAAA"] {
+        for junk in [
+            "",
+            "   ",
+            "hello",
+            "ssh-ed25519",
+            "ssh-ed25519 !!!notbase64",
+            "ssh-dss AAAA",
+        ] {
             assert!(parse_key(junk).is_err(), "{junk:?}");
         }
         assert!(parse_key(&"a".repeat(MAX_KEY_LEN + 1)).is_err());
@@ -405,7 +425,11 @@ mod tests {
 
     #[test]
     fn the_file_line_is_rebuilt_so_a_comment_cannot_add_a_second_key() {
-        let k = parse_key(&format!("{}  first   second", key_of("ssh-ed25519", &[7; 32]))).unwrap();
+        let k = parse_key(&format!(
+            "{}  first   second",
+            key_of("ssh-ed25519", &[7; 32])
+        ))
+        .unwrap();
         assert_eq!(k.comment, "first second");
         assert_eq!(k.line().lines().count(), 1);
     }
@@ -424,11 +448,25 @@ mod tests {
         let b = parse_key(&key_of("ssh-ed25519", &[9; 32])).unwrap();
         for k in [&a, &b] {
             store
-                .set_ssh_key(&k.id(), &SshKey { line: k.line(), label: String::new(), removed: false })
+                .set_ssh_key(
+                    &k.id(),
+                    &SshKey {
+                        line: k.line(),
+                        label: String::new(),
+                        removed: false,
+                    },
+                )
                 .unwrap();
         }
         store
-            .set_ssh_key(&a.id(), &SshKey { line: a.line(), label: String::new(), removed: true })
+            .set_ssh_key(
+                &a.id(),
+                &SshKey {
+                    line: a.line(),
+                    label: String::new(),
+                    removed: true,
+                },
+            )
             .unwrap();
         let file = render(&active(&store.ssh_keys().unwrap()));
         assert_eq!(file, format!("{}\n", b.line()));
@@ -438,12 +476,22 @@ mod tests {
     fn a_key_added_on_one_machine_reaches_the_file_on_another() {
         let mut one = Store::new("node1");
         let k = parse_key(&ed25519()).unwrap();
-        one.set_ssh_key(&k.id(), &SshKey { line: k.line(), label: "laptop".into(), removed: false })
-            .unwrap();
+        one.set_ssh_key(
+            &k.id(),
+            &SshKey {
+                line: k.line(),
+                label: "laptop".into(),
+                removed: false,
+            },
+        )
+        .unwrap();
         let mut two = Store::new("node2");
         let mut copy = Store::load("node1", &one.save()).unwrap();
         two.merge(&mut copy).unwrap();
-        assert_eq!(render(&active(&two.ssh_keys().unwrap())), format!("{}\n", ed25519()));
+        assert_eq!(
+            render(&active(&two.ssh_keys().unwrap())),
+            format!("{}\n", ed25519())
+        );
         assert_eq!(views(&active(&two.ssh_keys().unwrap()))[0].label, "laptop");
     }
 
@@ -454,7 +502,10 @@ mod tests {
         let path = dir.path().join("ssh/homelab.keys");
         assert!(sync_file(&path, "a\n").unwrap());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "a\n");
-        assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o644);
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o644
+        );
         assert!(!sync_file(&path, "a\n").unwrap());
         assert!(sync_file(&path, "").unwrap());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "");

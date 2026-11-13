@@ -4733,11 +4733,15 @@ class Privilege(unittest.TestCase):
         self.assertEqual(privilege_failures(spec, app="tailscale"), [])
 
     def test_a_privileged_container_outside_the_gateway_sidecar_is_refused(self):
-        found = privilege_failures({"containers": [container("docker", privileged=True)]})
+        found = privilege_failures(
+            {"containers": [container("docker", privileged=True)]}
+        )
         self.assertEqual(len(found), 1)
         self.assertIn("docker", found[0])
         self.assertEqual(
-            privilege_failures({"containers": [container("wireguard", privileged=True)]}),
+            privilege_failures(
+                {"containers": [container("wireguard", privileged=True)]}
+            ),
             [],
         )
 
