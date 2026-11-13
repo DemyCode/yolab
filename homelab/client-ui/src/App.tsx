@@ -8,6 +8,7 @@ import {
 } from "react-router-dom";
 import { fromOldBoxPath } from "@/lib/routes";
 import { AppShell } from "@/components/AppShell";
+import { RecoveryKeyGate } from "@/components/RecoveryKeyGate";
 import { Spinner } from "@/components/ui/feedback";
 import { LoginPage } from "@/pages/LoginPage";
 import { HomePage } from "@/pages/HomePage";
@@ -86,6 +87,7 @@ export default function App() {
 
   return (
     <>
+      <RecoveryKeyGate />
       <BrowserRouter>
         <Routes>
           <Route element={<AppShell onLogout={handleLogout} />}>

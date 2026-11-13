@@ -98,13 +98,22 @@ fn format_recovery_key(hex: &str) -> String {
 }
 
 pub async fn get_recovery_key(State(state): State<AppState>) -> Result<Json<serde_json::Value>> {
-    let Some(cfg) = master_config(&state.backend().await?.kube).await? else {
+    let b = state.backend().await?;
+    let Some(cfg) = master_config(&b.kube).await? else {
         return Ok(Json(serde_json::json!({ "configured": false })));
     };
     Ok(Json(serde_json::json!({
         "configured": true,
         "recovery_key": format_recovery_key(&cfg.restic_password),
+        "acknowledged": recovery_key_acknowledged(&b.kube).await?,
     })))
+}
+
+pub async fn acknowledge_recovery(
+    State(state): State<AppState>,
+) -> Result<Json<serde_json::Value>> {
+    acknowledge_recovery_key(&state.backend().await?.kube).await?;
+    Ok(Json(serde_json::json!({ "acknowledged": true })))
 }
 
 #[derive(Deserialize)]
@@ -379,6 +388,14 @@ impl crate::runtime::Controller for BackupKeyController {
             ));
         };
         let b = Backend::real().await?;
+        if master_config(&b.kube).await?.is_none() {
+            let sources = enable(&b, &url, &token).await?;
+            tracing::info!(
+                "backups turned on automatically; {} volumes protected",
+                sources.len()
+            );
+            return Ok(crate::runtime::Tick::Done);
+        }
         Ok(key_refresh_tick(
             refresh_master_key_with(&b.kube, &url, &token).await?,
         ))

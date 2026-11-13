@@ -136,6 +136,11 @@ export function BackupsPage() {
         <RecoveryKeyOverlay
           recoveryKey={recoveryKey}
           mandatory={recoveryMandatory}
+          onAcknowledge={
+            recoveryMandatory
+              ? () => api.post("/api/backups/recovery-key/ack")
+              : undefined
+          }
           onClose={() => setRecoveryKey(null)}
         />
       )}

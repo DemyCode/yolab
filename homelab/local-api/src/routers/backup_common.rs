@@ -52,6 +52,17 @@ pub(crate) struct S3StorageInfo {
 pub(crate) const MASTER_SECRET: &str = "yolab-backup-config";
 pub(crate) const MASTER_NS: &str = "kube-system";
 pub(crate) const RESTIC_SECRET_SUFFIX: &str = "-restic";
+pub(crate) const KEY_ACK_SECRET: &str = "yolab-backup-key-ack";
+
+pub(crate) async fn recovery_key_acknowledged(client: &Client) -> anyhow::Result<bool> {
+    Ok(crate::k8s::secret_data(client, MASTER_NS, KEY_ACK_SECRET)
+        .await?
+        .is_some())
+}
+
+pub(crate) async fn acknowledge_recovery_key(client: &Client) -> anyhow::Result<()> {
+    apply_secret(client, KEY_ACK_SECRET, MASTER_NS, &[("acknowledged", "1")]).await
+}
 
 pub(crate) const EXCLUDED_NS: &[&str] =
     &["kube-system", crate::csi::NS, "volsync-system", "default"];
@@ -814,6 +825,56 @@ mod tests {
                 .respond_with(ResponseTemplate::new(code).set_body_json(body))
                 .mount(server)
                 .await;
+        }
+
+        const ACK_PATH: &str = "/api/v1/namespaces/kube-system/secrets/yolab-backup-key-ack";
+
+        fn ack_secret() -> serde_json::Value {
+            json!({
+                "apiVersion": "v1", "kind": "Secret",
+                "metadata": { "name": "yolab-backup-key-ack", "namespace": "kube-system" },
+                "data": {}
+            })
+        }
+
+        #[tokio::test]
+        async fn a_recovery_key_with_no_marker_is_not_acknowledged() {
+            let (server, client) = api_server().await;
+            Mock::given(method("GET"))
+                .and(path(ACK_PATH))
+                .respond_with(ResponseTemplate::new(404).set_body_json(status(404, "NotFound")))
+                .mount(&server)
+                .await;
+            assert!(!recovery_key_acknowledged(&client).await.unwrap());
+        }
+
+        #[tokio::test]
+        async fn a_saved_marker_means_the_recovery_key_is_acknowledged() {
+            let (server, client) = api_server().await;
+            Mock::given(method("GET"))
+                .and(path(ACK_PATH))
+                .respond_with(ResponseTemplate::new(200).set_body_json(ack_secret()))
+                .mount(&server)
+                .await;
+            assert!(recovery_key_acknowledged(&client).await.unwrap());
+        }
+
+        #[tokio::test]
+        async fn acknowledging_writes_the_marker_and_not_the_config() {
+            let (server, client) = api_server().await;
+            Mock::given(method("PATCH"))
+                .and(path(ACK_PATH))
+                .respond_with(ResponseTemplate::new(200).set_body_json(ack_secret()))
+                .expect(1)
+                .mount(&server)
+                .await;
+            Mock::given(method("PATCH"))
+                .and(path(CONFIG_PATH))
+                .respond_with(ResponseTemplate::new(200).set_body_json(stored_config("pw")))
+                .expect(0)
+                .mount(&server)
+                .await;
+            acknowledge_recovery_key(&client).await.unwrap();
         }
 
         #[tokio::test]

@@ -6,13 +6,29 @@ export function RecoveryKeyOverlay({
   recoveryKey,
   mandatory,
   onClose,
+  onAcknowledge,
 }: {
   recoveryKey: string;
   mandatory: boolean;
   onClose: () => void;
+  onAcknowledge?: () => Promise<void>;
 }) {
   const [acknowledged, setAcknowledged] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  async function confirm() {
+    if (mandatory && onAcknowledge) {
+      setSaving(true);
+      try {
+        await onAcknowledge();
+      } catch {
+        setSaving(false);
+        return;
+      }
+    }
+    onClose();
+  }
 
   async function handleCopy() {
     try {
@@ -76,8 +92,9 @@ export function RecoveryKeyOverlay({
 
         <div className="flex justify-end">
           <Button
-            onClick={onClose}
-            disabled={mandatory && !acknowledged}
+            onClick={() => void confirm()}
+            disabled={(mandatory && !acknowledged) || saving}
+            loading={saving}
             size="sm"
           >
             {mandatory ? "I have saved it — continue" : "Close"}
