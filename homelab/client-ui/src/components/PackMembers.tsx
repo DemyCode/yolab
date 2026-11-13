@@ -5,6 +5,7 @@ import { GitHubMark } from "@/components/GitHubMark";
 import { Section } from "@/components/ui/list";
 import { taglineFor } from "@/catalog/meta";
 import { formatCount, githubUrl } from "@/lib/store";
+import { webHref } from "@/lib/utils";
 import type { CatalogApp } from "@/types/apps";
 
 const linkClass =
@@ -17,7 +18,8 @@ export function PackMembers({ members }: { members: CatalogApp[] }) {
     <Section title="Services inside">
       {members.map((m) => {
         const repo = githubUrl(m);
-        const website = m.home && m.home !== repo ? m.home : null;
+        const home = webHref(m.home);
+        const website = home && home !== repo ? home : null;
         return (
           <div
             key={`${m.repo}/${m.id}`}

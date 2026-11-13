@@ -303,6 +303,26 @@ in let
         touch $out
       '';
 
+    pods-cannot-reach-the-local-api = let
+      rules = nixosSystems.yolab-ci.config.networking.firewall.extraCommands;
+      wanted = [
+        "for pods in cni0 flannel.1 flannel-v6.1; do"
+        "iptables -I nixos-fw 1 -i \"$pods\" -p tcp --dport 3001 -j nixos-fw-refuse"
+        "ip6tables -I nixos-fw 1 -i \"$pods\" -p tcp --dport 3001 -j nixos-fw-refuse"
+      ];
+      missing = builtins.filter (r: !(lib.hasInfix r rules)) wanted;
+    in
+      pkgs.runCommand "pods-cannot-reach-the-local-api" {} ''
+        missing=${pkgs.writeText "missing" (builtins.concatStringsSep "\n" missing)}
+        if [ -s "$missing" ]; then
+          echo "The host firewall trusts the pod interfaces, so a hacked service" >&2
+          echo "could call the local API on 3001; these refuse rules are gone:" >&2
+          cat "$missing" >&2
+          exit 1
+        fi
+        touch $out
+      '';
+
     self-healing-timers-can-re-arm = let
       allowlist = ["yolab-ceph-bootstrap"];
       services = nixosSystems.yolab-ci.config.systemd.services;

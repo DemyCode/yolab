@@ -1,5 +1,6 @@
 import type { AppInfo, AppOutput, CatalogApp, PodInfo } from "@/types/apps";
 import { roughDuration } from "./format";
+import { webHref } from "./utils";
 
 export interface AppLink {
   label: string;
@@ -25,9 +26,10 @@ export function appLinks(
   const seen = new Set<string>();
 
   for (const o of app.outputs ?? []) {
-    if (o.format !== "uri" || !o.value || seen.has(o.value)) continue;
-    seen.add(o.value);
-    links.push({ label: o.title || "Open", url: o.value });
+    const url = o.format === "uri" ? webHref(o.value) : null;
+    if (!url || seen.has(url)) continue;
+    seen.add(url);
+    links.push({ label: o.title || "Open", url });
   }
   if (pack) return links;
 

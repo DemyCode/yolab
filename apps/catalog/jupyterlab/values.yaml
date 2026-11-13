@@ -8,6 +8,6 @@ yolab:
   accountToken: ''
   serviceName: ''
   gateway:
-    upstream: 127.0.0.1:8888
+    upstream: localhost:8888
 authelia:
   embedded: true

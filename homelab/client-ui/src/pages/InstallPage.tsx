@@ -54,7 +54,7 @@ import {
   updatedAgo,
   type AppStats,
 } from "@/lib/store";
-import { cn } from "@/lib/utils";
+import { cn, webHref } from "@/lib/utils";
 import { Swap } from "@/components/motion";
 import type {
   AppDefinition,
@@ -424,7 +424,8 @@ export function InstallPage() {
     const appStats = statsMap.get(app.id);
     const installs = appStats?.installs ?? 0;
     const repo = githubUrl(app);
-    const website = app.home && app.home !== repo ? app.home : null;
+    const home = webHref(app.home);
+    const website = home && home !== repo ? home : null;
     const updated = app.pushed_at ? updatedAgo(app.pushed_at) : null;
     const explains = app.description && app.description !== tagline;
     const similar = similarApps(app, catalog.data ?? [], statsMap);

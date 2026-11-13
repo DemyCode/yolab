@@ -436,8 +436,6 @@ spec:
         - name: data
           mountPath: /var/run
           subPath: 'data/docker'
-        - name: host-proc
-          mountPath: /proc
         - name: data
           mountPath: /etc/komodo
           subPath: 'data/periphery'
@@ -445,9 +443,6 @@ spec:
       - name: data
         persistentVolumeClaim:
           claimName: '{{ .Release.Name }}-data'
-      - name: host-proc
-        hostPath:
-          path: /proc
       - name: seed
         configMap:
           name: '{{ .Release.Name }}-seed'

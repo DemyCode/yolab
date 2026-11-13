@@ -4629,3 +4629,62 @@ class ActualStarts(RenderedChart):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def host_failures(spec, kind="Deployment"):
+    doc = {"kind": kind, "metadata": {"name": "server"}}
+    if kind == "Pod":
+        doc["spec"] = spec
+    elif kind == "CronJob":
+        doc["spec"] = {"jobTemplate": {"spec": {"template": {"spec": spec}}}}
+    else:
+        doc["spec"] = {"template": {"spec": spec}}
+    found = []
+    check_charts.check_host_access("demo", [doc], lambda app, msg: found.append(msg))
+    return found
+
+
+def host_volume(path):
+    return {"volumes": [{"name": "h", "hostPath": {"path": path}}]}
+
+
+class HostAccess(unittest.TestCase):
+    def test_devices_dbus_udev_and_the_time_zone_are_allowed(self):
+        for path in (
+            "/dev",
+            "/dev/net/tun",
+            "/dev/input",
+            "/run/dbus",
+            "/var/run/dbus",
+            "/run/udev",
+            "/etc/localtime",
+        ):
+            self.assertEqual(host_failures(host_volume(path)), [], path)
+
+    def test_the_hosts_proc_root_or_runtime_sockets_are_refused(self):
+        for path in (
+            "/proc",
+            "/",
+            "/sys",
+            "/var/run/docker.sock",
+            "/run/containerd/containerd.sock",
+            "/var/lib/yolab/machine",
+            "/etc",
+            "/etc/rancher/k3s",
+            "/home",
+            "/devices",
+            "/dev/../proc",
+        ):
+            found = host_failures(host_volume(path))
+            self.assertEqual(len(found), 1, path)
+            self.assertIn(path, found[0])
+
+    def test_sharing_the_hosts_processes_is_refused(self):
+        for flag in ("hostPID", "hostIPC"):
+            found = host_failures({flag: True})
+            self.assertEqual(len(found), 1, flag)
+            self.assertIn(flag, found[0])
+
+    def test_every_workload_kind_is_checked(self):
+        for kind in ("Deployment", "StatefulSet", "DaemonSet", "Job", "CronJob", "Pod"):
+            self.assertEqual(len(host_failures(host_volume("/proc"), kind)), 1, kind)

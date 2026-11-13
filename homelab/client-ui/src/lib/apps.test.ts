@@ -91,6 +91,21 @@ describe("appLinks", () => {
     expect(link.label).toBe("Open");
   });
 
+  it("makes no link of a script address a hacked service prints", () => {
+    expect(
+      appLinks(
+        app({
+          outputs: [
+            out("web", "javascript:fetch('/api/apps')", "uri", "Open"),
+            out("admin", "https://a.example/admin", "uri", "Admin"),
+          ],
+        }),
+        "example",
+        true,
+      ),
+    ).toEqual([{ label: "Admin", url: "https://a.example/admin" }]);
+  });
+
   it("makes no link of an address not reported yet", () => {
     expect(
       appLinks(app({ outputs: [out("web", null, "uri", "Open")] }), "example"),

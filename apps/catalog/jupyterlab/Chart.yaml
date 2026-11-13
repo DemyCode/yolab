@@ -2,7 +2,7 @@ apiVersion: v2
 name: jupyterlab
 description: Next-generation web interface for interactive computing and data science
 type: application
-version: 0.1.31
+version: 0.1.32
 appVersion: v4.6.4
 dependencies:
   - name: yolab-common

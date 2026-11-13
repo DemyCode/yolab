@@ -38,7 +38,8 @@
     "2001:4860:4860::8888"
   ];
 
-  localApi = "[::1]:3001";
+  localApiPort = 3001;
+  localApi = "[::1]:${toString localApiPort}";
 
   flannelVxlanPort = 8472;
   lanSet4 = "yolab-lan4";
@@ -128,6 +129,10 @@ in {
           ipset create ${lanSet6} hash:net family inet6 -exist
           iptables -A nixos-fw -p udp --dport ${toString flannelVxlanPort} -m set --match-set ${lanSet4} src -j nixos-fw-accept
           ip6tables -A nixos-fw -p udp --dport ${toString flannelVxlanPort} -m set --match-set ${lanSet6} src -j nixos-fw-accept
+          for pods in cni0 flannel.1 flannel-v6.1; do
+            iptables -I nixos-fw 1 -i "$pods" -p tcp --dport ${toString localApiPort} -j nixos-fw-refuse
+            ip6tables -I nixos-fw 1 -i "$pods" -p tcp --dport ${toString localApiPort} -j nixos-fw-refuse
+          done
         '';
       };
 
@@ -323,6 +328,14 @@ in {
         }
 
         (yolab_ui) {
+          header {
+            X-Frame-Options DENY
+            Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'self'"
+            X-Content-Type-Options nosniff
+            Referrer-Policy no-referrer
+            Strict-Transport-Security "max-age=31536000"
+            -Server
+          }
           handle /api/* {
             reverse_proxy ${localApi}
           }

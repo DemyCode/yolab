@@ -782,6 +782,7 @@ def check(app, docs, fail, chart_yaml="", schema=None, arches=None, home=RELEASE
     check_env_parts(app, docs, fail)
     check_caddy_dns(app, docs, fail)
     check_probe_timeouts(app, docs, fail)
+    check_host_access(app, docs, fail)
 
     for d in docs:
         spec = (d.get("spec", {}).get("template", {}) or {}).get("spec", {})
@@ -799,6 +800,57 @@ def pod_specs(docs):
         if d.get("kind") != "Deployment":
             continue
         yield d["metadata"]["name"], d["spec"]["template"]["spec"]
+
+
+HOST_PATHS_ALLOWED = (
+    "/etc/localtime",
+    "/dev",
+    "/run/dbus",
+    "/var/run/dbus",
+    "/run/udev",
+)
+
+
+def host_path_allowed(path):
+    path = "/" + path.strip("/")
+    return any(
+        path == allowed or (allowed == "/dev" and path.startswith("/dev/"))
+        for allowed in HOST_PATHS_ALLOWED
+    )
+
+
+def all_pod_specs(docs):
+    for d in docs:
+        if not isinstance(d, dict):
+            continue
+        spec = d.get("spec") or {}
+        if d.get("kind") == "Pod":
+            yield d["metadata"]["name"], spec
+        if d.get("kind") == "CronJob":
+            spec = (spec.get("jobTemplate") or {}).get("spec") or {}
+        template = (spec.get("template") or {}).get("spec")
+        if template:
+            yield d["metadata"]["name"], template
+
+
+def check_host_access(app, docs, fail):
+    for pod, spec in all_pod_specs(docs):
+        for flag in ("hostPID", "hostIPC"):
+            if spec.get(flag):
+                fail(
+                    app,
+                    f"pod {pod} sets {flag}: a container that sees the host's "
+                    f"processes can reach the host's files through /proc/1/root",
+                )
+        for v in spec.get("volumes") or []:
+            hp = v.get("hostPath")
+            if hp and not host_path_allowed(hp.get("path", "")):
+                fail(
+                    app,
+                    f"pod {pod} mounts the host's {hp.get('path')}; only device "
+                    f"nodes, D-Bus, udev and the time zone may come from the host, "
+                    f"anything else hands a hacked service the machine",
+                )
 
 
 PROBES = ("readinessProbe", "livenessProbe", "startupProbe")
