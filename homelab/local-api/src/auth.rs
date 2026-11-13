@@ -949,7 +949,11 @@ mod tests {
         with_session(req, token)
     }
 
-    async fn post_status(state: &crate::AppState, token: &str, headers: &[(&'static str, &str)]) -> StatusCode {
+    async fn post_status(
+        state: &crate::AppState,
+        token: &str,
+        headers: &[(&'static str, &str)],
+    ) -> StatusCode {
         write_router(state.auth.clone())
             .oneshot(signed_in_post(token, headers))
             .await
@@ -963,7 +967,10 @@ mod tests {
         let state = app_state(cfg);
         let token = signed_in_token(&state).await;
         for headers in [
-            vec![("origin", "https://evil.9.yolab.io"), ("sec-fetch-site", "same-site")],
+            vec![
+                ("origin", "https://evil.9.yolab.io"),
+                ("sec-fetch-site", "same-site"),
+            ],
             vec![("origin", "https://evil.9.yolab.io")],
             vec![("sec-fetch-site", "same-site")],
             vec![("sec-fetch-site", "cross-site")],
@@ -985,7 +992,10 @@ mod tests {
         let state = app_state(cfg);
         let token = signed_in_token(&state).await;
         for headers in [
-            vec![("origin", "https://cluster.5.yolab.io"), ("sec-fetch-site", "same-origin")],
+            vec![
+                ("origin", "https://cluster.5.yolab.io"),
+                ("sec-fetch-site", "same-origin"),
+            ],
             vec![("origin", "https://CLUSTER.5.yolab.io")],
             vec![("sec-fetch-site", "same-origin")],
             vec![],
