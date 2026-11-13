@@ -3,11 +3,11 @@ name: authelia
 description: One login for all your services, with users and groups you manage in a web page
 home: https://www.authelia.com
 type: application
-version: 0.2.5
+version: 0.2.6
 appVersion: 4.39.28
 dependencies:
   - name: yolab-common
-    version: "0.1.40"
+    version: "0.1.41"
     repository: oci://ghcr.io/demycode/charts
 annotations:
   yolab.io/display-name: Authelia

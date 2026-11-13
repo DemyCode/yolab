@@ -1247,6 +1247,7 @@ def check_env_parts(app, docs, fail):
 
 CADDY_DNS_GLOBAL = "{\n  cert_issuer acme {\n    dns acmedns {"
 CADDY_NO_HTTP3 = "  servers {\n    protocols h1 h2\n  }\n}"
+CADDY_ADMIN_OFF = "\n  admin off\n"
 CADDY_GLOBAL_BLOCK = re.compile(
     r"\A\s*\{\n.*?^\}[ \t]*(\n|\Z)", re.DOTALL | re.MULTILINE
 )
@@ -1273,6 +1274,12 @@ def check_caddy_dns(app, docs, fail):
                 app,
                 f"{d['metadata']['name']} does not start with yolab-common.caddyGlobal, "
                 f"so its certificates depend on Let's Encrypt reaching this machine",
+            )
+        if text is not None and CADDY_ADMIN_OFF not in text:
+            fail(
+                app,
+                f"{d['metadata']['name']} leaves Caddy's admin API on: any container "
+                f"in the pod can load a config that prints the account token",
             )
         if text is not None and CADDY_NO_HTTP3 not in text:
             fail(

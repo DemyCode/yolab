@@ -904,6 +904,14 @@ class GatewayProvesNamesThroughDns(RenderedChart):
         self.assertIn(check_charts.CADDY_NO_HTTP3, caddyfile)
         self.assertNotIn("h3", caddyfile)
 
+    def test_no_gateway_caddy_runs_an_admin_api_the_app_could_reach(self):
+        caddyfile = next(
+            d["data"]["Caddyfile"]
+            for d in self.docs()
+            if d["kind"] == "ConfigMap" and d["metadata"]["name"].endswith("-caddy")
+        )
+        self.assertIn(check_charts.CADDY_ADMIN_OFF, caddyfile)
+
 
 class EnvParts(unittest.TestCase):
     def test_appending_to_the_shared_env_file_is_reported(self):
