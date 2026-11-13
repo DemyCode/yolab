@@ -35,7 +35,7 @@ spec:
         args:
         - /bin/sh
         - -c
-        - start-notebook.py --IdentityProvider.token='' --ServerApp.root_dir=/home/jovyan/work
+        - start-notebook.py --IdentityProvider.token='' --ServerApp.ip=127.0.0.1 --ServerApp.root_dir=/home/jovyan/work
         securityContext:
           runAsUser: 1000
           runAsGroup: 1000
@@ -43,8 +43,11 @@ spec:
         - containerPort: 8888
         readinessProbe:
           timeoutSeconds: 5
-          tcpSocket:
-            port: 8888
+          exec:
+            command:
+            - python3
+            - -c
+            - import socket; socket.create_connection(("127.0.0.1", 8888), 4).close()
         volumeMounts:
         - name: data
           mountPath: /home/jovyan/work

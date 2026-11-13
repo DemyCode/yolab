@@ -1,11 +1,12 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
+use std::net::IpAddr;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use axum::{
     body::Body,
-    extract::State,
-    http::{Request, StatusCode},
+    extract::{Extension, State},
+    http::{header, HeaderMap, Request, StatusCode},
     middleware::Next,
     response::{IntoResponse, Response},
 };
@@ -18,6 +19,10 @@ use crate::store::Store;
 
 const SESSION_DAYS: i64 = 30;
 const COOKIE: &str = "yolab_session";
+
+pub const LOGIN_WINDOW_SECS: i64 = 15 * 60;
+pub const LOGIN_FAILURES_PER_CLIENT: usize = 10;
+pub const LOGIN_FAILURES_OVERALL: usize = 200;
 
 fn now_secs() -> i64 {
     i64::try_from(crate::system::now_secs()).unwrap_or(i64::MAX)
@@ -36,11 +41,100 @@ fn password_hash(cfg: &Config) -> String {
 
 pub const CLUSTER_AUTH_HEADER: &str = "x-yolab-cluster";
 
-fn is_loopback(req: &Request<Body>) -> bool {
+fn peer_ip(req: &Request<Body>) -> Option<IpAddr> {
     req.extensions()
         .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
-        .map(|ci| ci.0.ip().is_loopback())
-        .unwrap_or(false)
+        .map(|ci| ci.0.ip())
+}
+
+fn is_proxied(headers: &HeaderMap) -> bool {
+    headers.contains_key("x-forwarded-for")
+        || headers.contains_key(header::FORWARDED)
+        || headers.contains_key(header::VIA)
+}
+
+fn is_loopback(req: &Request<Body>) -> bool {
+    peer_ip(req).is_some_and(|ip| ip.is_loopback()) && !is_proxied(req.headers())
+}
+
+fn forwarded_for(headers: &HeaderMap) -> Option<IpAddr> {
+    headers
+        .get("x-forwarded-for")?
+        .to_str()
+        .ok()?
+        .split(',')
+        .next()?
+        .trim()
+        .parse()
+        .ok()
+}
+
+fn client_bucket(ip: IpAddr) -> String {
+    match ip {
+        IpAddr::V4(v4) => v4.to_string(),
+        IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
+            Some(v4) => v4.to_string(),
+            None => {
+                let s = v6.segments();
+                format!("{:x}:{:x}:{:x}:{:x}::/64", s[0], s[1], s[2], s[3])
+            }
+        },
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LoginClient(pub String);
+
+fn login_client(req: &Request<Body>) -> LoginClient {
+    let ip = match peer_ip(req) {
+        Some(peer) if peer.is_loopback() => forwarded_for(req.headers()).unwrap_or(peer),
+        Some(peer) => peer,
+        None => return LoginClient("unknown".into()),
+    };
+    LoginClient(client_bucket(ip))
+}
+
+#[derive(Default)]
+pub struct LoginFailures {
+    by_client: HashMap<String, Vec<i64>>,
+}
+
+impl LoginFailures {
+    fn prune(&mut self, now: i64) {
+        self.by_client.retain(|_, times| {
+            times.retain(|t| now - *t < LOGIN_WINDOW_SECS);
+            !times.is_empty()
+        });
+    }
+
+    fn wait_for(times: &[i64], now: i64) -> Option<i64> {
+        times
+            .iter()
+            .min()
+            .map(|oldest| (oldest + LOGIN_WINDOW_SECS - now).max(1))
+    }
+
+    pub fn retry_after(&mut self, client: &str, now: i64) -> Option<i64> {
+        self.prune(now);
+        if let Some(times) = self.by_client.get(client) {
+            if times.len() >= LOGIN_FAILURES_PER_CLIENT {
+                return Self::wait_for(times, now);
+            }
+        }
+        let all: Vec<i64> = self.by_client.values().flatten().copied().collect();
+        if all.len() >= LOGIN_FAILURES_OVERALL {
+            return Self::wait_for(&all, now);
+        }
+        None
+    }
+
+    pub fn failed(&mut self, client: &str, now: i64) {
+        self.by_client.entry(client.to_string()).or_default().push(now);
+    }
+
+    pub fn succeeded(&mut self, client: &str) {
+        self.by_client.remove(client);
+    }
 }
 
 fn has_cluster_token(req: &Request<Body>, cfg: &Config) -> bool {
@@ -59,6 +153,7 @@ pub struct AuthState {
     pub config: Arc<Config>,
     store: &'static Mutex<Store>,
     store_path: Option<PathBuf>,
+    failures: Arc<Mutex<LoginFailures>>,
 }
 
 impl AuthState {
@@ -67,6 +162,7 @@ impl AuthState {
             config,
             store: crate::store::shared(),
             store_path: Some(crate::store::default_path()),
+            failures: Arc::default(),
         }
     }
 
@@ -76,11 +172,18 @@ impl AuthState {
             config,
             store: Box::leak(Box::new(Mutex::new(Store::new("test")))),
             store_path: None,
+            failures: Arc::default(),
         }
     }
 
     fn store(&self) -> std::sync::MutexGuard<'static, Store> {
         self.store
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn failures(&self) -> std::sync::MutexGuard<'_, LoginFailures> {
+        self.failures
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
@@ -127,10 +230,12 @@ fn session_token(jar: &CookieJar) -> String {
 pub async fn auth_middleware(
     State(state): State<AuthState>,
     jar: CookieJar,
-    req: Request<Body>,
+    mut req: Request<Body>,
     next: Next,
 ) -> Response {
     if req.uri().path() == "/api/login" {
+        let client = login_client(&req);
+        req.extensions_mut().insert(client);
         return next.run(req).await;
     }
     if has_cluster_token(&req, &state.config) {
@@ -164,14 +269,30 @@ pub struct OkResponse {
     pub ok: bool,
 }
 
+fn too_many_attempts(retry_after: i64) -> Response {
+    (
+        StatusCode::TOO_MANY_REQUESTS,
+        [(header::RETRY_AFTER, retry_after.to_string())],
+        r#"{"detail":"Too many wrong passwords, try again later"}"#,
+    )
+        .into_response()
+}
+
 pub async fn login(
     State(state): State<crate::AppState>,
+    Extension(LoginClient(client)): Extension<LoginClient>,
     axum::Json(body): axum::Json<LoginRequest>,
 ) -> Response {
+    let blocked = state.auth.failures().retry_after(&client, now_secs());
+    if let Some(wait) = blocked {
+        return too_many_attempts(wait);
+    }
     let hash = password_hash(&state.config);
     if !session::verify_password(&body.password, &hash) {
+        state.auth.failures().failed(&client, now_secs());
         return (StatusCode::UNAUTHORIZED, r#"{"detail":"Wrong password"}"#).into_response();
     }
+    state.auth.failures().succeeded(&client);
     let token = {
         let auth = &state.auth;
         let mut store = auth.store();
@@ -304,6 +425,7 @@ mod tests {
                 config: Arc::clone(&config),
                 store: state.auth.store,
                 store_path: None,
+                failures: Arc::default(),
             },
             config,
             kube: crate::k8s::Kube::with(crate::k8s::testing::unreachable()),
@@ -313,8 +435,13 @@ mod tests {
     }
 
     async fn do_login(state: &crate::AppState, password: &str) -> Response {
+        login_from(state, "2001:db8:1:2::/64", password).await
+    }
+
+    async fn login_from(state: &crate::AppState, client: &str, password: &str) -> Response {
         login(
             State(state.clone()),
+            Extension(LoginClient(client.to_string())),
             axum::Json(LoginRequest {
                 password: password.to_string(),
             }),
@@ -578,5 +705,166 @@ mod tests {
         let res = logout(State(state.clone()), CookieJar::new()).await;
         assert_eq!(res.status(), StatusCode::OK);
         assert_eq!(reaches(&state, &token).await, StatusCode::OK);
+    }
+
+    fn client_of(peer: Option<&str>, forwarded: Option<&str>) -> String {
+        let mut req = request("/api/login", peer);
+        if let Some(xff) = forwarded {
+            req = with_header(req, "x-forwarded-for", xff);
+        }
+        login_client(&req).0
+    }
+
+    #[tokio::test]
+    async fn a_request_caddy_forwarded_from_the_internet_is_not_loopback() {
+        let (_d, cfg) = unprovisioned();
+        let s = AuthState::isolated(cfg);
+        for (name, value) in [
+            ("x-forwarded-for", "203.0.113.9"),
+            ("forwarded", "for=203.0.113.9"),
+            ("via", "1.1 Caddy"),
+        ] {
+            let req = with_header(request("/api/protected", Some("[::1]:5000")), name, value);
+            assert_eq!(
+                status_of(s.clone(), req).await,
+                StatusCode::UNAUTHORIZED,
+                "a {name} header means a proxy relayed it, so the passwordless loopback door stays shut"
+            );
+        }
+    }
+
+    #[test]
+    fn the_login_client_is_the_visitor_caddy_names_not_caddy_itself() {
+        assert_eq!(client_of(Some("[::1]:5000"), Some("203.0.113.9")), "203.0.113.9");
+        assert_eq!(
+            client_of(Some("[::1]:5000"), Some("2001:db8:aa:bb:1:2:3:4, 10.0.0.1")),
+            "2001:db8:aa:bb::/64"
+        );
+    }
+
+    #[test]
+    fn an_off_box_caller_cannot_choose_its_login_client_with_a_header() {
+        assert_eq!(
+            client_of(Some("[2001:db8:5:6::9]:5000"), Some("198.51.100.1")),
+            "2001:db8:5:6::/64"
+        );
+    }
+
+    #[test]
+    fn every_address_in_one_ipv6_64_counts_as_one_client() {
+        assert_eq!(
+            client_of(Some("[2001:db8:1:2::1]:1"), None),
+            client_of(Some("[2001:db8:1:2:ffff:ffff:ffff:ffff]:1"), None)
+        );
+        assert_ne!(
+            client_of(Some("[2001:db8:1:2::1]:1"), None),
+            client_of(Some("[2001:db8:1:3::1]:1"), None)
+        );
+        assert_eq!(client_of(Some("[::ffff:198.51.100.7]:1"), None), "198.51.100.7");
+    }
+
+    #[test]
+    fn a_garbled_forwarded_for_falls_back_to_the_peer() {
+        assert_eq!(client_of(Some("127.0.0.1:5000"), Some("not-an-ip")), "127.0.0.1");
+    }
+
+    #[tokio::test]
+    async fn the_middleware_hands_the_login_handler_its_client() {
+        let (_d, cfg) = provisioned();
+        let app = Router::new()
+            .route(
+                "/api/login",
+                get(|Extension(LoginClient(c)): Extension<LoginClient>| async move { c }),
+            )
+            .layer(axum::middleware::from_fn_with_state(
+                AuthState::isolated(cfg),
+                auth_middleware,
+            ));
+        let req = with_header(
+            request("/api/login", Some("[::1]:5000")),
+            "x-forwarded-for",
+            "203.0.113.9",
+        );
+        let res = app.oneshot(req).await.unwrap();
+        let body = axum::body::to_bytes(res.into_body(), 1024).await.unwrap();
+        assert_eq!(&body[..], b"203.0.113.9");
+    }
+
+    #[tokio::test]
+    async fn wrong_passwords_lock_that_client_out_for_a_while() {
+        let (_d, cfg) = provisioned();
+        let state = app_state(cfg);
+        for _ in 0..LOGIN_FAILURES_PER_CLIENT {
+            assert_eq!(
+                login_from(&state, "a", "wrong").await.status(),
+                StatusCode::UNAUTHORIZED
+            );
+        }
+        let res = login_from(&state, "a", PASSWORD).await;
+        assert_eq!(
+            res.status(),
+            StatusCode::TOO_MANY_REQUESTS,
+            "even the right password waits once the guesses ran out, or the lockout tells a guesser when they hit it"
+        );
+        assert!(issued_cookie(&res).is_none());
+        let wait: i64 = res.headers()[header::RETRY_AFTER]
+            .to_str()
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!(wait > 0 && wait <= LOGIN_WINDOW_SECS, "Retry-After {wait}");
+        assert_eq!(
+            login_from(&state, "b", PASSWORD).await.status(),
+            StatusCode::OK,
+            "another client is not punished for the first one's guesses"
+        );
+    }
+
+    #[test]
+    fn failures_older_than_the_window_are_forgiven() {
+        let mut f = LoginFailures::default();
+        for _ in 0..LOGIN_FAILURES_PER_CLIENT {
+            f.failed("a", 1_000);
+        }
+        assert!(f.retry_after("a", 1_000).is_some());
+        assert!(f.retry_after("a", 1_000 + LOGIN_WINDOW_SECS - 1).is_some());
+        assert_eq!(f.retry_after("a", 1_000 + LOGIN_WINDOW_SECS), None);
+        assert!(f.by_client.is_empty(), "expired entries do not pile up in memory");
+    }
+
+    #[test]
+    fn a_right_password_clears_that_clients_count() {
+        let mut f = LoginFailures::default();
+        for _ in 0..LOGIN_FAILURES_PER_CLIENT - 1 {
+            f.failed("a", 1_000);
+        }
+        f.succeeded("a");
+        f.failed("a", 1_000);
+        assert_eq!(f.retry_after("a", 1_000), None);
+    }
+
+    #[test]
+    fn guesses_spread_over_many_clients_still_hit_an_overall_cap() {
+        let mut f = LoginFailures::default();
+        for i in 0..LOGIN_FAILURES_OVERALL {
+            f.failed(&format!("client-{i}"), 1_000);
+        }
+        assert!(
+            f.retry_after("a-fresh-client", 1_000).is_some(),
+            "rotating through addresses must not buy unlimited guesses"
+        );
+    }
+
+    #[tokio::test]
+    async fn login_is_throttled_before_the_password_is_checked() {
+        let (_d, cfg) = unprovisioned();
+        let state = app_state(cfg);
+        for _ in 0..LOGIN_FAILURES_PER_CLIENT {
+            login_from(&state, "a", "x").await;
+        }
+        assert_eq!(
+            login_from(&state, "a", "x").await.status(),
+            StatusCode::TOO_MANY_REQUESTS
+        );
     }
 }

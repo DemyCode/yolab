@@ -19,6 +19,7 @@
     ../.;
 
   toplevel = name: nixosSystems.${name}.config.system.build.toplevel;
+  inherit (pkgs) lib;
 in let
   allChecks = {
     client-ui = builds.clientUi;
@@ -77,6 +78,17 @@ in let
         cp -r "$src" ./wg-register
         chmod -R +w ./wg-register
         busybox sh ./wg-register/setup_test.sh
+        touch $out
+      '';
+
+    wg-sidecar-firewall-tests =
+      pkgs.runCommand "wg-sidecar-firewall-tests"
+      {
+        nativeBuildInputs = [pkgs.busybox];
+        src = ../apps/wg-sidecar;
+      }
+      ''
+        busybox sh "$src/firewall_test.sh"
         touch $out
       '';
 
@@ -268,6 +280,26 @@ in let
           echo "through the machine's own connection, never through the YoLab server." >&2
           exit 1
         ''}
+        touch $out
+      '';
+
+    ssh-takes-only-keys = let
+      ssh = nixosSystems.yolab-ci.config.services.openssh.settings;
+      fail2ban = nixosSystems.yolab-ci.config.services.fail2ban.enable;
+      wrong =
+        (lib.optional (ssh.PasswordAuthentication != false) "PasswordAuthentication must be false")
+        ++ (lib.optional (ssh.KbdInteractiveAuthentication != false)
+          "KbdInteractiveAuthentication must be false: through PAM it asks for the homelab user's password, which is the UI password, and that user is in wheel")
+        ++ (lib.optional ((ssh.AuthenticationMethods or null) != "publickey") "AuthenticationMethods must be publickey")
+        ++ (lib.optional (ssh.PermitRootLogin != "prohibit-password") "PermitRootLogin must be prohibit-password")
+        ++ (lib.optional (!fail2ban) "fail2ban must be on: SSH faces the internet on the tunnel address");
+    in
+      pkgs.runCommand "ssh-takes-only-keys" {} ''
+        wrong=${pkgs.writeText "wrong" (builtins.concatStringsSep "\n" wrong)}
+        if [ -s "$wrong" ]; then
+          cat "$wrong" >&2
+          exit 1
+        fi
         touch $out
       '';
 

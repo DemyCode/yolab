@@ -189,7 +189,19 @@ in {
       settings = {
         PermitRootLogin = "prohibit-password";
         PasswordAuthentication = false;
+        KbdInteractiveAuthentication = false;
+        AuthenticationMethods = "publickey";
+        MaxAuthTries = 3;
+        LoginGraceTime = 20;
       };
+    };
+
+    services.fail2ban = {
+      enable = true;
+      maxretry = 5;
+      bantime = "1h";
+      bantime-increment.enable = true;
+      ignoreIP = [s.privateSubnet];
     };
 
     boot.kernelPackages = pkgs.linuxPackages_latest;
