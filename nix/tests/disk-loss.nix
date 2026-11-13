@@ -62,9 +62,11 @@ in
     nodes.node1 = node;
 
     testScript = ''
+      import hashlib
+      import hmac
       import json
 
-      TOKEN = "test-account-token"
+      TOKEN = hmac.new(b"test-token", b"yolab-cluster-token", hashlib.sha256).hexdigest()
       AUTH = f"-H 'x-yolab-cluster: {TOKEN}'"
       API = "http://[::1]:3001"
       K = "k3s kubectl"

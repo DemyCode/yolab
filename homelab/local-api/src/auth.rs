@@ -175,7 +175,18 @@ fn has_cluster_token(req: &Request<Body>, cfg: &Config) -> bool {
     else {
         return false;
     };
-    crate::session::ct_eq(presented, &cfg.cluster_token())
+    if crate::session::ct_eq(presented, &cfg.cluster_token()) {
+        return true;
+    }
+    from_cluster_peer(req, cfg) && crate::session::ct_eq(presented, &cfg.account_token())
+}
+
+fn from_cluster_peer(req: &Request<Body>, cfg: &Config) -> bool {
+    let Some(subnet) = cfg.private_subnet() else {
+        return false;
+    };
+    !is_proxied(req.headers())
+        && peer_ip(req).is_some_and(|ip| crate::config::subnet_contains(subnet, ip))
 }
 
 #[derive(Clone)]
@@ -409,7 +420,7 @@ mod tests {
 
     fn provisioned() -> (tempfile::TempDir, Arc<Config>) {
         write_config(&format!(
-            "[homelab]\nhomelab_password_hash = \"{HASH}\"\n[tunnel]\naccount_token = \"cluster-tok\"\n"
+            "[homelab]\nhomelab_password_hash = \"{HASH}\"\n[tunnel]\naccount_token = \"cluster-tok\"\n[node]\nsub_ipv6_private_subnet = \"fd00:cafe::/112\"\n[node.k3s]\ntoken = \"k3s-tok\"\n"
         ))
     }
 
@@ -448,6 +459,11 @@ mod tests {
 
     const LOOPBACK: Option<&str> = Some("127.0.0.1:5000");
     const OFF_BOX: Option<&str> = Some("[fd00:42::5]:5000");
+    const CLUSTER_PEER: Option<&str> = Some("[fd00:cafe::9]:5000");
+
+    fn peer_token() -> String {
+        crate::config::derive_cluster_token("k3s-tok")
+    }
 
     fn app_state(config: Arc<Config>) -> crate::AppState {
         crate::AppState {
@@ -572,6 +588,20 @@ mod tests {
         let req = with_header(
             request("/api/protected", OFF_BOX),
             CLUSTER_AUTH_HEADER,
+            &peer_token(),
+        );
+        assert_eq!(
+            status_of(AuthState::isolated(cfg), req).await,
+            StatusCode::OK
+        );
+    }
+
+    #[tokio::test]
+    async fn a_machine_not_yet_updated_still_reaches_its_peers_with_the_account_token() {
+        let (_d, cfg) = provisioned();
+        let req = with_header(
+            request("/api/protected", CLUSTER_PEER),
+            CLUSTER_AUTH_HEADER,
             "cluster-tok",
         );
         assert_eq!(
@@ -581,10 +611,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_account_token_opens_nothing_outside_the_private_subnet() {
+        let (_d, cfg) = provisioned();
+        let state = AuthState::isolated(cfg);
+        for peer in [OFF_BOX, LOOPBACK] {
+            let req = with_header(
+                request("/api/protected", peer),
+                CLUSTER_AUTH_HEADER,
+                "cluster-tok",
+            );
+            assert_eq!(
+                status_of(state.clone(), req).await,
+                StatusCode::UNAUTHORIZED,
+                "{peer:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn the_account_token_opens_nothing_through_the_public_page() {
+        let (_d, cfg) = provisioned();
+        let state = AuthState::isolated(cfg);
+        for peer in [LOOPBACK, CLUSTER_PEER] {
+            let req = with_header(
+                with_header(
+                    request("/api/protected", peer),
+                    CLUSTER_AUTH_HEADER,
+                    "cluster-tok",
+                ),
+                "x-forwarded-for",
+                "2a01:4f8::77",
+            );
+            assert_eq!(
+                status_of(state.clone(), req).await,
+                StatusCode::UNAUTHORIZED,
+                "{peer:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn a_wrong_or_partial_cluster_token_is_rejected() {
         let (_d, cfg) = provisioned();
         let state = AuthState::isolated(cfg);
-        for presented in ["wrong-tok", "cluster", "", " "] {
+        for presented in ["wrong-tok", "cluster", "k3s-tok", "", " "] {
             let req = with_header(
                 request("/api/protected", OFF_BOX),
                 CLUSTER_AUTH_HEADER,
@@ -1030,7 +1100,7 @@ mod tests {
             .uri("/api/system/reboot/all")
             .body(Body::empty())
             .unwrap();
-        req = with_header(req, CLUSTER_AUTH_HEADER, "cluster-tok");
+        req = with_header(req, CLUSTER_AUTH_HEADER, &peer_token());
         req = with_header(req, "origin", "https://elsewhere.example");
         let res = write_router(state.auth.clone()).oneshot(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::OK);

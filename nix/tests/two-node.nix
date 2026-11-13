@@ -132,7 +132,7 @@ in
         # Driven through the real HTTP API rather than by writing the ConfigMap
         # directly, so the test exercises the path the UI actually takes. Auth is
         # the shared cluster token, the same header node-to-node calls use.
-        TOKEN = "test-account-token"
+        TOKEN = CLUSTER_TOKEN
         AUTH = f"-H 'x-yolab-cluster: {TOKEN}'"
         API = "http://[::1]:3001"
 

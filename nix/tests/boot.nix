@@ -95,7 +95,7 @@ in
         with step(node1, "local-api is listening and answering"):
             node1.wait_for_open_port(3001, timeout=300)
             node1.wait_until_succeeds(
-                "curl -sf -H 'x-yolab-cluster: test-account-token' "
+                f"curl -sf -H 'x-yolab-cluster: {CLUSTER_TOKEN}' "
                 "http://[::1]:3001/api/disks",
                 timeout=300,
             )

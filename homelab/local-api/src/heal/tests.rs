@@ -718,6 +718,7 @@ mod real_network {
     use wiremock::{matchers, Mock, MockServer, ResponseTemplate};
 
     const TOKEN: &str = "cluster-tok";
+    const ACCOUNT_TOKEN: &str = "account-tok";
 
     fn network(port: u16, platform_url: &str, kube: kube::Client) -> RealNetwork {
         RealNetwork {
@@ -725,6 +726,7 @@ mod real_network {
             client: crate::testkit::http(),
             port,
             token: TOKEN.into(),
+            account_token: ACCOUNT_TOKEN.into(),
             platform_url: platform_url.into(),
         }
     }
@@ -830,7 +832,7 @@ mod real_network {
         let server = MockServer::start().await;
         Mock::given(matchers::method("GET"))
             .and(matchers::path("/nodes"))
-            .and(matchers::header("authorization", "Bearer cluster-tok"))
+            .and(matchers::header("authorization", "Bearer account-tok"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!([
                 { "node_id": 7, "sub_ipv6": "fd00:cafe::6", "extra": "ignored" }
             ])))

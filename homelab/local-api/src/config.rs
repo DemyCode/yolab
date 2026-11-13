@@ -14,6 +14,50 @@ pub fn read_account_token(config_path: &str) -> String {
         .unwrap_or_default()
 }
 
+fn read_k3s_token(config_path: &str) -> String {
+    read_config_table(config_path)
+        .and_then(|table| {
+            table
+                .get("node")?
+                .get("k3s")?
+                .get("token")?
+                .as_str()
+                .map(str::to_string)
+        })
+        .unwrap_or_default()
+}
+
+pub fn derive_cluster_token(k3s_token: &str) -> String {
+    if k3s_token.is_empty() {
+        return String::new();
+    }
+    hex::encode(crate::session::hmac_sha256(
+        k3s_token.as_bytes(),
+        b"yolab-cluster-token",
+    ))
+}
+
+pub fn parse_subnet(cidr: &str) -> Option<(std::net::Ipv6Addr, u8)> {
+    let (addr, len) = cidr.trim().split_once('/')?;
+    let len: u8 = len.parse().ok()?;
+    if len > 128 {
+        return None;
+    }
+    Some((addr.parse().ok()?, len))
+}
+
+pub fn subnet_contains(subnet: (std::net::Ipv6Addr, u8), ip: std::net::IpAddr) -> bool {
+    let std::net::IpAddr::V6(ip) = ip else {
+        return false;
+    };
+    let (base, len) = subnet;
+    if len == 0 {
+        return true;
+    }
+    let mask = u128::MAX << (128 - u32::from(len));
+    u128::from(base) & mask == u128::from(ip) & mask
+}
+
 fn read_config_table(config_path: &str) -> Option<toml::Table> {
     let text = match std::fs::read_to_string(config_path) {
         Ok(text) => text,
@@ -200,7 +244,17 @@ impl Config {
     }
 
     pub fn cluster_token(&self) -> String {
+        derive_cluster_token(&read_k3s_token(&self.config_path))
+    }
+
+    pub fn account_token(&self) -> String {
         read_account_token(&self.config_path)
+    }
+
+    pub fn private_subnet(&self) -> Option<(std::net::Ipv6Addr, u8)> {
+        let table = self.toml()?;
+        let cidr = table.get("node")?.get("sub_ipv6_private_subnet")?.as_str()?;
+        parse_subnet(cidr)
     }
 
     pub fn toml(&self) -> Option<toml::Table> {
@@ -259,9 +313,27 @@ mod tests {
     }
 
     #[test]
-    fn cluster_token_reads_the_account_token() {
-        let (_d, cfg) = config_with("[tunnel]\naccount_token = \"tok-abc123\"\n");
-        assert_eq!(cfg.cluster_token(), "tok-abc123");
+    fn the_cluster_token_comes_from_the_k3s_join_secret_not_the_account_token() {
+        let (_d, cfg) = config_with(
+            "[tunnel]\naccount_token = \"tok-abc123\"\n[node.k3s]\ntoken = \"k3s-secret\"\n",
+        );
+        assert_eq!(cfg.cluster_token(), derive_cluster_token("k3s-secret"));
+        assert_ne!(cfg.cluster_token(), "tok-abc123");
+        assert_ne!(cfg.cluster_token(), "k3s-secret");
+        assert_eq!(cfg.account_token(), "tok-abc123");
+    }
+
+    #[test]
+    fn every_machine_holding_the_same_join_secret_derives_the_same_cluster_token() {
+        assert_eq!(
+            derive_cluster_token("k3s-secret"),
+            derive_cluster_token("k3s-secret")
+        );
+        assert_ne!(
+            derive_cluster_token("k3s-secret"),
+            derive_cluster_token("other")
+        );
+        assert_eq!(derive_cluster_token("k3s-secret").len(), 64);
     }
 
     #[test]
@@ -272,14 +344,44 @@ mod tests {
         let (_d, no_section) = config_with("[homelab]\nhostname = \"yolab\"\n");
         assert_eq!(no_section.cluster_token(), "");
 
-        let (_d, no_key) = config_with("[tunnel]\nenabled = true\n");
-        assert_eq!(no_key.cluster_token(), "");
+        let (_d, account_only) = config_with("[tunnel]\naccount_token = \"tok-abc123\"\n");
+        assert_eq!(account_only.cluster_token(), "");
 
-        let (_d, wrong_type) = config_with("[tunnel]\naccount_token = 42\n");
+        let (_d, empty) = config_with("[node.k3s]\ntoken = \"\"\n");
+        assert_eq!(empty.cluster_token(), "");
+
+        let (_d, wrong_type) = config_with("[node.k3s]\ntoken = 42\n");
         assert_eq!(wrong_type.cluster_token(), "");
 
         let (_d, not_toml) = config_with("this is not valid toml {{{");
         assert_eq!(not_toml.cluster_token(), "");
+    }
+
+    #[test]
+    fn the_private_subnet_is_read_from_the_node_section() {
+        let (_d, cfg) = config_with("[node]\nsub_ipv6_private_subnet = \"fd00:cafe::/112\"\n");
+        let subnet = cfg.private_subnet().unwrap();
+        assert!(subnet_contains(subnet, "fd00:cafe::9".parse().unwrap()));
+        assert!(!subnet_contains(subnet, "fd00:cafe::1:9".parse().unwrap()));
+        assert!(!subnet_contains(subnet, "127.0.0.1".parse().unwrap()));
+        assert!(!subnet_contains(subnet, "::1".parse().unwrap()));
+
+        let (_d, none) = config_with("[node]\n");
+        assert_eq!(none.private_subnet(), None);
+    }
+
+    #[test]
+    fn a_malformed_subnet_is_not_a_subnet() {
+        for bad in [
+            "",
+            "fd00::",
+            "fd00::/129",
+            "fd00::/x",
+            "nope/64",
+            "10.0.0.0/8",
+        ] {
+            assert_eq!(parse_subnet(bad), None, "{bad:?}");
+        }
     }
 
     #[test]

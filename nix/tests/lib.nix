@@ -62,7 +62,11 @@
   };
 
   preamble = ''
+    import hashlib
+    import hmac
     import json
+
+    CLUSTER_TOKEN = hmac.new(b"test-token", b"yolab-cluster-token", hashlib.sha256).hexdigest()
 
     YOLAB_UNITS = [
         "yolab-reset-wipe",

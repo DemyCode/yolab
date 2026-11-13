@@ -74,7 +74,7 @@ in
     testScript =
       testLib.preamble
       + ''
-        TOKEN = "test-account-token"
+        TOKEN = CLUSTER_TOKEN
         AUTH = f"-H 'x-yolab-cluster: {TOKEN}'"
         API = "http://[::1]:3001"
         K = "k3s kubectl"

@@ -14,7 +14,8 @@ use crate::AppState;
 
 pub(crate) const PASSWORD_HASH: &str = "$6$UG3IURKt1uqugrtk$i3e3tXg2NMIXuOb9JXztEAwCcsIcfn81WYBkzsfmwA7keyOajafp/PAAlFtcrMHVXo3cXK9z03YRRLaplZZm90";
 pub(crate) const PASSWORD: &str = "password";
-pub(crate) const CLUSTER_TOKEN: &str = "cluster-tok";
+pub(crate) const ACCOUNT_TOKEN: &str = "cluster-tok";
+pub(crate) const K3S_TOKEN: &str = "k3s-tok";
 
 const OFF_BOX: &str = "[fd00:cafe::9]:40000";
 const LOOPBACK: &str = "127.0.0.1:40000";
@@ -22,7 +23,7 @@ const LOOPBACK: &str = "127.0.0.1:40000";
 fn provisioned_config() -> String {
     format!(
         "[homelab]\nhostname = \"yolab\"\nhomelab_password_hash = \"{PASSWORD_HASH}\"\n\
-         [tunnel]\naccount_token = \"{CLUSTER_TOKEN}\"\n"
+         [tunnel]\naccount_token = \"{ACCOUNT_TOKEN}\"\n[node.k3s]\ntoken = \"{K3S_TOKEN}\"\n"
     )
 }
 
@@ -85,7 +86,7 @@ impl TestApi {
 
     pub fn unprovisioned() -> Self {
         Self::with_config(&format!(
-            "[homelab]\nhostname = \"yolab\"\n[tunnel]\naccount_token = \"{CLUSTER_TOKEN}\"\n"
+            "[homelab]\nhostname = \"yolab\"\n[tunnel]\naccount_token = \"{ACCOUNT_TOKEN}\"\n[node.k3s]\ntoken = \"{K3S_TOKEN}\"\n"
         ))
     }
 
@@ -95,7 +96,7 @@ impl TestApi {
     }
 
     pub fn with_peer_token(mut self) -> Self {
-        self.cluster_token = Some(CLUSTER_TOKEN.to_string());
+        self.cluster_token = Some(crate::config::derive_cluster_token(K3S_TOKEN));
         self
     }
 

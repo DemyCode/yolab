@@ -4701,3 +4701,61 @@ class HostAccess(unittest.TestCase):
     def test_every_workload_kind_is_checked(self):
         for kind in ("Deployment", "StatefulSet", "DaemonSet", "Job", "CronJob", "Pod"):
             self.assertEqual(len(host_failures(host_volume("/proc"), kind)), 1, kind)
+
+
+def privilege_failures(spec, app="demo"):
+    doc = {"kind": "Deployment", "metadata": {"name": "server"}}
+    doc["spec"] = {"template": {"spec": spec}}
+    found = []
+    check_charts.check_privilege(app, [doc], lambda app, msg: found.append(msg))
+    return found
+
+
+def container(name="app", privileged=None, add=None):
+    c = {"name": name, "image": "x"}
+    sc = {}
+    if privileged is not None:
+        sc["privileged"] = privileged
+    if add is not None:
+        sc["capabilities"] = {"add": add}
+    if sc:
+        c["securityContext"] = sc
+    return c
+
+
+class Privilege(unittest.TestCase):
+    def test_a_plain_container_passes(self):
+        self.assertEqual(privilege_failures({"containers": [container()]}), [])
+
+    def test_the_host_network_is_refused_unless_listed(self):
+        spec = {"hostNetwork": True, "containers": [container()]}
+        self.assertEqual(len(privilege_failures(spec)), 1)
+        self.assertEqual(privilege_failures(spec, app="tailscale"), [])
+
+    def test_a_privileged_container_outside_the_gateway_sidecar_is_refused(self):
+        found = privilege_failures({"containers": [container("docker", privileged=True)]})
+        self.assertEqual(len(found), 1)
+        self.assertIn("docker", found[0])
+        self.assertEqual(
+            privilege_failures({"containers": [container("wireguard", privileged=True)]}),
+            [],
+        )
+
+    def test_a_privileged_init_container_is_refused_too(self):
+        spec = {"containers": [container()], "initContainers": [container("i", True)]}
+        self.assertEqual(len(privilege_failures(spec)), 1)
+
+    def test_powerful_capabilities_are_refused_unless_listed(self):
+        for cap in ("SYS_ADMIN", "NET_ADMIN", "SYS_PTRACE", "ALL", "CAP_SYS_MODULE"):
+            found = privilege_failures({"containers": [container(add=[cap])]})
+            self.assertEqual(len(found), 1, cap)
+
+    def test_a_listed_service_keeps_only_its_listed_capabilities(self):
+        ok = {"containers": [container(add=["NET_ADMIN", "NET_RAW"])]}
+        self.assertEqual(privilege_failures(ok, app="tailscale"), [])
+        more = {"containers": [container(add=["NET_ADMIN", "SYS_ADMIN"])]}
+        self.assertEqual(len(privilege_failures(more, app="tailscale")), 1)
+
+    def test_dockers_own_default_capabilities_need_no_listing(self):
+        spec = {"containers": [container(add=["CHOWN", "SETUID", "NET_BIND_SERVICE"])]}
+        self.assertEqual(privilege_failures(spec), [])

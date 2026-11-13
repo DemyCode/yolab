@@ -783,6 +783,7 @@ def check(app, docs, fail, chart_yaml="", schema=None, arches=None, home=RELEASE
     check_caddy_dns(app, docs, fail)
     check_probe_timeouts(app, docs, fail)
     check_host_access(app, docs, fail)
+    check_privilege(app, docs, fail)
 
     for d in docs:
         spec = (d.get("spec", {}).get("template", {}) or {}).get("spec", {})
@@ -850,6 +851,114 @@ def check_host_access(app, docs, fail):
                     f"pod {pod} mounts the host's {hp.get('path')}; only device "
                     f"nodes, D-Bus, udev and the time zone may come from the host, "
                     f"anything else hands a hacked service the machine",
+                )
+
+
+HOST_NETWORK_ALLOWED = frozenset(
+    {
+        "adguard-home",
+        "arcane",
+        "ee-gateway",
+        "esphome",
+        "formicaio",
+        "home-assistant",
+        "homebridge",
+        "homey",
+        "komodo",
+        "matter-server",
+        "music-assistant",
+        "netbird",
+        "node-red-standalone",
+        "nostr-vpn",
+        "onedev",
+        "openhands",
+        "openthread-border-router",
+        "pi-hole",
+        "plex",
+        "portainer",
+        "rustdesk-server",
+        "tailscale",
+        "technitium-dns",
+        "watch-your-lan",
+        "zerotier",
+    }
+)
+
+DEFAULT_CAPABILITIES = frozenset(
+    {
+        "AUDIT_WRITE",
+        "CHOWN",
+        "DAC_OVERRIDE",
+        "FOWNER",
+        "FSETID",
+        "KILL",
+        "MKNOD",
+        "NET_BIND_SERVICE",
+        "SETFCAP",
+        "SETGID",
+        "SETPCAP",
+        "SETUID",
+        "SYS_CHROOT",
+    }
+)
+
+CAPABILITIES_ALLOWED = {
+    "adguard-home": {"NET_ADMIN"},
+    "anything-llm": {"SYS_ADMIN"},
+    "ee-gateway": {"NET_ADMIN", "NET_RAW"},
+    "media-stack": {"NET_ADMIN"},
+    "movies-tv": {"NET_ADMIN"},
+    "music": {"NET_ADMIN"},
+    "music-assistant": {"DAC_READ_SEARCH", "SYS_ADMIN"},
+    "netbird": {"NET_ADMIN", "SYS_ADMIN", "SYS_RESOURCE"},
+    "nginx-proxy-manager": {"NET_ADMIN", "NET_RAW"},
+    "nostr-vpn": {"NET_ADMIN"},
+    "pi-hole": {"NET_ADMIN"},
+    "qbittorrent": {"NET_ADMIN"},
+    "tailscale": {"NET_ADMIN", "NET_RAW"},
+    "zerotier": {"NET_ADMIN"},
+}
+
+
+def added_capabilities(container):
+    caps = ((container.get("securityContext") or {}).get("capabilities") or {}).get(
+        "add"
+    ) or []
+    return {str(c).upper().removeprefix("CAP_") for c in caps}
+
+
+def check_privilege(app, docs, fail):
+    for pod, spec in all_pod_specs(docs):
+        if spec.get("hostNetwork") and app not in HOST_NETWORK_ALLOWED:
+            fail(
+                app,
+                f"pod {pod} sets hostNetwork: it shares the machine's network and "
+                f"reaches everything the machine listens on; add {app} to "
+                f"HOST_NETWORK_ALLOWED only if the service cannot work without it",
+            )
+        for c in (spec.get("containers") or []) + (spec.get("initContainers") or []):
+            privileged = (c.get("securityContext") or {}).get("privileged")
+            if (
+                privileged
+                and c.get("name") != "wireguard"
+                and app not in PRIVILEGED_IN_GATEWAY
+            ):
+                fail(
+                    app,
+                    f"container {c.get('name')} in pod {pod} is privileged: it owns "
+                    f"the machine",
+                )
+            extra = (
+                added_capabilities(c)
+                - DEFAULT_CAPABILITIES
+                - CAPABILITIES_ALLOWED.get(app, set())
+            )
+            if extra:
+                fail(
+                    app,
+                    f"container {c.get('name')} in pod {pod} adds "
+                    f"{', '.join(sorted(extra))}; add them to CAPABILITIES_ALLOWED "
+                    f"only if the service cannot work without them",
                 )
 
 

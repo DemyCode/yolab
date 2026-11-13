@@ -197,6 +197,7 @@ pub(crate) struct RealNetwork {
     client: crate::http::Client,
     port: u16,
     token: String,
+    account_token: String,
     platform_url: String,
 }
 
@@ -221,6 +222,7 @@ impl RealNetwork {
             client: crate::http::client(),
             port: cfg.port,
             token: cfg.cluster_token(),
+            account_token: cfg.account_token(),
             platform_url: platform_url.trim_end_matches('/').to_string(),
         }
     }
@@ -318,13 +320,13 @@ impl Network for RealNetwork {
         &self,
     ) -> impl Future<Output = Result<Option<Vec<PlatformNode>>>> + Send + '_ {
         async move {
-            if self.platform_url.is_empty() || self.token.is_empty() {
+            if self.platform_url.is_empty() || self.account_token.is_empty() {
                 return Ok(None);
             }
             let nodes = self
                 .client
                 .get(format!("{}/nodes", self.platform_url))
-                .bearer_auth(&self.token)
+                .bearer_auth(&self.account_token)
                 .timeout(Duration::from_secs(10))
                 .send()
                 .await?
@@ -340,7 +342,7 @@ impl Network for RealNetwork {
             let response = self
                 .client
                 .delete(format!("{}/nodes/{id}", self.platform_url))
-                .bearer_auth(&self.token)
+                .bearer_auth(&self.account_token)
                 .timeout(Duration::from_secs(10))
                 .send()
                 .await?;

@@ -17,7 +17,7 @@ pub fn verify_password(password: &str, hash: &str) -> bool {
     !hash.is_empty() && pwhash::unix::verify(password, hash)
 }
 
-fn hmac_sha256(key: &[u8], message: &[u8]) -> [u8; 32] {
+pub(crate) fn hmac_sha256(key: &[u8], message: &[u8]) -> [u8; 32] {
     const BLOCK: usize = 64;
     let mut block = [0u8; BLOCK];
     if key.len() > BLOCK {
