@@ -18,7 +18,7 @@ use crate::session;
 use crate::store::Store;
 
 const SESSION_DAYS: i64 = 30;
-const COOKIE: &str = "yolab_session";
+pub(crate) const COOKIE: &str = "__Host-yolab_session";
 
 pub const LOGIN_WINDOW_SECS: i64 = 15 * 60;
 pub const LOGIN_FAILURES_PER_CLIENT: usize = 10;
@@ -80,6 +80,33 @@ fn client_bucket(ip: IpAddr) -> String {
             }
         },
     }
+}
+
+fn header_text<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
+    headers.get(name).and_then(|v| v.to_str().ok())
+}
+
+fn is_cross_site_write(req: &Request<Body>) -> bool {
+    use axum::http::Method;
+    if matches!(*req.method(), Method::GET | Method::HEAD | Method::OPTIONS) {
+        return false;
+    }
+    let headers = req.headers();
+    if let Some(site) = header_text(headers, "sec-fetch-site") {
+        if !matches!(site, "same-origin" | "none") {
+            return true;
+        }
+    }
+    let Some(origin) = header_text(headers, "origin") else {
+        return false;
+    };
+    let Some(host) = header_text(headers, "host") else {
+        return true;
+    };
+    let authority = origin
+        .strip_prefix("https://")
+        .or_else(|| origin.strip_prefix("http://"));
+    !authority.is_some_and(|a| a.eq_ignore_ascii_case(host))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -255,6 +282,13 @@ pub async fn auth_middleware(
     if token.is_empty() {
         return unauthorized();
     }
+    if is_cross_site_write(&req) {
+        return (
+            StatusCode::FORBIDDEN,
+            r#"{"detail":"This change must come from this machine's own page"}"#,
+        )
+            .into_response();
+    }
     match state.valid(&token, &hash) {
         Ok(true) => next.run(req).await,
         Ok(false) => unauthorized(),
@@ -343,6 +377,9 @@ pub async fn logout(State(state): State<crate::AppState>, jar: CookieJar) -> Res
     }
     let cookie = Cookie::build((COOKIE, ""))
         .max_age(time::Duration::seconds(0))
+        .secure(true)
+        .http_only(true)
+        .same_site(SameSite::Strict)
         .path("/")
         .build();
     (jar_with(cookie), axum::Json(OkResponse { ok: true })).into_response()
@@ -635,6 +672,10 @@ mod tests {
         assert!(cookie.contains("Secure"), "got: {cookie}");
         assert!(cookie.contains("SameSite=Strict"), "got: {cookie}");
         assert!(cookie.contains("Path=/"), "got: {cookie}");
+        assert!(
+            cookie.starts_with("__Host-") && !cookie.to_ascii_lowercase().contains("domain="),
+            "a sibling *.yolab.io page can plant a cookie for the whole domain unless the name carries the __Host- prefix: {cookie}"
+        );
     }
 
     #[tokio::test]
@@ -881,5 +922,107 @@ mod tests {
             login_from(&state, "a", "x").await.status(),
             StatusCode::TOO_MANY_REQUESTS
         );
+    }
+
+    fn write_router(state: AuthState) -> Router {
+        Router::new()
+            .route(
+                "/api/system/reboot/all",
+                axum::routing::post(|| async { "rebooting" }),
+            )
+            .layer(axum::middleware::from_fn_with_state(state, auth_middleware))
+    }
+
+    fn signed_in_post(token: &str, headers: &[(&'static str, &str)]) -> Request<Body> {
+        let mut req = Request::builder()
+            .method("POST")
+            .uri("/api/system/reboot/all")
+            .body(Body::empty())
+            .unwrap();
+        let addr: SocketAddr = "[::1]:5000".parse().unwrap();
+        req.extensions_mut().insert(ConnectInfo(addr));
+        req = with_header(req, "host", "cluster.5.yolab.io");
+        req = with_header(req, "x-forwarded-for", "203.0.113.9");
+        for &(name, value) in headers {
+            req = with_header(req, name, value);
+        }
+        with_session(req, token)
+    }
+
+    async fn post_status(state: &crate::AppState, token: &str, headers: &[(&'static str, &str)]) -> StatusCode {
+        write_router(state.auth.clone())
+            .oneshot(signed_in_post(token, headers))
+            .await
+            .unwrap()
+            .status()
+    }
+
+    #[tokio::test]
+    async fn another_customers_page_cannot_make_your_browser_change_your_machine() {
+        let (_d, cfg) = provisioned();
+        let state = app_state(cfg);
+        let token = signed_in_token(&state).await;
+        for headers in [
+            vec![("origin", "https://evil.9.yolab.io"), ("sec-fetch-site", "same-site")],
+            vec![("origin", "https://evil.9.yolab.io")],
+            vec![("sec-fetch-site", "same-site")],
+            vec![("sec-fetch-site", "cross-site")],
+            vec![("origin", "null")],
+            vec![("origin", "https://cluster.5.yolab.io.evil.example")],
+        ] {
+            assert_eq!(
+                post_status(&state, &token, &headers).await,
+                StatusCode::FORBIDDEN,
+                "every customer's services share yolab.io, so SameSite=Strict still sends \
+                 the cookie from their pages: {headers:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn the_machines_own_page_still_changes_things() {
+        let (_d, cfg) = provisioned();
+        let state = app_state(cfg);
+        let token = signed_in_token(&state).await;
+        for headers in [
+            vec![("origin", "https://cluster.5.yolab.io"), ("sec-fetch-site", "same-origin")],
+            vec![("origin", "https://CLUSTER.5.yolab.io")],
+            vec![("sec-fetch-site", "same-origin")],
+            vec![],
+        ] {
+            assert_eq!(
+                post_status(&state, &token, &headers).await,
+                StatusCode::OK,
+                "{headers:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn reading_is_not_blocked_by_the_write_check() {
+        let (_d, cfg) = provisioned();
+        let state = app_state(cfg);
+        let token = signed_in_token(&state).await;
+        let req = with_header(
+            with_session(request("/api/protected", OFF_BOX), &token),
+            "sec-fetch-site",
+            "same-site",
+        );
+        assert_eq!(status_of(state.auth.clone(), req).await, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn another_machine_with_the_cluster_token_is_not_a_browser() {
+        let (_d, cfg) = provisioned();
+        let state = app_state(cfg);
+        let mut req = Request::builder()
+            .method("POST")
+            .uri("/api/system/reboot/all")
+            .body(Body::empty())
+            .unwrap();
+        req = with_header(req, CLUSTER_AUTH_HEADER, "cluster-tok");
+        req = with_header(req, "origin", "https://elsewhere.example");
+        let res = write_router(state.auth.clone()).oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
     }
 }

@@ -114,7 +114,7 @@ impl TestApi {
             .next()
             .and_then(|kv| kv.split_once('='))
             .map(|(_, v)| v.to_string())
-            .expect("no yolab_session in Set-Cookie");
+            .expect("no session in Set-Cookie");
         self.session = Some(token);
         self
     }
@@ -133,7 +133,7 @@ impl TestApi {
             .uri(uri)
             .header(header::CONTENT_TYPE, "application/json");
         if let Some(token) = &self.session {
-            req = req.header(header::COOKIE, format!("yolab_session={token}"));
+            req = req.header(header::COOKIE, format!("{}={token}", crate::auth::COOKIE));
         }
         if let Some(token) = &self.cluster_token {
             req = req.header(crate::auth::CLUSTER_AUTH_HEADER, token.as_str());
