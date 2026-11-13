@@ -293,8 +293,7 @@ in let
           "root may hold only the key this machine's own config.toml names, never one baked into every machine")
         ++ (lib.optional (!(builtins.elem "/var/lib/yolab-ssh/%u.keys" keyFiles))
           "sshd must read /var/lib/yolab-ssh/%u.keys, the keys added from the Machines page")
-        ++
-        (lib.optional (ssh.PasswordAuthentication != false) "PasswordAuthentication must be false")
+        ++ (lib.optional (ssh.PasswordAuthentication != false) "PasswordAuthentication must be false")
         ++ (lib.optional (ssh.KbdInteractiveAuthentication != false)
           "KbdInteractiveAuthentication must be false: through PAM it asks for the homelab user's password, which is the UI password, and that user is in wheel")
         ++ (lib.optional ((ssh.AuthenticationMethods or null) != "publickey") "AuthenticationMethods must be publickey")

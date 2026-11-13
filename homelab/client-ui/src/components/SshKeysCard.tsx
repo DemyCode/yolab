@@ -120,8 +120,8 @@ export function SshKeysCard() {
           />
           {privateKey && (
             <p className="text-sm text-danger">
-              This is a private key. Keep it secret and never paste it
-              anywhere: paste the file that ends in .pub instead.
+              This is a private key. Keep it secret and never paste it anywhere:
+              paste the file that ends in .pub instead.
             </p>
           )}
           <div className="flex flex-col gap-2 sm:flex-row">
