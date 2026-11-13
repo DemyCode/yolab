@@ -907,8 +907,6 @@ CAPABILITIES_ALLOWED = {
     "anything-llm": {"SYS_ADMIN"},
     "ee-gateway": {"NET_ADMIN", "NET_RAW"},
     "media-stack": {"NET_ADMIN"},
-    "movies-tv": {"NET_ADMIN"},
-    "music": {"NET_ADMIN"},
     "music-assistant": {"DAC_READ_SEARCH", "SYS_ADMIN"},
     "netbird": {"NET_ADMIN", "SYS_ADMIN", "SYS_RESOURCE"},
     "nginx-proxy-manager": {"NET_ADMIN", "NET_RAW"},
@@ -927,13 +925,21 @@ def added_capabilities(container):
     return {str(c).upper().removeprefix("CAP_") for c in caps}
 
 
+def owning_chart(label):
+    tail = label.rsplit(")", 1)[-1] if ")" in label else label
+    if "/" in tail:
+        return tail.rsplit("/", 1)[-1]
+    return label.split(" (")[0]
+
+
 def check_privilege(app, docs, fail):
+    chart = owning_chart(app)
     for pod, spec in all_pod_specs(docs):
-        if spec.get("hostNetwork") and app not in HOST_NETWORK_ALLOWED:
+        if spec.get("hostNetwork") and chart not in HOST_NETWORK_ALLOWED:
             fail(
                 app,
                 f"pod {pod} sets hostNetwork: it shares the machine's network and "
-                f"reaches everything the machine listens on; add {app} to "
+                f"reaches everything the machine listens on; add {chart} to "
                 f"HOST_NETWORK_ALLOWED only if the service cannot work without it",
             )
         for c in (spec.get("containers") or []) + (spec.get("initContainers") or []):
@@ -941,7 +947,7 @@ def check_privilege(app, docs, fail):
             if (
                 privileged
                 and c.get("name") != "wireguard"
-                and app not in PRIVILEGED_IN_GATEWAY
+                and chart not in PRIVILEGED_IN_GATEWAY
             ):
                 fail(
                     app,
@@ -951,13 +957,13 @@ def check_privilege(app, docs, fail):
             extra = (
                 added_capabilities(c)
                 - DEFAULT_CAPABILITIES
-                - CAPABILITIES_ALLOWED.get(app, set())
+                - CAPABILITIES_ALLOWED.get(chart, set())
             )
             if extra:
                 fail(
                     app,
                     f"container {c.get('name')} in pod {pod} adds "
-                    f"{', '.join(sorted(extra))}; add them to CAPABILITIES_ALLOWED "
+                    f"{', '.join(sorted(extra))}; add {chart} to CAPABILITIES_ALLOWED "
                     f"only if the service cannot work without them",
                 )
 

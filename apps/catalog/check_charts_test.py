@@ -4763,3 +4763,21 @@ class Privilege(unittest.TestCase):
     def test_dockers_own_default_capabilities_need_no_listing(self):
         spec = {"containers": [container(add=["CHOWN", "SETUID", "NET_BIND_SERVICE"])]}
         self.assertEqual(privilege_failures(spec), [])
+
+    def test_a_label_resolves_to_the_chart_that_owns_the_container(self):
+        cases = {
+            "qbittorrent": "qbittorrent",
+            "movies-tv ({'config.vpn_addresses': '10.64.0.2/32'})": "movies-tv",
+            "movies-tv ({'config.vpn_addresses': '10.64.0.2/32'})/qbittorrent": "qbittorrent",
+            "movies-tv/qbittorrent": "qbittorrent",
+        }
+        for label, chart in cases.items():
+            self.assertEqual(check_charts.owning_chart(label), chart, label)
+
+    def test_a_pack_members_capability_is_checked_against_the_member_not_the_pack(self):
+        spec = {"containers": [container("gluetun", add=["NET_ADMIN"])]}
+        label = "movies-tv ({'config.vpn_addresses': '10.64.0.2/32'})/qbittorrent"
+        self.assertEqual(privilege_failures(spec, app=label), [])
+        self.assertEqual(
+            len(privilege_failures(spec, app="movies-tv ({'x': 'y'})/jellyfin")), 1
+        )
