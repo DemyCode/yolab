@@ -812,7 +812,7 @@ HOST_PATHS_ALLOWED = (
 
 
 def host_path_allowed(path):
-    path = "/" + path.strip("/")
+    path = os.path.normpath("/" + path.strip("/"))
     return any(
         path == allowed or (allowed == "/dev" and path.startswith("/dev/"))
         for allowed in HOST_PATHS_ALLOWED

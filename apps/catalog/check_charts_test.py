@@ -821,7 +821,7 @@ def caddy_dns_failures(
 
 DNS_CADDYFILE = (
     "\n{\n  cert_issuer acme {\n    dns acmedns {\n      subdomain apps\n    }\n  }\n"
-    "  cert_issuer acme\n  servers {\n    protocols h1 h2\n  }\n}\n"
+    "  cert_issuer acme\n  admin off\n  servers {\n    protocols h1 h2\n  }\n}\n"
     "{$YOLAB_SITES} {\n  reverse_proxy app:80\n}\n"
 )
 
@@ -832,11 +832,16 @@ class CaddyDns(unittest.TestCase):
 
     def test_a_gateway_waiting_for_let_s_encrypt_to_reach_it_is_reported(self):
         found = caddy_dns_failures(
-            "{\n  servers {\n    protocols h1 h2\n  }\n}\n"
+            "{\n  admin off\n  servers {\n    protocols h1 h2\n  }\n}\n"
             "{$YOLAB_SITES} {\n  reverse_proxy app:80\n}\n"
         )
         self.assertEqual(len(found), 1)
         self.assertIn("demo-caddy", found[0])
+
+    def test_a_gateway_leaving_caddys_admin_api_on_is_reported(self):
+        found = caddy_dns_failures(DNS_CADDYFILE.replace("  admin off\n", ""))
+        self.assertEqual(len(found), 1)
+        self.assertIn("admin API", found[0])
 
     def test_a_caddyfile_of_only_global_options_serves_no_site(self):
         self.assertEqual(
