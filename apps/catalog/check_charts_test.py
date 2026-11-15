@@ -3976,7 +3976,7 @@ class Registrar(unittest.TestCase):
 
     def test_a_service_under_the_parent_is_signed_up_and_told_the_issuer(self):
         out = self.register(self.body())
-        self.assertTrue(out.startswith("HTTP/1.0 200 OK\r\n"), out)
+        self.assertTrue(out.startswith("Status: 200 OK\r\n"), out)
         self.assertIn("issuer https://auth.7.yolab.io", out)
         client = self.client()
         self.assertEqual(client["client_id"], "mealie.7.yolab.io")
@@ -3986,6 +3986,16 @@ class Registrar(unittest.TestCase):
         self.assertEqual(client["grant_types"], ["authorization_code"])
         self.assertEqual(client["token_endpoint_auth_method"], "client_secret_basic")
         self.assertEqual(client["consent_mode"], "implicit")
+
+    def test_busybox_httpd_gets_a_cgi_status_header_not_a_status_line_it_would_double(self):
+        for out in (
+            self.register(self.body()),
+            self.register(self.body(key="nope"), authelia_restarts=False),
+            self.register(self.body(), method="GET", authelia_restarts=False),
+        ):
+            first = out.split("\r\n", 1)[0]
+            self.assertRegex(first, r"^Status: [0-9]{3} ", out)
+            self.assertNotIn("HTTP/", out, out)
 
     def test_it_asks_for_what_the_central_authelia_asks_for(self):
         self.register(self.body())
@@ -4003,7 +4013,7 @@ class Registrar(unittest.TestCase):
 
     def refused(self, body, status, method="POST"):
         out = self.register(body, method=method, authelia_restarts=False)
-        self.assertTrue(out.startswith(f"HTTP/1.0 {status}"), out)
+        self.assertTrue(out.startswith(f"Status: {status}"), out)
         self.assertFalse(list((self.root / "clients").glob("*.yml")))
         return out
 
@@ -4071,7 +4081,7 @@ class Registrar(unittest.TestCase):
             env=env,
             check=True,
         ).stdout.decode()
-        self.assertTrue(out.startswith("HTTP/1.0 504"), out)
+        self.assertTrue(out.startswith("Status: 504"), out)
 
 
 class AutheliaProvider(RenderedChart):

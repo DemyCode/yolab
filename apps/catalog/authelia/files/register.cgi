@@ -6,7 +6,7 @@ WAIT=${REGISTRAR_WAIT:-120}
 . "$SETTINGS"
 
 reply() {
-  printf 'HTTP/1.0 %s\r\nContent-Type: text/plain\r\nCache-Control: no-store\r\n\r\n%s\n' "$1" "$2"
+  printf 'Status: %s\r\nContent-Type: text/plain\r\nCache-Control: no-store\r\n\r\n%s\n' "$1" "$2"
   exit 0
 }
 
