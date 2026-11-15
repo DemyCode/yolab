@@ -6,6 +6,38 @@
 ---
 {{ include "yolab-common.homeVolume" $ }}
 ---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: memos-config
+  namespace: {{ .Release.Namespace }}
+data:
+  signup.json: |
+    {
+      "instanceSettings": [
+        {
+          "name": "instance/settings/GENERAL",
+          "generalSetting": {
+            "disallowUserRegistration": true
+          }
+        }
+      ],
+      "lifecycle": [
+        {
+          "resource": "instance/settings/GENERAL",
+          "ignoreChanges": [
+            "customProfile",
+            "disallowPasswordAuth",
+            "disallowChangeUsername",
+            "disallowChangeNickname",
+            "weekStartDayOffset",
+            "additionalStyle",
+            "additionalScript"
+          ]
+        }
+      ]
+    }
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -42,6 +74,12 @@ spec:
           - name: data
             mountPath: /var/opt/memos
             subPath: memos
+          - name: memos-config
+            mountPath: /etc/memos/config
+            readOnly: true
       volumes:
+      - name: memos-config
+        configMap:
+          name: memos-config
       {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
       {{- include "yolab-common.privateAccessVolumes" . | nindent 6 }}
