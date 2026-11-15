@@ -21,6 +21,14 @@
           "writeOnly": true,
           "generate": true,
           "description": "Signing key generated for this app. Rotating it signs everyone out."
+        },
+        "admin_password": {
+          "type": "string",
+          "title": "Admin password",
+          "description": "Password of the wger account named admin.",
+          "minLength": 12,
+          "writeOnly": true,
+          "generate": true
         }
       },
       "dependencies": {
@@ -71,6 +79,11 @@
           "type": "string",
           "title": "Web URL",
           "format": "uri"
+        },
+        "admin_password": {
+          "type": "string",
+          "title": "Admin password (user admin)",
+          "format": "secret"
         }
       }
     }

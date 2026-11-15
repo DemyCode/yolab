@@ -2,7 +2,7 @@ apiVersion: v2
 name: wger
 description: A fitness tracker for workouts and nutrition
 type: application
-version: 0.1.28
+version: 0.1.29
 appVersion: '2.7'
 dependencies:
 - name: yolab-common

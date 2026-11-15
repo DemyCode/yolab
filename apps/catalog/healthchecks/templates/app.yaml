@@ -55,6 +55,8 @@ spec:
             value: "Etc/UTC"
           - name: SITE_NAME
             value: "Healthchecks"
+          - name: REGISTRATION_OPEN
+            value: "False"
           - name: SUPERUSER_EMAIL
             value: {{ .Values.config.admin_email | quote }}
           - name: SUPERUSER_PASSWORD

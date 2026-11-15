@@ -97,7 +97,7 @@ spec:
         - name: KOMODO_LOCAL_AUTH
           value: 'true'
         - name: KOMODO_DISABLE_USER_REGISTRATION
-          value: 'false'
+          value: 'true'
         - name: KOMODO_ENABLE_NEW_USERS
           value: 'false'
         - name: KOMODO_DISABLE_NON_ADMIN_CREATE

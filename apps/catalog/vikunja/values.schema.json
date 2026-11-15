@@ -9,7 +9,8 @@
       "title": "Vikunja",
       "type": "object",
       "required": [
-        "app_secret"
+        "app_secret",
+        "admin_password"
       ],
       "properties": {
         "yolab_enabled": {
@@ -23,6 +24,14 @@
           "title": "JWT secret",
           "minLength": 16,
           "description": "Random string used to sign login tokens. Changing it logs everyone out.",
+          "writeOnly": true,
+          "generate": true
+        },
+        "admin_password": {
+          "type": "string",
+          "title": "Admin password",
+          "description": "Password of the Vikunja account named admin, created on first start.",
+          "minLength": 12,
           "writeOnly": true,
           "generate": true
         },
@@ -125,6 +134,11 @@
         "app_secret": {
           "type": "string",
           "title": "JWT secret",
+          "format": "secret"
+        },
+        "admin_password": {
+          "type": "string",
+          "title": "Admin password (user admin)",
           "format": "secret"
         },
         "tor_url": {

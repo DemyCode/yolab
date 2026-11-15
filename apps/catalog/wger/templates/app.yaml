@@ -14,6 +14,7 @@ metadata:
 type: Opaque
 stringData:
   app_secret: {{ required "config.app_secret is required" .Values.config.app_secret | quote }}
+  admin_password: {{ required "config.admin_password is required" .Values.config.admin_password | quote }}
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -43,6 +44,7 @@ spec:
     spec:
       initContainers:
       {{- include "yolab-common.wgRegisterInit" . | nindent 6 }}
+      {{- include "yolab-common.printOutputs" (list . (dict "admin_password" (dict "secret" (printf "%s-secrets" .Release.Name) "key" "admin_password"))) | nindent 6 }}
       {{- include "yolab-common.privateAccessInit" . | nindent 6 }}
       - name: seed
         image: busybox:1.38@sha256:a46257e06c82ad85242d0d38077d0a52d9896389ca60a1a59d3463db586e5fa4
@@ -100,7 +102,29 @@ spec:
       - name: web
         image: wger/server:2.7@sha256:1c5789b93bfe5eed0b7287255782d9177027b255de2b22b59f511a693a48db04
         imagePullPolicy: IfNotPresent
+        command:
+        - /bin/bash
+        - -c
+        args:
+        - |
+          set -euo pipefail
+          wger bootstrap --no-process-static
+          python3 manage.py shell -c "
+          import os
+          from django.contrib.auth.models import User
+          admin = User.objects.filter(username='admin').first()
+          if admin is not None and admin.check_password('adminadmin'):
+              admin.set_password(os.environ['ADMIN_PASSWORD'])
+              admin.save()
+              print('replaced the default admin password with config.admin_password')
+          "
+          exec /home/wger/entrypoint.sh
         env:
+        - name: ADMIN_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: '{{ .Release.Name }}-secrets'
+              key: admin_password
         - name: APP_SEED
           valueFrom:
             secretKeyRef:
@@ -113,9 +137,9 @@ spec:
         - name: WGER_INSTANCE
           value: https://wger.de
         - name: ALLOW_REGISTRATION
-          value: 'True'
+          value: 'False'
         - name: ALLOW_GUEST_USERS
-          value: 'True'
+          value: 'False'
         - name: ALLOW_UPLOAD_VIDEOS
           value: 'True'
         - name: MIN_ACCOUNT_AGE_TO_TRUST
@@ -321,9 +345,9 @@ spec:
         - name: WGER_INSTANCE
           value: https://wger.de
         - name: ALLOW_REGISTRATION
-          value: 'True'
+          value: 'False'
         - name: ALLOW_GUEST_USERS
-          value: 'True'
+          value: 'False'
         - name: ALLOW_UPLOAD_VIDEOS
           value: 'True'
         - name: MIN_ACCOUNT_AGE_TO_TRUST
@@ -890,9 +914,9 @@ spec:
         - name: WGER_INSTANCE
           value: https://wger.de
         - name: ALLOW_REGISTRATION
-          value: 'True'
+          value: 'False'
         - name: ALLOW_GUEST_USERS
-          value: 'True'
+          value: 'False'
         - name: ALLOW_UPLOAD_VIDEOS
           value: 'True'
         - name: MIN_ACCOUNT_AGE_TO_TRUST
@@ -1083,9 +1107,9 @@ spec:
         - name: WGER_INSTANCE
           value: https://wger.de
         - name: ALLOW_REGISTRATION
-          value: 'True'
+          value: 'False'
         - name: ALLOW_GUEST_USERS
-          value: 'True'
+          value: 'False'
         - name: ALLOW_UPLOAD_VIDEOS
           value: 'True'
         - name: MIN_ACCOUNT_AGE_TO_TRUST

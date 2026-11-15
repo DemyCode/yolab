@@ -94,6 +94,7 @@ spec:
           export GITEA__server__DOMAIN=$YOLAB_FQDN
           export GITEA__server__ROOT_URL=https://$YOLAB_FQDN
           export GITEA__server__SSH_DOMAIN=$YOLAB_FQDN
+          export GITEA__service__DISABLE_REGISTRATION=true
           {{- if eq (include "authelia.embed.oidc" .) "true" }}
           . /yolab/oidc.env
           export GITEA__oauth2_client__ENABLE_AUTO_REGISTRATION=true
