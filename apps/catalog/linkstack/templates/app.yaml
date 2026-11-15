@@ -50,6 +50,26 @@ spec:
       labels:
         app: linkstack
     spec:
+      initContainers:
+      - name: seed-htdocs
+        image: linkstackorg/linkstack:latest@sha256:2920f70e15ae01a9d943cc90b96fc6198f6ac79260491deabf96103c42d49357
+        imagePullPolicy: IfNotPresent
+        securityContext:
+          runAsUser: 0
+          runAsGroup: 0
+        command:
+        - /bin/sh
+        - -c
+        - |
+          set -eu
+          if [ -z "$(ls -A /data)" ]; then
+            cp -a /htdocs/. /data/
+          fi
+          chown apache:apache /data
+        volumeMounts:
+        - name: data
+          mountPath: /data
+          subPath: 'volumes/linkstack_data'
       containers:
       - name: linkstack
         image: linkstackorg/linkstack:latest@sha256:2920f70e15ae01a9d943cc90b96fc6198f6ac79260491deabf96103c42d49357
