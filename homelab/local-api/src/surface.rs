@@ -14,6 +14,7 @@ pub(crate) const ROUTE_TABLE: &[(&str, &[&str])] = &[
     ("/api/update/channel", &["GET", "PUT"]),
     ("/api/rebuild-log", &["GET"]),
     ("/api/backups/recovery-key", &["GET"]),
+    ("/api/backups/recovery-key/ack", &["POST"]),
     ("/api/backups/s3", &["GET"]),
     ("/api/backups/s3/enable", &["POST"]),
     ("/api/backups/restore", &["POST"]),
