@@ -3987,7 +3987,9 @@ class Registrar(unittest.TestCase):
         self.assertEqual(client["token_endpoint_auth_method"], "client_secret_basic")
         self.assertEqual(client["consent_mode"], "implicit")
 
-    def test_busybox_httpd_gets_a_cgi_status_header_not_a_status_line_it_would_double(self):
+    def test_busybox_httpd_gets_a_cgi_status_header_not_a_status_line_it_would_double(
+        self,
+    ):
         for out in (
             self.register(self.body()),
             self.register(self.body(key="nope"), authelia_restarts=False),
