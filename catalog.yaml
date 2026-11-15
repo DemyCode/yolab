@@ -45,7 +45,7 @@ charts:
   - name: audiobookshelf
     version: "0.1.41"
   - name: authelia
-    version: "0.2.6"
+    version: "0.2.7"
   - name: autobrr
     version: "0.1.26"
   - name: babybuddy
@@ -199,7 +199,7 @@ charts:
   - name: gitea-mirror
     version: "0.1.27"
   - name: gitea
-    version: "0.1.43"
+    version: "0.1.44"
   - name: gitingest
     version: "0.1.29"
   - name: gitlab
@@ -217,7 +217,7 @@ charts:
   - name: habitica
     version: "0.1.28"
   - name: healthchecks
-    version: "0.1.41"
+    version: "0.1.42"
   - name: heimdall
     version: "0.1.29"
   - name: hermes-agent
@@ -289,7 +289,7 @@ charts:
   - name: kokoro
     version: "0.1.33"
   - name: komodo
-    version: "0.1.29"
+    version: "0.1.30"
   - name: l-town
     version: "0.1.27"
   - name: langflow
@@ -349,7 +349,7 @@ charts:
   - name: media-stack
     version: "0.1.45"
   - name: memos
-    version: "0.1.41"
+    version: "0.1.42"
   - name: meshchatx
     version: "0.1.27"
   - name: metube
@@ -661,7 +661,7 @@ charts:
   - name: vert
     version: "0.1.29"
   - name: vikunja
-    version: "0.1.41"
+    version: "0.1.42"
   - name: wallabag
     version: "0.1.41"
   - name: wallos
@@ -677,7 +677,7 @@ charts:
   - name: webcheck
     version: "0.1.28"
   - name: wger
-    version: "0.1.28"
+    version: "0.1.29"
   - name: whoogle-search
     version: "0.1.30"
   - name: wikijs
