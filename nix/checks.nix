@@ -1037,16 +1037,18 @@ in let
         ++ lib.optional (!(builtins.elem "amdgpu.si_support=1" withAmd.boot.kernelParams)) "an AMD report left GCN 1 cards on the radeon driver, without Vulkan"
         ++ lib.optional (!(builtins.elem "amdgpu.cik_support=1" withAmd.boot.kernelParams)) "an AMD report left GCN 2 cards on the radeon driver, without Vulkan"
         ++ lib.optional (builtins.elem "amdgpu.si_support=1" plain.boot.kernelParams) "a machine without an AMD card got AMD kernel options";
-      nvidiaToplevel = withNvidia.config.system.build.toplevel.drvPath;
+      nvidiaToplevel = builtins.unsafeDiscardStringContext withNvidia.config.system.build.toplevel.drvPath;
     in
       pkgs.runCommand "gpu-detection-picks-the-driver-each-card-can-run" {} ''
         ${lib.concatMapStrings (n: "echo ${lib.escapeShellArg "detect: ${n}"} >&2\n") failures}
         ${lib.concatMapStrings (p: "echo ${lib.escapeShellArg p} >&2\n") systemProblems}
         ${lib.optionalString (failures != [] || systemProblems != []) "exit 1"}
         echo ${lib.escapeShellArg nvidiaToplevel} > /dev/null
-        echo ${lib.escapeShellArg withKepler.system.build.toplevel.drvPath} > /dev/null
-        echo ${lib.escapeShellArg withIntel.system.build.toplevel.drvPath} > /dev/null
-        echo ${lib.escapeShellArg withAmd.system.build.toplevel.drvPath} > /dev/null
+        echo ${withNvidia.config.hardware.nvidia.package} > /dev/null
+        echo ${withKepler.hardware.nvidia.package} > /dev/null
+        echo ${lib.escapeShellArg (builtins.unsafeDiscardStringContext withKepler.system.build.toplevel.drvPath)} > /dev/null
+        echo ${lib.escapeShellArg (builtins.unsafeDiscardStringContext withIntel.system.build.toplevel.drvPath)} > /dev/null
+        echo ${lib.escapeShellArg (builtins.unsafeDiscardStringContext withAmd.system.build.toplevel.drvPath)} > /dev/null
         touch $out
       '';
 
@@ -1070,8 +1072,8 @@ in let
       pkgs.runCommand "hardware-report-picks-cpu-and-disk-modules" {} ''
         ${lib.concatMapStrings (p: "echo ${lib.escapeShellArg p} >&2\n") problems}
         ${lib.optionalString (problems != []) "exit 1"}
-        echo ${lib.escapeShellArg intel.system.build.toplevel.drvPath} > /dev/null
-        echo ${lib.escapeShellArg amd.system.build.toplevel.drvPath} > /dev/null
+        echo ${lib.escapeShellArg (builtins.unsafeDiscardStringContext intel.system.build.toplevel.drvPath)} > /dev/null
+        echo ${lib.escapeShellArg (builtins.unsafeDiscardStringContext amd.system.build.toplevel.drvPath)} > /dev/null
         touch $out
       '';
 
