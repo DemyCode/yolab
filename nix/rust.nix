@@ -36,7 +36,11 @@
   in {
     inherit args cargoArtifacts;
 
-    package = craneLib.buildPackage (args // {inherit cargoArtifacts;});
+    package = craneLib.buildPackage (args
+      // {
+        inherit cargoArtifacts;
+        doCheck = false;
+      });
     tests = craneLib.cargoTest (args // {inherit cargoArtifacts;});
 
     clippy = craneLib.cargoClippy (args
