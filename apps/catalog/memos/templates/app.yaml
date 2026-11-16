@@ -13,30 +13,7 @@ metadata:
   namespace: {{ .Release.Namespace }}
 data:
   signup.json: |
-    {
-      "instanceSettings": [
-        {
-          "name": "instance/settings/GENERAL",
-          "generalSetting": {
-            "disallowUserRegistration": true
-          }
-        }
-      ],
-      "lifecycle": [
-        {
-          "resource": "instance/settings/GENERAL",
-          "ignoreChanges": [
-            "generalSetting.customProfile",
-            "generalSetting.disallowPasswordAuth",
-            "generalSetting.disallowChangeUsername",
-            "generalSetting.disallowChangeNickname",
-            "generalSetting.weekStartDayOffset",
-            "generalSetting.additionalStyle",
-            "generalSetting.additionalScript"
-          ]
-        }
-      ]
-    }
+{{ include "memos.signup" . | indent 4 }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -52,6 +29,8 @@ spec:
       app: gateway
   template:
     metadata:
+      annotations:
+        checksum/memos-config: {{ include "memos.signup" . | sha256sum }}
       labels:
         app: gateway
     spec:
