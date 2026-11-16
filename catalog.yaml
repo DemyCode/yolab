@@ -333,7 +333,7 @@ charts:
   - name: mainsail
     version: "0.1.29"
   - name: mastodon
-    version: "0.1.41"
+    version: "0.1.42"
   - name: matrix
     version: "0.1.7"
   - name: matter-server
@@ -349,7 +349,7 @@ charts:
   - name: media-stack
     version: "0.1.46"
   - name: memos
-    version: "0.1.43"
+    version: "0.1.44"
   - name: meshchatx
     version: "0.1.27"
   - name: metube
