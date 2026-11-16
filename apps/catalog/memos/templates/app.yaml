@@ -26,13 +26,13 @@ data:
         {
           "resource": "instance/settings/GENERAL",
           "ignoreChanges": [
-            "customProfile",
-            "disallowPasswordAuth",
-            "disallowChangeUsername",
-            "disallowChangeNickname",
-            "weekStartDayOffset",
-            "additionalStyle",
-            "additionalScript"
+            "generalSetting.customProfile",
+            "generalSetting.disallowPasswordAuth",
+            "generalSetting.disallowChangeUsername",
+            "generalSetting.disallowChangeNickname",
+            "generalSetting.weekStartDayOffset",
+            "generalSetting.additionalStyle",
+            "generalSetting.additionalScript"
           ]
         }
       ]
