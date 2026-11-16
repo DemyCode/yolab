@@ -568,12 +568,37 @@ jobs:
       - name: Get ISO info
         id: iso_info
         run: |
-          ISO_PATH=$(readlink -f "${{ steps.build_iso.outputs.store_path }}"/iso/*.iso)
-          ISO_NAME=$(basename "$ISO_PATH")
+          set -euo pipefail
+          ISO_NAME="yolab-installer-${{ matrix.iso.system }}.iso"
+          ISO_PATH="$RUNNER_TEMP/$ISO_NAME"
+          cp "$(readlink -f "${{ steps.build_iso.outputs.store_path }}"/iso/*.iso)" "$ISO_PATH"
           echo "iso_path=$ISO_PATH" >> $GITHUB_OUTPUT
           echo "iso_name=$ISO_NAME" >> $GITHUB_OUTPUT
           echo "ISO built: $ISO_NAME"
           ls -lh "$ISO_PATH"
+
+      - name: Remove this architecture's other ISOs from the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.tag.outputs.value }}-latest
+          REPO: ${{ github.repository }}
+          KEEP: ${{ steps.iso_info.outputs.iso_name }}
+        run: |
+          set -euo pipefail
+          if ! gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+            echo "no release $TAG yet"
+            exit 0
+          fi
+          gh release view "$TAG" --repo "$REPO" --json assets -q '.assets[].name' > /tmp/assets.txt
+          while read -r asset; do
+            case "$asset" in
+              "$KEEP") ;;
+              *-${{ matrix.iso.system }}.iso)
+                echo "deleting $asset"
+                gh release delete-asset "$TAG" "$asset" --repo "$REPO" --yes
+                ;;
+            esac
+          done < /tmp/assets.txt
 
       - name: Create/Update Release
         uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
@@ -590,8 +615,9 @@ jobs:
             - Download the ISO file
             - Write to USB drive using Rufus (Windows) or dd (Linux/macOS):
               ```bash
-              sudo dd if=${{ steps.iso_info.outputs.iso_name }} of=/dev/sdX bs=4M status=progress && sync
+              sudo dd if=yolab-installer-x86_64-linux.iso of=/dev/sdX bs=4M status=progress && sync
               ```
+              Use `yolab-installer-aarch64-linux.iso` instead on ARM machines such as a Raspberry Pi.
             - Boot from USB and follow installation instructions
 
             **Branch:** `${{ github.ref_name }}`
