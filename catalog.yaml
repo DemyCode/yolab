@@ -349,7 +349,7 @@ charts:
   - name: media-stack
     version: "0.1.46"
   - name: memos
-    version: "0.1.42"
+    version: "0.1.43"
   - name: meshchatx
     version: "0.1.27"
   - name: metube
