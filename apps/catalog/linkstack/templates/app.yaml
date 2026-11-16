@@ -65,6 +65,11 @@ spec:
           if [ -z "$(ls -A /data)" ]; then
             cp -a /htdocs/. /data/
           fi
+          proxies=/data/app/Http/Middleware/TrustProxies.php
+          if ! grep -q "protected \$proxies = '\*';" "$proxies"; then
+            sed -i "s/protected \$proxies;/protected \$proxies = '*';/" "$proxies"
+            grep -q "protected \$proxies = '\*';" "$proxies"
+          fi
           chown apache:apache /data
         volumeMounts:
         - name: data
