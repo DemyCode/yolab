@@ -157,6 +157,8 @@ pub(crate) async fn delete_namespace_with_retry(client: &Client, ns: &str) {
 pub struct UninstallQuery {
     #[serde(default)]
     pub delete_shared: bool,
+    #[serde(default)]
+    pub delete_backups: bool,
 }
 
 pub async fn uninstall_app(
@@ -179,13 +181,41 @@ pub async fn uninstall_app(
         return Ok(accepted);
     }
 
+    let delete_backups = query.delete_backups;
     tokio::spawn(async move {
-        if drive_teardown(&b, &instance_name, &ns).await.is_ok() {
-            tracing::info!("uninstall {instance_name}: done");
+        if drive_teardown(&b, &instance_name, &ns).await.is_err() {
+            return;
+        }
+        tracing::info!("uninstall {instance_name}: done");
+        if delete_backups {
+            delete_backups_of(&b, &instance_name, &ns).await;
         }
     });
 
     Ok(accepted)
+}
+
+async fn delete_backups_of<H: crate::host::Host + Clone + 'static>(
+    b: &Backend<H>,
+    instance_name: &str,
+    ns: &str,
+) {
+    let cfg = match crate::routers::backup_common::master_config(&b.kube).await {
+        Ok(Some(cfg)) => cfg,
+        Ok(None) => return,
+        Err(e) => {
+            tracing::warn!(
+                "uninstall {instance_name}: its backups were kept, the backup settings are unreadable: {e:#}"
+            );
+            return;
+        }
+    };
+    match crate::routers::backup_points::delete_all(b, &cfg, ns).await {
+        Ok(n) => tracing::info!("uninstall {instance_name}: deleted its {n} backups"),
+        Err(e) => tracing::warn!(
+            "uninstall {instance_name}: its backups were kept and can be deleted from the Backups page: {e:#}"
+        ),
+    }
 }
 
 pub async fn app_data(

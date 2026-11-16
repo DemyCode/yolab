@@ -160,6 +160,22 @@ fn newest_for<'a>(sets: &'a [serde_json::Value], namespace: &str) -> Option<&'a 
         .find(|s| s["namespace"].as_str().unwrap_or("") == namespace)
 }
 
+fn check_alerts(checks: &crate::routers::backup_check::Checks) -> Vec<Alert> {
+    checks
+        .iter()
+        .filter(|(_, c)| !c.ok)
+        .map(|(store, c)| Alert {
+            key: format!("backup:check:{store}"),
+            title: "A backup store has a problem".to_string(),
+            message: format!(
+                "The weekly check of {store} found: {}. Your newest backups may not restore until this is fixed.",
+                c.problem.as_deref().unwrap_or("an unknown problem")
+            ),
+            page: "/system/backups".into(),
+        })
+        .collect()
+}
+
 fn backup_alerts(
     sets: &[serde_json::Value],
     namespaces: &[String],
@@ -186,6 +202,17 @@ fn backup_alerts(
                 page: "/system/backups".into(),
             });
             continue;
+        }
+        if let Some(warning) = newest
+            .and_then(|s| s["warning"].as_str())
+            .filter(|w| !w.is_empty())
+        {
+            alerts.push(Alert {
+                key: format!("backup:{namespace}:budget"),
+                title: format!("{name}'s backups need your attention"),
+                message: warning.to_string(),
+                page: "/system/backups".into(),
+            });
         }
         let age = newest
             .and_then(|s| s["finished_at"].as_str())
@@ -220,12 +247,22 @@ async fn backup_source<H: Host>(backend: &anyhow::Result<Backend<H>>, silent: bo
         Ok((sets, b)) => match crate::routers::backup_common::managed_namespaces(&b.kube).await {
             Ok(mut namespaces) => {
                 namespaces.push(String::new());
-                Some(backup_alerts(
+                let mut alerts = backup_alerts(
                     &sets,
                     &namespaces,
                     chrono::Utc::now(),
                     BACKUP_STALE_AFTER_HOURS,
-                ))
+                );
+                match crate::routers::backup_check::read_checks(&b.kube).await {
+                    Ok(checks) => {
+                        alerts.extend(check_alerts(&checks));
+                        Some(alerts)
+                    }
+                    Err(e) => {
+                        tracing::debug!("notifier: backup checks unreadable: {e:#}");
+                        None
+                    }
+                }
             }
             Err(e) => {
                 tracing::debug!("notifier: app list unreadable: {e:#}");
@@ -465,6 +502,45 @@ mod tests {
         let alerts = alerts_now(&[], &ns(&["yolab-a"]));
         assert_eq!(alerts.len(), 1);
         assert!(alerts[0].message.contains("never"), "{}", alerts[0].message);
+    }
+
+    #[test]
+    fn a_service_over_its_backup_budget_is_reported_apart_from_its_backup_state() {
+        let sets = [json!({
+            "id": "bk-1", "namespace": "yolab-a", "state": "restorable",
+            "finished_at": at(1), "warning": "a's backups take 30 GB but its budget is 10 GB"
+        })];
+        let alerts = alerts_now(&sets, &ns(&["yolab-a"]));
+        assert_eq!(alerts.len(), 1);
+        assert_eq!(alerts[0].key, "backup:yolab-a:budget");
+        assert!(alerts[0].message.contains("budget"), "{}", alerts[0].message);
+    }
+
+    #[test]
+    fn a_backup_store_that_failed_its_check_is_reported_and_a_healthy_one_is_not() {
+        let checks = crate::routers::backup_check::Checks::from([
+            (
+                "services/yolab-a".to_string(),
+                crate::routers::backup_check::Checked {
+                    ok: false,
+                    checked_at: at(1),
+                    problem: Some("pack 1a2b is damaged".into()),
+                    repaired: false,
+                },
+            ),
+            (
+                "cluster-backup".to_string(),
+                crate::routers::backup_check::Checked {
+                    ok: true,
+                    checked_at: at(1),
+                    ..Default::default()
+                },
+            ),
+        ]);
+        let alerts = check_alerts(&checks);
+        assert_eq!(alerts.len(), 1);
+        assert_eq!(alerts[0].key, "backup:check:services/yolab-a");
+        assert!(alerts[0].message.contains("pack 1a2b is damaged"));
     }
 
     #[test]

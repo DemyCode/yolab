@@ -9,9 +9,16 @@ export interface DataVerdict {
   kept: FolderUse[];
 }
 
-export function removePath(instance: string, deleteShared: boolean): string {
-  const query = deleteShared ? "?delete_shared=true" : "";
-  return `/api/apps/${encodeURIComponent(instance)}${query}`;
+export function removePath(
+  instance: string,
+  deleteShared: boolean,
+  deleteBackups = false,
+): string {
+  const params = new URLSearchParams();
+  if (deleteShared) params.set("delete_shared", "true");
+  if (deleteBackups) params.set("delete_backups", "true");
+  const query = params.toString();
+  return `/api/apps/${encodeURIComponent(instance)}${query ? `?${query}` : ""}`;
 }
 
 export function folderName(folder: string): string {

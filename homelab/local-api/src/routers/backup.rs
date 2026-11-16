@@ -50,6 +50,8 @@ pub(crate) struct BackupSet {
     pub snapshot_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub services: Vec<ServiceSummary>,
     #[serde(flatten)]
@@ -117,7 +119,7 @@ async fn read_sets(client: &Client) -> anyhow::Result<Vec<BackupSet>> {
 async fn record_done(
     client: &Client,
     id: &str,
-    result: &anyhow::Result<(String, Vec<ServiceSummary>)>,
+    result: &anyhow::Result<RunDone>,
 ) {
     let finished_at = Utc::now().to_rfc3339();
     let written = SETS
@@ -127,16 +129,18 @@ async fn record_done(
             };
             s.finished_at = Some(finished_at.clone());
             match result {
-                Ok((snapshot_id, services)) => {
+                Ok(done) => {
                     s.state = SUCCEEDED.to_string();
-                    s.snapshot_id = Some(snapshot_id.clone());
+                    s.snapshot_id = Some(done.snapshot_id.clone());
                     s.error = None;
-                    s.services = services.clone();
+                    s.warning = done.warning.clone();
+                    s.services = done.services.clone();
                 }
                 Err(e) => {
                     s.state = FAILED.to_string();
                     s.snapshot_id = None;
                     s.error = Some(e.to_string());
+                    s.warning = None;
                     s.services = vec![];
                 }
             }
@@ -223,6 +227,7 @@ async fn enqueue<H: Host>(
         finished_at: None,
         snapshot_id: None,
         error: None,
+        warning: None,
         services: vec![],
         claim: Claim::default(),
     };
@@ -315,23 +320,161 @@ fn spawn_run<H: Host + 'static>(b: Backend<H>, cfg: BackupConfig, promoted: Prom
     });
 }
 
+pub(crate) struct RunDone {
+    snapshot_id: String,
+    services: Vec<ServiceSummary>,
+    warning: Option<String>,
+}
+
+fn split_by_tree(pvcs: Vec<PvcInfo>, in_tree: &[crate::tree::Claimed]) -> (Vec<PvcInfo>, Vec<PvcInfo>) {
+    pvcs.into_iter().partition(|p| {
+        in_tree
+            .iter()
+            .any(|c| c.namespace == p.namespace && c.claim == p.name)
+    })
+}
+
+pub(crate) fn budget_warning(name: &str, size: &crate::routers::backup_points::ServiceSize) -> Option<String> {
+    size.over_budget.then(|| {
+        format!(
+            "{name}'s backups take {} but its budget is {}: only its newest copy and the ones you chose to keep are left. Raise the budget or delete copies you no longer need.",
+            crate::quantity::human_bytes(size.size_bytes),
+            crate::quantity::human_bytes(size.budget_bytes),
+        )
+    })
+}
+
 async fn run_set<H: Host>(
     b: &Backend<H>,
     cfg: &BackupConfig,
     target: &BackupTarget,
     run_id: &str,
-) -> anyhow::Result<(String, Vec<ServiceSummary>)> {
+) -> anyhow::Result<RunDone> {
+    let BackupTarget::App(namespace) = target else {
+        let (snapshot_id, services) =
+            snapshot_cluster(b, cfg, &HashMap::new(), target, run_id).await?;
+        forget_old_cluster_snapshots(b, cfg).await;
+        return Ok(RunDone {
+            snapshot_id,
+            services,
+            warning: None,
+        });
+    };
+    let volumes = crate::tree::volumes(&b.kube).await?;
+    let claimed = crate::tree::claimed_in(&volumes, namespace);
     let pvcs: Vec<PvcInfo> = user_pvcs(&b.kube)
         .await?
         .into_iter()
-        .filter(|p| match target {
-            BackupTarget::App(ns) => &p.namespace == ns,
-            BackupTarget::Cluster => true,
-        })
+        .filter(|p| &p.namespace == namespace)
         .collect();
+    let (_, outside_tree) = split_by_tree(pvcs, &claimed);
+    let mut failures = Vec::new();
+    let mut pinned = HashMap::new();
+
+    let folders = crate::tree::service_folders(&volumes, namespace);
+    if !folders.is_empty() {
+        match crate::routers::folder_backup::back_up(&b.kube, cfg, namespace, run_id, &folders)
+            .await
+        {
+            Ok(short) => match pin_snapshot(
+                &b.host,
+                cfg,
+                &crate::routers::folder_backup::store(namespace),
+                &short,
+            )
+            .await
+            {
+                Some(snap) => {
+                    for c in &claimed {
+                        pinned.insert((namespace.clone(), c.claim.clone()), snap.clone());
+                    }
+                }
+                None => failures.push(format!(
+                    "its folders were saved as {short}, but that snapshot could not be read back"
+                )),
+            },
+            Err(e) => failures.push(format!("its folders: {e:#}")),
+        }
+    }
+
+    let (legacy_failures, legacy_pinned) = sync_outside_tree(b, cfg, &outside_tree).await;
+    failures.extend(legacy_failures);
+    pinned.extend(legacy_pinned);
+
+    let (snapshot_id, services) = snapshot_cluster(b, cfg, &pinned, target, run_id).await?;
+
+    let name = namespace.strip_prefix("yolab-").unwrap_or(namespace);
+    let warning = match crate::routers::backup_points::after_run(b, cfg, namespace, &snapshot_id).await {
+        Ok(done) => {
+            if done.dropped > 0 {
+                tracing::info!(
+                    "backup: {namespace} was over its budget; deleted its {} oldest copies",
+                    done.dropped
+                );
+            }
+            budget_warning(name, &done.size)
+        }
+        Err(e) => Some(format!(
+            "{name} was backed up, but keeping its backups within budget failed: {e:#}"
+        )),
+    };
+
+    if !failures.is_empty() {
+        anyhow::bail!(
+            "the service settings were saved, but {} part(s) did not back up: {}",
+            failures.len(),
+            failures.join("; ")
+        );
+    }
+    Ok(RunDone {
+        snapshot_id,
+        services,
+        warning,
+    })
+}
+
+async fn forget_old_cluster_snapshots<H: Host>(b: &Backend<H>, cfg: &BackupConfig) {
+    let repo = cfg.restic_repo("cluster-backup");
+    cfg.unlock(&b.host, "cluster-backup").await;
+    let out = restic_with(
+        &b.host,
+        &repo,
+        cfg,
+        &[
+            "forget",
+            "--tag",
+            "scope:cluster",
+            "--keep-daily",
+            "7",
+            "--keep-weekly",
+            "4",
+            "--keep-monthly",
+            "12",
+            "--prune",
+        ],
+        Duration::from_secs(PRUNE_TIMEOUT_SECS),
+    )
+    .await;
+    match out {
+        Ok(o) if o.success => {}
+        Ok(o) => tracing::warn!(
+            "backup: thinning the nightly cluster snapshots failed, the next night retries: {}",
+            o.stderr.trim()
+        ),
+        Err(e) => tracing::warn!(
+            "backup: thinning the nightly cluster snapshots could not run, the next night retries: {e}"
+        ),
+    }
+}
+
+async fn sync_outside_tree<H: Host>(
+    b: &Backend<H>,
+    cfg: &BackupConfig,
+    pvcs: &[PvcInfo],
+) -> (Vec<String>, PinnedVolumes) {
     let mut pending = Vec::new();
     let mut failures = Vec::new();
-    for pvc in &pvcs {
+    for pvc in pvcs {
         allow_privileged_movers(&b.kube, &pvc.namespace).await;
         if let Err(e) = restic_secret(&b.kube, &pvc.namespace, &pvc.namespace, &pvc.name, cfg).await
         {
@@ -379,42 +522,7 @@ async fn run_set<H: Host>(
             )),
         }
     }
-
-    let (snapshot_id, services) = snapshot_cluster(b, cfg, &pinned, target, run_id).await?;
-
-    let repo = cfg.restic_repo("cluster-backup");
-    cfg.unlock(&b.host, "cluster-backup").await;
-    restic_with(
-        &b.host,
-        &repo,
-        cfg,
-        &[
-            "forget",
-            "--tag",
-            "cluster-backup",
-            "--group-by",
-            "tags",
-            "--keep-daily",
-            "7",
-            "--keep-weekly",
-            "4",
-            "--keep-monthly",
-            "12",
-            "--prune",
-        ],
-        Duration::from_secs(PRUNE_TIMEOUT_SECS),
-    )
-    .await
-    .warn_on_err("backup: retention (forget --prune) — the next run prunes instead");
-
-    if !failures.is_empty() {
-        anyhow::bail!(
-            "the app settings were saved, but {} volume(s) did not back up: {}",
-            failures.len(),
-            failures.join("; ")
-        );
-    }
-    Ok((snapshot_id, services))
+    (failures, pinned)
 }
 
 const VOLUME_SYNC_TIMEOUT: Duration = Duration::from_secs(4 * 3600);
@@ -518,12 +626,27 @@ async fn pin_volume_snapshot<H: Host>(
     rs: &Value,
 ) -> Option<VolumeSnapshot> {
     let short = saved_snapshot_id(mover_logs(rs)?.as_str())?;
-    let repo = cfg.restic_repo(&format!("volsync/{}/{}", pvc.namespace, pvc.name));
+    pin_snapshot(
+        host,
+        cfg,
+        &format!("volsync/{}/{}", pvc.namespace, pvc.name),
+        &short,
+    )
+    .await
+}
+
+async fn pin_snapshot<H: Host>(
+    host: &H,
+    cfg: &BackupConfig,
+    repo_path: &str,
+    short: &str,
+) -> Option<VolumeSnapshot> {
+    let repo = cfg.restic_repo(repo_path);
     let out = restic_with(
         host,
         &repo,
         cfg,
-        &["snapshots", "--no-lock", "--json", &short],
+        &["snapshots", "--no-lock", "--json", short],
         RESTIC_TIMEOUT,
     )
     .await
@@ -587,11 +710,20 @@ async fn wait_for_volume_syncs(
 
 type PinnedVolumes = HashMap<(String, String), VolumeSnapshot>;
 
-fn catalog_pvc(name: &str, capacity: &str, pinned: Option<&VolumeSnapshot>) -> Value {
+fn catalog_pvc(
+    name: &str,
+    capacity: &str,
+    pinned: Option<&VolumeSnapshot>,
+    in_tree: Option<(&str, &str)>,
+) -> Value {
     let mut v = json!({ "name": name, "capacity": capacity });
     if let Some(s) = pinned {
         v["snapshot_id"] = Value::String(s.id.clone());
         v["snapshot_time"] = Value::String(s.time.clone());
+    }
+    if let Some((store, folder)) = in_tree {
+        v["store"] = Value::String(store.to_string());
+        v["folder"] = Value::String(folder.to_string());
     }
     v
 }
@@ -648,7 +780,7 @@ async fn snapshot_cluster<H: Host>(
         tokio::fs::set_permissions(&tmp_dir, std::fs::Permissions::from_mode(0o700)).await?;
     }
 
-    let result = snapshot_cluster_inner(b, cfg, &tmp_dir, pinned, target).await;
+    let result = snapshot_cluster_inner(b, cfg, &tmp_dir, pinned, target, run_id).await;
     tokio::fs::remove_dir_all(&tmp_dir)
         .await
         .debug_on_err("backup: clear the staging directory");
@@ -775,7 +907,9 @@ async fn snapshot_cluster_inner<H: Host>(
     tmp_dir: &str,
     pinned: &PinnedVolumes,
     target: &BackupTarget,
+    run_id: &str,
 ) -> anyhow::Result<(String, Vec<ServiceSummary>)> {
+    let in_tree = crate::tree::claimed(&crate::tree::volumes(&b.kube).await?);
     let date = Utc::now().format("%Y-%m-%d-%H%M%S").to_string();
     let repo = cfg.restic_repo("cluster-backup");
 
@@ -852,7 +986,12 @@ async fn snapshot_cluster_inner<H: Host>(
                 list.iter()
                     .map(|p| {
                         let snap = pinned.get(&(ns.clone(), p.name.clone()));
-                        catalog_pvc(&p.name, &p.capacity, snap)
+                        let store = crate::routers::folder_backup::store(ns);
+                        let folder = in_tree
+                            .iter()
+                            .find(|c| &c.namespace == ns && c.claim == p.name)
+                            .map(|c| (store.as_str(), c.folder.as_str()));
+                        catalog_pvc(&p.name, &p.capacity, snap, folder)
                     })
                     .collect()
             })
@@ -928,8 +1067,9 @@ async fn snapshot_cluster_inner<H: Host>(
 
     let scope_tag = match target {
         BackupTarget::Cluster => "scope:cluster".to_string(),
-        BackupTarget::App(ns) => format!("namespace:{ns}"),
+        BackupTarget::App(ns) => crate::routers::backup_points::namespace_tag(ns),
     };
+    let run_tag = crate::routers::folder_backup::run_tag(run_id);
     let backup = restic_with(
         &b.host,
         &repo,
@@ -941,6 +1081,8 @@ async fn snapshot_cluster_inner<H: Host>(
             "cluster-backup",
             "--tag",
             &scope_tag,
+            "--tag",
+            &run_tag,
         ],
         Duration::from_secs(CLUSTER_BACKUP_TIMEOUT_SECS),
     )
@@ -949,7 +1091,7 @@ async fn snapshot_cluster_inner<H: Host>(
         anyhow::bail!("restic backup failed: {}", backup.stderr.trim());
     }
 
-    newest_snapshot_id(&b.host, &repo, cfg, &scope_tag)
+    newest_snapshot_id(&b.host, &repo, cfg, &run_tag)
         .await
         .ok_or_else(|| anyhow::anyhow!("backup completed but no snapshot id could be read"))
         .map(|snapshot_id| (snapshot_id, summarize_services(&services)))
@@ -1083,6 +1225,7 @@ pub(crate) async fn list(client: &Client) -> anyhow::Result<Vec<Value>> {
                 "finished_at": s.finished_at,
                 "snapshot_id": s.snapshot_id,
                 "error": s.error,
+                "warning": s.warning,
                 "services": s.services,
                 "state": state_str(classify(s, liveness_of(s))),
                 "node": s.claim.owner,
@@ -1307,12 +1450,12 @@ mod tests {
             time: "2026-09-14T12:10:05Z".into(),
         };
         assert_eq!(
-            catalog_pvc("data", "5Gi", Some(&snap)),
+            catalog_pvc("data", "5Gi", Some(&snap), None),
             json!({"name": "data", "capacity": "5Gi", "snapshot_id": "abc",
                    "snapshot_time": "2026-09-14T12:10:05Z"})
         );
         assert_eq!(
-            catalog_pvc("data", "5Gi", None),
+            catalog_pvc("data", "5Gi", None, None),
             json!({"name": "data", "capacity": "5Gi"})
         );
     }
@@ -1324,11 +1467,11 @@ mod tests {
             time: "2026-10-12T03:00:00Z".into(),
         };
         assert_eq!(
-            VolumeSnapshot::recorded_in(&catalog_pvc("data", "5Gi", Some(&snap))),
+            VolumeSnapshot::recorded_in(&catalog_pvc("data", "5Gi", Some(&snap), None)),
             Some(snap)
         );
         assert_eq!(
-            VolumeSnapshot::recorded_in(&catalog_pvc("data", "5Gi", None)),
+            VolumeSnapshot::recorded_in(&catalog_pvc("data", "5Gi", None, None)),
             None
         );
     }
@@ -1355,6 +1498,7 @@ mod tests {
             },
             snapshot_id: None,
             error: None,
+            warning: None,
             services: vec![],
             claim: Claim {
                 owner: "other-node".into(),

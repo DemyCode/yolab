@@ -10,6 +10,15 @@ describe("removing a service", () => {
     expect(removePath("jellyfin", false)).toBe("/api/apps/jellyfin");
   });
 
+  it("deletes its backups only when asked, alongside the other choice", () => {
+    expect(removePath("jellyfin", false, true)).toBe(
+      "/api/apps/jellyfin?delete_backups=true",
+    );
+    expect(removePath("jellyfin", true, true)).toBe(
+      "/api/apps/jellyfin?delete_shared=true&delete_backups=true",
+    );
+  });
+
   it("names the whole tree in words instead of an empty path", () => {
     expect(folderName("")).toBe("/ (the whole file tree)");
     expect(folderName("jellyfin/media")).toBe("/jellyfin/media");

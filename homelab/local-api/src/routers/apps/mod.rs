@@ -1771,6 +1771,7 @@ pub async fn set_backup_policy(
     def.backup = BackupPolicy {
         enabled: body.enabled,
         schedule: body.schedule,
+        budget_bytes: def.backup.budget_bytes,
     };
     let app = installed_schema(&client, &ns, &def.app_id, &state.config.catalog_dir()).await;
     write_definition(&client, &ns, &def, &app).await?;

@@ -8,13 +8,16 @@ import { RecoveryKeyOverlay } from "@/components/RecoveryKeyOverlay";
 import { api } from "@/lib/api";
 import { formatDateTime } from "@/lib/format";
 import { useApi } from "@/lib/useResource";
+import { BackupCopies } from "@/components/BackupCopies";
 import {
   needsAttention,
   protectionLabel,
   protectionState,
   protectionTone,
+  removedServices,
+  usageLabel,
 } from "@/lib/backups";
-import type { ProtectedApp } from "@/lib/backups";
+import type { BackedUpService, ProtectedApp } from "@/lib/backups";
 import { Collapse, RollingNumber, Swap } from "@/components/motion";
 import { cn } from "@/lib/utils";
 
@@ -35,6 +38,7 @@ const TONE_CLASS: Record<string, string> = {
 function AppRow({ app }: { app: ProtectedApp }) {
   const navigate = useNavigate();
   const state = protectionState(app);
+  const usage = usageLabel(app.size_bytes, app.budget_bytes);
   return (
     <Row
       onClick={() => navigate(`/app/${app.instance_name}`)}
@@ -65,14 +69,67 @@ function AppRow({ app }: { app: ProtectedApp }) {
               {formatDateTime(app.last_ok_at)}
             </span>
           )}
+          {usage && (
+            <span
+              className={cn(
+                "font-mono tabular-nums",
+                app.over_budget && "text-warning",
+              )}
+            >
+              {" · "}
+              {usage}
+            </span>
+          )}
           {app.error && (
             <span className="mt-1 line-clamp-2 block text-danger">
               {app.error}
             </span>
           )}
+          {!app.error && app.warning && (
+            <span className="mt-1 line-clamp-2 block text-warning">
+              {app.warning}
+            </span>
+          )}
         </>
       }
     />
+  );
+}
+
+function RemovedServices() {
+  const backedUp = useApi<{ configured: boolean; apps: BackedUpService[] }>(
+    "backed-up-apps",
+    "/api/backups/apps",
+  );
+  const [open, setOpen] = useState<BackedUpService | null>(null);
+  const removed = removedServices(backedUp.data?.apps ?? []);
+  if (removed.length === 0) return null;
+  return (
+    <Section title="Removed services">
+      {removed.map((s) => (
+        <Row
+          key={s.namespace}
+          label={s.instance_name}
+          detail={
+            <span className="font-mono tabular-nums">
+              {s.versions.length === 1
+                ? "1 copy"
+                : `${s.versions.length} copies`}
+              {s.size_bytes != null && ` · ${usageLabel(s.size_bytes, null)}`}
+            </span>
+          }
+          onClick={() => setOpen(s)}
+        />
+      ))}
+      <BackupCopies
+        namespace={open?.namespace ?? ""}
+        name={open?.instance_name ?? ""}
+        open={open !== null}
+        removed
+        onClose={() => setOpen(null)}
+        onChanged={() => void backedUp.refresh()}
+      />
+    </Section>
   );
 }
 
@@ -201,12 +258,14 @@ export function BackupsPage() {
             {apps.length === 0 ? (
               <Row
                 label="Nothing to back up yet"
-                detail="Once you add an app, it is backed up automatically."
+                detail="Once you add a service, it is backed up automatically."
               />
             ) : (
               apps.map((app) => <AppRow key={app.namespace} app={app} />)
             )}
           </Section>
+
+          <RemovedServices />
 
           <Section title="Recovery key">
             <Row

@@ -5,7 +5,8 @@ use std::collections::HashSet;
 
 use crate::host::Host;
 use crate::routers::backup_common::*;
-use crate::routers::{backup, restore};
+use crate::error::Outcome;
+use crate::routers::{backup, backup_points, restore};
 use crate::{config::Config, error::Result, AppState};
 
 pub fn ye_creds(cfg: &Config) -> Option<(String, String)> {
@@ -79,7 +80,7 @@ pub(crate) async fn enable<H: Host>(
 ) -> anyhow::Result<Vec<String>> {
     let cfg = ensure_master_config_with(&b.kube, url, token).await?;
     let mut sources: Vec<String> = Vec::new();
-    for pvc in &user_pvcs(&b.kube).await? {
+    for pvc in &outside_tree_pvcs(&b.kube).await? {
         allow_privileged_movers(&b.kube, &pvc.namespace).await;
         restic_secret(&b.kube, &pvc.namespace, &pvc.namespace, &pvc.name, &cfg).await?;
         replication_source(&b.kube, pvc, false).await?;
@@ -150,6 +151,7 @@ pub async fn list_restores(State(state): State<AppState>) -> Result<Json<serde_j
 fn backed_up_apps_json(
     versions: &restore::BackupVersions,
     installed: &HashSet<String>,
+    sizes: &backup_points::Sizes,
 ) -> serde_json::Value {
     let apps: Vec<serde_json::Value> = versions
         .apps
@@ -160,6 +162,7 @@ fn backed_up_apps_json(
                 "instance_name": ns.strip_prefix("yolab-").unwrap_or(ns),
                 "installed": installed.contains(ns),
                 "versions": vs,
+                "size_bytes": sizes.get(ns).map(|s| s.size_bytes),
             })
         })
         .collect();
@@ -170,7 +173,8 @@ pub async fn list_backed_up_apps(State(state): State<AppState>) -> Result<Json<s
     let b = state.backend().await?;
     let versions = restore::backup_versions(&b).await?;
     let installed: HashSet<String> = managed_namespaces(&b.kube).await?.into_iter().collect();
-    Ok(Json(backed_up_apps_json(&versions, &installed)))
+    let sizes = sizes_or_empty(&b.kube).await;
+    Ok(Json(backed_up_apps_json(&versions, &installed, &sizes)))
 }
 
 pub async fn run_app_backup_now(
@@ -226,7 +230,7 @@ pub(crate) async fn setup_namespace_backup<H: Host>(
     let Some(cfg) = master_config(&b.kube).await? else {
         return Ok(());
     };
-    let pvcs = user_pvcs(&b.kube).await?;
+    let pvcs = outside_tree_pvcs(&b.kube).await?;
     for pvc in pvcs.into_iter().filter(|p| p.namespace == namespace) {
         allow_privileged_movers(&b.kube, &pvc.namespace).await;
         restic_secret(&b.kube, &pvc.namespace, &pvc.namespace, &pvc.name, &cfg).await?;
@@ -247,6 +251,9 @@ pub(crate) struct AppBackup {
     pub state: String,
     pub last_ok_at: Option<String>,
     pub error: Option<String>,
+    pub warning: Option<String>,
+    pub size: Option<backup_points::ServiceSize>,
+    pub budget_set: bool,
 }
 
 pub(crate) fn app_backup_state(set: Option<&serde_json::Value>) -> (String, Option<String>) {
@@ -266,8 +273,25 @@ pub(crate) fn app_backup_state(set: Option<&serde_json::Value>) -> (String, Opti
     }
 }
 
+fn size_json(size: Option<&backup_points::ServiceSize>) -> serde_json::Value {
+    match size {
+        Some(s) => serde_json::json!({
+            "size_bytes": s.size_bytes,
+            "budget_bytes": s.budget_bytes,
+            "over_budget": s.over_budget,
+            "measured_at": s.updated_at,
+        }),
+        None => serde_json::json!({
+            "size_bytes": null,
+            "budget_bytes": null,
+            "over_budget": false,
+            "measured_at": null,
+        }),
+    }
+}
+
 fn app_backup_json(app: &AppBackup) -> serde_json::Value {
-    serde_json::json!({
+    let mut v = serde_json::json!({
         "namespace": app.namespace,
         "instance_name": app.instance_name,
         "app_id": app.app_id,
@@ -276,11 +300,26 @@ fn app_backup_json(app: &AppBackup) -> serde_json::Value {
         "state": app.state,
         "last_ok_at": app.last_ok_at,
         "error": app.error,
-    })
+        "warning": app.warning,
+        "budget_set": app.budget_set,
+    });
+    if let (Some(obj), serde_json::Value::Object(size)) =
+        (v.as_object_mut(), size_json(app.size.as_ref()))
+    {
+        obj.extend(size);
+    }
+    v
 }
 
 pub async fn list_protected_apps(State(state): State<AppState>) -> Result<Json<serde_json::Value>> {
     Ok(Json(protected_apps(&state.backend().await?).await?))
+}
+
+async fn sizes_or_empty(client: &kube::Client) -> backup_points::Sizes {
+    backup_points::read_sizes(client)
+        .await
+        .ok_or_warn("backups: the recorded backup sizes are unreadable")
+        .unwrap_or_default()
 }
 
 pub(crate) async fn protected_apps<H: Host>(b: &Backend<H>) -> anyhow::Result<serde_json::Value> {
@@ -288,6 +327,7 @@ pub(crate) async fn protected_apps<H: Host>(b: &Backend<H>) -> anyhow::Result<se
         return Ok(serde_json::json!({ "configured": false, "apps": [] }));
     }
     let sets = backup::list(&b.kube).await.unwrap_or_default();
+    let mut sizes = sizes_or_empty(&b.kube).await;
     let mut apps = Vec::new();
     for namespace in managed_namespaces(&b.kube).await? {
         let Some(def) = crate::routers::apps::read_definition_opt(&b.kube, &namespace).await?
@@ -298,23 +338,28 @@ pub(crate) async fn protected_apps<H: Host>(b: &Backend<H>) -> anyhow::Result<se
             .iter()
             .find(|s| s["namespace"].as_str() == Some(namespace.as_str()));
         let (state, error) = app_backup_state(newest);
-        let last_ok_at = sets
-            .iter()
-            .find(|s| {
-                s["namespace"].as_str() == Some(namespace.as_str())
-                    && s["state"].as_str() == Some("restorable")
-            })
+        let last_ok = sets.iter().find(|s| {
+            s["namespace"].as_str() == Some(namespace.as_str())
+                && s["state"].as_str() == Some("restorable")
+        });
+        let last_ok_at = last_ok
             .and_then(|s| s["finished_at"].as_str())
+            .map(str::to_string);
+        let warning = last_ok
+            .and_then(|s| s["warning"].as_str())
             .map(str::to_string);
         apps.push(AppBackup {
             instance_name: def.instance_name.clone(),
             app_id: def.app_id.clone(),
             enabled: def.backup.enabled,
             schedule: def.backup.schedule.clone(),
+            budget_set: def.backup.budget_bytes.is_some(),
+            size: sizes.remove(&namespace),
             namespace,
             state,
             last_ok_at,
             error,
+            warning,
         });
     }
     apps.sort_by(|a, b| a.instance_name.cmp(&b.instance_name));
@@ -322,23 +367,164 @@ pub(crate) async fn protected_apps<H: Host>(b: &Backend<H>) -> anyhow::Result<se
     Ok(serde_json::json!({ "configured": true, "apps": apps }))
 }
 
+fn app_namespace(namespace: &str) -> anyhow::Result<()> {
+    if !crate::routers::install::is_app_namespace(namespace) {
+        anyhow::bail!("{namespace} is not a service");
+    }
+    Ok(())
+}
+
+pub(crate) fn points_json(
+    points: &[backup_points::Point],
+    size: Option<&backup_points::ServiceSize>,
+) -> serde_json::Value {
+    let listed: Vec<serde_json::Value> = points
+        .iter()
+        .enumerate()
+        .map(|(i, p)| {
+            serde_json::json!({
+                "snapshot_id": p.snapshot_id,
+                "time": p.time,
+                "keep": p.keep,
+                "older": p.legacy(),
+                "newest": i == 0,
+                "added_bytes": size.and_then(|s| s.added.get(&p.snapshot_id)).copied(),
+            })
+        })
+        .collect();
+    let mut v = serde_json::json!({ "configured": true, "points": listed });
+    if let (Some(obj), serde_json::Value::Object(extra)) = (v.as_object_mut(), size_json(size)) {
+        obj.extend(extra);
+    }
+    v
+}
+
 pub async fn app_restore_points(
     State(state): State<AppState>,
     Path(namespace): Path<String>,
 ) -> Result<Json<serde_json::Value>> {
-    if !crate::routers::install::is_app_namespace(&namespace) {
-        return Err(anyhow::anyhow!("{namespace} is not an app namespace").into());
-    }
+    app_namespace(&namespace)?;
     let b = state.backend().await?;
     let Some(cfg) = master_config(&b.kube).await? else {
         return Ok(Json(
             serde_json::json!({ "configured": false, "points": [] }),
         ));
     };
-    let points = restore::restore_points(&b.host, &cfg, &namespace).await?;
+    let svc = backup_points::Service {
+        host: &b.host,
+        cfg: &cfg,
+        namespace: &namespace,
+    };
+    let points = svc.points().await?;
+    let size = sizes_or_empty(&b.kube).await.remove(&namespace);
+    let mut v = points_json(&points, size.as_ref());
+    v["budget_set"] = serde_json::json!(backup_points::budget_of(&b.kube, &namespace)
+        .await?
+        .is_some());
+    Ok(Json(v))
+}
+
+async fn configured(b: &Backend) -> anyhow::Result<BackupConfig> {
+    master_config(&b.kube)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("backups are not turned on"))
+}
+
+pub async fn point_frees(
+    State(state): State<AppState>,
+    Path((namespace, snapshot_id)): Path<(String, String)>,
+) -> Result<Json<serde_json::Value>> {
+    crate::routers::install::check_backup_ref(&namespace, &snapshot_id)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let b = state.backend().await?;
+    let cfg = configured(&b).await?;
+    let svc = backup_points::Service {
+        host: &b.host,
+        cfg: &cfg,
+        namespace: &namespace,
+    };
+    let frees = svc.frees(&snapshot_id).await?;
+    Ok(Json(serde_json::json!({ "frees_bytes": frees })))
+}
+
+pub async fn delete_point(
+    State(state): State<AppState>,
+    Path((namespace, snapshot_id)): Path<(String, String)>,
+) -> Result<Json<serde_json::Value>> {
+    crate::routers::install::check_backup_ref(&namespace, &snapshot_id)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let b = state.backend().await?;
+    let cfg = configured(&b).await?;
+    backup_points::delete_point(&b, &cfg, &namespace, &snapshot_id).await?;
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+#[derive(Deserialize)]
+pub struct KeepRequest {
+    pub keep: bool,
+}
+
+pub async fn keep_point(
+    State(state): State<AppState>,
+    Path((namespace, snapshot_id)): Path<(String, String)>,
+    Json(body): Json<KeepRequest>,
+) -> Result<Json<serde_json::Value>> {
+    crate::routers::install::check_backup_ref(&namespace, &snapshot_id)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let b = state.backend().await?;
+    let cfg = configured(&b).await?;
+    let id = backup_points::keep(&b, &cfg, &namespace, &snapshot_id, body.keep).await?;
     Ok(Json(
-        serde_json::json!({ "configured": true, "points": points }),
+        serde_json::json!({ "ok": true, "keep": body.keep, "snapshot_id": id }),
     ))
+}
+
+#[derive(Deserialize)]
+pub struct BudgetRequest {
+    pub budget_bytes: Option<u64>,
+}
+
+pub(crate) fn checked_budget(budget: Option<u64>) -> anyhow::Result<Option<u64>> {
+    match budget {
+        Some(0) => anyhow::bail!("a budget of nothing would delete every backup but the newest"),
+        other => Ok(other),
+    }
+}
+
+pub async fn set_budget(
+    State(state): State<AppState>,
+    Path(namespace): Path<String>,
+    Json(body): Json<BudgetRequest>,
+) -> Result<Json<serde_json::Value>> {
+    app_namespace(&namespace)?;
+    let budget = checked_budget(body.budget_bytes)?;
+    let b = state.backend().await?;
+    let mut def = crate::routers::apps::read_definition(&b.kube, &namespace).await?;
+    def.backup.budget_bytes = budget;
+    let app = crate::routers::apps::installed_schema(
+        &b.kube,
+        &namespace,
+        &def.app_id,
+        &state.config.catalog_dir(),
+    )
+    .await;
+    crate::routers::apps::write_definition(&b.kube, &namespace, &def, &app).await?;
+    if let Some(cfg) = master_config(&b.kube).await? {
+        let (b, ns) = (b.clone(), namespace.clone());
+        tokio::spawn(async move { backup_points::refresh(&b, &cfg, &ns).await });
+    }
+    Ok(Json(serde_json::json!({ "ok": true, "budget_bytes": budget })))
+}
+
+pub async fn delete_all_backups(
+    State(state): State<AppState>,
+    Path(namespace): Path<String>,
+) -> Result<Json<serde_json::Value>> {
+    app_namespace(&namespace)?;
+    let b = state.backend().await?;
+    let cfg = configured(&b).await?;
+    let deleted = backup_points::delete_all(&b, &cfg, &namespace).await?;
+    Ok(Json(serde_json::json!({ "ok": true, "deleted": deleted })))
 }
 
 pub struct LockSweeperController;
@@ -422,7 +608,11 @@ pub(crate) async fn sweep_locks<H: Host>(b: &Backend<H>) -> anyhow::Result<crate
         return Ok(crate::runtime::Tick::Idle("backups are not enabled".into()));
     };
     cfg.unlock(&b.host, "cluster-backup").await;
-    for pvc in user_pvcs(&b.kube).await? {
+    for namespace in managed_namespaces(&b.kube).await? {
+        cfg.unlock(&b.host, &crate::routers::folder_backup::store(&namespace))
+            .await;
+    }
+    for pvc in outside_tree_pvcs(&b.kube).await? {
         let path = format!("volsync/{}/{}", pvc.namespace, pvc.name);
         cfg.unlock(&b.host, &path).await;
     }
@@ -463,7 +653,14 @@ mod tests {
     #[test]
     fn the_list_shows_each_backed_up_app_with_its_state_and_versions() {
         let installed: HashSet<String> = ["yolab-b".to_string()].into();
-        let v = backed_up_apps_json(&versions(), &installed);
+        let sizes = backup_points::Sizes::from([(
+            "yolab-a".to_string(),
+            backup_points::ServiceSize {
+                size_bytes: 7,
+                ..Default::default()
+            },
+        )]);
+        let v = backed_up_apps_json(&versions(), &installed, &sizes);
         assert_eq!(v["configured"], true);
         assert_eq!(
             v["apps"][0],
@@ -475,9 +672,11 @@ mod tests {
                     {"snapshot_id": "new", "time": "2026-09-14T02:00:00Z"},
                     {"snapshot_id": "old", "time": "2026-09-14T02:00:00Z"},
                 ],
+                "size_bytes": 7,
             })
         );
         assert_eq!(v["apps"][1]["installed"], true);
+        assert_eq!(v["apps"][1]["size_bytes"], serde_json::Value::Null);
     }
 
     #[test]
@@ -548,6 +747,13 @@ mod tests {
                 )))
                 .mount(server)
                 .await;
+            Mock::given(method("GET"))
+                .and(path("/api/v1/persistentvolumes"))
+                .respond_with(
+                    ResponseTemplate::new(200).set_body_json(list("PersistentVolume", vec![])),
+                )
+                .mount(server)
+                .await;
         }
 
         fn unlocked_repos(host: &FakeHost) -> Vec<String> {
@@ -578,7 +784,7 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn the_sweeper_unlocks_the_cluster_repo_and_every_app_volume() {
+        async fn the_sweeper_unlocks_the_settings_every_service_store_and_every_volume_outside_the_tree() {
             let (server, kube) = api_server().await;
             config(&server, 200, enabled()).await;
             apps(&server).await;
@@ -592,6 +798,7 @@ mod tests {
                 unlocked_repos(&b.host),
                 vec![
                     "s3:https://s3.example/bucket-1/cluster-backup".to_string(),
+                    "s3:https://s3.example/bucket-1/services/yolab-notes".to_string(),
                     "s3:https://s3.example/bucket-1/volsync/yolab-notes/data".to_string(),
                 ]
             );

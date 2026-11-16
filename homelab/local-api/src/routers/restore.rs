@@ -227,6 +227,7 @@ async fn restore_inner<H: Host>(
 
     let pvcs = catalog_pvcs(&catalog, namespace);
     let live = crate::tree::claimed_in(&crate::tree::volumes(&b.kube).await?, namespace);
+    let mut saved = SavedFolders::default();
     let mut backed_up = Vec::new();
     for pvc in &pvcs {
         let wanted = rf::step(
@@ -238,13 +239,7 @@ async fn restore_inner<H: Host>(
         if wanted == rf::Step::Keep {
             continue;
         }
-        let snaps = volume_snapshots(&b.host, namespace, &pvc.name, cfg).await?;
-        match plan_volume(
-            &pvc.name,
-            pvc.snapshot.as_ref(),
-            &snaps,
-            restore_as_of.as_deref(),
-        ) {
+        match plan_for(&b.host, cfg, namespace, pvc, restore_as_of.as_deref(), &mut saved).await? {
             VolumePlan::NoBackup => tracing::warn!(
                 "restore: {namespace}/{}: no backup snapshot — keeping as-is",
                 pvc.name
@@ -255,11 +250,18 @@ async fn restore_inner<H: Host>(
                     .iter()
                     .find(|c| crate::tree::same_role(&pvc.name, &c.claim))
                     .ok_or_else(|| no_longer_has(&pvc.name))?;
-                backed_up.push((pvc, as_of, into.claim.clone()))
+                backed_up.push((pvc, Restorable::AsOf(as_of), into.clone()))
+            }
+            VolumePlan::FromFolders { snapshot, path } => {
+                let into = live
+                    .iter()
+                    .find(|c| crate::tree::same_role(&pvc.name, &c.claim))
+                    .ok_or_else(|| no_longer_has(&pvc.name))?;
+                backed_up.push((pvc, Restorable::Folders { snapshot, path }, into.clone()))
             }
         }
     }
-    for (pvc, as_of, into) in &backed_up {
+    for (pvc, from, into) in &backed_up {
         restore_into(
             b,
             cfg,
@@ -267,8 +269,9 @@ async fn restore_inner<H: Host>(
                 namespace,
                 source_namespace: namespace,
                 source_pvc: &pvc.name,
-                dest_pvc: into,
-                as_of: as_of.as_deref(),
+                dest_pvc: &into.claim,
+                dest_folder: &into.folder,
+                from,
                 replace: true,
             },
         )
@@ -295,6 +298,143 @@ enum VolumePlan {
     NoBackup,
     Refuse(String),
     RestoreAsOf(Option<String>),
+    FromFolders { snapshot: String, path: String },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum Restorable {
+    AsOf(Option<String>),
+    Folders { snapshot: String, path: String },
+}
+
+fn restorable(plan: VolumePlan) -> Result<Option<Restorable>, String> {
+    match plan {
+        VolumePlan::NoBackup => Ok(None),
+        VolumePlan::Refuse(why) => Err(why),
+        VolumePlan::RestoreAsOf(as_of) => Ok(Some(Restorable::AsOf(as_of))),
+        VolumePlan::FromFolders { snapshot, path } => {
+            Ok(Some(Restorable::Folders { snapshot, path }))
+        }
+    }
+}
+
+#[derive(Default)]
+struct SavedFolders(Option<Vec<SnapshotEntry>>);
+
+async fn plan_for<H: Host>(
+    host: &H,
+    cfg: &BackupConfig,
+    namespace: &str,
+    pvc: &CatalogPvc,
+    as_of: Option<&str>,
+    saved: &mut SavedFolders,
+) -> anyhow::Result<VolumePlan> {
+    if pvc.store.is_none() {
+        let snaps = volume_snapshots(host, namespace, &pvc.name, cfg).await?;
+        return Ok(plan_volume(&pvc.name, pvc.snapshot.as_ref(), &snaps, as_of));
+    }
+    if saved.0.is_none() {
+        saved.0 = Some(folder_snapshots(host, namespace, cfg).await?);
+    }
+    let snaps = saved.0.as_deref().unwrap_or_default();
+    Ok(plan_folders(
+        &pvc.name,
+        pvc.snapshot.as_ref(),
+        snaps,
+        as_of,
+        pvc.folder.as_deref().unwrap_or_default(),
+    ))
+}
+
+fn plan_folders(
+    pvc: &str,
+    pinned: Option<&VolumeSnapshot>,
+    snaps: &[SnapshotEntry],
+    cluster_time: Option<&str>,
+    folder: &str,
+) -> VolumePlan {
+    if snaps.is_empty() {
+        return VolumePlan::NoBackup;
+    }
+    let path = crate::routers::folder_backup::path_in_snapshot(folder);
+    if let Some(p) = pinned {
+        return if snaps.iter().any(|s| s.id == p.id) {
+            VolumePlan::FromFolders {
+                snapshot: p.id.clone(),
+                path,
+            }
+        } else {
+            VolumePlan::Refuse(format!(
+                "the backup of {pvc} this restore point took has since been deleted — pick a newer backup"
+            ))
+        };
+    }
+    let as_of = cluster_time
+        .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
+        .map(|t| t.with_timezone(&Utc));
+    let picked = snaps
+        .iter()
+        .filter(|s| as_of.is_none_or(|limit| s.time <= limit))
+        .max_by_key(|s| s.time);
+    match picked {
+        Some(s) => VolumePlan::FromFolders {
+            snapshot: s.id.clone(),
+            path,
+        },
+        None => VolumePlan::Refuse(format!(
+            "{pvc} has no backup taken before this restore point — pick a later backup"
+        )),
+    }
+}
+
+async fn folder_snapshots<H: Host>(
+    host: &H,
+    namespace: &str,
+    cfg: &BackupConfig,
+) -> anyhow::Result<Vec<SnapshotEntry>> {
+    let repo = cfg.restic_repo(&crate::routers::folder_backup::store(namespace));
+    let out = restic_with(
+        host,
+        &repo,
+        cfg,
+        &[
+            "snapshots",
+            "--no-lock",
+            "--json",
+            "--tag",
+            crate::routers::folder_backup::FOLDERS_TAG,
+        ],
+        RESTIC_TIMEOUT,
+    )
+    .await?;
+    if !out.success {
+        if repo_missing(&out.stderr) {
+            return Ok(Vec::new());
+        }
+        anyhow::bail!("{}", out.stderr.trim());
+    }
+    Ok(parse_snapshots(&serde_json::from_str(&out.stdout)?))
+}
+
+pub(crate) async fn legacy_volumes<H: Host>(
+    host: &H,
+    cfg: &BackupConfig,
+    snapshot_id: &str,
+    namespace: &str,
+) -> anyhow::Result<Vec<(String, Vec<String>)>> {
+    let repo = cfg.restic_repo("cluster-backup");
+    let catalog = extract_json_file(host, &repo, cfg, snapshot_id, "catalog.json").await?;
+    Ok(legacy_copies(&catalog_pvcs(&catalog, namespace), namespace))
+}
+
+fn legacy_copies(pvcs: &[CatalogPvc], namespace: &str) -> Vec<(String, Vec<String>)> {
+    pvcs.iter()
+        .filter(|p| p.store.is_none())
+        .filter_map(|p| {
+            let snap = p.snapshot.as_ref()?;
+            Some((format!("volsync/{namespace}/{}", p.name), vec![snap.id.clone()]))
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -453,55 +593,18 @@ async fn restic_json<H: Host>(
     })?))
 }
 
-pub(crate) async fn restore_points<H: Host>(
-    host: &H,
-    cfg: &BackupConfig,
-    namespace: &str,
-) -> anyhow::Result<Vec<AppVersion>> {
-    let repo = cfg.restic_repo("cluster-backup");
-    cfg.unlock(host, "cluster-backup").await;
-    let Some(snapshots) = restic_json(
-        host,
-        &repo,
-        cfg,
-        &[
-            "snapshots",
-            "--no-lock",
-            "--json",
-            "--tag",
-            "cluster-backup",
-        ],
-    )
-    .await?
-    else {
-        return Ok(Vec::new());
-    };
-    let pattern = format!("{namespace}.yaml");
-    let found = restic_json(
-        host,
-        &repo,
-        cfg,
-        &[
-            "find",
-            "--no-lock",
-            "--json",
-            "--tag",
-            "cluster-backup",
-            &pattern,
-        ],
-    )
-    .await?
-    .unwrap_or(Value::Null);
-    Ok(versions_by_app(&snapshots, &found)
-        .remove(namespace)
-        .unwrap_or_default())
-}
-
 fn versions_by_app(snapshots: &Value, found: &Value) -> BTreeMap<String, Vec<AppVersion>> {
     let listed: Vec<(String, chrono::DateTime<Utc>, String)> = snapshots
         .as_array()
         .into_iter()
         .flatten()
+        .filter(|s| {
+            !s["tags"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .any(|t| t.as_str() == Some("scope:cluster"))
+        })
         .filter_map(|s| {
             let id = s["id"].as_str()?.to_string();
             let raw = s["time"].as_str()?;
@@ -557,7 +660,7 @@ pub(crate) struct BackupPayload {
     source_namespace: String,
     app_id: String,
     objects: Value,
-    volumes: Vec<(CatalogPvc, Result<Option<String>, String>)>,
+    volumes: Vec<(CatalogPvc, Result<Restorable, String>)>,
     choices: rf::Choices,
 }
 
@@ -592,20 +695,24 @@ pub(crate) async fn backup_payload<H: Host>(
     let restore_as_of = Some(snapshot_time(&b.host, &repo, &cfg, snapshot_id).await?);
 
     let mut volumes = Vec::new();
+    let mut saved = SavedFolders::default();
     for pvc in catalog_pvcs(&catalog, source_namespace) {
-        let snaps = volume_snapshots(&b.host, source_namespace, &pvc.name, &cfg).await?;
-        match plan_volume(
-            &pvc.name,
-            pvc.snapshot.as_ref(),
-            &snaps,
+        let plan = plan_for(
+            &b.host,
+            &cfg,
+            source_namespace,
+            &pvc,
             restore_as_of.as_deref(),
-        ) {
-            VolumePlan::NoBackup => tracing::warn!(
+            &mut saved,
+        )
+        .await?;
+        match restorable(plan) {
+            Ok(None) => tracing::warn!(
                 "{source_namespace}/{} was never backed up — the chart creates it empty",
                 pvc.name
             ),
-            VolumePlan::Refuse(why) => volumes.push((pvc, Err(why))),
-            VolumePlan::RestoreAsOf(as_of) => volumes.push((pvc, Ok(as_of))),
+            Ok(Some(from)) => volumes.push((pvc, Ok(from))),
+            Err(why) => volumes.push((pvc, Err(why))),
         }
     }
 
@@ -662,7 +769,7 @@ impl BackupPayload {
                 rf::Step::Replace => true,
                 rf::Step::Keep | rf::Step::CreateEmpty => continue,
             };
-            let as_of = planned.clone().map_err(|why| anyhow::anyhow!("{why}"))?;
+            let from = planned.clone().map_err(|why| anyhow::anyhow!("{why}"))?;
             let into = folders
                 .iter()
                 .find(|f| crate::tree::same_role(&pvc.name, &f.claimed.claim))
@@ -677,7 +784,8 @@ impl BackupPayload {
                     source_namespace: &self.source_namespace,
                     source_pvc: &pvc.name,
                     dest_pvc: &into.claimed.claim,
-                    as_of: as_of.as_deref(),
+                    dest_folder: &into.claimed.folder,
+                    from: &from,
                     replace,
                 },
             )
@@ -874,10 +982,12 @@ pub(crate) async fn restore_plan<H: Host>(
     let (cfg, repo) = open_backups(b).await?;
     let catalog = extract_json_file(&b.host, &repo, &cfg, snapshot_id, "catalog.json").await?;
     let pvcs = catalog_pvcs(&catalog, namespace);
+    let as_of = Some(snapshot_time(&b.host, &repo, &cfg, snapshot_id).await?);
+    let mut saved = SavedFolders::default();
     let mut backed_up = Vec::new();
     for pvc in &pvcs {
-        let snaps = volume_snapshots(&b.host, namespace, &pvc.name, &cfg).await?;
-        backed_up.push(!snaps.is_empty());
+        let plan = plan_for(&b.host, &cfg, namespace, pvc, as_of.as_deref(), &mut saved).await?;
+        backed_up.push(!matches!(plan, VolumePlan::NoBackup));
     }
     let data: Vec<rf::SavedData<'_>> = pvcs
         .iter()
@@ -918,7 +1028,8 @@ pub(crate) struct VolumeRestore<'a> {
     pub source_namespace: &'a str,
     pub source_pvc: &'a str,
     pub dest_pvc: &'a str,
-    pub as_of: Option<&'a str>,
+    pub dest_folder: &'a str,
+    pub from: &'a Restorable,
     pub replace: bool,
 }
 
@@ -927,6 +1038,23 @@ pub(crate) async fn restore_into<H: Host>(
     cfg: &BackupConfig,
     r: &VolumeRestore<'_>,
 ) -> anyhow::Result<()> {
+    let as_of = match r.from {
+        Restorable::AsOf(as_of) => as_of.as_deref(),
+        Restorable::Folders { snapshot, path } => {
+            return crate::routers::folder_backup::restore(
+                &b.kube,
+                cfg,
+                r.source_namespace,
+                snapshot,
+                &[crate::routers::folder_backup::FolderRestore {
+                    from: path.clone(),
+                    to: r.dest_folder.to_string(),
+                    replace: r.replace,
+                }],
+            )
+            .await;
+        }
+    };
     let (namespace, source_namespace, source_pvc) = (r.namespace, r.source_namespace, r.source_pvc);
     let cid = source_pvc;
     let pvc_repo = cfg.restic_repo(&format!("volsync/{source_namespace}/{cid}"));
@@ -943,7 +1071,7 @@ pub(crate) async fn restore_into<H: Host>(
 
     restic_secret(&b.kube, namespace, source_namespace, source_pvc, cfg).await?;
     let secret_name = format!("{cid}{RESTIC_SECRET_SUFFIX}");
-    let restic_spec = destination_spec(&secret_name, r.dest_pvc, r.as_of, r.replace);
+    let restic_spec = destination_spec(&secret_name, r.dest_pvc, as_of, r.replace);
     let dest_name = format!("restore-{cid}");
     let manifest = json!({
         "apiVersion": "volsync.backube/v1alpha1",
@@ -1174,6 +1302,8 @@ struct CatalogPvc {
     name: String,
     capacity: String,
     snapshot: Option<VolumeSnapshot>,
+    store: Option<String>,
+    folder: Option<String>,
 }
 
 fn catalog_pvcs(catalog: &Value, namespace: &str) -> Vec<CatalogPvc> {
@@ -1191,6 +1321,8 @@ fn catalog_pvcs(catalog: &Value, namespace: &str) -> Vec<CatalogPvc> {
                         name: p["name"].as_str()?.to_string(),
                         capacity: p["capacity"].as_str().unwrap_or("10Gi").to_string(),
                         snapshot: VolumeSnapshot::recorded_in(p),
+                        store: p["store"].as_str().map(str::to_string),
+                        folder: p["folder"].as_str().map(str::to_string),
                     })
                 })
                 .collect()
@@ -1593,16 +1725,22 @@ mod tests {
                     name: "gitea-data".into(),
                     capacity: "5Gi".into(),
                     snapshot: Some(pin("abc", "2026-09-14T12:10:05Z")),
+                    store: None,
+                    folder: None,
                 },
                 CatalogPvc {
                     name: "gitea-db".into(),
                     capacity: "10Gi".into(),
                     snapshot: None,
+                    store: None,
+                    folder: None,
                 },
                 CatalogPvc {
                     name: "half-pinned".into(),
                     capacity: "10Gi".into(),
                     snapshot: None,
+                    store: None,
+                    folder: None,
                 },
             ]
         );
@@ -1691,6 +1829,84 @@ mod tests {
         );
         assert_eq!(ids("yolab-b"), ["bbbb2222"], "listed once");
         assert_eq!(v["yolab-a"][1].time, "2026-09-10T02:00:00+02:00");
+    }
+
+    #[test]
+    fn the_nightly_whole_cluster_snapshot_is_not_a_restore_point_of_any_service() {
+        let snapshots = json!([
+            {"id": "app1", "time": "2026-11-16T03:00:00Z", "tags": ["cluster-backup", "namespace:yolab-a"]},
+            {"id": "dr01", "time": "2026-11-16T04:00:00Z", "tags": ["cluster-backup", "scope:cluster"]},
+        ]);
+        let found = json!([
+            {"snapshot": "app1", "matches": [{"path": "/s/yolab-a.yaml"}]},
+            {"snapshot": "dr01", "matches": [{"path": "/s/yolab-a.yaml"}, {"path": "/s/yolab-b.yaml"}]},
+        ]);
+        let v = versions_by_app(&snapshots, &found);
+        assert_eq!(v.keys().collect::<Vec<_>>(), ["yolab-a"]);
+        assert_eq!(v["yolab-a"].len(), 1);
+        assert_eq!(v["yolab-a"][0].snapshot_id, "app1");
+    }
+
+    #[test]
+    fn a_folder_backup_restores_its_pinned_snapshot_from_the_folders_path() {
+        let snaps = [
+            snap("f1", "2026-11-15T03:00:00Z"),
+            snap("f2", "2026-11-16T03:00:00Z"),
+        ];
+        assert_eq!(
+            plan_folders(
+                "data",
+                Some(&pin("f1", "2026-11-15T03:00:00Z")),
+                &snaps,
+                None,
+                "notes-ab12"
+            ),
+            VolumePlan::FromFolders {
+                snapshot: "f1".into(),
+                path: "/data/notes-ab12".into()
+            }
+        );
+        match plan_folders("data", Some(&pin("gone", "x")), &snaps, None, "n") {
+            VolumePlan::Refuse(why) => assert!(why.contains("deleted"), "{why}"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_unpinned_folder_backup_takes_the_newest_snapshot_not_after_the_restore_point() {
+        let snaps = [
+            snap("f1", "2026-11-15T03:00:00Z"),
+            snap("f2", "2026-11-16T03:00:00Z"),
+            snap("f3", "2026-11-17T03:00:00Z"),
+        ];
+        let picked = |at: Option<&str>| match plan_folders("d", None, &snaps, at, "") {
+            VolumePlan::FromFolders { snapshot, path } => {
+                assert_eq!(path, "/data");
+                snapshot
+            }
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(picked(Some("2026-11-16T04:00:00Z")), "f2");
+        assert_eq!(picked(None), "f3");
+        assert!(matches!(
+            plan_folders("d", None, &snaps, Some("2026-11-01T00:00:00Z"), ""),
+            VolumePlan::Refuse(_)
+        ));
+        assert_eq!(plan_folders("d", None, &[], None, ""), VolumePlan::NoBackup);
+    }
+
+    #[test]
+    fn only_older_volume_copies_are_forgotten_through_the_catalog() {
+        let catalog = json!({"services": [{"namespace": "yolab-a", "pvcs": [
+            {"name": "old", "snapshot_id": "v1", "snapshot_time": "2026-10-01T00:00:00Z"},
+            {"name": "home", "snapshot_id": "f1", "snapshot_time": "2026-11-16T00:00:00Z",
+             "store": "services/yolab-a", "folder": "a"},
+            {"name": "never"},
+        ]}]});
+        assert_eq!(
+            legacy_copies(&catalog_pvcs(&catalog, "yolab-a"), "yolab-a"),
+            vec![("volsync/yolab-a/old".to_string(), vec!["v1".to_string()])]
+        );
     }
 
     #[test]

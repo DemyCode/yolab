@@ -49,6 +49,26 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/backups/restores", get(backups::list_restores))
         .route("/api/backups/apps", get(backups::list_backed_up_apps))
         .route(
+            "/api/backups/apps/{namespace}",
+            axum::routing::delete(backups::delete_all_backups),
+        )
+        .route(
+            "/api/backups/apps/{namespace}/budget",
+            axum::routing::put(backups::set_budget),
+        )
+        .route(
+            "/api/backups/apps/{namespace}/points/{snapshot_id}",
+            axum::routing::delete(backups::delete_point),
+        )
+        .route(
+            "/api/backups/apps/{namespace}/points/{snapshot_id}/frees",
+            get(backups::point_frees),
+        )
+        .route(
+            "/api/backups/apps/{namespace}/points/{snapshot_id}/keep",
+            axum::routing::put(backups::keep_point),
+        )
+        .route(
             "/api/backups/apps/{namespace}/run-now",
             post(backups::run_app_backup_now),
         )

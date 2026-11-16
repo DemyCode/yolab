@@ -1,12 +1,15 @@
 pub mod apps;
 pub mod backup;
+pub mod backup_check;
 pub mod backup_common;
+pub mod backup_points;
 pub mod backups;
 pub mod ceph;
 pub mod ceph_join;
 pub mod copy;
 pub mod custom_app;
 pub mod disks;
+pub mod folder_backup;
 pub mod install;
 pub mod logs;
 pub mod nodes;

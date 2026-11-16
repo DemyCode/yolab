@@ -468,17 +468,32 @@ pub(crate) async fn run(client: &Client, op: &Op) -> anyhow::Result<()> {
     if op.is_empty() {
         return Ok(());
     }
-    crate::k8s::apply(client, &root_volume()).await?;
-    crate::k8s::apply(client, &root_claim()).await?;
     let name = format!(
         "yolab-tree-{}",
         crate::routers::backup_common::random_hex(4)
     );
-    crate::k8s::create(client, &job(&name, op)).await?;
-    let reference = crate::k8s::reference("batch/v1", "Job", crate::csi::NS, &name);
+    run_job(client, &name, &job(&name, op), &op.describe(), DEADLINE).await
+}
+
+pub(crate) const JOB_CONTAINER: &str = CONTAINER;
+pub(crate) const JOB_MOUNT: &str = MOUNT;
+pub(crate) const JOB_VOLUME: &str = ROOT_VOLUME;
+pub(crate) const JOB_KEEP_FINISHED_SECS: u64 = KEEP_FINISHED_SECS;
+
+pub(crate) async fn run_job(
+    client: &Client,
+    name: &str,
+    manifest: &Value,
+    what: &str,
+    deadline: Duration,
+) -> anyhow::Result<()> {
+    crate::k8s::apply(client, &root_volume()).await?;
+    crate::k8s::apply(client, &root_claim()).await?;
+    crate::k8s::create(client, manifest).await?;
+    let reference = crate::k8s::reference("batch/v1", "Job", crate::csi::NS, name);
     let reference = &reference;
-    let job_name = name.as_str();
-    let failure = crate::poll::until(DEADLINE + WAIT_MARGIN, POLL, move || async move {
+    let job_name = name;
+    let failure = crate::poll::until(deadline + WAIT_MARGIN, POLL, move || async move {
         match crate::k8s::get(client, reference).await {
             Ok(Some(found)) => match job_state(&found) {
                 JobState::Succeeded => crate::poll::Step::Done(None),
@@ -492,20 +507,21 @@ pub(crate) async fn run(client: &Client, op: &Op) -> anyhow::Result<()> {
         }
     })
     .await
-    .map_err(|e| anyhow::anyhow!("could not {}: {e}", op.describe()))?;
+    .map_err(|e| anyhow::anyhow!("could not {what}: {e}"))?;
     let Some(why) = failure else {
         return Ok(());
     };
-    let said = last_words(client, &name).await.map_err(|e| {
-        anyhow::anyhow!(
-            "could not {}: {why} (its log could not be read: {e})",
-            op.describe()
-        )
+    let said = last_words(client, name).await.map_err(|e| {
+        anyhow::anyhow!("could not {what}: {why} (its log could not be read: {e})")
     })?;
     match said {
-        Some(line) => anyhow::bail!("could not {}: {line}", op.describe()),
-        None => anyhow::bail!("could not {}: {why}", op.describe()),
+        Some(line) => anyhow::bail!("could not {what}: {line}"),
+        None => anyhow::bail!("could not {what}: {why}"),
     }
+}
+
+pub(crate) async fn job_last_line(client: &Client, name: &str) -> anyhow::Result<Option<String>> {
+    last_words(client, name).await
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

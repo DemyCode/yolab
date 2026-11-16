@@ -9,6 +9,7 @@ pub const NAMES: &[&str] = &[
     "store-sync",
     "ssh-keys",
     "backup-lock-sweeper",
+    "backup-check",
     "disks",
     "cephfs",
     "topology",
@@ -61,6 +62,7 @@ pub fn spawn_all(leader: Leadership, state: &crate::AppState) {
     spawn(apps::UninstallWatchdogController, &leader);
     spawn(crate::outputs::OutputsController, &leader);
     spawn(backups::LockSweeperController, &leader);
+    spawn(crate::routers::backup_check::BackupCheckController, &leader);
 
     spawn(crate::store::sync::StoreSyncController, &leader);
     spawn(crate::ssh_keys::SshKeysController, &leader);
@@ -151,6 +153,9 @@ pub async fn run_named(name: &str) -> anyhow::Result<runtime::Tick> {
         "store-sync" => runtime::run_once(&crate::store::sync::StoreSyncController).await,
         "ssh-keys" => runtime::run_once(&crate::ssh_keys::SshKeysController).await,
         "backup-lock-sweeper" => runtime::run_once(&backups::LockSweeperController).await,
+        "backup-check" => {
+            runtime::run_once(&crate::routers::backup_check::BackupCheckController).await
+        }
         "disks" => runtime::run_once(&crate::disks_reconciler::DisksController).await,
         "cephfs" => runtime::run_once(&crate::cephfs::CephFsController).await,
         "topology" => runtime::run_once(&crate::topology::TopologyController).await,

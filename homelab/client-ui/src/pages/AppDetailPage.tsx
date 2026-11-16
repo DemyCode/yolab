@@ -13,6 +13,7 @@ import { useNow } from "@/lib/useNow";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog, Sheet } from "@/components/ui/sheet";
 import { RemoveDataChoice } from "@/components/RemoveDataChoice";
+import { BackupCopies } from "@/components/BackupCopies";
 import { removePath } from "@/lib/removeData";
 import {
   Banner,
@@ -546,6 +547,7 @@ function BackupsSection({
   );
   const [draft, setDraft] = useState(app.backup.schedule);
   const [note, setNote] = useState<{ ok: boolean; text: string } | null>(null);
+  const [copiesOpen, setCopiesOpen] = useState(false);
 
   const enabled = pending?.enabled ?? app.backup.enabled;
   const schedule = pending?.schedule ?? app.backup.schedule;
@@ -691,6 +693,19 @@ function BackupsSection({
           onClick={onRestore}
         />
       )}
+      {canRestore && (
+        <Row
+          label="Saved copies"
+          detail="See how much space they take, keep or delete them, and set a budget"
+          onClick={() => setCopiesOpen(true)}
+        />
+      )}
+      <BackupCopies
+        namespace={`yolab-${app.instance_name}`}
+        name={app.instance_name}
+        open={copiesOpen}
+        onClose={() => setCopiesOpen(false)}
+      />
     </Section>
   );
 }
@@ -709,6 +724,7 @@ export function AppDetailPage() {
 
   const [confirmRemove, setConfirmRemove] = useState(false);
   const [deleteShared, setDeleteShared] = useState(false);
+  const [deleteBackups, setDeleteBackups] = useState(false);
   const [working, setWorking] = useState<null | "update" | "remove">(null);
   const [notice, setNotice] = useState<Notice | null>(null);
   const [restoreOpen, setRestoreOpen] = useState(false);
@@ -789,7 +805,7 @@ export function AppDetailPage() {
     setWorking("remove");
     setNotice(null);
     try {
-      await api.del(removePath(app.instance_name, deleteShared));
+      await api.del(removePath(app.instance_name, deleteShared, deleteBackups));
       navigate("/");
     } catch (e) {
       setNotice({
@@ -1163,13 +1179,25 @@ export function AppDetailPage() {
         busy={working === "remove"}
         body={
           <>
-            {name} stops and is removed. Backups you already have are kept.
+            {name} stops and is removed.{" "}
+            {deleteBackups
+              ? "Its backups are deleted too."
+              : "Its backups are kept, so you can add it back later."}
             <RemoveDataChoice
               instance={app.instance_name}
               open={confirmRemove}
               deleteShared={deleteShared}
               onChange={setDeleteShared}
             />
+            <label className="mt-4 flex cursor-pointer items-center gap-2">
+              <input
+                type="checkbox"
+                checked={deleteBackups}
+                onChange={(e) => setDeleteBackups(e.target.checked)}
+                className="h-4 w-4 accent-primary"
+              />
+              <span className="text-sm text-fg">Also delete its backups</span>
+            </label>
           </>
         }
       />

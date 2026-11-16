@@ -25,6 +25,8 @@ pub struct ResourceSpec {
 pub struct BackupPolicy {
     pub enabled: bool,
     pub schedule: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget_bytes: Option<u64>,
 }
 
 impl Default for BackupPolicy {
@@ -32,6 +34,7 @@ impl Default for BackupPolicy {
         Self {
             enabled: true,
             schedule: "0 3 * * *".to_string(),
+            budget_bytes: None,
         }
     }
 }

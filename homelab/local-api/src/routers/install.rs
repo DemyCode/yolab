@@ -1223,6 +1223,7 @@ mod tests {
         source.backup = BackupPolicy {
             enabled: false,
             schedule: "0 5 * * 0".into(),
+            budget_bytes: Some(5 << 30),
         };
         let plan = plan(
             "gitea",

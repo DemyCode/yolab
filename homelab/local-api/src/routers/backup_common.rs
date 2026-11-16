@@ -359,6 +359,19 @@ pub(crate) async fn user_pvcs(client: &Client) -> anyhow::Result<Vec<PvcInfo>> {
         .collect())
 }
 
+pub(crate) async fn outside_tree_pvcs(client: &Client) -> anyhow::Result<Vec<PvcInfo>> {
+    let in_tree = crate::tree::claimed(&crate::tree::volumes(client).await?);
+    Ok(user_pvcs(client)
+        .await?
+        .into_iter()
+        .filter(|p| {
+            !in_tree
+                .iter()
+                .any(|c| c.namespace == p.namespace && c.claim == p.name)
+        })
+        .collect())
+}
+
 pub(crate) async fn managed_namespaces(client: &Client) -> anyhow::Result<Vec<String>> {
     use k8s_openapi::api::core::v1::Namespace;
     let listed = kube::Api::<Namespace>::all(client.clone())

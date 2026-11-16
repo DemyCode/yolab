@@ -25,9 +25,40 @@ pub(crate) fn bytes(s: &str) -> u64 {
     }
 }
 
+pub(crate) fn human_bytes(n: u64) -> String {
+    const UNITS: [&str; 5] = ["KB", "MB", "GB", "TB", "PB"];
+    if n < 1000 {
+        return format!("{n} B");
+    }
+    let mut value = n as f64;
+    let mut unit = "B";
+    for u in UNITS {
+        if value < 1000.0 {
+            break;
+        }
+        value /= 1000.0;
+        unit = u;
+    }
+    if value < 10.0 {
+        format!("{value:.1} {unit}")
+    } else {
+        format!("{value:.0} {unit}")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sizes_are_shown_the_way_disks_are_sold() {
+        assert_eq!(human_bytes(0), "0 B");
+        assert_eq!(human_bytes(999), "999 B");
+        assert_eq!(human_bytes(1_000), "1.0 KB");
+        assert_eq!(human_bytes(3_200_000_000), "3.2 GB");
+        assert_eq!(human_bytes(45_000_000_000), "45 GB");
+        assert_eq!(human_bytes(1_500_000_000_000), "1.5 TB");
+    }
 
     const GI: u64 = 1024 * 1024 * 1024;
 

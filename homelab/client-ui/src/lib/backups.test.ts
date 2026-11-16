@@ -5,8 +5,15 @@ import {
   protectionLabel,
   protectionState,
   protectionTone,
+  budgetToBytes,
+  bytesToBudget,
+  canDelete,
+  pointPath,
+  removedServices,
   restorePath,
+  serviceName,
   sortRestorePoints,
+  usageLabel,
 } from "./backups";
 import type { ProtectedApp } from "./backups";
 
@@ -166,5 +173,60 @@ describe("sortRestorePoints", () => {
     ];
     sortRestorePoints(points);
     expect(points[0].snapshot_id).toBe("old");
+  });
+});
+
+describe("backup sizes", () => {
+  it("shows the size against the budget once both are known", () => {
+    expect(usageLabel(3_200_000_000, 10_000_000_000)).toBe("3.2 GB of 10 GB");
+    expect(usageLabel(3_200_000_000, null)).toBe("3.2 GB");
+    expect(usageLabel(null, 10_000_000_000)).toBeNull();
+  });
+
+  it("reads a budget typed in gigabytes, with a comma or a dot", () => {
+    expect(budgetToBytes("10")).toBe(10_000_000_000);
+    expect(budgetToBytes("2,5")).toBe(2_500_000_000);
+    expect(budgetToBytes(" 0.5 ")).toBe(500_000_000);
+  });
+
+  it("refuses a budget of nothing or of words", () => {
+    for (const junk of ["", "0", "-3", "lots"]) {
+      expect(budgetToBytes(junk)).toBeNull();
+    }
+  });
+
+  it("shows a stored budget back in gigabytes", () => {
+    expect(bytesToBudget(10_000_000_000)).toBe("10");
+    expect(bytesToBudget(2_500_000_000)).toBe("2.5");
+  });
+});
+
+describe("restore points", () => {
+  it("addresses one point under its service", () => {
+    expect(pointPath("yolab-gitea-ab23", "1a2b3c4d")).toBe(
+      "/api/backups/apps/yolab-gitea-ab23/points/1a2b3c4d",
+    );
+  });
+
+  it("never offers to delete a point the user chose to keep", () => {
+    expect(canDelete({ snapshot_id: "a", time: "", keep: true })).toBe(false);
+    expect(canDelete({ snapshot_id: "a", time: "" })).toBe(true);
+  });
+});
+
+describe("removedServices", () => {
+  it("lists only services that are gone but still have backups, by name", () => {
+    const point = { snapshot_id: "a", time: "2026-11-01T03:00:00Z" };
+    const got = removedServices([
+      { namespace: "yolab-z", instance_name: "z", installed: false, versions: [point] },
+      { namespace: "yolab-here", instance_name: "h", installed: true, versions: [point] },
+      { namespace: "yolab-empty", instance_name: "e", installed: false, versions: [] },
+      { namespace: "yolab-a", instance_name: "a", installed: false, versions: [point] },
+    ]);
+    expect(got.map((s) => s.namespace)).toEqual(["yolab-a", "yolab-z"]);
+  });
+
+  it("names a service without its namespace prefix", () => {
+    expect(serviceName("yolab-gitea-ab23")).toBe("gitea-ab23");
   });
 });
