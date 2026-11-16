@@ -13,7 +13,7 @@ pub(crate) const KEEP_TAG: &str = "yolab-keep";
 pub(crate) const RUN_TAG_PREFIX: &str = "run:";
 const DATA: &str = "/data";
 const CACHE: &str = "/cache";
-const HOST: &str = "yolab";
+const SNAPSHOT_HOST: &str = "yolab";
 const SAVED_PREFIX: &str = "YOLAB_SNAPSHOT ";
 const RESTORED: &str = "YOLAB_RESTORED";
 const BACKUP_DEADLINE: Duration = Duration::from_secs(24 * 3600);
@@ -191,7 +191,7 @@ fn job(name: &str, script: &str, args: Vec<String>, deadline: Duration) -> Value
                             { "name": "SNAP", "value": name },
                             { "name": "TREE", "value": format!("{mount}{}", crate::tree::ROOT) },
                             { "name": "DATA", "value": DATA },
-                            { "name": "HOSTNAME_TAG", "value": HOST },
+                            { "name": "HOSTNAME_TAG", "value": SNAPSHOT_HOST },
                             { "name": "FOLDERS_TAG", "value": FOLDERS_TAG },
                             { "name": "RESTIC_CACHE_DIR", "value": CACHE },
                         ],
