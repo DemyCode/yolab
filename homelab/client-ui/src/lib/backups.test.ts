@@ -218,10 +218,30 @@ describe("removedServices", () => {
   it("lists only services that are gone but still have backups, by name", () => {
     const point = { snapshot_id: "a", time: "2026-11-01T03:00:00Z" };
     const got = removedServices([
-      { namespace: "yolab-z", instance_name: "z", installed: false, versions: [point] },
-      { namespace: "yolab-here", instance_name: "h", installed: true, versions: [point] },
-      { namespace: "yolab-empty", instance_name: "e", installed: false, versions: [] },
-      { namespace: "yolab-a", instance_name: "a", installed: false, versions: [point] },
+      {
+        namespace: "yolab-z",
+        instance_name: "z",
+        installed: false,
+        versions: [point],
+      },
+      {
+        namespace: "yolab-here",
+        instance_name: "h",
+        installed: true,
+        versions: [point],
+      },
+      {
+        namespace: "yolab-empty",
+        instance_name: "e",
+        installed: false,
+        versions: [],
+      },
+      {
+        namespace: "yolab-a",
+        instance_name: "a",
+        installed: false,
+        versions: [point],
+      },
     ]);
     expect(got.map((s) => s.namespace)).toEqual(["yolab-a", "yolab-z"]);
   });

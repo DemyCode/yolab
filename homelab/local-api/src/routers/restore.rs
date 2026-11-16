@@ -239,7 +239,16 @@ async fn restore_inner<H: Host>(
         if wanted == rf::Step::Keep {
             continue;
         }
-        match plan_for(&b.host, cfg, namespace, pvc, restore_as_of.as_deref(), &mut saved).await? {
+        match plan_for(
+            &b.host,
+            cfg,
+            namespace,
+            pvc,
+            restore_as_of.as_deref(),
+            &mut saved,
+        )
+        .await?
+        {
             VolumePlan::NoBackup => tracing::warn!(
                 "restore: {namespace}/{}: no backup snapshot — keeping as-is",
                 pvc.name
@@ -432,7 +441,10 @@ fn legacy_copies(pvcs: &[CatalogPvc], namespace: &str) -> Vec<(String, Vec<Strin
         .filter(|p| p.store.is_none())
         .filter_map(|p| {
             let snap = p.snapshot.as_ref()?;
-            Some((format!("volsync/{namespace}/{}", p.name), vec![snap.id.clone()]))
+            Some((
+                format!("volsync/{namespace}/{}", p.name),
+                vec![snap.id.clone()],
+            ))
         })
         .collect()
 }

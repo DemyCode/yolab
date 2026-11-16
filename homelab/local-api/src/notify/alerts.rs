@@ -513,7 +513,11 @@ mod tests {
         let alerts = alerts_now(&sets, &ns(&["yolab-a"]));
         assert_eq!(alerts.len(), 1);
         assert_eq!(alerts[0].key, "backup:yolab-a:budget");
-        assert!(alerts[0].message.contains("budget"), "{}", alerts[0].message);
+        assert!(
+            alerts[0].message.contains("budget"),
+            "{}",
+            alerts[0].message
+        );
     }
 
     #[test]

@@ -116,11 +116,7 @@ async fn read_sets(client: &Client) -> anyhow::Result<Vec<BackupSet>> {
     Ok(SETS.read(client).await?)
 }
 
-async fn record_done(
-    client: &Client,
-    id: &str,
-    result: &anyhow::Result<RunDone>,
-) {
+async fn record_done(client: &Client, id: &str, result: &anyhow::Result<RunDone>) {
     let finished_at = Utc::now().to_rfc3339();
     let written = SETS
         .update(client, |sets: &mut Vec<BackupSet>| {
@@ -326,7 +322,10 @@ pub(crate) struct RunDone {
     warning: Option<String>,
 }
 
-fn split_by_tree(pvcs: Vec<PvcInfo>, in_tree: &[crate::tree::Claimed]) -> (Vec<PvcInfo>, Vec<PvcInfo>) {
+fn split_by_tree(
+    pvcs: Vec<PvcInfo>,
+    in_tree: &[crate::tree::Claimed],
+) -> (Vec<PvcInfo>, Vec<PvcInfo>) {
     pvcs.into_iter().partition(|p| {
         in_tree
             .iter()
@@ -334,7 +333,10 @@ fn split_by_tree(pvcs: Vec<PvcInfo>, in_tree: &[crate::tree::Claimed]) -> (Vec<P
     })
 }
 
-pub(crate) fn budget_warning(name: &str, size: &crate::routers::backup_points::ServiceSize) -> Option<String> {
+pub(crate) fn budget_warning(
+    name: &str,
+    size: &crate::routers::backup_points::ServiceSize,
+) -> Option<String> {
     size.over_budget.then(|| {
         format!(
             "{name}'s backups take {} but its budget is {}: only its newest copy and the ones you chose to keep are left. Raise the budget or delete copies you no longer need.",
@@ -404,20 +406,21 @@ async fn run_set<H: Host>(
     let (snapshot_id, services) = snapshot_cluster(b, cfg, &pinned, target, run_id).await?;
 
     let name = namespace.strip_prefix("yolab-").unwrap_or(namespace);
-    let warning = match crate::routers::backup_points::after_run(b, cfg, namespace, &snapshot_id).await {
-        Ok(done) => {
-            if done.dropped > 0 {
-                tracing::info!(
-                    "backup: {namespace} was over its budget; deleted its {} oldest copies",
-                    done.dropped
-                );
+    let warning =
+        match crate::routers::backup_points::after_run(b, cfg, namespace, &snapshot_id).await {
+            Ok(done) => {
+                if done.dropped > 0 {
+                    tracing::info!(
+                        "backup: {namespace} was over its budget; deleted its {} oldest copies",
+                        done.dropped
+                    );
+                }
+                budget_warning(name, &done.size)
             }
-            budget_warning(name, &done.size)
-        }
-        Err(e) => Some(format!(
-            "{name} was backed up, but keeping its backups within budget failed: {e:#}"
-        )),
-    };
+            Err(e) => Some(format!(
+                "{name} was backed up, but keeping its backups within budget failed: {e:#}"
+            )),
+        };
 
     if !failures.is_empty() {
         anyhow::bail!(

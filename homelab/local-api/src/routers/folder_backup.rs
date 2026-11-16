@@ -349,7 +349,12 @@ mod tests {
     #[test]
     fn folders_reach_the_script_as_arguments_never_as_script_text() {
         let folders = vec!["notes-1".to_string(), "".to_string(), "a b".to_string()];
-        let j = job("yolab-backup-x", BACKUP_SCRIPT, backup_args("bk-1", &folders), BACKUP_DEADLINE);
+        let j = job(
+            "yolab-backup-x",
+            BACKUP_SCRIPT,
+            backup_args("bk-1", &folders),
+            BACKUP_DEADLINE,
+        );
         let cmd = command(&j);
         assert_eq!(&cmd[..2], &["sh", "-c"]);
         assert!(!cmd[2].contains("notes-1") && !cmd[2].contains("a b"));
@@ -410,7 +415,15 @@ mod tests {
         ];
         assert_eq!(
             restore_args("abc123", &items),
-            vec!["abc123", "/data/notes-1", "/notes-2", "replace", "/data", "/", "merge"]
+            vec![
+                "abc123",
+                "/data/notes-1",
+                "/notes-2",
+                "replace",
+                "/data",
+                "/",
+                "merge"
+            ]
         );
         assert!(RESTORE_SCRIPT.contains("--delete"));
     }

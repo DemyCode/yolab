@@ -334,9 +334,9 @@ export function BackupCopies({
           <>
             {data.over_budget && (
               <p className="mb-3 text-sm text-warning">
-                Its copies take more than its budget, but only the newest copy and
-                the ones you keep are left. Raise the budget or stop keeping a
-                copy.
+                Its copies take more than its budget, but only the newest copy
+                and the ones you keep are left. Raise the budget or stop keeping
+                a copy.
               </p>
             )}
             <div className="divide-y divide-border rounded-card border border-border">

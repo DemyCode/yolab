@@ -3,9 +3,9 @@ use axum::Json;
 use serde::Deserialize;
 use std::collections::HashSet;
 
+use crate::error::Outcome;
 use crate::host::Host;
 use crate::routers::backup_common::*;
-use crate::error::Outcome;
 use crate::routers::{backup, backup_points, restore};
 use crate::{config::Config, error::Result, AppState};
 
@@ -513,7 +513,9 @@ pub async fn set_budget(
         let (b, ns) = (b.clone(), namespace.clone());
         tokio::spawn(async move { backup_points::refresh(&b, &cfg, &ns).await });
     }
-    Ok(Json(serde_json::json!({ "ok": true, "budget_bytes": budget })))
+    Ok(Json(
+        serde_json::json!({ "ok": true, "budget_bytes": budget }),
+    ))
 }
 
 pub async fn delete_all_backups(
@@ -784,7 +786,8 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn the_sweeper_unlocks_the_settings_every_service_store_and_every_volume_outside_the_tree() {
+        async fn the_sweeper_unlocks_the_settings_every_service_store_and_every_volume_outside_the_tree(
+        ) {
             let (server, kube) = api_server().await;
             config(&server, 200, enabled()).await;
             apps(&server).await;

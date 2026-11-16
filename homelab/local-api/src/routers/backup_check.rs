@@ -71,7 +71,11 @@ pub(crate) fn verdict(success: bool, stdout: &str, stderr: &str) -> Verdict {
     if !success && summary.is_none() && stderr.contains("already locked") {
         return Verdict::Busy;
     }
-    if summary.as_ref().is_some_and(|s| s["suggest_repair_index"] == true) && !broken_packs {
+    if summary
+        .as_ref()
+        .is_some_and(|s| s["suggest_repair_index"] == true)
+        && !broken_packs
+    {
         return Verdict::RepairIndex;
     }
     let why = first_error(stdout)
@@ -211,10 +215,14 @@ pub(crate) async fn check_due<H: Host>(b: &Backend<H>) -> anyhow::Result<Tick> {
         .filter(|s| due(checks.get(s), now))
         .collect();
     let Some(store) = due_now.first() else {
-        return Ok(Tick::Idle("every backup store was checked this week".into()));
+        return Ok(Tick::Idle(
+            "every backup store was checked this week".into(),
+        ));
     };
     let Some(result) = check_and_repair(&b.host, &cfg, store).await? else {
-        return Ok(Tick::Idle(format!("{store} is in use, it is checked later")));
+        return Ok(Tick::Idle(format!(
+            "{store} is in use, it is checked later"
+        )));
     };
     if !result.ok {
         tracing::warn!(
@@ -237,7 +245,11 @@ mod tests {
     #[test]
     fn a_clean_check_is_healthy() {
         let out = r#"{"message_type":"summary","num_errors":0,"broken_packs":null,"suggest_repair_index":false,"suggest_prune":true}"#;
-        assert_eq!(verdict(true, out, ""), Verdict::Healthy, "a prune hint is not a problem");
+        assert_eq!(
+            verdict(true, out, ""),
+            Verdict::Healthy,
+            "a prune hint is not a problem"
+        );
     }
 
     #[test]
@@ -249,7 +261,10 @@ mod tests {
     #[test]
     fn broken_files_are_reported_never_repaired_quietly() {
         let out = "{\"message_type\":\"error\",\"message\":\"pack 1a2b is damaged\"}\n{\"message_type\":\"summary\",\"num_errors\":1,\"broken_packs\":[\"1a2b\"],\"suggest_repair_index\":true}";
-        assert_eq!(verdict(false, out, ""), Verdict::Broken("pack 1a2b is damaged".into()));
+        assert_eq!(
+            verdict(false, out, ""),
+            Verdict::Broken("pack 1a2b is damaged".into())
+        );
     }
 
     #[test]
@@ -263,7 +278,11 @@ mod tests {
     #[test]
     fn a_store_locked_by_a_running_backup_is_checked_later_not_reported() {
         assert_eq!(
-            verdict(false, "", "Fatal: unable to create lock in backend: repository is already locked by PID 7\n"),
+            verdict(
+                false,
+                "",
+                "Fatal: unable to create lock in backend: repository is already locked by PID 7\n"
+            ),
             Verdict::Busy
         );
     }
@@ -279,7 +298,10 @@ mod tests {
         assert!(due(None, now));
         assert!(!due(Some(&at(3)), now));
         assert!(due(Some(&at(7)), now));
-        assert!(due(Some(&Checked::default()), now), "an unreadable time is checked again");
+        assert!(
+            due(Some(&Checked::default()), now),
+            "an unreadable time is checked again"
+        );
     }
 
     #[test]

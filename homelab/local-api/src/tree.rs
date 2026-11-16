@@ -511,9 +511,9 @@ pub(crate) async fn run_job(
     let Some(why) = failure else {
         return Ok(());
     };
-    let said = last_words(client, name).await.map_err(|e| {
-        anyhow::anyhow!("could not {what}: {why} (its log could not be read: {e})")
-    })?;
+    let said = last_words(client, name)
+        .await
+        .map_err(|e| anyhow::anyhow!("could not {what}: {why} (its log could not be read: {e})"))?;
     match said {
         Some(line) => anyhow::bail!("could not {what}: {line}"),
         None => anyhow::bail!("could not {what}: {why}"),

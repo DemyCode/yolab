@@ -102,7 +102,10 @@ pub(crate) fn folder_snapshots_of(snapshots: &Value) -> FolderSnapshots {
         let (Some(run), Some(id)) = (folder_backup::run_of(&tags), s["id"].as_str()) else {
             continue;
         };
-        by_run.entry(run.to_string()).or_default().push(id.to_string());
+        by_run
+            .entry(run.to_string())
+            .or_default()
+            .push(id.to_string());
     }
     by_run
 }
@@ -140,7 +143,11 @@ pub(crate) struct Fit {
     pub over: bool,
 }
 
-pub(crate) async fn fit<F, Fut>(points: &[Point], budget: u64, mut measure: F) -> anyhow::Result<Fit>
+pub(crate) async fn fit<F, Fut>(
+    points: &[Point],
+    budget: u64,
+    mut measure: F,
+) -> anyhow::Result<Fit>
 where
     F: FnMut(Vec<Point>) -> Fut,
     Fut: Future<Output = anyhow::Result<u64>>,
@@ -191,9 +198,20 @@ impl<H: Host> Service<'_, H> {
     }
 
     async fn restic(&self, repo: &str, args: &[&str], timeout: Duration) -> anyhow::Result<String> {
-        let out = restic_with(self.host, &self.cfg.restic_repo(repo), self.cfg, args, timeout).await?;
+        let out = restic_with(
+            self.host,
+            &self.cfg.restic_repo(repo),
+            self.cfg,
+            args,
+            timeout,
+        )
+        .await?;
         if !out.success {
-            anyhow::bail!("restic {}: {}", args.first().unwrap_or(&""), out.stderr.trim());
+            anyhow::bail!(
+                "restic {}: {}",
+                args.first().unwrap_or(&""),
+                out.stderr.trim()
+            );
         }
         Ok(out.stdout)
     }
@@ -256,7 +274,11 @@ impl<H: Host> Service<'_, H> {
         )?)
     }
 
-    async fn measure_points(&self, points: &[Point], folders: &FolderSnapshots) -> anyhow::Result<u64> {
+    async fn measure_points(
+        &self,
+        points: &[Point],
+        folders: &FolderSnapshots,
+    ) -> anyhow::Result<u64> {
         self.measure(&folder_ids(points, folders)).await
     }
 
@@ -302,7 +324,11 @@ impl<H: Host> Service<'_, H> {
         Ok(touched)
     }
 
-    pub(crate) async fn drop_orphans(&self, points: &[Point], folders: &FolderSnapshots) -> anyhow::Result<bool> {
+    pub(crate) async fn drop_orphans(
+        &self,
+        points: &[Point],
+        folders: &FolderSnapshots,
+    ) -> anyhow::Result<bool> {
         let left = orphans(points, folders);
         self.forget(&self.store(), &left).await?;
         Ok(!left.is_empty())
@@ -310,9 +336,13 @@ impl<H: Host> Service<'_, H> {
 
     pub(crate) async fn set_keep(&self, snapshot_id: &str, keep: bool) -> anyhow::Result<()> {
         let flag = if keep { "--add" } else { "--remove" };
-        self.restic(SETTINGS_REPO, &["tag", flag, KEEP_TAG, snapshot_id], RESTIC_TIMEOUT)
-            .await
-            .map(|_| ())
+        self.restic(
+            SETTINGS_REPO,
+            &["tag", flag, KEEP_TAG, snapshot_id],
+            RESTIC_TIMEOUT,
+        )
+        .await
+        .map(|_| ())
     }
 
     pub(crate) async fn frees(&self, snapshot_id: &str) -> anyhow::Result<Option<u64>> {
@@ -344,11 +374,15 @@ impl<H: Host> Service<'_, H> {
         let fresh: Vec<Point> = points.iter().filter(|p| !p.legacy()).cloned().collect();
         let size = self.measure_points(&fresh, &folders).await?;
         let newest = match fresh.first() {
-            Some(p) => self.measure_points(std::slice::from_ref(p), &folders).await?,
+            Some(p) => {
+                self.measure_points(std::slice::from_ref(p), &folders)
+                    .await?
+            }
             None => 0,
         };
         let budget_bytes = budget.unwrap_or_else(|| default_budget(newest));
-        let mut known: BTreeMap<String, u64> = previous.map(|p| p.added.clone()).unwrap_or_default();
+        let mut known: BTreeMap<String, u64> =
+            previous.map(|p| p.added.clone()).unwrap_or_default();
         known.retain(|id, _| points.iter().any(|p| &p.snapshot_id == id));
         Ok(ServiceSize {
             size_bytes: size,
@@ -369,7 +403,9 @@ static PRUNING: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
 
 pub(crate) async fn prune<H: Host>(host: &H, cfg: &BackupConfig, repo: &str) {
     {
-        let mut busy = PRUNING.lock().expect("the prune registry is never poisoned");
+        let mut busy = PRUNING
+            .lock()
+            .expect("the prune registry is never poisoned");
         if !busy.insert(repo.to_string()) {
             tracing::info!("backup: {repo} is already being cleaned up");
             return;
@@ -379,8 +415,13 @@ pub(crate) async fn prune<H: Host>(host: &H, cfg: &BackupConfig, repo: &str) {
     let out = restic_with(host, &cfg.restic_repo(repo), cfg, &["prune"], PRUNE_TIMEOUT).await;
     match out {
         Ok(o) if o.success => tracing::info!("backup: cleaned up {repo}"),
-        Ok(o) => tracing::warn!("backup: clean-up of {repo} failed, the next one retries: {}", o.stderr.trim()),
-        Err(e) => tracing::warn!("backup: clean-up of {repo} could not run, the next one retries: {e}"),
+        Ok(o) => tracing::warn!(
+            "backup: clean-up of {repo} failed, the next one retries: {}",
+            o.stderr.trim()
+        ),
+        Err(e) => {
+            tracing::warn!("backup: clean-up of {repo} could not run, the next one retries: {e}")
+        }
     }
     PRUNING
         .lock()
@@ -406,7 +447,10 @@ pub(crate) async fn record_size(client: &kube::Client, namespace: &str, size: Op
         .warn_on_err(format!("{namespace}: record the size of its backups"));
 }
 
-pub(crate) async fn budget_of(client: &kube::Client, namespace: &str) -> anyhow::Result<Option<u64>> {
+pub(crate) async fn budget_of(
+    client: &kube::Client,
+    namespace: &str,
+) -> anyhow::Result<Option<u64>> {
     Ok(crate::routers::apps::read_definition_opt(client, namespace)
         .await?
         .and_then(|d| d.backup.budget_bytes))
@@ -442,7 +486,10 @@ pub(crate) async fn after_run<H: Host>(
         .collect();
     let added = with_new.saturating_sub(svc.measure_points(&without, &folders).await?);
     let newest = match fresh.first() {
-        Some(p) => svc.measure_points(std::slice::from_ref(p), &folders).await?,
+        Some(p) => {
+            svc.measure_points(std::slice::from_ref(p), &folders)
+                .await?
+        }
         None => 0,
     };
     let budget = budget_of(&b.kube, namespace)
@@ -484,7 +531,6 @@ pub(crate) async fn after_run<H: Host>(
         dropped: doomed.len(),
     })
 }
-
 
 pub(crate) fn retagged<'a>(before: &Point, after: &'a [Point]) -> Option<&'a Point> {
     after.iter().find(|p| match &before.run {
@@ -581,7 +627,10 @@ pub(crate) async fn delete_all<H: Host + Clone + 'static>(
     if svc.drop_orphans(&points, &folders).await? {
         touched.insert(svc.store());
     }
-    tracing::info!("backup: deleted all {} backups of {namespace}", points.len());
+    tracing::info!(
+        "backup: deleted all {} backups of {namespace}",
+        points.len()
+    );
     spawn_cleanup(b.clone(), cfg.clone(), namespace.to_string(), touched);
     Ok(points.len())
 }
@@ -611,7 +660,9 @@ pub(crate) async fn refresh<H: Host>(b: &Backend<H>, cfg: &BackupConfig, namespa
             record_size(&b.kube, namespace, None).await
         }
         Ok(size) => record_size(&b.kube, namespace, Some(size)).await,
-        Err(e) => tracing::warn!("{namespace}: the size of its backups could not be measured: {e:#}"),
+        Err(e) => {
+            tracing::warn!("{namespace}: the size of its backups could not be measured: {e:#}")
+        }
     }
 }
 
@@ -629,11 +680,19 @@ mod tests {
         }
     }
 
-    fn sized(sizes: &[(&str, u64)]) -> impl FnMut(Vec<Point>) -> std::future::Ready<anyhow::Result<u64>> + '_ {
+    fn sized(
+        sizes: &[(&str, u64)],
+    ) -> impl FnMut(Vec<Point>) -> std::future::Ready<anyhow::Result<u64>> + '_ {
         move |kept: Vec<Point>| {
             let total = kept
                 .iter()
-                .map(|p| sizes.iter().find(|(id, _)| *id == p.snapshot_id).map(|(_, s)| *s).unwrap_or(0))
+                .map(|p| {
+                    sizes
+                        .iter()
+                        .find(|(id, _)| *id == p.snapshot_id)
+                        .map(|(_, s)| *s)
+                        .unwrap_or(0)
+                })
                 .sum();
             std::future::ready(Ok(total))
         }
@@ -642,7 +701,10 @@ mod tests {
     #[test]
     fn a_point_is_found_again_after_retagging_gives_it_a_new_id() {
         let before = point("aaa", Some("run:1"), false);
-        let after = vec![point("bbb", Some("run:2"), false), point("ccc", Some("run:1"), true)];
+        let after = vec![
+            point("bbb", Some("run:2"), false),
+            point("ccc", Some("run:1"), true),
+        ];
         assert_eq!(retagged(&before, &after).unwrap().snapshot_id, "ccc");
         let older = point("old", None, false);
         let after = vec![point("new", None, true)];
@@ -665,11 +727,24 @@ mod tests {
         assert_eq!(
             points,
             vec![
-                Point { snapshot_id: "new".into(), time: "2026-11-16T03:00:00Z".into(), run: Some("bk-2".into()), keep: true },
-                Point { snapshot_id: "old".into(), time: "2026-11-14T03:00:00Z".into(), run: None, keep: false },
+                Point {
+                    snapshot_id: "new".into(),
+                    time: "2026-11-16T03:00:00Z".into(),
+                    run: Some("bk-2".into()),
+                    keep: true
+                },
+                Point {
+                    snapshot_id: "old".into(),
+                    time: "2026-11-14T03:00:00Z".into(),
+                    run: None,
+                    keep: false
+                },
             ]
         );
-        assert!(points[1].legacy(), "a point from before the folder stores has no run");
+        assert!(
+            points[1].legacy(),
+            "a point from before the folder stores has no run"
+        );
     }
 
     #[test]
@@ -711,15 +786,27 @@ mod tests {
             point("legacy", None, false),
             point("oldest", Some("r1"), false),
         ];
-        let ids: Vec<&str> = droppable(&points).iter().map(|p| p.snapshot_id.as_str()).collect();
+        let ids: Vec<&str> = droppable(&points)
+            .iter()
+            .map(|p| p.snapshot_id.as_str())
+            .collect();
         assert_eq!(ids, vec!["oldest", "middle"], "oldest first");
     }
 
     #[tokio::test]
     async fn under_budget_nothing_is_dropped() {
         let points = vec![point("b", Some("r2"), false), point("a", Some("r1"), false)];
-        let fitted = fit(&points, 100, sized(&[("a", 30), ("b", 30)])).await.unwrap();
-        assert_eq!(fitted, Fit { drop: vec![], size_after: 60, over: false });
+        let fitted = fit(&points, 100, sized(&[("a", 30), ("b", 30)]))
+            .await
+            .unwrap();
+        assert_eq!(
+            fitted,
+            Fit {
+                drop: vec![],
+                size_after: 60,
+                over: false
+            }
+        );
     }
 
     #[tokio::test]
@@ -729,7 +816,9 @@ mod tests {
             point("b", Some("r2"), false),
             point("a", Some("r1"), false),
         ];
-        let fitted = fit(&points, 70, sized(&[("a", 40), ("b", 30), ("c", 30)])).await.unwrap();
+        let fitted = fit(&points, 70, sized(&[("a", 40), ("b", 30), ("c", 30)]))
+            .await
+            .unwrap();
         assert_eq!(fitted.drop, vec!["a".to_string()]);
         assert_eq!(fitted.size_after, 60);
         assert!(!fitted.over);
@@ -737,8 +826,13 @@ mod tests {
 
     #[tokio::test]
     async fn a_newest_point_bigger_than_the_budget_is_kept_and_reported() {
-        let points = vec![point("big", Some("r2"), false), point("a", Some("r1"), false)];
-        let fitted = fit(&points, 50, sized(&[("a", 10), ("big", 80)])).await.unwrap();
+        let points = vec![
+            point("big", Some("r2"), false),
+            point("a", Some("r1"), false),
+        ];
+        let fitted = fit(&points, 50, sized(&[("a", 10), ("big", 80)]))
+            .await
+            .unwrap();
         assert_eq!(fitted.drop, vec!["a".to_string()]);
         assert_eq!(fitted.size_after, 80);
         assert!(fitted.over, "the newest alone is over budget");
@@ -746,8 +840,13 @@ mod tests {
 
     #[tokio::test]
     async fn a_kept_point_stays_even_when_that_leaves_the_service_over_budget() {
-        let points = vec![point("new", Some("r2"), false), point("pinned", Some("r1"), true)];
-        let fitted = fit(&points, 10, sized(&[("pinned", 50), ("new", 5)])).await.unwrap();
+        let points = vec![
+            point("new", Some("r2"), false),
+            point("pinned", Some("r1"), true),
+        ];
+        let fitted = fit(&points, 10, sized(&[("pinned", 50), ("new", 5)]))
+            .await
+            .unwrap();
         assert!(fitted.drop.is_empty());
         assert!(fitted.over);
     }
@@ -773,7 +872,10 @@ mod tests {
 
     #[test]
     fn restic_stats_must_say_the_size() {
-        assert_eq!(raw_size(&json!({"total_size": 42, "snapshots_count": 1})).unwrap(), 42);
+        assert_eq!(
+            raw_size(&json!({"total_size": 42, "snapshots_count": 1})).unwrap(),
+            42
+        );
         assert!(raw_size(&json!({})).is_err());
     }
 }
