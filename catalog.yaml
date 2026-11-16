@@ -649,7 +649,7 @@ charts:
   - name: unifi
     version: "0.1.41"
   - name: uptime-kuma
-    version: "0.1.41"
+    version: "0.1.42"
   - name: urbit
     version: "0.1.27"
   - name: valheim

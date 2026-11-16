@@ -30,8 +30,11 @@ spec:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
       {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
       - name: uptime-kuma
-        image: louislam/uptime-kuma:1@sha256:70233f4acb5163fd2a59a49909cf01e44415cecff13dba69e3a86647a2919f83
+        image: louislam/uptime-kuma:2.5.11@sha256:7554dba313c84e44fee921ef3b5626ba1c711e412e82815e8c957517026112a9
         imagePullPolicy: IfNotPresent
+        env:
+          - name: UPTIME_KUMA_DB_TYPE
+            value: sqlite
         readinessProbe:
           timeoutSeconds: 5
           tcpSocket:
