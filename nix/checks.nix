@@ -477,8 +477,11 @@ in let
           | sed 's/^\.route([[:space:]]*"//; s/"$//' \
           | LC_ALL=C sort -u > registered
 
-        # Every path the table claims.
-        sed -n 's/^ *("\([^"]*\)", &\[.*$/\1/p' "$src/surface.rs" \
+        # Every path the table claims. Flattened too: rustfmt splits an entry
+        # whose path is long over three lines.
+        tr '\n' ' ' < "$src/surface.rs" \
+          | grep -oE '\([[:space:]]*"/[^"]*",[[:space:]]*&\[' \
+          | sed 's/^([[:space:]]*"//; s/",.*$//' \
           | LC_ALL=C sort -u > tabled
 
         if ! diff -u tabled registered > delta; then
