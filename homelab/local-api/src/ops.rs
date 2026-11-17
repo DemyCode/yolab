@@ -24,33 +24,6 @@ impl Claim {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Liveness {
-    Driving,
-    Remote,
-    Abandoned,
-}
-
-impl Liveness {
-    pub fn is_live(self) -> bool {
-        matches!(self, Liveness::Driving | Liveness::Remote)
-    }
-}
-
-pub fn liveness(claim: &Claim, me: &str, in_flight_here: bool, silent: Duration) -> Liveness {
-    if in_flight_here {
-        return Liveness::Driving;
-    }
-    if claim.owner == me {
-        return Liveness::Abandoned;
-    }
-    if silent < STALE_AFTER {
-        Liveness::Remote
-    } else {
-        Liveness::Abandoned
-    }
-}
-
 const FORGET_AFTER: Duration = Duration::from_secs(24 * 3600);
 
 type Seen = HashMap<String, (String, Instant, Instant)>;
@@ -78,57 +51,6 @@ fn silence_in(seen: &mut Seen, id: &str, heartbeat: &str, now: Instant) -> Durat
     }
 }
 
-pub struct InFlight {
-    ids: Mutex<Vec<String>>,
-}
-
-impl InFlight {
-    pub const fn new() -> Self {
-        Self {
-            ids: Mutex::new(Vec::new()),
-        }
-    }
-
-    fn lock(&self) -> std::sync::MutexGuard<'_, Vec<String>> {
-        self.ids
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-
-    pub fn claim(&'static self, id: &str) -> InFlightGuard {
-        self.lock().push(id.to_string());
-        InFlightGuard {
-            set: self,
-            id: id.to_string(),
-        }
-    }
-
-    pub fn contains(&self, id: &str) -> bool {
-        self.lock().iter().any(|i| i == id)
-    }
-
-    pub fn ids(&self) -> Vec<String> {
-        let mut ids = self.lock().clone();
-        ids.sort();
-        ids.dedup();
-        ids
-    }
-}
-
-pub struct InFlightGuard {
-    set: &'static InFlight,
-    id: String,
-}
-
-impl Drop for InFlightGuard {
-    fn drop(&mut self) {
-        let mut ids = self.set.lock();
-        if let Some(pos) = ids.iter().position(|i| i == &self.id) {
-            ids.swap_remove(pos);
-        }
-    }
-}
-
 pub const QUEUED: &str = "queued";
 pub const RUNNING: &str = "running";
 pub const SUCCEEDED: &str = "succeeded";
@@ -139,12 +61,6 @@ pub trait Claimed: serde::Serialize + serde::de::DeserializeOwned + Send + Sync 
     fn is_running(&self) -> bool;
     fn claim(&self) -> &Claim;
     fn claim_mut(&mut self) -> &mut Claim;
-
-    fn liveness(&self, me: &str, in_flight: &InFlight) -> Liveness {
-        let claim = self.claim();
-        let silent = observed_silence(self.id(), &claim.heartbeat, Instant::now());
-        liveness(claim, me, in_flight.contains(self.id()), silent)
-    }
 }
 
 pub fn upsert<T: Claimed>(records: &mut Vec<T>, record: T, keep: usize) {
@@ -252,45 +168,6 @@ async fn beat_forever<T: Claimed>(
     }
 }
 
-pub fn spawn_heartbeat<T: Claimed + 'static>(
-    store: crate::records::Store,
-    in_flight: &'static InFlight,
-    kube: crate::k8s::Kube,
-) {
-    tokio::spawn(async move {
-        loop {
-            tokio::time::sleep(HEARTBEAT_EVERY).await;
-            if let Err(e) = beat_once::<T>(store, in_flight, &kube).await {
-                tracing::warn!(
-                    "heartbeat for {}/{}: {e} — other nodes will treat these as abandoned after {}s",
-                    store.namespace,
-                    store.name,
-                    STALE_AFTER.as_secs()
-                );
-            }
-        }
-    });
-}
-
-async fn beat_once<T: Claimed>(
-    store: crate::records::Store,
-    in_flight: &InFlight,
-    kube: &crate::k8s::Kube,
-) -> anyhow::Result<()> {
-    let ids = in_flight.ids();
-    if ids.is_empty() {
-        return Ok(());
-    }
-    let me = crate::system::hostname();
-    let now = Utc::now();
-    store
-        .update(&kube.client().await?, |sets: &mut Vec<T>| {
-            beat(sets, &ids, &me, now);
-        })
-        .await?;
-    Ok(())
-}
-
 pub fn beat<T: Claimed>(sets: &mut [T], ids: &[String], me: &str, now: DateTime<Utc>) {
     for s in sets.iter_mut() {
         if s.is_running() && ids.iter().any(|i| i == s.id()) {
@@ -318,37 +195,6 @@ mod tests {
             owner: owner.into(),
             heartbeat: "2026-09-14T11:59:30Z".into(),
         }
-    }
-
-    #[test]
-    fn a_restore_driven_by_another_node_is_live_while_it_heartbeats() {
-        let seen = liveness(&claim("node1"), "node2", false, Duration::from_secs(30));
-        assert_eq!(seen, Liveness::Remote);
-    }
-
-    #[test]
-    fn another_nodes_claim_is_abandoned_once_this_node_has_watched_it_go_quiet() {
-        assert_eq!(
-            liveness(&claim("node1"), "node2", false, SILENT),
-            Liveness::Abandoned
-        );
-        let just_under = STALE_AFTER - Duration::from_secs(1);
-        assert_eq!(
-            liveness(&claim("node1"), "node2", false, just_under),
-            Liveness::Remote
-        );
-    }
-
-    #[test]
-    fn our_own_claim_without_our_process_is_abandoned_immediately() {
-        assert_eq!(
-            liveness(&claim("node1"), "node1", false, QUIET),
-            Liveness::Abandoned
-        );
-        assert_eq!(
-            liveness(&claim("node1"), "node1", true, SILENT),
-            Liveness::Driving
-        );
     }
 
     #[test]
@@ -380,32 +226,6 @@ mod tests {
         assert!(seen.contains_key("new"));
     }
 
-    #[test]
-    fn a_doubly_claimed_id_stays_in_flight_until_both_guards_drop() {
-        static SET: InFlight = InFlight::new();
-        let first = SET.claim("rs-1");
-        let second = SET.claim("rs-1");
-        let _other = SET.claim("rs-2");
-        assert_eq!(SET.ids(), vec!["rs-1".to_string(), "rs-2".to_string()]);
-        drop(first);
-        assert!(SET.contains("rs-1"));
-        drop(second);
-        assert!(!SET.contains("rs-1"));
-        assert!(SET.contains("rs-2"));
-    }
-
-    #[test]
-    fn a_claim_is_released_even_when_the_driver_panics() {
-        static SET: InFlight = InFlight::new();
-        let r = std::panic::catch_unwind(|| {
-            let _g = SET.claim("bk-1");
-            assert!(SET.contains("bk-1"));
-            panic!("driver died");
-        });
-        assert!(r.is_err());
-        assert!(!SET.contains("bk-1"));
-    }
-
     #[derive(serde::Serialize, serde::Deserialize)]
     struct Rec {
         id: String,
@@ -434,33 +254,6 @@ mod tests {
         namespace: "kube-system",
         key: "sets",
     };
-
-    #[tokio::test]
-    async fn a_heartbeat_with_nothing_in_flight_asks_the_cluster_nothing() {
-        static IDLE: InFlight = InFlight::new();
-        let kube = crate::k8s::Kube::with(crate::k8s::testing::unreachable());
-        beat_once::<Rec>(BEATS, &IDLE, &kube).await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn a_heartbeat_writes_through_the_cluster_it_was_handed() {
-        static BEATING: InFlight = InFlight::new();
-        let _held = BEATING.claim("bk-beat");
-        let (server, client) = crate::k8s::testing::api_server().await;
-        let kube = crate::k8s::Kube::with(client);
-        let outcome = beat_once::<Rec>(BEATS, &BEATING, &kube).await;
-        let asked = server.received_requests().await.unwrap_or_default();
-        assert!(
-            asked
-                .iter()
-                .any(|r| r.url.path().ends_with("/configmaps/yolab-beat-test")),
-            "{outcome:?}: {:?}",
-            asked
-                .iter()
-                .map(|r| r.url.path().to_string())
-                .collect::<Vec<_>>()
-        );
-    }
 
     #[derive(Clone, serde::Serialize, serde::Deserialize)]
     struct Job {

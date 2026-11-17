@@ -62,7 +62,6 @@ pub fn spawn_all(leader: Leadership, state: &crate::AppState) {
     let tools = state.tools();
     spawn(backup::BackupSchedulerController, &leader, &tools);
     spawn(restore::RestoresController, &leader, &tools);
-    backup::start_heartbeat(tools.kube.clone());
     spawn(apps::UninstallsController, &leader, &tools);
     spawn(crate::outputs::OutputsController, &leader, &tools);
     spawn(backups::LockSweeperController, &leader, &tools);

@@ -7,7 +7,7 @@ use serde_json::{json, Value};
 
 use crate::error::Outcome;
 use crate::host::Host;
-use crate::ops::{self, Claim, Claimed, InFlight, Liveness, FAILED, QUEUED, RUNNING, SUCCEEDED};
+use crate::ops::{self, Claim, Claimed, FAILED, QUEUED, RUNNING, SUCCEEDED};
 use crate::records::Store;
 use crate::routers::apps::{ANN_APP_ID, ANN_CHART_REPO, ANN_CHART_VERSION};
 use crate::routers::backup_common::*;
@@ -27,7 +27,7 @@ const SCHEDULE_TICK_SECS: u64 = 300;
 const CLUSTER_BACKUP_TIMEOUT_SECS: u64 = 3600;
 const PRUNE_TIMEOUT_SECS: u64 = 600;
 
-pub(crate) static IN_FLIGHT: InFlight = InFlight::new();
+const MAX_ATTEMPTS: u32 = 3;
 
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct ServiceSummary {
@@ -54,6 +54,8 @@ pub(crate) struct BackupSet {
     pub warning: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub services: Vec<ServiceSummary>,
+    #[serde(default)]
+    pub attempts: u32,
     #[serde(flatten)]
     pub claim: Claim,
 }
@@ -147,12 +149,11 @@ async fn record_done(client: &Client, id: &str, result: &anyhow::Result<RunDone>
     ));
 }
 
-fn classify(set: &BackupSet, liveness: Liveness) -> SetState {
+fn classify(set: &BackupSet) -> SetState {
     match set.state.as_str() {
         SUCCEEDED => SetState::Restorable,
-        FAILED => SetState::Crashed,
         QUEUED => SetState::Queued,
-        _ if liveness.is_live() => SetState::Running,
+        RUNNING => SetState::Running,
         _ => SetState::Crashed,
     }
 }
@@ -167,17 +168,12 @@ fn last_ok_for(sets: &[BackupSet], namespace: &str) -> Option<DateTime<Utc>> {
 
 fn running_for(sets: &[BackupSet], namespace: &str) -> bool {
     sets.iter()
-        .any(|s| s.namespace == namespace && s.is_running() && liveness_of(s).is_live())
+        .any(|s| s.namespace == namespace && s.is_running())
 }
 
 pub(crate) fn queued_for<'a>(sets: &'a [BackupSet], namespace: &str) -> Option<&'a BackupSet> {
     sets.iter()
         .find(|s| s.namespace == namespace && s.state == QUEUED)
-}
-
-fn anything_running(sets: &[BackupSet]) -> bool {
-    sets.iter()
-        .any(|s| s.is_running() && liveness_of(s).is_live())
 }
 
 pub(crate) fn next_in_line(sets: &[BackupSet]) -> Option<&BackupSet> {
@@ -225,6 +221,7 @@ async fn enqueue<H: Host>(
         error: None,
         warning: None,
         services: vec![],
+        attempts: 0,
         claim: Claim::default(),
     };
 
@@ -234,9 +231,7 @@ async fn enqueue<H: Host>(
             .map(|s| s.id.clone())
             .or_else(|| {
                 sets.iter()
-                    .find(|s| {
-                        s.namespace == namespace && s.is_running() && liveness_of(s).is_live()
-                    })
+                    .find(|s| s.namespace == namespace && s.is_running())
                     .map(|s| s.id.clone())
             });
         if existing.is_none() {
@@ -249,51 +244,57 @@ async fn enqueue<H: Host>(
     Ok(existing.unwrap_or(id))
 }
 
-pub(crate) struct Promoted {
-    id: String,
-    target: BackupTarget,
-    guard: ops::InFlightGuard,
+fn pick(sets: &[BackupSet], silent: impl Fn(&BackupSet) -> Duration) -> ops::Next {
+    match ops::next(sets, |_| false, silent) {
+        ops::Next::Nothing => match next_in_line(sets) {
+            Some(s) => ops::Next::Run(s.id.clone()),
+            None => ops::Next::Nothing,
+        },
+        found => found,
+    }
 }
 
-async fn promote_next(client: &Client) -> anyhow::Result<Option<Promoted>> {
-    let sets = read_sets(client).await?;
-    if anything_running(&sets) {
-        return Ok(None);
-    }
-    let Some(next) = next_in_line(&sets) else {
-        return Ok(None);
-    };
-    let Some(target) = target_of(next) else {
-        return Ok(None);
-    };
-    let id = next.id.clone();
+fn takeable(s: &BackupSet) -> bool {
+    let waiting = s.state == QUEUED && target_of(s).is_some();
+    waiting || (s.is_running() && !ops::is_driven(s, ops::silent_for(s)))
+}
 
-    let guard = IN_FLIGHT.claim(&id);
-    let mut won = false;
-    let claim_id = id.clone();
-    SETS.update(client, |sets: &mut Vec<BackupSet>| {
-        won = false;
-        if anything_running(sets) {
-            return;
-        }
-        let Some(s) = sets
-            .iter_mut()
-            .find(|s| s.id == claim_id && s.state == QUEUED)
-        else {
-            return;
-        };
-        s.state = RUNNING.to_string();
-        s.started_at = Utc::now().to_rfc3339();
-        s.claim = Claim::mine(Utc::now());
-        won = true;
-    })
-    .await?;
+fn begin_attempt(s: &mut BackupSet) {
+    s.state = RUNNING.to_string();
+    s.started_at = Utc::now().to_rfc3339();
+    s.attempts += 1;
+}
 
-    if !won {
-        drop(guard);
-        return Ok(None);
+async fn run_taken<H: Host>(
+    b: &Backend<H>,
+    cfg: &BackupConfig,
+    set: &BackupSet,
+) -> anyhow::Result<RunDone> {
+    if set.attempts > MAX_ATTEMPTS {
+        anyhow::bail!("interrupted {} times — stopped", set.attempts - 1);
     }
-    Ok(Some(Promoted { id, target, guard }))
+    let Some(target) = target_of(set) else {
+        anyhow::bail!("{} is not a service namespace", set.namespace);
+    };
+    run_set(b, cfg, &target, &set.id).await
+}
+
+async fn drive_next<H: Host>(b: &Backend<H>, cfg: &BackupConfig) -> anyhow::Result<bool> {
+    let sets = read_sets(&b.kube).await?;
+    let id = match pick(&sets, ops::silent_for) {
+        ops::Next::Run(id) => id,
+        ops::Next::Busy(_) | ops::Next::Nothing => return Ok(false),
+    };
+    sweep_staging(std::slice::from_ref(&id)).await;
+    let Some(set) = ops::take(SETS, &b.kube, &id, takeable, begin_attempt).await? else {
+        return Ok(false);
+    };
+    tracing::info!("backup: starting {} (attempt {})", set.id, set.attempts);
+    let run = run_taken(b, cfg, &set);
+    let result = ops::drive::<BackupSet, _>(SETS, &b.kube, &set.id, run).await;
+    record_done(&b.kube, &set.id, &result).await;
+    crate::runtime::wake("backup-scheduler");
+    Ok(true)
 }
 
 fn target_of(set: &BackupSet) -> Option<BackupTarget> {
@@ -304,16 +305,6 @@ fn target_of(set: &BackupSet) -> Option<BackupTarget> {
     } else {
         None
     }
-}
-
-fn spawn_run<H: Host + 'static>(b: Backend<H>, cfg: BackupConfig, promoted: Promoted) {
-    let Promoted { id, target, guard } = promoted;
-    tokio::spawn(async move {
-        let _guard = guard;
-        let result = run_set(&b, &cfg, &target, &id).await;
-        record_done(&b.kube, &id, &result).await;
-        crate::runtime::wake("backup-scheduler");
-    });
 }
 
 pub(crate) struct RunDone {
@@ -1211,10 +1202,6 @@ fn built_hash() -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-fn liveness_of(s: &BackupSet) -> Liveness {
-    s.liveness(&crate::system::hostname(), &IN_FLIGHT)
-}
-
 pub(crate) async fn list(client: &Client) -> anyhow::Result<Vec<Value>> {
     let sets = read_sets(client).await?;
     Ok(sets
@@ -1230,7 +1217,7 @@ pub(crate) async fn list(client: &Client) -> anyhow::Result<Vec<Value>> {
                 "error": s.error,
                 "warning": s.warning,
                 "services": s.services,
-                "state": state_str(classify(s, liveness_of(s))),
+                "state": state_str(classify(s)),
                 "node": s.claim.owner,
             })
         })
@@ -1247,7 +1234,7 @@ pub(crate) async fn app_backup_status(client: &Client) -> HashMap<String, (Optio
             continue;
         }
         let e = map.entry(s.namespace.clone()).or_insert((None, false));
-        if s.is_running() && liveness_of(s).is_live() {
+        if s.is_running() {
             e.1 = true;
         }
         if e.0.is_none() && s.state == SUCCEEDED {
@@ -1341,23 +1328,13 @@ async fn schedule<H: Host + Clone + 'static>(b: &Backend<H>) -> anyhow::Result<T
         }
     }
 
-    let promoted = promote_next(&b.kube).await?;
-    sweep_staging(&promoted.iter().map(|p| p.id.clone()).collect::<Vec<_>>()).await;
-    let started = promoted.is_some();
-    if let Some(promoted) = promoted {
-        tracing::info!("backup: starting {}", promoted.id);
-        spawn_run(b.clone(), cfg, promoted);
-    }
+    let started = drive_next(b, &cfg).await?;
 
     if queued == 0 && !started {
         Ok(Tick::Idle("no app is due for a backup".into()))
     } else {
         Ok(Tick::Done)
     }
-}
-
-pub(crate) fn start_heartbeat(kube: crate::k8s::Kube) {
-    ops::spawn_heartbeat::<BackupSet>(SETS, &IN_FLIGHT, kube);
 }
 
 #[cfg(test)]
@@ -1503,6 +1480,7 @@ mod tests {
             error: None,
             warning: None,
             services: vec![],
+            attempts: 0,
             claim: Claim {
                 owner: "other-node".into(),
                 heartbeat: "2026-01-01T00:00:00Z".into(),
@@ -1511,47 +1489,93 @@ mod tests {
     }
 
     #[test]
-    fn a_succeeded_set_is_restorable_regardless_of_in_flight() {
+    fn a_set_reads_as_what_its_record_says() {
+        assert_eq!(classify(&set("a", SUCCEEDED)), SetState::Restorable);
+        assert_eq!(classify(&set("a", FAILED)), SetState::Crashed);
+        assert_eq!(classify(&set("a", RUNNING)), SetState::Running);
+        assert_eq!(classify(&set("a", "weird")), SetState::Crashed);
+    }
+
+    const QUIET: Duration = Duration::ZERO;
+    const SILENT: Duration = Duration::from_secs(600);
+
+    #[test]
+    fn a_backup_that_still_heartbeats_keeps_the_queue_waiting() {
+        let sets = vec![
+            queued_at("q", "yolab-b", "2026-01-01T01:00:00Z"),
+            set("live", RUNNING),
+        ];
+        assert_eq!(pick(&sets, |_| QUIET), ops::Next::Busy("live".into()));
+    }
+
+    #[test]
+    fn a_backup_whose_machine_went_quiet_is_run_again_first() {
+        let sets = vec![
+            queued_at("q", "yolab-b", "2026-01-01T01:00:00Z"),
+            set("stopped", RUNNING),
+        ];
+        assert_eq!(pick(&sets, |_| SILENT), ops::Next::Run("stopped".into()));
+    }
+
+    #[test]
+    fn with_nothing_running_the_oldest_queued_backup_is_next() {
+        let sets = vec![
+            queued_at("newer", "yolab-b", "2026-01-01T03:00:00Z"),
+            queued_at("older", "yolab-a", "2026-01-01T01:00:00Z"),
+            set("done", SUCCEEDED),
+        ];
+        assert_eq!(pick(&sets, |_| SILENT), ops::Next::Run("older".into()));
         assert_eq!(
-            classify(&set("a", "succeeded"), Liveness::Driving),
-            SetState::Restorable
-        );
-        assert_eq!(
-            classify(&set("a", "succeeded"), Liveness::Abandoned),
-            SetState::Restorable
+            pick(&[set("done", SUCCEEDED)], |_| QUIET),
+            ops::Next::Nothing
         );
     }
 
     #[test]
-    fn a_failed_set_is_crashed() {
-        assert_eq!(
-            classify(&set("a", "failed"), Liveness::Driving),
-            SetState::Crashed
-        );
+    fn a_queued_backup_of_a_service_is_takeable_and_a_finished_one_never() {
+        assert!(takeable(&queued_at("q", "yolab-a", "t")));
+        assert!(!takeable(&queued_at("q", "kube-system", "t")));
+        assert!(!takeable(&set("a", SUCCEEDED)));
+        assert!(!takeable(&set("a", FAILED)));
     }
 
     #[test]
-    fn a_running_set_is_running_only_while_someone_drives_it() {
-        assert_eq!(
-            classify(&set("a", "running"), Liveness::Driving),
-            SetState::Running
-        );
-        assert_eq!(
-            classify(&set("a", "running"), Liveness::Remote),
-            SetState::Running
-        );
-        assert_eq!(
-            classify(&set("a", "running"), Liveness::Abandoned),
-            SetState::Crashed
-        );
+    fn each_attempt_counts_and_restarts_the_clock() {
+        let mut s = queued_at("q", "yolab-a", "2026-01-01T00:00:00Z");
+        begin_attempt(&mut s);
+        assert_eq!(s.state, RUNNING);
+        assert_eq!(s.attempts, 1);
+        assert_ne!(s.started_at, "2026-01-01T00:00:00Z");
+    }
+
+    #[tokio::test]
+    async fn a_backup_interrupted_too_often_fails_without_running() {
+        let mut s = set("a", RUNNING);
+        s.attempts = MAX_ATTEMPTS + 1;
+        let b = Backend {
+            kube: crate::k8s::testing::unreachable(),
+            host: crate::host::fake::FakeHost::new(),
+        };
+        let cfg = BackupConfig {
+            access_key_id: "AKID".into(),
+            secret_access_key: "SECRET".into(),
+            bucket: "bucket-1".into(),
+            endpoint: "https://s3.example".into(),
+            restic_password: "pw".into(),
+        };
+        let err = run_taken(&b, &cfg, &s).await.err().unwrap();
+        assert!(err.to_string().contains("interrupted"), "{err}");
+        assert!(b.host.calls().is_empty(), "{:?}", b.host.calls());
     }
 
     #[test]
-    fn an_unknown_state_reads_as_crashed_when_not_in_flight() {
-        assert_eq!(
-            classify(&set("a", "weird"), Liveness::Abandoned),
-            SetState::Crashed
-        );
+    fn a_record_written_before_attempts_were_counted_still_reads() {
+        let old: BackupSet = serde_json::from_value(json!({
+            "id": "bk-old", "started_at": "t", "state": RUNNING,
+            "owner": "node1", "heartbeat": "h"
+        }))
+        .unwrap();
+        assert_eq!(old.attempts, 0);
     }
 
     #[test]
@@ -1668,10 +1692,7 @@ mod tests {
     #[test]
     fn a_queued_set_reads_as_waiting_not_as_a_failure() {
         assert_eq!(
-            classify(
-                &queued_at("a", "yolab-a", "2026-01-01T00:00:00Z"),
-                Liveness::Abandoned
-            ),
+            classify(&queued_at("a", "yolab-a", "2026-01-01T00:00:00Z")),
             SetState::Queued,
             "nobody drives a queued set yet — that is not a crash"
         );
