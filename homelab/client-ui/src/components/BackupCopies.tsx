@@ -181,9 +181,10 @@ function DeletePoint({
   onClose: () => void;
   onDeleted: () => Promise<void>;
 }) {
-  const [frees, setFrees] = useState<
-    { id: string; bytes: number | null | "failed" } | null
-  >(null);
+  const [frees, setFrees] = useState<{
+    id: string;
+    bytes: number | null | "failed";
+  } | null>(null);
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<{ id: string; text: string } | null>(
     null,
