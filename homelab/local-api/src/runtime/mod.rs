@@ -1,7 +1,6 @@
 pub mod activity;
 pub mod fleet;
 pub mod leader;
-pub mod liveness;
 pub mod lock;
 pub mod resource;
 pub mod status;
@@ -82,19 +81,8 @@ pub trait Controller: Send + Sync + 'static {
     fn not_before_uptime(&self) -> Duration {
         Duration::ZERO
     }
-    fn deadline(&self) -> Duration {
-        DEFAULT_DEADLINE
-    }
     fn reconcile(&self, ctx: &Ctx) -> impl Future<Output = anyhow::Result<Tick>> + Send;
 }
-
-pub const DEFAULT_DEADLINE: Duration = Duration::from_secs(3600);
-
-const CHECK_WITHIN: Duration = Duration::from_secs(120);
-
-const GATES_WITHIN: Duration = Duration::from_secs(8 * 60);
-
-const ABORT_GRACE: Duration = Duration::from_secs(30);
 
 const MIN_GAP: Duration = Duration::from_secs(2);
 
@@ -172,7 +160,7 @@ pub async fn run_once<C: Controller>(controller: &C) -> anyhow::Result<Tick> {
         controller.pauses_during(),
     )
     .await?;
-    resource::within(controller.deadline(), controller.reconcile(&Ctx { node })).await
+    controller.reconcile(&Ctx { node }).await
 }
 
 #[cfg(test)]

@@ -25,7 +25,7 @@ impl Filesystem {
     }
 }
 
-pub(super) const FS_OP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1800);
+const FS_OP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1800);
 
 const OSD_REQUEST_TIMEOUT_SECS: u32 = 300;
 

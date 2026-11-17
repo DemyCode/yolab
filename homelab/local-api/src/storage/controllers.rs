@@ -329,9 +329,6 @@ impl<H: Host + 'static> crate::runtime::resource::Resource for ContainerdStoreRe
     fn interval(&self) -> Duration {
         Duration::from_secs(60)
     }
-    fn deadline(&self) -> Duration {
-        super::pivot_lock::HOLD
-    }
     fn disruption(&self) -> crate::runtime::resource::Disruption {
         crate::runtime::resource::Disruption::RestartsWorkloads
     }
@@ -363,14 +360,6 @@ impl<H: Host + 'static> crate::runtime::resource::Resource for ContainerdStoreRe
 mod tests {
     use super::*;
     use crate::host::fake::FakeHost;
-
-    #[test]
-    fn a_swap_is_stopped_before_its_claim_lets_another_machine_start_one() {
-        use crate::runtime::resource::Resource;
-        let r = containerd_store_resource(StorageEnv::from_env());
-        assert!(r.deadline() <= super::super::pivot_lock::HOLD);
-        assert!(r.deadline() > containerd_store::FS_OP_TIMEOUT);
-    }
 
     #[tokio::test]
     async fn csi_recovery_runs_once_per_boot() {

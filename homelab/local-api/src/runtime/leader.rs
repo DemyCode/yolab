@@ -15,31 +15,21 @@ const LEASE_SECS: i64 = 30;
 const RENEW_EVERY: Duration = Duration::from_secs(10);
 const ACT_WITHIN_MS: i64 = 20_000;
 
-const LAPSE_POLL: Duration = Duration::from_secs(1);
-
-const ROUND_WITHIN: Duration = Duration::from_secs(5 * 60);
-
 static IS_ME: AtomicBool = AtomicBool::new(false);
 
 #[derive(Clone)]
 pub struct Leadership {
     last_renewed_ms: Arc<AtomicI64>,
-    fixed: Option<Arc<AtomicBool>>,
+    fixed: Option<bool>,
 }
 
 impl Leadership {
     pub fn is_leader(&self) -> bool {
-        if let Some(f) = &self.fixed {
-            return f.load(Ordering::SeqCst);
+        if let Some(f) = self.fixed {
+            return f;
         }
         let last = self.last_renewed_ms.load(Ordering::SeqCst);
         last > 0 && now_ms() - last < ACT_WITHIN_MS
-    }
-
-    pub async fn lapsed(&self) {
-        while self.is_leader() {
-            tokio::time::sleep(LAPSE_POLL).await;
-        }
     }
 
     #[cfg(test)]
@@ -54,14 +44,7 @@ impl Leadership {
     pub fn fixed_for_tests(leader: bool) -> Self {
         Self {
             last_renewed_ms: Arc::new(AtomicI64::new(0)),
-            fixed: Some(Arc::new(AtomicBool::new(leader))),
-        }
-    }
-
-    #[cfg(test)]
-    pub fn set_for_tests(&self, leader: bool) {
-        if let Some(f) = &self.fixed {
-            f.store(leader, Ordering::SeqCst);
+            fixed: Some(leader),
         }
     }
 }
@@ -88,7 +71,6 @@ pub fn start(identity: String, kube: Kube) -> Leadership {
         let mut seen: Option<(String, Instant)> = None;
         let mut failing = false;
         loop {
-            super::liveness::expect("leader", ROUND_WITHIN);
             let attempt_started = now_ms();
             let attempt = match kube.client().await {
                 Ok(client) => try_acquire(&client, &identity, Utc::now(), &mut seen).await,
@@ -342,32 +324,6 @@ mod tests {
             assert!(ACT_WITHIN_MS < LEASE_SECS * 1000);
             assert!((RENEW_EVERY.as_millis() as i64) < ACT_WITHIN_MS);
         }
-    }
-
-    #[test]
-    fn work_in_flight_is_cancelled_before_another_node_may_take_over() {
-        const {
-            assert!(ACT_WITHIN_MS + (LAPSE_POLL.as_millis() as i64) < LEASE_SECS * 1000);
-        }
-    }
-
-    #[test]
-    fn a_renewal_round_is_promised_long_enough_for_its_three_bounded_api_calls() {
-        assert!(ROUND_WITHIN >= RENEW_EVERY + Duration::from_secs(3 * 60));
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn losing_the_lease_is_noticed_within_a_poll() {
-        let l = Leadership::fixed_for_tests(true);
-        let watcher = tokio::spawn({
-            let l = l.clone();
-            async move { l.lapsed().await }
-        });
-        tokio::time::sleep(Duration::from_secs(30)).await;
-        assert!(!watcher.is_finished(), "a held lease was reported lost");
-        l.set_for_tests(false);
-        tokio::time::sleep(LAPSE_POLL * 2).await;
-        assert!(watcher.is_finished(), "a lost lease went unnoticed");
     }
 
     #[test]

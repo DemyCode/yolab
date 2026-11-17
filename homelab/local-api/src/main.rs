@@ -120,7 +120,6 @@ async fn main() {
     let app = router::build_router(state.clone());
 
     controllers::spawn_all(runtime::leader::start(system::hostname(), kube), &state);
-    runtime::liveness::start();
 
     let mut servers = tokio::task::JoinSet::new();
     for addr in cfg.listen_addrs() {

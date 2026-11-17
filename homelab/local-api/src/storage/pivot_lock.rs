@@ -9,7 +9,7 @@ use crate::host::Host;
 use super::settings;
 
 pub const KEY: &str = "yolab/containerd-pivot";
-pub const HOLD: Duration = Duration::from_secs(90 * 60);
+const HOLD: Duration = Duration::from_secs(90 * 60);
 const SETTLE: Duration = Duration::from_secs(2);
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
