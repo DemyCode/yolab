@@ -680,9 +680,9 @@ mod tests {
         }
     }
 
-    fn sized(
-        sizes: &[(&str, u64)],
-    ) -> impl FnMut(Vec<Point>) -> std::future::Ready<anyhow::Result<u64>> + '_ {
+    fn sized<'a>(
+        sizes: &'a [(&'a str, u64)],
+    ) -> impl FnMut(Vec<Point>) -> std::future::Ready<anyhow::Result<u64>> + 'a {
         move |kept: Vec<Point>| {
             let total = kept
                 .iter()
