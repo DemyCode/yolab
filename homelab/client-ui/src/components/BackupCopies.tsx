@@ -26,6 +26,12 @@ function message(e: unknown, fallback: string): string {
 function useCopies(namespace: string, open: boolean) {
   const [data, setData] = useState<RestorePoints | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [wasOpen, setWasOpen] = useState(open);
+
+  if (open !== wasOpen) {
+    setWasOpen(open);
+    if (open) setData(null);
+  }
 
   const load = useCallback(async () => {
     try {
@@ -39,7 +45,6 @@ function useCopies(namespace: string, open: boolean) {
 
   useEffect(() => {
     if (!open) return;
-    setData(null);
     void load();
   }, [open, load]);
 
@@ -177,24 +182,24 @@ function DeletePoint({
   onDeleted: () => Promise<void>;
 }) {
   const [frees, setFrees] = useState<
-    { id: string; bytes: number | null } | "failed" | null
+    { id: string; bytes: number | null | "failed" } | null
   >(null);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [failure, setFailure] = useState<{ id: string; text: string } | null>(
+    null,
+  );
   const id = point?.snapshot_id ?? null;
 
   useEffect(() => {
     if (!id) return;
     let cancelled = false;
-    setFrees(null);
-    setError(null);
     api
       .get<{ frees_bytes: number | null }>(`${pointPath(namespace, id)}/frees`)
       .then((d) => {
         if (!cancelled) setFrees({ id, bytes: d.frees_bytes });
       })
       .catch(() => {
-        if (!cancelled) setFrees("failed");
+        if (!cancelled) setFrees({ id, bytes: "failed" });
       });
     return () => {
       cancelled = true;
@@ -204,19 +209,20 @@ function DeletePoint({
   async function confirm() {
     if (!id) return;
     setBusy(true);
-    setError(null);
+    setFailure(null);
     try {
       await api.del(pointPath(namespace, id));
       await onDeleted();
       onClose();
     } catch (e) {
-      setError(message(e, "That copy was not deleted."));
+      setFailure({ id, text: message(e, "That copy was not deleted.") });
     } finally {
       setBusy(false);
     }
   }
 
-  const known = frees !== null && frees !== "failed" && frees.id === id;
+  const current = frees !== null && frees.id === id ? frees.bytes : undefined;
+  const error = failure !== null && failure.id === id ? failure.text : null;
 
   return (
     <ConfirmDialog
@@ -232,15 +238,15 @@ function DeletePoint({
           The copy from {point ? formatDateTime(point.time) : ""} is deleted for
           good. You can no longer go back to it.
           <p className="mt-3 text-sm text-fg-muted">
-            {frees === "failed"
-              ? "How much space it frees could not be worked out."
-              : !known
-                ? "Working out how much space it frees…"
-                : frees.bytes === null
+            {current === undefined
+              ? "Working out how much space it frees…"
+              : current === "failed"
+                ? "How much space it frees could not be worked out."
+                : current === null
                   ? "It is an older backup; the space it frees is known once it is gone."
-                  : frees.bytes === 0
+                  : current === 0
                     ? "It frees almost nothing: its files are shared with other copies."
-                    : `It frees about ${formatBytes(frees.bytes)}.`}
+                    : `It frees about ${formatBytes(current)}.`}
           </p>
           {error && <p className="mt-2 text-sm text-danger">{error}</p>}
         </>
