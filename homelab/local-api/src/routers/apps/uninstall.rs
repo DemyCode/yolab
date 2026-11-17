@@ -350,7 +350,9 @@ pub(crate) fn registered_in(namespaces: &[Value]) -> Vec<(String, String)> {
         .collect()
 }
 
-pub(crate) async fn registered_uninstalls(client: &Client) -> anyhow::Result<Vec<(String, String)>> {
+pub(crate) async fn registered_uninstalls(
+    client: &Client,
+) -> anyhow::Result<Vec<(String, String)>> {
     let managed = kube::api::ListParams::default().labels(&format!("{LABEL_MANAGED}=true"));
     let namespaces = crate::k8s::list(client, "v1", "Namespace", None, &managed).await?;
     Ok(registered_in(&namespaces))
@@ -381,7 +383,9 @@ pub(crate) async fn finish_uninstalls<H: crate::host::Host + Clone + 'static>(
 ) -> anyhow::Result<crate::runtime::Tick> {
     let registered = registered_uninstalls(&b.kube).await?;
     if registered.is_empty() {
-        return Ok(crate::runtime::Tick::Idle("no service is being removed".into()));
+        return Ok(crate::runtime::Tick::Idle(
+            "no service is being removed".into(),
+        ));
     }
     for (ns, instance) in registered {
         if drive_teardown(b, &instance, &ns).await.is_ok() {

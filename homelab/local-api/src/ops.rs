@@ -306,10 +306,7 @@ mod tests {
             job("stopped", RUNNING),
             job("older", QUEUED),
         ];
-        assert_eq!(
-            next(&jobs, queued, |_| SILENT),
-            Next::Run("stopped".into())
-        );
+        assert_eq!(next(&jobs, queued, |_| SILENT), Next::Run("stopped".into()));
     }
 
     #[test]

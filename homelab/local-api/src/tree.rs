@@ -468,10 +468,7 @@ pub(crate) async fn run(client: &Client, op: &Op) -> anyhow::Result<()> {
     if op.is_empty() {
         return Ok(());
     }
-    let name = format!(
-        "yolab-tree-{}",
-        crate::backup::common::random_hex(4)
-    );
+    let name = format!("yolab-tree-{}", crate::backup::common::random_hex(4));
     run_job(client, &name, &job(&name, op), &op.describe(), DEADLINE).await
 }
 

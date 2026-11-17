@@ -397,21 +397,20 @@ async fn run_set<H: Host>(
     let (snapshot_id, services) = snapshot_cluster(b, cfg, &pinned, target, run_id).await?;
 
     let name = namespace.strip_prefix("yolab-").unwrap_or(namespace);
-    let warning =
-        match crate::backup::points::after_run(b, cfg, namespace, &snapshot_id).await {
-            Ok(done) => {
-                if done.dropped > 0 {
-                    tracing::info!(
-                        "backup: {namespace} was over its budget; deleted its {} oldest copies",
-                        done.dropped
-                    );
-                }
-                budget_warning(name, &done.size)
+    let warning = match crate::backup::points::after_run(b, cfg, namespace, &snapshot_id).await {
+        Ok(done) => {
+            if done.dropped > 0 {
+                tracing::info!(
+                    "backup: {namespace} was over its budget; deleted its {} oldest copies",
+                    done.dropped
+                );
             }
-            Err(e) => Some(format!(
-                "{name} was backed up, but keeping its backups within budget failed: {e:#}"
-            )),
-        };
+            budget_warning(name, &done.size)
+        }
+        Err(e) => Some(format!(
+            "{name} was backed up, but keeping its backups within budget failed: {e:#}"
+        )),
+    };
 
     if !failures.is_empty() {
         anyhow::bail!(

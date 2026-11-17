@@ -44,11 +44,7 @@ pub struct Entry {
     built_name: Box<dyn Fn(&Setup) -> &'static str + Send + Sync>,
 }
 
-fn entry<C: runtime::Controller>(
-    name: &'static str,
-    needs: Needs,
-    make: fn(&Setup) -> C,
-) -> Entry {
+fn entry<C: runtime::Controller>(name: &'static str, needs: Needs, make: fn(&Setup) -> C) -> Entry {
     Entry {
         name,
         needs,
@@ -103,11 +99,15 @@ pub fn table() -> Vec<Entry> {
         entry("backup-key", Nothing, |_| backups::BackupKeyController {
             config: Config::from_env(),
         }),
-        entry("notifier", Nothing, |_| crate::notify::alerts::NotifierController {
-            config: Config::from_env(),
+        entry("notifier", Nothing, |_| {
+            crate::notify::alerts::NotifierController {
+                config: Config::from_env(),
+            }
         }),
-        entry("shared-names", Nothing, |_| crate::shared_names::SharedNamesController {
-            config: Config::from_env(),
+        entry("shared-names", Nothing, |_| {
+            crate::shared_names::SharedNamesController {
+                config: Config::from_env(),
+            }
         }),
         entry("mesh-paths", Nothing, |_| {
             crate::mesh::MeshPathsController::new()
@@ -118,14 +118,18 @@ pub fn table() -> Vec<Entry> {
         entry("hardware-labels", Nothing, |_| {
             crate::hardware::HardwareLabelsController::real()
         }),
-        entry("chart-sync", Nothing, |_| crate::charts::ChartSyncController),
-        entry(crate::vdisk::NAME, Storage, |s| crate::vdisk::VdisksController {
-            config: Config::from_env(),
-            host: s.tools.host.clone(),
-            http: s.tools.http.clone(),
+        entry("chart-sync", Nothing, |_| {
+            crate::charts::ChartSyncController
         }),
-        entry("osd-activate", Storage, |s| storage::OsdActivateController {
-            env: s.env.clone(),
+        entry(crate::vdisk::NAME, Storage, |s| {
+            crate::vdisk::VdisksController {
+                config: Config::from_env(),
+                host: s.tools.host.clone(),
+                http: s.tools.http.clone(),
+            }
+        }),
+        entry("osd-activate", Storage, |s| {
+            storage::OsdActivateController { env: s.env.clone() }
         }),
         entry("system-osd", Storage, |s| storage::SystemOsdController {
             env: s.env.clone(),
@@ -136,8 +140,8 @@ pub fn table() -> Vec<Entry> {
         entry("images-grow", Storage, |s| storage::ImagesGrowController {
             env: s.env.clone(),
         }),
-        entry("ceph-dashboard", Storage, |s| storage::DashboardController {
-            env: s.env.clone(),
+        entry("ceph-dashboard", Storage, |s| {
+            storage::DashboardController { env: s.env.clone() }
         }),
         entry("mon-member", Storage, |s| storage::MonMemberController {
             env: s.env.clone(),

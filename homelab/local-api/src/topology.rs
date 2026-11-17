@@ -191,10 +191,7 @@ impl crate::runtime::Controller for TopologyController {
         std::time::Duration::from_secs(60)
     }
     fn depends_on(&self) -> &'static [&'static str] {
-        &[
-            crate::runtime::KUBE_API,
-            crate::runtime::CEPH,
-        ]
+        &[crate::runtime::KUBE_API, crate::runtime::CEPH]
     }
     fn pauses_during(&self) -> &'static [crate::runtime::Activity] {
         &[crate::runtime::Activity::Restore]

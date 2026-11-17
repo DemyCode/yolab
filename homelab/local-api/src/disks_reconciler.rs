@@ -748,11 +748,8 @@ impl ClusterView {
     }
 
     fn state_of(&self, osd_id: i64) -> OsdState {
-        let (crush_weight, reweight, kb) = self
-            .weights
-            .get(&osd_id)
-            .copied()
-            .unwrap_or((0.0, 1.0, 0));
+        let (crush_weight, reweight, kb) =
+            self.weights.get(&osd_id).copied().unwrap_or((0.0, 1.0, 0));
         OsdState {
             crush_weight,
             reweight,
@@ -796,7 +793,12 @@ async fn observe_cluster<H: Host>(host: &H) -> Option<ClusterView> {
         })
         .unwrap_or_default();
 
-    Some(ClusterView::new(crush_nodes, never_booted, want_copies, failure_domain))
+    Some(ClusterView::new(
+        crush_nodes,
+        never_booted,
+        want_copies,
+        failure_domain,
+    ))
 }
 
 async fn apply_steer<H: Host>(

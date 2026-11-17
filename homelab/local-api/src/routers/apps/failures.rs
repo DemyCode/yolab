@@ -298,7 +298,11 @@ pub(super) fn last_lines(log: &str) -> String {
         .join("\n")
 }
 
-pub(super) async fn explain_failure(client: &Client, ns: &str, failure: &ContainerFailure) -> String {
+pub(super) async fn explain_failure(
+    client: &Client,
+    ns: &str,
+    failure: &ContainerFailure,
+) -> String {
     if !failure.said.is_empty() {
         return failure.describe(&failure.said);
     }
@@ -390,7 +394,11 @@ pub(crate) fn install_failure(ann: &serde_json::Map<String, Value>) -> Option<St
         .map(str::to_string)
 }
 
-pub(super) async fn set_install_failed(client: &Client, ns: &str, value: Value) -> anyhow::Result<()> {
+pub(super) async fn set_install_failed(
+    client: &Client,
+    ns: &str,
+    value: Value,
+) -> anyhow::Result<()> {
     let mut patch = namespace_ref(ns);
     patch["metadata"]["annotations"] = serde_json::json!({ ANN_INSTALL_FAILED: value });
     match crate::k8s::merge_patch(client, &patch).await {

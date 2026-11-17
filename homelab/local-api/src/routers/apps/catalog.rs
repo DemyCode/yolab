@@ -117,7 +117,10 @@ pub(crate) async fn chart_schema(
     read_chart(&dir).map(|meta| meta.app)
 }
 
-pub(super) fn resolve_service_name(schema: &Value, config: &serde_json::Map<String, Value>) -> String {
+pub(super) fn resolve_service_name(
+    schema: &Value,
+    config: &serde_json::Map<String, Value>,
+) -> String {
     fn tunnel_field(props: Option<&serde_json::Map<String, Value>>) -> Option<(String, Value)> {
         props?.iter().find_map(|(k, v)| {
             (v["format"].as_str() == Some("tunnel")).then(|| (k.clone(), v.clone()))

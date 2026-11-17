@@ -1901,7 +1901,9 @@ mod tests {
     #[test]
     fn backups_are_deleted_only_when_the_request_said_so() {
         let ns = |ann: Value| serde_json::json!({ "metadata": { "annotations": ann } });
-        assert!(backups_doomed(&ns(serde_json::json!({ ANN_DELETE_BACKUPS: "true" }))));
+        assert!(backups_doomed(&ns(
+            serde_json::json!({ ANN_DELETE_BACKUPS: "true" })
+        )));
         assert!(!backups_doomed(&ns(serde_json::json!({}))));
         assert!(!backups_doomed(&serde_json::json!({})));
     }
