@@ -11,7 +11,7 @@ use crate::ops::{self, Claim, Claimed, FAILED, QUEUED, RUNNING, SUCCEEDED};
 use crate::records::Store;
 use crate::routers::apps::{ANN_APP_ID, ANN_CHART_REPO, ANN_CHART_VERSION};
 use crate::routers::backup_common::*;
-use crate::runtime::{Activity, Controller, Ctx, Requirement, Scope, Tick};
+use crate::runtime::{Activity, Controller, Ctx, Scope, Tick};
 use chrono::{DateTime, Utc};
 use kube::Client;
 
@@ -1256,8 +1256,8 @@ impl Controller for BackupSchedulerController {
     fn interval(&self) -> Duration {
         Duration::from_secs(SCHEDULE_TICK_SECS)
     }
-    fn requires(&self) -> &'static [Requirement] {
-        &[Requirement::KubeApi]
+    fn depends_on(&self) -> &'static [&'static str] {
+        &[crate::runtime::KUBE_API]
     }
     fn pauses_during(&self) -> &'static [Activity] {
         &[Activity::Restore]

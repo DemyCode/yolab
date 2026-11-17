@@ -44,10 +44,6 @@ pub trait Resource: Send + Sync + 'static {
 
     fn interval(&self) -> Duration;
 
-    fn requires(&self) -> &'static [Requirement] {
-        &[]
-    }
-
     fn pauses_during(&self) -> &'static [activity::Activity] {
         &[]
     }
@@ -63,11 +59,6 @@ pub trait Resource: Send + Sync + 'static {
 
 pub struct ControllerResource<C> {
     inner: C,
-    deps: Vec<&'static str>,
-}
-
-pub fn deps_of(requires: &[Requirement]) -> Vec<&'static str> {
-    requires.iter().map(|r| r.resource_name()).collect()
 }
 
 pub(crate) async fn preflight(
@@ -83,12 +74,13 @@ pub(crate) async fn preflight(
             "{name} is cluster-scoped and {node} does not hold the cluster lease — run it on the leader"
         );
     }
-    for dep in deps {
-        if let Some(r) = Requirement::from_resource_name(dep) {
-            if !activity::is_met(tools, r).await {
-                anyhow::bail!("not running {name}: waiting for {r}");
-            }
-        }
+    let requires: Vec<Requirement> = deps
+        .iter()
+        .copied()
+        .filter_map(Requirement::from_resource_name)
+        .collect();
+    if let Some(r) = activity::unmet(tools, &requires).await {
+        anyhow::bail!("not running {name}: waiting for {r}");
     }
     if let activity::Gate::Paused(why) = activity::gate(tools, pauses).await {
         anyhow::bail!("not running {name}: {why}");
@@ -98,10 +90,7 @@ pub(crate) async fn preflight(
 
 impl<C: Controller> ControllerResource<C> {
     pub fn new(inner: C) -> Self {
-        Self {
-            deps: deps_of(inner.requires()),
-            inner,
-        }
+        Self { inner }
     }
 }
 
@@ -111,7 +100,7 @@ impl<C: Controller> Resource for ControllerResource<C> {
     }
 
     fn depends_on(&self) -> &[&'static str] {
-        &self.deps
+        self.inner.depends_on()
     }
 
     fn scope(&self) -> Scope {
@@ -387,14 +376,6 @@ async fn run<R: Resource>(
             set_state(name, State::Standby);
             was_settled = false;
             reg.set_phase(name, Phase::Standby);
-            super::wait_or_wake(&notify, super::RECHECK).await;
-            continue;
-        }
-
-        if let Some(missing) = activity::unmet(&tools, resource.requires()).await {
-            set_state(name, State::NotYet(format!("waiting for {missing}")));
-            was_settled = false;
-            reg.set_phase(name, Phase::Waiting(format!("waiting for {missing}")));
             super::wait_or_wake(&notify, super::RECHECK).await;
             continue;
         }
@@ -773,8 +754,8 @@ mod tests {
         fn interval(&self) -> Duration {
             Duration::from_secs(1)
         }
-        fn requires(&self) -> &'static [Requirement] {
-            &[Requirement::Ceph]
+        fn depends_on(&self) -> &'static [&'static str] {
+            &[crate::runtime::CEPH]
         }
         async fn reconcile(&self, _ctx: &Ctx) -> anyhow::Result<Tick> {
             Ok(Tick::Done)

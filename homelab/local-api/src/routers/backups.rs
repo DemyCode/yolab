@@ -541,8 +541,8 @@ impl crate::runtime::Controller for LockSweeperController {
     fn interval(&self) -> std::time::Duration {
         std::time::Duration::from_secs(1800)
     }
-    fn requires(&self) -> &'static [crate::runtime::Requirement] {
-        &[crate::runtime::Requirement::KubeApi]
+    fn depends_on(&self) -> &'static [&'static str] {
+        &[crate::runtime::KUBE_API]
     }
     fn not_before_uptime(&self) -> std::time::Duration {
         std::time::Duration::from_secs(300)
@@ -566,8 +566,8 @@ impl crate::runtime::Controller for BackupKeyController {
     fn interval(&self) -> std::time::Duration {
         std::time::Duration::from_secs(300)
     }
-    fn requires(&self) -> &'static [crate::runtime::Requirement] {
-        &[crate::runtime::Requirement::KubeApi]
+    fn depends_on(&self) -> &'static [&'static str] {
+        &[crate::runtime::KUBE_API]
     }
     async fn reconcile(&self, ctx: &crate::runtime::Ctx) -> anyhow::Result<crate::runtime::Tick> {
         let Some((url, token)) = ye_creds(&self.config) else {

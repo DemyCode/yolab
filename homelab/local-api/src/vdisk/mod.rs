@@ -10,7 +10,7 @@ use anyhow::{Context, Result};
 use crate::error::Outcome;
 use crate::host::Host;
 use crate::notify::Tunnel;
-use crate::runtime::{Controller, Ctx, Requirement, Scope, Tick};
+use crate::runtime::{Controller, Ctx, Scope, Tick};
 use record::VdiskRecord;
 
 pub const NAME: &str = "vdisks";
@@ -164,8 +164,8 @@ impl<H: Host + 'static> Controller for VdisksController<H> {
     fn interval(&self) -> Duration {
         Duration::from_secs(30)
     }
-    fn requires(&self) -> &'static [Requirement] {
-        &[Requirement::Ceph]
+    fn depends_on(&self) -> &'static [&'static str] {
+        &[crate::runtime::CEPH]
     }
     async fn reconcile(&self, ctx: &Ctx) -> Result<Tick> {
         let host = &self.host;

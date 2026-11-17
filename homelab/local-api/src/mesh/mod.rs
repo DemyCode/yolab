@@ -258,8 +258,8 @@ impl crate::runtime::Controller for MeshDiscoveryController {
     fn interval(&self) -> Duration {
         TICK
     }
-    fn requires(&self) -> &'static [crate::runtime::Requirement] {
-        &[crate::runtime::Requirement::KubeApi]
+    fn depends_on(&self) -> &'static [&'static str] {
+        &[crate::runtime::KUBE_API]
     }
     async fn reconcile(&self, ctx: &crate::runtime::Ctx) -> anyhow::Result<crate::runtime::Tick> {
         let mut last_probe = self.last_probe.lock().await;

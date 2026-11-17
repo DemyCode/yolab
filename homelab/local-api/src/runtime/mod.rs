@@ -30,6 +30,9 @@ pub enum Requirement {
     Ceph,
 }
 
+pub const KUBE_API: &str = "kube-api";
+pub const CEPH: &str = "ceph";
+
 impl Requirement {
     pub const ALL: [Requirement; 2] = [Requirement::KubeApi, Requirement::Ceph];
 
@@ -41,8 +44,8 @@ impl Requirement {
 
     pub fn resource_name(self) -> &'static str {
         match self {
-            Requirement::KubeApi => "kube-api",
-            Requirement::Ceph => "ceph",
+            Requirement::KubeApi => KUBE_API,
+            Requirement::Ceph => CEPH,
         }
     }
 }
@@ -73,7 +76,7 @@ pub trait Controller: Send + Sync + 'static {
     fn name(&self) -> &'static str;
     fn scope(&self) -> Scope;
     fn interval(&self) -> Duration;
-    fn requires(&self) -> &'static [Requirement] {
+    fn depends_on(&self) -> &'static [&'static str] {
         &[]
     }
     fn pauses_during(&self) -> &'static [Activity] {
@@ -158,7 +161,7 @@ pub async fn run_once<C: Controller>(controller: &C) -> anyhow::Result<Tick> {
         &tools,
         controller.name(),
         controller.scope(),
-        &resource::deps_of(controller.requires()),
+        controller.depends_on(),
         controller.pauses_during(),
     )
     .await?;

@@ -4,7 +4,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use kube::Client;
 
-use crate::runtime::{Controller, Ctx, Requirement, Scope, Tick};
+use crate::runtime::{Controller, Ctx, Scope, Tick};
 
 pub const MANIFESTS_ENV: &str = "YOLAB_CEPH_CSI_MANIFESTS";
 
@@ -27,8 +27,8 @@ impl Controller for CephCsiController {
     fn interval(&self) -> Duration {
         Duration::from_secs(60)
     }
-    fn requires(&self) -> &'static [Requirement] {
-        &[Requirement::KubeApi]
+    fn depends_on(&self) -> &'static [&'static str] {
+        &[crate::runtime::KUBE_API]
     }
     async fn reconcile(&self, ctx: &Ctx) -> Result<Tick> {
         let path = std::env::var(MANIFESTS_ENV).with_context(|| {

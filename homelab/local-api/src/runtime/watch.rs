@@ -191,7 +191,7 @@ mod tests {
 
     #[test]
     fn every_watch_target_is_a_controller_that_exists() {
-        let known = crate::controllers::NAMES;
+        let known = crate::controllers::names();
         for w in standard() {
             for t in w.targets {
                 assert!(

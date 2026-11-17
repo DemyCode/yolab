@@ -50,7 +50,7 @@ impl StorageEnv {
         Self::from_lookup(|name| std::env::var(name).ok())
     }
 
-    fn from_lookup(get: impl Fn(&str) -> Option<String>) -> Self {
+    pub(crate) fn from_lookup(get: impl Fn(&str) -> Option<String>) -> Self {
         let s = |name: &str| get(name).unwrap_or_default();
         let or = |name: &str, default: &str| {
             get(name)

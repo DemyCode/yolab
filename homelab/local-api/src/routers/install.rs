@@ -1007,8 +1007,8 @@ impl crate::runtime::Controller for InstallsController {
     fn interval(&self) -> Duration {
         Duration::from_secs(30)
     }
-    fn requires(&self) -> &'static [crate::runtime::Requirement] {
-        &[crate::runtime::Requirement::KubeApi]
+    fn depends_on(&self) -> &'static [&'static str] {
+        &[crate::runtime::KUBE_API]
     }
     async fn reconcile(&self, ctx: &crate::runtime::Ctx) -> anyhow::Result<crate::runtime::Tick> {
         let cfg = Config::from_env();

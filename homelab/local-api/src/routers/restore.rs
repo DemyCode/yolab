@@ -14,7 +14,7 @@ use crate::records::Store;
 use crate::routers::backup::VolumeSnapshot;
 use crate::routers::backup_common::*;
 use crate::routers::restore_plan as rf;
-use crate::runtime::{Controller, Ctx, Requirement, Scope, Tick};
+use crate::runtime::{Controller, Ctx, Scope, Tick};
 use kube::Client;
 
 pub(crate) const RESTORES: Store = Store {
@@ -1429,8 +1429,8 @@ impl Controller for RestoresController {
     fn interval(&self) -> Duration {
         Duration::from_secs(TICK_SECS)
     }
-    fn requires(&self) -> &'static [Requirement] {
-        &[Requirement::KubeApi]
+    fn depends_on(&self) -> &'static [&'static str] {
+        &[crate::runtime::KUBE_API]
     }
     async fn reconcile(&self, ctx: &Ctx) -> anyhow::Result<Tick> {
         drive_next(&ctx.tools.backend().await?).await

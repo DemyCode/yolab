@@ -495,8 +495,8 @@ impl crate::runtime::Controller for ChartSyncController {
     fn interval(&self) -> std::time::Duration {
         CHART_SYNC_EVERY
     }
-    fn requires(&self) -> &'static [crate::runtime::Requirement] {
-        &[crate::runtime::Requirement::KubeApi]
+    fn depends_on(&self) -> &'static [&'static str] {
+        &[crate::runtime::KUBE_API]
     }
     async fn reconcile(&self, ctx: &crate::runtime::Ctx) -> anyhow::Result<crate::runtime::Tick> {
         let b = ctx.tools.backend().await?;

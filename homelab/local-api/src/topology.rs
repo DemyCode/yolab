@@ -190,10 +190,10 @@ impl crate::runtime::Controller for TopologyController {
     fn interval(&self) -> std::time::Duration {
         std::time::Duration::from_secs(60)
     }
-    fn requires(&self) -> &'static [crate::runtime::Requirement] {
+    fn depends_on(&self) -> &'static [&'static str] {
         &[
-            crate::runtime::Requirement::KubeApi,
-            crate::runtime::Requirement::Ceph,
+            crate::runtime::KUBE_API,
+            crate::runtime::CEPH,
         ]
     }
     fn pauses_during(&self) -> &'static [crate::runtime::Activity] {

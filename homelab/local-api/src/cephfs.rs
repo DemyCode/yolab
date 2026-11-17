@@ -4,7 +4,7 @@ use anyhow::Result;
 
 use crate::ceph::model::{FsEntry, OsdStat};
 use crate::host::Host;
-use crate::runtime::{Activity, Controller, Ctx, Requirement, Scope, Tick};
+use crate::runtime::{Activity, Controller, Ctx, Scope, Tick};
 
 pub(crate) const FS_NAME: &str = "yolab-fs";
 pub(crate) const META_POOL: &str = "yolab-fs-metadata";
@@ -31,8 +31,8 @@ impl Controller for CephFsController {
     fn interval(&self) -> Duration {
         Duration::from_secs(120)
     }
-    fn requires(&self) -> &'static [Requirement] {
-        &[Requirement::Ceph, Requirement::KubeApi]
+    fn depends_on(&self) -> &'static [&'static str] {
+        &[crate::runtime::CEPH, crate::runtime::KUBE_API]
     }
     fn pauses_during(&self) -> &'static [Activity] {
         &[Activity::Restore]

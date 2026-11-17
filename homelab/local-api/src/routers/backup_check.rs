@@ -8,7 +8,7 @@ use serde_json::Value;
 use crate::host::Host;
 use crate::records::Store;
 use crate::routers::backup_common::*;
-use crate::runtime::{Activity, Controller, Ctx, Requirement, Scope, Tick};
+use crate::runtime::{Activity, Controller, Ctx, Scope, Tick};
 
 pub(crate) const CHECKS: Store = Store {
     name: "yolab-backup-checks",
@@ -189,8 +189,8 @@ impl Controller for BackupCheckController {
     fn interval(&self) -> Duration {
         Duration::from_secs(6 * 3600)
     }
-    fn requires(&self) -> &'static [Requirement] {
-        &[Requirement::KubeApi]
+    fn depends_on(&self) -> &'static [&'static str] {
+        &[crate::runtime::KUBE_API]
     }
     fn pauses_during(&self) -> &'static [Activity] {
         &[Activity::Restore]

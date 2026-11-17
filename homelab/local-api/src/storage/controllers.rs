@@ -5,7 +5,7 @@ use anyhow::Result;
 
 use crate::error::Outcome;
 use crate::host::Host;
-use crate::runtime::{lock, Controller, Ctx, Requirement, Scope, Tick};
+use crate::runtime::{lock, Controller, Ctx, Scope, Tick};
 
 use super::{
     bootstrap, csi_secrets, dashboard, images_grow, images_rbd, keys, lock_name, mon_member, osd,
@@ -72,7 +72,7 @@ macro_rules! storage_controller {
         $(#[$doc:meta])*
         $ty:ident, name: $name:literal, job: $job:literal,
         every: $every:expr, after_boot: $boot:expr,
-        requires: [$($req:expr),*],
+        depends_on: [$($req:expr),*],
         run: |$env:ident, $node:ident, $host:ident| $body:expr
     ) => {
         $(#[$doc])*
@@ -93,7 +93,7 @@ macro_rules! storage_controller {
             fn not_before_uptime(&self) -> Duration {
                 $boot
             }
-            fn requires(&self) -> &'static [Requirement] {
+            fn depends_on(&self) -> &'static [&'static str] {
                 &[$($req),*]
             }
             async fn reconcile(&self, ctx: &Ctx) -> Result<Tick> {
@@ -109,14 +109,14 @@ macro_rules! storage_controller {
 storage_controller! {
     OsdActivateController, name: "osd-activate", job: "osd-activate",
     every: Duration::from_secs(120), after_boot: Duration::ZERO,
-    requires: [Requirement::Ceph],
+    depends_on: [crate::runtime::CEPH],
     run: |_env, _node, host| done(osd::run(host))
 }
 
 storage_controller! {
     SystemOsdController, name: "system-osd", job: "system-osd",
     every: Duration::from_secs(60), after_boot: Duration::ZERO,
-    requires: [Requirement::Ceph],
+    depends_on: [crate::runtime::CEPH],
     run: |_env, _node, host| async {
         Ok(tick_of(crate::disks_reconciler::system_osd_attempt(host).await?))
     }
@@ -125,7 +125,7 @@ storage_controller! {
 storage_controller! {
     ImagesRbdController, name: "images-rbd", job: "images-rbd",
     every: Duration::from_secs(60), after_boot: Duration::ZERO,
-    requires: [Requirement::Ceph],
+    depends_on: [crate::runtime::CEPH],
     run: |env, node, host| async {
         let policy = env.images_rbd_policy();
         Ok(tick_of(images_rbd::attempt(host, node, &policy).await?))
@@ -135,7 +135,7 @@ storage_controller! {
 storage_controller! {
     ImagesGrowController, name: "images-grow", job: "images-grow",
     every: Duration::from_secs(120), after_boot: Duration::from_secs(600),
-    requires: [Requirement::Ceph],
+    depends_on: [crate::runtime::CEPH],
     run: |env, node, host| async {
         let policy = env.grow_policy();
         done(images_grow::run(host, root(), node, &policy)).await
@@ -145,7 +145,7 @@ storage_controller! {
 storage_controller! {
     DashboardController, name: "ceph-dashboard", job: "dashboard",
     every: Duration::from_secs(120), after_boot: Duration::ZERO,
-    requires: [Requirement::Ceph],
+    depends_on: [crate::runtime::CEPH],
     run: |env, node, host| async {
         let policy = env.dashboard_policy();
         done(dashboard::run(host, node, &policy)).await
@@ -155,7 +155,7 @@ storage_controller! {
 storage_controller! {
     MonMemberController, name: "mon-member", job: "mon-member",
     every: Duration::from_secs(120), after_boot: Duration::ZERO,
-    requires: [Requirement::Ceph],
+    depends_on: [crate::runtime::CEPH],
     run: |env, node, host| async {
         let args = env.mon_member_args();
         done(mon_member::run(host, root(), node, &args)).await
@@ -174,8 +174,8 @@ impl Controller for CsiSecretsController {
     fn interval(&self) -> Duration {
         Duration::from_secs(120)
     }
-    fn requires(&self) -> &'static [Requirement] {
-        &[Requirement::Ceph, Requirement::KubeApi]
+    fn depends_on(&self) -> &'static [&'static str] {
+        &[crate::runtime::CEPH, crate::runtime::KUBE_API]
     }
     async fn reconcile(&self, ctx: &Ctx) -> Result<Tick> {
         locked("csi-secrets", || async {
@@ -197,8 +197,8 @@ impl Controller for CephKeysController {
     fn interval(&self) -> Duration {
         Duration::from_secs(300)
     }
-    fn requires(&self) -> &'static [Requirement] {
-        &[Requirement::Ceph]
+    fn depends_on(&self) -> &'static [&'static str] {
+        &[crate::runtime::CEPH]
     }
     async fn reconcile(&self, ctx: &Ctx) -> Result<Tick> {
         let daemons = ["mgr", "mds"];
@@ -286,8 +286,8 @@ impl Controller for CsiRecoveryController {
     fn interval(&self) -> Duration {
         Duration::from_secs(30)
     }
-    fn requires(&self) -> &'static [Requirement] {
-        &[Requirement::KubeApi]
+    fn depends_on(&self) -> &'static [&'static str] {
+        &[crate::runtime::KUBE_API]
     }
     async fn reconcile(&self, ctx: &Ctx) -> Result<Tick> {
         once_per_boot(

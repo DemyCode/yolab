@@ -353,8 +353,8 @@ impl crate::runtime::Controller for DisksController {
     fn interval(&self) -> Duration {
         Duration::from_secs(INTERVAL_SECS)
     }
-    fn requires(&self) -> &'static [crate::runtime::Requirement] {
-        &[crate::runtime::Requirement::Ceph]
+    fn depends_on(&self) -> &'static [&'static str] {
+        &[crate::runtime::CEPH]
     }
     fn pauses_during(&self) -> &'static [crate::runtime::Activity] {
         &[crate::runtime::Activity::Restore]

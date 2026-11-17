@@ -368,8 +368,8 @@ impl crate::runtime::Controller for UninstallsController {
     fn interval(&self) -> std::time::Duration {
         std::time::Duration::from_secs(60)
     }
-    fn requires(&self) -> &'static [crate::runtime::Requirement] {
-        &[crate::runtime::Requirement::KubeApi]
+    fn depends_on(&self) -> &'static [&'static str] {
+        &[crate::runtime::KUBE_API]
     }
     async fn reconcile(&self, ctx: &crate::runtime::Ctx) -> anyhow::Result<crate::runtime::Tick> {
         finish_uninstalls(&ctx.tools.backend().await?).await
