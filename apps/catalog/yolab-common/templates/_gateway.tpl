@@ -281,7 +281,7 @@ printf 'export YOLAB_HOST=%s\nexport YOLAB_URL=https://%s\nexport YOLAB_SITES="%
     - /bin/sh
     - -c
     - |
-      . /yolab/env && exec caddy run --config /etc/caddy/Caddyfile --adapter caddyfile
+      . /yolab/env && exec caddy run --config /etc/caddy-config/Caddyfile --adapter caddyfile --watch
   {{- if eq (include "yolab-common.tunnel.enabled" .) "true" }}
   env:
     - name: PLATFORM_API_URL
@@ -308,8 +308,7 @@ printf 'export YOLAB_HOST=%s\nexport YOLAB_URL=https://%s\nexport YOLAB_SITES="%
       mountPath: /data
       subPath: "caddy"
     - name: caddy-config
-      mountPath: /etc/caddy/Caddyfile
-      subPath: Caddyfile
+      mountPath: /etc/caddy-config
     - name: yolab
       mountPath: /yolab
 {{- end -}}

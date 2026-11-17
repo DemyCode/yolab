@@ -781,6 +781,7 @@ def check(app, docs, fail, chart_yaml="", schema=None, arches=None, home=RELEASE
     check_sourced_secrets_reach_the_program(app, docs, fail)
     check_env_parts(app, docs, fail)
     check_caddy_dns(app, docs, fail)
+    check_caddy_reloads(app, docs, fail)
     check_probe_timeouts(app, docs, fail)
     check_host_access(app, docs, fail)
     check_privilege(app, docs, fail)
@@ -1414,6 +1415,37 @@ def check_caddy_dns(app, docs, fail):
                         f"pod {pod_name}: caddy has no {needed}, so it cannot prove "
                         f"its names through the platform's DNS",
                     )
+
+
+def check_caddy_reloads(app, docs, fail):
+    for pod_name, spec in pod_specs(docs):
+        config_volumes = {
+            v["name"]
+            for v in spec.get("volumes") or []
+            if str((v.get("configMap") or {}).get("name", "")).endswith("-caddy")
+        }
+        for c in spec.get("containers") or []:
+            mounts = [
+                m
+                for m in c.get("volumeMounts") or []
+                if m.get("name") in config_volumes
+            ]
+            if not mounts:
+                continue
+            if any(m.get("subPath") for m in mounts):
+                fail(
+                    app,
+                    f"pod {pod_name}: {c['name']} mounts its Caddyfile with subPath, "
+                    f"which Kubernetes never refreshes, so a new upstream after an "
+                    f"update is never served",
+                )
+            script = " ".join((c.get("command") or []) + (c.get("args") or []))
+            if "caddy run" in script and "--watch" not in script:
+                fail(
+                    app,
+                    f"pod {pod_name}: {c['name']} runs Caddy without --watch, so it "
+                    f"keeps serving the Caddyfile it started with after an update",
+                )
 
 
 def check_yolab_off(app, docs, fail):

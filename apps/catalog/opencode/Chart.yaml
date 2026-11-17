@@ -2,14 +2,14 @@ apiVersion: v2
 name: opencode
 description: The open source AI coding agent
 type: application
-version: 0.1.30
+version: 0.1.31
 appVersion: 1.18.34
 dependencies:
   - name: yolab-common
-    version: "0.1.41"
+    version: "0.1.42"
     repository: oci://ghcr.io/demycode/charts
   - name: authelia
-    version: "0.2.7"
+    version: "0.2.8"
     repository: oci://ghcr.io/demycode/charts
 annotations:
   yolab.io/display-name: OpenCode

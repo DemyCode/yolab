@@ -819,6 +819,51 @@ def caddy_dns_failures(
     return found
 
 
+def caddy_reload_failures(script, mount):
+    gateway = pod(shell("caddy", script) | {"volumeMounts": [mount]})
+    gateway["spec"]["template"]["spec"]["volumes"] = [
+        {"name": "caddy-config", "configMap": {"name": "demo-caddy"}}
+    ]
+    found = []
+    check_charts.check_caddy_reloads(
+        "demo", [gateway], lambda app, msg: found.append(msg)
+    )
+    return found
+
+
+WATCHING = ". /yolab/env && exec caddy run --config /etc/caddy-config/Caddyfile --watch"
+DIR_MOUNT = {"name": "caddy-config", "mountPath": "/etc/caddy-config"}
+
+
+class CaddyReloads(unittest.TestCase):
+    def test_a_gateway_that_watches_a_refreshed_caddyfile_passes(self):
+        self.assertEqual(caddy_reload_failures(WATCHING, DIR_MOUNT), [])
+
+    def test_a_caddyfile_mounted_with_subpath_never_sees_an_update(self):
+        found = caddy_reload_failures(
+            WATCHING,
+            {
+                "name": "caddy-config",
+                "mountPath": "/etc/caddy/Caddyfile",
+                "subPath": "Caddyfile",
+            },
+        )
+        self.assertEqual(len(found), 1)
+        self.assertIn("subPath", found[0])
+
+    def test_a_caddy_that_does_not_watch_keeps_its_first_caddyfile(self):
+        found = caddy_reload_failures(
+            "exec caddy run --config /etc/caddy-config/Caddyfile", DIR_MOUNT
+        )
+        self.assertEqual(len(found), 1)
+        self.assertIn("--watch", found[0])
+
+    def test_the_library_gateway_reloads_its_caddyfile(self):
+        tpl = Path(check_charts.LIBRARY, "templates", "_gateway.tpl").read_text()
+        self.assertIn("--watch", tpl)
+        self.assertNotIn("subPath: Caddyfile", tpl)
+
+
 DNS_CADDYFILE = (
     "\n{\n  cert_issuer acme {\n    dns acmedns {\n      subdomain apps\n    }\n  }\n"
     "  cert_issuer acme\n  admin off\n  servers {\n    protocols h1 h2\n  }\n}\n"
