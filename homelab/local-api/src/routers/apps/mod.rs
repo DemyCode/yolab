@@ -1534,7 +1534,11 @@ pub async fn install_app(
             return (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")).into_response();
         }
     }
-    install::start(b, state.config.clone(), plan, state.http.clone());
+    if let Err(e) = install::queue(&b.kube, &plan).await {
+        let ns = format!("yolab-{instance_name}");
+        mark_install_failed(&b.kube, &ns, &format!("{e:#}")).await;
+        return (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")).into_response();
+    }
     (
         StatusCode::ACCEPTED,
         Json(serde_json::json!({ "instance_name": instance_name })),

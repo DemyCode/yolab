@@ -7,7 +7,10 @@ use serde::Deserialize;
 use serde_json::{Map, Value};
 
 use crate::config::Config;
+use crate::error::Outcome;
 use crate::host::Host;
+use crate::ops::{self, Claim, Claimed};
+use crate::records::Store;
 use crate::routers::apps::{
     app_schema, clear_install_failed, collect_runtime, mark_install_failed, merge_credentials,
     stage_install, write_definition, AppDefinition, BackupPolicy, ChartAt, StagedInstall,
@@ -54,7 +57,8 @@ pub(crate) enum ConfigOrigin {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum DataOrigin {
     Backup {
         namespace: String,
@@ -72,12 +76,14 @@ pub(crate) struct Sources {
     pub(crate) data: Option<DataOrigin>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum ChartPin {
     Newest,
     Saved {
         repo: String,
         version: String,
+        #[serde(with = "tgz_text")]
         tgz: Vec<u8>,
     },
     Exact {
@@ -102,6 +108,21 @@ pub(crate) struct Source {
     pub(crate) definition: AppDefinition,
     pub(crate) chart: Option<Vec<u8>>,
     pub(crate) schema: Option<Value>,
+}
+
+mod tgz_text {
+    use base64::Engine as _;
+
+    pub fn serialize<S: serde::Serializer>(bytes: &[u8], s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&base64::engine::general_purpose::STANDARD.encode(bytes))
+    }
+
+    pub fn deserialize<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<u8>, D::Error> {
+        let text = <String as serde::Deserialize>::deserialize(d)?;
+        base64::engine::general_purpose::STANDARD
+            .decode(text)
+            .map_err(serde::de::Error::custom)
+    }
 }
 
 pub(crate) fn pin_chart(source: Option<&Source>) -> Result<ChartPin, String> {
@@ -131,7 +152,7 @@ pub(crate) fn pin_chart(source: Option<&Source>) -> Result<ChartPin, String> {
     Ok(ChartPin::Exact { repo, version })
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, Deserialize)]
 pub(crate) struct InstallPlan {
     pub(crate) app_id: String,
     pub(crate) instance_name: String,
@@ -764,46 +785,235 @@ where
     }
 }
 
-pub(crate) fn start(
-    b: Backend,
-    cfg: Arc<Config>,
-    plan: InstallPlan,
-    http: crate::http::Client,
-) -> tokio::task::JoinHandle<()> {
-    let subject = format!("install yolab-{}", plan.instance_name);
-    let ns = format!("yolab-{}", plan.instance_name);
-    let kube = b.kube.clone();
-    let log = Log::to_tracing(subject.clone());
-    run_detached(kube, ns, subject, async move {
-        execute(&b, &cfg, &plan, &log).await?;
-        crate::routers::store::report_install(&b.kube, &http, &cfg, &plan.app_id).await;
-        Ok(())
+pub(crate) const INSTALLS: Store = Store {
+    name: "yolab-installs",
+    namespace: "kube-system",
+    key: "sets",
+};
+const MAX_INSTALLS: usize = 50;
+const MAX_ATTEMPTS: u32 = 3;
+const PLAN_SECRET: &str = "yolab-install-plan";
+const PLAN_KEY: &str = "plan";
+const LOOK_FOR_NEW_INSTALLS: Duration = Duration::from_secs(5);
+
+#[derive(Clone, serde::Serialize, Deserialize)]
+pub(crate) struct InstallRun {
+    id: String,
+    namespace: String,
+    started_at: String,
+    state: String,
+    #[serde(default)]
+    attempts: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+    #[serde(flatten)]
+    claim: Claim,
+}
+
+impl Claimed for InstallRun {
+    fn id(&self) -> &str {
+        &self.id
+    }
+    fn is_running(&self) -> bool {
+        self.state == ops::RUNNING
+    }
+    fn claim(&self) -> &Claim {
+        &self.claim
+    }
+    fn claim_mut(&mut self) -> &mut Claim {
+        &mut self.claim
+    }
+}
+
+fn queued_run(namespace: &str) -> InstallRun {
+    InstallRun {
+        id: format!("in-{}", crate::routers::backup_common::random_hex(8)),
+        namespace: namespace.to_string(),
+        started_at: chrono::Utc::now().to_rfc3339(),
+        state: ops::QUEUED.to_string(),
+        attempts: 0,
+        error: None,
+        claim: Claim::default(),
+    }
+}
+
+pub(crate) fn plan_secret(namespace: &str, plan: &InstallPlan) -> anyhow::Result<Value> {
+    let text = serde_json::to_string(plan)?;
+    Ok(crate::k8s::secret_manifest(
+        PLAN_SECRET,
+        namespace,
+        &[(PLAN_KEY, &text)],
+        &[("app.kubernetes.io/managed-by", "yolab")],
+    ))
+}
+
+pub(crate) fn plan_from_secret(secret: &Value) -> anyhow::Result<InstallPlan> {
+    use base64::Engine as _;
+    let Some(encoded) = secret["data"][PLAN_KEY].as_str() else {
+        anyhow::bail!("{PLAN_SECRET} holds no {PLAN_KEY}");
+    };
+    let bytes = base64::engine::general_purpose::STANDARD.decode(encoded)?;
+    Ok(serde_json::from_slice(&bytes)?)
+}
+
+pub(crate) async fn queue(client: &kube::Client, plan: &InstallPlan) -> anyhow::Result<()> {
+    let namespace = format!("yolab-{}", plan.instance_name);
+    crate::k8s::apply(client, &plan_secret(&namespace, plan)?).await?;
+    let run = queued_run(&namespace);
+    INSTALLS
+        .update(client, |runs: &mut Vec<InstallRun>| {
+            ops::upsert(runs, run.clone(), MAX_INSTALLS)
+        })
+        .await?;
+    crate::runtime::wake("installs");
+    Ok(())
+}
+
+fn takeable(r: &InstallRun) -> bool {
+    r.state == ops::QUEUED || (r.is_running() && !ops::is_driven(r, ops::silent_for(r)))
+}
+
+fn begin_attempt(r: &mut InstallRun) {
+    r.state = ops::RUNNING.to_string();
+    r.attempts += 1;
+}
+
+async fn take_waiting(client: &kube::Client) -> anyhow::Result<Vec<InstallRun>> {
+    let runs: Vec<InstallRun> = INSTALLS.read(client).await?;
+    let mut taken = Vec::new();
+    for run in runs.iter().rev().filter(|r| takeable(r)) {
+        if let Some(t) = ops::take(INSTALLS, client, &run.id, takeable, begin_attempt).await? {
+            taken.push(t);
+        }
+    }
+    Ok(taken)
+}
+
+async fn record_run(client: &kube::Client, id: &str, result: &anyhow::Result<()>) {
+    let state = if result.is_ok() {
+        ops::SUCCEEDED
+    } else {
+        ops::FAILED
+    };
+    let error = result.as_ref().err().map(|e| format!("{e:#}"));
+    let written = INSTALLS
+        .update(client, |runs: &mut Vec<InstallRun>| {
+            if let Some(r) = runs.iter_mut().find(|r| r.id == id) {
+                r.state = state.to_string();
+                r.error = error.clone();
+            }
+        })
+        .await;
+    written.warn_on_err(format!(
+        "install {id}: could not record the outcome — it is run again once its heartbeat stops"
+    ));
+}
+
+async fn forget_plan(client: &kube::Client, namespace: &str) {
+    crate::k8s::delete_if_present(
+        client,
+        &crate::k8s::reference("v1", "Secret", namespace, PLAN_SECRET),
+    )
+    .await
+    .warn_on_err(format!("{namespace}: remove its install plan"));
+}
+
+async fn give_up(client: &kube::Client, namespace: &str, why: String) -> anyhow::Error {
+    mark_install_failed(client, namespace, &why).await;
+    forget_plan(client, namespace).await;
+    anyhow::anyhow!(why)
+}
+
+async fn run_install<H: Host + 'static>(
+    b: &Backend<H>,
+    cfg: &Config,
+    http: &crate::http::Client,
+    run: &InstallRun,
+) -> anyhow::Result<()> {
+    if run.attempts > MAX_ATTEMPTS {
+        let why = format!("the install was interrupted {} times", run.attempts - 1);
+        return Err(give_up(&b.kube, &run.namespace, why).await);
+    }
+    let found = crate::k8s::get(
+        &b.kube,
+        &crate::k8s::reference("v1", "Secret", &run.namespace, PLAN_SECRET),
+    )
+    .await?;
+    let Some(secret) = found else {
+        let why = "what to install was lost before it ran".to_string();
+        return Err(give_up(&b.kube, &run.namespace, why).await);
+    };
+    let plan = match plan_from_secret(&secret) {
+        Ok(plan) => plan,
+        Err(e) => return Err(give_up(&b.kube, &run.namespace, format!("{e:#}")).await),
+    };
+    let log = Log::to_tracing(format!("install {}", run.namespace));
+    let outcome = execute(b, cfg, &plan, &log).await;
+    forget_plan(&b.kube, &run.namespace).await;
+    outcome?;
+    crate::routers::store::report_install(&b.kube, http, cfg, &plan.app_id).await;
+    Ok(())
+}
+
+async fn drive_install<H: Host + 'static>(
+    b: &Backend<H>,
+    cfg: &Config,
+    http: &crate::http::Client,
+    run: InstallRun,
+) {
+    tracing::info!("{}: install attempt {}", run.namespace, run.attempts);
+    let work = run_install(b, cfg, http, &run);
+    let result = ops::drive::<InstallRun, _>(INSTALLS, &b.kube, &run.id, work).await;
+    record_run(&b.kube, &run.id, &result).await;
+}
+
+pub(crate) async fn drive_installs<H: Host + 'static>(
+    b: &Backend<H>,
+    cfg: &Config,
+    http: &crate::http::Client,
+) -> anyhow::Result<crate::runtime::Tick> {
+    use futures::StreamExt as _;
+    let mut running = futures::stream::FuturesUnordered::new();
+    let mut started = 0usize;
+    loop {
+        for run in take_waiting(&b.kube).await? {
+            started += 1;
+            running.push(drive_install(b, cfg, http, run));
+        }
+        if running.is_empty() {
+            break;
+        }
+        tokio::select! {
+            _ = running.next() => {}
+            () = tokio::time::sleep(LOOK_FOR_NEW_INSTALLS) => {}
+        }
+    }
+    Ok(if started == 0 {
+        crate::runtime::Tick::Idle("no install is waiting".into())
+    } else {
+        crate::runtime::Tick::Done
     })
 }
 
-pub(crate) fn run_detached<F>(
-    kube: kube::Client,
-    ns: String,
-    subject: String,
-    work: F,
-) -> tokio::task::JoinHandle<()>
-where
-    F: std::future::Future<Output = anyhow::Result<()>> + Send + 'static,
-{
-    tokio::spawn(async move {
-        match tokio::spawn(work).await {
-            Ok(Ok(())) => tracing::info!("{subject}: finished"),
-            Ok(Err(e)) => tracing::warn!("{subject}: failed: {e:#}"),
-            Err(e) => {
-                mark_install_failed(
-                    &kube,
-                    &ns,
-                    &format!("the install stopped unexpectedly: {e}"),
-                )
-                .await
-            }
-        }
-    })
+pub struct InstallsController;
+
+impl crate::runtime::Controller for InstallsController {
+    fn name(&self) -> &'static str {
+        "installs"
+    }
+    fn scope(&self) -> crate::runtime::Scope {
+        crate::runtime::Scope::Cluster
+    }
+    fn interval(&self) -> Duration {
+        Duration::from_secs(30)
+    }
+    fn requires(&self) -> &'static [crate::runtime::Requirement] {
+        &[crate::runtime::Requirement::KubeApi]
+    }
+    async fn reconcile(&self, ctx: &crate::runtime::Ctx) -> anyhow::Result<crate::runtime::Tick> {
+        let cfg = Config::from_env();
+        drive_installs(&ctx.tools.backend().await?, &cfg, &ctx.tools.http).await
+    }
 }
 
 pub(crate) fn upgrade_stream(
@@ -1407,62 +1617,169 @@ mod tests {
             .collect()
     }
 
+    fn as_the_api_returns(manifest: &Value) -> Value {
+        use base64::Engine as _;
+        let mut data = serde_json::Map::new();
+        for (k, v) in manifest["stringData"].as_object().unwrap() {
+            let encoded = base64::engine::general_purpose::STANDARD.encode(v.as_str().unwrap());
+            data.insert(k.clone(), Value::String(encoded));
+        }
+        json!({ "metadata": manifest["metadata"].clone(), "data": data })
+    }
+
+    fn a_plan(chart: ChartPin, data: Option<DataOrigin>) -> InstallPlan {
+        let mut config = Map::new();
+        config.insert("password".into(), json!("hunter2"));
+        InstallPlan {
+            app_id: "gitea".into(),
+            instance_name: "gitea-ab12".into(),
+            release: "gitea-ab12".into(),
+            config,
+            backup: definition("gitea").backup,
+            data,
+            chart,
+        }
+    }
+
+    #[test]
+    fn an_install_plan_comes_back_whole_from_its_secret() {
+        let mut choices = crate::routers::restore_plan::Choices::default();
+        choices
+            .data
+            .insert("data".into(), crate::routers::restore_plan::Choice::Use);
+        let plans = [
+            a_plan(ChartPin::Newest, None),
+            a_plan(
+                ChartPin::Saved {
+                    repo: "official".into(),
+                    version: "1.2.3".into(),
+                    tgz: vec![0x1f, 0x8b, 0, 255],
+                },
+                Some(DataOrigin::Backup {
+                    namespace: "yolab-gitea-old".into(),
+                    snapshot_id: "snap-1".into(),
+                    choices,
+                }),
+            ),
+            a_plan(
+                ChartPin::Exact {
+                    repo: "official".into(),
+                    version: "1.2.3".into(),
+                },
+                Some(DataOrigin::Live {
+                    namespace: "yolab-gitea-old".into(),
+                }),
+            ),
+        ];
+        for plan in plans {
+            let secret = plan_secret("yolab-gitea-ab12", &plan).unwrap();
+            assert_eq!(secret["metadata"]["namespace"], "yolab-gitea-ab12");
+            let back = plan_from_secret(&as_the_api_returns(&secret)).unwrap();
+            assert_eq!(back, plan);
+        }
+    }
+
+    #[test]
+    fn a_secret_without_a_plan_is_an_error() {
+        assert!(plan_from_secret(&json!({ "data": {} })).is_err());
+    }
+
+    fn run(state: &str) -> InstallRun {
+        let mut r = queued_run("yolab-gitea-ab12");
+        r.state = state.into();
+        r
+    }
+
+    #[test]
+    fn a_queued_install_is_takeable_and_a_finished_one_never() {
+        assert!(takeable(&run(ops::QUEUED)));
+        assert!(!takeable(&run(ops::SUCCEEDED)));
+        assert!(!takeable(&run(ops::FAILED)));
+    }
+
+    #[test]
+    fn a_running_install_first_seen_now_is_not_taken_from_its_machine() {
+        let mut r = run(ops::RUNNING);
+        r.claim = Claim {
+            owner: "node1".into(),
+            heartbeat: chrono::Utc::now().to_rfc3339(),
+        };
+        assert!(!takeable(&r));
+    }
+
+    #[test]
+    fn each_attempt_counts() {
+        let mut r = run(ops::QUEUED);
+        begin_attempt(&mut r);
+        begin_attempt(&mut r);
+        assert_eq!(r.state, ops::RUNNING);
+        assert_eq!(r.attempts, 2);
+    }
+
+    #[test]
+    fn a_queued_install_names_its_namespace_and_nobody_owns_it_yet() {
+        let r = queued_run("yolab-gitea-ab12");
+        assert!(r.id.starts_with("in-"));
+        assert_eq!(r.namespace, "yolab-gitea-ab12");
+        assert_eq!(r.state, ops::QUEUED);
+        assert_eq!(r.claim, Claim::default());
+    }
+
+    fn test_backend(kube: kube::Client) -> Backend<crate::host::fake::FakeHost> {
+        Backend {
+            kube,
+            host: crate::host::fake::FakeHost::new(),
+        }
+    }
+
     #[tokio::test]
-    async fn an_install_that_panics_is_still_left_marked_as_failed() {
+    async fn an_install_interrupted_too_often_is_marked_failed_without_running() {
         use crate::k8s::testing::{accept_patches, api_server, patched};
         let (server, kube) = api_server().await;
         accept_patches(&server).await;
+        let b = test_backend(kube);
+        let mut r = run(ops::RUNNING);
+        r.attempts = MAX_ATTEMPTS + 1;
+        let cfg = Config::from_env();
+        let http = crate::http::Client::new();
 
-        run_detached(
-            kube,
-            "yolab-gitea-ab12".into(),
-            "install yolab-gitea-ab12".into(),
-            async move { blow_up() },
-        )
-        .await
-        .unwrap();
-
+        let err = run_install(&b, &cfg, &http, &r).await.unwrap_err();
+        assert!(err.to_string().contains("interrupted"), "{err}");
         let marks = install_failed_marks(&patched(&server).await);
         assert_eq!(marks.len(), 1, "{marks:?}");
-        assert!(marks[0].contains("the install blew up"), "{marks:?}");
+        assert!(b.host.calls().is_empty(), "{:?}", b.host.calls());
     }
 
     #[tokio::test]
-    async fn a_detached_install_that_succeeds_leaves_no_mark() {
-        use crate::k8s::testing::{accept_patches, api_server, patched};
+    async fn an_install_whose_plan_is_gone_is_marked_failed() {
+        use crate::k8s::testing::{accept_patches, api_server, patched, serve, status};
         let (server, kube) = api_server().await;
-        accept_patches(&server).await;
-
-        run_detached(
-            kube,
-            "yolab-gitea-ab12".into(),
-            "install yolab-gitea-ab12".into(),
-            async move { Ok(()) },
+        serve(
+            &server,
+            "/api/v1/namespaces/yolab-gitea-ab12/secrets/yolab-install-plan",
+            404,
+            status(404, "NotFound"),
         )
-        .await
-        .unwrap();
+        .await;
+        accept_patches(&server).await;
+        let b = test_backend(kube);
+        let cfg = Config::from_env();
+        let http = crate::http::Client::new();
 
-        assert!(install_failed_marks(&patched(&server).await).is_empty());
+        let mut r = run(ops::RUNNING);
+        r.attempts = 1;
+        assert!(run_install(&b, &cfg, &http, &r).await.is_err());
+        let marks = install_failed_marks(&patched(&server).await);
+        assert!(marks[0].contains("lost"), "{marks:?}");
     }
 
-    #[tokio::test]
-    async fn an_install_runs_to_its_end_with_nobody_waiting_on_it() {
-        let (release, released) = tokio::sync::oneshot::channel::<()>();
-        let (finished, finished_rx) = tokio::sync::oneshot::channel::<()>();
-        drop(run_detached(
-            crate::k8s::testing::unreachable(),
-            "yolab-gitea-ab12".into(),
-            "install yolab-gitea-ab12".into(),
-            async move {
-                let _ = released.await;
-                let _ = finished.send(());
-                Ok(())
-            },
-        ));
-        release.send(()).unwrap();
-        tokio::time::timeout(std::time::Duration::from_secs(5), finished_rx)
-            .await
-            .expect("the install must run to its end")
-            .expect("the install was dropped instead of finishing");
+    #[test]
+    fn a_record_written_before_attempts_were_counted_still_reads() {
+        let old: InstallRun = serde_json::from_value(json!({
+            "id": "in-1", "namespace": "yolab-gitea-ab12", "started_at": "t",
+            "state": "running", "owner": "node1", "heartbeat": "h"
+        }))
+        .unwrap();
+        assert_eq!(old.attempts, 0);
     }
 }

@@ -6,6 +6,7 @@ pub const NAMES: &[&str] = &[
     "backup-scheduler",
     "restores",
     "uninstalls",
+    "installs",
     "outputs",
     "store-sync",
     "ssh-keys",
@@ -63,6 +64,7 @@ pub fn spawn_all(leader: Leadership, state: &crate::AppState) {
     spawn(backup::BackupSchedulerController, &leader, &tools);
     spawn(restore::RestoresController, &leader, &tools);
     spawn(apps::UninstallsController, &leader, &tools);
+    spawn(crate::routers::install::InstallsController, &leader, &tools);
     spawn(crate::outputs::OutputsController, &leader, &tools);
     spawn(backups::LockSweeperController, &leader, &tools);
     spawn(
@@ -190,6 +192,7 @@ pub async fn run_named(name: &str) -> anyhow::Result<runtime::Tick> {
         "backup-scheduler" => runtime::run_once(&backup::BackupSchedulerController).await,
         "restores" => runtime::run_once(&restore::RestoresController).await,
         "uninstalls" => runtime::run_once(&apps::UninstallsController).await,
+        "installs" => runtime::run_once(&crate::routers::install::InstallsController).await,
         "outputs" => runtime::run_once(&crate::outputs::OutputsController).await,
         "store-sync" => runtime::run_once(&crate::store::sync::StoreSyncController).await,
         "ssh-keys" => runtime::run_once(&crate::ssh_keys::SshKeysController).await,
