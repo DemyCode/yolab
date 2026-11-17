@@ -431,31 +431,20 @@ in {
     systemd.services.yolab-local-api = {
       after = ["network.target"];
       wantedBy = ["multi-user.target"];
-      environment = {
-        PATH = lib.mkForce (
-          lib.makeBinPath (with pkgs; [ceph ceph-client lvm2 util-linux xfsprogs e2fsprogs coreutils systemd cryptsetup cifs-utils])
-          + ":/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin:/run/wrappers/bin"
-        );
-        YOLAB_MACHINE_DIR = config.yolab.machineDir;
-        YOLAB_CONFIG = "${config.yolab.machineDir}/config.toml";
-        YOLAB_NODE_IPV6 = s.nodeCfg.sub_ipv6_private;
-        KUBECONFIG = "/etc/rancher/k3s/k3s.yaml";
-        NIX_SSL_CERT_FILE = "/etc/static/ssl/certs/ca-bundle.crt";
-        SSL_CERT_FILE = "/etc/static/ssl/certs/ca-bundle.crt";
-        YOLAB_LIBRADOS = "${pkgs.ceph.lib}/lib/librados.so.2";
-        YOLAB_LIBCEPHFS = "${pkgs.ceph.lib}/lib/libcephfs.so.2";
-        YOLAB_CEPH_FSID = config.yolab.ceph.fsid;
-        YOLAB_CEPH_MON_ADDR = config.yolab.ceph.monAddr;
-        YOLAB_CEPH_JOIN_SEED_ADDR = config.yolab.ceph.joinSeedAddr;
-        YOLAB_CEPH_IMAGES_POOL = config.yolab.ceph.imagesStore.poolName;
-        YOLAB_CEPH_IMAGES_SHARE = toString config.yolab.ceph.imagesStore.shareOfPool;
-        YOLAB_CEPH_IMAGES_MIN_GB = toString config.yolab.ceph.imagesStore.minSizeGb;
-        YOLAB_CEPH_IMAGES_FS = config.yolab.ceph.imagesStore.filesystem;
-        YOLAB_CEPH_CSI_MANIFESTS = "${./ceph-csi/cephfs.yaml}";
-        YOLAB_CEPH_DASHBOARD_PORT = toString config.yolab.ceph.dashboard.port;
-        YOLAB_CEPH_DASHBOARD_PREFIX = config.yolab.ceph.dashboard.urlPrefix;
-        YOLAB_CEPH_DASHBOARD_PASSWORD_FILE = config.yolab.ceph.dashboard.passwordFile;
-      };
+      environment =
+        config.yolab.ceph.env
+        // {
+          PATH = lib.mkForce (
+            lib.makeBinPath (with pkgs; [ceph ceph-client lvm2 util-linux xfsprogs e2fsprogs coreutils systemd cryptsetup cifs-utils])
+            + ":/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin:/run/wrappers/bin"
+          );
+          YOLAB_MACHINE_DIR = config.yolab.machineDir;
+          YOLAB_CONFIG = "${config.yolab.machineDir}/config.toml";
+          YOLAB_NODE_IPV6 = s.nodeCfg.sub_ipv6_private;
+          KUBECONFIG = "/etc/rancher/k3s/k3s.yaml";
+          NIX_SSL_CERT_FILE = "/etc/static/ssl/certs/ca-bundle.crt";
+          SSL_CERT_FILE = "/etc/static/ssl/certs/ca-bundle.crt";
+        };
       serviceConfig = {
         Type = "simple";
         User = "root";

@@ -1098,6 +1098,24 @@ in let
         touch $out
       '';
 
+    ceph-units-share-one-env = let
+      cfg = nixosSystems.yolab-ci.config;
+      svcs = cfg.systemd.services;
+      env = cfg.yolab.ceph.env;
+      units = ["yolab-local-api" "yolab-ceph-bootstrap" "yolab-image-store"];
+      missing = unit: builtins.filter (k: (svcs.${unit}.environment.${k} or null) != env.${k}) (builtins.attrNames env);
+      stray = unit: builtins.filter (k: lib.hasPrefix "YOLAB_CEPH_" k && !(env ? ${k})) (builtins.attrNames svcs.${unit}.environment);
+      problems =
+        lib.optional (!(env ? YOLAB_CEPH_FSID)) "yolab.ceph.env has no YOLAB_CEPH_FSID"
+        ++ lib.concatMap (u: map (k: "${u} does not get ${k} from yolab.ceph.env") (missing u)) units
+        ++ lib.concatMap (u: map (k: "${u} sets ${k} outside yolab.ceph.env") (stray u)) units;
+    in
+      pkgs.runCommand "ceph-units-share-one-env" {} ''
+        ${lib.concatMapStrings (p: "echo ${lib.escapeShellArg p} >&2\n") problems}
+        ${lib.optionalString (problems != []) "exit 1"}
+        touch $out
+      '';
+
     ceph-csi-manifest =
       pkgs.runCommand "ceph-csi-manifest"
       {

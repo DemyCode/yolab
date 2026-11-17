@@ -66,6 +66,27 @@ in {
         reads this again.
       '';
     };
+
+    env = mkOption {
+      type = types.attrsOf types.str;
+      readOnly = true;
+      description = "The YOLAB_CEPH_* settings every unit that runs local-api against Ceph gets.";
+      default = {
+        YOLAB_CEPH_FSID = cfg.fsid;
+        YOLAB_CEPH_MON_ADDR = cfg.monAddr;
+        YOLAB_CEPH_JOIN_SEED_ADDR = cfg.joinSeedAddr;
+        YOLAB_CEPH_IMAGES_POOL = cfg.imagesStore.poolName;
+        YOLAB_CEPH_IMAGES_SHARE = toString cfg.imagesStore.shareOfPool;
+        YOLAB_CEPH_IMAGES_MIN_GB = toString cfg.imagesStore.minSizeGb;
+        YOLAB_CEPH_IMAGES_FS = cfg.imagesStore.filesystem;
+        YOLAB_CEPH_CSI_MANIFESTS = "${../ceph-csi/cephfs.yaml}";
+        YOLAB_CEPH_DASHBOARD_PORT = toString cfg.dashboard.port;
+        YOLAB_CEPH_DASHBOARD_PREFIX = cfg.dashboard.urlPrefix;
+        YOLAB_CEPH_DASHBOARD_PASSWORD_FILE = toString cfg.dashboard.passwordFile;
+        YOLAB_LIBRADOS = "${pkgs.ceph.lib}/lib/librados.so.2";
+        YOLAB_LIBCEPHFS = "${pkgs.ceph.lib}/lib/libcephfs.so.2";
+      };
+    };
   };
 
   config = {
@@ -147,12 +168,11 @@ in {
         ExecStart = "${localApiEnv}/bin/local-api storage bootstrap";
       };
       path = with pkgs; [ceph ceph-client coreutils];
-      environment = {
-        YOLAB_CEPH_FSID = cfg.fsid;
-        YOLAB_CEPH_MON_ADDR = cfg.monAddr;
-        YOLAB_CEPH_JOIN_SEED_ADDR = cfg.joinSeedAddr;
-        YOLAB_CONFIG = "${config.yolab.machineDir}/config.toml";
-      };
+      environment =
+        cfg.env
+        // {
+          YOLAB_CONFIG = "${config.yolab.machineDir}/config.toml";
+        };
       postStart = ''
         ${pkgs.systemd}/bin/systemctl start --no-block ceph-mon-${host}.service
       '';
@@ -194,13 +214,7 @@ in {
       restartIfChanged = false;
       stopIfChanged = false;
       path = with pkgs; [ceph ceph-client util-linux xfsprogs e2fsprogs coreutils];
-      environment = {
-        YOLAB_CEPH_FSID = cfg.fsid;
-        YOLAB_CEPH_MON_ADDR = cfg.monAddr;
-        YOLAB_CEPH_IMAGES_POOL = cfg.imagesStore.poolName;
-        YOLAB_CEPH_IMAGES_FS = cfg.imagesStore.filesystem;
-        YOLAB_LIBRADOS = "${pkgs.ceph.lib}/lib/librados.so.2";
-      };
+      environment = cfg.env;
       serviceConfig = {
         Type = "simple";
         RemainAfterExit = true;
