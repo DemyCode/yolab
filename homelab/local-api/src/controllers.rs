@@ -33,15 +33,19 @@ pub enum Needs {
     Storage,
 }
 
+type Spawn = Box<dyn Fn(&Setup, &Leadership) + Send + Sync>;
 type Once = Pin<Box<dyn Future<Output = anyhow::Result<runtime::Tick>> + Send>>;
+type OnceFn = Box<dyn Fn(&Setup) -> Once + Send + Sync>;
+#[cfg(test)]
+type BuiltName = Box<dyn Fn(&Setup) -> &'static str + Send + Sync>;
 
 pub struct Entry {
     pub name: &'static str,
     pub needs: Needs,
-    spawn: Box<dyn Fn(&Setup, &Leadership) + Send + Sync>,
-    once: Box<dyn Fn(&Setup) -> Once + Send + Sync>,
+    spawn: Spawn,
+    once: OnceFn,
     #[cfg(test)]
-    built_name: Box<dyn Fn(&Setup) -> &'static str + Send + Sync>,
+    built_name: BuiltName,
 }
 
 fn entry<C: runtime::Controller>(name: &'static str, needs: Needs, make: fn(&Setup) -> C) -> Entry {
