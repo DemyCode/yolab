@@ -153,6 +153,105 @@ pub fn upsert<T: Claimed>(records: &mut Vec<T>, record: T, keep: usize) {
     records.truncate(keep);
 }
 
+pub fn silent_for<T: Claimed>(record: &T) -> Duration {
+    observed_silence(record.id(), &record.claim().heartbeat, Instant::now())
+}
+
+pub fn is_driven(record: &impl Claimed, silent: Duration) -> bool {
+    record.is_running() && silent < STALE_AFTER
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum Next {
+    Busy(String),
+    Run(String),
+    Nothing,
+}
+
+pub fn next<T: Claimed>(
+    records: &[T],
+    is_queued: impl Fn(&T) -> bool,
+    silent: impl Fn(&T) -> Duration,
+) -> Next {
+    if let Some(live) = records.iter().find(|r| is_driven(*r, silent(r))) {
+        return Next::Busy(live.id().to_string());
+    }
+    records
+        .iter()
+        .rev()
+        .find(|r| r.is_running())
+        .or_else(|| records.iter().rev().find(|r| is_queued(r)))
+        .map_or(Next::Nothing, |r| Next::Run(r.id().to_string()))
+}
+
+pub fn take_in<T: Claimed + Clone>(
+    records: &mut [T],
+    id: &str,
+    takeable: impl Fn(&T) -> bool,
+    start: impl Fn(&mut T),
+    claim: &Claim,
+) -> Option<T> {
+    let record = records.iter_mut().find(|r| r.id() == id)?;
+    if !takeable(record) {
+        return None;
+    }
+    start(record);
+    *record.claim_mut() = claim.clone();
+    Some(record.clone())
+}
+
+pub async fn take<T: Claimed + Clone>(
+    store: crate::records::Store,
+    client: &kube::Client,
+    id: &str,
+    takeable: impl Fn(&T) -> bool,
+    start: impl Fn(&mut T),
+) -> anyhow::Result<Option<T>> {
+    let claim = Claim::mine(Utc::now());
+    let taken = store
+        .update(client, |records: &mut Vec<T>| {
+            take_in(records, id, &takeable, &start, &claim)
+        })
+        .await?;
+    Ok(taken)
+}
+
+pub async fn drive<T: Claimed, F: std::future::Future>(
+    store: crate::records::Store,
+    client: &kube::Client,
+    id: &str,
+    work: F,
+) -> F::Output {
+    tokio::select! {
+        biased;
+        out = work => out,
+        never = beat_forever::<T>(store, client, id) => match never {},
+    }
+}
+
+async fn beat_forever<T: Claimed>(
+    store: crate::records::Store,
+    client: &kube::Client,
+    id: &str,
+) -> std::convert::Infallible {
+    let me = crate::system::hostname();
+    let ids = [id.to_string()];
+    loop {
+        tokio::time::sleep(HEARTBEAT_EVERY).await;
+        let written = store
+            .update(client, |records: &mut Vec<T>| {
+                beat(records, &ids, &me, Utc::now())
+            })
+            .await;
+        if let Err(e) = written {
+            tracing::warn!(
+                "{id}: its heartbeat was not written: {e} — another machine takes it over after {}s",
+                STALE_AFTER.as_secs()
+            );
+        }
+    }
+}
+
 pub fn spawn_heartbeat<T: Claimed + 'static>(
     store: crate::records::Store,
     in_flight: &'static InFlight,
@@ -361,6 +460,121 @@ mod tests {
                 .map(|r| r.url.path().to_string())
                 .collect::<Vec<_>>()
         );
+    }
+
+    #[derive(Clone, serde::Serialize, serde::Deserialize)]
+    struct Job {
+        id: String,
+        state: String,
+        #[serde(default)]
+        attempts: u32,
+        #[serde(flatten)]
+        claim: Claim,
+    }
+
+    impl Claimed for Job {
+        fn id(&self) -> &str {
+            &self.id
+        }
+        fn is_running(&self) -> bool {
+            self.state == RUNNING
+        }
+        fn claim(&self) -> &Claim {
+            &self.claim
+        }
+        fn claim_mut(&mut self) -> &mut Claim {
+            &mut self.claim
+        }
+    }
+
+    fn job(id: &str, state: &str) -> Job {
+        Job {
+            id: id.into(),
+            state: state.into(),
+            attempts: 0,
+            claim: claim("node1"),
+        }
+    }
+
+    fn queued(j: &Job) -> bool {
+        j.state == QUEUED
+    }
+
+    #[test]
+    fn a_job_that_still_heartbeats_keeps_everything_else_waiting() {
+        let jobs = [job("new", QUEUED), job("live", RUNNING)];
+        assert_eq!(next(&jobs, queued, |_| QUIET), Next::Busy("live".into()));
+    }
+
+    #[test]
+    fn a_job_whose_machine_went_quiet_is_run_again_before_anything_queued() {
+        let jobs = [
+            job("newer", QUEUED),
+            job("stopped", RUNNING),
+            job("older", QUEUED),
+        ];
+        assert_eq!(
+            next(&jobs, queued, |_| SILENT),
+            Next::Run("stopped".into())
+        );
+    }
+
+    #[test]
+    fn queued_jobs_run_oldest_first() {
+        let jobs = [
+            job("newest", QUEUED),
+            job("done", SUCCEEDED),
+            job("oldest", QUEUED),
+        ];
+        assert_eq!(next(&jobs, queued, |_| QUIET), Next::Run("oldest".into()));
+    }
+
+    #[test]
+    fn finished_jobs_leave_nothing_to_run() {
+        let jobs = [job("a", SUCCEEDED), job("b", FAILED)];
+        assert_eq!(next(&jobs, queued, |_| SILENT), Next::Nothing);
+    }
+
+    #[test]
+    fn taking_a_job_stamps_this_machine_and_applies_its_start() {
+        let mut jobs = vec![job("a", QUEUED), job("b", QUEUED)];
+        let mine = Claim {
+            owner: "node2".into(),
+            heartbeat: NOW.into(),
+        };
+        let taken = take_in(
+            &mut jobs,
+            "b",
+            queued,
+            |j| {
+                j.state = RUNNING.into();
+                j.attempts += 1;
+            },
+            &mine,
+        )
+        .expect("a queued job is takeable");
+        assert_eq!(taken.claim, mine);
+        assert_eq!(taken.attempts, 1);
+        assert_eq!(jobs[1].state, RUNNING);
+        assert_eq!(jobs[0].state, QUEUED, "only the named job is taken");
+    }
+
+    #[test]
+    fn a_job_someone_else_took_first_is_not_taken_again() {
+        let mut jobs = vec![job("a", RUNNING)];
+        let mine = Claim::mine(at(NOW));
+        let again = take_in(&mut jobs, "a", queued, |j| j.attempts += 1, &mine);
+        assert!(again.is_none());
+        assert_eq!(jobs[0].attempts, 0);
+        assert_eq!(jobs[0].claim, claim("node1"));
+        assert!(take_in(&mut jobs, "gone", queued, |_| {}, &mine).is_none());
+    }
+
+    #[tokio::test]
+    async fn driving_a_job_returns_what_its_work_returned() {
+        let unreachable = crate::k8s::testing::unreachable();
+        let out = drive::<Job, _>(BEATS, &unreachable, "a", async { 7 }).await;
+        assert_eq!(out, 7);
     }
 
     fn rec(id: &str, state: &str, claim: Claim) -> Rec {

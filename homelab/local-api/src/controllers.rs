@@ -4,7 +4,7 @@ use crate::tools::Tools;
 
 pub const NAMES: &[&str] = &[
     "backup-scheduler",
-    "restore-watchdog",
+    "restores",
     "uninstall-watchdog",
     "outputs",
     "store-sync",
@@ -61,9 +61,8 @@ pub fn spawn_all(leader: Leadership, state: &crate::AppState) {
 
     let tools = state.tools();
     spawn(backup::BackupSchedulerController, &leader, &tools);
-    spawn(restore::RestoreWatchdogController, &leader, &tools);
+    spawn(restore::RestoresController, &leader, &tools);
     backup::start_heartbeat(tools.kube.clone());
-    restore::start_heartbeat(tools.kube.clone());
     spawn(apps::UninstallWatchdogController, &leader, &tools);
     spawn(crate::outputs::OutputsController, &leader, &tools);
     spawn(backups::LockSweeperController, &leader, &tools);
@@ -190,7 +189,7 @@ pub async fn run_named(name: &str) -> anyhow::Result<runtime::Tick> {
     let env = StorageEnv::from_env();
     match name {
         "backup-scheduler" => runtime::run_once(&backup::BackupSchedulerController).await,
-        "restore-watchdog" => runtime::run_once(&restore::RestoreWatchdogController).await,
+        "restores" => runtime::run_once(&restore::RestoresController).await,
         "uninstall-watchdog" => runtime::run_once(&apps::UninstallWatchdogController).await,
         "outputs" => runtime::run_once(&crate::outputs::OutputsController).await,
         "store-sync" => runtime::run_once(&crate::store::sync::StoreSyncController).await,

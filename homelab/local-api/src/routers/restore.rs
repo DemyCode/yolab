@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 
 use crate::error::Outcome;
 use crate::host::Host;
-use crate::ops::{self, Claim, Claimed, InFlight, Liveness, FAILED, RUNNING, SUCCEEDED};
+use crate::ops::{self, Claim, Claimed, FAILED, QUEUED, RUNNING, SUCCEEDED};
 use crate::poll::Step;
 use crate::records::Store;
 use crate::routers::backup::VolumeSnapshot;
@@ -25,11 +25,10 @@ pub(crate) const RESTORES: Store = Store {
 const MAX_RESTORES: usize = 50;
 
 const RD_TIMEOUT_SECS: u64 = 3600;
-const WATCHDOG_TICK_SECS: u64 = 30;
+const TICK_SECS: u64 = 30;
+const MAX_ATTEMPTS: u32 = 3;
 
 const RD_POLL: Duration = Duration::from_secs(10);
-
-pub(crate) static RESTORE_IN_FLIGHT: InFlight = InFlight::new();
 
 #[derive(Clone, Serialize, Deserialize)]
 struct DeploymentScale {
@@ -51,6 +50,12 @@ pub(crate) struct RestoreSet {
     error: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     scaled_deployments: Vec<DeploymentScale>,
+    #[serde(default)]
+    choices: rf::Choices,
+    #[serde(default)]
+    attempts: u32,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    by_install: bool,
     #[serde(flatten)]
     claim: Claim,
 }
@@ -102,7 +107,7 @@ async fn open_backups<H: Host>(b: &Backend<H>) -> anyhow::Result<(BackupConfig, 
     Ok((cfg, repo))
 }
 
-pub(crate) async fn start<H: Host + 'static>(
+pub(crate) async fn start<H: Host>(
     b: &Backend<H>,
     namespace: &str,
     snapshot_id: Option<String>,
@@ -115,47 +120,46 @@ pub(crate) async fn start<H: Host + 'static>(
     let Some(snapshot_id) = resolved else {
         anyhow::bail!("no cluster-backup snapshot to restore from");
     };
-
-    let (id, original, guard) = begin(b, namespace, &snapshot_id).await?;
-    let task_id = id.clone();
-    let ns = namespace.to_string();
-    let b = b.clone();
-    tokio::spawn(async move {
-        let _guard = guard;
-        let result = run_restore(&b, &ns, &snapshot_id, &cfg, &choices, &original).await;
-        record_done(&b.kube, &task_id, &result).await;
-        crate::runtime::wake("restore-watchdog");
-    });
-
-    Ok(id)
-}
-
-async fn begin<H: Host>(
-    b: &Backend<H>,
-    namespace: &str,
-    snapshot_id: &str,
-) -> anyhow::Result<(String, Vec<DeploymentScale>, ops::InFlightGuard)> {
-    let scaled_deployments = read_deployment_scales(&b.kube, namespace).await?;
-
-    let id = format!("rs-{}", random_hex(8));
-    let guard = RESTORE_IN_FLIGHT.claim(&id);
-    let set = RestoreSet {
-        id: id.clone(),
-        namespace: namespace.to_string(),
-        snapshot_id: Some(snapshot_id.to_string()),
-        started_at: Utc::now().to_rfc3339(),
-        state: RUNNING.to_string(),
-        finished_at: None,
-        error: None,
-        scaled_deployments: scaled_deployments.clone(),
-        claim: Claim::mine(Utc::now()),
-    };
+    let scales = read_deployment_scales(&b.kube, namespace).await?;
+    let set = queued(namespace, &snapshot_id, scales, choices);
+    let id = set.id.clone();
     RESTORES
         .update(&b.kube, |sets: &mut Vec<RestoreSet>| {
             ops::upsert(sets, set.clone(), MAX_RESTORES)
         })
         .await?;
-    Ok((id, scaled_deployments, guard))
+    crate::runtime::wake("restores");
+    Ok(id)
+}
+
+fn queued(
+    namespace: &str,
+    snapshot_id: &str,
+    scaled_deployments: Vec<DeploymentScale>,
+    choices: rf::Choices,
+) -> RestoreSet {
+    RestoreSet {
+        id: format!("rs-{}", random_hex(8)),
+        namespace: namespace.to_string(),
+        snapshot_id: Some(snapshot_id.to_string()),
+        started_at: Utc::now().to_rfc3339(),
+        state: QUEUED.to_string(),
+        finished_at: None,
+        error: None,
+        scaled_deployments,
+        choices,
+        attempts: 0,
+        by_install: false,
+        claim: Claim::default(),
+    }
+}
+
+fn filled_by_install(namespace: &str, snapshot_id: &str, choices: rf::Choices) -> RestoreSet {
+    let mut set = queued(namespace, snapshot_id, vec![], choices);
+    begin_attempt(&mut set);
+    set.by_install = true;
+    set.claim = Claim::mine(Utc::now());
+    set
 }
 
 async fn record_done(client: &Client, id: &str, result: &anyhow::Result<bool>) {
@@ -168,35 +172,51 @@ async fn record_done(client: &Client, id: &str, result: &anyhow::Result<bool>) {
     })
     .await
     .warn_on_err(format!(
-        "restore {id}: could not record the outcome — the watchdog will treat it as abandoned"
+        "restore {id}: could not record the outcome — it is run again once its heartbeat stops"
     ));
 }
 
-async fn run_restore<H: Host>(
-    b: &Backend<H>,
-    namespace: &str,
-    snapshot_id: &str,
-    cfg: &BackupConfig,
-    choices: &rf::Choices,
-    original: &[DeploymentScale],
-) -> anyhow::Result<bool> {
-    let result = restore_inner(b, namespace, snapshot_id, cfg, choices).await;
+async fn run_set<H: Host>(b: &Backend<H>, set: &RestoreSet) -> anyhow::Result<bool> {
+    let result = attempt(b, set).await;
     if result.is_err() {
-        for d in original {
-            scale(&b.kube, namespace, &d.name, d.replicas)
-                .await
-                .warn_on_err(format!(
-                    "restore of {namespace} failed; scale {} back up",
-                    d.name
-                ));
-        }
-        hold_daemonsets(&b.kube, namespace, false)
-            .await
-            .warn_on_err(format!(
-                "restore of {namespace} failed; release its DaemonSets"
-            ));
+        scale_back(b, &set.namespace, &set.scaled_deployments).await;
     }
     result
+}
+
+async fn attempt<H: Host>(b: &Backend<H>, set: &RestoreSet) -> anyhow::Result<bool> {
+    if set.by_install {
+        anyhow::bail!("the install filling it stopped before it finished");
+    }
+    if set.attempts > MAX_ATTEMPTS {
+        anyhow::bail!(
+            "interrupted {} times — stopped and scaled back up",
+            set.attempts - 1
+        );
+    }
+    let Some(snapshot_id) = set.snapshot_id.as_deref() else {
+        anyhow::bail!("restore {} names no snapshot", set.id);
+    };
+    let Some(cfg) = master_config(&b.kube).await? else {
+        anyhow::bail!("backup not configured");
+    };
+    restore_inner(b, &set.namespace, snapshot_id, &cfg, &set.choices).await
+}
+
+async fn scale_back<H: Host>(b: &Backend<H>, namespace: &str, original: &[DeploymentScale]) {
+    for d in original {
+        scale(&b.kube, namespace, &d.name, d.replicas)
+            .await
+            .warn_on_err(format!(
+                "restore of {namespace} failed; scale {} back up",
+                d.name
+            ));
+    }
+    hold_daemonsets(&b.kube, namespace, false)
+        .await
+        .warn_on_err(format!(
+            "restore of {namespace} failed; release its DaemonSets"
+        ));
 }
 
 async fn restore_inner<H: Host>(
@@ -751,10 +771,15 @@ impl BackupPayload {
         release: &str,
         folders: &[crate::tree::Planned],
     ) -> anyhow::Result<()> {
-        let (id, _, _guard) = begin(b, dest_namespace, &self.snapshot_id).await?;
-        let outcome = self
-            .fill_volumes_inner(b, dest_namespace, release, folders)
-            .await;
+        let set = filled_by_install(dest_namespace, &self.snapshot_id, self.choices.clone());
+        let id = set.id.clone();
+        RESTORES
+            .update(&b.kube, |sets: &mut Vec<RestoreSet>| {
+                ops::upsert(sets, set.clone(), MAX_RESTORES)
+            })
+            .await?;
+        let fill = self.fill_volumes_inner(b, dest_namespace, release, folders);
+        let outcome = ops::drive::<RestoreSet, _>(RESTORES, &b.kube, &id, fill).await;
         let recorded = match &outcome {
             Ok(_) => Ok(!self.volumes.is_empty()),
             Err(e) => Err(anyhow::anyhow!("{e}")),
@@ -1342,10 +1367,6 @@ fn catalog_pvcs(catalog: &Value, namespace: &str) -> Vec<CatalogPvc> {
         .unwrap_or_default()
 }
 
-fn liveness_of(s: &RestoreSet) -> Liveness {
-    s.liveness(&crate::system::hostname(), &RESTORE_IN_FLIGHT)
-}
-
 pub(crate) async fn list(client: &Client) -> anyhow::Result<Vec<Value>> {
     let sets = read_sets(client).await?;
     Ok(sets
@@ -1358,7 +1379,7 @@ pub(crate) async fn list(client: &Client) -> anyhow::Result<Vec<Value>> {
                 "started_at": s.started_at,
                 "finished_at": s.finished_at,
                 "error": s.error,
-                "state": classify(s, liveness_of(s)),
+                "state": classify(s),
                 "node": s.claim.owner,
             })
         })
@@ -1367,93 +1388,76 @@ pub(crate) async fn list(client: &Client) -> anyhow::Result<Vec<Value>> {
 
 pub(crate) async fn running_anywhere(client: &Client) -> anyhow::Result<bool> {
     let sets = read_sets(client).await?;
-    Ok(sets
-        .iter()
-        .any(|s| s.is_running() && liveness_of(s).is_live()))
+    Ok(sets.iter().any(unfinished))
 }
 
-fn classify(s: &RestoreSet, liveness: Liveness) -> &'static str {
+fn unfinished(s: &RestoreSet) -> bool {
+    is_queued(s) || s.is_running()
+}
+
+fn classify(s: &RestoreSet) -> &'static str {
     match s.state.as_str() {
         SUCCEEDED => SUCCEEDED,
         FAILED => FAILED,
-        _ if liveness.is_live() => RUNNING,
-        _ => FAILED,
+        _ => RUNNING,
     }
 }
 
-fn abandoned(sets: &[RestoreSet], me: &str) -> Vec<RestoreSet> {
-    sets.iter()
-        .filter(|s| s.is_running() && s.liveness(me, &RESTORE_IN_FLIGHT) == Liveness::Abandoned)
-        .cloned()
-        .collect()
+fn is_queued(s: &RestoreSet) -> bool {
+    s.state == QUEUED
 }
 
-pub struct RestoreWatchdogController;
+fn takeable(s: &RestoreSet) -> bool {
+    is_queued(s) || (s.is_running() && !ops::is_driven(s, ops::silent_for(s)))
+}
 
-impl Controller for RestoreWatchdogController {
+fn begin_attempt(s: &mut RestoreSet) {
+    s.state = RUNNING.to_string();
+    s.attempts += 1;
+    s.error = None;
+}
+
+pub struct RestoresController;
+
+impl Controller for RestoresController {
     fn name(&self) -> &'static str {
-        "restore-watchdog"
+        "restores"
     }
     fn scope(&self) -> Scope {
         Scope::Cluster
     }
     fn interval(&self) -> Duration {
-        Duration::from_secs(WATCHDOG_TICK_SECS)
+        Duration::from_secs(TICK_SECS)
     }
     fn requires(&self) -> &'static [Requirement] {
         &[Requirement::KubeApi]
     }
     async fn reconcile(&self, ctx: &Ctx) -> anyhow::Result<Tick> {
-        scale_back_abandoned(&ctx.tools.backend().await?, &ctx.node).await
+        drive_next(&ctx.tools.backend().await?).await
     }
 }
 
-async fn scale_back_abandoned<H: Host>(b: &Backend<H>, node: &str) -> anyhow::Result<Tick> {
-    let now = Utc::now();
-    let crashed = abandoned(&read_sets(&b.kube).await?, node);
-    if crashed.is_empty() {
-        return Ok(Tick::Idle("no abandoned restores".into()));
-    }
-    for set in crashed {
-        let mut claimed_by_us = false;
-        let me = node.to_string();
-        RESTORES
-            .update(&b.kube, |sets: &mut Vec<RestoreSet>| {
-                claimed_by_us = false;
-                if let Some(s) = sets.iter_mut().find(|s| s.id == set.id) {
-                    if s.is_running() && s.liveness(&me, &RESTORE_IN_FLIGHT) == Liveness::Abandoned
-                    {
-                        s.state = FAILED.to_string();
-                        s.finished_at = Some(now.to_rfc3339());
-                        s.error = Some("interrupted — scaled back up".to_string());
-                        claimed_by_us = true;
-                    }
-                }
-            })
-            .await?;
-        if !claimed_by_us {
-            continue;
-        }
-        tracing::warn!(
-            "restore {} ({}) was abandoned by {} — scaling back up",
-            set.id,
-            set.namespace,
-            set.claim.owner
-        );
-        for d in &set.scaled_deployments {
-            scale(&b.kube, &set.namespace, &d.name, d.replicas)
-                .await
-                .warn_on_err(format!("restore {}: scale {} back up", set.id, d.name));
-        }
-        hold_daemonsets(&b.kube, &set.namespace, false)
-            .await
-            .warn_on_err(format!("restore {}: release its DaemonSets", set.id));
-    }
+async fn drive_next<H: Host>(b: &Backend<H>) -> anyhow::Result<Tick> {
+    let sets = read_sets(&b.kube).await?;
+    let id = match ops::next(&sets, is_queued, ops::silent_for) {
+        ops::Next::Busy(id) => return Ok(Tick::Idle(format!("restore {id} is running"))),
+        ops::Next::Nothing => return Ok(Tick::Idle("no restore to run".into())),
+        ops::Next::Run(id) => id,
+    };
+    let Some(set) = ops::take(RESTORES, &b.kube, &id, takeable, begin_attempt).await? else {
+        return Ok(Tick::Done);
+    };
+    tracing::info!(
+        "restore {} of {}: attempt {}",
+        set.id,
+        set.namespace,
+        set.attempts
+    );
+    let run = run_set(b, &set);
+    let result = ops::drive::<RestoreSet, _>(RESTORES, &b.kube, &set.id, run).await;
+    record_done(&b.kube, &set.id, &result).await;
+    crate::runtime::wake("restores");
     Ok(Tick::Done)
-}
-
-pub(crate) fn start_heartbeat(kube: crate::k8s::Kube) {
-    ops::spawn_heartbeat::<RestoreSet>(RESTORES, &RESTORE_IN_FLIGHT, kube);
 }
 
 #[cfg(test)]
@@ -1474,6 +1478,9 @@ mod tests {
             },
             error: None,
             scaled_deployments: vec![],
+            choices: rf::Choices::default(),
+            attempts: 0,
+            by_install: false,
             claim: Claim::default(),
         }
     }
@@ -1537,50 +1544,92 @@ mod tests {
     }
 
     #[test]
-    fn succeeded_is_succeeded() {
-        assert_eq!(
-            classify(&set("a", "succeeded"), Liveness::Abandoned),
-            "succeeded"
-        );
+    fn a_finished_restore_reads_as_its_outcome() {
+        assert_eq!(classify(&set("a", SUCCEEDED)), SUCCEEDED);
+        assert_eq!(classify(&set("a", FAILED)), FAILED);
     }
 
     #[test]
-    fn failed_is_failed() {
-        assert_eq!(classify(&set("a", "failed"), Liveness::Driving), "failed");
+    fn a_queued_or_interrupted_restore_reads_as_running_because_it_will_be_run() {
+        assert_eq!(classify(&set("a", QUEUED)), RUNNING);
+        assert_eq!(classify(&set("a", RUNNING)), RUNNING);
     }
 
     #[test]
-    fn running_is_running_only_while_someone_drives_it() {
-        assert_eq!(classify(&set("a", "running"), Liveness::Driving), "running");
-        assert_eq!(classify(&set("a", "running"), Liveness::Remote), "running");
-        assert_eq!(
-            classify(&set("a", "running"), Liveness::Abandoned),
-            "failed"
-        );
+    fn a_queued_restore_already_holds_back_everything_that_pauses_for_restores() {
+        assert!(unfinished(&set("a", QUEUED)));
+        assert!(unfinished(&set("a", RUNNING)));
+        assert!(!unfinished(&set("a", SUCCEEDED)));
+        assert!(!unfinished(&set("a", FAILED)));
     }
 
     #[test]
-    fn another_nodes_heartbeating_restore_is_never_abandoned() {
-        let now = Utc::now();
-        let mut live = set("rs-live", "running");
-        live.claim = Claim {
+    fn a_queued_restore_is_takeable_and_a_finished_one_never() {
+        assert!(takeable(&set("a", QUEUED)));
+        assert!(!takeable(&set("a", SUCCEEDED)));
+        assert!(!takeable(&set("a", FAILED)));
+    }
+
+    #[test]
+    fn a_running_restore_first_seen_now_is_not_taken_from_its_machine() {
+        let mut fresh = set("rs-first-seen", RUNNING);
+        fresh.claim = Claim {
             owner: "node1".into(),
-            heartbeat: (now - chrono::Duration::seconds(10)).to_rfc3339(),
+            heartbeat: Utc::now().to_rfc3339(),
         };
-        let mut looks_old = set("rs-looks-old", "running");
-        looks_old.claim = Claim {
-            owner: "node1".into(),
-            heartbeat: (now - chrono::Duration::seconds(600)).to_rfc3339(),
-        };
-        let mut mine_restarted = set("rs-mine", "running");
-        mine_restarted.claim = Claim {
-            owner: "node2".into(),
-            heartbeat: now.to_rfc3339(),
-        };
-        let done = set("rs-done", "succeeded");
-        let found = abandoned(&[live, looks_old, mine_restarted, done], "node2");
-        let ids: Vec<&str> = found.iter().map(|s| s.id.as_str()).collect();
-        assert_eq!(ids, vec!["rs-mine"]);
+        assert!(!takeable(&fresh));
+    }
+
+    #[test]
+    fn each_attempt_counts_and_clears_the_last_error() {
+        let mut s = set("a", QUEUED);
+        s.error = Some("interrupted".into());
+        begin_attempt(&mut s);
+        begin_attempt(&mut s);
+        assert_eq!(s.state, RUNNING);
+        assert_eq!(s.attempts, 2);
+        assert_eq!(s.error, None);
+    }
+
+    #[test]
+    fn a_queued_restore_carries_everything_needed_to_run_it_on_any_machine() {
+        let mut choices = rf::Choices::default();
+        choices.data.insert("data".into(), rf::Choice::Use);
+        let scales = vec![DeploymentScale {
+            name: "web".into(),
+            replicas: 2,
+        }];
+        let s = queued("yolab-notes", "snap-1", scales, choices.clone());
+        let stored = serde_json::to_value(&s).unwrap();
+        let back: RestoreSet = serde_json::from_value(stored).unwrap();
+        assert_eq!(back.state, QUEUED);
+        assert_eq!(back.snapshot_id.as_deref(), Some("snap-1"));
+        assert_eq!(back.choices, choices);
+        assert_eq!(back.scaled_deployments[0].replicas, 2);
+        assert_eq!(back.attempts, 0);
+        assert!(!back.by_install);
+        assert!(back.id.starts_with("rs-"));
+    }
+
+    #[test]
+    fn a_record_written_before_restores_were_queued_still_reads() {
+        let old: RestoreSet = serde_json::from_value(json!({
+            "id": "rs-old", "namespace": "yolab-notes", "started_at": "2026-09-28T00:00:00Z",
+            "state": "running", "owner": "node1", "heartbeat": "h"
+        }))
+        .unwrap();
+        assert_eq!(old.attempts, 0);
+        assert_eq!(old.choices, rf::Choices::default());
+        assert!(!old.by_install);
+    }
+
+    #[test]
+    fn an_install_fill_is_running_on_this_machine_from_the_start() {
+        let s = filled_by_install("yolab-notes", "snap-1", rf::Choices::default());
+        assert_eq!(s.state, RUNNING);
+        assert_eq!(s.attempts, 1);
+        assert!(s.by_install);
+        assert_eq!(s.claim.owner, crate::system::hostname());
     }
 
     #[test]
@@ -1955,7 +2004,7 @@ mod tests {
         use crate::host::fake::FakeHost;
         use crate::k8s::testing::{api_server, list, status};
         use wiremock::matchers::{body_partial_json, method, path};
-        use wiremock::{Mock, ResponseTemplate};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
 
         fn cfg() -> BackupConfig {
             BackupConfig {
@@ -2115,31 +2164,79 @@ mod tests {
             assert!(server.received_requests().await.unwrap().is_empty());
         }
 
-        #[tokio::test]
-        async fn an_abandoned_restore_scales_the_app_back_to_what_it_was() {
+        async fn drive_one(record: Value) -> (MockServer, Tick) {
             let (server, kube) = api_server().await;
-            scaled("web", 3).expect(1).mount(&server).await;
+            scaled("web", 3).mount(&server).await;
             daemonsets(&["engine"]).mount(&server).await;
-            held("engine", false).expect(1).mount(&server).await;
-            let running = json!([{
-                "id": "rs-1", "namespace": "yolab-notes", "started_at": "2026-09-28T00:00:00Z",
-                "state": "running", "scaled_deployments": [{ "name": "web", "replicas": 3 }],
-                "owner": "node1", "heartbeat": "2026-09-28T00:00:00Z"
-            }]);
-            crate::records::testing::records(&server, "yolab-restores", running).await;
+            held("engine", false).mount(&server).await;
+            crate::records::testing::records(&server, "yolab-restores", json!([record])).await;
             crate::records::testing::accept_writes(&server).await;
             let b = Backend {
                 kube,
                 host: FakeHost::new(),
             };
+            let tick = drive_next(&b).await.unwrap();
+            (server, tick)
+        }
 
-            assert!(matches!(
-                scale_back_abandoned(&b, "node1").await.unwrap(),
-                Tick::Done
-            ));
-            let marked = crate::records::testing::written(&server, "yolab-restores").await;
-            assert_eq!(marked[0][0]["state"], "failed");
-            assert_eq!(marked[0][0]["error"], "interrupted — scaled back up");
+        fn queued_record(more: Value) -> Value {
+            let mut r = json!({
+                "id": "rs-1", "namespace": "yolab-notes", "started_at": "2026-09-28T00:00:00Z",
+                "state": QUEUED, "snapshot_id": "snap-1",
+                "scaled_deployments": [{ "name": "web", "replicas": 3 }],
+                "owner": "", "heartbeat": ""
+            });
+            for (k, v) in more.as_object().unwrap() {
+                r[k] = v.clone();
+            }
+            r
+        }
+
+        #[tokio::test]
+        async fn a_restore_interrupted_too_often_scales_the_app_back_and_fails() {
+            let record = queued_record(json!({ "attempts": MAX_ATTEMPTS }));
+            let (server, tick) = drive_one(record).await;
+            assert_eq!(tick, Tick::Done);
+            let written = crate::records::testing::written(&server, "yolab-restores").await;
+            let taken = &written[0][0];
+            assert_eq!(taken["state"], RUNNING);
+            assert_eq!(taken["attempts"], MAX_ATTEMPTS + 1);
+            assert_eq!(taken["owner"], crate::system::hostname());
+            let done = &written.last().unwrap()[0];
+            assert_eq!(done["state"], FAILED);
+            assert!(
+                done["error"].as_str().unwrap().contains("interrupted"),
+                "{done}"
+            );
+            let patched = crate::k8s::testing::patched(&server).await;
+            assert!(
+                patched.iter().any(|p| p["spec"]["replicas"] == 3),
+                "{patched:?}"
+            );
+        }
+
+        #[tokio::test]
+        async fn an_install_fill_left_behind_fails_instead_of_restoring_in_place() {
+            let (server, _) = drive_one(queued_record(json!({ "by_install": true }))).await;
+            let written = crate::records::testing::written(&server, "yolab-restores").await;
+            let done = &written.last().unwrap()[0];
+            assert_eq!(done["state"], FAILED);
+            assert!(
+                done["error"].as_str().unwrap().contains("install"),
+                "{done}"
+            );
+        }
+
+        #[tokio::test]
+        async fn nothing_queued_runs_nothing() {
+            let (server, tick) = drive_one(json!({
+                "id": "rs-1", "namespace": "yolab-notes", "started_at": "2026-09-28T00:00:00Z",
+                "state": SUCCEEDED, "owner": "node1", "heartbeat": "h"
+            }))
+            .await;
+            assert!(matches!(tick, Tick::Idle(_)), "{tick:?}");
+            let written = crate::records::testing::written(&server, "yolab-restores").await;
+            assert!(written.is_empty());
         }
     }
 }
