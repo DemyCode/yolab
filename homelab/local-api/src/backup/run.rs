@@ -5,12 +5,12 @@ use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+use crate::backup::common::*;
 use crate::error::Outcome;
 use crate::host::Host;
 use crate::ops::{self, Claim, Claimed, FAILED, QUEUED, RUNNING, SUCCEEDED};
 use crate::records::Store;
 use crate::routers::apps::{ANN_APP_ID, ANN_CHART_REPO, ANN_CHART_VERSION};
-use crate::routers::backup_common::*;
 use crate::runtime::{Activity, Controller, Ctx, Scope, Tick};
 use chrono::{DateTime, Utc};
 use kube::Client;
@@ -326,7 +326,7 @@ fn split_by_tree(
 
 pub(crate) fn budget_warning(
     name: &str,
-    size: &crate::routers::backup_points::ServiceSize,
+    size: &crate::backup::points::ServiceSize,
 ) -> Option<String> {
     size.over_budget.then(|| {
         format!(
@@ -398,7 +398,7 @@ async fn run_set<H: Host>(
 
     let name = namespace.strip_prefix("yolab-").unwrap_or(namespace);
     let warning =
-        match crate::routers::backup_points::after_run(b, cfg, namespace, &snapshot_id).await {
+        match crate::backup::points::after_run(b, cfg, namespace, &snapshot_id).await {
             Ok(done) => {
                 if done.dropped > 0 {
                     tracing::info!(
@@ -1061,7 +1061,7 @@ async fn snapshot_cluster_inner<H: Host>(
 
     let scope_tag = match target {
         BackupTarget::Cluster => "scope:cluster".to_string(),
-        BackupTarget::App(ns) => crate::routers::backup_points::namespace_tag(ns),
+        BackupTarget::App(ns) => crate::backup::points::namespace_tag(ns),
     };
     let run_tag = crate::routers::folder_backup::run_tag(run_id);
     let backup = restic_with(

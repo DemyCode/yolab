@@ -16,7 +16,7 @@ use crate::routers::apps::{
     stage_install, write_definition, AppDefinition, BackupPolicy, ChartAt, StagedInstall,
     DEFINITION_SCHEMA,
 };
-use crate::routers::backup_common::Backend;
+use crate::backup::common::Backend;
 
 const HELM_TIMEOUT: Duration = Duration::from_secs(900);
 const MAX_LABEL_LEN: usize = 63;
@@ -35,7 +35,7 @@ pub struct InstallSource {
     #[serde(default)]
     pub with_data: bool,
     #[serde(default)]
-    pub choices: crate::routers::restore_plan::Choices,
+    pub choices: crate::backup::restore_plan::Choices,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,7 +63,7 @@ pub(crate) enum DataOrigin {
     Backup {
         namespace: String,
         snapshot_id: String,
-        choices: crate::routers::restore_plan::Choices,
+        choices: crate::backup::restore_plan::Choices,
     },
     Live {
         namespace: String,
@@ -194,7 +194,7 @@ fn data_origin(
     with_data: bool,
     namespace: &str,
     snapshot_id: Option<String>,
-    choices: &crate::routers::restore_plan::Choices,
+    choices: &crate::backup::restore_plan::Choices,
 ) -> Result<Option<DataOrigin>, String> {
     if !with_data {
         return Ok(None);
@@ -339,9 +339,9 @@ pub(crate) async fn source<H: Host>(
             snapshot_id,
         } => {
             let definition =
-                crate::routers::restore::definition_from_backup(b, namespace, snapshot_id).await?;
+                crate::backup::restore::definition_from_backup(b, namespace, snapshot_id).await?;
             let (chart, schema) =
-                crate::routers::restore::kept_from_backup(b, namespace, snapshot_id).await?;
+                crate::backup::restore::kept_from_backup(b, namespace, snapshot_id).await?;
             Ok(Some(Source {
                 definition,
                 chart,
@@ -454,7 +454,7 @@ struct ChartJob<'a> {
 
 enum DataFill<'a> {
     None,
-    Backup(Box<crate::routers::restore::BackupPayload>),
+    Backup(Box<crate::backup::restore::BackupPayload>),
     Live { source_namespace: &'a str },
 }
 
@@ -582,7 +582,7 @@ async fn install_inner<H: Host + 'static>(
         }) => {
             log.say("Reading the backup…");
             let payload =
-                crate::routers::restore::backup_payload(b, namespace, snapshot_id, choices.clone())
+                crate::backup::restore::backup_payload(b, namespace, snapshot_id, choices.clone())
                     .await?;
             same_app(&plan.app_id, payload.app_id(), "that backup")
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -827,7 +827,7 @@ impl Claimed for InstallRun {
 
 fn queued_run(namespace: &str) -> InstallRun {
     InstallRun {
-        id: format!("in-{}", crate::routers::backup_common::random_hex(8)),
+        id: format!("in-{}", crate::backup::common::random_hex(8)),
         namespace: namespace.to_string(),
         started_at: chrono::Utc::now().to_rfc3339(),
         state: ops::QUEUED.to_string(),
@@ -1643,10 +1643,10 @@ mod tests {
 
     #[test]
     fn an_install_plan_comes_back_whole_from_its_secret() {
-        let mut choices = crate::routers::restore_plan::Choices::default();
+        let mut choices = crate::backup::restore_plan::Choices::default();
         choices
             .data
-            .insert("data".into(), crate::routers::restore_plan::Choice::Use);
+            .insert("data".into(), crate::backup::restore_plan::Choice::Use);
         let plans = [
             a_plan(ChartPin::Newest, None),
             a_plan(

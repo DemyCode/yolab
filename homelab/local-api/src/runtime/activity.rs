@@ -98,7 +98,7 @@ async fn ask_requirement(tools: &crate::tools::Tools, r: Requirement) -> Answer 
 async fn ask_activity(tools: &crate::tools::Tools, a: Activity) -> Answer {
     let r = match a {
         Activity::Restore => match tools.kube().await {
-            Ok(client) => crate::routers::restore::running_anywhere(&client).await,
+            Ok(client) => crate::backup::restore::running_anywhere(&client).await,
             Err(e) => Err(e),
         },
     };

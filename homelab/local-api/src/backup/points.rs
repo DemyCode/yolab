@@ -7,10 +7,10 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::backup::common::*;
 use crate::error::Outcome;
 use crate::host::Host;
 use crate::records::Store;
-use crate::routers::backup_common::*;
 use crate::routers::folder_backup::{self, FOLDERS_TAG, KEEP_TAG};
 
 pub(crate) const SETTINGS_REPO: &str = "cluster-backup";
@@ -298,7 +298,7 @@ impl<H: Host> Service<'_, H> {
     ) -> anyhow::Result<BTreeSet<String>> {
         let mut touched = BTreeSet::new();
         for point in points {
-            for (repo, ids) in crate::routers::restore::legacy_volumes(
+            for (repo, ids) in crate::backup::restore::legacy_volumes(
                 self.host,
                 self.cfg,
                 &point.snapshot_id,

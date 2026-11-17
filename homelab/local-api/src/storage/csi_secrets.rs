@@ -4,9 +4,9 @@ use anyhow::{Context, Result};
 use kube::Client;
 use serde_json::{json, Value};
 
+use crate::backup::common::Backend;
 use crate::csi::{CLUSTER_ID, CONFIG_MAP, NODE_SECRET, NS, PROVISIONER_SECRET};
 use crate::host::Host;
-use crate::routers::backup_common::Backend;
 
 const KERNEL_MOUNT_OPTIONS: &str = "ms_mode=secure,noquotadf";
 

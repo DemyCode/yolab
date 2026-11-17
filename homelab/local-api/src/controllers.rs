@@ -65,8 +65,10 @@ fn entry<C: runtime::Controller>(
 }
 
 pub fn table() -> Vec<Entry> {
-    use crate::routers::{apps, backup, backup_check, backups, install, restore};
+    use crate::backup::{check as backup_check, restore, run as backup};
+    use crate::routers::{apps, backups, install};
     use crate::storage::controllers as storage;
+
     use Needs::{Nothing, Storage};
 
     vec![

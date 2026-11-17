@@ -211,7 +211,7 @@ async fn compute_cluster_health<H: Host>(host: &H, kube: Option<&kube::Client>) 
 
     let shape = match kube {
         Some(kube) => {
-            crate::topology::observe(&crate::routers::backup_common::Backend {
+            crate::topology::observe(&crate::backup::common::Backend {
                 kube: kube.clone(),
                 host: host.clone(),
             })

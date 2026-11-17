@@ -3,10 +3,10 @@ use axum::Json;
 use serde::Deserialize;
 use std::collections::HashSet;
 
+use crate::backup::common::*;
+use crate::backup::{points as backup_points, restore, run as backup};
 use crate::error::Outcome;
 use crate::host::Host;
-use crate::routers::backup_common::*;
-use crate::routers::{backup, backup_points, restore};
 use crate::{config::Config, error::Result, AppState};
 
 pub fn ye_creds(cfg: &Config) -> Option<(String, String)> {
@@ -123,7 +123,7 @@ pub struct RestoreRequest {
     #[serde(default)]
     pub snapshot_id: Option<String>,
     #[serde(default)]
-    pub choices: crate::routers::restore_plan::Choices,
+    pub choices: crate::backup::restore_plan::Choices,
 }
 
 pub async fn restore_app(
@@ -216,7 +216,7 @@ pub async fn app_restore_plan(
     State(state): State<AppState>,
     Path(namespace): Path<String>,
     axum::extract::Query(q): axum::extract::Query<DefinitionQuery>,
-) -> Result<Json<crate::routers::restore_plan::RestorePlan>> {
+) -> Result<Json<crate::backup::restore_plan::RestorePlan>> {
     let b = state.backend().await?;
     Ok(Json(
         restore::restore_plan(&b, &namespace, &q.snapshot_id).await?,

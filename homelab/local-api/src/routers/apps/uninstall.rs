@@ -158,7 +158,7 @@ async fn delete_backups_of<H: crate::host::Host + Clone + 'static>(
     instance_name: &str,
     ns: &str,
 ) {
-    let cfg = match crate::routers::backup_common::master_config(&b.kube).await {
+    let cfg = match crate::backup::common::master_config(&b.kube).await {
         Ok(Some(cfg)) => cfg,
         Ok(None) => return,
         Err(e) => {
@@ -168,7 +168,7 @@ async fn delete_backups_of<H: crate::host::Host + Clone + 'static>(
             return;
         }
     };
-    match crate::routers::backup_points::delete_all(b, &cfg, ns).await {
+    match crate::backup::points::delete_all(b, &cfg, ns).await {
         Ok(n) => tracing::info!("uninstall {instance_name}: deleted its {n} backups"),
         Err(e) => tracing::warn!(
             "uninstall {instance_name}: its backups were kept and can be deleted from the Backups page: {e:#}"

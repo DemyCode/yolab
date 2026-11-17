@@ -10,8 +10,8 @@ use kube::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::backup::common::Backend;
 use crate::error::Outcome;
-use crate::routers::backup_common::Backend;
 use crate::routers::install;
 use crate::{config::Config, error::Result, AppState};
 
@@ -173,7 +173,7 @@ pub(crate) async fn collect_runtime(
     client: &kube::Client,
     ns: &str,
 ) -> (Vec<VolumeSpec>, ResourceSpec) {
-    let volumes = crate::routers::backup_common::user_pvcs(client)
+    let volumes = crate::backup::common::user_pvcs(client)
         .await
         .unwrap_or_default()
         .into_iter()
@@ -316,7 +316,7 @@ fn validate_config_values(
 pub async fn list_apps(State(state): State<AppState>) -> Result<Json<Vec<AppInfo>>> {
     let client = &state.kube.client().await?;
     let catalog_dir = state.config.catalog_dir();
-    let backup_status = crate::routers::backup::app_backup_status(client).await;
+    let backup_status = crate::backup::run::app_backup_status(client).await;
     let schemas = crate::saved_chart::all_schemas(client)
         .await
         .unwrap_or_default();

@@ -1,5 +1,6 @@
 mod appschema;
 mod auth;
+mod backup;
 mod boot;
 mod ceph;
 mod ceph_cli;
@@ -71,7 +72,7 @@ impl AppState {
         }
     }
 
-    pub(crate) async fn backend(&self) -> anyhow::Result<routers::backup_common::Backend> {
+    pub(crate) async fn backend(&self) -> anyhow::Result<backup::common::Backend> {
         self.tools().backend().await
     }
 }

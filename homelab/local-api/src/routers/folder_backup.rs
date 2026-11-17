@@ -3,8 +3,8 @@ use std::time::Duration;
 use kube::Client;
 use serde_json::{json, Value};
 
+use crate::backup::common::{apply_secret, random_hex, BackupConfig};
 use crate::error::Outcome;
-use crate::routers::backup_common::{apply_secret, random_hex, BackupConfig};
 
 pub(crate) const IMAGE: &str =
     "restic/restic:0.19.1@sha256:136600b6ff6843d61d355f7f71f460a166429f35de6fd11b568fece3c9a4d510";

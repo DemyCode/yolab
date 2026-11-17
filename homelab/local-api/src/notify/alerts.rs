@@ -6,8 +6,8 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use super::{publish_everywhere, topic, Notification, Tunnel};
+use crate::backup::common::Backend;
 use crate::host::Host;
-use crate::routers::backup_common::Backend;
 use crate::runtime::{Controller, Ctx, Scope, Tick};
 
 const NAME: &str = "notifier";
@@ -160,7 +160,7 @@ fn newest_for<'a>(sets: &'a [serde_json::Value], namespace: &str) -> Option<&'a 
         .find(|s| s["namespace"].as_str().unwrap_or("") == namespace)
 }
 
-fn check_alerts(checks: &crate::routers::backup_check::Checks) -> Vec<Alert> {
+fn check_alerts(checks: &crate::backup::check::Checks) -> Vec<Alert> {
     checks
         .iter()
         .filter(|(_, c)| !c.ok)
@@ -240,11 +240,11 @@ fn backup_alerts(
 async fn backup_source<H: Host>(backend: &anyhow::Result<Backend<H>>, silent: bool) -> Source {
     let read = async {
         let b = backend.as_ref().map_err(|e| anyhow::anyhow!("{e:#}"))?;
-        let sets = crate::routers::backup::list(&b.kube).await?;
+        let sets = crate::backup::run::list(&b.kube).await?;
         anyhow::Ok((sets, b))
     };
     let alerts = match read.await {
-        Ok((sets, b)) => match crate::routers::backup_common::managed_namespaces(&b.kube).await {
+        Ok((sets, b)) => match crate::backup::common::managed_namespaces(&b.kube).await {
             Ok(mut namespaces) => {
                 namespaces.push(String::new());
                 let mut alerts = backup_alerts(
@@ -253,7 +253,7 @@ async fn backup_source<H: Host>(backend: &anyhow::Result<Backend<H>>, silent: bo
                     chrono::Utc::now(),
                     BACKUP_STALE_AFTER_HOURS,
                 );
-                match crate::routers::backup_check::read_checks(&b.kube).await {
+                match crate::backup::check::read_checks(&b.kube).await {
                     Ok(checks) => {
                         alerts.extend(check_alerts(&checks));
                         Some(alerts)
@@ -522,10 +522,10 @@ mod tests {
 
     #[test]
     fn a_backup_store_that_failed_its_check_is_reported_and_a_healthy_one_is_not() {
-        let checks = crate::routers::backup_check::Checks::from([
+        let checks = crate::backup::check::Checks::from([
             (
                 "services/yolab-a".to_string(),
-                crate::routers::backup_check::Checked {
+                crate::backup::check::Checked {
                     ok: false,
                     checked_at: at(1),
                     problem: Some("pack 1a2b is damaged".into()),
@@ -534,7 +534,7 @@ mod tests {
             ),
             (
                 "cluster-backup".to_string(),
-                crate::routers::backup_check::Checked {
+                crate::backup::check::Checked {
                     ok: true,
                     checked_at: at(1),
                     ..Default::default()

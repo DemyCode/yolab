@@ -1,8 +1,4 @@
 pub mod apps;
-pub mod backup;
-pub mod backup_check;
-pub mod backup_common;
-pub mod backup_points;
 pub mod backups;
 pub mod ceph;
 pub mod ceph_join;
@@ -15,8 +11,6 @@ pub mod logs;
 pub mod nodes;
 pub mod reboot;
 pub mod rebuild;
-pub mod restore;
-pub mod restore_plan;
 pub mod status;
 pub mod store;
 pub mod update;

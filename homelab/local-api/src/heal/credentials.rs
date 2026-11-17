@@ -6,7 +6,7 @@ use anyhow::{Context, Result};
 
 use kube::Client;
 
-use crate::routers::backup_common::{apply_secret, MASTER_NS, MASTER_SECRET};
+use crate::backup::common::{apply_secret, MASTER_NS, MASTER_SECRET};
 use crate::runtime::{Controller, Ctx, Scope, Tick};
 
 const NAME: &str = "backup-credentials";

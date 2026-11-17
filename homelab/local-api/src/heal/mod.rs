@@ -1131,7 +1131,7 @@ pub async fn post_heal(
 ) -> (StatusCode, Json<Value>) {
     let net = RealNetwork::from_config(&s.config);
     let me = crate::system::hostname();
-    let id = crate::routers::backup_common::random_hex(8);
+    let id = crate::backup::common::random_hex(8);
     match start_heal(
         &s.host,
         &net,

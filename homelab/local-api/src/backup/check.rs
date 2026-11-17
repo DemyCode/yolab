@@ -5,9 +5,9 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::backup::common::*;
 use crate::host::Host;
 use crate::records::Store;
-use crate::routers::backup_common::*;
 use crate::runtime::{Activity, Controller, Ctx, Scope, Tick};
 
 pub(crate) const CHECKS: Store = Store {
@@ -168,7 +168,7 @@ pub(crate) async fn read_checks(client: &kube::Client) -> anyhow::Result<Checks>
 }
 
 pub(crate) fn stores_to_check(services: impl IntoIterator<Item = String>) -> Vec<String> {
-    std::iter::once(crate::routers::backup_points::SETTINGS_REPO.to_string())
+    std::iter::once(crate::backup::points::SETTINGS_REPO.to_string())
         .chain(
             services
                 .into_iter()
@@ -207,7 +207,7 @@ pub(crate) async fn check_due<H: Host>(b: &Backend<H>) -> anyhow::Result<Tick> {
     let Some(cfg) = master_config(&b.kube).await? else {
         return Ok(Tick::Idle("backups are not enabled".into()));
     };
-    let services = crate::routers::backup_points::read_sizes(&b.kube).await?;
+    let services = crate::backup::points::read_sizes(&b.kube).await?;
     let checks = read_checks(&b.kube).await?;
     let now = Utc::now();
     let due_now: Vec<String> = stores_to_check(services.into_keys())
