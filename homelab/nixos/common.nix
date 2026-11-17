@@ -430,7 +430,6 @@ in {
 
     systemd.services.yolab-local-api = {
       after = ["network.target"];
-      wants = ["k3s.service"];
       wantedBy = ["multi-user.target"];
       environment = {
         PATH = lib.mkForce (

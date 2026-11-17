@@ -179,9 +179,12 @@ in let
         ++ lib.optional (!(builtins.elem unit (k3s.after or []))) "k3s is not After=${unit}, so it can start before the store is mounted"
         ++ map (u: "k3s is ordered behind ${u}; the image store is the only storage it waits for") otherStorage
         ++ lib.optional (builtins.elem "k3s.service" waitsFor) "yolab-image-store waits for k3s, which waits for it"
-        ++ lib.optional ((store.serviceConfig.Type or "") != "oneshot") "yolab-image-store is not a oneshot, so k3s does not wait for it to finish"
-        ++ lib.optional ((store.serviceConfig.TimeoutStartSec or "") != "infinity") "yolab-image-store can time out, which fails k3s's start for good instead of waiting"
+        ++ lib.optional ((k3s.unitConfig.ConditionPathIsMountPoint or "") != "/var/lib/rancher/k3s/agent/containerd") "k3s has no ConditionPathIsMountPoint on containerd's data-root, so a start from anywhere can run it on the root disk"
+        ++ lib.optional (builtins.elem "multi-user.target" (k3s.wantedBy or [])) "k3s is wanted by multi-user.target, so boot starts it before the image store is mounted"
+        ++ lib.optional ((store.serviceConfig.Type or "") != "simple") "yolab-image-store is not Type=simple, so its wait holds the boot transaction"
+        ++ lib.optional ((store.serviceConfig.RemainAfterExit or false) != true) "yolab-image-store does not RemainAfterExit, so k3s's Requires= stops k3s when it exits"
         ++ lib.optional ((store.restartIfChanged or true) != false) "yolab-image-store reruns on a switch"
+        ++ lib.optional (builtins.elem "k3s.service" (svcs.yolab-local-api.wants or [])) "yolab-local-api Wants=k3s.service, which starts k3s before the image store is mounted"
         ++ lib.optional (builtins.elem "k3s.service" (svcs.yolab-local-api.after or [])) "yolab-local-api is After=k3s.service, so nothing can report why k3s is waiting"
         ++ lib.optional (builtins.elem unit (svcs.yolab-local-api.after or [])) "yolab-local-api is After=${unit}, but it creates the OSD and the RBD the store waits for";
     in

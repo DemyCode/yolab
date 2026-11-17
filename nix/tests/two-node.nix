@@ -194,7 +194,7 @@ in
             m.succeed("ls /var/lib/rancher/k3s/agent/containerd/ >/dev/null")
             m.succeed("systemctl is-active k3s.service")
             mounted_at = int(m.succeed(
-                "systemctl show -P ActiveEnterTimestampMonotonic yolab-image-store.service"
+                "systemctl show -P ExecMainExitTimestampMonotonic yolab-image-store.service"
             ).strip())
             k3s_started_at = int(m.succeed(
                 "systemctl show -P InactiveExitTimestampMonotonic k3s.service"

@@ -84,7 +84,8 @@ in
       start_all()
       node1.wait_for_unit("multi-user.target", timeout=900)
       node1.wait_until_succeeds("systemctl is-active ceph-mon-yolab-n1.service", timeout=600)
-      node1.wait_until_succeeds(f"{K} get --raw /readyz", timeout=900)
+      node1.succeed("systemctl is-active yolab-image-store.service")
+      node1.fail("systemctl is-active k3s.service")
 
       # ── Two disks on, one copy of everything ──────────────────────────────
       node1.wait_for_open_port(3001, timeout=300)
@@ -100,6 +101,7 @@ in
               f"-d '{{\"desired\":\"ON\"}}' {API}/api/disks/{node_name}/{disk_id}"
           )
       node1.wait_until_succeeds("ceph osd stat | grep -E '2 osds: 2 up'", timeout=900)
+      node1.wait_until_succeeds(f"{K} get --raw /readyz", timeout=900)
 
       # CephFS appears once an OSD exists (cephfs.rs), with an active MDS.
       jq_ok("ceph fs ls -f json", 'map(.name) | index("yolab-fs") != null', 600)
@@ -193,17 +195,29 @@ in
           node1.wait_until_succeeds("systemctl show -p Result yolab-reset-wipe | grep -q success", timeout=300)
           node1.succeed(f"grep -q 'wipe_condition = false' {MACHINE_CONFIG}")
           node1.wait_until_succeeds("systemctl is-active ceph-mon-yolab-n1.service", timeout=600)
-          node1.wait_until_succeeds(f"{K} get --raw /readyz", timeout=900)
       except Exception:
           dump_heal_log()
           raise
       node1.succeed("ceph osd ls -f json | jq -e 'length == 0'")
-      node1.fail(f"{K} get namespace yolab-demo")
       node1.wait_for_open_port(3001, timeout=300)
       # Both disks are blank again, and nothing switches them on.
       jq_ok(f"curl -sf {AUTH} {API}/api/disks", f"[.[][] | {SPARE}] | length == 2", 600)
       jq_ok("ceph config-key dump yolab/disks/", 'to_entries | map(select(.value == "OFF")) | length == 2', 600)
       # The k3s manifests tmpfiles links in survive the wipe.
       node1.succeed("test -e /var/lib/rancher/k3s/server/manifests/snap-1-crds-rbac.yaml")
+      node1.succeed("systemctl is-active yolab-image-store.service")
+      node1.fail("systemctl is-active k3s.service")
+      for line in node1.succeed(
+          f"curl -sf {AUTH} {API}/api/disks | "
+          f"jq -r 'to_entries[] as $n | $n.value[] | {SPARE} | \"\\($n.key) \\(.id)\"'"
+      ).strip().splitlines():
+          node_name, disk_id = line.split()
+          node1.succeed(
+              f"curl -sf -X PUT {AUTH} -H 'content-type: application/json' "
+              f"-d '{{\"desired\":\"ON\"}}' {API}/api/disks/{node_name}/{disk_id}"
+          )
+      node1.wait_until_succeeds("ceph osd stat | grep -E '2 osds: 2 up'", timeout=900)
+      node1.wait_until_succeeds(f"{K} get --raw /readyz", timeout=900)
+      node1.fail(f"{K} get namespace yolab-demo")
     '';
   })

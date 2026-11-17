@@ -202,9 +202,10 @@ in {
         YOLAB_LIBRADOS = "${pkgs.ceph.lib}/lib/librados.so.2";
       };
       serviceConfig = {
-        Type = "oneshot";
+        Type = "simple";
         RemainAfterExit = true;
-        TimeoutStartSec = "infinity";
+        Restart = "on-failure";
+        RestartSec = "10s";
         ExecStart = "${localApiEnv}/bin/local-api storage image-store-up";
       };
     };
@@ -212,6 +213,8 @@ in {
     systemd.services.k3s = {
       requires = ["yolab-image-store.service"];
       after = ["yolab-image-store.service"];
+      wantedBy = lib.mkForce [];
+      unitConfig.ConditionPathIsMountPoint = "/var/lib/rancher/k3s/agent/containerd";
     };
 
     systemd.services.yolab-vdisks = {

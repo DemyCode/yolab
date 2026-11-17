@@ -138,16 +138,24 @@ async fn image_store_up<H: crate::host::Host>(
     node: &str,
 ) -> Result<()> {
     if !env.is_configured() {
-        tracing::warn!(
-            "image store: this machine has no Ceph settings, so k3s keeps its images on the \
-             root disk"
+        anyhow::bail!(
+            "this machine has no Ceph settings, so it has no image store to start k3s on"
         );
-        return Ok(());
     }
     let policy = env.containerd_store_policy();
     match containerd_store::up(host, root(), node, &policy, containerd_store::RETRY).await {
-        containerd_store::Up::Mounted => tracing::info!("image store: mounted, k3s may start"),
+        containerd_store::Up::Mounted => tracing::info!("image store: mounted, starting k3s"),
         containerd_store::Up::LeftOnRootDisk(why) => tracing::warn!("image store: {why}"),
+    }
+    let started = host
+        .systemctl(&["start", "--no-block", controllers::K3S_UNIT])
+        .await?;
+    if !started.success {
+        anyhow::bail!(
+            "could not start {}: {}",
+            controllers::K3S_UNIT,
+            started.stderr.trim()
+        );
     }
     Ok(())
 }
@@ -225,6 +233,53 @@ pub async fn run(args: &[String]) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::host::fake::FakeHost;
+
+    fn ceph_settings() -> StorageEnv {
+        StorageEnv::from_lookup(|name| match name {
+            "YOLAB_CEPH_FSID" => Some("f".into()),
+            "YOLAB_CEPH_MON_ADDR" => Some("fd00:cafe::1".into()),
+            _ => None,
+        })
+    }
+
+    #[tokio::test]
+    async fn the_image_store_starts_k3s_once_it_is_mounted() {
+        let host = FakeHost::new()
+            .ok("findmnt -rno TARGET --mountpoint", "")
+            .ok("systemctl start --no-block k3s.service", "");
+        image_store_up(&host, &ceph_settings(), "yolab-n1")
+            .await
+            .unwrap();
+        let calls = host.calls();
+        let mounted = calls.iter().position(|c| c.starts_with("findmnt")).unwrap();
+        let started = calls
+            .iter()
+            .position(|c| c == "systemctl start --no-block k3s.service")
+            .expect("k3s was never started");
+        assert!(mounted < started, "{calls:?}");
+    }
+
+    #[tokio::test]
+    async fn a_k3s_that_cannot_be_started_fails_the_unit_so_systemd_tries_again() {
+        let host = FakeHost::new()
+            .ok("findmnt -rno TARGET --mountpoint", "")
+            .fail("systemctl start --no-block k3s.service", "unit masked");
+        let err = image_store_up(&host, &ceph_settings(), "yolab-n1")
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("unit masked"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_machine_without_ceph_settings_fails_instead_of_starting_k3s_on_the_root_disk() {
+        let host = FakeHost::new().ok("systemctl", "");
+        let err = image_store_up(&host, &StorageEnv::from_lookup(|_| None), "yolab-n1")
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("no Ceph settings"), "{err}");
+        assert!(!host.ran("systemctl start"), "{:?}", host.calls());
+    }
 
     #[test]
     fn defaults_apply_only_to_settings_that_have_one() {
