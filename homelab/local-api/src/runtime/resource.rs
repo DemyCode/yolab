@@ -399,8 +399,7 @@ async fn run<R: Resource>(
             continue;
         }
 
-        if let activity::Gate::Paused(why) =
-            activity::gate(&tools, resource.pauses_during()).await
+        if let activity::Gate::Paused(why) = activity::gate(&tools, resource.pauses_during()).await
         {
             if last_pause.as_deref() != Some(why.as_str()) {
                 tracing::warn!("resource {name}: paused, {why}");

@@ -1230,15 +1230,7 @@ pub async fn post_peer_undo(
         &s,
         &request.heal_id,
         |layout, boot, id, may_rebuild| async move {
-            member::undo(
-                &host,
-                &layout,
-                &id,
-                &boot,
-                Preparing::global(),
-                may_rebuild,
-            )
-            .await
+            member::undo(&host, &layout, &id, &boot, Preparing::global(), may_rebuild).await
         },
     )
     .await

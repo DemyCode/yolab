@@ -356,7 +356,10 @@ mod tests {
                 .iter()
                 .any(|r| r.url.path().ends_with("/configmaps/yolab-beat-test")),
             "{outcome:?}: {:?}",
-            asked.iter().map(|r| r.url.path().to_string()).collect::<Vec<_>>()
+            asked
+                .iter()
+                .map(|r| r.url.path().to_string())
+                .collect::<Vec<_>>()
         );
     }
 

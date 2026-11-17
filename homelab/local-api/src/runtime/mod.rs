@@ -141,11 +141,7 @@ fn uptime() -> Option<Duration> {
     Some(Duration::from_secs_f64(secs))
 }
 
-pub fn spawn<C: Controller>(
-    controller: C,
-    leader: leader::Leadership,
-    tools: crate::tools::Tools,
-) {
+pub fn spawn<C: Controller>(controller: C, leader: leader::Leadership, tools: crate::tools::Tools) {
     resource::spawn(resource::ControllerResource::new(controller), leader, tools);
 }
 

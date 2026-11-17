@@ -519,7 +519,13 @@ pub async fn upload_chart(
     State(state): State<AppState>,
     body: axum::body::Bytes,
 ) -> impl IntoResponse {
-    upload(&state.host, &state.config.catalog_dir(), &custom_dir(), &body).await
+    upload(
+        &state.host,
+        &state.config.catalog_dir(),
+        &custom_dir(),
+        &body,
+    )
+    .await
 }
 
 async fn upload<H: Host>(
