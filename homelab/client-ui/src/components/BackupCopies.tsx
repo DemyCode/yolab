@@ -33,20 +33,39 @@ function useCopies(namespace: string, open: boolean) {
     if (open) setData(null);
   }
 
+  const fetchCopies = useCallback(
+    () =>
+      api.get<RestorePoints>(pointsPath(namespace)).then(
+        (d) => ({ ...d, points: sortRestorePoints(d.points ?? []) }),
+      ),
+    [namespace],
+  );
+
   const load = useCallback(async () => {
     try {
-      const d = await api.get<RestorePoints>(pointsPath(namespace));
-      setData({ ...d, points: sortRestorePoints(d.points ?? []) });
+      setData(await fetchCopies());
       setError(null);
     } catch (e) {
       setError(message(e, "Its backups could not be listed."));
     }
-  }, [namespace]);
+  }, [fetchCopies]);
 
   useEffect(() => {
     if (!open) return;
-    void load();
-  }, [open, load]);
+    let cancelled = false;
+    fetchCopies()
+      .then((d) => {
+        if (cancelled) return;
+        setData(d);
+        setError(null);
+      })
+      .catch((e: unknown) => {
+        if (!cancelled) setError(message(e, "Its backups could not be listed."));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, fetchCopies]);
 
   return { data, error, reload: load };
 }
