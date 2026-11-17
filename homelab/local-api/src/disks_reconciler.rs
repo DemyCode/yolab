@@ -699,6 +699,276 @@ fn steer_report(steer: &Steer, applied: bool) -> (Phase, String) {
     }
 }
 
+struct ClusterView {
+    crush_nodes: Vec<Value>,
+    want_copies: Option<u32>,
+    failure_domain: String,
+    up: std::collections::HashSet<i64>,
+    never_booted: std::collections::HashSet<i64>,
+    weights: HashMap<i64, (f64, f64, u64)>,
+}
+
+impl ClusterView {
+    fn new(
+        crush_nodes: Vec<Value>,
+        never_booted: std::collections::HashSet<i64>,
+        want_copies: Option<u32>,
+        failure_domain: String,
+    ) -> Self {
+        let osds = || {
+            crush_nodes
+                .iter()
+                .filter(|n| n["type"].as_str() == Some("osd"))
+        };
+        let up = osds()
+            .filter(|n| n["status"].as_str() == Some("up"))
+            .filter_map(|n| n["id"].as_i64())
+            .collect();
+        let weights = osds()
+            .filter_map(|n| {
+                let id = n["id"].as_i64()?;
+                Some((
+                    id,
+                    (
+                        n["crush_weight"].as_f64().unwrap_or(0.0),
+                        n["reweight"].as_f64().unwrap_or(1.0),
+                        n["kb"].as_u64().unwrap_or(0),
+                    ),
+                ))
+            })
+            .collect();
+        ClusterView {
+            crush_nodes,
+            want_copies,
+            failure_domain,
+            up,
+            never_booted,
+            weights,
+        }
+    }
+
+    fn state_of(&self, osd_id: i64) -> OsdState {
+        let (crush_weight, reweight, kb) = self
+            .weights
+            .get(&osd_id)
+            .copied()
+            .unwrap_or((0.0, 1.0, 0));
+        OsdState {
+            crush_weight,
+            reweight,
+            kb,
+            up: self.up.contains(&osd_id),
+            in_crush: self.weights.contains_key(&osd_id),
+            never_booted: self.never_booted.contains(&osd_id),
+        }
+    }
+}
+
+async fn observe_cluster<H: Host>(host: &H) -> Option<ClusterView> {
+    let crush_nodes: Vec<Value> = match host.ceph_json(&["osd", "df", "tree"]).await {
+        Ok(v) => v["nodes"].as_array().cloned().unwrap_or_default(),
+        Err(e) => {
+            tracing::warn!(
+                "reconcile: `ceph osd df tree` did not answer ({e}) — daemons were started, but \
+                 nothing else can be decided this tick"
+            );
+            return None;
+        }
+    };
+
+    let (want_copies, failure_domain) = match crate::topology::read_policy_from(host).await {
+        Some(crate::topology::PolicyState::Chosen(p)) => (Some(p.size), p.failure_domain),
+        _ => (None, "osd".to_string()),
+    };
+
+    let never_booted: std::collections::HashSet<i64> = host
+        .osd_dump()
+        .await
+        .ok_or_warn(
+            "reconcile: `ceph osd dump` did not answer — a first start shows as a retry this tick",
+        )
+        .map(|d| {
+            d.osds
+                .iter()
+                .filter(|e| e.never_booted())
+                .map(|e| e.osd)
+                .collect()
+        })
+        .unwrap_or_default();
+
+    Some(ClusterView::new(crush_nodes, never_booted, want_copies, failure_domain))
+}
+
+async fn apply_steer<H: Host>(
+    host: &H,
+    disk_id: &str,
+    osd_id: i64,
+    steer: &Steer,
+    reweight: f64,
+) -> bool {
+    let osd = format!("osd.{osd_id}");
+    let mut applied = true;
+    if let Some(weight) = steer.set_weight {
+        tracing::info!("{osd} ({disk_id}): crush_weight=0 — setting weight={weight:.5}");
+        if let Err(e) = host
+            .ceph(&["osd", "crush", "reweight", &osd, &format!("{weight:.5}")])
+            .await
+        {
+            applied = false;
+            tracing::warn!("{osd} ({disk_id}): could not set its weight: {e}");
+        }
+    }
+    if steer.mark_in {
+        tracing::info!("{osd} ({disk_id}): reweight={reweight:.2}, desired=ON — marking in");
+        if let Err(e) = host.ceph(&["osd", "in", &osd]).await {
+            applied = false;
+            tracing::warn!("{osd} ({disk_id}): could not mark it in: {e}");
+        }
+    }
+    if steer.mark_out {
+        tracing::info!("{osd} ({disk_id}): reweight={reweight:.2}, desired=OFF — marking out");
+        if let Err(e) = host.ceph(&["osd", "out", &osd]).await {
+            applied = false;
+            tracing::warn!("{osd} ({disk_id}): could not mark it out: {e}");
+        }
+    }
+    applied
+}
+
+async fn remove_drained<H: Host>(
+    host: &H,
+    disk_id: &str,
+    m: &Disk,
+    osd_id: i64,
+    view: &ClusterView,
+) {
+    let osd = format!("osd.{osd_id}");
+    let before = destructive::safe_to_destroy(host, osd_id)
+        .await
+        .ok_or_warn(format!("{osd} ({disk_id}): safe-to-destroy did not answer"))
+        .flatten();
+    let settled = if before.is_some() {
+        host.ceph_json(&["status"])
+            .await
+            .ok_or_warn(format!("{osd} ({disk_id}): ceph status did not answer"))
+            .is_some_and(|status| cluster_settled(&status))
+    } else {
+        false
+    };
+    let safe_before = before.is_some() && settled;
+    if safe_before {
+        set_phase(
+            disk_id,
+            Phase::Removing,
+            "Finishing up — do not unplug yet.",
+        );
+        stopped_for_removal().insert(osd_id);
+        disable_osd_unit(host, osd_id).await;
+    }
+    let after = if safe_before {
+        destructive::safe_to_destroy(host, osd_id)
+            .await
+            .ok_or_warn(format!("{osd} ({disk_id}): safe-to-destroy did not answer"))
+            .flatten()
+    } else {
+        None
+    };
+    let safe_after = after.is_some();
+    let loss = if safe_after {
+        crate::routers::ceph::assess_pg_loss_via(host).await
+    } else {
+        None
+    };
+
+    match plan_purge(safe_before, safe_after, loss.as_ref()) {
+        PurgeVerdict::Wait if before.is_some() => {
+            tracing::debug!(
+                "{osd} ({disk_id}): empty, waiting for every placement group to be \
+                 active+clean before stopping it"
+            );
+            keep_running(host, osd_id).await;
+            set_phase(
+                disk_id,
+                Phase::Draining,
+                "Empty. Waiting for the other disks to finish moving data before it is removed.",
+            );
+            return;
+        }
+        PurgeVerdict::Wait => {
+            tracing::debug!("{osd} ({disk_id}): out but not yet safe-to-destroy — waiting");
+            keep_running(host, osd_id).await;
+            let targets = drain_targets_remaining(&view.crush_nodes, osd_id, &view.failure_domain);
+            set_phase(
+                disk_id,
+                Phase::Draining,
+                drain_message(targets, view.want_copies),
+            );
+            return;
+        }
+        PurgeVerdict::Recheck => {
+            tracing::warn!("{osd} ({disk_id}): stopped, but no longer reports safe-to-destroy — starting it again");
+            keep_running(host, osd_id).await;
+            return;
+        }
+        PurgeVerdict::RefuseDataAtRisk => {
+            keep_running(host, osd_id).await;
+            if let Some(l) = loss.as_ref() {
+                tracing::warn!(
+                    "{osd} ({disk_id}): NOT purging — {} of {} placement groups are unreadable \
+                     and cannot be rebuilt, and this disk may hold the only copy",
+                    l.stuck,
+                    l.total
+                );
+            }
+            set_phase(
+                disk_id,
+                Phase::Removing,
+                "Not removing this disk: data elsewhere in the cluster is unreadable and \
+                 cannot be rebuilt, and this disk may hold the only copy of it.",
+            );
+            return;
+        }
+        PurgeVerdict::Purge => {}
+    }
+    let Some(proof) = after else {
+        return;
+    };
+
+    match destructive::purge_safe(host, proof).await {
+        Ok(Some(receipt)) => {
+            tracing::info!("{osd} ({disk_id}): purged");
+            stopped_for_removal().remove(&osd_id);
+            if !m.device.is_empty() {
+                tracing::info!("{osd} ({disk_id}): returning {} to blank", m.device);
+                wipe_device(host, &m.device, receipt).await;
+            }
+            set_phase(
+                disk_id,
+                Phase::Removable,
+                "Removed from the pool. Safe to unplug.",
+            );
+        }
+        Ok(None) => {
+            tracing::warn!(
+                "{osd} ({disk_id}): purge reported success but {osd} is still listed — leaving the disk alone"
+            );
+            set_phase(
+                disk_id,
+                Phase::Removing,
+                "Still finishing up — do not unplug this disk yet.",
+            );
+        }
+        Err(e) => {
+            tracing::warn!("{osd} ({disk_id}): purge failed: {e}");
+            set_phase(
+                disk_id,
+                Phase::Removing,
+                "Still finishing up — do not unplug this disk yet.",
+            );
+        }
+    }
+}
+
 async fn reconcile_local_osds<H: Host + 'static>(
     host: &H,
     node: &str,
@@ -802,59 +1072,9 @@ async fn reconcile_local_osds<H: Host + 'static>(
         .await
         .warn_on_err("reconcile: stop OSD units that belong to another cluster");
 
-    let crush_nodes: Vec<Value> = match host.ceph_json(&["osd", "df", "tree"]).await {
-        Ok(v) => v["nodes"].as_array().cloned().unwrap_or_default(),
-        Err(e) => {
-            tracing::warn!(
-                "reconcile: `ceph osd df tree` did not answer ({e}) — daemons were started, but \
-                 nothing else can be decided this tick"
-            );
-            return;
-        }
+    let Some(view) = observe_cluster(host).await else {
+        return;
     };
-
-    let (want_copies, failure_domain) = match crate::topology::read_policy_from(host).await {
-        Some(crate::topology::PolicyState::Chosen(p)) => (Some(p.size), p.failure_domain),
-        _ => (None, "osd".to_string()),
-    };
-
-    let osd_state_up: std::collections::HashSet<i64> = crush_nodes
-        .iter()
-        .filter(|n| n["type"].as_str() == Some("osd") && n["status"].as_str() == Some("up"))
-        .filter_map(|n| n["id"].as_i64())
-        .collect();
-
-    let never_booted: std::collections::HashSet<i64> = host
-        .osd_dump()
-        .await
-        .ok_or_warn(
-            "reconcile: `ceph osd dump` did not answer — a first start shows as a retry this tick",
-        )
-        .map(|d| {
-            d.osds
-                .iter()
-                .filter(|e| e.never_booted())
-                .map(|e| e.osd)
-                .collect()
-        })
-        .unwrap_or_default();
-
-    let mut osd_state: HashMap<i64, (f64, f64, u64)> = HashMap::new();
-    for n in &crush_nodes {
-        if n["type"].as_str() != Some("osd") {
-            continue;
-        }
-        if let Some(id) = n["id"].as_i64() {
-            osd_state.insert(
-                id,
-                (
-                    n["crush_weight"].as_f64().unwrap_or(0.0),
-                    n["reweight"].as_f64().unwrap_or(1.0),
-                    n["kb"].as_u64().unwrap_or(0),
-                ),
-            );
-        }
-    }
 
     for (disk_id, m) in meta {
         let want_on = wants_on(desired, node, disk_id);
@@ -864,179 +1084,19 @@ async fn reconcile_local_osds<H: Host + 'static>(
             }
             continue;
         };
-        let in_crush = osd_state.contains_key(&osd_id);
-        let (crush_weight, reweight, kb) = osd_state.get(&osd_id).copied().unwrap_or((0.0, 1.0, 0));
-        let osd = format!("osd.{osd_id}");
-
-        let state = OsdState {
-            crush_weight,
-            reweight,
-            kb,
-            up: osd_state_up.contains(&osd_id),
-            in_crush,
-            never_booted: never_booted.contains(&osd_id),
-        };
+        let state = view.state_of(osd_id);
         let steer = decide_steer(
             want_on,
             m.size_bytes,
             state,
             osd_id,
-            &crush_nodes,
-            &failure_domain,
-            want_copies,
+            &view.crush_nodes,
+            &view.failure_domain,
+            view.want_copies,
         );
-
-        let mut applied = true;
-        if let Some(weight) = steer.set_weight {
-            tracing::info!("{osd} ({disk_id}): crush_weight=0 — setting weight={weight:.5}");
-            if let Err(e) = host
-                .ceph(&["osd", "crush", "reweight", &osd, &format!("{weight:.5}")])
-                .await
-            {
-                applied = false;
-                tracing::warn!("{osd} ({disk_id}): could not set its weight: {e}");
-            }
-        }
-        if steer.mark_in {
-            tracing::info!("{osd} ({disk_id}): reweight={reweight:.2}, desired=ON — marking in");
-            if let Err(e) = host.ceph(&["osd", "in", &osd]).await {
-                applied = false;
-                tracing::warn!("{osd} ({disk_id}): could not mark it in: {e}");
-            }
-        }
-        if steer.mark_out {
-            tracing::info!("{osd} ({disk_id}): reweight={reweight:.2}, desired=OFF — marking out");
-            if let Err(e) = host.ceph(&["osd", "out", &osd]).await {
-                applied = false;
-                tracing::warn!("{osd} ({disk_id}): could not mark it out: {e}");
-            }
-        }
-
+        let applied = apply_steer(host, disk_id, osd_id, &steer, state.reweight).await;
         if steer.needs_purge {
-            let before = destructive::safe_to_destroy(host, osd_id)
-                .await
-                .ok_or_warn(format!("{osd} ({disk_id}): safe-to-destroy did not answer"))
-                .flatten();
-            let settled = if before.is_some() {
-                host.ceph_json(&["status"])
-                    .await
-                    .ok_or_warn(format!("{osd} ({disk_id}): ceph status did not answer"))
-                    .is_some_and(|status| cluster_settled(&status))
-            } else {
-                false
-            };
-            let safe_before = before.is_some() && settled;
-            if safe_before {
-                set_phase(
-                    disk_id,
-                    Phase::Removing,
-                    "Finishing up — do not unplug yet.",
-                );
-                stopped_for_removal().insert(osd_id);
-                disable_osd_unit(host, osd_id).await;
-            }
-            let after = if safe_before {
-                destructive::safe_to_destroy(host, osd_id)
-                    .await
-                    .ok_or_warn(format!("{osd} ({disk_id}): safe-to-destroy did not answer"))
-                    .flatten()
-            } else {
-                None
-            };
-            let safe_after = after.is_some();
-            let loss = if safe_after {
-                crate::routers::ceph::assess_pg_loss_via(host).await
-            } else {
-                None
-            };
-
-            match plan_purge(safe_before, safe_after, loss.as_ref()) {
-                PurgeVerdict::Wait if before.is_some() => {
-                    tracing::debug!(
-                        "{osd} ({disk_id}): empty, waiting for every placement group to be \
-                         active+clean before stopping it"
-                    );
-                    keep_running(host, osd_id).await;
-                    set_phase(
-                        disk_id,
-                        Phase::Draining,
-                        "Empty. Waiting for the other disks to finish moving data before it is removed.",
-                    );
-                    continue;
-                }
-                PurgeVerdict::Wait => {
-                    tracing::debug!("{osd} ({disk_id}): out but not yet safe-to-destroy — waiting");
-                    keep_running(host, osd_id).await;
-                    let targets = drain_targets_remaining(&crush_nodes, osd_id, &failure_domain);
-                    set_phase(
-                        disk_id,
-                        Phase::Draining,
-                        drain_message(targets, want_copies),
-                    );
-                    continue;
-                }
-                PurgeVerdict::Recheck => {
-                    tracing::warn!("{osd} ({disk_id}): stopped, but no longer reports safe-to-destroy — starting it again");
-                    keep_running(host, osd_id).await;
-                    continue;
-                }
-                PurgeVerdict::RefuseDataAtRisk => {
-                    keep_running(host, osd_id).await;
-                    if let Some(l) = loss.as_ref() {
-                        tracing::warn!(
-                            "{osd} ({disk_id}): NOT purging — {} of {} placement groups are unreadable \
-                             and cannot be rebuilt, and this disk may hold the only copy",
-                            l.stuck,
-                            l.total
-                        );
-                    }
-                    set_phase(
-                        disk_id,
-                        Phase::Removing,
-                        "Not removing this disk: data elsewhere in the cluster is unreadable and \
-                         cannot be rebuilt, and this disk may hold the only copy of it.",
-                    );
-                    continue;
-                }
-                PurgeVerdict::Purge => {}
-            }
-            let Some(proof) = after else {
-                continue;
-            };
-
-            match destructive::purge_safe(host, proof).await {
-                Ok(Some(receipt)) => {
-                    tracing::info!("{osd} ({disk_id}): purged");
-                    stopped_for_removal().remove(&osd_id);
-                    if !m.device.is_empty() {
-                        tracing::info!("{osd} ({disk_id}): returning {} to blank", m.device);
-                        wipe_device(host, &m.device, receipt).await;
-                    }
-                    set_phase(
-                        disk_id,
-                        Phase::Removable,
-                        "Removed from the pool. Safe to unplug.",
-                    );
-                }
-                Ok(None) => {
-                    tracing::warn!(
-                        "{osd} ({disk_id}): purge reported success but {osd} is still listed — leaving the disk alone"
-                    );
-                    set_phase(
-                        disk_id,
-                        Phase::Removing,
-                        "Still finishing up — do not unplug this disk yet.",
-                    );
-                }
-                Err(e) => {
-                    tracing::warn!("{osd} ({disk_id}): purge failed: {e}");
-                    set_phase(
-                        disk_id,
-                        Phase::Removing,
-                        "Still finishing up — do not unplug this disk yet.",
-                    );
-                }
-            }
+            remove_drained(host, disk_id, m, osd_id, &view).await;
         } else {
             let (phase, message) = steer_report(&steer, applied);
             set_phase(disk_id, phase, message);
@@ -1046,7 +1106,14 @@ async fn reconcile_local_osds<H: Host + 'static>(
     let unplugged_but_wanted = any_unplugged_but_wanted(desired, node, meta);
 
     if map_is_complete {
-        purge_drained_osds(host, node, &crush_nodes, disk_to_osd, unplugged_but_wanted).await;
+        purge_drained_osds(
+            host,
+            node,
+            &view.crush_nodes,
+            disk_to_osd,
+            unplugged_but_wanted,
+        )
+        .await;
     }
 }
 
@@ -4485,5 +4552,103 @@ mod tests {
         assert!(wants_on(&desired, "node1", SYSTEM_OSD_ID));
         assert!(wants_on(&HashMap::new(), "node1", SYSTEM_OSD_ID));
         assert!(!wants_on(&HashMap::new(), "node1", "dev-sdb"));
+    }
+    fn view_of(nodes: Value, never_booted: &[i64]) -> ClusterView {
+        ClusterView::new(
+            nodes.as_array().unwrap().clone(),
+            never_booted.iter().copied().collect(),
+            Some(2),
+            "host".to_string(),
+        )
+    }
+
+    #[test]
+    fn the_cluster_view_reads_each_osds_weights_and_status() {
+        let view = view_of(
+            serde_json::json!([
+                {"type": "host", "id": -2, "name": "node1"},
+                {"type": "osd", "id": 3, "status": "up", "crush_weight": 0.5, "reweight": 1.0, "kb": 1024},
+                {"type": "osd", "id": 4, "status": "down", "crush_weight": 0.0, "reweight": 0.0, "kb": 0}
+            ]),
+            &[4],
+        );
+        assert_eq!(
+            view.state_of(3),
+            OsdState {
+                crush_weight: 0.5,
+                reweight: 1.0,
+                kb: 1024,
+                up: true,
+                in_crush: true,
+                never_booted: false,
+            }
+        );
+        assert_eq!(
+            view.state_of(4),
+            OsdState {
+                crush_weight: 0.0,
+                reweight: 0.0,
+                kb: 0,
+                up: false,
+                in_crush: true,
+                never_booted: true,
+            }
+        );
+    }
+
+    #[test]
+    fn an_osd_missing_from_the_crush_tree_reads_as_not_in_crush_and_down() {
+        let view = view_of(serde_json::json!([{"type": "host", "id": 7}]), &[]);
+        let state = view.state_of(7);
+        assert!(!state.in_crush);
+        assert!(!state.up);
+        assert_eq!(state.reweight, 1.0);
+    }
+
+    fn steer(set_weight: Option<f64>, mark_in: bool, mark_out: bool) -> Steer {
+        Steer {
+            set_weight,
+            mark_in,
+            mark_out,
+            needs_purge: false,
+            phase: Some(Phase::Active),
+            message: Some(String::new()),
+        }
+    }
+
+    #[tokio::test]
+    async fn applying_a_steer_runs_each_step_it_asks_for() {
+        let host = FakeHost::new()
+            .ok("ceph osd crush reweight osd.3", "")
+            .ok("ceph osd in osd.3", "");
+        let s = steer(Some(0.25), true, false);
+        assert!(apply_steer(&host, "d", 3, &s, 0.0).await);
+        assert!(host.ran("ceph osd crush reweight osd.3 0.25000"));
+        assert!(host.ran("ceph osd in osd.3"));
+        assert!(!host.ran("ceph osd out"));
+    }
+
+    #[tokio::test]
+    async fn a_failed_step_makes_the_steer_unapplied_but_the_others_still_run() {
+        let host = FakeHost::new()
+            .fail("ceph osd crush reweight osd.3", "busy")
+            .ok("ceph osd out osd.3", "");
+        let s = steer(Some(0.25), false, true);
+        assert!(!apply_steer(&host, "d", 3, &s, 1.0).await);
+        assert!(host.ran("ceph osd out osd.3"));
+    }
+
+    #[tokio::test]
+    async fn a_steer_with_nothing_to_do_runs_nothing() {
+        let host = FakeHost::new();
+        let s = steer(None, false, false);
+        assert!(apply_steer(&host, "d", 3, &s, 1.0).await);
+        assert!(host.calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn without_the_crush_tree_nothing_is_observed() {
+        let host = FakeHost::new().fail("ceph osd df tree", "timeout");
+        assert!(observe_cluster(&host).await.is_none());
     }
 }
