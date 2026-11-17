@@ -76,10 +76,6 @@ in
                 timeout=600,
             )
 
-        # k3s starts only once the image store is mounted from Ceph: the system
-        # OSD, the images RBD and the mount all come first. local-api is not
-        # After=k3s, so it creates them and can say why k3s is still waiting
-        # (see k3s-starts-once-on-its-image-store in nix/checks.nix).
         with step(node1, "k3s serves its API"):
             node1.wait_until_succeeds("k3s kubectl get --raw /readyz", timeout=900)
 

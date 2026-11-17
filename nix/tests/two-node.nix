@@ -185,9 +185,6 @@ in
 
         # ── THE REGRESSION THIS FILE EXISTS FOR ───────────────────────────────
         #
-        # containerd's data-root has to be on the RBD on BOTH nodes, and k3s must
-        # have started only after it was mounted, so no pod ever ran on the root
-        # disk and nothing had to be stopped and swapped.
         for m in (node1, node2):
             m.wait_until_succeeds(
                 "findmnt -rno SOURCE --mountpoint /var/lib/rancher/k3s/agent/containerd "
