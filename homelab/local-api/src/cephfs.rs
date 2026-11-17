@@ -37,8 +37,8 @@ impl Controller for CephFsController {
     fn pauses_during(&self) -> &'static [Activity] {
         &[Activity::Restore]
     }
-    async fn reconcile(&self, _ctx: &Ctx) -> Result<Tick> {
-        ensure(&crate::host::HOST).await
+    async fn reconcile(&self, ctx: &Ctx) -> Result<Tick> {
+        ensure(&ctx.tools.host).await
     }
 }
 

@@ -71,25 +71,26 @@ pub fn deps_of(requires: &[Requirement]) -> Vec<&'static str> {
 }
 
 pub(crate) async fn preflight(
+    tools: &crate::tools::Tools,
     name: &str,
     scope: Scope,
     deps: &[&'static str],
     pauses: &[activity::Activity],
 ) -> anyhow::Result<String> {
     let node = crate::system::hostname();
-    if scope == Scope::Cluster && !leader::held_by(&crate::k8s::client().await?, &node).await? {
+    if scope == Scope::Cluster && !leader::held_by(&tools.kube().await?, &node).await? {
         anyhow::bail!(
             "{name} is cluster-scoped and {node} does not hold the cluster lease — run it on the leader"
         );
     }
     for dep in deps {
         if let Some(r) = Requirement::from_resource_name(dep) {
-            if !activity::is_met(r).await {
+            if !activity::is_met(tools, r).await {
                 anyhow::bail!("not running {name}: waiting for {r}");
             }
         }
     }
-    if let activity::Gate::Paused(why) = activity::gate(pauses).await {
+    if let activity::Gate::Paused(why) = activity::gate(tools, pauses).await {
         anyhow::bail!("not running {name}: {why}");
     }
     Ok(node)
@@ -149,8 +150,8 @@ impl Resource for Observed {
         Duration::from_secs(15)
     }
 
-    async fn check(&self, _ctx: &Ctx) -> State {
-        if activity::is_met(self.0).await {
+    async fn check(&self, ctx: &Ctx) -> State {
+        if activity::is_met(&ctx.tools, self.0).await {
             State::Ready
         } else {
             State::NotYet(format!("{} is not answering", self.0))
@@ -297,18 +298,23 @@ fn walk(
     None
 }
 
-pub fn spawn<R: Resource>(resource: R, leader: leader::Leadership) {
+pub fn spawn<R: Resource>(resource: R, leader: leader::Leadership, tools: crate::tools::Tools) {
     let resource = Arc::new(resource);
     let name = resource.name();
     record_edges(name, resource.depends_on().to_vec());
     let notify = super::waker(name);
     super::registry().register(name, resource.scope(), resource.interval());
     tokio::spawn(async move {
-        run(resource, notify, leader).await;
+        run(resource, notify, leader, tools).await;
     });
 }
 
-async fn run<R: Resource>(resource: Arc<R>, notify: Arc<Notify>, leader: leader::Leadership) {
+async fn run<R: Resource>(
+    resource: Arc<R>,
+    notify: Arc<Notify>,
+    leader: leader::Leadership,
+    tools: crate::tools::Tools,
+) {
     let name = resource.name();
     let reg = super::registry();
     let node = crate::system::hostname();
@@ -346,7 +352,10 @@ async fn run<R: Resource>(resource: Arc<R>, notify: Arc<Notify>, leader: leader:
             }
         }
 
-        let ctx = Ctx { node: node.clone() };
+        let ctx = Ctx {
+            node: node.clone(),
+            tools: tools.clone(),
+        };
         let interval = resource.interval();
 
         let state = resource.check(&ctx).await;
@@ -382,7 +391,7 @@ async fn run<R: Resource>(resource: Arc<R>, notify: Arc<Notify>, leader: leader:
             continue;
         }
 
-        if let Some(missing) = activity::unmet(resource.requires()).await {
+        if let Some(missing) = activity::unmet(&tools, resource.requires()).await {
             set_state(name, State::NotYet(format!("waiting for {missing}")));
             was_settled = false;
             reg.set_phase(name, Phase::Waiting(format!("waiting for {missing}")));
@@ -390,7 +399,9 @@ async fn run<R: Resource>(resource: Arc<R>, notify: Arc<Notify>, leader: leader:
             continue;
         }
 
-        if let activity::Gate::Paused(why) = activity::gate(resource.pauses_during()).await {
+        if let activity::Gate::Paused(why) =
+            activity::gate(&tools, resource.pauses_during()).await
+        {
             if last_pause.as_deref() != Some(why.as_str()) {
                 tracing::warn!("resource {name}: paused, {why}");
                 last_pause = Some(why.clone());
@@ -406,7 +417,10 @@ async fn run<R: Resource>(resource: Arc<R>, notify: Arc<Notify>, leader: leader:
         last_start = Some(Instant::now());
         reg.started(name);
         let r = resource.clone();
-        let ctx = Ctx { node: node.clone() };
+        let ctx = Ctx {
+            node: node.clone(),
+            tools: tools.clone(),
+        };
         let outcome = tokio::spawn(async move { r.converge(&ctx).await }).await;
 
         let next = match outcome {
@@ -563,6 +577,7 @@ mod tests {
                 converges: converges.clone(),
             },
             leader::Leadership::fixed_for_tests(true),
+            crate::tools::Tools::unreachable(),
         );
         tokio::time::sleep(Duration::from_secs(30)).await;
         assert_eq!(
@@ -587,6 +602,7 @@ mod tests {
                 converges: Arc::new(AtomicU32::new(0)),
             },
             leader.clone(),
+            crate::tools::Tools::unreachable(),
         );
         spawn(
             Probe {
@@ -596,6 +612,7 @@ mod tests {
                 converges: dep_converges.clone(),
             },
             leader,
+            crate::tools::Tools::unreachable(),
         );
 
         tokio::time::sleep(Duration::from_secs(30)).await;
@@ -657,6 +674,7 @@ mod tests {
                 converges: converges.clone(),
             }),
             leader::Leadership::fixed_for_tests(true),
+            crate::tools::Tools::unreachable(),
         );
 
         for _ in 0..60 {
@@ -697,6 +715,7 @@ mod tests {
                 converges: Arc::new(AtomicU32::new(0)),
             },
             leader.clone(),
+            crate::tools::Tools::unreachable(),
         );
         spawn(
             Probe {
@@ -706,6 +725,7 @@ mod tests {
                 converges: Arc::new(AtomicU32::new(0)),
             },
             leader.clone(),
+            crate::tools::Tools::unreachable(),
         );
         spawn(
             Probe {
@@ -715,6 +735,7 @@ mod tests {
                 converges: Arc::new(AtomicU32::new(0)),
             },
             leader,
+            crate::tools::Tools::unreachable(),
         );
 
         tokio::time::sleep(Duration::from_secs(60)).await;
@@ -817,6 +838,7 @@ mod tests {
                 converges: converges.clone(),
             },
             leader::Leadership::fixed_for_tests(true),
+            crate::tools::Tools::unreachable(),
         );
         tokio::time::sleep(Duration::from_secs(30)).await;
         assert!(converges.load(Ordering::SeqCst) > 1, "it stopped retrying");
@@ -862,6 +884,7 @@ mod tests {
                 ready: converged.clone(),
             },
             leader.clone(),
+            crate::tools::Tools::unreachable(),
         );
         tokio::time::sleep(Duration::from_secs(5)).await;
         match state_of("test-standby-truth") {
@@ -880,6 +903,7 @@ mod tests {
                 converges: Arc::new(AtomicU32::new(0)),
             },
             leader,
+            crate::tools::Tools::unreachable(),
         );
 
         for _ in 0..120 {

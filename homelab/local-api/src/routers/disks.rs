@@ -7,7 +7,7 @@ use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
 
 use crate::disks_reconciler::{is_globally_unique_id, record_key, SYSTEM_OSD_ID};
-use crate::host::{Host, RealHost};
+use crate::host::Host;
 use crate::storage::settings;
 use crate::store::DiskIntent;
 use crate::AppState;
@@ -158,9 +158,9 @@ fn disk_list(
 }
 
 pub async fn list_disks(
-    State(_s): State<AppState>,
+    State(s): State<AppState>,
 ) -> crate::error::Result<Json<HashMap<String, Vec<DiskInfo>>>> {
-    let host = RealHost;
+    let host = s.host;
     let desired: HashMap<String, String> = settings::dump(&host, settings::DISKS)
         .await?
         .into_iter()
@@ -169,8 +169,8 @@ pub async fn list_disks(
     Ok(Json(disk_list(&desired, &live)))
 }
 
-pub async fn movement() -> Json<crate::storage::movement::Movement> {
-    Json(crate::storage::movement::assess_via(&RealHost).await)
+pub async fn movement(State(s): State<AppState>) -> Json<crate::storage::movement::Movement> {
+    Json(crate::storage::movement::assess_via(&s.host).await)
 }
 
 fn refuse_state_change(disk_id: &str, desired: &str) -> Option<&'static str> {
@@ -184,12 +184,17 @@ fn refuse_state_change(disk_id: &str, desired: &str) -> Option<&'static str> {
     }
 }
 
-pub(crate) async fn record_switch(node: &str, disk_id: &str, desired: &str) -> Result<(), String> {
+pub(crate) async fn record_switch<H: Host>(
+    host: &H,
+    node: &str,
+    disk_id: &str,
+    desired: &str,
+) -> Result<(), String> {
     if let Some(error) = refuse_state_change(disk_id, desired) {
         return Err(error.to_string());
     }
     let key = format!("{}{}", settings::DISKS, record_key(node, disk_id));
-    settings::set(&RealHost, &key, desired)
+    settings::set(host, &key, desired)
         .await
         .map_err(|e| format!("the setting could not be saved: {e}"))?;
     record_intent(node, disk_id, desired);
@@ -237,10 +242,10 @@ fn store_intent(node: &str, disk_id: &str, intent: DiskIntent) {
 
 pub async fn set_disk_state(
     Path((node, id)): Path<(String, String)>,
-    State(_s): State<AppState>,
+    State(s): State<AppState>,
     Json(body): Json<SetState>,
 ) -> Json<Value> {
-    match record_switch(&node, &id, &body.desired).await {
+    match record_switch(&s.host, &node, &id, &body.desired).await {
         Ok(()) => Json(serde_json::json!({"ok": true})),
         Err(error) => Json(serde_json::json!({"ok": false, "error": error})),
     }
@@ -249,6 +254,27 @@ pub async fn set_disk_state(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::host::fake::FakeHost;
+
+    #[tokio::test]
+    async fn switching_the_system_disk_off_is_refused_before_anything_is_written() {
+        let host = FakeHost::new();
+        let refused = record_switch(&host, "node1", SYSTEM_OSD_ID, "OFF").await;
+        assert!(refused.unwrap_err().contains("system disk"));
+        assert!(host.calls().is_empty(), "{:?}", host.calls());
+    }
+
+    #[tokio::test]
+    async fn a_switch_that_cannot_be_saved_says_so() {
+        let host = FakeHost::new().fail("ceph config-key set", "mon unreachable");
+        let failed = record_switch(&host, "node1", "dev-sdb", "ON").await;
+        assert!(
+            failed.unwrap_err().contains("could not be saved"),
+            "{:?}",
+            host.calls()
+        );
+        assert!(host.ran("ceph config-key set"));
+    }
 
     #[test]
     fn a_node_scoped_key_splits_into_node_and_disk() {

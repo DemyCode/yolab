@@ -136,7 +136,7 @@ pub async fn add_vdisk(
             ),
         )
     })?;
-    crate::routers::disks::record_switch(&rec.node, &rec.disk_id(), "ON")
+    crate::routers::disks::record_switch(&s.host, &rec.node, &rec.disk_id(), "ON")
         .await
         .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e))?;
     crate::runtime::wake(crate::vdisk::NAME);

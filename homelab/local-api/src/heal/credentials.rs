@@ -75,8 +75,8 @@ impl Controller for BackupCredentialsController {
     fn requires(&self) -> &'static [Requirement] {
         &[Requirement::KubeApi]
     }
-    async fn reconcile(&self, _ctx: &Ctx) -> Result<Tick> {
-        sync(&crate::k8s::client().await?, Path::new("/")).await
+    async fn reconcile(&self, ctx: &Ctx) -> Result<Tick> {
+        sync(&ctx.tools.kube().await?, Path::new("/")).await
     }
 }
 

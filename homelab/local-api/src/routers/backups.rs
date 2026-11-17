@@ -34,7 +34,7 @@ pub async fn get_s3(State(state): State<AppState>) -> Result<Json<serde_json::Va
             serde_json::json!({ "provisioned": false, "reason": "platform API not configured" }),
         ));
     };
-    Ok(Json(s3_status(&crate::http::client(), &url, &token).await?))
+    Ok(Json(s3_status(&state.http, &url, &token).await?))
 }
 
 async fn s3_status(
@@ -547,8 +547,8 @@ impl crate::runtime::Controller for LockSweeperController {
     fn not_before_uptime(&self) -> std::time::Duration {
         std::time::Duration::from_secs(300)
     }
-    async fn reconcile(&self, _ctx: &crate::runtime::Ctx) -> anyhow::Result<crate::runtime::Tick> {
-        sweep_locks(&Backend::real().await?).await
+    async fn reconcile(&self, ctx: &crate::runtime::Ctx) -> anyhow::Result<crate::runtime::Tick> {
+        sweep_locks(&ctx.tools.backend().await?).await
     }
 }
 
@@ -569,13 +569,13 @@ impl crate::runtime::Controller for BackupKeyController {
     fn requires(&self) -> &'static [crate::runtime::Requirement] {
         &[crate::runtime::Requirement::KubeApi]
     }
-    async fn reconcile(&self, _ctx: &crate::runtime::Ctx) -> anyhow::Result<crate::runtime::Tick> {
+    async fn reconcile(&self, ctx: &crate::runtime::Ctx) -> anyhow::Result<crate::runtime::Tick> {
         let Some((url, token)) = ye_creds(&self.config) else {
             return Ok(crate::runtime::Tick::Idle(
                 "this machine is not connected to the YoLab platform".into(),
             ));
         };
-        let b = Backend::real().await?;
+        let b = ctx.tools.backend().await?;
         if master_config(&b.kube).await?.is_none() {
             let sources = enable(&b, &url, &token).await?;
             tracing::info!(

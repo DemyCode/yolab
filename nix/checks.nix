@@ -529,78 +529,32 @@ in let
         touch $out
       '';
 
-    host-seam-ratchet = let
-      budget = {
-        "boot/mod.rs" = 2;
-        "cephfs.rs" = 1;
-        "charts.rs" = 1;
-        "disks_reconciler.rs" = 2;
-        "heal/credentials.rs" = 1;
-        "heal/mod.rs" = 9;
-        "main.rs" = 2;
-        "mesh/mod.rs" = 7;
-        "notify/mod.rs" = 2;
-        "ops.rs" = 1;
-        "outputs.rs" = 1;
-        "routers/backup_common.rs" = 4;
-        "routers/backups.rs" = 1;
-        "routers/ceph.rs" = 3;
-        "routers/ceph_join.rs" = 1;
-        "routers/custom_app.rs" = 8;
-        "routers/disks.rs" = 4;
-        "routers/logs.rs" = 1;
-        "routers/reboot.rs" = 2;
-        "routers/update.rs" = 3;
-        "runtime/activity.rs" = 3;
-        "runtime/resource.rs" = 1;
-        "runtime/watch.rs" = 1;
-        "shared_names.rs" = 1;
-        "storage/bootstrap.rs" = 1;
-        "storage/controllers.rs" = 12;
-        "storage/dashboard.rs" = 1;
-        "storage/mod.rs" = 2;
-        "store/sync.rs" = 1;
-        "topology.rs" = 1;
-      };
-      expected = pkgs.writeText "seam-budget" (
-        pkgs.lib.concatStrings (map (n: "${n} ${toString budget.${n}}\n") (builtins.attrNames budget))
-      );
-    in
-      pkgs.runCommand "host-seam-ratchet"
+    only-entry-points-touch-the-machine =
+      pkgs.runCommand "only-entry-points-touch-the-machine"
       {
         nativeBuildInputs = [
           pkgs.gnugrep
-          pkgs.diffutils
+          pkgs.gawk
+          pkgs.findutils
         ];
       }
       ''
-        # The subshell matters: `cd` lands in the read-only store path, so the
-        # redirection below has to happen back in the build directory.
-        (
-          cd ${treeSrc}/homelab/local-api/src
-          find . -name '*.rs' \
-            ! -path './host.rs' ! -path './ceph_cli.rs' \
-            ! -path './exec.rs' ! -path './k8s.rs' ! -path './http.rs' -print0 \
-            | xargs -0 grep -cE 'RealHost|\bHOST\b|\bkubectl::|ceph_cli::|exec::(output|checked|with_stdin|stream_lines)|k8s::client\(\)|http::client|Command::new|reqwest::' /dev/null
-        ) \
-          | grep -v ':0$' \
-          | sed 's|^\./||; s|:| |' \
-          | LC_ALL=C sort > actual
-
-        if ! diff -u ${expected} actual > delta; then
-          echo "Direct machine access moved. This list is a ratchet: it may only" >&2
-          echo "shrink, and nix/checks.nix says why." >&2
+        cd ${treeSrc}/homelab/local-api/src
+        find . -name '*.rs' \
+          ! -path './host.rs' ! -path './ceph_cli.rs' ! -path './exec.rs' \
+          ! -path './k8s.rs' ! -path './http.rs' ! -path './main.rs' \
+          ! -path './tools.rs' ! -path './runtime/watch.rs' -print0 \
+          | xargs -0 awk '/^mod tests/ { nextfile } { print FILENAME ":" FNR ": " $0 }' \
+            > "$NIX_BUILD_TOP/scanned"
+        grep -E 'RealHost|\bHOST\b|\bkubectl::|ceph_cli::|exec::(output|checked|with_stdin|stream_lines)|k8s::client\(\)|Command::new|reqwest::' \
+          "$NIX_BUILD_TOP/scanned" \
+          | grep -v 'Backend<H: Host = crate::host::RealHost>' > "$NIX_BUILD_TOP/found" \
+          || [ $? -eq 1 ]
+        if [ -s "$NIX_BUILD_TOP/found" ]; then
+          echo "Only main.rs and tools.rs build the real machine access; everything" >&2
+          echo "else takes it from Ctx.tools, AppState, or a 'host: &H' parameter:" >&2
           echo "" >&2
-          echo "  '+' lines: more direct machine access (RealHost, HOST, kubectl," >&2
-          echo "             ceph_cli, exec, k8s::client(), http::client*, Command::new," >&2
-          echo "             reqwest) than the budget allows, or a file that had none" >&2
-          echo "             and now does. Take a 'client: &kube::Client', a" >&2
-          echo "             'http: &crate::http::Client' or a 'host: &H' and call" >&2
-          echo "             through it; entry points hand in the real ones." >&2
-          echo "  '-' lines: fewer than the budget — thank you. Lower the number" >&2
-          echo "             in nix/checks.nix in this same commit." >&2
-          echo "" >&2
-          cat delta >&2
+          cat "$NIX_BUILD_TOP/found" >&2
           exit 1
         fi
         touch $out

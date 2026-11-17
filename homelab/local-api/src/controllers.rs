@@ -1,5 +1,6 @@
 use crate::runtime::{self, leader::Leadership};
 use crate::storage::StorageEnv;
+use crate::tools::Tools;
 
 pub const NAMES: &[&str] = &[
     "backup-scheduler",
@@ -35,70 +36,88 @@ pub const NAMES: &[&str] = &[
     "ceph-csi",
 ];
 
-fn spawn_observed(leader: &Leadership) {
+fn spawn_observed(leader: &Leadership, tools: &Tools) {
     for r in runtime::Requirement::ALL {
-        runtime::resource::spawn(runtime::resource::Observed(r), leader.clone());
+        runtime::resource::spawn(
+            runtime::resource::Observed(r),
+            leader.clone(),
+            tools.clone(),
+        );
     }
 }
 
-fn spawn<C: runtime::Controller>(controller: C, leader: &Leadership) {
+fn spawn<C: runtime::Controller>(controller: C, leader: &Leadership, tools: &Tools) {
     debug_assert!(
         NAMES.contains(&controller.name()),
         "controller {} is missing from controllers::NAMES",
         controller.name()
     );
-    runtime::spawn(controller, leader.clone());
+    runtime::spawn(controller, leader.clone(), tools.clone());
 }
 
 pub fn spawn_all(leader: Leadership, state: &crate::AppState) {
     use crate::routers::{apps, backup, backups, restore};
     use crate::storage::controllers as storage;
 
-    spawn(backup::BackupSchedulerController, &leader);
-    spawn(restore::RestoreWatchdogController, &leader);
-    backup::start_heartbeat();
-    restore::start_heartbeat();
-    spawn(apps::UninstallWatchdogController, &leader);
-    spawn(crate::outputs::OutputsController, &leader);
-    spawn(backups::LockSweeperController, &leader);
-    spawn(crate::routers::backup_check::BackupCheckController, &leader);
+    let tools = state.tools();
+    spawn(backup::BackupSchedulerController, &leader, &tools);
+    spawn(restore::RestoreWatchdogController, &leader, &tools);
+    backup::start_heartbeat(tools.kube.clone());
+    restore::start_heartbeat(tools.kube.clone());
+    spawn(apps::UninstallWatchdogController, &leader, &tools);
+    spawn(crate::outputs::OutputsController, &leader, &tools);
+    spawn(backups::LockSweeperController, &leader, &tools);
+    spawn(
+        crate::routers::backup_check::BackupCheckController,
+        &leader,
+        &tools,
+    );
 
-    spawn(crate::store::sync::StoreSyncController, &leader);
-    spawn(crate::ssh_keys::SshKeysController, &leader);
-    spawn(crate::disks_reconciler::DisksController, &leader);
-    spawn(crate::cephfs::CephFsController, &leader);
-    spawn(crate::topology::TopologyController, &leader);
-    spawn(crate::mesh::MeshPathsController::new(), &leader);
-    spawn(crate::mesh::MeshDiscoveryController::new(), &leader);
-    spawn(crate::hardware::HardwareLabelsController::real(), &leader);
-    spawn(crate::charts::ChartSyncController, &leader);
+    spawn(crate::store::sync::StoreSyncController, &leader, &tools);
+    spawn(crate::ssh_keys::SshKeysController, &leader, &tools);
+    spawn(crate::disks_reconciler::DisksController, &leader, &tools);
+    spawn(crate::cephfs::CephFsController, &leader, &tools);
+    spawn(crate::topology::TopologyController, &leader, &tools);
+    spawn(crate::mesh::MeshPathsController::new(), &leader, &tools);
+    spawn(crate::mesh::MeshDiscoveryController::new(), &leader, &tools);
+    spawn(
+        crate::hardware::HardwareLabelsController::real(),
+        &leader,
+        &tools,
+    );
+    spawn(crate::charts::ChartSyncController, &leader, &tools);
     spawn(
         crate::heal::HealController {
             config: crate::config::Config::from_env(),
         },
         &leader,
+        &tools,
     );
     spawn(
         crate::heal::credentials::BackupCredentialsController,
         &leader,
+        &tools,
     );
     spawn(
         backups::BackupKeyController {
             config: crate::config::Config::from_env(),
         },
         &leader,
+        &tools,
     );
     spawn(
         crate::notify::alerts::NotifierController {
             config: crate::config::Config::from_env(),
         },
         &leader,
+        &tools,
     );
     spawn(
         crate::shared_names::SharedNamesController {
             config: crate::config::Config::from_env(),
         },
         &leader,
+        &tools,
     );
 
     let env = StorageEnv::from_env();
@@ -110,21 +129,50 @@ pub fn spawn_all(leader: Leadership, state: &crate::AppState) {
                 http: state.http.clone(),
             },
             &leader,
+            &tools,
         );
-        spawn(storage::OsdActivateController { env: env.clone() }, &leader);
-        spawn(storage::SystemOsdController { env: env.clone() }, &leader);
-        spawn(storage::ImagesRbdController { env: env.clone() }, &leader);
-        spawn(storage::ImagesGrowController { env: env.clone() }, &leader);
-        spawn(storage::DashboardController { env: env.clone() }, &leader);
-        spawn(storage::MonMemberController { env: env.clone() }, &leader);
-        spawn(storage::CephKeysController, &leader);
-        spawn(storage::CephJoinController { env: env.clone() }, &leader);
-        spawn(storage::CsiSecretsController, &leader);
-        spawn(storage::CsiRecoveryController, &leader);
-        spawn(crate::storage::ceph_csi::CephCsiController, &leader);
+        spawn(
+            storage::OsdActivateController { env: env.clone() },
+            &leader,
+            &tools,
+        );
+        spawn(
+            storage::SystemOsdController { env: env.clone() },
+            &leader,
+            &tools,
+        );
+        spawn(
+            storage::ImagesRbdController { env: env.clone() },
+            &leader,
+            &tools,
+        );
+        spawn(
+            storage::ImagesGrowController { env: env.clone() },
+            &leader,
+            &tools,
+        );
+        spawn(
+            storage::DashboardController { env: env.clone() },
+            &leader,
+            &tools,
+        );
+        spawn(
+            storage::MonMemberController { env: env.clone() },
+            &leader,
+            &tools,
+        );
+        spawn(storage::CephKeysController, &leader, &tools);
+        spawn(
+            storage::CephJoinController { env: env.clone() },
+            &leader,
+            &tools,
+        );
+        spawn(storage::CsiSecretsController, &leader, &tools);
+        spawn(storage::CsiRecoveryController, &leader, &tools);
+        spawn(crate::storage::ceph_csi::CephCsiController, &leader, &tools);
     }
 
-    spawn_observed(&leader);
+    spawn_observed(&leader, &tools);
 
     for watch in runtime::watch::standard() {
         runtime::watch::spawn(watch);

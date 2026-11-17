@@ -66,6 +66,7 @@ pub enum Tick {
 
 pub struct Ctx {
     pub node: String,
+    pub tools: crate::tools::Tools,
 }
 
 pub trait Controller: Send + Sync + 'static {
@@ -140,8 +141,12 @@ fn uptime() -> Option<Duration> {
     Some(Duration::from_secs_f64(secs))
 }
 
-pub fn spawn<C: Controller>(controller: C, leader: leader::Leadership) {
-    resource::spawn(resource::ControllerResource::new(controller), leader);
+pub fn spawn<C: Controller>(
+    controller: C,
+    leader: leader::Leadership,
+    tools: crate::tools::Tools,
+) {
+    resource::spawn(resource::ControllerResource::new(controller), leader, tools);
 }
 
 async fn wait_or_wake(notify: &Notify, d: Duration) {
@@ -152,14 +157,16 @@ async fn wait_or_wake(notify: &Notify, d: Duration) {
 }
 
 pub async fn run_once<C: Controller>(controller: &C) -> anyhow::Result<Tick> {
+    let tools = crate::tools::Tools::real();
     let node = resource::preflight(
+        &tools,
         controller.name(),
         controller.scope(),
         &resource::deps_of(controller.requires()),
         controller.pauses_during(),
     )
     .await?;
-    controller.reconcile(&Ctx { node }).await
+    controller.reconcile(&Ctx { node, tools }).await
 }
 
 #[cfg(test)]
@@ -211,6 +218,7 @@ mod tests {
         spawn(
             Flaky { runs: runs.clone() },
             leader::Leadership::fixed_for_tests(true),
+            crate::tools::Tools::unreachable(),
         );
         for _ in 0..600 {
             tokio::time::sleep(Duration::from_secs(1)).await;
@@ -254,6 +262,7 @@ mod tests {
         spawn(
             Clustered { runs: runs.clone() },
             leader::Leadership::fixed_for_tests(false),
+            crate::tools::Tools::unreachable(),
         );
         tokio::time::sleep(Duration::from_secs(120)).await;
         assert_eq!(runs.load(Ordering::SeqCst), 0);
@@ -289,6 +298,7 @@ mod tests {
         spawn(
             Woken { runs: runs.clone() },
             leader::Leadership::fixed_for_tests(true),
+            crate::tools::Tools::unreachable(),
         );
         tokio::time::sleep(Duration::from_secs(5)).await;
         assert_eq!(runs.load(Ordering::SeqCst), 1);
@@ -325,6 +335,7 @@ mod tests {
         spawn(
             Impatient { runs: runs.clone() },
             leader::Leadership::fixed_for_tests(true),
+            crate::tools::Tools::unreachable(),
         );
         tokio::time::sleep(Duration::from_secs(15)).await;
         assert_eq!(

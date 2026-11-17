@@ -325,9 +325,9 @@ impl Controller for NotifierController {
             ));
         }
         let topic = topic(&self.config.config_path)?;
-        let view = crate::heal::current_view(&self.config).await;
+        let view = crate::heal::current_view(&ctx.tools.host, &self.config).await;
         let quiet = !sends_for_cluster(&ctx.node, &view.answering);
-        let backend = Backend::real().await;
+        let backend = ctx.tools.backend().await;
         let sources = [
             heal_source(&view.problems, quiet),
             backup_source(&backend, quiet).await,

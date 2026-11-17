@@ -226,9 +226,9 @@ impl crate::runtime::Controller for OutputsController {
     fn requires(&self) -> &'static [crate::runtime::Requirement] {
         &[crate::runtime::Requirement::KubeApi]
     }
-    async fn reconcile(&self, _ctx: &crate::runtime::Ctx) -> anyhow::Result<crate::runtime::Tick> {
+    async fn reconcile(&self, ctx: &crate::runtime::Ctx) -> anyhow::Result<crate::runtime::Tick> {
         let catalog_dir = crate::config::Config::from_env().catalog_dir();
-        let failed = rescan_all(&crate::k8s::client().await?, &catalog_dir).await?;
+        let failed = rescan_all(&ctx.tools.kube().await?, &catalog_dir).await?;
         if failed.is_empty() {
             Ok(crate::runtime::Tick::Done)
         } else {

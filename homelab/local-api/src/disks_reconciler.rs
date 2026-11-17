@@ -7,7 +7,7 @@ use tokio::time::{sleep, Duration};
 
 use crate::ceph::destructive;
 use crate::error::Outcome;
-use crate::host::{Host, RealHost};
+use crate::host::Host;
 use crate::storage::settings;
 use crate::store::entry::Origin;
 use crate::store::{DiskIntent, Store};
@@ -363,9 +363,9 @@ impl crate::runtime::Controller for DisksController {
         if ctx.node.is_empty() {
             anyhow::bail!("cannot determine this node's name");
         }
-        let host = RealHost;
-        publish_local(&host, &ctx.node).await?;
-        crate::storage::movement::sample(&host).await;
+        let host = &ctx.tools.host;
+        publish_local(host, &ctx.node).await?;
+        crate::storage::movement::sample(host).await;
         Ok(crate::runtime::Tick::Done)
     }
 }

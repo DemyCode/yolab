@@ -404,8 +404,8 @@ impl crate::runtime::Controller for UninstallWatchdogController {
     fn not_before_uptime(&self) -> std::time::Duration {
         std::time::Duration::from_secs(90)
     }
-    async fn reconcile(&self, _ctx: &crate::runtime::Ctx) -> anyhow::Result<crate::runtime::Tick> {
-        finish_abandoned_uninstalls(&Backend::real().await?).await
+    async fn reconcile(&self, ctx: &crate::runtime::Ctx) -> anyhow::Result<crate::runtime::Tick> {
+        finish_abandoned_uninstalls(&ctx.tools.backend().await?).await
     }
 }
 

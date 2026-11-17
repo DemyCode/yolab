@@ -123,11 +123,12 @@ pub async fn update(State(state): State<AppState>) -> Response {
     }
 
     let cfg = state.config.clone();
+    let host = state.host.clone();
     let (tx, rx) = tokio::sync::mpsc::channel::<String>(256);
 
     tokio::spawn(async move {
         let _guard = UpdateGuard;
-        run_update(&crate::host::RealHost, &cfg, &tx).await;
+        run_update(&host, &cfg, &tx).await;
     });
 
     let stream = tokio_stream::wrappers::ReceiverStream::new(rx)
@@ -147,6 +148,7 @@ pub async fn trigger_update(State(state): State<AppState>) -> Json<serde_json::V
     }
 
     let cfg = state.config.clone();
+    let host = state.host.clone();
     let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(256);
 
     let log_path = cfg.rebuild_log.clone();
@@ -169,7 +171,7 @@ pub async fn trigger_update(State(state): State<AppState>) -> Json<serde_json::V
 
     tokio::spawn(async move {
         let _guard = UpdateGuard;
-        run_update(&crate::host::RealHost, &cfg, &tx).await;
+        run_update(&host, &cfg, &tx).await;
     });
 
     Json(serde_json::json!({"status": "started"}))
@@ -261,7 +263,7 @@ pub async fn update_all(State(state): State<AppState>) -> Response {
     let peers = crate::runtime::fleet::order(&crate::k8s::peer_ipv6(&nodes, &self_ip), &self_ip);
 
     let fleet = UpdateFleet {
-        client: crate::http::client(),
+        client: state.http.clone(),
         port: cfg.port,
         token: cfg.cluster_token(),
         channel: serde_json::json!({ "url": ch.url, "ref": ch.ref_ }),

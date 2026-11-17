@@ -198,8 +198,8 @@ impl Controller for BackupCheckController {
     fn not_before_uptime(&self) -> Duration {
         Duration::from_secs(600)
     }
-    async fn reconcile(&self, _ctx: &Ctx) -> anyhow::Result<Tick> {
-        check_due(&Backend::real().await?).await
+    async fn reconcile(&self, ctx: &Ctx) -> anyhow::Result<Tick> {
+        check_due(&ctx.tools.backend().await?).await
     }
 }
 

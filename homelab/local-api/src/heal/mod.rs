@@ -15,7 +15,7 @@ use serde_json::{json, Value};
 use crate::ceph::destructive::APP_DATA_POOLS;
 use crate::ceph::model::{self, PgsByPool};
 use crate::error::Outcome;
-use crate::host::{Host, RealHost};
+use crate::host::Host;
 use crate::runtime::{Controller, Ctx, Scope, Tick};
 use crate::system::now_secs;
 use crate::AppState;
@@ -780,10 +780,10 @@ impl Controller for HealController {
     fn interval(&self) -> Duration {
         TICK
     }
-    async fn reconcile(&self, _ctx: &Ctx) -> Result<Tick> {
+    async fn reconcile(&self, ctx: &Ctx) -> Result<Tick> {
         let boot_id = boot_id().await?;
         tick(
-            &RealHost,
+            &ctx.tools.host,
             &RealNetwork::from_config(&self.config),
             &LocalRecord::under(Path::new("/")),
             &boot_id,
@@ -1099,10 +1099,10 @@ pub(crate) struct View {
     pub peer_addrs: Vec<String>,
 }
 
-pub(crate) async fn current_view(cfg: &crate::config::Config) -> View {
+pub(crate) async fn current_view<H: Host>(host: &H, cfg: &crate::config::Config) -> View {
     let net = RealNetwork::from_config(cfg);
     let me = crate::system::hostname();
-    let s = survey(&RealHost, &net, &me, &cfg.node_ipv6, uptime_secs().await).await;
+    let s = survey(host, &net, &me, &cfg.node_ipv6, uptime_secs().await).await;
     View {
         problems: s.problems(),
         answering: s.kept().map(MachineState::label).collect(),
@@ -1121,14 +1121,7 @@ pub async fn get_status(State(s): State<AppState>) -> (StatusCode, Json<Value>) 
         Err(e) => return error(StatusCode::SERVICE_UNAVAILABLE, format!("{e:#}")),
     };
     let me = crate::system::hostname();
-    let survey = survey(
-        &RealHost,
-        &net,
-        &me,
-        &s.config.node_ipv6,
-        uptime_secs().await,
-    )
-    .await;
+    let survey = survey(&s.host, &net, &me, &s.config.node_ipv6, uptime_secs().await).await;
     (StatusCode::OK, Json(status_json(&survey, local.as_ref())))
 }
 
@@ -1140,7 +1133,7 @@ pub async fn post_heal(
     let me = crate::system::hostname();
     let id = crate::routers::backup_common::random_hex(8);
     match start_heal(
-        &RealHost,
+        &s.host,
         &net,
         &LocalRecord::under(Path::new("/")),
         &me,
@@ -1202,12 +1195,13 @@ pub async fn post_peer_prepare(
             "an update is rebuilding this machine's system",
         );
     };
-    match member::begin_prepare(&RealHost, &layout, &request, &boot, Preparing::global()).await {
+    match member::begin_prepare(&s.host, &layout, &request, &boot, Preparing::global()).await {
         Ok(Begin::Already(v)) => (StatusCode::OK, Json(json!(v))),
         Ok(Begin::Start) => {
+            let host = s.host.clone();
             tokio::spawn(async move {
                 let _update = update;
-                member::prepare(&RealHost, &layout, &request, Preparing::global()).await;
+                member::prepare(&host, &layout, &request, Preparing::global()).await;
             });
             (StatusCode::ACCEPTED, Json(json!({ "status": "preparing" })))
         }
@@ -1231,12 +1225,13 @@ pub async fn post_peer_undo(
     State(s): State<AppState>,
     Json(request): Json<HealIdRequest>,
 ) -> (StatusCode, Json<Value>) {
+    let host = s.host.clone();
     peer_change(
         &s,
         &request.heal_id,
         |layout, boot, id, may_rebuild| async move {
             member::undo(
-                &RealHost,
+                &host,
                 &layout,
                 &id,
                 &boot,

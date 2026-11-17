@@ -498,8 +498,8 @@ impl crate::runtime::Controller for ChartSyncController {
     fn requires(&self) -> &'static [crate::runtime::Requirement] {
         &[crate::runtime::Requirement::KubeApi]
     }
-    async fn reconcile(&self, _ctx: &crate::runtime::Ctx) -> anyhow::Result<crate::runtime::Tick> {
-        let b = crate::routers::backup_common::Backend::real().await?;
+    async fn reconcile(&self, ctx: &crate::runtime::Ctx) -> anyhow::Result<crate::runtime::Tick> {
+        let b = ctx.tools.backend().await?;
         sync_all(&b.kube, &b.host).await
     }
 }

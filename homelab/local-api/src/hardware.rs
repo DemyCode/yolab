@@ -698,6 +698,7 @@ mod tests {
         controller
             .reconcile(&crate::runtime::Ctx {
                 node: "node1".into(),
+                tools: crate::tools::Tools::unreachable(),
             })
             .await
             .unwrap();

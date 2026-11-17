@@ -471,6 +471,7 @@ mod tests {
             config,
             kube: crate::k8s::Kube::with(crate::k8s::testing::unreachable()),
             http: crate::http::Client::new(),
+            proxy_http: crate::http::Client::new(),
             host: Default::default(),
         }
     }
@@ -486,6 +487,7 @@ mod tests {
             config,
             kube: crate::k8s::Kube::with(crate::k8s::testing::unreachable()),
             http: crate::http::Client::new(),
+            proxy_http: crate::http::Client::new(),
             host: Default::default(),
         }
     }

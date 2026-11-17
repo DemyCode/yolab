@@ -13,15 +13,6 @@ pub(crate) struct Backend<H: Host = crate::host::RealHost> {
     pub host: H,
 }
 
-impl Backend {
-    pub(crate) async fn real() -> anyhow::Result<Self> {
-        Ok(Backend {
-            kube: crate::k8s::client().await?,
-            host: crate::host::RealHost,
-        })
-    }
-}
-
 pub(crate) async fn apply_secret(
     client: &Client,
     name: &str,

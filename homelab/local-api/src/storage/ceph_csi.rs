@@ -30,11 +30,11 @@ impl Controller for CephCsiController {
     fn requires(&self) -> &'static [Requirement] {
         &[Requirement::KubeApi]
     }
-    async fn reconcile(&self, _ctx: &Ctx) -> Result<Tick> {
+    async fn reconcile(&self, ctx: &Ctx) -> Result<Tick> {
         let path = std::env::var(MANIFESTS_ENV).with_context(|| {
             format!("{MANIFESTS_ENV} is not set; the NixOS module names the CSI manifests")
         })?;
-        let b = crate::routers::backup_common::Backend::real().await?;
+        let b = ctx.tools.backend().await?;
         apply_manifests(&b.kube, Path::new(&path)).await
     }
 }

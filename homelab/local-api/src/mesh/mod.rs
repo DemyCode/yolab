@@ -11,7 +11,7 @@ use serde::Serialize;
 use crate::{
     auth::CLUSTER_AUTH_HEADER,
     error::{Outcome, Result},
-    host::{Host, RealHost},
+    host::Host,
     system::now_secs,
     AppState,
 };
@@ -33,10 +33,11 @@ const SUBNET_SUFFIX: &str = "/112";
 const MESH_PUBKEY_HEADER: &str = "x-yolab-mesh-pubkey";
 
 pub async fn mesh_candidates(
+    State(s): State<AppState>,
     axum::extract::ConnectInfo(addr): axum::extract::ConnectInfo<std::net::SocketAddr>,
     headers: axum::http::HeaderMap,
 ) -> Result<Json<Candidates>> {
-    let host = &RealHost;
+    let host = &s.host;
     if let Some(caller_key) = headers
         .get(MESH_PUBKEY_HEADER)
         .and_then(|v| v.to_str().ok())
@@ -76,9 +77,9 @@ pub struct PathStatus {
 }
 
 pub async fn paths(State(state): State<AppState>) -> Result<Json<Vec<PathStatus>>> {
-    let host = &RealHost;
+    let host = &state.host;
     let peers = wg::peers(host).await.unwrap_or_default();
-    let addrs = peer_addresses(&state.config.node_ipv6).await;
+    let addrs = peer_addresses(&state.kube, &state.config.node_ipv6).await;
     Ok(Json(path_statuses(&peers, &addrs, now_secs())))
 }
 
@@ -110,8 +111,8 @@ fn path_statuses(peers: &[wg::Peer], addrs: &[String], now: u64) -> Vec<PathStat
 
 const PEER_CACHE: &str = "/var/lib/yolab/mesh-peers.json";
 
-pub(crate) async fn peer_addresses(self_ip: &str) -> Vec<String> {
-    let kube = crate::k8s::client().await.ok();
+pub(crate) async fn peer_addresses(kube: &crate::k8s::Kube, self_ip: &str) -> Vec<String> {
+    let kube = kube.client().await.ok();
     peer_addresses_from(kube.as_ref(), std::path::Path::new(PEER_CACHE), self_ip).await
 }
 
@@ -228,9 +229,9 @@ impl crate::runtime::Controller for MeshPathsController {
     fn interval(&self) -> Duration {
         FAST_TICK
     }
-    async fn reconcile(&self, _ctx: &crate::runtime::Ctx) -> anyhow::Result<crate::runtime::Tick> {
+    async fn reconcile(&self, ctx: &crate::runtime::Ctx) -> anyhow::Result<crate::runtime::Tick> {
         let mut blackhole = self.blackhole.lock().await;
-        reconcile_local(&RealHost, &mut blackhole).await?;
+        reconcile_local(&ctx.tools.host, &mut blackhole).await?;
         Ok(crate::runtime::Tick::Done)
     }
 }
@@ -260,12 +261,12 @@ impl crate::runtime::Controller for MeshDiscoveryController {
     fn requires(&self) -> &'static [crate::runtime::Requirement] {
         &[crate::runtime::Requirement::KubeApi]
     }
-    async fn reconcile(&self, _ctx: &crate::runtime::Ctx) -> anyhow::Result<crate::runtime::Tick> {
+    async fn reconcile(&self, ctx: &crate::runtime::Ctx) -> anyhow::Result<crate::runtime::Tick> {
         let mut last_probe = self.last_probe.lock().await;
         let cfg = crate::config::Config::from_env();
-        let peers = peer_addresses(&cfg.node_ipv6).await;
+        let peers = peer_addresses(&ctx.tools.kube, &cfg.node_ipv6).await;
         tick(
-            &RealHost,
+            &ctx.tools.host,
             &peers,
             cfg.port,
             &cfg.cluster_token(),

@@ -199,8 +199,8 @@ impl crate::runtime::Controller for TopologyController {
     fn pauses_during(&self) -> &'static [crate::runtime::Activity] {
         &[crate::runtime::Activity::Restore]
     }
-    async fn reconcile(&self, _ctx: &crate::runtime::Ctx) -> anyhow::Result<crate::runtime::Tick> {
-        tick(&Backend::real().await?).await;
+    async fn reconcile(&self, ctx: &crate::runtime::Ctx) -> anyhow::Result<crate::runtime::Tick> {
+        tick(&ctx.tools.backend().await?).await;
         Ok(crate::runtime::Tick::Done)
     }
 }
@@ -368,7 +368,7 @@ pub struct SetPolicyReq {
 }
 
 pub async fn set_policy(
-    State(_s): State<AppState>,
+    State(s): State<AppState>,
     Json(req): Json<SetPolicyReq>,
 ) -> (StatusCode, Json<Value>) {
     let (Some(size), Some(failure_domain)) = (req.size, req.failure_domain.clone()) else {
@@ -394,7 +394,7 @@ pub async fn set_policy(
         size,
         failure_domain,
     };
-    match write_policy(&crate::host::RealHost, &p).await {
+    match write_policy(&s.host, &p).await {
         Ok(_) => (
             StatusCode::OK,
             Json(serde_json::json!({"ok": true, "policy": p})),

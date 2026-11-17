@@ -1278,8 +1278,8 @@ impl Controller for BackupSchedulerController {
     fn not_before_uptime(&self) -> Duration {
         Duration::from_secs(60)
     }
-    async fn reconcile(&self, _ctx: &Ctx) -> anyhow::Result<Tick> {
-        schedule(&Backend::real().await?).await
+    async fn reconcile(&self, ctx: &Ctx) -> anyhow::Result<Tick> {
+        schedule(&ctx.tools.backend().await?).await
     }
 }
 
@@ -1356,8 +1356,8 @@ async fn schedule<H: Host + Clone + 'static>(b: &Backend<H>) -> anyhow::Result<T
     }
 }
 
-pub(crate) fn start_heartbeat() {
-    ops::spawn_heartbeat::<BackupSet>(SETS, &IN_FLIGHT);
+pub(crate) fn start_heartbeat(kube: crate::k8s::Kube) {
+    ops::spawn_heartbeat::<BackupSet>(SETS, &IN_FLIGHT, kube);
 }
 
 #[cfg(test)]

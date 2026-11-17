@@ -41,6 +41,7 @@ mod surface;
 mod system;
 #[cfg(test)]
 mod testkit;
+mod tools;
 mod topology;
 mod tree;
 mod tree_list;
@@ -57,15 +58,21 @@ pub struct AppState {
     pub auth: AuthState,
     pub kube: k8s::Kube,
     pub http: http::Client,
+    pub proxy_http: http::Client,
     pub host: host::RealHost,
 }
 
 impl AppState {
-    pub(crate) async fn backend(&self) -> anyhow::Result<routers::backup_common::Backend> {
-        Ok(routers::backup_common::Backend {
-            kube: self.kube.client().await?,
+    pub(crate) fn tools(&self) -> tools::Tools {
+        tools::Tools {
             host: self.host.clone(),
-        })
+            kube: self.kube.clone(),
+            http: self.http.clone(),
+        }
+    }
+
+    pub(crate) async fn backend(&self) -> anyhow::Result<routers::backup_common::Backend> {
+        self.tools().backend().await
     }
 }
 
@@ -107,19 +114,23 @@ async fn main() {
     }
 
     let cfg = Arc::new(Config::from_env());
-    let kube = k8s::Kube::from_environment();
+    let real = tools::Tools::real();
     let auth_state = AuthState::new(Arc::clone(&cfg));
     let state = AppState {
         config: Arc::clone(&cfg),
         auth: auth_state,
-        kube: kube.clone(),
-        http: http::client(),
-        host: Default::default(),
+        kube: real.kube.clone(),
+        http: real.http.clone(),
+        proxy_http: http::client_without_redirects(),
+        host: real.host.clone(),
     };
 
     let app = router::build_router(state.clone());
 
-    controllers::spawn_all(runtime::leader::start(system::hostname(), kube), &state);
+    controllers::spawn_all(
+        runtime::leader::start(system::hostname(), real.kube.clone()),
+        &state,
+    );
 
     let mut servers = tokio::task::JoinSet::new();
     for addr in cfg.listen_addrs() {

@@ -1,9 +1,10 @@
-use axum::Json;
+use axum::{extract::State, Json};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::error::Result;
 use crate::host::Host;
+use crate::AppState;
 
 #[derive(Serialize, Deserialize, Debug, Default, PartialEq)]
 pub struct CephJoinBundle {
@@ -58,8 +59,8 @@ async fn keyring<H: Host>(host: &H, entity: &str) -> anyhow::Result<String> {
     Ok(text)
 }
 
-pub async fn ceph_join_bundle() -> Result<Json<CephJoinBundle>> {
-    Ok(Json(bundle(&crate::host::RealHost).await?))
+pub async fn ceph_join_bundle(State(s): State<AppState>) -> Result<Json<CephJoinBundle>> {
+    Ok(Json(bundle(&s.host).await?))
 }
 
 async fn bundle<H: Host>(host: &H) -> anyhow::Result<CephJoinBundle> {

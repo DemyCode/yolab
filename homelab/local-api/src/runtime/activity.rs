@@ -71,15 +71,15 @@ impl Cache {
     }
 }
 
-async fn kube_api_ready() -> Answer {
-    let Ok(client) = crate::k8s::client().await else {
+async fn kube_api_ready(tools: &crate::tools::Tools) -> Answer {
+    let Ok(client) = tools.kube().await else {
         return Some(false);
     };
     Some(crate::k8s::ready(&client).await)
 }
 
-async fn ceph_ready() -> Answer {
-    Some(ceph_answers(&crate::host::RealHost).await)
+async fn ceph_ready(tools: &crate::tools::Tools) -> Answer {
+    Some(ceph_answers(&tools.host).await)
 }
 
 async fn ceph_answers<H: crate::host::Host>(host: &H) -> bool {
@@ -88,16 +88,16 @@ async fn ceph_answers<H: crate::host::Host>(host: &H) -> bool {
         .is_ok()
 }
 
-async fn ask_requirement(r: Requirement) -> Answer {
+async fn ask_requirement(tools: &crate::tools::Tools, r: Requirement) -> Answer {
     match r {
-        Requirement::KubeApi => kube_api_ready().await,
-        Requirement::Ceph => ceph_ready().await,
+        Requirement::KubeApi => kube_api_ready(tools).await,
+        Requirement::Ceph => ceph_ready(tools).await,
     }
 }
 
-async fn ask_activity(a: Activity) -> Answer {
+async fn ask_activity(tools: &crate::tools::Tools, a: Activity) -> Answer {
     let r = match a {
-        Activity::Restore => match crate::k8s::client().await {
+        Activity::Restore => match tools.kube().await {
             Ok(client) => crate::routers::restore::running_anywhere(&client).await,
             Err(e) => Err(e),
         },
@@ -105,15 +105,15 @@ async fn ask_activity(a: Activity) -> Answer {
     r.map_err(|e| tracing::debug!("activity {a:?}: {e:#}")).ok()
 }
 
-pub async fn is_met(r: Requirement) -> bool {
+pub async fn is_met(tools: &crate::tools::Tools, r: Requirement) -> bool {
     Cache::global()
-        .get_or_ask(Key::Req(r), ask_requirement(r))
+        .get_or_ask(Key::Req(r), ask_requirement(tools, r))
         .await
         == Some(true)
 }
 
-pub async fn unmet(requires: &[Requirement]) -> Option<Requirement> {
-    first_unmet(Cache::global(), requires, ask_requirement).await
+pub async fn unmet(tools: &crate::tools::Tools, requires: &[Requirement]) -> Option<Requirement> {
+    first_unmet(Cache::global(), requires, |r| ask_requirement(tools, r)).await
 }
 
 async fn first_unmet<F, Fut>(cache: &Cache, requires: &[Requirement], ask: F) -> Option<Requirement>
@@ -129,8 +129,8 @@ where
     None
 }
 
-pub async fn gate(activities: &[Activity]) -> Gate {
-    gate_in(Cache::global(), activities, ask_activity).await
+pub async fn gate(tools: &crate::tools::Tools, activities: &[Activity]) -> Gate {
+    gate_in(Cache::global(), activities, |a| ask_activity(tools, a)).await
 }
 
 async fn gate_in<F, Fut>(cache: &Cache, activities: &[Activity], ask: F) -> Gate
@@ -178,8 +178,9 @@ mod tests {
 
     #[tokio::test]
     async fn nothing_declared_means_nothing_asked() {
-        assert!(unmet(&[]).await.is_none());
-        assert!(matches!(gate(&[]).await, Gate::Clear));
+        let tools = crate::tools::Tools::unreachable();
+        assert!(unmet(&tools, &[]).await.is_none());
+        assert!(matches!(gate(&tools, &[]).await, Gate::Clear));
     }
 
     #[tokio::test]

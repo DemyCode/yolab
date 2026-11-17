@@ -160,7 +160,7 @@ async fn osd_provisioning_active<H: Host>(host: &H, data_unavailable: bool) -> b
 
 pub async fn cluster_health(State(state): State<AppState>) -> Json<ClusterHealth> {
     let kube = state.kube.client().await.ok();
-    Json(compute_cluster_health(&crate::host::RealHost, kube.as_ref()).await)
+    Json(compute_cluster_health(&state.host, kube.as_ref()).await)
 }
 
 async fn mon_quorum<H: Host>(host: &H) -> bool {
@@ -1097,11 +1097,15 @@ pub(crate) fn dashboard_origin_from(services: &serde_json::Value) -> Option<Stri
     Some(format!("{}://{}:{}", parsed.scheme(), host, port))
 }
 
-pub async fn dashboard_proxy(req: axum::extract::Request) -> Response {
-    proxy_via(&crate::host::RealHost, req).await
+pub async fn dashboard_proxy(State(s): State<AppState>, req: axum::extract::Request) -> Response {
+    proxy_via(&s.host, &s.proxy_http, req).await
 }
 
-async fn proxy_via<H: Host>(host: &H, req: axum::extract::Request) -> Response {
+async fn proxy_via<H: Host>(
+    host: &H,
+    client: &crate::http::Client,
+    req: axum::extract::Request,
+) -> Response {
     let Some(origin) = active_dashboard_origin(host).await else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -1117,8 +1121,6 @@ async fn proxy_via<H: Host>(host: &H, req: axum::extract::Request) -> Response {
         .map(|p| p.as_str().to_string())
         .unwrap_or_else(|| "/".into());
     let url = format!("{origin}{path_and_query}");
-
-    let client = crate::http::client_without_redirects();
 
     let (parts, body) = req.into_parts();
     let body_bytes = match axum::body::to_bytes(body, 32 * 1024 * 1024).await {
@@ -1276,7 +1278,12 @@ mod dashboard_tests {
                 .expect(1)
         })
         .await;
-        let res = proxy_via(&mgr_serving(port), login_request()).await;
+        let res = proxy_via(
+            &mgr_serving(port),
+            &crate::http::client_without_redirects(),
+            login_request(),
+        )
+        .await;
         assert_eq!(res.status(), StatusCode::CREATED);
         assert_eq!(res.headers()["x-ceph-token"], "t0k");
         assert_eq!(body_of(res).await, "welcome");
@@ -1292,7 +1299,12 @@ mod dashboard_tests {
             )
         })
         .await;
-        let res = proxy_via(&mgr_serving(port), login_request()).await;
+        let res = proxy_via(
+            &mgr_serving(port),
+            &crate::http::client_without_redirects(),
+            login_request(),
+        )
+        .await;
         assert_eq!(res.status(), StatusCode::SEE_OTHER);
         assert_eq!(
             res.headers()["location"],
@@ -1303,17 +1315,32 @@ mod dashboard_tests {
     #[tokio::test]
     async fn no_active_mgr_is_unavailable() {
         let host = FakeHost::new().ok("ceph mgr services", r#"{"dashboard":""}"#);
-        let res = proxy_via(&host, login_request()).await;
+        let res = proxy_via(
+            &host,
+            &crate::http::client_without_redirects(),
+            login_request(),
+        )
+        .await;
         assert_eq!(res.status(), StatusCode::SERVICE_UNAVAILABLE);
         let silent = FakeHost::new().fail("ceph mgr services", "timed out");
-        let res = proxy_via(&silent, login_request()).await;
+        let res = proxy_via(
+            &silent,
+            &crate::http::client_without_redirects(),
+            login_request(),
+        )
+        .await;
         assert_eq!(res.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 
     #[tokio::test]
     async fn an_active_mgr_that_does_not_answer_is_a_bad_gateway() {
         let port = crate::testkit::closed_port();
-        let res = proxy_via(&mgr_serving(port), login_request()).await;
+        let res = proxy_via(
+            &mgr_serving(port),
+            &crate::http::client_without_redirects(),
+            login_request(),
+        )
+        .await;
         assert_eq!(res.status(), StatusCode::BAD_GATEWAY);
     }
 

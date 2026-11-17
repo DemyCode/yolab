@@ -60,14 +60,14 @@ impl Controller for SharedNamesController {
     fn interval(&self) -> Duration {
         Duration::from_secs(600)
     }
-    async fn reconcile(&self, _ctx: &Ctx) -> Result<Tick> {
+    async fn reconcile(&self, ctx: &Ctx) -> Result<Tick> {
         let tunnel = Tunnel::read(&self.config.config_path)?;
         if !tunnel.enabled || tunnel.tunnel_id.is_empty() {
             return Ok(Tick::Idle(
                 "this machine is not connected to the YoLab platform".into(),
             ));
         }
-        claim_names(&crate::http::client(), &tunnel).await
+        claim_names(&ctx.tools.http, &tunnel).await
     }
 }
 

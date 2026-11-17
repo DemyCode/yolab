@@ -25,8 +25,6 @@ use std::time::Duration;
 
 use anyhow::Result;
 
-use crate::host::RealHost;
-
 pub(crate) fn root() -> &'static Path {
     Path::new("/")
 }
@@ -167,7 +165,7 @@ pub fn lock_name(job: &str) -> String {
 const BOOT_LOCK_WAIT: Duration = Duration::from_secs(120);
 
 pub async fn run(args: &[String]) -> i32 {
-    let host = RealHost;
+    let host = crate::tools::Tools::real().host;
     let Some(sub) = args.first().map(String::as_str) else {
         eprintln!("storage: missing subcommand");
         return 2;

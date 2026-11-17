@@ -6,10 +6,6 @@ use crate::{auth::CLUSTER_AUTH_HEADER, host::Host, AppState};
 
 const REBOOT_DELAY_SECS: u64 = 3;
 
-fn spawn_reboot() {
-    spawn_reboot_on(crate::host::RealHost);
-}
-
 fn spawn_reboot_on<H: Host + 'static>(host: H) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         tokio::time::sleep(Duration::from_secs(REBOOT_DELAY_SECS)).await;
@@ -22,8 +18,8 @@ fn spawn_reboot_on<H: Host + 'static>(host: H) -> tokio::task::JoinHandle<()> {
     })
 }
 
-pub async fn reboot() -> Json<serde_json::Value> {
-    spawn_reboot();
+pub async fn reboot(State(state): State<AppState>) -> Json<serde_json::Value> {
+    spawn_reboot_on(state.host.clone());
     Json(serde_json::json!({ "status": "rebooting" }))
 }
 
@@ -69,8 +65,9 @@ pub async fn reboot_all(State(state): State<AppState>) -> Json<serde_json::Value
     };
     let peers = crate::runtime::fleet::order(&crate::k8s::peer_ipv6(&nodes, &self_ip), &self_ip);
 
+    let host = state.host.clone();
     let fleet = RebootFleet {
-        client: crate::http::client(),
+        client: state.http.clone(),
         port: cfg.port,
         token: cfg.cluster_token(),
     };
@@ -91,7 +88,7 @@ pub async fn reboot_all(State(state): State<AppState>) -> Json<serde_json::Value
             "reboot: {:?} are back, restarting this machine now",
             rolled.done
         );
-        spawn_reboot();
+        spawn_reboot_on(host);
     });
 
     Json(serde_json::json!({

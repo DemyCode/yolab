@@ -109,10 +109,10 @@ pub(crate) fn parse_journal(raw: &str, search: Option<&str>) -> (Vec<LogEntry>, 
 }
 
 pub async fn list_logs(
-    State(_s): State<AppState>,
+    State(s): State<AppState>,
     Query(q): Query<LogQuery>,
 ) -> Json<LogsResponse> {
-    Json(read_logs(&crate::host::RealHost, &q).await)
+    Json(read_logs(&s.host, &q).await)
 }
 
 fn journal_args(q: &LogQuery, limit: usize) -> Vec<String> {

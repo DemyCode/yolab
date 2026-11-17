@@ -156,26 +156,12 @@ pub fn upsert<T: Claimed>(records: &mut Vec<T>, record: T, keep: usize) {
 pub fn spawn_heartbeat<T: Claimed + 'static>(
     store: crate::records::Store,
     in_flight: &'static InFlight,
+    kube: crate::k8s::Kube,
 ) {
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(HEARTBEAT_EVERY).await;
-            let ids = in_flight.ids();
-            if ids.is_empty() {
-                continue;
-            }
-            let me = crate::system::hostname();
-            let now = Utc::now();
-            let result = match crate::k8s::client().await {
-                Ok(client) => store
-                    .update(&client, |sets: &mut Vec<T>| {
-                        beat(sets, &ids, &me, now);
-                    })
-                    .await
-                    .map_err(anyhow::Error::from),
-                Err(e) => Err(e),
-            };
-            if let Err(e) = result {
+            if let Err(e) = beat_once::<T>(store, in_flight, &kube).await {
                 tracing::warn!(
                     "heartbeat for {}/{}: {e} — other nodes will treat these as abandoned after {}s",
                     store.namespace,
@@ -185,6 +171,25 @@ pub fn spawn_heartbeat<T: Claimed + 'static>(
             }
         }
     });
+}
+
+async fn beat_once<T: Claimed>(
+    store: crate::records::Store,
+    in_flight: &InFlight,
+    kube: &crate::k8s::Kube,
+) -> anyhow::Result<()> {
+    let ids = in_flight.ids();
+    if ids.is_empty() {
+        return Ok(());
+    }
+    let me = crate::system::hostname();
+    let now = Utc::now();
+    store
+        .update(&kube.client().await?, |sets: &mut Vec<T>| {
+            beat(sets, &ids, &me, now);
+        })
+        .await?;
+    Ok(())
 }
 
 pub fn beat<T: Claimed>(sets: &mut [T], ids: &[String], me: &str, now: DateTime<Utc>) {
@@ -323,6 +328,36 @@ mod tests {
         fn claim_mut(&mut self) -> &mut Claim {
             &mut self.claim
         }
+    }
+
+    const BEATS: crate::records::Store = crate::records::Store {
+        name: "yolab-beat-test",
+        namespace: "kube-system",
+        key: "sets",
+    };
+
+    #[tokio::test]
+    async fn a_heartbeat_with_nothing_in_flight_asks_the_cluster_nothing() {
+        static IDLE: InFlight = InFlight::new();
+        let kube = crate::k8s::Kube::with(crate::k8s::testing::unreachable());
+        beat_once::<Rec>(BEATS, &IDLE, &kube).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_heartbeat_writes_through_the_cluster_it_was_handed() {
+        static BEATING: InFlight = InFlight::new();
+        let _held = BEATING.claim("bk-beat");
+        let (server, client) = crate::k8s::testing::api_server().await;
+        let kube = crate::k8s::Kube::with(client);
+        let outcome = beat_once::<Rec>(BEATS, &BEATING, &kube).await;
+        let asked = server.received_requests().await.unwrap_or_default();
+        assert!(
+            asked
+                .iter()
+                .any(|r| r.url.path().ends_with("/configmaps/yolab-beat-test")),
+            "{outcome:?}: {:?}",
+            asked.iter().map(|r| r.url.path().to_string()).collect::<Vec<_>>()
+        );
     }
 
     fn rec(id: &str, state: &str, claim: Claim) -> Rec {

@@ -252,7 +252,7 @@ pub async fn post_test(State(s): State<AppState>) -> (StatusCode, Json<Value>) {
     let result = async {
         let tunnel = Tunnel::read(&s.config.config_path)?;
         let topic = topic(&s.config.config_path)?;
-        let view = crate::heal::current_view(&s.config).await;
+        let view = crate::heal::current_view(&s.host, &s.config).await;
         let n = Notification {
             title: "YoLab".into(),
             message: format!("Notifications work. Sent from {}.", tunnel.machine_label()),

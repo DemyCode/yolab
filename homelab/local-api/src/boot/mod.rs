@@ -4,10 +4,8 @@ mod node_ip;
 
 use anyhow::Result;
 
-use crate::host::RealHost;
-
 pub async fn run(args: &[String]) -> i32 {
-    let host = RealHost;
+    let host = crate::tools::Tools::real().host;
     let Some(sub) = args.first().map(String::as_str) else {
         eprintln!("boot: missing subcommand");
         return 2;

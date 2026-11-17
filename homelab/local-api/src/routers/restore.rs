@@ -1404,7 +1404,7 @@ impl Controller for RestoreWatchdogController {
         &[Requirement::KubeApi]
     }
     async fn reconcile(&self, ctx: &Ctx) -> anyhow::Result<Tick> {
-        scale_back_abandoned(&Backend::real().await?, &ctx.node).await
+        scale_back_abandoned(&ctx.tools.backend().await?, &ctx.node).await
     }
 }
 
@@ -1452,8 +1452,8 @@ async fn scale_back_abandoned<H: Host>(b: &Backend<H>, node: &str) -> anyhow::Re
     Ok(Tick::Done)
 }
 
-pub(crate) fn start_heartbeat() {
-    ops::spawn_heartbeat::<RestoreSet>(RESTORES, &RESTORE_IN_FLIGHT);
+pub(crate) fn start_heartbeat(kube: crate::k8s::Kube) {
+    ops::spawn_heartbeat::<RestoreSet>(RESTORES, &RESTORE_IN_FLIGHT, kube);
 }
 
 #[cfg(test)]

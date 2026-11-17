@@ -61,9 +61,9 @@ impl Controller for StoreSyncController {
         INTERVAL
     }
 
-    async fn reconcile(&self, _ctx: &Ctx) -> anyhow::Result<Tick> {
+    async fn reconcile(&self, ctx: &Ctx) -> anyhow::Result<Tick> {
         let cfg = crate::config::Config::from_env();
-        let peers = crate::mesh::peer_addresses(&cfg.node_ipv6).await;
+        let peers = crate::mesh::peer_addresses(&ctx.tools.kube, &cfg.node_ipv6).await;
         if peers.is_empty() {
             return Ok(Tick::Idle(
                 "there are no other machines to exchange choices with".into(),
@@ -71,7 +71,7 @@ impl Controller for StoreSyncController {
         }
 
         let token = cfg.cluster_token();
-        let client = crate::http::client();
+        let client = ctx.tools.http.clone();
         let mut reached = 0usize;
         for peer in &peers {
             match exchange(&client, peer, cfg.port, &token).await {
