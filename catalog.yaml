@@ -333,7 +333,7 @@ charts:
   - name: mainsail
     version: "0.1.29"
   - name: mastodon
-    version: "0.1.42"
+    version: "0.1.43"
   - name: matrix
     version: "0.1.7"
   - name: matter-server
