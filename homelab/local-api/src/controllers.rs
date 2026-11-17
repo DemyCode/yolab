@@ -5,7 +5,7 @@ use crate::tools::Tools;
 pub const NAMES: &[&str] = &[
     "backup-scheduler",
     "restores",
-    "uninstall-watchdog",
+    "uninstalls",
     "outputs",
     "store-sync",
     "ssh-keys",
@@ -63,7 +63,7 @@ pub fn spawn_all(leader: Leadership, state: &crate::AppState) {
     spawn(backup::BackupSchedulerController, &leader, &tools);
     spawn(restore::RestoresController, &leader, &tools);
     backup::start_heartbeat(tools.kube.clone());
-    spawn(apps::UninstallWatchdogController, &leader, &tools);
+    spawn(apps::UninstallsController, &leader, &tools);
     spawn(crate::outputs::OutputsController, &leader, &tools);
     spawn(backups::LockSweeperController, &leader, &tools);
     spawn(
@@ -190,7 +190,7 @@ pub async fn run_named(name: &str) -> anyhow::Result<runtime::Tick> {
     match name {
         "backup-scheduler" => runtime::run_once(&backup::BackupSchedulerController).await,
         "restores" => runtime::run_once(&restore::RestoresController).await,
-        "uninstall-watchdog" => runtime::run_once(&apps::UninstallWatchdogController).await,
+        "uninstalls" => runtime::run_once(&apps::UninstallsController).await,
         "outputs" => runtime::run_once(&crate::outputs::OutputsController).await,
         "store-sync" => runtime::run_once(&crate::store::sync::StoreSyncController).await,
         "ssh-keys" => runtime::run_once(&crate::ssh_keys::SshKeysController).await,

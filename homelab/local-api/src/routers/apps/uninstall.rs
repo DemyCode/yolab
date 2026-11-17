@@ -1,16 +1,5 @@
 use super::*;
 
-pub(crate) fn uninstall_lock_is_fresh(ann: &serde_json::Map<String, Value>) -> bool {
-    ann.get(ANN_UNINSTALLING)
-        .and_then(|v| v.as_str())
-        .and_then(|ts| chrono::DateTime::parse_from_rfc3339(ts).ok())
-        .map(|t| {
-            chrono::Utc::now().signed_duration_since(t).num_seconds()
-                <= UNINSTALL_LOCK_TTL.as_secs() as i64
-        })
-        .unwrap_or(false)
-}
-
 pub(crate) fn removal_registered(ann: &serde_json::Map<String, Value>) -> bool {
     ann.contains_key(ANN_UNINSTALLING)
 }
@@ -49,38 +38,11 @@ pub(crate) fn removal_of(
     })
 }
 
-static DRIVING: std::sync::LazyLock<std::sync::Mutex<std::collections::HashSet<String>>> =
-    std::sync::LazyLock::new(Default::default);
-
-pub(crate) struct Driving(String);
-
-impl Driving {
-    pub(crate) fn take(ns: &str) -> Option<Self> {
-        let mut driving = DRIVING.lock().unwrap_or_else(|e| e.into_inner());
-        driving
-            .insert(ns.to_string())
-            .then(|| Driving(ns.to_string()))
-    }
-}
-
-impl Drop for Driving {
-    fn drop(&mut self) {
-        DRIVING
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(&self.0);
-    }
-}
-
-pub(crate) async fn drive_teardown<H: crate::host::Host>(
+pub(crate) async fn drive_teardown<H: crate::host::Host + Clone + 'static>(
     b: &Backend<H>,
     instance_name: &str,
     ns: &str,
 ) -> anyhow::Result<()> {
-    let Some(_driving) = Driving::take(ns) else {
-        tracing::info!("uninstall {instance_name}: already being torn down here");
-        return Ok(());
-    };
     match run_teardown(b, instance_name, ns).await {
         Ok(()) => Ok(()),
         Err(e) => {
@@ -91,38 +53,46 @@ pub(crate) async fn drive_teardown<H: crate::host::Host>(
     }
 }
 
-pub(crate) async fn claim_uninstall_lock(
+pub(crate) fn uninstall_request(delete: &[String], delete_backups: bool) -> anyhow::Result<Value> {
+    let doomed = match delete {
+        [] => Value::Null,
+        folders => Value::String(serde_json::to_string(folders)?),
+    };
+    let backups = if delete_backups {
+        Value::String("true".into())
+    } else {
+        Value::Null
+    };
+    Ok(serde_json::json!({
+        ANN_UNINSTALLING: chrono::Utc::now().to_rfc3339(),
+        ANN_DELETE_FOLDERS: doomed,
+        ANN_DELETE_BACKUPS: backups,
+    }))
+}
+
+pub(crate) async fn register_uninstall(
     client: &Client,
     ns: &str,
     delete: &[String],
+    delete_backups: bool,
 ) -> anyhow::Result<bool> {
     let Some(existing) = namespace(client, ns).await? else {
-        return Ok(true);
+        return Ok(false);
     };
     let ann = existing["metadata"]["annotations"]
         .as_object()
         .cloned()
         .unwrap_or_default();
-    if uninstall_lock_is_fresh(&ann) {
+    if removal_registered(&ann) {
         return Ok(false);
     }
-    if ann.contains_key(ANN_UNINSTALLING) {
-        tracing::warn!("uninstall {ns}: reclaiming a stale uninstall lock");
-    }
-    let mut claim = namespace_ref(ns);
-    claim["metadata"]["resourceVersion"] = existing["metadata"]["resourceVersion"].clone();
-    let doomed = match delete {
-        [] => Value::Null,
-        folders => Value::String(serde_json::to_string(folders)?),
-    };
-    claim["metadata"]["annotations"] = serde_json::json!({
-        ANN_UNINSTALLING: chrono::Utc::now().to_rfc3339(),
-        ANN_DELETE_FOLDERS: doomed,
-    });
-    match crate::k8s::merge_patch(client, &claim).await {
+    let mut request = namespace_ref(ns);
+    request["metadata"]["resourceVersion"] = existing["metadata"]["resourceVersion"].clone();
+    request["metadata"]["annotations"] = uninstall_request(delete, delete_backups)?;
+    match crate::k8s::merge_patch(client, &request).await {
         Ok(()) => Ok(true),
         Err(e) if crate::k8s::refused_with(&e, 409) => Ok(false),
-        Err(e) if crate::k8s::refused_with(&e, 404) => Ok(true),
+        Err(e) if crate::k8s::refused_with(&e, 404) => Ok(false),
         Err(e) => Err(e),
     }
 }
@@ -176,22 +146,10 @@ pub async fn uninstall_app(
         axum::http::StatusCode::ACCEPTED,
         Json(serde_json::json!({"ok": true})),
     );
-    if !claim_uninstall_lock(&b.kube, &ns, &doomed).await? {
-        tracing::info!("uninstall {instance_name}: already registered");
-        return Ok(accepted);
+    if !register_uninstall(&b.kube, &ns, &doomed, query.delete_backups).await? {
+        tracing::info!("uninstall {instance_name}: already registered or already gone");
     }
-
-    let delete_backups = query.delete_backups;
-    tokio::spawn(async move {
-        if drive_teardown(&b, &instance_name, &ns).await.is_err() {
-            return;
-        }
-        tracing::info!("uninstall {instance_name}: done");
-        if delete_backups {
-            delete_backups_of(&b, &instance_name, &ns).await;
-        }
-    });
-
+    crate::runtime::wake("uninstalls");
     Ok(accepted)
 }
 
@@ -307,7 +265,11 @@ pub(crate) async fn wait_for_volumes_deleted(
     .await
 }
 
-pub(crate) async fn run_teardown<H: crate::host::Host>(
+pub(crate) fn backups_doomed(namespace: &Value) -> bool {
+    namespace["metadata"]["annotations"][ANN_DELETE_BACKUPS] == "true"
+}
+
+pub(crate) async fn run_teardown<H: crate::host::Host + Clone + 'static>(
     b: &Backend<H>,
     instance_name: &str,
     ns: &str,
@@ -317,17 +279,30 @@ pub(crate) async fn run_teardown<H: crate::host::Host>(
         Some(v) => folders_in(v)?,
         None => Vec::new(),
     };
+    let delete_backups = found.as_ref().is_some_and(backups_doomed);
     if found.is_some_and(|v| v["status"]["phase"] == "Terminating") {
         tracing::info!(
             "uninstall {instance_name}: namespace is already terminating — waiting for it \
              to finish rather than re-running helm"
         );
-        delete_data(b, instance_name, ns, &doomed).await?;
-        delete_namespace_with_retry(&b.kube, ns).await;
-        release_tree_volumes(&b.kube, ns).await?;
-        return wait_for_volumes_deleted(&b.kube, ns, VOLUME_DELETE_WAIT, VOLUME_DELETE_POLL).await;
+    } else {
+        helm_uninstall(b, instance_name, ns).await?;
     }
 
+    delete_data(b, instance_name, ns, &doomed).await?;
+    if delete_backups {
+        delete_backups_of(b, instance_name, ns).await;
+    }
+    delete_namespace_with_retry(&b.kube, ns).await;
+    release_tree_volumes(&b.kube, ns).await?;
+    wait_for_volumes_deleted(&b.kube, ns, VOLUME_DELETE_WAIT, VOLUME_DELETE_POLL).await
+}
+
+async fn helm_uninstall<H: crate::host::Host>(
+    b: &Backend<H>,
+    instance_name: &str,
+    ns: &str,
+) -> anyhow::Result<()> {
     let release = read_definition_opt(&b.kube, ns)
         .await?
         .map(|d| d.release().to_string())
@@ -357,21 +332,16 @@ pub(crate) async fn run_teardown<H: crate::host::Host>(
         ),
         Ok(_) => {}
     }
-
-    delete_data(b, instance_name, ns, &doomed).await?;
-    delete_namespace_with_retry(&b.kube, ns).await;
-    release_tree_volumes(&b.kube, ns).await?;
-    wait_for_volumes_deleted(&b.kube, ns, VOLUME_DELETE_WAIT, VOLUME_DELETE_POLL).await
+    Ok(())
 }
 
-pub(crate) fn abandoned_in(namespaces: &[Value]) -> Vec<(String, String)> {
+pub(crate) fn registered_in(namespaces: &[Value]) -> Vec<(String, String)> {
     namespaces
         .iter()
         .filter_map(|ns| {
             let name = ns["metadata"]["name"].as_str()?;
             let ann = ns["metadata"]["annotations"].as_object()?;
-            ann.get(ANN_UNINSTALLING)?;
-            if uninstall_lock_is_fresh(ann) {
+            if !removal_registered(ann) {
                 return None;
             }
             let instance = name.strip_prefix("yolab-")?.to_string();
@@ -380,47 +350,40 @@ pub(crate) fn abandoned_in(namespaces: &[Value]) -> Vec<(String, String)> {
         .collect()
 }
 
-pub(crate) async fn abandoned_uninstalls(client: &Client) -> anyhow::Result<Vec<(String, String)>> {
+pub(crate) async fn registered_uninstalls(client: &Client) -> anyhow::Result<Vec<(String, String)>> {
     let managed = kube::api::ListParams::default().labels(&format!("{LABEL_MANAGED}=true"));
     let namespaces = crate::k8s::list(client, "v1", "Namespace", None, &managed).await?;
-    Ok(abandoned_in(&namespaces))
+    Ok(registered_in(&namespaces))
 }
 
-pub struct UninstallWatchdogController;
+pub struct UninstallsController;
 
-impl crate::runtime::Controller for UninstallWatchdogController {
+impl crate::runtime::Controller for UninstallsController {
     fn name(&self) -> &'static str {
-        "uninstall-watchdog"
+        "uninstalls"
     }
     fn scope(&self) -> crate::runtime::Scope {
         crate::runtime::Scope::Cluster
     }
     fn interval(&self) -> std::time::Duration {
-        std::time::Duration::from_secs(120)
+        std::time::Duration::from_secs(60)
     }
     fn requires(&self) -> &'static [crate::runtime::Requirement] {
         &[crate::runtime::Requirement::KubeApi]
     }
-    fn not_before_uptime(&self) -> std::time::Duration {
-        std::time::Duration::from_secs(90)
-    }
     async fn reconcile(&self, ctx: &crate::runtime::Ctx) -> anyhow::Result<crate::runtime::Tick> {
-        finish_abandoned_uninstalls(&ctx.tools.backend().await?).await
+        finish_uninstalls(&ctx.tools.backend().await?).await
     }
 }
 
-pub(crate) async fn finish_abandoned_uninstalls<H: crate::host::Host>(
+pub(crate) async fn finish_uninstalls<H: crate::host::Host + Clone + 'static>(
     b: &Backend<H>,
 ) -> anyhow::Result<crate::runtime::Tick> {
-    let abandoned = abandoned_uninstalls(&b.kube).await?;
-    if abandoned.is_empty() {
-        return Ok(crate::runtime::Tick::Idle("no abandoned uninstalls".into()));
+    let registered = registered_uninstalls(&b.kube).await?;
+    if registered.is_empty() {
+        return Ok(crate::runtime::Tick::Idle("no service is being removed".into()));
     }
-    for (ns, instance) in abandoned {
-        tracing::warn!(
-            "uninstall {instance}: claim is stale and nothing is driving it — \
-             finishing the teardown"
-        );
+    for (ns, instance) in registered {
         if drive_teardown(b, &instance, &ns).await.is_ok() {
             tracing::info!("uninstall {instance}: done");
         }

@@ -33,7 +33,7 @@ const ANN_UNINSTALLING: &str = "yolab.io/uninstalling";
 const ANN_DELETE_FOLDERS: &str = "yolab.io/delete-folders";
 const ANN_INSTALL_FAILED: &str = "yolab.io/install-failed";
 const ANN_UNINSTALL_FAILED: &str = "yolab.io/uninstall-failed";
-const UNINSTALL_LOCK_TTL: std::time::Duration = std::time::Duration::from_secs(600);
+const ANN_DELETE_BACKUPS: &str = "yolab.io/delete-backups";
 const LOGS_FOLLOW_TAIL: u32 = 100;
 
 #[derive(Serialize)]
@@ -2958,80 +2958,70 @@ mod tests {
     }
 
     #[test]
-    fn no_lock_annotation_is_not_fresh() {
-        assert!(!uninstall_lock_is_fresh(&serde_json::Map::new()));
-    }
-
-    #[test]
-    fn a_lock_claimed_moments_ago_is_fresh() {
-        let ts = chrono::Utc::now().to_rfc3339();
-        assert!(uninstall_lock_is_fresh(&map(
-            serde_json::json!({ ANN_UNINSTALLING: ts })
-        )));
-    }
-
-    #[test]
-    fn a_lock_past_the_ttl_is_not_fresh() {
-        let ts = (chrono::Utc::now()
-            - chrono::Duration::seconds(UNINSTALL_LOCK_TTL.as_secs() as i64 + 1))
-        .to_rfc3339();
-        assert!(!uninstall_lock_is_fresh(&map(
-            serde_json::json!({ ANN_UNINSTALLING: ts })
-        )));
-    }
-
-    #[test]
-    fn the_watchdog_only_picks_up_abandoned_uninstalls() {
-        let stale = (chrono::Utc::now()
-            - chrono::Duration::seconds(UNINSTALL_LOCK_TTL.as_secs() as i64 + 1))
-        .to_rfc3339();
-        let fresh = chrono::Utc::now().to_rfc3339();
-
+    fn every_registered_removal_is_driven_however_long_ago_it_was_asked() {
         let list = serde_json::json!([
             { "metadata": { "name": "yolab-minecraft",
-                            "annotations": { ANN_UNINSTALLING: stale } } },
+                            "annotations": { ANN_UNINSTALLING: "2026-01-01T00:00:00Z" } } },
             { "metadata": { "name": "yolab-filebrowser",
-                            "annotations": { ANN_UNINSTALLING: fresh } } },
+                            "annotations": { ANN_UNINSTALLING: chrono::Utc::now().to_rfc3339() } } },
             { "metadata": { "name": "yolab-vaultwarden",
                             "annotations": { "yolab.io/app-id": "vaultwarden" } } },
             { "metadata": { "name": "yolab-babybuddy" } },
         ]);
 
         assert_eq!(
-            abandoned_in(list.as_array().unwrap()),
-            vec![("yolab-minecraft".to_string(), "minecraft".to_string())],
-            "only the stale claim, and the instance name comes off the prefix"
+            registered_in(list.as_array().unwrap()),
+            vec![
+                ("yolab-minecraft".to_string(), "minecraft".to_string()),
+                ("yolab-filebrowser".to_string(), "filebrowser".to_string()),
+            ],
+            "the instance name comes off the prefix"
         );
     }
 
     #[test]
-    fn the_watchdog_ignores_namespaces_outside_the_yolab_prefix() {
-        let stale = (chrono::Utc::now()
-            - chrono::Duration::seconds(UNINSTALL_LOCK_TTL.as_secs() as i64 + 1))
-        .to_rfc3339();
+    fn namespaces_outside_the_yolab_prefix_are_never_torn_down() {
         let list = vec![serde_json::json!(
             { "metadata": { "name": "kube-system",
-                            "annotations": { ANN_UNINSTALLING: stale } } }
+                            "annotations": { ANN_UNINSTALLING: "2026-01-01T00:00:00Z" } } }
         )];
-        assert!(abandoned_in(&list).is_empty());
+        assert!(registered_in(&list).is_empty());
     }
 
     #[test]
-    fn no_namespaces_means_nothing_abandoned() {
-        assert!(abandoned_in(&[]).is_empty());
+    fn no_namespaces_means_nothing_to_remove() {
+        assert!(registered_in(&[]).is_empty());
     }
 
     #[test]
-    fn a_registered_removal_shows_as_removing_even_after_its_claim_goes_stale() {
-        let stale = (chrono::Utc::now()
-            - chrono::Duration::seconds(UNINSTALL_LOCK_TTL.as_secs() as i64 + 1))
-        .to_rfc3339();
-        let ann = map(serde_json::json!({ ANN_UNINSTALLING: stale.clone() }));
+    fn an_uninstall_request_remembers_the_folders_and_whether_backups_go_too() {
+        let doomed = vec!["notes".to_string()];
+        let asked = uninstall_request(&doomed, true).unwrap();
+        assert_eq!(asked[ANN_DELETE_FOLDERS], "[\"notes\"]");
+        assert_eq!(asked[ANN_DELETE_BACKUPS], "true");
+        assert!(asked[ANN_UNINSTALLING].as_str().is_some());
+        let kept = uninstall_request(&[], false).unwrap();
+        assert!(kept[ANN_DELETE_FOLDERS].is_null());
+        assert!(kept[ANN_DELETE_BACKUPS].is_null());
+    }
+
+    #[test]
+    fn backups_are_deleted_only_when_the_request_said_so() {
+        let ns = |ann: Value| serde_json::json!({ "metadata": { "annotations": ann } });
+        assert!(backups_doomed(&ns(serde_json::json!({ ANN_DELETE_BACKUPS: "true" }))));
+        assert!(!backups_doomed(&ns(serde_json::json!({}))));
+        assert!(!backups_doomed(&serde_json::json!({})));
+    }
+
+    #[test]
+    fn a_registered_removal_shows_as_removing_however_long_ago_it_was_asked() {
+        let asked = "2026-01-01T00:00:00Z".to_string();
+        let ann = map(serde_json::json!({ ANN_UNINSTALLING: asked.clone() }));
         let namespace = serde_json::json!({ "status": { "phase": "Active" } });
         assert_eq!(
             removal_of(&namespace, &ann),
             Some(Removal {
-                since: Some(stale),
+                since: Some(asked),
                 ..Default::default()
             })
         );
@@ -3073,21 +3063,6 @@ mod tests {
             ),
             None
         );
-    }
-
-    #[test]
-    fn one_teardown_at_a_time_per_service_on_this_machine() {
-        let first = Driving::take("yolab-driving-test").unwrap();
-        assert!(Driving::take("yolab-driving-test").is_none());
-        drop(first);
-        assert!(Driving::take("yolab-driving-test").is_some());
-    }
-
-    #[test]
-    fn an_unparsable_lock_timestamp_is_not_fresh() {
-        assert!(!uninstall_lock_is_fresh(&map(
-            serde_json::json!({ ANN_UNINSTALLING: "not-a-timestamp" })
-        )));
     }
 
     fn chart_dir_with(schema: Value) -> tempfile::TempDir {
@@ -3479,25 +3454,30 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn an_app_that_is_already_gone_may_be_uninstalled() {
+        async fn nothing_is_registered_for_a_service_that_is_already_gone() {
             let (server, kube) = api_server().await;
             namespace_is(&server, 404, gone()).await;
-            assert!(claim_uninstall_lock(&kube, "yolab-notes", &[])
+            assert!(!register_uninstall(&kube, "yolab-notes", &[], false)
                 .await
                 .unwrap());
         }
 
         #[tokio::test]
-        async fn a_fresh_uninstall_is_not_started_twice() {
+        async fn an_uninstall_already_registered_keeps_its_first_request() {
             let (server, kube) = api_server().await;
-            let now = chrono::Utc::now().to_rfc3339();
-            namespace_is(&server, 200, ns(json!({ ANN_UNINSTALLING: now }), "Active")).await;
+            let long_ago = "2026-01-01T00:00:00Z";
+            namespace_is(
+                &server,
+                200,
+                ns(json!({ ANN_UNINSTALLING: long_ago }), "Active"),
+            )
+            .await;
             Mock::given(method("PATCH"))
                 .respond_with(ResponseTemplate::new(200))
                 .expect(0)
                 .mount(&server)
                 .await;
-            assert!(!claim_uninstall_lock(&kube, "yolab-notes", &[])
+            assert!(!register_uninstall(&kube, "yolab-notes", &[], true)
                 .await
                 .unwrap());
         }
@@ -3515,7 +3495,7 @@ mod tests {
                 .expect(1)
                 .mount(&server)
                 .await;
-            assert!(claim_uninstall_lock(&kube, "yolab-notes", &[])
+            assert!(register_uninstall(&kube, "yolab-notes", &[], false)
                 .await
                 .unwrap());
         }
@@ -3528,7 +3508,7 @@ mod tests {
                 .respond_with(ResponseTemplate::new(409).set_body_json(status(409, "Conflict")))
                 .mount(&server)
                 .await;
-            assert!(!claim_uninstall_lock(&kube, "yolab-notes", &[])
+            assert!(!register_uninstall(&kube, "yolab-notes", &[], false)
                 .await
                 .unwrap());
         }
@@ -3537,7 +3517,7 @@ mod tests {
         async fn an_unreachable_cluster_blocks_the_uninstall_claim() {
             let (server, kube) = api_server().await;
             namespace_is(&server, 503, status(503, "ServiceUnavailable")).await;
-            assert!(claim_uninstall_lock(&kube, "yolab-notes", &[])
+            assert!(register_uninstall(&kube, "yolab-notes", &[], false)
                 .await
                 .is_err());
         }
@@ -3676,7 +3656,7 @@ mod tests {
                 .mount(&server)
                 .await;
             let doomed = vec!["notes".to_string(), "media".to_string()];
-            assert!(claim_uninstall_lock(&kube, "yolab-notes", &doomed)
+            assert!(register_uninstall(&kube, "yolab-notes", &doomed, false)
                 .await
                 .unwrap());
         }
@@ -3694,7 +3674,7 @@ mod tests {
                 .expect(1)
                 .mount(&server)
                 .await;
-            assert!(claim_uninstall_lock(&kube, "yolab-notes", &[])
+            assert!(register_uninstall(&kube, "yolab-notes", &[], false)
                 .await
                 .unwrap());
         }
