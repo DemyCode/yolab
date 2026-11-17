@@ -331,6 +331,25 @@ in let
         touch $out
       '';
 
+    local-api-is-restarted-when-it-stops-reporting = let
+      sc = nixosSystems.yolab-ci.config.systemd.services.yolab-local-api.serviceConfig;
+      problems =
+        lib.optional ((sc.Type or "") != "notify") "Type is not notify, so systemd never hears READY=1 or WATCHDOG=1"
+        ++ lib.optional ((sc.WatchdogSec or null) == null) "WatchdogSec is unset, so a stuck runtime loop is logged but never restarted"
+        ++ lib.optional ((sc.NotifyAccess or "main") != "main") "NotifyAccess lets a child process ping the watchdog on the runtime's behalf"
+        ++ lib.optional ((sc.Restart or "no") != "always") "Restart is not always, so a watchdog kill leaves the machine without its API";
+    in
+      pkgs.runCommand "local-api-is-restarted-when-it-stops-reporting" {} ''
+        problems=${pkgs.writeText "problems" (builtins.concatStringsSep "\n" problems)}
+        if [ -s "$problems" ]; then
+          echo "local-api pings the systemd watchdog only while every runtime loop" >&2
+          echo "keeps its promise to report; the unit must hold up its end:" >&2
+          cat "$problems" >&2
+          exit 1
+        fi
+        touch $out
+      '';
+
     self-healing-timers-can-re-arm = let
       allowlist = ["yolab-ceph-bootstrap"];
       services = nixosSystems.yolab-ci.config.systemd.services;

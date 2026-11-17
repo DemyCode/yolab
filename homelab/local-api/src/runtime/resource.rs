@@ -82,6 +82,10 @@ pub trait Resource: Send + Sync + 'static {
         async { true }
     }
 
+    fn deadline(&self) -> Duration {
+        super::DEFAULT_DEADLINE
+    }
+
     fn check(&self, ctx: &Ctx) -> impl Future<Output = State> + Send;
 
     fn converge(&self, ctx: &Ctx) -> impl Future<Output = anyhow::Result<Tick>> + Send;
@@ -155,6 +159,10 @@ impl<C: Controller> Resource for ControllerResource<C> {
 
     fn not_before_uptime(&self) -> Duration {
         self.inner.not_before_uptime()
+    }
+
+    fn deadline(&self) -> Duration {
+        self.inner.deadline()
     }
 
     async fn check(&self, _ctx: &Ctx) -> State {
@@ -336,10 +344,74 @@ pub fn spawn<R: Resource>(resource: R, leader: leader::Leadership) {
     });
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Cut {
+    Deadline,
+    Lease,
+}
+
+#[derive(Debug)]
+pub(super) enum Ran<T> {
+    Finished(Result<T, tokio::task::JoinError>),
+    Cut(Cut),
+    Unstoppable(Cut),
+}
+
+pub(super) async fn supervise<T: Send + 'static>(
+    mut work: tokio::task::JoinHandle<T>,
+    deadline: Duration,
+    fence: Option<&leader::Leadership>,
+) -> Ran<T> {
+    let lapsed = async {
+        match fence {
+            Some(l) => l.lapsed().await,
+            None => std::future::pending::<()>().await,
+        }
+    };
+    let cut = tokio::select! {
+        biased;
+        r = &mut work => return Ran::Finished(r),
+        _ = tokio::time::sleep(deadline) => Cut::Deadline,
+        _ = lapsed => Cut::Lease,
+    };
+    work.abort();
+    match tokio::time::timeout(super::ABORT_GRACE, work).await {
+        Ok(_) => Ran::Cut(cut),
+        Err(_) => Ran::Unstoppable(cut),
+    }
+}
+
+fn past_deadline(deadline: Duration) -> String {
+    format!(
+        "ran past its {}s deadline and was stopped",
+        deadline.as_secs()
+    )
+}
+
+const LOST_LEASE: &str = "stopped mid-run: this machine lost the cluster lease, so another \
+                          machine may now own this work";
+
+pub(super) async fn within<T>(
+    deadline: Duration,
+    work: impl Future<Output = anyhow::Result<T>>,
+) -> anyhow::Result<T> {
+    match tokio::time::timeout(deadline, work).await {
+        Ok(r) => r,
+        Err(_) => anyhow::bail!("{}", past_deadline(deadline)),
+    }
+}
+
+async fn rest(name: &'static str, notify: &Notify, d: Duration) {
+    super::liveness::expect(name, d);
+    super::wait_or_wake(notify, d).await;
+    super::liveness::expect(name, super::GATES_WITHIN);
+}
+
 async fn run<R: Resource>(resource: Arc<R>, notify: Arc<Notify>, leader: leader::Leadership) {
     let name = resource.name();
     let reg = super::registry();
     let node = crate::system::hostname();
+    super::liveness::expect(name, super::GATES_WITHIN);
 
     let min_uptime = resource.not_before_uptime();
     if let Some(up) = super::uptime() {
@@ -348,7 +420,9 @@ async fn run<R: Resource>(resource: Arc<R>, notify: Arc<Notify>, leader: leader:
                 name,
                 Phase::Waiting(format!("starts {}s after boot", min_uptime.as_secs())),
             );
+            super::liveness::expect(name, min_uptime - up);
             tokio::time::sleep(min_uptime - up).await;
+            super::liveness::expect(name, super::GATES_WITHIN);
         }
     }
 
@@ -377,7 +451,22 @@ async fn run<R: Resource>(resource: Arc<R>, notify: Arc<Notify>, leader: leader:
         let ctx = Ctx { node: node.clone() };
         let interval = resource.interval();
 
-        let state = resource.check(&ctx).await;
+        let state = match tokio::time::timeout(super::CHECK_WITHIN, resource.check(&ctx)).await {
+            Ok(state) => state,
+            Err(_) => {
+                let why = format!(
+                    "its check did not answer within {}s, so it is not repaired blind",
+                    super::CHECK_WITHIN.as_secs()
+                );
+                tracing::warn!("resource {name}: {why}");
+                set_state(name, State::Failed(why.clone()));
+                was_settled = false;
+                let n = reg.failed(name, why);
+                super::status::publish_snapshot();
+                rest(name, &notify, super::failure_backoff(n, interval)).await;
+                continue;
+            }
+        };
 
         let unchecked = matches!(state, State::Unchecked);
         if !unchecked {
@@ -386,7 +475,7 @@ async fn run<R: Resource>(resource: Arc<R>, notify: Arc<Notify>, leader: leader:
                 becomes_ready!();
                 reg.succeeded(name, None);
                 super::status::publish_snapshot();
-                super::wait_or_wake(&notify, interval).await;
+                rest(name, &notify, interval).await;
                 continue;
             }
             was_settled = false;
@@ -398,7 +487,7 @@ async fn run<R: Resource>(resource: Arc<R>, notify: Arc<Notify>, leader: leader:
             was_settled = false;
             reg.set_phase(name, Phase::Waiting(why));
             super::status::publish_snapshot();
-            super::wait_or_wake(&notify, super::RECHECK).await;
+            rest(name, &notify, super::RECHECK).await;
             continue;
         }
 
@@ -406,7 +495,7 @@ async fn run<R: Resource>(resource: Arc<R>, notify: Arc<Notify>, leader: leader:
             set_state(name, State::Standby);
             was_settled = false;
             reg.set_phase(name, Phase::Standby);
-            super::wait_or_wake(&notify, super::RECHECK).await;
+            rest(name, &notify, super::RECHECK).await;
             continue;
         }
 
@@ -414,11 +503,23 @@ async fn run<R: Resource>(resource: Arc<R>, notify: Arc<Notify>, leader: leader:
             set_state(name, State::NotYet(format!("waiting for {missing}")));
             was_settled = false;
             reg.set_phase(name, Phase::Waiting(format!("waiting for {missing}")));
-            super::wait_or_wake(&notify, super::RECHECK).await;
+            rest(name, &notify, super::RECHECK).await;
             continue;
         }
 
-        let disruption = if resource.disrupts_now().await {
+        let disrupts = match tokio::time::timeout(super::CHECK_WITHIN, resource.disrupts_now()).await
+        {
+            Ok(d) => d,
+            Err(_) => {
+                tracing::warn!(
+                    "resource {name}: could not tell within {}s whether a repair would restart \
+                     workloads, so it is treated as one that does",
+                    super::CHECK_WITHIN.as_secs()
+                );
+                true
+            }
+        };
+        let disruption = if disrupts {
             resource.disruption()
         } else {
             Disruption::None
@@ -433,7 +534,7 @@ async fn run<R: Resource>(resource: Arc<R>, notify: Arc<Notify>, leader: leader:
             set_state(name, State::NotYet(why.clone()));
             was_settled = false;
             reg.set_phase(name, Phase::Paused(why));
-            super::wait_or_wake(&notify, super::RECHECK).await;
+            rest(name, &notify, super::RECHECK).await;
             continue;
         }
 
@@ -442,16 +543,20 @@ async fn run<R: Resource>(resource: Arc<R>, notify: Arc<Notify>, leader: leader:
         reg.started(name);
         let r = resource.clone();
         let ctx = Ctx { node: node.clone() };
-        let outcome = tokio::spawn(async move { r.converge(&ctx).await }).await;
+        let deadline = resource.deadline();
+        super::liveness::expect(name, deadline.saturating_add(super::ABORT_GRACE));
+        let fence = (resource.scope() == Scope::Cluster).then_some(&leader);
+        let work = tokio::spawn(async move { r.converge(&ctx).await });
+        let outcome = supervise(work, deadline, fence).await;
 
         let next = match outcome {
-            Ok(Ok(Tick::NotYet(why))) => {
+            Ran::Finished(Ok(Ok(Tick::NotYet(why)))) => {
                 set_state(name, State::NotYet(why.clone()));
                 was_settled = false;
                 reg.succeeded(name, Some(why));
                 interval
             }
-            Ok(Ok(tick)) => {
+            Ran::Finished(Ok(Ok(tick))) => {
                 let (note, next) = match tick {
                     Tick::Done => (None, interval),
                     Tick::Idle(why) => (Some(why), interval),
@@ -464,7 +569,7 @@ async fn run<R: Resource>(resource: Arc<R>, notify: Arc<Notify>, leader: leader:
                 }
                 next
             }
-            Ok(Err(e)) => {
+            Ran::Finished(Ok(Err(e))) => {
                 let why = format!("{e:#}");
                 set_state(name, State::Failed(why.clone()));
                 was_settled = false;
@@ -472,16 +577,46 @@ async fn run<R: Resource>(resource: Arc<R>, notify: Arc<Notify>, leader: leader:
                 tracing::warn!("resource {name}: {e:#}");
                 super::failure_backoff(n, interval)
             }
-            Err(join) => {
+            Ran::Finished(Err(join)) => {
                 set_state(name, State::Failed(format!("panicked: {join}")));
                 was_settled = false;
                 let n = reg.panicked(name, join.to_string());
                 tracing::error!("resource {name}: converge panicked ({join}) — continuing");
                 super::failure_backoff(n, interval)
             }
+            Ran::Cut(Cut::Deadline) => {
+                let why = past_deadline(deadline);
+                set_state(name, State::Failed(why.clone()));
+                was_settled = false;
+                let n = reg.failed(name, why.clone());
+                tracing::error!("resource {name}: {why}");
+                super::failure_backoff(n, interval)
+            }
+            Ran::Cut(Cut::Lease) => {
+                set_state(name, State::Standby);
+                was_settled = false;
+                reg.interrupted(name, LOST_LEASE.to_string());
+                tracing::warn!("resource {name}: {LOST_LEASE}");
+                super::RECHECK
+            }
+            Ran::Unstoppable(cut) => {
+                let what = match cut {
+                    Cut::Deadline => past_deadline(deadline),
+                    Cut::Lease => LOST_LEASE.to_string(),
+                };
+                let why = format!(
+                    "{name} {what}, but did not stop within {}s of being cancelled",
+                    super::ABORT_GRACE.as_secs()
+                );
+                set_state(name, State::Failed(why.clone()));
+                reg.failed(name, why.clone());
+                super::status::publish_snapshot();
+                super::liveness::wedge(why);
+                return;
+            }
         };
         super::status::publish_snapshot();
-        super::wait_or_wake(&notify, next).await;
+        rest(name, &notify, next).await;
     }
 }
 
@@ -494,7 +629,7 @@ pub async fn run_once<R: Resource>(resource: &R) -> anyhow::Result<Tick> {
         resource.pauses_during(),
     )
     .await?;
-    resource.converge(&Ctx { node }).await
+    within(resource.deadline(), resource.converge(&Ctx { node })).await
 }
 
 #[cfg(test)]
@@ -1033,6 +1168,240 @@ mod tests {
         assert!(
             !converged.load(Ordering::SeqCst),
             "cluster-scoped work must not run on a standby machine"
+        );
+    }
+
+    struct Hangs {
+        name: &'static str,
+        scope: Scope,
+        deadline: Duration,
+        started: Arc<AtomicU32>,
+        finished: Arc<AtomicBool>,
+    }
+
+    impl Resource for Hangs {
+        fn name(&self) -> &'static str {
+            self.name
+        }
+        fn scope(&self) -> Scope {
+            self.scope
+        }
+        fn interval(&self) -> Duration {
+            Duration::from_secs(30)
+        }
+        fn deadline(&self) -> Duration {
+            self.deadline
+        }
+        async fn check(&self, _ctx: &Ctx) -> State {
+            State::Unchecked
+        }
+        async fn converge(&self, _ctx: &Ctx) -> anyhow::Result<Tick> {
+            self.started.fetch_add(1, Ordering::SeqCst);
+            tokio::time::sleep(Duration::from_secs(3600)).await;
+            self.finished.store(true, Ordering::SeqCst);
+            Ok(Tick::Done)
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_converge_that_runs_past_its_deadline_is_stopped_and_tried_again() {
+        let started = Arc::new(AtomicU32::new(0));
+        let finished = Arc::new(AtomicBool::new(false));
+        spawn(
+            Hangs {
+                name: "test-past-deadline",
+                scope: Scope::Node,
+                deadline: Duration::from_secs(60),
+                started: started.clone(),
+                finished: finished.clone(),
+            },
+            leader::Leadership::fixed_for_tests(true),
+        );
+        tokio::time::sleep(Duration::from_secs(65)).await;
+        match state_of("test-past-deadline") {
+            Some(State::Failed(why)) => assert!(why.contains("60s deadline"), "{why}"),
+            other => panic!("a hung converge was not stopped: {other:?}"),
+        }
+        let s = super::super::registry()
+            .get("test-past-deadline")
+            .expect("registered");
+        assert_eq!(s.consecutive_failures, 1);
+        tokio::time::sleep(Duration::from_secs(60)).await;
+        assert!(
+            started.load(Ordering::SeqCst) >= 2,
+            "a stopped converge was never tried again"
+        );
+        assert!(
+            !finished.load(Ordering::SeqCst),
+            "the stopped converge kept running in the background"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn cluster_work_in_flight_stops_the_moment_the_lease_is_lost() {
+        let started = Arc::new(AtomicU32::new(0));
+        let finished = Arc::new(AtomicBool::new(false));
+        let leader = leader::Leadership::fixed_for_tests(true);
+        spawn(
+            Hangs {
+                name: "test-fenced",
+                scope: Scope::Cluster,
+                deadline: super::super::DEFAULT_DEADLINE,
+                started: started.clone(),
+                finished: finished.clone(),
+            },
+            leader.clone(),
+        );
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        assert_eq!(started.load(Ordering::SeqCst), 1);
+
+        leader.set_for_tests(false);
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        assert_eq!(state_of("test-fenced"), Some(State::Standby));
+        let s = super::super::registry()
+            .get("test-fenced")
+            .expect("registered");
+        assert_eq!(s.phase, Phase::Standby);
+        assert!(
+            s.last_note
+                .as_deref()
+                .is_some_and(|n| n.contains("lost the cluster lease")),
+            "{:?}",
+            s.last_note
+        );
+        assert_eq!(
+            s.consecutive_failures, 0,
+            "losing the lease is not this resource failing"
+        );
+
+        tokio::time::sleep(Duration::from_secs(7200)).await;
+        assert!(
+            !finished.load(Ordering::SeqCst),
+            "cluster work finished after the lease was lost, alongside the new leader"
+        );
+        assert_eq!(
+            started.load(Ordering::SeqCst),
+            1,
+            "a standby machine started cluster work"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn node_work_is_not_fenced_by_the_cluster_lease() {
+        let started = Arc::new(AtomicU32::new(0));
+        let finished = Arc::new(AtomicBool::new(false));
+        spawn(
+            Hangs {
+                name: "test-not-fenced",
+                scope: Scope::Node,
+                deadline: Duration::from_secs(7200),
+                started: started.clone(),
+                finished: finished.clone(),
+            },
+            leader::Leadership::fixed_for_tests(false),
+        );
+        tokio::time::sleep(Duration::from_secs(3605)).await;
+        assert!(
+            finished.load(Ordering::SeqCst),
+            "node work was cut short by a lease it never needed"
+        );
+    }
+
+    struct SilentCheck {
+        converges: Arc<AtomicU32>,
+    }
+
+    impl Resource for SilentCheck {
+        fn name(&self) -> &'static str {
+            "test-silent-check"
+        }
+        fn interval(&self) -> Duration {
+            Duration::from_secs(30)
+        }
+        async fn check(&self, _ctx: &Ctx) -> State {
+            tokio::time::sleep(Duration::from_secs(3600)).await;
+            State::Ready
+        }
+        async fn converge(&self, _ctx: &Ctx) -> anyhow::Result<Tick> {
+            self.converges.fetch_add(1, Ordering::SeqCst);
+            Ok(Tick::Done)
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_check_that_never_answers_fails_and_nothing_is_repaired_blind() {
+        let converges = Arc::new(AtomicU32::new(0));
+        spawn(
+            SilentCheck {
+                converges: converges.clone(),
+            },
+            leader::Leadership::fixed_for_tests(true),
+        );
+        tokio::time::sleep(super::super::CHECK_WITHIN + Duration::from_secs(5)).await;
+        match state_of("test-silent-check") {
+            Some(State::Failed(why)) => assert!(why.contains("did not answer"), "{why}"),
+            other => panic!("a silent check was not reported: {other:?}"),
+        }
+        assert_eq!(
+            converges.load(Ordering::SeqCst),
+            0,
+            "a repair ran without knowing whether one was needed"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_manual_run_is_held_to_the_same_deadline() {
+        let err = within(Duration::from_secs(5), async {
+            tokio::time::sleep(Duration::from_secs(10)).await;
+            Ok(())
+        })
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("5s deadline"), "{err}");
+        assert_eq!(
+            within(Duration::from_secs(5), async { Ok(7) }).await.unwrap(),
+            7
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn finished_work_is_returned_as_is() {
+        let work = tokio::spawn(async { 42 });
+        match supervise(work, Duration::from_secs(60), None).await {
+            Ran::Finished(Ok(42)) => {}
+            other => panic!("expected the work's own result, got {other:?}"),
+        }
+    }
+
+    struct Patient;
+
+    impl Controller for Patient {
+        fn name(&self) -> &'static str {
+            "test-patient"
+        }
+        fn scope(&self) -> Scope {
+            Scope::Node
+        }
+        fn interval(&self) -> Duration {
+            Duration::from_secs(60)
+        }
+        fn deadline(&self) -> Duration {
+            Duration::from_secs(4 * 3600)
+        }
+        async fn reconcile(&self, _ctx: &Ctx) -> anyhow::Result<Tick> {
+            Ok(Tick::Done)
+        }
+    }
+
+    #[test]
+    fn an_adapted_controller_keeps_its_own_deadline_and_others_get_the_default() {
+        assert_eq!(
+            ControllerResource::new(Patient).deadline(),
+            Duration::from_secs(4 * 3600)
+        );
+        assert_eq!(
+            ControllerResource::new(NeedsCeph).deadline(),
+            super::super::DEFAULT_DEADLINE
         );
     }
 }

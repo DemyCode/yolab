@@ -198,6 +198,9 @@ impl Controller for BackupCheckController {
     fn not_before_uptime(&self) -> Duration {
         Duration::from_secs(600)
     }
+    fn deadline(&self) -> Duration {
+        CHECK_TIMEOUT + REPAIR_TIMEOUT + Duration::from_secs(30 * 60)
+    }
     async fn reconcile(&self, _ctx: &Ctx) -> anyhow::Result<Tick> {
         check_due(&Backend::real().await?).await
     }
@@ -241,6 +244,11 @@ pub(crate) async fn check_due<H: Host>(b: &Backend<H>) -> anyhow::Result<Tick> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_check_and_its_repair_both_fit_before_the_runtime_stops_them() {
+        assert!(BackupCheckController.deadline() > CHECK_TIMEOUT + REPAIR_TIMEOUT);
+    }
 
     #[test]
     fn a_clean_check_is_healthy() {

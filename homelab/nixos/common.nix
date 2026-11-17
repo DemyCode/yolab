@@ -458,7 +458,9 @@ in {
         YOLAB_CEPH_DASHBOARD_PASSWORD_FILE = config.yolab.ceph.dashboard.passwordFile;
       };
       serviceConfig = {
-        Type = "simple";
+        Type = "notify";
+        NotifyAccess = "main";
+        WatchdogSec = "120s";
         User = "root";
         Restart = "always";
         RestartSec = "5s";

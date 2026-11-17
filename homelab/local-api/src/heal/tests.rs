@@ -892,3 +892,11 @@ mod real_network {
             .all(|r| r.url.path() == "/readyz"));
     }
 }
+
+#[test]
+fn a_heal_pass_may_wait_out_every_machines_undo_before_it_is_stopped() {
+    let c = HealController {
+        config: crate::config::Config::from_env(),
+    };
+    assert!(c.deadline() > PEER_UNDO_TIMEOUT * UNDONE_IN_ONE_PASS);
+}

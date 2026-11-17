@@ -22,6 +22,14 @@ use crate::AppState;
 use member::{Begin, Layout, PhaseView, PrepareRequest, Preparing, ResetView};
 
 const NAME: &str = "heal";
+
+const PEER_UNDO_TIMEOUT: Duration = Duration::from_secs(3600);
+
+const UNDONE_IN_ONE_PASS: u32 = 3;
+
+const DEADLINE: Duration = Duration::from_secs(
+    PEER_UNDO_TIMEOUT.as_secs() * UNDONE_IN_ONE_PASS as u64 + 30 * 60,
+);
 const TICK: Duration = Duration::from_secs(10);
 const KUBERNETES_GRACE_SECS: u64 = 600;
 const PREPARE_WAIT_SECS: u64 = 3 * 3600;
@@ -305,7 +313,7 @@ impl Network for RealNetwork {
                 .client
                 .post(self.url(addr, "/api/heal/peer/undo"))
                 .json(&json!({ "heal_id": heal_id }));
-            self.send(r, Duration::from_secs(3600)).await.map(|_| ())
+            self.send(r, PEER_UNDO_TIMEOUT).await.map(|_| ())
         }
     }
 
@@ -779,6 +787,9 @@ impl Controller for HealController {
     }
     fn interval(&self) -> Duration {
         TICK
+    }
+    fn deadline(&self) -> Duration {
+        DEADLINE
     }
     async fn reconcile(&self, _ctx: &Ctx) -> Result<Tick> {
         let boot_id = boot_id().await?;

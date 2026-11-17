@@ -117,6 +117,14 @@ impl Registry {
         n
     }
 
+    pub fn interrupted(&self, name: &str, note: String) {
+        self.with(name, |s| {
+            s.phase = Phase::Standby;
+            s.last_finished_at = Some(Utc::now());
+            s.last_note = Some(note);
+        });
+    }
+
     #[cfg(test)]
     pub fn get(&self, name: &str) -> Option<ControllerStatus> {
         self.inner
@@ -146,6 +154,7 @@ pub fn publish_snapshot() {
         "node": crate::system::hostname(),
         "written_at": Utc::now(),
         "leader": super::leader::current_holder_is_me(),
+        "liveness": liveness_json(super::liveness::verdict()),
         "controllers": super::registry().snapshot(),
         "resources": super::resource::states(),
     });
@@ -165,10 +174,20 @@ pub fn publish_snapshot() {
     }
 }
 
+fn liveness_json(v: super::liveness::Verdict) -> serde_json::Value {
+    match v {
+        super::liveness::Verdict::Healthy => serde_json::json!({ "healthy": true }),
+        super::liveness::Verdict::Unhealthy(why) => {
+            serde_json::json!({ "healthy": false, "reason": why })
+        }
+    }
+}
+
 pub async fn handler() -> axum::Json<serde_json::Value> {
     axum::Json(serde_json::json!({
         "node": crate::system::hostname(),
         "leader": super::leader::current_holder_is_me(),
+        "liveness": liveness_json(super::liveness::verdict()),
         "controllers": super::registry().snapshot(),
         "resources": super::resource::states(),
     }))
@@ -177,6 +196,27 @@ pub async fn handler() -> axum::Json<serde_json::Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_interrupted_run_is_standby_and_does_not_count_as_a_failure() {
+        let r = Registry::default();
+        r.register("x", Scope::Cluster, Duration::from_secs(30));
+        r.started("x");
+        r.interrupted("x", "lost the lease".into());
+        let s = r.get("x").unwrap();
+        assert_eq!(s.phase, Phase::Standby);
+        assert_eq!(s.consecutive_failures, 0);
+        assert_eq!(s.last_note.as_deref(), Some("lost the lease"));
+    }
+
+    #[test]
+    fn liveness_is_reported_with_its_reason() {
+        use super::super::liveness::Verdict;
+        assert_eq!(liveness_json(Verdict::Healthy)["healthy"], true);
+        let sick = liveness_json(Verdict::Unhealthy("disks (40s late)".into()));
+        assert_eq!(sick["healthy"], false);
+        assert_eq!(sick["reason"], "disks (40s late)");
+    }
 
     #[test]
     fn a_failure_streak_resets_on_success_and_panics_are_counted() {
