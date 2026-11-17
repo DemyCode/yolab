@@ -283,7 +283,6 @@ fn is_built_here(store: &Path) -> bool {
     store.join(BUILT_HERE).is_file()
 }
 
-
 pub const PODS_SLICE: &str = "kubepods.slice";
 
 pub const RETRY: std::time::Duration = std::time::Duration::from_secs(10);
@@ -759,7 +758,11 @@ mod tests {
         .await;
         assert!(waited.is_err(), "up gave up instead of waiting: {waited:?}");
         assert!(
-            host.calls().iter().filter(|c| c.starts_with("rbd ls")).count() > 1,
+            host.calls()
+                .iter()
+                .filter(|c| c.starts_with("rbd ls"))
+                .count()
+                > 1,
             "it never asked again"
         );
         assert!(!ran_mount(&host));
@@ -768,7 +771,9 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn k3s_keeps_waiting_through_an_error_instead_of_failing() {
         let dir = tempfile::tempdir().unwrap();
-        let host = mapped().fail("blkid /dev/rbd0", "").fail("mkfs.xfs", "busy");
+        let host = mapped()
+            .fail("blkid /dev/rbd0", "")
+            .fail("mkfs.xfs", "busy");
         let waited = tokio::time::timeout(
             std::time::Duration::from_secs(600),
             up(&host, dir.path(), "yolab-n1", &policy(), RETRY),
