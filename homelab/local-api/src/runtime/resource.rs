@@ -450,17 +450,6 @@ async fn run<R: Resource>(resource: Arc<R>, notify: Arc<Notify>, leader: leader:
     }
 }
 
-pub async fn run_once<R: Resource>(resource: &R) -> anyhow::Result<Tick> {
-    let node = preflight(
-        resource.name(),
-        resource.scope(),
-        resource.depends_on(),
-        resource.pauses_during(),
-    )
-    .await?;
-    resource.converge(&Ctx { node }).await
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
