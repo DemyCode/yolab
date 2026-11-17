@@ -231,16 +231,16 @@ mod tests {
         }
     }
 
-    #[test]
-    fn every_entry_is_named_after_the_controller_it_builds() {
+    #[tokio::test]
+    async fn every_entry_is_named_after_the_controller_it_builds() {
         let setup = test_setup();
         for e in table() {
             assert_eq!((e.built_name)(&setup), e.name);
         }
     }
 
-    #[test]
-    fn storage_controllers_run_only_where_storage_is_configured() {
+    #[tokio::test]
+    async fn storage_controllers_run_only_where_storage_is_configured() {
         let table = table();
         let osd = table.iter().find(|e| e.name == "osd-activate").unwrap();
         let backups = table.iter().find(|e| e.name == "backup-scheduler").unwrap();
