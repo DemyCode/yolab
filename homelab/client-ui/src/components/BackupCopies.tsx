@@ -23,6 +23,8 @@ function message(e: unknown, fallback: string): string {
   return e instanceof Error ? e.message : fallback;
 }
 
+const LIST_FAILED = "Its backups could not be listed.";
+
 function useCopies(namespace: string, open: boolean) {
   const [data, setData] = useState<RestorePoints | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -33,20 +35,17 @@ function useCopies(namespace: string, open: boolean) {
     if (open) setData(null);
   }
 
-  const fetchCopies = useCallback(
-    () =>
-      api.get<RestorePoints>(pointsPath(namespace)).then(
-        (d) => ({ ...d, points: sortRestorePoints(d.points ?? []) }),
-      ),
-    [namespace],
-  );
+  const fetchCopies = useCallback(async () => {
+    const d = await api.get<RestorePoints>(pointsPath(namespace));
+    return { ...d, points: sortRestorePoints(d.points ?? []) };
+  }, [namespace]);
 
   const load = useCallback(async () => {
     try {
       setData(await fetchCopies());
       setError(null);
     } catch (e) {
-      setError(message(e, "Its backups could not be listed."));
+      setError(message(e, LIST_FAILED));
     }
   }, [fetchCopies]);
 
@@ -60,7 +59,7 @@ function useCopies(namespace: string, open: boolean) {
         setError(null);
       })
       .catch((e: unknown) => {
-        if (!cancelled) setError(message(e, "Its backups could not be listed."));
+        if (!cancelled) setError(message(e, LIST_FAILED));
       });
     return () => {
       cancelled = true;
