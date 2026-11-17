@@ -385,6 +385,11 @@ mod tests {
         keyed(FakeHost::new().fail("findmnt -rno TARGET --mountpoint", ""))
     }
 
+    fn at(host: &FakeHost, needle: &str) -> usize {
+        host.position(needle)
+            .unwrap_or_else(|| panic!("never ran {needle}: {:?}", host.calls()))
+    }
+
     fn ran_mount(host: &FakeHost) -> bool {
         host.calls().iter().any(|c| c.starts_with("mount "))
     }
