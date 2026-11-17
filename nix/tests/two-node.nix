@@ -185,30 +185,27 @@ in
 
         # ── THE REGRESSION THIS FILE EXISTS FOR ───────────────────────────────
         #
-        # containerd's data-root has to end up on the RBD, on BOTH nodes. This is
-        # the path that had never once completed on a real machine: the first
-        # attempt fails open (Ceph has no OSD yet at boot), and everything then
-        # depends on the timer firing again.
-        #
-        # The swap itself is seconds — it mkfs-es and mounts, and deliberately does
-        # NOT copy the old store (see storage/containerd_store.rs). The timeout is
-        # generous only because it has to cover the timer's own retry interval.
+        # containerd's data-root has to be on the RBD on BOTH nodes, and k3s must
+        # have started only after it was mounted, so no pod ever ran on the root
+        # disk and nothing had to be stopped and swapped.
         for m in (node1, node2):
             m.wait_until_succeeds(
                 "findmnt -rno SOURCE --mountpoint /var/lib/rancher/k3s/agent/containerd "
                 "| grep -q '^/dev/rbd'",
                 timeout=900,
             )
-            # Mounted is not the same as working — see the module header of
-            # storage/containerd_store.rs for the 17-hour outage that distinction
-            # was written in blood for.
             m.succeed("ls /var/lib/rancher/k3s/agent/containerd/ >/dev/null")
-
-        # And k3s has to be left running afterwards. The migration stops it to do
-        # its work and is responsible for putting it back; when it failed to, the
-        # node stayed down while the unit looped.
-        for m in (node1, node2):
             m.succeed("systemctl is-active k3s.service")
+            mounted_at = int(m.succeed(
+                "systemctl show -P ActiveEnterTimestampMonotonic yolab-image-store.service"
+            ).strip())
+            k3s_started_at = int(m.succeed(
+                "systemctl show -P InactiveExitTimestampMonotonic k3s.service"
+            ).strip())
+            assert 0 < mounted_at <= k3s_started_at, (
+                f"{m.name}: k3s started at {k3s_started_at}, before the image store was "
+                f"mounted at {mounted_at}"
+            )
 
         # ── Self-healing must keep running, and must not hot-loop ────────────
         #
@@ -219,7 +216,7 @@ in
         with step([node1, node2], "yolabd keeps supervising and does not hot-loop"):
             assert_yolabd_is_ticking(
                 [node1, node2],
-                ["containerd-store", "images-rbd", "system-osd", "ceph-keys"],
+                ["images-rbd", "system-osd", "ceph-keys"],
             )
 
         # ── The store is on Ceph, so growing the pool grows image space ───────

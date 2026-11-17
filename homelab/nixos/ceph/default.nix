@@ -181,6 +181,39 @@ in {
       };
     };
 
+    systemd.services.yolab-image-store = {
+      description = "Mount this machine's image store from Ceph before k3s starts";
+      wantedBy = ["multi-user.target"];
+      after = [
+        "network-online.target"
+        "wireguard-wg1.service"
+        "yolab-ceph-bootstrap.service"
+        "ceph-mon-${host}.service"
+      ];
+      wants = ["network-online.target"];
+      restartIfChanged = false;
+      stopIfChanged = false;
+      path = with pkgs; [ceph ceph-client util-linux xfsprogs e2fsprogs coreutils];
+      environment = {
+        YOLAB_CEPH_FSID = cfg.fsid;
+        YOLAB_CEPH_MON_ADDR = cfg.monAddr;
+        YOLAB_CEPH_IMAGES_POOL = cfg.imagesStore.poolName;
+        YOLAB_CEPH_IMAGES_FS = cfg.imagesStore.filesystem;
+        YOLAB_LIBRADOS = "${pkgs.ceph.lib}/lib/librados.so.2";
+      };
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        TimeoutStartSec = "infinity";
+        ExecStart = "${localApiEnv}/bin/local-api storage image-store-up";
+      };
+    };
+
+    systemd.services.k3s = {
+      requires = ["yolab-image-store.service"];
+      after = ["yolab-image-store.service"];
+    };
+
     systemd.services.yolab-vdisks = {
       description = "Detach virtual disks after their OSDs stop and before the network goes down";
       wantedBy = ["multi-user.target"];

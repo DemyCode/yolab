@@ -15,7 +15,6 @@ pub mod movement;
 pub mod noout;
 pub mod osd;
 pub mod overview;
-pub mod pivot_lock;
 pub mod release;
 pub mod reset_wipe;
 pub mod settings;
@@ -133,6 +132,26 @@ impl StorageEnv {
     }
 }
 
+async fn image_store_up<H: crate::host::Host>(
+    host: &H,
+    env: &StorageEnv,
+    node: &str,
+) -> Result<()> {
+    if !env.is_configured() {
+        tracing::warn!(
+            "image store: this machine has no Ceph settings, so k3s keeps its images on the \
+             root disk"
+        );
+        return Ok(());
+    }
+    let policy = env.containerd_store_policy();
+    match containerd_store::up(host, root(), node, &policy, containerd_store::RETRY).await {
+        containerd_store::Up::Mounted => tracing::info!("image store: mounted, k3s may start"),
+        containerd_store::Up::LeftOnRootDisk(why) => tracing::warn!("image store: {why}"),
+    }
+    Ok(())
+}
+
 pub fn lock_name(job: &str) -> String {
     format!("storage-{job}")
 }
@@ -155,6 +174,7 @@ pub async fn run(args: &[String]) -> i32 {
         "reset-wipe",
         "release",
         "vdisk-detach-all",
+        "image-store-up",
     ];
     if !known.contains(&sub) {
         eprintln!("storage: unknown subcommand '{sub}'");
@@ -184,6 +204,7 @@ pub async fn run(args: &[String]) -> i32 {
         "noout-set" => noout::set(&host, root()).await,
         "release" => release::run(&host, root(), controllers::K3S_UNIT, release::WAITS).await,
         "vdisk-detach-all" => crate::vdisk::detach_all(&host, root()).await,
+        "image-store-up" => image_store_up(&host, &env, &node).await,
         "bootstrap" => bootstrap::run(&host, root(), &node, &env.bootstrap_args()).await,
         "reset-wipe" => {
             let config = crate::config::machine_dir().join("config.toml");
@@ -235,7 +256,7 @@ mod tests {
 
     #[test]
     fn a_subcommand_and_its_controller_share_one_lock_name() {
-        assert_eq!(lock_name("containerd-store"), "storage-containerd-store");
+        assert_eq!(lock_name("images-rbd"), "storage-images-rbd");
     }
 
     #[tokio::test]

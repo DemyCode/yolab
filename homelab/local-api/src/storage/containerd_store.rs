@@ -283,180 +283,71 @@ fn is_built_here(store: &Path) -> bool {
     store.join(BUILT_HERE).is_file()
 }
 
-async fn is_mounted<H: Host>(host: &H, root: &Path) -> bool {
-    let croot = containerd_root(root);
-    is_mountpoint(host, &croot.to_string_lossy()).await
-}
-
-pub async fn workloads_run_here<H: Host>(host: &H, k3s_unit: &str) -> bool {
-    host.systemctl(&["is-active", "--quiet", k3s_unit])
-        .await
-        .is_ok_and(|o| o.success)
-}
-
-pub async fn is_in_place<H: Host>(host: &H, root: &Path) -> bool {
-    is_mounted(host, root).await && is_built_here(&containerd_root(root))
-}
 
 pub const PODS_SLICE: &str = "kubepods.slice";
-const SHIM: &str = "containerd-shim-runc-v2";
-const QUIET_CHECKS: u32 = 10;
-const QUIET_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
 
-pub async fn pivot<H: Host>(
+pub const RETRY: std::time::Duration = std::time::Duration::from_secs(10);
+
+const ALREADY_RUNNING: [&str; 2] = ["containerd", "containerd-shim"];
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum Up {
+    Mounted,
+    LeftOnRootDisk(String),
+}
+
+fn running_on_the_root_disk(root: &Path) -> Option<&'static str> {
+    ALREADY_RUNNING
+        .into_iter()
+        .find(|name| super::release::process_named(root, name))
+}
+
+async fn step<H: Host>(
     host: &H,
     root: &Path,
     node: &str,
     policy: &ContainerdStorePolicy,
-    k3s_unit: &str,
-) -> Result<Attempt<()>> {
-    if is_in_place(host, root).await {
-        return Ok(Attempt::Ready(()));
-    }
-    match image_state(host, &policy.pool_name, node).await {
-        ImageState::Present => {}
-        ImageState::Absent => {
-            return Ok(Attempt::NotYet(format!(
-                "{}/{node} does not exist yet",
-                policy.pool_name
-            )))
-        }
-        ImageState::Unavailable(why) => {
-            return Ok(Attempt::NotYet(format!(
-                "the {} pool cannot answer: {why}",
-                policy.pool_name
-            )))
-        }
-    }
-
-    match super::pivot_lock::claim(host, node, crate::system::now_secs()).await? {
-        super::pivot_lock::Claim::Held => {}
-        super::pivot_lock::Claim::Busy(why) => return Ok(Attempt::NotYet(why)),
-    }
-    let outcome = swap(host, root, node, policy, k3s_unit).await;
-    super::pivot_lock::release(host, node).await;
-    outcome
-}
-
-async fn swap<H: Host>(
-    host: &H,
-    root: &Path,
-    node: &str,
-    policy: &ContainerdStorePolicy,
-    k3s_unit: &str,
-) -> Result<Attempt<()>> {
-    let stopped = host.systemctl(&["stop", k3s_unit]).await?;
-    if !stopped.success {
-        return Ok(Attempt::NotYet(format!(
-            "could not stop {k3s_unit} to swap the image store: {}",
-            stopped.stderr.trim()
-        )));
-    }
-
-    let outcome = match quiesce(host, root).await {
-        Some(why) => Ok(Attempt::NotYet(why)),
-        None => match unmount_untrusted(host, root).await? {
-            Some(why) => Ok(Attempt::NotYet(why)),
-            None => attempt(host, root, node, policy).await,
-        },
-    };
-
-    if host
-        .systemctl(&["is-enabled", "--quiet", k3s_unit])
-        .await
-        .is_ok_and(|o| o.success)
-    {
-        host.systemctl(&["reset-failed", k3s_unit])
-            .await
-            .debug_on_err(format!("reset-failed {k3s_unit}"));
-        host.systemctl(&["start", "--no-block", k3s_unit])
-            .await
-            .warn_on_err(format!("start {k3s_unit} after swapping the image store"));
-    }
-    outcome
-}
-
-async fn unmount_untrusted<H: Host>(host: &H, root: &Path) -> Result<Option<String>> {
-    if !is_mounted(host, root).await {
-        return Ok(None);
-    }
+) -> Result<Attempt<Up>> {
     let croot_s = containerd_root(root).to_string_lossy().into_owned();
-    tracing::warn!("the image store at {croot_s} was not built by this swap — rebuilding it");
-    let out = host.run_cmd("umount", &[croot_s.as_str()]).await?;
-    if out.success {
-        return Ok(None);
+    if is_mountpoint(host, &croot_s).await {
+        return Ok(Attempt::Ready(Up::Mounted));
     }
-    Ok(Some(format!(
-        "could not unmount the untrusted image store at {croot_s}: {}",
-        out.stderr.trim()
-    )))
+    if let Some(name) = running_on_the_root_disk(root) {
+        return Ok(Attempt::Ready(Up::LeftOnRootDisk(format!(
+            "{name} is already running on the root disk, so the image store is mounted at the \
+             next boot instead of under it"
+        ))));
+    }
+    Ok(match attempt(host, root, node, policy).await? {
+        Attempt::Ready(()) => Attempt::Ready(Up::Mounted),
+        Attempt::NotYet(why) => Attempt::NotYet(why),
+    })
 }
 
-async fn quiesce<H: Host>(host: &H, root: &Path) -> Option<String> {
-    host.systemctl(&["stop", PODS_SLICE])
-        .await
-        .warn_on_err(format!("stop {PODS_SLICE}"));
-    match host.run_cmd("pkill", &["-KILL", "-f", SHIM]).await {
-        Ok(o) if !o.success && !o.stderr.trim().is_empty() => {
-            tracing::warn!("kill the containerd shims: {}", o.stderr.trim())
-        }
-        Ok(_) => {}
-        Err(e) => tracing::warn!("kill the containerd shims: {e}"),
-    }
-    let data_root = containerd_root(root);
-    for target in mounts_resting_on(root, &data_root) {
-        let target_s = target.to_string_lossy().into_owned();
-        host.run_cmd("umount", &[target_s.as_str()])
-            .await
-            .warn_on_err(format!("unmount {target_s}, left behind by a killed shim"));
-    }
-    for check in 1..=QUIET_CHECKS {
-        let holders = holders_of(root, &data_root);
-        if holders.is_empty() {
-            return None;
-        }
-        if check == QUIET_CHECKS {
-            return Some(format!(
-                "containerd's data-root is still in use by {} — not mounting over it",
-                holders.join(", ")
-            ));
-        }
-        tokio::time::sleep(QUIET_WAIT).await;
-    }
-    None
-}
-
-fn uses_data_root(pid: &Path, data_root: &Path) -> bool {
-    let mut links = vec![pid.join("cwd"), pid.join("root")];
-    if let Ok(fds) = std::fs::read_dir(pid.join("fd")) {
-        links.extend(fds.filter_map(|fd| fd.ok()).map(|fd| fd.path()));
-    }
-    links
-        .iter()
-        .filter_map(|link| std::fs::read_link(link).ok())
-        .any(|target| target.starts_with(data_root))
-}
-
-fn holders_of(root: &Path, data_root: &Path) -> Vec<String> {
-    let proc = root.join("proc");
-    let mut out = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(&proc) {
-        for entry in entries.filter_map(|e| e.ok()) {
-            let name = entry.file_name().to_string_lossy().into_owned();
-            if name.is_empty() || !name.bytes().all(|b| b.is_ascii_digit()) {
-                continue;
+pub async fn up<H: Host>(
+    host: &H,
+    root: &Path,
+    node: &str,
+    policy: &ContainerdStorePolicy,
+    retry: std::time::Duration,
+) -> Up {
+    let mut last: Option<String> = None;
+    loop {
+        match step(host, root, node, policy).await {
+            Ok(Attempt::Ready(up)) => return up,
+            Ok(Attempt::NotYet(why)) => {
+                if last.as_deref() != Some(why.as_str()) {
+                    tracing::info!("image store: k3s waits until this is ready — {why}");
+                    last = Some(why);
+                }
             }
-            if uses_data_root(&entry.path(), data_root) {
-                let comm = std::fs::read_to_string(entry.path().join("comm")).unwrap_or_default();
-                out.push(format!("pid {name} ({})", comm.trim()));
+            Err(e) => {
+                tracing::warn!("image store: {e:#} — trying again in {}s", retry.as_secs());
+                last = None;
             }
         }
+        tokio::time::sleep(retry).await;
     }
-    for target in mounts_resting_on(root, data_root) {
-        out.push(format!("the mount at {}", target.display()));
-    }
-    out.sort();
-    out
 }
 
 pub(crate) fn mount_resting_on(line: &str, data_root: &Path) -> Option<PathBuf> {
@@ -470,17 +361,6 @@ pub(crate) fn mount_resting_on(line: &str, data_root: &Path) -> Option<PathBuf> 
     (inside || built_on).then(|| target.to_path_buf())
 }
 
-fn mounts_resting_on(root: &Path, data_root: &Path) -> Vec<PathBuf> {
-    let mountinfo = std::fs::read_to_string(root.join("proc/self/mountinfo")).unwrap_or_default();
-    let mut out: Vec<PathBuf> = mountinfo
-        .lines()
-        .filter_map(|line| mount_resting_on(line, data_root))
-        .collect();
-    out.sort_by(|a, b| b.cmp(a));
-    out.dedup();
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -492,18 +372,6 @@ mod tests {
             pool_name: "images".into(),
             filesystem: Filesystem::Xfs,
         }
-    }
-
-    #[tokio::test]
-    async fn workloads_run_here_only_while_k3s_is_active() {
-        let active = FakeHost::new().ok("systemctl is-active --quiet k3s.service", "");
-        assert!(workloads_run_here(&active, "k3s.service").await);
-
-        let stuck_starting = FakeHost::new().fail("systemctl is-active --quiet k3s.service", "");
-        assert!(
-            !workloads_run_here(&stuck_starting, "k3s.service").await,
-            "a k3s that cannot start because its image store is dead runs no workloads to disrupt"
-        );
     }
 
     fn keyed(host: FakeHost) -> FakeHost {
@@ -819,303 +687,95 @@ mod tests {
         assert!(FS_OP_TIMEOUT > crate::host::RUN_CMD_TIMEOUT);
     }
 
-    const K3S: &str = "k3s.service";
-
-    #[tokio::test]
-    async fn a_pivot_with_no_image_never_touches_k3s() {
-        let dir = tempfile::tempdir().unwrap();
-        let host = booting().fail("rbd ls images", "");
-        let out = pivot(&host, dir.path(), "yolab-n1", &policy(), K3S)
-            .await
-            .unwrap();
-        assert!(not_yet(out).contains("cannot answer"));
-        assert!(
-            !host.ran("systemctl stop"),
-            "k3s was stopped for a pivot that could not proceed: {:?}",
-            host.calls()
-        );
-    }
-
-    fn built_here_in_place(root: &Path) {
-        let croot = containerd_root(root);
-        std::fs::create_dir_all(&croot).unwrap();
-        std::fs::write(croot.join(BUILT_HERE), b"").unwrap();
+    fn a_process_named(root: &Path, pid: u32, comm: &str) {
+        let dir = root.join("proc").join(pid.to_string());
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("comm"), format!("{comm}\n")).unwrap();
     }
 
     #[tokio::test]
-    async fn an_already_mounted_store_is_not_pivoted_again() {
+    async fn a_store_that_is_already_mounted_lets_k3s_start_at_once() {
         let dir = tempfile::tempdir().unwrap();
-        built_here_in_place(dir.path());
         let host = FakeHost::new().ok("findmnt -rno TARGET --mountpoint", "");
-        let out = pivot(&host, dir.path(), "yolab-n1", &policy(), K3S)
-            .await
-            .unwrap();
-        assert_eq!(out, Attempt::Ready(()));
-        assert!(!host.ran("systemctl stop"));
-        assert!(!ran_mount(&host));
+        let got = up(&host, dir.path(), "yolab-n1", &policy(), RETRY).await;
+        assert_eq!(got, Up::Mounted);
+        assert!(!ran_mount(&host), "{:?}", host.calls());
     }
 
     #[tokio::test]
-    async fn only_a_mounted_store_this_swap_built_is_in_place() {
+    async fn a_blank_image_is_formatted_and_mounted_before_k3s_starts() {
         let dir = tempfile::tempdir().unwrap();
-        let mounted = || FakeHost::new().ok("findmnt -rno TARGET --mountpoint", "");
-        assert!(!is_in_place(&mounted(), dir.path()).await);
-        built_here_in_place(dir.path());
-        assert!(is_in_place(&mounted(), dir.path()).await);
-        assert!(!is_in_place(&booting(), dir.path()).await);
+        let host = mapped()
+            .fail("blkid /dev/rbd0", "")
+            .ok("mkfs.xfs", "")
+            .ok("mount", "");
+        let got = up(&host, dir.path(), "yolab-n1", &policy(), RETRY).await;
+        assert_eq!(got, Up::Mounted);
+        assert!(host.ran("mkfs.xfs -f -K -m crc=1 /dev/rbd0"));
+        assert!(host.ran("mount /dev/rbd0"));
     }
 
-    const CLAIM: &str = "ceph config-key get yolab/containerd-pivot";
-    const MINE: &str = r#"{"node":"yolab-n1","until":99999999999}"#;
-
-    fn claimable(host: FakeHost) -> FakeHost {
-        host.fail(CLAIM, "Error ENOENT: no such key")
-            .ok(CLAIM, MINE)
-            .ok("ceph config-key set", "")
-            .ok("ceph config-key rm", "")
-    }
-
-    fn swap_base() -> FakeHost {
-        claimable(
-            mapped()
-                .fail("blkid", "")
+    #[tokio::test]
+    async fn nothing_is_ever_mounted_under_a_containerd_that_is_already_running() {
+        for comm in ["containerd", "containerd-shim"] {
+            let dir = tempfile::tempdir().unwrap();
+            a_process_named(dir.path(), 4242, comm);
+            let host = mapped()
+                .fail("blkid /dev/rbd0", "")
                 .ok("mkfs.xfs", "")
-                .ok("systemctl stop", "")
-                .ok("systemctl reset-failed", "")
-                .ok("systemctl start", ""),
-        )
+                .ok("mount", "");
+            match up(&host, dir.path(), "yolab-n1", &policy(), RETRY).await {
+                Up::LeftOnRootDisk(why) => assert!(why.contains(comm), "{why}"),
+                Up::Mounted => panic!("the store was reported mounted under a live {comm}"),
+            }
+            assert!(!host.ran("mkfs"), "{comm}: {:?}", host.calls());
+            assert!(!ran_mount(&host), "{comm}: {:?}", host.calls());
+        }
     }
 
-    fn swappable() -> FakeHost {
-        swap_base().ok("mount ", "").ok("systemctl is-enabled", "")
-    }
-
-    fn at(host: &FakeHost, needle: &str) -> usize {
-        host.position(needle)
-            .unwrap_or_else(|| panic!("never ran {needle}: {:?}", host.calls()))
-    }
-
-    fn first_mount(host: &FakeHost) -> usize {
-        host.calls()
-            .iter()
-            .position(|c| c.starts_with("mount "))
-            .unwrap_or_else(|| panic!("never mounted: {:?}", host.calls()))
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn nothing_runs_on_the_old_store_when_the_new_one_is_mounted() {
+    #[tokio::test]
+    async fn an_unrelated_process_does_not_hold_the_store_back() {
         let dir = tempfile::tempdir().unwrap();
-        let host = swappable();
-        let out = pivot(&host, dir.path(), "yolab-n1", &policy(), K3S)
-            .await
-            .unwrap();
-        assert_eq!(out, Attempt::Ready(()));
-        let k3s = at(&host, "systemctl stop k3s.service");
-        let pods = at(&host, "systemctl stop kubepods.slice");
-        let shims = at(&host, "pkill -KILL -f containerd-shim-runc-v2");
-        let mounted = first_mount(&host);
-        let started = at(&host, "systemctl start --no-block k3s.service");
-        assert!(
-            k3s < pods && pods < shims && shims < mounted && mounted < started,
-            "{:?}",
-            host.calls()
-        );
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn a_k3s_that_is_still_starting_is_stopped_like_a_running_one() {
-        let dir = tempfile::tempdir().unwrap();
-        let host = swappable().fail("systemctl is-active", "activating");
-        pivot(&host, dir.path(), "yolab-n1", &policy(), K3S)
-            .await
-            .unwrap();
-        assert!(
-            at(&host, "systemctl stop k3s.service") < first_mount(&host),
-            "the data-root was mounted over a k3s that was only starting: {:?}",
-            host.calls()
-        );
-        assert!(!host.ran("systemctl is-active"));
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn k3s_is_started_after_the_swap_whether_or_not_it_was_running_before() {
-        let dir = tempfile::tempdir().unwrap();
-        let host = swappable().fail("systemctl is-active", "inactive");
-        pivot(&host, dir.path(), "yolab-n1", &policy(), K3S)
-            .await
-            .unwrap();
-        assert!(host.ran("systemctl start --no-block k3s.service"));
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn a_k3s_that_is_switched_off_stays_off() {
-        let dir = tempfile::tempdir().unwrap();
-        let host = swap_base()
-            .ok("mount ", "")
-            .fail("systemctl is-enabled", "disabled");
-        pivot(&host, dir.path(), "yolab-n1", &policy(), K3S)
-            .await
-            .unwrap();
-        assert!(!host.ran("systemctl start"));
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn k3s_is_brought_back_even_when_the_mount_fails() {
-        let dir = tempfile::tempdir().unwrap();
-        let host = swap_base()
-            .fail("mount ", "no such device")
-            .ok("systemctl is-enabled", "");
-        let out = pivot(&host, dir.path(), "yolab-n1", &policy(), K3S)
-            .await
-            .unwrap();
-        assert!(not_yet(out).contains("mount"));
-        assert!(host.ran("systemctl start --no-block k3s.service"));
-        assert!(host.ran("ceph config-key rm yolab/containerd-pivot"));
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn a_k3s_that_will_not_stop_is_never_mounted_under() {
-        let dir = tempfile::tempdir().unwrap();
-        let host = swappable().fail("systemctl stop k3s.service", "Job canceled");
-        let out = pivot(&host, dir.path(), "yolab-n1", &policy(), K3S)
-            .await
-            .unwrap();
-        assert!(not_yet(out).contains("could not stop"));
-        assert!(!host.calls().iter().any(|c| c.starts_with("mount ")));
-        assert!(host.ran("ceph config-key rm yolab/containerd-pivot"));
-    }
-
-    const FINDMNT: &str = "findmnt -rno TARGET --mountpoint";
-
-    fn mounted_untrusted() -> FakeHost {
-        claimable(
-            keyed(FakeHost::new())
-                .ok(FINDMNT, "")
-                .ok(FINDMNT, "")
-                .fail(FINDMNT, "")
-                .ok("rbd ls images", "yolab-n1\n")
-                .ok("rbd showmapped --format json", "[]")
-                .ok("rbd map images/yolab-n1", "/dev/rbd0\n")
-                .ok("blkid /dev/rbd0", "TYPE=xfs")
-                .ok("mkfs.xfs", "")
-                .ok("mount ", "")
-                .ok("systemctl stop", "")
-                .ok("systemctl reset-failed", "")
-                .ok("systemctl start", "")
-                .ok("systemctl is-enabled", ""),
-        )
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn a_mounted_store_this_swap_did_not_build_is_rebuilt_while_k3s_is_down() {
-        let dir = tempfile::tempdir().unwrap();
-        let croot = containerd_root(dir.path());
-        let host = mounted_untrusted().ok("umount", "");
-        let out = pivot(&host, dir.path(), "yolab-n1", &policy(), K3S)
-            .await
-            .unwrap();
-        assert_eq!(out, Attempt::Ready(()));
-        let stopped = at(&host, "systemctl stop k3s.service");
-        let unmounted = at(&host, &format!("umount {}", croot.display()));
-        let rebuilt = at(&host, "mkfs.xfs -f -K -m crc=1 /dev/rbd0");
-        let remounted = at(&host, &format!("mount /dev/rbd0 {}", croot.display()));
-        let started = at(&host, "systemctl start --no-block k3s.service");
-        assert!(
-            stopped < unmounted
-                && unmounted < rebuilt
-                && rebuilt < remounted
-                && remounted < started,
-            "{:?}",
-            host.calls()
-        );
-        assert!(is_built_here(&croot));
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn an_untrusted_store_that_will_not_unmount_is_left_alone() {
-        let dir = tempfile::tempdir().unwrap();
-        let host = mounted_untrusted().fail("umount", "target is busy");
-        let out = pivot(&host, dir.path(), "yolab-n1", &policy(), K3S)
-            .await
-            .unwrap();
-        assert!(not_yet(out).contains("target is busy"));
-        assert!(!host.ran("mkfs"));
-        assert!(!ran_mount(&host));
-        assert!(host.ran("systemctl start --no-block k3s.service"));
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn only_one_machine_swaps_its_image_store_at_a_time() {
-        let dir = tempfile::tempdir().unwrap();
-        let host = mapped().ok(CLAIM, r#"{"node":"yolab-n2","until":99999999999}"#);
-        let out = pivot(&host, dir.path(), "yolab-n1", &policy(), K3S)
-            .await
-            .unwrap();
-        assert!(not_yet(out).contains("yolab-n2 is swapping"));
-        assert!(!host.ran("systemctl stop"));
-        assert!(!host.ran("config-key set"));
-    }
-
-    fn a_process_holding(root: &Path, pid: u32, comm: &str, target: &Path) {
-        let fd = root.join(format!("proc/{pid}/fd"));
-        std::fs::create_dir_all(&fd).unwrap();
-        std::fs::write(root.join(format!("proc/{pid}/comm")), format!("{comm}\n")).unwrap();
-        std::os::unix::fs::symlink(target, fd.join("3")).unwrap();
-        std::os::unix::fs::symlink("/", root.join(format!("proc/{pid}/root"))).unwrap();
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn a_data_root_something_still_uses_is_not_mounted_over() {
-        let dir = tempfile::tempdir().unwrap();
-        let meta = containerd_root(dir.path()).join("io.containerd.metadata.v1.bolt/meta.db");
-        a_process_holding(dir.path(), 12564, "containerd", &meta);
-        let host = swappable();
-        let out = pivot(&host, dir.path(), "yolab-n1", &policy(), K3S)
-            .await
-            .unwrap();
-        let why = not_yet(out);
-        assert!(why.contains("pid 12564 (containerd)"), "{why}");
-        assert!(!host.calls().iter().any(|c| c.starts_with("mount ")));
-        assert!(host.ran("systemctl start --no-block k3s.service"));
-    }
-
-    #[test]
-    fn only_processes_and_mounts_inside_the_data_root_hold_it() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-        let data_root = containerd_root(root);
-        a_process_holding(root, 10, "containerd", &data_root.join("meta.db"));
-        a_process_holding(root, 11, "sshd", Path::new("/var/log/lastlog"));
-        a_process_holding(
-            root,
-            12,
-            "neighbour",
-            &PathBuf::from(format!("{}-old/x", data_root.display())),
-        );
-        std::fs::create_dir_all(root.join("proc/13")).unwrap();
-        std::os::unix::fs::symlink(&data_root, root.join("proc/13/cwd")).unwrap();
-        std::fs::create_dir_all(root.join("proc/self")).unwrap();
-        std::fs::write(
-            root.join("proc/self/mountinfo"),
-            format!(
-                "22 1 0:21 / / rw - ext4 /dev/dm-0 rw\n\
-                 90 22 0:50 / {dr} rw - xfs /dev/rbd0 rw\n\
-                 91 22 0:51 / {dr}/io.containerd.grpc.v1.cri/sandboxes/x/shm rw - tmpfs shm rw\n",
-                dr = data_root.display()
-            ),
-        )
-        .unwrap();
+        a_process_named(dir.path(), 7, "containerd-helper");
+        a_process_named(dir.path(), 8, "sshd");
+        let host = mapped()
+            .fail("blkid /dev/rbd0", "")
+            .ok("mkfs.xfs", "")
+            .ok("mount", "");
         assert_eq!(
-            holders_of(root, &data_root),
-            vec![
-                "pid 10 (containerd)".to_string(),
-                "pid 13 ()".to_string(),
-                format!(
-                    "the mount at {}/io.containerd.grpc.v1.cri/sandboxes/x/shm",
-                    data_root.display()
-                ),
-            ]
+            up(&host, dir.path(), "yolab-n1", &policy(), RETRY).await,
+            Up::Mounted
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn k3s_keeps_waiting_while_the_image_does_not_exist_and_nothing_is_mounted() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = booting().ok("rbd ls images", "someone-else\n");
+        let waited = tokio::time::timeout(
+            std::time::Duration::from_secs(3600),
+            up(&host, dir.path(), "yolab-n1", &policy(), RETRY),
+        )
+        .await;
+        assert!(waited.is_err(), "up gave up instead of waiting: {waited:?}");
+        assert!(
+            host.calls().iter().filter(|c| c.starts_with("rbd ls")).count() > 1,
+            "it never asked again"
+        );
+        assert!(!ran_mount(&host));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn k3s_keeps_waiting_through_an_error_instead_of_failing() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = mapped().fail("blkid /dev/rbd0", "").fail("mkfs.xfs", "busy");
+        let waited = tokio::time::timeout(
+            std::time::Duration::from_secs(600),
+            up(&host, dir.path(), "yolab-n1", &policy(), RETRY),
+        )
+        .await;
+        assert!(waited.is_err(), "an error ended the wait: {waited:?}");
+        assert!(!ran_mount(&host));
     }
 
     const ORPHAN: &str = "/run/k3s/containerd/io.containerd.runtime.v2.task/k8s.io/abc/rootfs";
@@ -1142,35 +802,5 @@ mod tests {
         assert_eq!(mount_resting_on(&neighbour, dr), None);
         let the_store_itself = format!("90 22 0:50 / {} rw - xfs /dev/rbd0 rw", dr.display());
         assert_eq!(mount_resting_on(&the_store_itself, dr), None);
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn a_rootfs_a_killed_shim_left_behind_is_unmounted_and_blocks_the_swap_until_gone() {
-        let dir = tempfile::tempdir().unwrap();
-        let data_root = containerd_root(dir.path());
-        std::fs::create_dir_all(dir.path().join("proc/self")).unwrap();
-        std::fs::write(
-            dir.path().join("proc/self/mountinfo"),
-            orphaned_rootfs(&data_root),
-        )
-        .unwrap();
-        let host = swappable().ok("umount", "");
-        let out = pivot(&host, dir.path(), "yolab-n1", &policy(), K3S)
-            .await
-            .unwrap();
-        assert!(
-            at(&host, "pkill -KILL") < at(&host, &format!("umount {ORPHAN}")),
-            "{:?}",
-            host.calls()
-        );
-        assert!(not_yet(out).contains(ORPHAN));
-        assert!(!host.ran("mkfs"));
-        assert!(!ran_mount(&host));
-    }
-
-    #[test]
-    fn a_machine_with_nothing_on_the_data_root_has_no_holders() {
-        let dir = tempfile::tempdir().unwrap();
-        assert!(holders_of(dir.path(), &containerd_root(dir.path())).is_empty());
     }
 }

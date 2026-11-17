@@ -125,7 +125,7 @@ fn pods_running(root: &Path) -> bool {
         .unwrap_or(false)
 }
 
-fn process_named(root: &Path, name: &str) -> bool {
+pub(super) fn process_named(root: &Path, name: &str) -> bool {
     let Ok(entries) = std::fs::read_dir(root.join("proc")) else {
         return false;
     };

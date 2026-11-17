@@ -76,11 +76,10 @@ in
                 timeout=600,
             )
 
-        # k3s must come up whether or not there is an OSD yet. The image store
-        # falls back to the root disk when the RBD is not there, and a k3s that
-        # waited for storage instead would leave the machine with nothing able to
-        # report why — which is the whole reason yolab-local-api is not
-        # After=k3s (see containerd-store-after-order in nix/checks.nix).
+        # k3s starts only once the image store is mounted from Ceph: the system
+        # OSD, the images RBD and the mount all come first. local-api is not
+        # After=k3s, so it creates them and can say why k3s is still waiting
+        # (see k3s-starts-once-on-its-image-store in nix/checks.nix).
         with step(node1, "k3s serves its API"):
             node1.wait_until_succeeds("k3s kubectl get --raw /readyz", timeout=900)
 

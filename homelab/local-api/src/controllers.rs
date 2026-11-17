@@ -25,7 +25,6 @@ pub const NAMES: &[&str] = &[
     "osd-activate",
     "system-osd",
     "images-rbd",
-    "containerd-store",
     "images-grow",
     "ceph-dashboard",
     "mon-member",
@@ -115,10 +114,6 @@ pub fn spawn_all(leader: Leadership, state: &crate::AppState) {
         spawn(storage::OsdActivateController { env: env.clone() }, &leader);
         spawn(storage::SystemOsdController { env: env.clone() }, &leader);
         spawn(storage::ImagesRbdController { env: env.clone() }, &leader);
-        runtime::resource::spawn(
-            storage::containerd_store_resource(env.clone()),
-            leader.clone(),
-        );
         spawn(storage::ImagesGrowController { env: env.clone() }, &leader);
         spawn(storage::DashboardController { env: env.clone() }, &leader);
         spawn(storage::MonMemberController { env: env.clone() }, &leader);
@@ -203,9 +198,6 @@ pub async fn run_named(name: &str) -> anyhow::Result<runtime::Tick> {
         "ceph-join" => runtime::run_once(&storage::CephJoinController { env }).await,
         "csi-recovery" => runtime::run_once(&storage::CsiRecoveryController).await,
         "ceph-csi" => runtime::run_once(&crate::storage::ceph_csi::CephCsiController).await,
-        "containerd-store" => {
-            runtime::resource::run_once(&storage::containerd_store_resource(env)).await
-        }
         _ => anyhow::bail!("unknown controller '{name}' (known: {})", NAMES.join(", ")),
     }
 }

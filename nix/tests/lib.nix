@@ -71,6 +71,7 @@
     YOLAB_UNITS = [
         "yolab-reset-wipe",
         "yolab-ceph-bootstrap",
+        "yolab-image-store",
         "k3s",
         "yolab-local-api",
     ]

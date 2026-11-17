@@ -8,8 +8,8 @@ use crate::host::{Host, HOST};
 use crate::runtime::{lock, Controller, Ctx, Requirement, Scope, Tick};
 
 use super::{
-    bootstrap, containerd_store, csi_secrets, dashboard, images_grow, images_rbd, keys, lock_name,
-    mon_member, osd, root, StorageEnv,
+    bootstrap, csi_secrets, dashboard, images_grow, images_rbd, keys, lock_name, mon_member, osd,
+    root, StorageEnv,
 };
 
 use super::wait::Attempt;
@@ -309,52 +309,6 @@ async fn once_per_boot(marker: &std::path::Path, client: &kube::Client) -> Resul
 }
 
 pub const K3S_UNIT: &str = "k3s.service";
-
-pub struct ContainerdStoreResource<H: 'static> {
-    env: StorageEnv,
-    host: &'static H,
-}
-
-pub fn containerd_store_resource(env: StorageEnv) -> ContainerdStoreResource<impl Host> {
-    ContainerdStoreResource { env, host: &HOST }
-}
-
-impl<H: Host + 'static> crate::runtime::resource::Resource for ContainerdStoreResource<H> {
-    fn name(&self) -> &'static str {
-        "containerd-store"
-    }
-    fn depends_on(&self) -> &[&'static str] {
-        &["images-rbd"]
-    }
-    fn interval(&self) -> Duration {
-        Duration::from_secs(60)
-    }
-    fn disruption(&self) -> crate::runtime::resource::Disruption {
-        crate::runtime::resource::Disruption::RestartsWorkloads
-    }
-    async fn disrupts_now(&self) -> bool {
-        containerd_store::workloads_run_here(self.host, K3S_UNIT).await
-    }
-    async fn check(&self, _ctx: &Ctx) -> crate::runtime::resource::State {
-        use crate::runtime::resource::State;
-        if containerd_store::is_in_place(self.host, root()).await {
-            State::Ready
-        } else {
-            State::NotYet(
-                "containerd's data-root is not yet on an image store this swap built".into(),
-            )
-        }
-    }
-    async fn converge(&self, ctx: &Ctx) -> Result<Tick> {
-        let policy = self.env.containerd_store_policy();
-        locked_tick("containerd-store", || async {
-            Ok(tick_of(
-                containerd_store::pivot(self.host, root(), &ctx.node, &policy, K3S_UNIT).await?,
-            ))
-        })
-        .await
-    }
-}
 
 #[cfg(test)]
 mod tests {

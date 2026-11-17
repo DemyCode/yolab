@@ -31,24 +31,6 @@ impl State {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Disruption {
-    None,
-    RestartsWorkloads,
-}
-
-pub fn effective_pauses(
-    disruption: Disruption,
-    declared: &[activity::Activity],
-) -> Vec<activity::Activity> {
-    let mut out = declared.to_vec();
-    if disruption == Disruption::RestartsWorkloads && !out.contains(&activity::Activity::Restore) {
-        out.push(activity::Activity::Restore);
-    }
-    out
-}
-
 pub trait Resource: Send + Sync + 'static {
     fn name(&self) -> &'static str;
 
@@ -74,14 +56,6 @@ pub trait Resource: Send + Sync + 'static {
         Duration::ZERO
     }
 
-    fn disruption(&self) -> Disruption {
-        Disruption::None
-    }
-
-    fn disrupts_now(&self) -> impl Future<Output = bool> + Send {
-        async { true }
-    }
-
     fn check(&self, ctx: &Ctx) -> impl Future<Output = State> + Send;
 
     fn converge(&self, ctx: &Ctx) -> impl Future<Output = anyhow::Result<Tick>> + Send;
@@ -100,7 +74,6 @@ pub(crate) async fn preflight(
     name: &str,
     scope: Scope,
     deps: &[&'static str],
-    disruption: Disruption,
     pauses: &[activity::Activity],
 ) -> anyhow::Result<String> {
     let node = crate::system::hostname();
@@ -116,8 +89,7 @@ pub(crate) async fn preflight(
             }
         }
     }
-    if let activity::Gate::Paused(why) = activity::gate(&effective_pauses(disruption, pauses)).await
-    {
+    if let activity::Gate::Paused(why) = activity::gate(pauses).await {
         anyhow::bail!("not running {name}: {why}");
     }
     Ok(node)
@@ -418,14 +390,7 @@ async fn run<R: Resource>(resource: Arc<R>, notify: Arc<Notify>, leader: leader:
             continue;
         }
 
-        let disruption = if resource.disrupts_now().await {
-            resource.disruption()
-        } else {
-            Disruption::None
-        };
-        if let activity::Gate::Paused(why) =
-            activity::gate(&effective_pauses(disruption, resource.pauses_during())).await
-        {
+        if let activity::Gate::Paused(why) = activity::gate(resource.pauses_during()).await {
             if last_pause.as_deref() != Some(why.as_str()) {
                 tracing::warn!("resource {name}: paused, {why}");
                 last_pause = Some(why.clone());
@@ -490,7 +455,6 @@ pub async fn run_once<R: Resource>(resource: &R) -> anyhow::Result<Tick> {
         resource.name(),
         resource.scope(),
         resource.depends_on(),
-        resource.disruption(),
         resource.pauses_during(),
     )
     .await?;
@@ -834,94 +798,6 @@ mod tests {
         let found = problems_in(&g);
         assert_eq!(found.len(), 1, "{found:?}");
         assert!(found[0].contains("'ceph'"), "{found:?}");
-    }
-
-    #[test]
-    fn a_disruptive_resource_always_pauses_during_a_restore() {
-        let pauses = effective_pauses(Disruption::RestartsWorkloads, &[]);
-        assert!(
-            pauses.contains(&activity::Activity::Restore),
-            "a resource that restarts workloads must never do so mid-restore"
-        );
-    }
-
-    #[test]
-    fn a_harmless_resource_is_not_given_a_pause_it_did_not_ask_for() {
-        assert!(effective_pauses(Disruption::None, &[]).is_empty());
-    }
-
-    #[test]
-    fn a_disruptive_resource_does_not_get_a_duplicate_pause() {
-        let pauses = effective_pauses(
-            Disruption::RestartsWorkloads,
-            &[activity::Activity::Restore],
-        );
-        assert_eq!(pauses.len(), 1, "{pauses:?}");
-    }
-
-    struct Disruptive {
-        name: &'static str,
-        disrupting: bool,
-        converges: Arc<AtomicU32>,
-    }
-
-    impl Resource for Disruptive {
-        fn name(&self) -> &'static str {
-            self.name
-        }
-        fn interval(&self) -> Duration {
-            Duration::from_secs(1)
-        }
-        fn disruption(&self) -> Disruption {
-            Disruption::RestartsWorkloads
-        }
-        async fn disrupts_now(&self) -> bool {
-            self.disrupting
-        }
-        async fn check(&self, _ctx: &Ctx) -> State {
-            State::Unchecked
-        }
-        async fn converge(&self, _ctx: &Ctx) -> anyhow::Result<Tick> {
-            self.converges.fetch_add(1, Ordering::SeqCst);
-            Ok(Tick::Done)
-        }
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn a_repair_with_nothing_running_to_disrupt_does_not_wait_on_the_restore_check() {
-        let converges = Arc::new(AtomicU32::new(0));
-        spawn(
-            Disruptive {
-                name: "test-nothing-to-disrupt",
-                disrupting: false,
-                converges: converges.clone(),
-            },
-            leader::Leadership::fixed_for_tests(true),
-        );
-        tokio::time::sleep(Duration::from_secs(5)).await;
-        assert!(
-            converges.load(Ordering::SeqCst) > 0,
-            "the restore check cannot be answered here, and that must not block a repair that restarts nothing"
-        );
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn a_repair_that_would_restart_running_workloads_still_waits_for_the_restore_check() {
-        let converges = Arc::new(AtomicU32::new(0));
-        spawn(
-            Disruptive {
-                name: "test-would-disrupt",
-                disrupting: true,
-                converges: converges.clone(),
-            },
-            leader::Leadership::fixed_for_tests(true),
-        );
-        tokio::time::sleep(Duration::from_secs(5)).await;
-        assert_eq!(converges.load(Ordering::SeqCst), 0);
-        match state_of("test-would-disrupt") {
-            Some(State::NotYet(why)) => assert!(why.contains("restore"), "{why}"),
-            other => panic!("expected a pause naming the restore check, got {other:?}"),
-        }
     }
 
     struct NeverDone {

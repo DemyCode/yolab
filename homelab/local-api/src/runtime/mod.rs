@@ -156,7 +156,6 @@ pub async fn run_once<C: Controller>(controller: &C) -> anyhow::Result<Tick> {
         controller.name(),
         controller.scope(),
         &resource::deps_of(controller.requires()),
-        resource::Disruption::None,
         controller.pauses_during(),
     )
     .await?;

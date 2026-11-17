@@ -160,28 +160,37 @@ in let
     disko-join = nixosSystems.yolab-ci-join.config.system.build.diskoScript;
     formatting = treefmtEval.config.build.check treeSrc;
 
-    k3s-does-not-wait-for-storage = let
+    k3s-starts-once-on-its-image-store = let
+      inherit (pkgs) lib;
       svcs = nixosSystems.yolab-ci.config.systemd.services;
       k3s = svcs.k3s;
+      store = svcs.yolab-image-store or {};
+      unit = "yolab-image-store.service";
       ordering = (k3s.after or []) ++ (k3s.wants or []) ++ (k3s.requires or []);
-      storageUnits =
+      otherStorage =
         builtins.filter (
-          u: pkgs.lib.hasPrefix "yolab-" u && !(pkgs.lib.hasPrefix "yolab-reset-wipe" u)
+          u: lib.hasPrefix "yolab-" u && u != unit && !(lib.hasPrefix "yolab-reset-wipe" u)
         )
         ordering;
+      waitsFor = lib.flatten [(store.after or []) (store.requires or []) (store.wants or [])];
       problems =
-        (map (u: "k3s is ordered behind ${u}, so storage can hold the control plane down") storageUnits)
-        ++ pkgs.lib.optional (builtins.elem "k3s.service" (
-          svcs.yolab-local-api.after or []
-        )) "yolab-local-api is After=k3s.service, so nothing can report why k3s is waiting";
+        lib.optional (store == {}) "yolab-image-store is not a unit"
+        ++ lib.optional (!(builtins.elem unit (k3s.requires or []))) "k3s does not Require ${unit}, so it can start on the root disk"
+        ++ lib.optional (!(builtins.elem unit (k3s.after or []))) "k3s is not After=${unit}, so it can start before the store is mounted"
+        ++ map (u: "k3s is ordered behind ${u}; the image store is the only storage it waits for") otherStorage
+        ++ lib.optional (builtins.elem "k3s.service" waitsFor) "yolab-image-store waits for k3s, which waits for it"
+        ++ lib.optional ((store.serviceConfig.Type or "") != "oneshot") "yolab-image-store is not a oneshot, so k3s does not wait for it to finish"
+        ++ lib.optional ((store.serviceConfig.TimeoutStartSec or "") != "infinity") "yolab-image-store can time out, which fails k3s's start for good instead of waiting"
+        ++ lib.optional ((store.restartIfChanged or true) != false) "yolab-image-store reruns on a switch"
+        ++ lib.optional (builtins.elem "k3s.service" (svcs.yolab-local-api.after or [])) "yolab-local-api is After=k3s.service, so nothing can report why k3s is waiting"
+        ++ lib.optional (builtins.elem unit (svcs.yolab-local-api.after or [])) "yolab-local-api is After=${unit}, but it creates the OSD and the RBD the store waits for";
     in
-      pkgs.runCommand "k3s-does-not-wait-for-storage" {} ''
-        ${pkgs.lib.concatMapStrings (p: "echo ${pkgs.lib.escapeShellArg p} >&2\n") problems}
-        ${pkgs.lib.optionalString (problems != []) ''
+      pkgs.runCommand "k3s-starts-once-on-its-image-store" {} ''
+        ${lib.concatMapStrings (p: "echo ${lib.escapeShellArg p} >&2\n") problems}
+        ${lib.optionalString (problems != []) ''
           echo "" >&2
-          echo "k3s must boot whether or not Ceph is healthy. Storage convergence" >&2
-          echo "belongs in yolabd's resource graph, which retries; a systemd job" >&2
-          echo "gets one attempt and then holds everything ordered behind it." >&2
+          echo "k3s starts only once this machine's image store is mounted from Ceph," >&2
+          echo "so every pod starts once, on the store it keeps using:" >&2
           exit 1
         ''}
         touch $out

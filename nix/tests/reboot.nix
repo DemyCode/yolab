@@ -234,7 +234,7 @@ in
         with step(node1, "after reboot: yolabd is still supervising, not stuck"):
             assert_yolabd_is_ticking(
                 node1,
-                ["containerd-store", "images-rbd", "system-osd", "ceph-keys"],
+                ["images-rbd", "system-osd", "ceph-keys"],
             )
       '';
   })
