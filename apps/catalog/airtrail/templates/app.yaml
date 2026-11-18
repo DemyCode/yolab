@@ -37,9 +37,6 @@ spec:
           value: /app/uploads
         - name: DB_URL
           value: postgres://airtrail:itworkslocally@postgres:5432/airtrail
-        securityContext:
-          runAsUser: 1000
-          runAsGroup: 1000
         ports:
         - containerPort: 3000
         readinessProbe:
@@ -84,9 +81,6 @@ spec:
           value: itworkslocally
         - name: PGDATA
           value: /data/pgdata
-        securityContext:
-          runAsUser: 1000
-          runAsGroup: 1000
         ports:
         - containerPort: 5432
         readinessProbe:

@@ -4858,3 +4858,13 @@ class MastodonOwner(RenderedChart):
         self.assertLess(
             after_exists.index("approve_owner"), after_exists.index("sleep infinity")
         )
+
+
+class AirTrailOwnership(RenderedChart):
+    CHART = "airtrail"
+
+    def test_airtrail_and_postgres_start_as_root_to_take_ownership_of_their_folders(self):
+        specs = self.deployments(self.docs())
+        for deployment, container in (("gateway", "app"), ("postgres", "postgres")):
+            c = container_of(specs[deployment], container)
+            self.assertNotIn("runAsUser", c.get("securityContext") or {}, container)
