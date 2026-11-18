@@ -305,7 +305,7 @@ mod tests {
 
     #[test]
     fn hours_and_nights_give_the_same_choice() {
-        let hours: Vec<i64> = [0, 1, 2, 3].iter().map(|a| -a * 3600).collect();
+        let hours: Vec<i64> = [0i64, 1, 2, 3].iter().map(|a| -a * 3600).collect();
         assert_eq!(ranked(&hours, &only_newest(4), 3, 1)[0], vec![0, 1, 3]);
     }
 
