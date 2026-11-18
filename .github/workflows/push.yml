@@ -470,7 +470,7 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           newer_charts() {
             git fetch -q origin "${GITHUB_REF_NAME}"
-            [ -n "$(git rev-list "${GITHUB_SHA}..origin/${GITHUB_REF_NAME}" -- apps/catalog)" ]
+            [ -n "$(git rev-list "${GITHUB_SHA}..origin/${GITHUB_REF_NAME}" -- ':(glob)apps/catalog/*/Chart.yaml')" ]
           }
           if newer_charts; then
             echo "a newer push changed the charts; its own run writes the catalog"
