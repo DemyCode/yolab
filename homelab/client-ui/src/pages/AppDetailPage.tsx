@@ -773,7 +773,9 @@ export function AppDetailPage() {
               <Button
                 size="sm"
                 variant="secondary"
-                onClick={() => setRestoreOpen(true)}
+                onClick={() =>
+                  navigate(backupPagePath(`yolab-${app.instance_name}`))
+                }
               >
                 Pick a backup again
               </Button>
