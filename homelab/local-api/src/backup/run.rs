@@ -401,8 +401,7 @@ async fn run_set<H: Host>(
     failures.extend(legacy_failures);
     pinned.extend(legacy_pinned);
 
-    let (snapshot_id, services) =
-        snapshot_cluster(b, cfg, &pinned, target, run_id, keep).await?;
+    let (snapshot_id, services) = snapshot_cluster(b, cfg, &pinned, target, run_id, keep).await?;
 
     let name = namespace.strip_prefix("yolab-").unwrap_or(namespace);
     let warning = match crate::backup::points::after_run(b, cfg, namespace, &snapshot_id).await {

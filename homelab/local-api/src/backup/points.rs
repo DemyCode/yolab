@@ -192,11 +192,7 @@ where
     }
 }
 
-pub(crate) async fn fit<F, Fut>(
-    points: &[Point],
-    budget: u64,
-    measure: F,
-) -> anyhow::Result<Fit>
+pub(crate) async fn fit<F, Fut>(points: &[Point], budget: u64, measure: F) -> anyhow::Result<Fit>
 where
     F: FnMut(Vec<Point>) -> Fut,
     Fut: Future<Output = anyhow::Result<u64>>,
@@ -1015,7 +1011,10 @@ mod tests {
 
     #[tokio::test]
     async fn a_kept_backup_over_budget_alone_deletes_nothing() {
-        let points = [aged("new", 0, false, false), aged("pinned", 24, true, false)];
+        let points = [
+            aged("new", 0, false, false),
+            aged("pinned", 24, true, false),
+        ];
         let fitted = fit(&points, 10, sized(&[("pinned", 50), ("new", 5)]))
             .await
             .unwrap();
@@ -1030,9 +1029,13 @@ mod tests {
             aged("kept", 24, true, false),
             aged("extra", 48, false, false),
         ];
-        let fitted = fit(&points, 50, sized(&[("new", 8), ("kept", 40), ("extra", 10)]))
-            .await
-            .unwrap();
+        let fitted = fit(
+            &points,
+            50,
+            sized(&[("new", 8), ("kept", 40), ("extra", 10)]),
+        )
+        .await
+        .unwrap();
         assert_eq!(fitted.drop, vec!["extra".to_string()]);
         assert_eq!(fitted.size_after, 48);
         assert!(!fitted.over);
