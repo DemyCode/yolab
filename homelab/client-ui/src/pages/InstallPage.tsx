@@ -137,7 +137,7 @@ export function InstallPage() {
   const [target, setTarget] = useState<RestoreTarget | null>(null);
   const where = target ?? restoreTargets(running)[0];
   const replacing = origin.mode === "restore" && where === "replace";
-  const waitingForApps = origin.mode === "restore" && !apps.data;
+  const waitingForApps = origin.mode === "restore" && !apps.data && !apps.error;
   const [picked, setPicked] = useState<RestoreChoices>(NO_CHOICES);
   const restorePlan = useRestorePlan(
     origin.mode === "restore" ? origin.namespace : null,
