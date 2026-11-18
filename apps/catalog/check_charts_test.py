@@ -4854,7 +4854,7 @@ class MastodonOwner(RenderedChart):
         script = self.script()
         marker = script.index("if [ -f /state/owner.txt ]; then approve_owner;")
         self.assertLess(script.index("tootctl accounts approve"), marker)
-        after_exists = script[script.index("leaving it alone"):]
+        after_exists = script[script.index("leaving it alone") :]
         self.assertLess(
             after_exists.index("approve_owner"), after_exists.index("sleep infinity")
         )
