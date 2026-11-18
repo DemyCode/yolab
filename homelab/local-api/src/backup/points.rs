@@ -201,7 +201,7 @@ where
         .iter()
         .map(|p| Ok((p, seconds(p)?)))
         .collect::<anyhow::Result<_>>()?;
-    order.sort_by(|a, b| b.1.cmp(&a.1));
+    order.sort_by_key(|a| std::cmp::Reverse(a.1));
     let n = order.len();
     let times: Vec<i64> = order.iter().map(|(_, t)| *t).collect();
     let forced: Vec<bool> = order
@@ -238,7 +238,7 @@ where
         None => {
             let (mut lo, mut hi) = (floor.len(), n - 2);
             while lo < hi {
-                let mid = (lo + hi + 1) / 2;
+                let mid = (lo + hi).div_ceil(2);
                 match sizer.first_fit(&times, &forced, mid, target).await? {
                     Some(found) => {
                         lo = mid;

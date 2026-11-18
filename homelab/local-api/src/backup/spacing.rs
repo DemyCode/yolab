@@ -6,7 +6,7 @@ pub(crate) const WORK_MAX: f64 = 2e8;
 
 pub(crate) fn doubling_cost(times: &[i64]) -> f64 {
     let mut newest_first = times.to_vec();
-    newest_first.sort_unstable_by(|a, b| b.cmp(a));
+    newest_first.sort_unstable_by_key(|t| std::cmp::Reverse(*t));
     let off: Vec<f64> = newest_first
         .windows(2)
         .enumerate()
