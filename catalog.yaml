@@ -49,7 +49,7 @@ charts:
   - name: autobrr
     version: "0.1.27"
   - name: babybuddy
-    version: "0.1.42"
+    version: "0.1.43"
   - name: back-that-mac-up
     version: "0.1.29"
   - name: baikal
@@ -149,7 +149,7 @@ charts:
   - name: emby
     version: "0.1.28"
   - name: emulatorjs
-    version: "0.1.46"
+    version: "0.1.47"
   - name: enclosed
     version: "0.1.27"
   - name: endurain
@@ -217,7 +217,7 @@ charts:
   - name: habitica
     version: "0.1.29"
   - name: healthchecks
-    version: "0.1.43"
+    version: "0.1.44"
   - name: heimdall
     version: "0.1.31"
   - name: hermes-agent
@@ -281,7 +281,7 @@ charts:
   - name: kavita
     version: "0.1.42"
   - name: kimai
-    version: "0.1.42"
+    version: "0.1.43"
   - name: kitchenowl
     version: "0.1.31"
   - name: kiwix
@@ -333,7 +333,7 @@ charts:
   - name: mainsail
     version: "0.1.30"
   - name: mastodon
-    version: "0.1.45"
+    version: "0.1.46"
   - name: matrix
     version: "0.1.8"
   - name: matter-server
@@ -427,7 +427,7 @@ charts:
   - name: onlyoffice-nextcloud
     version: "0.1.29"
   - name: onlyoffice
-    version: "0.1.43"
+    version: "0.1.44"
   - name: open-webui
     version: "0.2.44"
   - name: openclaw
@@ -453,7 +453,7 @@ charts:
   - name: owncloud
     version: "0.1.28"
   - name: pairdrop
-    version: "0.1.42"
+    version: "0.1.43"
   - name: palmr
     version: "0.1.28"
   - name: paperclip
@@ -579,7 +579,7 @@ charts:
   - name: spacebot
     version: "0.1.31"
   - name: speedtest-tracker
-    version: "0.1.43"
+    version: "0.1.44"
   - name: splitpro
     version: "0.1.24"
   - name: sqlitebrowser
@@ -647,7 +647,7 @@ charts:
   - name: umami
     version: "0.1.42"
   - name: unifi
-    version: "0.1.42"
+    version: "0.1.43"
   - name: uptime-kuma
     version: "0.1.43"
   - name: urbit
@@ -691,7 +691,7 @@ charts:
   - name: yamtrack
     version: "0.1.28"
   - name: your-spotify
-    version: "0.1.42"
+    version: "0.1.43"
   - name: yucca
     version: "0.1.28"
   - name: yuvomi
