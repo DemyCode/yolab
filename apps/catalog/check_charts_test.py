@@ -4907,7 +4907,7 @@ class AirTrailOwnership(RenderedChart):
 
 
 class EveryWebAddressIsAnOutput(unittest.TestCase):
-    NO_WEB_PAGE = {"minecraft", "valheim"}
+    NO_WEB_PAGE = frozenset({"minecraft", "valheim"})
 
     def test_every_chart_with_a_yolab_address_declares_the_url_wg_register_prints(self):
         for chart in sorted(Path(check_charts.HERE).glob("*/values.schema.json")):
