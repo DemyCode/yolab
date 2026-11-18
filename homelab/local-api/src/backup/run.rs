@@ -276,7 +276,7 @@ async fn run_taken<H: Host>(
     let Some(target) = target_of(set) else {
         anyhow::bail!("{} is not a service namespace", set.namespace);
     };
-    run_set(b, cfg, &target, &set.id).await
+    run_set(b, cfg, &target, &set.id, kept_forever(&set.triggered_by)).await
 }
 
 async fn drive_next<H: Host>(b: &Backend<H>, cfg: &BackupConfig) -> anyhow::Result<bool> {
@@ -324,13 +324,19 @@ fn split_by_tree(
     })
 }
 
+pub(crate) const MANUAL_TRIGGER: &str = "manual";
+
+pub(crate) fn kept_forever(triggered_by: &str) -> bool {
+    triggered_by == MANUAL_TRIGGER
+}
+
 pub(crate) fn budget_warning(
     name: &str,
     size: &crate::backup::points::ServiceSize,
 ) -> Option<String> {
     size.over_budget.then(|| {
         format!(
-            "{name}'s backups take {} but its budget is {}: only its newest copy and the ones you chose to keep are left. Raise the budget or delete copies you no longer need.",
+            "{name}'s backups take {} but its budget is {}: its newest copy and the ones you chose to keep do not fit, so no copy was deleted. Raise the budget or remove Keep from copies you no longer need.",
             crate::quantity::human_bytes(size.size_bytes),
             crate::quantity::human_bytes(size.budget_bytes),
         )
@@ -342,10 +348,11 @@ async fn run_set<H: Host>(
     cfg: &BackupConfig,
     target: &BackupTarget,
     run_id: &str,
+    keep: bool,
 ) -> anyhow::Result<RunDone> {
     let BackupTarget::App(namespace) = target else {
         let (snapshot_id, services) =
-            snapshot_cluster(b, cfg, &HashMap::new(), target, run_id).await?;
+            snapshot_cluster(b, cfg, &HashMap::new(), target, run_id, keep).await?;
         forget_old_cluster_snapshots(b, cfg).await;
         return Ok(RunDone {
             snapshot_id,
@@ -394,14 +401,15 @@ async fn run_set<H: Host>(
     failures.extend(legacy_failures);
     pinned.extend(legacy_pinned);
 
-    let (snapshot_id, services) = snapshot_cluster(b, cfg, &pinned, target, run_id).await?;
+    let (snapshot_id, services) =
+        snapshot_cluster(b, cfg, &pinned, target, run_id, keep).await?;
 
     let name = namespace.strip_prefix("yolab-").unwrap_or(namespace);
     let warning = match crate::backup::points::after_run(b, cfg, namespace, &snapshot_id).await {
         Ok(done) => {
             if done.dropped > 0 {
                 tracing::info!(
-                    "backup: {namespace} was over its budget; deleted its {} oldest copies",
+                    "backup: {namespace} was over its budget; deleted {} copies to fit it",
                     done.dropped
                 );
             }
@@ -760,6 +768,7 @@ async fn snapshot_cluster<H: Host>(
     pinned: &PinnedVolumes,
     target: &BackupTarget,
     run_id: &str,
+    keep: bool,
 ) -> anyhow::Result<(String, Vec<ServiceSummary>)> {
     let tmp_dir = staging_dir(STAGING_ROOT, run_id);
 
@@ -773,7 +782,7 @@ async fn snapshot_cluster<H: Host>(
         tokio::fs::set_permissions(&tmp_dir, std::fs::Permissions::from_mode(0o700)).await?;
     }
 
-    let result = snapshot_cluster_inner(b, cfg, &tmp_dir, pinned, target, run_id).await;
+    let result = snapshot_cluster_inner(b, cfg, &tmp_dir, pinned, target, run_id, keep).await;
     tokio::fs::remove_dir_all(&tmp_dir)
         .await
         .debug_on_err("backup: clear the staging directory");
@@ -901,6 +910,7 @@ async fn snapshot_cluster_inner<H: Host>(
     pinned: &PinnedVolumes,
     target: &BackupTarget,
     run_id: &str,
+    keep: bool,
 ) -> anyhow::Result<(String, Vec<ServiceSummary>)> {
     let in_tree = crate::tree::claimed(&crate::tree::volumes(&b.kube).await?);
     let date = Utc::now().format("%Y-%m-%d-%H%M%S").to_string();
@@ -1063,20 +1073,24 @@ async fn snapshot_cluster_inner<H: Host>(
         BackupTarget::App(ns) => crate::backup::points::namespace_tag(ns),
     };
     let run_tag = crate::routers::folder_backup::run_tag(run_id);
+    let mut args = vec![
+        "backup",
+        tmp_dir,
+        "--tag",
+        "cluster-backup",
+        "--tag",
+        &scope_tag,
+        "--tag",
+        &run_tag,
+    ];
+    if keep {
+        args.extend(["--tag", crate::routers::folder_backup::KEEP_TAG]);
+    }
     let backup = restic_with(
         &b.host,
         &repo,
         cfg,
-        &[
-            "backup",
-            tmp_dir,
-            "--tag",
-            "cluster-backup",
-            "--tag",
-            &scope_tag,
-            "--tag",
-            &run_tag,
-        ],
+        &args,
         Duration::from_secs(CLUSTER_BACKUP_TIMEOUT_SECS),
     )
     .await?;
@@ -1339,6 +1353,13 @@ async fn schedule<H: Host + Clone + 'static>(b: &Backend<H>) -> anyhow::Result<T
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_backup_started_by_hand_is_kept_and_a_scheduled_one_is_not() {
+        assert!(kept_forever(MANUAL_TRIGGER));
+        assert!(!kept_forever("schedule"));
+        assert!(!kept_forever("user"));
+    }
 
     fn rs(last_manual: &str, result: &str, logs: &str) -> Value {
         json!({"status": {

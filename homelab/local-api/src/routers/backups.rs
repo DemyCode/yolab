@@ -184,7 +184,12 @@ pub async fn run_app_backup_now(
     if !namespace.starts_with("yolab-") {
         return Err(anyhow::anyhow!("{namespace} is not an app namespace").into());
     }
-    let name = backup::start_app(&state.backend().await?, &namespace, "manual").await?;
+    let name = backup::start_app(
+        &state.backend().await?,
+        &namespace,
+        backup::MANUAL_TRIGGER,
+    )
+    .await?;
     Ok(Json(
         serde_json::json!({ "ok": true, "started": true, "name": name }),
     ))

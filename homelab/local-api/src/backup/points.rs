@@ -139,35 +139,8 @@ fn seconds(point: &Point) -> anyhow::Result<i64> {
         .timestamp())
 }
 
-pub(crate) fn spacing_cost(times: &[i64]) -> f64 {
-    let mut newest_first = times.to_vec();
-    newest_first.sort_unstable_by(|a, b| b.cmp(a));
-    let gaps: Vec<f64> = newest_first
-        .windows(2)
-        .map(|w| (w[0] - w[1]).max(1) as f64)
-        .collect();
-    gaps.windows(2)
-        .map(|g| ((g[1] / g[0]).log2() - 1.0).powi(2))
-        .sum()
-}
-
-pub(crate) fn least_harmful(left: &[(&Point, i64)]) -> Option<usize> {
-    left.iter()
-        .enumerate()
-        .skip(1)
-        .filter(|(_, (p, _))| !p.keep && !p.legacy())
-        .map(|(i, _)| {
-            let rest: Vec<i64> = left
-                .iter()
-                .enumerate()
-                .filter(|(j, _)| *j != i)
-                .map(|(_, (_, t))| *t)
-                .collect();
-            (i, spacing_cost(&rest), left[i].1)
-        })
-        .min_by(|a, b| a.1.total_cmp(&b.1).then(a.2.cmp(&b.2)).then(b.0.cmp(&a.0)))
-        .map(|(i, _, _)| i)
-}
+pub(crate) const CANDIDATES_PER_COUNT: usize = 6;
+pub(crate) const FILL_PERCENT: u64 = 90;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Fit {
@@ -176,38 +149,123 @@ pub(crate) struct Fit {
     pub over: bool,
 }
 
+struct Sizer<'a, F> {
+    order: &'a [(&'a Point, i64)],
+    measure: F,
+    known: BTreeMap<Vec<usize>, u64>,
+}
+
+impl<F, Fut> Sizer<'_, F>
+where
+    F: FnMut(Vec<Point>) -> Fut,
+    Fut: Future<Output = anyhow::Result<u64>>,
+{
+    async fn size(&mut self, picked: &[usize]) -> anyhow::Result<u64> {
+        if let Some(size) = self.known.get(picked) {
+            return Ok(*size);
+        }
+        let kept: Vec<Point> = picked
+            .iter()
+            .map(|&i| self.order[i].0)
+            .filter(|p| !p.legacy())
+            .cloned()
+            .collect();
+        let size = (self.measure)(kept).await?;
+        self.known.insert(picked.to_vec(), size);
+        Ok(size)
+    }
+
+    async fn first_fit(
+        &mut self,
+        times: &[i64],
+        forced: &[bool],
+        m: usize,
+        target: u64,
+    ) -> anyhow::Result<Option<(Vec<usize>, u64)>> {
+        for picked in crate::backup::spacing::ranked(times, forced, m, CANDIDATES_PER_COUNT) {
+            let size = self.size(&picked).await?;
+            if size <= target {
+                return Ok(Some((picked, size)));
+            }
+        }
+        Ok(None)
+    }
+}
+
 pub(crate) async fn fit<F, Fut>(
     points: &[Point],
     budget: u64,
-    mut measure: F,
+    measure: F,
 ) -> anyhow::Result<Fit>
 where
     F: FnMut(Vec<Point>) -> Fut,
     Fut: Future<Output = anyhow::Result<u64>>,
 {
-    let mut left: Vec<(&Point, i64)> = points
+    let mut order: Vec<(&Point, i64)> = points
         .iter()
         .map(|p| Ok((p, seconds(p)?)))
         .collect::<anyhow::Result<_>>()?;
-    let measured = |left: &[(&Point, i64)]| -> Vec<Point> {
-        left.iter()
-            .filter(|(p, _)| !p.legacy())
-            .map(|(p, _)| (*p).clone())
-            .collect()
+    order.sort_by(|a, b| b.1.cmp(&a.1));
+    let n = order.len();
+    let times: Vec<i64> = order.iter().map(|(_, t)| *t).collect();
+    let forced: Vec<bool> = order
+        .iter()
+        .enumerate()
+        .map(|(i, (p, _))| i == 0 || p.keep || p.legacy())
+        .collect();
+    let mut sizer = Sizer {
+        order: &order,
+        measure,
+        known: BTreeMap::new(),
     };
-    let mut size = measure(measured(&left)).await?;
-    let mut drop = Vec::new();
-    while size > budget {
-        let Some(i) = least_harmful(&left) else {
-            break;
-        };
-        drop.push(left.remove(i).0.snapshot_id.clone());
-        size = measure(measured(&left)).await?;
+    let all: Vec<usize> = (0..n).collect();
+    let whole = sizer.size(&all).await?;
+    let keep_all = Fit {
+        drop: Vec::new(),
+        size_after: whole,
+        over: whole > budget,
+    };
+    if whole <= budget {
+        return Ok(keep_all);
+    }
+    let floor: Vec<usize> = (0..n).filter(|&i| forced[i]).collect();
+    let floor_size = sizer.size(&floor).await?;
+    if floor_size > budget {
+        return Ok(keep_all);
+    }
+    let filled = budget / 100 * FILL_PERCENT + budget % 100 * FILL_PERCENT / 100;
+    let target = if floor_size <= filled { filled } else { budget };
+
+    let mut chosen = (floor.clone(), floor_size);
+    match sizer.first_fit(&times, &forced, n - 1, target).await? {
+        Some(found) => chosen = found,
+        None => {
+            let (mut lo, mut hi) = (floor.len(), n - 2);
+            while lo < hi {
+                let mid = (lo + hi + 1) / 2;
+                match sizer.first_fit(&times, &forced, mid, target).await? {
+                    Some(found) => {
+                        lo = mid;
+                        chosen = found;
+                    }
+                    None => hi = mid - 1,
+                }
+            }
+            for m in (lo + 1)..=(n - 2) {
+                match sizer.first_fit(&times, &forced, m, target).await? {
+                    Some(found) => chosen = found,
+                    None => break,
+                }
+            }
+        }
     }
     Ok(Fit {
-        drop,
-        size_after: size,
-        over: size > budget,
+        drop: (0..n)
+            .filter(|i| !chosen.0.contains(i))
+            .map(|i| order[i].0.snapshot_id.clone())
+            .collect(),
+        size_after: chosen.1,
+        over: chosen.1 > budget,
     })
 }
 
@@ -811,7 +869,8 @@ mod tests {
     }
 
     #[test]
-    fn the_default_budget_is_twice_the_newest_point_and_never_under_a_gigabyte() {
+    fn the_default_budget_is_twice_the_newest_point_and_never_under_ten_gigabytes() {
+        assert_eq!(MIN_BUDGET, 10 << 30);
         assert_eq!(default_budget(0), MIN_BUDGET);
         assert_eq!(default_budget(100), MIN_BUDGET);
         assert_eq!(default_budget(10 << 30), 20 << 30);
@@ -828,6 +887,12 @@ mod tests {
         }
     }
 
+    fn nightly(count: i64) -> Vec<Point> {
+        (0..count)
+            .map(|n| aged(&format!("n{n}"), 24 * n, false, false))
+            .collect()
+    }
+
     async fn dropped(points: &[Point], budget: u64) -> Vec<String> {
         let each: Vec<(&str, u64)> = points
             .iter()
@@ -836,75 +901,92 @@ mod tests {
         fit(points, budget, sized(&each)).await.unwrap().drop
     }
 
-    #[test]
-    fn perfect_spacing_doubles_every_gap_whatever_the_unit() {
-        assert_eq!(spacing_cost(&[0, -1, -3, -7, -15]), 0.0);
-        assert_eq!(spacing_cost(&[0, -60, -180, -420]), 0.0);
-        assert!(
-            spacing_cost(&[0, -1, -2, -3]) > 0.0,
-            "equal gaps are not doubling"
+    #[tokio::test]
+    async fn under_budget_every_backup_stays() {
+        let points = nightly(5);
+        let each: Vec<(&str, u64)> = points
+            .iter()
+            .map(|p| (p.snapshot_id.as_str(), 10))
+            .collect();
+        let fitted = fit(&points, 50, sized(&each)).await.unwrap();
+        assert_eq!(
+            fitted,
+            Fit {
+                drop: vec![],
+                size_after: 50,
+                over: false
+            }
         );
-        assert_eq!(spacing_cost(&[0, -5]), 0.0, "one gap has nothing to double");
     }
 
     #[tokio::test]
     async fn over_budget_the_backup_that_breaks_the_doubling_most_goes() {
-        let daily = [
-            aged("d0", 0, false, false),
-            aged("d1", 24, false, false),
-            aged("d2", 48, false, false),
-            aged("d3", 72, false, false),
-        ];
         assert_eq!(
-            dropped(&daily, 30).await,
-            vec!["d2"],
-            "leaves gaps of 1 and 2 days"
+            dropped(&nightly(4), 34).await,
+            vec!["n2"],
+            "leaves gaps of 1 and 2 nights"
         );
     }
 
     #[tokio::test]
-    async fn the_choice_is_the_same_in_hours_as_in_days() {
-        let hourly = [
-            aged("h0", 0, false, false),
-            aged("h1", 1, false, false),
-            aged("h2", 2, false, false),
-            aged("h3", 3, false, false),
-        ];
-        assert_eq!(dropped(&hourly, 30).await, vec!["h2"]);
+    async fn the_choice_is_the_same_in_hours_as_in_nights() {
+        let hourly: Vec<Point> = (0..4)
+            .map(|h| aged(&format!("h{h}"), h, false, false))
+            .collect();
+        assert_eq!(dropped(&hourly, 34).await, vec!["h2"]);
     }
 
     #[tokio::test]
-    async fn already_doubling_backups_lose_their_oldest() {
+    async fn backups_already_doubling_lose_their_oldest() {
         let spaced = [
             aged("a", 0, false, false),
             aged("b", 24, false, false),
             aged("c", 72, false, false),
             aged("d", 168, false, false),
         ];
-        assert_eq!(dropped(&spaced, 30).await, vec!["d"]);
+        assert_eq!(dropped(&spaced, 34).await, vec!["d"]);
+    }
+
+    #[tokio::test]
+    async fn cleaning_up_goes_down_to_ninety_percent_so_the_next_backup_has_room() {
+        let gone = dropped(&nightly(10), 99).await;
+        assert_eq!(gone.len(), 2, "one would leave 90 of 99, above 89");
+    }
+
+    #[tokio::test]
+    async fn the_most_backups_that_fit_win_over_a_better_doubling() {
+        let points = nightly(4);
+        let sizes = [("n0", 10), ("n1", 30), ("n2", 10), ("n3", 10)];
+        let fitted = fit(&points, 50, sized(&sizes)).await.unwrap();
+        assert_eq!(
+            fitted.drop,
+            vec!["n1"],
+            "0,1,3 nights doubles perfectly but is 50; 0,2,3 is 30"
+        );
+        assert_eq!(fitted.size_after, 30);
     }
 
     #[tokio::test]
     async fn nightly_backups_thin_out_into_doubling_gaps() {
-        let nights: Vec<Point> = (0..16)
-            .map(|n| aged(&format!("n{n}"), 24 * n, false, false))
-            .collect();
-        let dropped = dropped(&nights, 50).await;
+        let nights = nightly(16);
+        let gone = dropped(&nights, 56).await;
         let left: Vec<i64> = nights
             .iter()
-            .filter(|p| !dropped.contains(&p.snapshot_id))
+            .filter(|p| !gone.contains(&p.snapshot_id))
             .map(|p| seconds(p).unwrap())
             .collect();
         assert_eq!(left.len(), 5);
         let all: Vec<i64> = nights.iter().map(|p| seconds(p).unwrap()).collect();
         assert!(
-            spacing_cost(&left) < spacing_cost(&all[..5]),
+            crate::backup::spacing::doubling_cost(&left)
+                < crate::backup::spacing::doubling_cost(&all[..5]),
             "better than keeping the 5 newest"
         );
+        assert!(left.contains(&all[15]) || left.iter().min() < Some(&all[4]));
     }
 
     #[tokio::test]
-    async fn a_kept_or_older_style_backup_still_counts_in_the_spacing_but_never_goes() {
+    async fn a_kept_or_older_style_backup_counts_in_the_spacing_but_never_goes() {
         let points = [
             aged("new", 0, false, false),
             aged("kept", 24, true, false),
@@ -912,11 +994,48 @@ mod tests {
             aged("legacy", 72, false, true),
             aged("old", 96, false, false),
         ];
-        let gone = dropped(&points, 10).await;
-        assert!(!gone.contains(&"new".to_string()));
-        assert!(!gone.contains(&"kept".to_string()));
-        assert!(!gone.contains(&"legacy".to_string()));
-        assert_eq!(gone.len(), 2, "mid and old go, and it is still over budget");
+        let gone = dropped(&points, 30).await;
+        assert_eq!(gone, vec!["mid".to_string(), "old".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn when_even_the_backups_that_must_stay_do_not_fit_nothing_is_deleted() {
+        let points = [
+            aged("big", 0, false, false),
+            aged("a", 24, false, false),
+            aged("b", 48, false, false),
+        ];
+        let fitted = fit(&points, 50, sized(&[("big", 80), ("a", 10), ("b", 10)]))
+            .await
+            .unwrap();
+        assert!(fitted.drop.is_empty());
+        assert_eq!(fitted.size_after, 100);
+        assert!(fitted.over);
+    }
+
+    #[tokio::test]
+    async fn a_kept_backup_over_budget_alone_deletes_nothing() {
+        let points = [aged("new", 0, false, false), aged("pinned", 24, true, false)];
+        let fitted = fit(&points, 10, sized(&[("pinned", 50), ("new", 5)]))
+            .await
+            .unwrap();
+        assert!(fitted.drop.is_empty());
+        assert!(fitted.over);
+    }
+
+    #[tokio::test]
+    async fn the_budget_is_the_line_when_what_must_stay_is_above_ninety_percent() {
+        let points = [
+            aged("new", 0, false, false),
+            aged("kept", 24, true, false),
+            aged("extra", 48, false, false),
+        ];
+        let fitted = fit(&points, 50, sized(&[("new", 8), ("kept", 40), ("extra", 10)]))
+            .await
+            .unwrap();
+        assert_eq!(fitted.drop, vec!["extra".to_string()]);
+        assert_eq!(fitted.size_after, 48);
+        assert!(!fitted.over);
     }
 
     #[tokio::test]
@@ -930,61 +1049,40 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn under_budget_nothing_is_dropped() {
-        let points = vec![point("b", Some("r2"), false), point("a", Some("r1"), false)];
-        let fitted = fit(&points, 100, sized(&[("a", 30), ("b", 30)]))
-            .await
-            .unwrap();
-        assert_eq!(
-            fitted,
-            Fit {
-                drop: vec![],
-                size_after: 60,
-                over: false
-            }
-        );
+    async fn the_same_set_is_measured_once() {
+        let points = nightly(12);
+        let mut seen: Vec<Vec<String>> = Vec::new();
+        let seen_ref = &mut seen;
+        fit(&points, 35, move |kept: Vec<Point>| {
+            seen_ref.push(kept.iter().map(|p| p.snapshot_id.clone()).collect());
+            std::future::ready(anyhow::Ok(kept.len() as u64 * 10))
+        })
+        .await
+        .unwrap();
+        let mut unique = seen.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(unique.len(), seen.len());
     }
 
     #[tokio::test]
-    async fn over_budget_the_oldest_points_go_until_it_fits() {
-        let points = vec![
-            point("c", Some("r3"), false),
-            point("b", Some("r2"), false),
-            point("a", Some("r1"), false),
-        ];
-        let fitted = fit(&points, 70, sized(&[("a", 40), ("b", 30), ("c", 30)]))
-            .await
-            .unwrap();
-        assert_eq!(fitted.drop, vec!["a".to_string()]);
-        assert_eq!(fitted.size_after, 60);
-        assert!(!fitted.over);
-    }
-
-    #[tokio::test]
-    async fn a_newest_point_bigger_than_the_budget_is_kept_and_reported() {
-        let points = vec![
-            point("big", Some("r2"), false),
-            point("a", Some("r1"), false),
-        ];
-        let fitted = fit(&points, 50, sized(&[("a", 10), ("big", 80)]))
-            .await
-            .unwrap();
-        assert_eq!(fitted.drop, vec!["a".to_string()]);
-        assert_eq!(fitted.size_after, 80);
-        assert!(fitted.over, "the newest alone is over budget");
-    }
-
-    #[tokio::test]
-    async fn a_kept_point_stays_even_when_that_leaves_the_service_over_budget() {
-        let points = vec![
-            point("new", Some("r2"), false),
-            point("pinned", Some("r1"), true),
-        ];
-        let fitted = fit(&points, 10, sized(&[("pinned", 50), ("new", 5)]))
-            .await
-            .unwrap();
-        assert!(fitted.drop.is_empty());
-        assert!(fitted.over);
+    async fn the_cleanup_never_keeps_fewer_than_keeping_only_the_newest_would() {
+        let points = nightly(7);
+        let sizes: Vec<(&str, u64)> = points
+            .iter()
+            .zip([5u64, 30, 12, 8, 20, 3, 15])
+            .map(|(p, s)| (p.snapshot_id.as_str(), s))
+            .collect();
+        for budget in [40u64, 55, 70, 85] {
+            let fitted = fit(&points, budget, sized(&sizes)).await.unwrap();
+            let target = budget * FILL_PERCENT / 100;
+            let newest_that_fit = (1..=7)
+                .filter(|&m| sizes[..m].iter().map(|(_, s)| s).sum::<u64>() <= target)
+                .max()
+                .unwrap();
+            assert!(7 - fitted.drop.len() >= newest_that_fit, "budget {budget}");
+            assert!(fitted.size_after <= target);
+        }
     }
 
     #[test]

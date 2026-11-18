@@ -106,8 +106,8 @@ function Budget({
       label="Space for its backups"
       detail={
         copies.budget_set
-          ? "When its copies take more than this, the oldest ones are deleted. The newest copy and the ones you keep always stay."
-          : "Chosen for you: twice the size of its newest copy, at least 1 GB. Set your own to keep more or fewer copies."
+          ? "When its copies take more than this, as many as fit are kept, spaced so the gaps between them double going back in time. The newest copy and the ones you keep always stay."
+          : "Chosen for you: twice the size of its newest copy, at least 10 GB. Set your own to keep more or fewer copies."
       }
     >
       <div className="mt-3 flex flex-wrap items-center gap-2">
