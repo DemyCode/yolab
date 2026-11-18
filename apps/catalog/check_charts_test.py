@@ -4470,6 +4470,12 @@ class LoginGate(RenderedChart):
                         for b in config["dependencies"]["yolab_enabled"]["oneOf"]
                         if b["properties"]["yolab_enabled"] == {"const": True}
                     )
+                if "auth_enabled" in holder.get("dependencies", {}):
+                    holder = next(
+                        b
+                        for b in holder["dependencies"]["auth_enabled"]["oneOf"]
+                        if b["properties"]["auth_enabled"] == {"const": True}
+                    )
                 self.assertIn("auth_mode", holder["required"])
                 modes = holder["dependencies"]["auth_mode"]["oneOf"]
                 self.assertEqual(
