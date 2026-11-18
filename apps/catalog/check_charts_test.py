@@ -4863,7 +4863,9 @@ class MastodonOwner(RenderedChart):
 class AirTrailOwnership(RenderedChart):
     CHART = "airtrail"
 
-    def test_airtrail_and_postgres_start_as_root_to_take_ownership_of_their_folders(self):
+    def test_airtrail_and_postgres_start_as_root_to_take_ownership_of_their_folders(
+        self,
+    ):
         specs = self.deployments(self.docs())
         for deployment, container in (("gateway", "app"), ("postgres", "postgres")):
             c = container_of(specs[deployment], container)
