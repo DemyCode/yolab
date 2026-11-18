@@ -185,11 +185,15 @@ spec:
               . /state/secrets.env
               set +a
               cd /app/www || exit 0
-              if [ -f /state/owner.txt ]; then cat /state/owner.txt; exec sleep infinity; fi
+              approve_owner() {
+                s6-setuidgid abc /usr/bin/bundle exec bin/tootctl accounts approve "$OWNER_USERNAME" \
+                  || echo "could not approve the owner account $OWNER_USERNAME"
+              }
+              if [ -f /state/owner.txt ]; then approve_owner; cat /state/owner.txt; exec sleep infinity; fi
               i=0
               while [ "$i" -lt 90 ]; do
                 if OUT=$(s6-setuidgid abc /usr/bin/bundle exec bin/tootctl accounts create \
-                      "$OWNER_USERNAME" --email "$OWNER_EMAIL" --confirmed --role Owner 2>&1); then
+                      "$OWNER_USERNAME" --email "$OWNER_EMAIL" --confirmed --approve --role Owner 2>&1); then
                   PW=$(printf '%s' "$OUT" | sed -n 's/.*password: *//p' | tail -1)
                   printf 'YOLAB_OUTPUT owner_user %s\nYOLAB_OUTPUT owner_password %s\n' \
                     "$OWNER_USERNAME" "$PW" > /state/owner.txt
@@ -201,6 +205,7 @@ spec:
                 case "$OUT" in
                   *taken*|*already*|*exists*)
                     echo "owner account already exists — leaving it alone"
+                    approve_owner
                     exec sleep infinity
                     ;;
                 esac

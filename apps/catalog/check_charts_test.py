@@ -4838,3 +4838,23 @@ class Privilege(unittest.TestCase):
         self.assertEqual(
             len(privilege_failures(spec, app="movies-tv ({'x': 'y'})/jellyfin")), 1
         )
+
+
+class MastodonOwner(RenderedChart):
+    CHART = "mastodon"
+
+    def script(self):
+        spec = self.deployments(self.docs())["mastodon"]
+        return container_of(spec, "create-owner")["args"][0]
+
+    def test_the_owner_is_created_approved_so_it_never_waits_for_review(self):
+        self.assertIn("--confirmed --approve --role Owner", self.script())
+
+    def test_an_owner_left_pending_by_an_older_install_is_approved_on_every_start(self):
+        script = self.script()
+        marker = script.index("if [ -f /state/owner.txt ]; then approve_owner;")
+        self.assertLess(script.index("tootctl accounts approve"), marker)
+        after_exists = script[script.index("leaving it alone"):]
+        self.assertLess(
+            after_exists.index("approve_owner"), after_exists.index("sleep infinity")
+        )
