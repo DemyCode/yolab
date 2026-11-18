@@ -468,14 +468,6 @@ jobs:
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          newer_charts() {
-            git fetch -q origin "${GITHUB_REF_NAME}"
-            [ -n "$(git rev-list "${GITHUB_SHA}..origin/${GITHUB_REF_NAME}" -- ':(glob)apps/catalog/*/Chart.yaml')" ]
-          }
-          if newer_charts; then
-            echo "a newer push changed the charts; its own run writes the catalog"
-            exit 0
-          fi
           git add catalog.yaml
           if git diff --cached --quiet; then
             echo "catalog unchanged"
@@ -487,10 +479,7 @@ jobs:
           pushed=""
           for attempt in 1 2 3 4 5; do
             if git push origin "HEAD:${GITHUB_REF_NAME}"; then pushed=1; break; fi
-            if newer_charts; then
-              echo "a newer push changed the charts; its own run writes the catalog"
-              exit 0
-            fi
+            git fetch -q origin "${GITHUB_REF_NAME}"
             git rebase -X theirs "origin/${GITHUB_REF_NAME}" || { git rebase --abort; exit 1; }
             sleep $((attempt * 5))
           done
