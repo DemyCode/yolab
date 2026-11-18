@@ -273,8 +273,15 @@ mod tests {
     fn perfect_spacing_doubles_every_gap_whatever_the_unit() {
         assert!(doubling_cost(&[0, -1, -3, -7, -15]) < 1e-12);
         assert!(doubling_cost(&[0, -60, -180, -420]) < 1e-12);
-        assert!(doubling_cost(&[0, -1, -2, -3]) > 0.1, "equal gaps are not doubling");
-        assert_eq!(doubling_cost(&[0, -5]), 0.0, "one gap has nothing to double");
+        assert!(
+            doubling_cost(&[0, -1, -2, -3]) > 0.1,
+            "equal gaps are not doubling"
+        );
+        assert_eq!(
+            doubling_cost(&[0, -5]),
+            0.0,
+            "one gap has nothing to double"
+        );
     }
 
     #[test]
@@ -283,7 +290,10 @@ mod tests {
         let last_gap_off = doubling_cost(&nights(&[0, 1, 3, 7, 10]));
         assert!(first_gap_off > 0.0 && last_gap_off > 0.0);
         let shifted = doubling_cost(&nights(&[0, 2, 6, 14, 30]));
-        assert!(shifted < 1e-12, "any scale fits: 2, 4, 8, 16 nights is perfect too");
+        assert!(
+            shifted < 1e-12,
+            "any scale fits: 2, 4, 8, 16 nights is perfect too"
+        );
     }
 
     #[test]
@@ -329,7 +339,10 @@ mod tests {
                 assert_eq!(picked.len(), m);
             }
         }
-        assert!(ranked(&nights(&ages), &forced, 2, 5).is_empty(), "three must stay");
+        assert!(
+            ranked(&nights(&ages), &forced, 2, 5).is_empty(),
+            "three must stay"
+        );
     }
 
     #[test]
@@ -387,7 +400,10 @@ mod tests {
                 let found = best_subset(&times, &forced, m).expect("a set exists");
                 let cost = doubling_cost(&found.iter().map(|&i| times[i]).collect::<Vec<_>>());
                 let bound = (m - 1) as f64 * (OFFSET_STEP / 2.0).powi(2) + 1e-9;
-                assert!(cost <= brute_force(&times, &forced, m) + bound, "{ages:?} m={m}");
+                assert!(
+                    cost <= brute_force(&times, &forced, m) + bound,
+                    "{ages:?} m={m}"
+                );
                 assert!((0..n).all(|i| !forced[i] || found.contains(&i)));
             }
         }
