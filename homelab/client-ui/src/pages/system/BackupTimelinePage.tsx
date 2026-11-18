@@ -33,23 +33,41 @@ function message(e: unknown, fallback: string): string {
   return e instanceof Error ? e.message : fallback;
 }
 
+const LIST_FAILED = "Its backups could not be listed.";
+
 function useCopies(namespace: string) {
   const [data, setData] = useState<RestorePoints | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const load = useCallback(async () => {
-    try {
-      const d = await api.get<RestorePoints>(pointsPath(namespace));
-      setData({ ...d, points: sortRestorePoints(d.points ?? []) });
-      setError(null);
-    } catch (e) {
-      setError(message(e, "Its backups could not be listed."));
-    }
+  const fetchCopies = useCallback(async () => {
+    const d = await api.get<RestorePoints>(pointsPath(namespace));
+    return { ...d, points: sortRestorePoints(d.points ?? []) };
   }, [namespace]);
 
+  const load = useCallback(async () => {
+    try {
+      setData(await fetchCopies());
+      setError(null);
+    } catch (e) {
+      setError(message(e, LIST_FAILED));
+    }
+  }, [fetchCopies]);
+
   useEffect(() => {
-    void load();
-  }, [load]);
+    let cancelled = false;
+    fetchCopies()
+      .then((d) => {
+        if (cancelled) return;
+        setData(d);
+        setError(null);
+      })
+      .catch((e: unknown) => {
+        if (!cancelled) setError(message(e, LIST_FAILED));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [fetchCopies]);
 
   return { data, error, reload: load };
 }
