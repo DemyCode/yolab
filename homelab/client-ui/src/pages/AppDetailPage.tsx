@@ -774,7 +774,7 @@ export function AppDetailPage() {
                 size="sm"
                 variant="secondary"
                 onClick={() =>
-                  navigate(backupPagePath(`yolab-${app.instance_name}`))
+                  navigate(backupPagePath(`yolab-${current.instance_name}`))
                 }
               >
                 Pick a backup again
