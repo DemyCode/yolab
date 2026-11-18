@@ -27,7 +27,7 @@ charts:
   - name: agent-zero
     version: "0.1.31"
   - name: airtrail
-    version: "0.1.28"
+    version: "0.1.29"
   - name: akaunting
     version: "0.1.28"
   - name: albyhub
@@ -333,7 +333,7 @@ charts:
   - name: mainsail
     version: "0.1.30"
   - name: mastodon
-    version: "0.1.44"
+    version: "0.1.45"
   - name: matrix
     version: "0.1.8"
   - name: matter-server
