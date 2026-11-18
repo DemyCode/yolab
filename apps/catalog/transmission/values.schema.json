@@ -89,28 +89,52 @@
                   "writeOnly": true,
                   "description": "Leave it as it is to use this box's YoLab account."
                 },
-                "auth_mode": {
-                  "type": "string",
-                  "title": "Login",
-                  "default": "existing",
-                  "description": "Transmission has no login of its own, so Authelia asks who you are before anyone reaches it on the YoLab address.",
-                  "oneOf": [
-                    {
-                      "const": "existing",
-                      "title": "The Authelia service you already run, with its users"
-                    },
-                    {
-                      "const": "own",
-                      "title": "Its own Authelia, with the users below"
-                    }
-                  ]
+                "auth_enabled": {
+                  "type": "boolean",
+                  "title": "Sign in with Authelia",
+                  "default": true,
+                  "description": "On: Authelia asks who you are, and Transmission asks nothing more. Off: Transmission asks for its own username and password, shown below once it runs; phone remote apps such as Transmission Remote need this, because they cannot get past an Authelia page."
                 }
               },
               "required": [
                 "subdomain",
-                "auth_mode"
+                "auth_enabled"
               ],
               "dependencies": {
+                "auth_enabled": {
+                  "oneOf": [
+                    {
+                      "properties": {
+                        "auth_enabled": {
+                          "const": false
+                        }
+                      }
+                    },
+                    {
+                      "properties": {
+                        "auth_enabled": {
+                          "const": true
+                        },
+                        "auth_mode": {
+                          "type": "string",
+                          "title": "Authelia",
+                          "default": "existing",
+                          "oneOf": [
+                            {
+                              "const": "existing",
+                              "title": "The Authelia service you already run, with its users"
+                            },
+                            {
+                              "const": "own",
+                              "title": "Its own Authelia, with the users below"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "auth_mode"
+                      ],
+                      "dependencies": {
                 "auth_mode": {
                   "oneOf": [
                     {
@@ -166,6 +190,10 @@
                       "required": [
                         "auth_url"
                       ]
+                    }
+                  ]
+                }
+              }
                     }
                   ]
                 }

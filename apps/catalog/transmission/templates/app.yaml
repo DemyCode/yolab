@@ -1,3 +1,4 @@
+{{- $gated := and .Values.config.auth_enabled (eq (include "yolab-common.yolab.enabled" .) "true") }}
 {{ include "yolab-common.caddyConfigMap" . }}
 ---
 {{ include "authelia.embed.secret" . }}
@@ -54,8 +55,13 @@ spec:
           mv "$f.new" "$f"
           chown 1000:1000 "$f" "$pw"
           chmod 600 "$pw"
+          {{- if $gated }}
+          echo "YOLAB_OUTPUT rpc_username NONE"
+          echo "YOLAB_OUTPUT rpc_password NONE"
+          {{- else }}
           echo "YOLAB_OUTPUT rpc_username yolab"
           echo "YOLAB_OUTPUT rpc_password $(cat "$pw")"
+          {{- end }}
         volumeMounts:
         - name: data
           mountPath: /config
@@ -73,12 +79,16 @@ spec:
         - -c
         - |
           set -eu
+          {{- if $gated }}
+          unset USER PASS
+          {{- else }}
           PASS=$(cat /config/yolab-rpc-password)
           if [ -z "$PASS" ]; then
             echo "no Transmission password: refusing to start with RPC open" >&2
             exit 1
           fi
           export USER=yolab PASS
+          {{- end }}
           exec /init
         env:
         - name: PUID

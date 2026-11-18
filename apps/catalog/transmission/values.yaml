@@ -9,8 +9,6 @@ yolab:
   serviceName: ''
   gateway:
     upstream: localhost:9095
-  auth:
-    openWhenAuthorized: true
 
 authelia:
   embedded: true

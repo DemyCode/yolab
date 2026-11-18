@@ -4561,27 +4561,41 @@ class ClientsGetPastTheLogin(RenderedChart):
         )
         self.assertEqual(values["yolab"]["auth"]["openPaths"], ["/api/*"])
 
-    def test_transmission_lets_its_own_login_answer_remote_apps(self):
-        caddy = self.gate("transmission")
-        self.assertIn("@yolab_brings_credentials header Authorization *", caddy)
-        self.assertIn("reverse_proxy localhost:9095", caddy)
-        self.assertLess(
-            caddy.index("@yolab_brings_credentials"),
-            caddy.index("forward_auth localhost:9091"),
+    def transmission(self, extra=None):
+        gateway = self.deployments(self.render("transmission", extra))["gateway"]
+        return (
+            container_of(gateway, "server")["command"][2],
+            container_of(gateway, "settings")["command"][2],
         )
 
-    def test_transmission_never_starts_without_its_password(self):
+    def test_transmission_behind_authelia_asks_for_nothing_more(self):
+        caddy = self.gate("transmission")
+        self.assertIn("forward_auth localhost:9091", caddy)
+        self.assertNotIn("@yolab_brings_credentials", caddy)
+        server, settings = self.transmission()
+        self.assertIn("unset USER PASS", server)
+        self.assertNotIn("export USER", server)
+        self.assertIn("YOLAB_OUTPUT rpc_username NONE", settings)
+        self.assertIn("YOLAB_OUTPUT rpc_password NONE", settings)
+
+    def test_transmission_without_authelia_asks_only_its_own_password(self):
+        off = {"config.auth_enabled": "false"}
+        caddy = self.gate("transmission", off)
+        self.assertNotIn("forward_auth", caddy)
+        self.assertIn("reverse_proxy localhost:9095", caddy)
+        server, settings = self.transmission(off)
+        self.assertIn("PASS=$(cat /config/yolab-rpc-password)", server)
+        self.assertIn('if [ -z "$PASS" ]; then', server)
+        self.assertIn("export USER=yolab PASS", server)
+        self.assertIn('YOLAB_OUTPUT rpc_password $(cat "$pw")', settings)
+
+    def test_transmission_listens_where_its_gateway_sends_it(self):
         gateway = self.deployments(self.render("transmission"))["gateway"]
         server = container_of(gateway, "server")
-        script = server["command"][2]
-        self.assertIn("PASS=$(cat /config/yolab-rpc-password)", script)
-        self.assertIn('if [ -z "$PASS" ]; then', script)
-        self.assertIn("export USER=yolab PASS", script)
-        self.assertIn("exec /init", script)
+        self.assertIn("exec /init", server["command"][2])
         self.assertEqual(server["readinessProbe"]["tcpSocket"]["port"], 9095)
         settings = container_of(gateway, "settings")["command"][2]
         self.assertIn('.["rpc-port"] = 9095', settings)
-        self.assertIn("YOLAB_OUTPUT rpc_password", settings)
 
     def test_an_openai_client_with_the_key_gets_past_the_login(self):
         for chart in ("localai", "kokoro"):
