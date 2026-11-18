@@ -272,8 +272,11 @@ mod tests {
 
     #[test]
     fn a_capture_anchored_at_the_start_sees_the_message_without_the_kubernetes_timestamp() {
-        let spec = parse_output("url", &json!({ "x-yolab-capture": "^Listening on (\\S+)$" }))
-            .unwrap();
+        let spec = parse_output(
+            "url",
+            &json!({ "x-yolab-capture": "^Listening on (\\S+)$" }),
+        )
+        .unwrap();
         let found = latest_matches(
             &[spec],
             ["2026-09-28T12:00:00.123456789Z Listening on http://0.0.0.0:8080"],
@@ -283,7 +286,10 @@ mod tests {
 
     #[test]
     fn a_line_without_a_timestamp_is_matched_whole() {
-        assert_eq!(without_timestamp("plain message here"), "plain message here");
+        assert_eq!(
+            without_timestamp("plain message here"),
+            "plain message here"
+        );
         assert_eq!(without_timestamp("2026-09-28T12:00:00Z hi"), "hi");
     }
 

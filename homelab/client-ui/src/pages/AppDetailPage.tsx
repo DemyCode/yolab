@@ -54,11 +54,7 @@ import {
 } from "@/lib/apps";
 import { taglineFor } from "@/catalog/meta";
 import { cn } from "@/lib/utils";
-import type {
-  AppInfo,
-  CatalogApp,
-  PodInfo,
-} from "@/types/apps";
+import type { AppInfo, CatalogApp, PodInfo } from "@/types/apps";
 
 const DOT: Record<StatusTone, string> = {
   live: "bg-success",

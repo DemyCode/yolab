@@ -4922,5 +4922,7 @@ class EveryWebAddressIsAnOutput(unittest.TestCase):
                 or {}
             ).get("properties") or {}
             self.assertEqual(
-                (outputs.get("url") or {}).get("format"), "uri", f"{name} has no url link"
+                (outputs.get("url") or {}).get("format"),
+                "uri",
+                f"{name} has no url link",
             )

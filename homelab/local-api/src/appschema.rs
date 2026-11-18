@@ -1,5 +1,5 @@
-use std::collections::HashSet;
 use crate::error::Outcome as _;
+use std::collections::HashSet;
 
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -238,7 +238,10 @@ mod tests {
     #[test]
     fn a_capture_needs_exactly_one_group() {
         for bad in ["no group", "(a) (b)"] {
-            assert!(parse_output("k", &json!({ "x-yolab-capture": bad })).is_err(), "{bad}");
+            assert!(
+                parse_output("k", &json!({ "x-yolab-capture": bad })).is_err(),
+                "{bad}"
+            );
         }
         assert!(parse_output("k", &json!({ "x-yolab-capture": "(?:a) (b)" })).is_ok());
     }

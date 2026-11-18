@@ -14,7 +14,7 @@ use crate::records::Store;
 use crate::routers::folder_backup::{self, FOLDERS_TAG, KEEP_TAG};
 
 pub(crate) const SETTINGS_REPO: &str = "cluster-backup";
-pub(crate) const MIN_BUDGET: u64 = 1 << 30;
+pub(crate) const MIN_BUDGET: u64 = 10 << 30;
 const PRUNE_TIMEOUT: Duration = Duration::from_secs(3600);
 const STATS_TIMEOUT: Duration = Duration::from_secs(900);
 
@@ -127,13 +127,46 @@ pub(crate) fn default_budget(newest_bytes: u64) -> u64 {
     newest_bytes.saturating_mul(2).max(MIN_BUDGET)
 }
 
-pub(crate) fn droppable(points: &[Point]) -> Vec<&Point> {
-    points
-        .iter()
+fn seconds(point: &Point) -> anyhow::Result<i64> {
+    Ok(chrono::DateTime::parse_from_rfc3339(&point.time)
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "backup {} has time {:?}: {e}",
+                point.snapshot_id,
+                point.time
+            )
+        })?
+        .timestamp())
+}
+
+pub(crate) fn spacing_cost(times: &[i64]) -> f64 {
+    let mut newest_first = times.to_vec();
+    newest_first.sort_unstable_by(|a, b| b.cmp(a));
+    let gaps: Vec<f64> = newest_first
+        .windows(2)
+        .map(|w| (w[0] - w[1]).max(1) as f64)
+        .collect();
+    gaps.windows(2)
+        .map(|g| ((g[1] / g[0]).log2() - 1.0).powi(2))
+        .sum()
+}
+
+pub(crate) fn least_harmful(left: &[(&Point, i64)]) -> Option<usize> {
+    left.iter()
+        .enumerate()
         .skip(1)
-        .filter(|p| !p.keep && !p.legacy())
-        .rev()
-        .collect()
+        .filter(|(_, (p, _))| !p.keep && !p.legacy())
+        .map(|(i, _)| {
+            let rest: Vec<i64> = left
+                .iter()
+                .enumerate()
+                .filter(|(j, _)| *j != i)
+                .map(|(_, (_, t))| *t)
+                .collect();
+            (i, spacing_cost(&rest), left[i].1)
+        })
+        .min_by(|a, b| a.1.total_cmp(&b.1).then(a.2.cmp(&b.2)).then(b.0.cmp(&a.0)))
+        .map(|(i, _, _)| i)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -152,16 +185,24 @@ where
     F: FnMut(Vec<Point>) -> Fut,
     Fut: Future<Output = anyhow::Result<u64>>,
 {
-    let mut kept: Vec<Point> = points.iter().filter(|p| !p.legacy()).cloned().collect();
-    let mut size = measure(kept.clone()).await?;
+    let mut left: Vec<(&Point, i64)> = points
+        .iter()
+        .map(|p| Ok((p, seconds(p)?)))
+        .collect::<anyhow::Result<_>>()?;
+    let measured = |left: &[(&Point, i64)]| -> Vec<Point> {
+        left.iter()
+            .filter(|(p, _)| !p.legacy())
+            .map(|(p, _)| (*p).clone())
+            .collect()
+    };
+    let mut size = measure(measured(&left)).await?;
     let mut drop = Vec::new();
-    for candidate in droppable(points) {
-        if size <= budget {
+    while size > budget {
+        let Some(i) = least_harmful(&left) else {
             break;
-        }
-        kept.retain(|p| p.snapshot_id != candidate.snapshot_id);
-        drop.push(candidate.snapshot_id.clone());
-        size = measure(kept.clone()).await?;
+        };
+        drop.push(left.remove(i).0.snapshot_id.clone());
+        size = measure(measured(&left)).await?;
     }
     Ok(Fit {
         drop,
@@ -777,20 +818,115 @@ mod tests {
         assert_eq!(default_budget(u64::MAX), u64::MAX);
     }
 
-    #[test]
-    fn the_budget_never_drops_the_newest_a_kept_or_an_older_style_point() {
-        let points = vec![
-            point("newest", Some("r4"), false),
-            point("kept", Some("r3"), true),
-            point("middle", Some("r2"), false),
-            point("legacy", None, false),
-            point("oldest", Some("r1"), false),
-        ];
-        let ids: Vec<&str> = droppable(&points)
+    fn aged(id: &str, hours_ago: i64, keep: bool, legacy: bool) -> Point {
+        let now = chrono::DateTime::parse_from_rfc3339("2026-11-16T03:00:00Z").unwrap();
+        Point {
+            snapshot_id: id.into(),
+            time: (now - chrono::Duration::hours(hours_ago)).to_rfc3339(),
+            run: (!legacy).then(|| format!("run-{id}")),
+            keep,
+        }
+    }
+
+    async fn dropped(points: &[Point], budget: u64) -> Vec<String> {
+        let each: Vec<(&str, u64)> = points
             .iter()
-            .map(|p| p.snapshot_id.as_str())
+            .map(|p| (p.snapshot_id.as_str(), 10))
             .collect();
-        assert_eq!(ids, vec!["oldest", "middle"], "oldest first");
+        fit(points, budget, sized(&each)).await.unwrap().drop
+    }
+
+    #[test]
+    fn perfect_spacing_doubles_every_gap_whatever_the_unit() {
+        assert_eq!(spacing_cost(&[0, -1, -3, -7, -15]), 0.0);
+        assert_eq!(spacing_cost(&[0, -60, -180, -420]), 0.0);
+        assert!(
+            spacing_cost(&[0, -1, -2, -3]) > 0.0,
+            "equal gaps are not doubling"
+        );
+        assert_eq!(spacing_cost(&[0, -5]), 0.0, "one gap has nothing to double");
+    }
+
+    #[tokio::test]
+    async fn over_budget_the_backup_that_breaks_the_doubling_most_goes() {
+        let daily = [
+            aged("d0", 0, false, false),
+            aged("d1", 24, false, false),
+            aged("d2", 48, false, false),
+            aged("d3", 72, false, false),
+        ];
+        assert_eq!(
+            dropped(&daily, 30).await,
+            vec!["d2"],
+            "leaves gaps of 1 and 2 days"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_choice_is_the_same_in_hours_as_in_days() {
+        let hourly = [
+            aged("h0", 0, false, false),
+            aged("h1", 1, false, false),
+            aged("h2", 2, false, false),
+            aged("h3", 3, false, false),
+        ];
+        assert_eq!(dropped(&hourly, 30).await, vec!["h2"]);
+    }
+
+    #[tokio::test]
+    async fn already_doubling_backups_lose_their_oldest() {
+        let spaced = [
+            aged("a", 0, false, false),
+            aged("b", 24, false, false),
+            aged("c", 72, false, false),
+            aged("d", 168, false, false),
+        ];
+        assert_eq!(dropped(&spaced, 30).await, vec!["d"]);
+    }
+
+    #[tokio::test]
+    async fn nightly_backups_thin_out_into_doubling_gaps() {
+        let nights: Vec<Point> = (0..16)
+            .map(|n| aged(&format!("n{n}"), 24 * n, false, false))
+            .collect();
+        let dropped = dropped(&nights, 50).await;
+        let left: Vec<i64> = nights
+            .iter()
+            .filter(|p| !dropped.contains(&p.snapshot_id))
+            .map(|p| seconds(p).unwrap())
+            .collect();
+        assert_eq!(left.len(), 5);
+        let all: Vec<i64> = nights.iter().map(|p| seconds(p).unwrap()).collect();
+        assert!(
+            spacing_cost(&left) < spacing_cost(&all[..5]),
+            "better than keeping the 5 newest"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_kept_or_older_style_backup_still_counts_in_the_spacing_but_never_goes() {
+        let points = [
+            aged("new", 0, false, false),
+            aged("kept", 24, true, false),
+            aged("mid", 48, false, false),
+            aged("legacy", 72, false, true),
+            aged("old", 96, false, false),
+        ];
+        let gone = dropped(&points, 10).await;
+        assert!(!gone.contains(&"new".to_string()));
+        assert!(!gone.contains(&"kept".to_string()));
+        assert!(!gone.contains(&"legacy".to_string()));
+        assert_eq!(gone.len(), 2, "mid and old go, and it is still over budget");
+    }
+
+    #[tokio::test]
+    async fn a_backup_with_an_unreadable_time_stops_the_cleanup_instead_of_guessing() {
+        let mut bad = aged("bad", 24, false, false);
+        bad.time = "yesterday".into();
+        let points = [aged("new", 0, false, false), bad];
+        assert!(fit(&points, 0, sized(&[("new", 10), ("bad", 10)]))
+            .await
+            .is_err());
     }
 
     #[tokio::test]
