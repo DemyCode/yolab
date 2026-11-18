@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use crate::error::Outcome as _;
 
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -24,12 +25,14 @@ impl Format {
 }
 
 pub const OUTPUT_MARK: &str = "YOLAB_OUTPUT ";
+pub const CAPTURE_FIELD: &str = "x-yolab-capture";
 
 #[derive(Clone, Debug)]
 pub struct OutputSpec {
     pub key: String,
     pub title: String,
     pub format: Format,
+    pub capture: regex::Regex,
 }
 
 #[derive(Clone, Debug)]
@@ -76,26 +79,43 @@ impl AppSchema {
         };
         props
             .iter()
-            .map(|(key, spec)| parse_output(key, spec))
+            .filter_map(|(key, spec)| {
+                parse_output(key, spec).ok_or_warn(format!("output {key} is left out"))
+            })
             .collect()
     }
 }
 
 impl OutputSpec {
     pub fn find_in(&self, line: &str) -> Option<String> {
-        let (_, printed) = line.split_once(OUTPUT_MARK)?;
-        let (key, value) = printed.split_once(' ')?;
-        let value = value.trim();
-        (key == self.key && !value.is_empty()).then(|| value.to_string())
+        let value = self.capture.captures(line)?.get(1)?.as_str().trim();
+        (!value.is_empty()).then(|| value.to_string())
     }
 }
 
-pub fn parse_output(key: &str, spec: &Value) -> OutputSpec {
-    OutputSpec {
+pub fn default_capture(key: &str) -> String {
+    format!("{}{} (.+)", regex::escape(OUTPUT_MARK), regex::escape(key))
+}
+
+pub fn parse_output(key: &str, spec: &Value) -> anyhow::Result<OutputSpec> {
+    let pattern = match &spec[CAPTURE_FIELD] {
+        Value::Null => default_capture(key),
+        Value::String(p) => p.clone(),
+        other => anyhow::bail!("{CAPTURE_FIELD} must be a string, got {other}"),
+    };
+    let capture = regex::Regex::new(&pattern)?;
+    if capture.captures_len() != 2 {
+        anyhow::bail!(
+            "{CAPTURE_FIELD} {pattern:?} must have exactly one capture group, it has {}",
+            capture.captures_len() - 1
+        );
+    }
+    Ok(OutputSpec {
         key: key.to_string(),
         title: spec["title"].as_str().unwrap_or(key).to_string(),
         format: Format::parse(spec["format"].as_str()),
-    }
+        capture,
+    })
 }
 
 #[cfg(test)]
@@ -154,7 +174,7 @@ mod tests {
 
     #[test]
     fn a_value_may_hold_spaces() {
-        let wiring = parse_output("wiring", &json!({}));
+        let wiring = parse_output("wiring", &json!({})).unwrap();
         assert_eq!(
             wiring.find_in("YOLAB_OUTPUT wiring Sonarr and Radarr are connected \r"),
             Some("Sonarr and Radarr are connected".to_string())
@@ -163,7 +183,7 @@ mod tests {
 
     #[test]
     fn another_keys_line_is_not_this_outputs_value() {
-        let url = parse_output("url", &json!({}));
+        let url = parse_output("url", &json!({})).unwrap();
         assert_eq!(
             url.find_in("YOLAB_OUTPUT file_explorer_url https://f"),
             None
@@ -174,10 +194,67 @@ mod tests {
     }
 
     #[test]
-    fn an_output_declares_only_its_title_and_format() {
-        let bare = parse_output("pin", &json!({}));
+    fn an_output_without_a_title_or_format_is_text_titled_by_its_key() {
+        let bare = parse_output("pin", &json!({})).unwrap();
         assert_eq!(bare.title, "pin");
         assert_eq!(bare.format, Format::Text);
+    }
+
+    #[test]
+    fn a_custom_capture_reads_a_value_straight_from_the_apps_own_logs() {
+        let password = parse_output(
+            "admin_password",
+            &json!({ "x-yolab-capture": "Generated admin password: (\\S+)" }),
+        )
+        .unwrap();
+        assert_eq!(
+            password.find_in("[INFO] Generated admin password: s3cr3t (store it)"),
+            Some("s3cr3t".to_string())
+        );
+        assert_eq!(password.find_in("YOLAB_OUTPUT admin_password other"), None);
+    }
+
+    #[test]
+    fn a_custom_capture_may_anchor_on_the_start_of_the_message() {
+        let url = parse_output(
+            "admin_url",
+            &json!({ "x-yolab-capture": "^Admin panel at (https://\\S+)$" }),
+        )
+        .unwrap();
+        assert_eq!(
+            url.find_in("Admin panel at https://x.yolab.io/admin"),
+            Some("https://x.yolab.io/admin".to_string())
+        );
+        assert_eq!(url.find_in("old: Admin panel at https://x"), None);
+    }
+
+    #[test]
+    fn a_key_with_regex_characters_is_matched_literally_by_the_default_capture() {
+        let dotted = parse_output("a.b", &json!({})).unwrap();
+        assert_eq!(dotted.find_in("YOLAB_OUTPUT a.b v"), Some("v".to_string()));
+        assert_eq!(dotted.find_in("YOLAB_OUTPUT axb v"), None);
+    }
+
+    #[test]
+    fn a_capture_needs_exactly_one_group() {
+        for bad in ["no group", "(a) (b)"] {
+            assert!(parse_output("k", &json!({ "x-yolab-capture": bad })).is_err(), "{bad}");
+        }
+        assert!(parse_output("k", &json!({ "x-yolab-capture": "(?:a) (b)" })).is_ok());
+    }
+
+    #[test]
+    fn an_invalid_capture_is_refused_and_leaves_only_that_output_out() {
+        assert!(parse_output("k", &json!({ "x-yolab-capture": "(unclosed" })).is_err());
+        assert!(parse_output("k", &json!({ "x-yolab-capture": 3 })).is_err());
+        let app = schema(
+            json!({}),
+            json!({
+                "good": { "title": "Good" },
+                "bad": { "x-yolab-capture": "(unclosed" }
+            }),
+        );
+        assert_eq!(keys(&app.outputs()), vec!["good"]);
     }
 
     #[test]

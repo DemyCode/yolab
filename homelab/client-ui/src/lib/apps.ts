@@ -17,11 +17,7 @@ export function installedByChart(
   return counts;
 }
 
-export function appLinks(
-  app: AppInfo,
-  tunnelDomain: string,
-  pack = false,
-): AppLink[] {
+export function appLinks(app: AppInfo): AppLink[] {
   const links: AppLink[] = [];
   const seen = new Set<string>();
 
@@ -31,18 +27,6 @@ export function appLinks(
     seen.add(url);
     links.push({ label: o.title || "Open", url });
   }
-  if (pack) return links;
-
-  const subdomain = app.config?.subdomain;
-  const yolabOn = app.config?.yolab_enabled !== false;
-  if (yolabOn && typeof subdomain === "string" && subdomain && tunnelDomain) {
-    const derived = `https://${subdomain}.${tunnelDomain}`;
-    const already = [...seen].some(
-      (u) => u.replace(/\/$/, "") === derived.replace(/\/$/, ""),
-    );
-    if (!already) links.push({ label: "Open", url: derived });
-  }
-
   return links;
 }
 

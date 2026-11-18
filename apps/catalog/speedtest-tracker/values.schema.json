@@ -82,6 +82,11 @@
       "type": "object",
       "readOnly": true,
       "properties": {
+        "url": {
+          "type": "string",
+          "title": "Web URL",
+          "format": "uri"
+        },
         "admin_password": {
           "type": "string",
           "title": "Admin password",

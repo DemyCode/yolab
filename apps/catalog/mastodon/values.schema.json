@@ -109,6 +109,11 @@
       "type": "object",
       "readOnly": true,
       "properties": {
+        "url": {
+          "type": "string",
+          "title": "Web URL",
+          "format": "uri"
+        },
         "owner_user": {
           "type": "string",
           "title": "Owner username",

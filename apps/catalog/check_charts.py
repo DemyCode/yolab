@@ -1486,7 +1486,25 @@ def check_sourced_secrets_reach_the_program(app, docs, fail):
 
 
 OUTPUT_FORMATS = {"text", "uri", "secret", "multiline"}
-OUTPUT_FIELDS = {"type", "title", "format"}
+CAPTURE_FIELD = "x-yolab-capture"
+OUTPUT_FIELDS = {"type", "title", "format", CAPTURE_FIELD}
+RUST_REGEX_LACKS = re.compile(r"\(\?<?[=!]|\(\?P=|\\[1-9]")
+
+
+def capture_problem(pattern):
+    if not isinstance(pattern, str) or not pattern:
+        return "must be a non-empty string"
+    if RUST_REGEX_LACKS.search(pattern):
+        return "uses a lookaround or backreference, which the local API regex engine does not support"
+    try:
+        groups = re.compile(pattern).groups
+    except re.error as e:
+        return f"is not a valid regex ({e})"
+    if groups != 1:
+        return f"must have exactly one capture group, it has {groups}"
+    return None
+
+
 LEGACY_ANNOTATIONS = ("yolab.io/uischema", "yolab.io/outputs")
 
 
@@ -1640,9 +1658,13 @@ def check_schema(app, schema, chart_yaml, fail):
             fail(
                 app,
                 f"{where} declares {', '.join(extra)}: an output is only a type, "
-                f"title and format, and its value is the app's own "
-                f"YOLAB_OUTPUT {key} <value> log line",
+                f"title, format and {CAPTURE_FIELD}; its value is what the capture "
+                f"finds in the logs, by default the YOLAB_OUTPUT {key} <value> line",
             )
+        if CAPTURE_FIELD in out:
+            problem = capture_problem(out[CAPTURE_FIELD])
+            if problem:
+                fail(app, f"{where}.{CAPTURE_FIELD} {problem}")
 
 
 RETIRED_LINK_FORMATS = ("yolab-output", "connection", "service-url", "app")

@@ -120,6 +120,26 @@ class CheckSchema(unittest.TestCase):
             self.assertEqual(len(found), 1, extra)
             self.assertIn("YOLAB_OUTPUT x <value>", found[0])
 
+    def test_an_output_may_capture_its_value_from_any_log_line(self):
+        ok = output(**{"x-yolab-capture": r"Admin password: (\S+)"})
+        self.assertEqual(failures(schema(outputs={"x": ok})), [])
+        named = output(**{"x-yolab-capture": r"^at (?P<url>https://\S+)$"})
+        self.assertEqual(failures(schema(outputs={"x": named})), [])
+
+    def test_a_capture_the_local_api_cannot_use_is_refused(self):
+        for bad, why in (
+            ("no group here", "exactly one capture group"),
+            (r"(a) (b)", "exactly one capture group"),
+            ("(unclosed", "not a valid regex"),
+            (r"(?<=key: )(\S+)", "lookaround"),
+            (r"(\w)\1", "backreference"),
+            ("", "non-empty string"),
+            (3, "non-empty string"),
+        ):
+            found = failures(schema(outputs={"x": output(**{"x-yolab-capture": bad})}))
+            self.assertEqual(len(found), 1, bad)
+            self.assertIn(why, found[0], bad)
+
     def test_every_catalog_output_is_only_a_type_title_and_format(self):
         for path in sorted(Path(check_charts.HERE).glob("*/values.schema.json")):
             s = json.loads(path.read_text())
@@ -4870,3 +4890,23 @@ class AirTrailOwnership(RenderedChart):
         for deployment, container in (("gateway", "app"), ("postgres", "postgres")):
             c = container_of(specs[deployment], container)
             self.assertNotIn("runAsUser", c.get("securityContext") or {}, container)
+
+
+class EveryWebAddressIsAnOutput(unittest.TestCase):
+    NO_WEB_PAGE = {"minecraft", "valheim"}
+
+    def test_every_chart_with_a_yolab_address_declares_the_url_wg_register_prints(self):
+        for chart in sorted(Path(check_charts.HERE).glob("*/values.schema.json")):
+            name = chart.parent.name
+            templates = "".join(
+                p.read_text() for p in chart.parent.glob("templates/*.yaml")
+            )
+            if "wgRegisterInit" not in templates or name in self.NO_WEB_PAGE:
+                continue
+            outputs = (
+                (json.loads(chart.read_text()).get("properties") or {}).get("outputs")
+                or {}
+            ).get("properties") or {}
+            self.assertEqual(
+                (outputs.get("url") or {}).get("format"), "uri", f"{name} has no url link"
+            )

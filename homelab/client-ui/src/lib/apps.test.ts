@@ -75,7 +75,6 @@ describe("appLinks", () => {
           out("admin", "https://a.example/admin", "uri", "Admin"),
         ],
       }),
-      "example",
     );
     expect(links).toEqual([
       { label: "Open", url: "https://a.example" },
@@ -86,7 +85,6 @@ describe("appLinks", () => {
   it("falls back to a label a person can read", () => {
     const [link] = appLinks(
       app({ outputs: [out("web", "https://a.example", "uri")] }),
-      "example",
     );
     expect(link.label).toBe("Open");
   });
@@ -100,40 +98,28 @@ describe("appLinks", () => {
             out("admin", "https://a.example/admin", "uri", "Admin"),
           ],
         }),
-        "example",
-        true,
       ),
     ).toEqual([{ label: "Admin", url: "https://a.example/admin" }]);
   });
 
   it("makes no link of an address not reported yet", () => {
     expect(
-      appLinks(app({ outputs: [out("web", null, "uri", "Open")] }), "example"),
+      appLinks(app({ outputs: [out("web", null, "uri", "Open")] })),
     ).toEqual([]);
   });
 
-  it("offers the derived address before any output has been scraped", () => {
-    expect(
-      appLinks(app({ config: { subdomain: "git" } }), "box.yolab.io"),
-    ).toEqual([{ label: "Open", url: "https://git.box.yolab.io" }]);
-  });
-
-  it("offers no YoLab address when the app has it switched off", () => {
-    expect(
-      appLinks(
-        app({ config: { subdomain: "git", yolab_enabled: false } }),
-        "box.yolab.io",
-      ),
-    ).toEqual([]);
+  it("never makes a link the chart did not output, not even from its subdomain", () => {
+    expect(appLinks(app({ config: { subdomain: "git" } }))).toEqual([]);
   });
 
   it("does not offer the same address twice under two labels", () => {
     const links = appLinks(
       app({
-        config: { subdomain: "git" },
-        outputs: [out("web", "https://git.box.yolab.io/", "uri", "Open")],
+        outputs: [
+          out("url", "https://git.box.yolab.io/", "uri", "Open"),
+          out("web", "https://git.box.yolab.io/", "uri", "Web"),
+        ],
       }),
-      "box.yolab.io",
     );
     expect(links).toHaveLength(1);
   });
@@ -141,24 +127,8 @@ describe("appLinks", () => {
   it("ignores outputs that are not addresses", () => {
     const links = appLinks(
       app({ outputs: [out("password", "hunter2"), out("empty", "", "uri")] }),
-      "",
     );
     expect(links).toEqual([]);
-  });
-
-  it("offers nothing derived when there is no tunnel domain yet", () => {
-    expect(appLinks(app({ config: { subdomain: "git" } }), "")).toEqual([]);
-  });
-
-  it("a pack offers its apps' own addresses, never one made from its subdomain", () => {
-    const jellyfin = "https://media-jellyfin.box.yolab.io";
-    const pack = app({
-      config: { subdomain: "media" },
-      outputs: [out("jellyfin_url", jellyfin, "uri", "Jellyfin")],
-    });
-    expect(appLinks(pack, "box.yolab.io", true)).toEqual([
-      { label: "Jellyfin", url: jellyfin },
-    ]);
   });
 });
 

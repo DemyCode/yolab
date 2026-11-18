@@ -57,7 +57,6 @@ import { cn } from "@/lib/utils";
 import type {
   AppInfo,
   CatalogApp,
-  DomainResponse,
   PodInfo,
 } from "@/types/apps";
 
@@ -720,7 +719,6 @@ export function AppDetailPage() {
 
   const apps = useApi<AppInfo[]>("apps", "/api/apps", { pollMs: 10_000 });
   const catalog = useApi<CatalogApp[]>("catalog", "/api/apps/catalog");
-  const domain = useApi<DomainResponse>("domain", "/api/tunnel/domain");
 
   const [confirmRemove, setConfirmRemove] = useState(false);
   const [deleteShared, setDeleteShared] = useState(false);
@@ -792,7 +790,7 @@ export function AppDetailPage() {
   const entry = catalogEntry(app, catalog.data ?? []);
   const name = appDisplayName(app, catalog.data ?? [], apps.data ?? []);
   const members = packMembers(app, catalog.data ?? []);
-  const links = appLinks(app, domain.data?.domain ?? "", members.length > 0);
+  const links = appLinks(app);
   const restoring = restore?.state === "running";
   const actions = availableActions(state, restoring);
   const newer = newerVersion(app, entry);

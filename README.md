@@ -92,7 +92,8 @@ Schema, `values.schema.json`, with two sections:
       "readOnly": true,
       "properties": {
         "url":      { "type": "string", "title": "Web URL", "format": "uri" },
-        "password": { "type": "string", "title": "Admin password", "format": "secret" },
+        "password": { "type": "string", "title": "Admin password", "format": "secret",
+                      "x-yolab-capture": "Generated admin password: (\\S+)" },
         "onion":    { "type": "string", "title": "Tor address", "format": "uri" }
       }
     }
@@ -106,18 +107,30 @@ marks a credential: masked in the form, never written to non-secret places, kept
 the app is duplicated. Add `generate: true` and YoLab fills it with a random value.
 Fields revealed by a toggle (standard `dependencies`/`oneOf`) render under that toggle.
 
-**`outputs`** is what the app page shows once it runs. Each output has only a `title`
-and a `format` (`text`, `uri`, `secret` or `multiline`). Its value is whatever the app
-prints, in any container's logs, init containers included, as one line:
+**`outputs`** is what the app page shows once it runs. Each output has a `title`, a
+`format` (`text`, `uri`, `secret` or `multiline`) and optionally `x-yolab-capture`, a
+regex with exactly one capture group. YoLab runs the regex over every line of every
+container's logs, init containers included, with the Kubernetes timestamp removed so
+`^` and `$` anchor on the message itself, and the captured text is the value. That lets
+an output read what the app already prints, with no wrapper script. Lookarounds and
+backreferences are not supported. Without `x-yolab-capture` the capture is
 
 ```
-YOLAB_OUTPUT <key> <value>
+YOLAB_OUTPUT <key> (.+)
 ```
 
-The value is the rest of the line. YoLab rescans every minute and keeps the latest value
-found, so a value printed once is not lost when the logs roll over. An output appears on
-the page once it has been printed, and not before. To take one away, for example the Tor
-address after Tor is switched off, the chart prints `YOLAB_OUTPUT <key> NONE`. A
+so a chart can also print the value itself as one line, `YOLAB_OUTPUT <key> <value>`.
+
+Every `uri` output is a link on the app page, titled by its `title`, and there are no
+other links. The YoLab address is the `url` output, which the tunnel printer
+(wg-register) prints for every app that has one, so a chart with a web page declares
+`url`. Custom links, such as an admin page, are just more `uri` outputs.
+
+YoLab rescans every minute and keeps the latest value found, so a value captured once is
+not lost when the logs roll over. An output appears on the page once it has been
+captured, and not before. To take one away, for example the Tor address after Tor is
+switched off, the chart prints a line its capture reads as `NONE`, by default
+`YOLAB_OUTPUT <key> NONE`. A
 generated setting such as the admin password is printed the same way, from the Secret
 that holds it (`yolab-common.printOutputs`).
 

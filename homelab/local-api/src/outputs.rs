@@ -36,13 +36,21 @@ pub fn latest_matches<'a>(
 ) -> BTreeMap<String, String> {
     let mut latest = BTreeMap::new();
     for line in lines {
+        let message = without_timestamp(line);
         for spec in specs {
-            if let Some(value) = spec.find_in(line) {
+            if let Some(value) = spec.find_in(message) {
                 latest.insert(spec.key.clone(), value);
             }
         }
     }
     latest
+}
+
+fn without_timestamp(line: &str) -> &str {
+    match line.split_once(' ') {
+        Some((stamp, message)) if DateTime::parse_from_rfc3339(stamp).is_ok() => message,
+        _ => line,
+    }
 }
 
 pub fn remember(
@@ -252,7 +260,7 @@ mod tests {
     }
 
     fn logs(key: &str) -> OutputSpec {
-        parse_output(key, &json!({}))
+        parse_output(key, &json!({})).unwrap()
     }
 
     fn fresh(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
@@ -260,6 +268,23 @@ mod tests {
             .iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect()
+    }
+
+    #[test]
+    fn a_capture_anchored_at_the_start_sees_the_message_without_the_kubernetes_timestamp() {
+        let spec = parse_output("url", &json!({ "x-yolab-capture": "^Listening on (\\S+)$" }))
+            .unwrap();
+        let found = latest_matches(
+            &[spec],
+            ["2026-09-28T12:00:00.123456789Z Listening on http://0.0.0.0:8080"],
+        );
+        assert_eq!(found["url"], "http://0.0.0.0:8080");
+    }
+
+    #[test]
+    fn a_line_without_a_timestamp_is_matched_whole() {
+        assert_eq!(without_timestamp("plain message here"), "plain message here");
+        assert_eq!(without_timestamp("2026-09-28T12:00:00Z hi"), "hi");
     }
 
     #[test]
@@ -334,7 +359,8 @@ mod tests {
         let spec = parse_output(
             "password",
             &json!({ "title": "Admin password", "format": "secret" }),
-        );
+        )
+        .unwrap();
         let rows = shown(&[spec], &remembered);
         assert_eq!(rows[0].title, "Admin password");
         assert_eq!(rows[0].format, Format::Secret);

@@ -60,6 +60,11 @@
       "type": "object",
       "readOnly": true,
       "properties": {
+        "url": {
+          "type": "string",
+          "title": "Web URL",
+          "format": "uri"
+        },
         "jwt_secret": {
           "type": "string",
           "title": "Connector secret",
