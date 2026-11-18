@@ -156,16 +156,89 @@ export function pointPath(namespace: string, snapshotId: string): string {
   return `${pointsPath(namespace)}/${encodeURIComponent(snapshotId)}`;
 }
 
-export function removedServices(all: BackedUpService[]): BackedUpService[] {
-  return all
-    .filter((s) => !s.installed && s.versions.length > 0)
-    .sort((a, b) => a.namespace.localeCompare(b.namespace));
-}
-
 export function serviceName(namespace: string): string {
   return namespace.replace(/^yolab-/, "");
 }
 
 export function canDelete(point: RestorePoint): boolean {
   return !point.keep;
+}
+
+export interface BackupService {
+  namespace: string;
+  name: string;
+  appId: string | null;
+  installed: boolean;
+  protection: ProtectedApp | null;
+  copies: number;
+  sizeBytes: number | null;
+}
+
+export function backupServices(
+  running: ProtectedApp[],
+  backedUp: BackedUpService[],
+): BackupService[] {
+  const byNamespace = new Map<string, BackupService>();
+  for (const s of backedUp) {
+    if (!s.installed && s.versions.length === 0) continue;
+    byNamespace.set(s.namespace, {
+      namespace: s.namespace,
+      name: s.instance_name || serviceName(s.namespace),
+      appId: null,
+      installed: s.installed,
+      protection: null,
+      copies: s.versions.length,
+      sizeBytes: s.size_bytes ?? null,
+    });
+  }
+  for (const app of running) {
+    const known = byNamespace.get(app.namespace);
+    byNamespace.set(app.namespace, {
+      namespace: app.namespace,
+      name: app.instance_name,
+      appId: app.app_id,
+      installed: true,
+      protection: app,
+      copies: known?.copies ?? 0,
+      sizeBytes: app.size_bytes ?? known?.sizeBytes ?? null,
+    });
+  }
+  return [...byNamespace.values()].sort((a, b) => a.name.localeCompare(b.name));
+}
+
+export function copiesLabel(count: number): string {
+  return count === 1 ? "1 copy" : `${count} copies`;
+}
+
+export function backupPagePath(namespace: string): string {
+  return `/system/backups/${encodeURIComponent(namespace)}`;
+}
+
+const HOUR_MS = 3_600_000;
+
+export function timelinePlaces(
+  points: RestorePoint[],
+  now: number,
+): Map<string, number> {
+  const ages = points.map((p) =>
+    Math.max(0, now - new Date(p.time).getTime()),
+  );
+  const oldest = Math.max(HOUR_MS, ...ages);
+  const scale = Math.log1p(oldest / HOUR_MS);
+  return new Map(
+    points.map((p, i) => [
+      p.snapshot_id,
+      1 - Math.log1p(ages[i] / HOUR_MS) / scale,
+    ]),
+  );
+}
+
+export function ageLabel(iso: string, now: number): string {
+  const hours = Math.max(0, (now - new Date(iso).getTime()) / HOUR_MS);
+  if (hours < 1) return "now";
+  if (hours < 24) return `${Math.round(hours)} h ago`;
+  const days = hours / 24;
+  if (days < 60) return `${Math.round(days)} d ago`;
+  if (days < 730) return `${Math.round(days / 30)} mo ago`;
+  return `${Math.round(days / 365)} y ago`;
 }

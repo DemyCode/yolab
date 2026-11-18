@@ -31,6 +31,11 @@ const BackupsPage = lazy(() =>
     default: m.BackupsPage,
   })),
 );
+const BackupTimelinePage = lazy(() =>
+  import("@/pages/system/BackupTimelinePage").then((m) => ({
+    default: m.BackupTimelinePage,
+  })),
+);
 const NodesPage = lazy(() =>
   import("@/pages/system/NodesPage").then((m) => ({ default: m.NodesPage })),
 );
@@ -118,6 +123,14 @@ export default function App() {
                     <BackupsPage />
                   </Suspense>
                 </SystemSubPage>
+              }
+            />
+            <Route
+              path="/system/backups/:namespace"
+              element={
+                <Suspense fallback={<Loading />}>
+                  <BackupTimelinePage />
+                </Suspense>
               }
             />
             <Route

@@ -9,8 +9,12 @@ import {
   bytesToBudget,
   canDelete,
   pointPath,
-  removedServices,
+  ageLabel,
+  backupPagePath,
+  backupServices,
+  copiesLabel,
   restorePath,
+  timelinePlaces,
   serviceName,
   sortRestorePoints,
   usageLabel,
@@ -214,39 +218,116 @@ describe("restore points", () => {
   });
 });
 
-describe("removedServices", () => {
-  it("lists only services that are gone but still have backups, by name", () => {
-    const point = { snapshot_id: "a", time: "2026-11-01T03:00:00Z" };
-    const got = removedServices([
-      {
-        namespace: "yolab-z",
-        instance_name: "z",
-        installed: false,
-        versions: [point],
-      },
-      {
-        namespace: "yolab-here",
-        instance_name: "h",
-        installed: true,
-        versions: [point],
-      },
-      {
-        namespace: "yolab-empty",
-        instance_name: "e",
-        installed: false,
-        versions: [],
-      },
-      {
-        namespace: "yolab-a",
-        instance_name: "a",
-        installed: false,
-        versions: [point],
-      },
+describe("backupServices", () => {
+  const point = { snapshot_id: "a", time: "2026-11-01T03:00:00Z" };
+
+  it("lists running and removed services together, by name", () => {
+    const got = backupServices(
+      [app({ namespace: "yolab-m", instance_name: "m", app_id: "mealie" })],
+      [
+        {
+          namespace: "yolab-z",
+          instance_name: "z",
+          installed: false,
+          versions: [point],
+        },
+        {
+          namespace: "yolab-m",
+          instance_name: "m",
+          installed: true,
+          versions: [point, point],
+          size_bytes: 9,
+        },
+        {
+          namespace: "yolab-a",
+          instance_name: "a",
+          installed: false,
+          versions: [point],
+        },
+      ],
+    );
+    expect(got.map((s) => [s.name, s.installed, s.copies])).toEqual([
+      ["a", false, 1],
+      ["m", true, 2],
+      ["z", false, 1],
     ]);
-    expect(got.map((s) => s.namespace)).toEqual(["yolab-a", "yolab-z"]);
+    expect(got[1].appId).toBe("mealie");
+    expect(got[1].sizeBytes).toBe(9);
+  });
+
+  it("leaves out a removed service with nothing left to restore", () => {
+    const got = backupServices(
+      [],
+      [
+        {
+          namespace: "yolab-gone",
+          instance_name: "gone",
+          installed: false,
+          versions: [],
+        },
+      ],
+    );
+    expect(got).toEqual([]);
+  });
+
+  it("shows a running service that has not been backed up yet", () => {
+    const got = backupServices([app({ state: "never" })], []);
+    expect(got).toHaveLength(1);
+    expect(got[0].copies).toBe(0);
+    expect(got[0].installed).toBe(true);
   });
 
   it("names a service without its namespace prefix", () => {
     expect(serviceName("yolab-gitea-ab23")).toBe("gitea-ab23");
+  });
+
+  it("counts copies in words", () => {
+    expect(copiesLabel(1)).toBe("1 copy");
+    expect(copiesLabel(3)).toBe("3 copies");
+  });
+
+  it("opens a service's timeline at its own address", () => {
+    expect(backupPagePath("yolab-a b")).toBe("/system/backups/yolab-a%20b");
+  });
+});
+
+describe("timelinePlaces", () => {
+  const at = (id: string, hoursAgo: number) => ({
+    snapshot_id: id,
+    time: new Date(NOW - hoursAgo * 3_600_000).toISOString(),
+  });
+
+  it("puts the newest copy at the right edge and the oldest at the left", () => {
+    const places = timelinePlaces([at("new", 0), at("old", 24 * 30)], NOW);
+    expect(places.get("new")).toBe(1);
+    expect(places.get("old")).toBe(0);
+  });
+
+  it("stretches recent time so doubling gaps look evenly spaced", () => {
+    const places = timelinePlaces(
+      [at("a", 0), at("b", 24), at("c", 72), at("d", 168), at("e", 360)],
+      NOW,
+    );
+    const xs = ["a", "b", "c", "d", "e"].map((id) => places.get(id)!);
+    const steps = xs.slice(1).map((x, i) => xs[i] - x);
+    const later = steps.slice(1);
+    expect(Math.max(...later) / Math.min(...later)).toBeLessThan(1.6);
+    expect(xs.every((x) => x >= 0 && x <= 1)).toBe(true);
+  });
+
+  it("keeps a single copy, or one from the future, on the line", () => {
+    const places = timelinePlaces([at("only", -2)], NOW);
+    expect(places.get("only")).toBe(1);
+  });
+});
+
+describe("ageLabel", () => {
+  it("says how long ago in the largest unit that reads naturally", () => {
+    const ago = (h: number) => new Date(NOW - h * 3_600_000).toISOString();
+    expect(ageLabel(ago(0.2), NOW)).toBe("now");
+    expect(ageLabel(ago(5), NOW)).toBe("5 h ago");
+    expect(ageLabel(ago(72), NOW)).toBe("3 d ago");
+    expect(ageLabel(ago(24 * 120), NOW)).toBe("4 mo ago");
+    expect(ageLabel(ago(24 * 1000), NOW)).toBe("3 y ago");
   });
 });

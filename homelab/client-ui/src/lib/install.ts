@@ -117,8 +117,12 @@ export function filesFolderCopy(
   return { kind: "new", from, to };
 }
 
-export function keepsSourceAddress(mode: InstallMode): boolean {
-  return mode === "restore" || changesLiveApp(mode);
+export function keepsSourceAddress(
+  mode: InstallMode,
+  sourceRuns = false,
+): boolean {
+  if (mode === "restore") return !sourceRuns;
+  return changesLiveApp(mode);
 }
 
 export function readsLiveApp(mode: InstallMode): boolean {
@@ -176,6 +180,7 @@ export function seedForm(
   source: Record<string, unknown> | null,
   mode: InstallMode,
   generate: (length: number) => string,
+  sourceRuns = false,
 ): Record<string, unknown> {
   const seed: Record<string, unknown> = source ? { ...source } : {};
   for (const [name, prop] of Object.entries(schema.properties ?? {})) {
@@ -194,8 +199,25 @@ export function seedForm(
   }
   Object.assign(seed, chosenBranchDefaults(schema, seed));
   const address = addressField(schema);
-  if (source && address && !keepsSourceAddress(mode)) {
+  if (source && address && !keepsSourceAddress(mode, sourceRuns)) {
     delete seed[address];
   }
   return seed;
+}
+
+export type RestoreTarget = "replace" | "new";
+
+export function runningFromBackup(
+  namespace: string | null,
+  installed: { instance_name: string }[],
+): string | null {
+  if (!namespace) return null;
+  return (
+    installed.find((a) => `yolab-${a.instance_name}` === namespace)
+      ?.instance_name ?? null
+  );
+}
+
+export function restoreTargets(running: string | null): RestoreTarget[] {
+  return running ? ["replace", "new"] : ["new"];
 }

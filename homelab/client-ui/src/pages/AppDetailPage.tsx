@@ -5,15 +5,10 @@ import { ArrowLeft, RefreshCw } from "lucide-react";
 import { Page } from "@/components/AppShell";
 import { AppAccess } from "@/components/AppAccess";
 import { AppIconTile } from "@/components/AppIcon";
-import { RestoreData } from "@/components/RestoreData";
-import { NO_CHOICES, choicesFor, type RestoreChoices } from "@/lib/restore";
-import { useRestorePlan } from "@/lib/useRestorePlan";
-import { useRestorePoints } from "@/lib/useRestorePoints";
 import { useNow } from "@/lib/useNow";
 import { Button } from "@/components/ui/button";
-import { ConfirmDialog, Sheet } from "@/components/ui/sheet";
+import { ConfirmDialog } from "@/components/ui/sheet";
 import { RemoveDataChoice } from "@/components/RemoveDataChoice";
-import { BackupCopies } from "@/components/BackupCopies";
 import { removePath } from "@/lib/removeData";
 import {
   Banner,
@@ -30,7 +25,7 @@ import {
   ValueRow,
 } from "@/components/ui/list";
 import { api, streamEvents } from "@/lib/api";
-import { BACKUP_PRESETS } from "@/lib/backups";
+import { BACKUP_PRESETS, backupPagePath } from "@/lib/backups";
 import { formatDateTime, relativeTime } from "@/lib/format";
 import { useApi } from "@/lib/useResource";
 import {
@@ -381,157 +376,18 @@ function TechnicalDetails({ app }: { app: AppInfo }) {
   );
 }
 
-function RestoreSheet({
-  instanceName,
-  name,
-  open,
-  onClose,
-  onStarted,
-}: {
-  instanceName: string;
-  name: string;
-  open: boolean;
-  onClose: () => void;
-  onStarted: (snapshotTime: string | null) => void;
-}) {
-  const { points: snapshots, error: loadError } = useRestorePoints(
-    open ? `yolab-${instanceName}` : null,
-  );
-  const [chosen, setSelected] = useState<string | null>(null);
-  const selected = chosen ?? snapshots?.[0]?.snapshot_id ?? null;
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [picked, setPicked] = useState<RestoreChoices>(NO_CHOICES);
-  const restorePlan = useRestorePlan(
-    open && selected ? `yolab-${instanceName}` : null,
-    selected ?? "",
-  );
-
-  function close() {
-    setSelected(null);
-    setError(null);
-    setPicked(NO_CHOICES);
-    onClose();
-  }
-
-  async function confirm() {
-    setBusy(true);
-    setError(null);
-    try {
-      await api.post("/api/backups/restore", {
-        namespace: `yolab-${instanceName}`,
-        snapshot_id: selected,
-        ...(restorePlan.plan
-          ? {
-              choices: choicesFor(restorePlan.plan, "in-place", picked),
-            }
-          : {}),
-      });
-      onStarted(
-        snapshots?.find((s) => s.snapshot_id === selected)?.time ?? null,
-      );
-      close();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "The restore did not start.");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <Sheet
-      open={open}
-      onClose={close}
-      title={`Restore ${name}`}
-      subtitle="Its settings go back to the backup you pick. Choose below what happens to its data; whatever is replaced loses anything newer."
-    >
-      {snapshots === null ? (
-        <div className="flex items-center gap-2 py-4 text-sm text-fg-muted">
-          <Spinner className="h-4 w-4" />
-          Looking for backups…
-        </div>
-      ) : loadError ? (
-        <p className="py-4 text-sm text-fg-muted">
-          The backups could not be listed right now. Close this and try again in
-          a moment.
-        </p>
-      ) : snapshots.length === 0 ? (
-        <p className="py-4 text-sm text-fg-muted">
-          There is no backup of this service yet, so there is nothing to go back
-          to.
-        </p>
-      ) : (
-        <div className="divide-y divide-border rounded-card border border-border">
-          <AnimatedList
-            items={snapshots.map((s, i) => ({ s, i }))}
-            keyOf={({ s }) => s.snapshot_id}
-          >
-            {({ s, i }) => (
-              <label className="flex cursor-pointer items-center gap-3 px-4 py-3 hover:bg-surface-2">
-                <input
-                  type="radio"
-                  name="restore-snapshot"
-                  checked={selected === s.snapshot_id}
-                  onChange={() => setSelected(s.snapshot_id)}
-                  className="accent-primary"
-                />
-                <span className="flex-1 text-sm text-fg">
-                  {formatDateTime(s.time)}
-                </span>
-                {i === 0 && (
-                  <span className="text-xs text-fg-subtle">Latest</span>
-                )}
-              </label>
-            )}
-          </AnimatedList>
-        </div>
-      )}
-
-      {selected && snapshots && snapshots.length > 0 && (
-        <Section title="What comes back">
-          <RestoreData
-            plan={restorePlan.plan}
-            error={restorePlan.error}
-            mode="in-place"
-            app={instanceName}
-            picked={picked}
-            onPick={setPicked}
-          />
-        </Section>
-      )}
-
-      {error && <p className="mt-3 text-sm text-danger">{error}</p>}
-
-      <div className="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
-        <Button variant="secondary" onClick={close} disabled={busy}>
-          Cancel
-        </Button>
-        <Button
-          variant="danger"
-          onClick={() => void confirm()}
-          loading={busy}
-          disabled={!selected}
-        >
-          Restore
-        </Button>
-      </div>
-    </Sheet>
-  );
-}
-
 function BackupsSection({
   app,
   canBackUp,
   canRestore,
-  onRestore,
   onChanged,
 }: {
   app: AppInfo;
   canBackUp: boolean;
   canRestore: boolean;
-  onRestore: () => void;
   onChanged: () => Promise<unknown>;
 }) {
+  const navigate = useNavigate();
   const [pending, setPending] = useState<{
     enabled: boolean;
     schedule: string;
@@ -542,7 +398,6 @@ function BackupsSection({
   );
   const [draft, setDraft] = useState(app.backup.schedule);
   const [note, setNote] = useState<{ ok: boolean; text: string } | null>(null);
-  const [copiesOpen, setCopiesOpen] = useState(false);
 
   const enabled = pending?.enabled ?? app.backup.enabled;
   const schedule = pending?.schedule ?? app.backup.schedule;
@@ -683,24 +538,13 @@ function BackupsSection({
       />
       {canRestore && (
         <Row
-          label="Restore from a backup"
-          detail="Go back to an earlier copy of its files and settings"
-          onClick={onRestore}
+          label="Its backups"
+          detail="Every copy through time: bring one back, keep it forever, or give its backups more space"
+          onClick={() =>
+            navigate(backupPagePath(`yolab-${app.instance_name}`))
+          }
         />
       )}
-      {canRestore && (
-        <Row
-          label="Saved copies"
-          detail="See how much space they take, keep or delete them, and set a budget"
-          onClick={() => setCopiesOpen(true)}
-        />
-      )}
-      <BackupCopies
-        namespace={`yolab-${app.instance_name}`}
-        name={app.instance_name}
-        open={copiesOpen}
-        onClose={() => setCopiesOpen(false)}
-      />
     </Section>
   );
 }
@@ -721,7 +565,6 @@ export function AppDetailPage() {
   const [deleteBackups, setDeleteBackups] = useState(false);
   const [working, setWorking] = useState<null | "update" | "remove">(null);
   const [notice, setNotice] = useState<Notice | null>(null);
-  const [restoreOpen, setRestoreOpen] = useState(false);
   const [restore, setRestore] = useState<RestoreRecord | null>(null);
   const [restoreSeen, setRestoreSeen] = useState<string | null>(null);
 
@@ -1053,7 +896,6 @@ export function AppDetailPage() {
           app={app}
           canBackUp={actions.has("backup")}
           canRestore={actions.has("restore")}
-          onRestore={() => setRestoreOpen(true)}
           onChanged={() => apps.refresh()}
         />
       )}
@@ -1146,22 +988,6 @@ export function AppDetailPage() {
           />
         </Section>
       )}
-
-      <RestoreSheet
-        instanceName={app.instance_name}
-        name={name}
-        open={restoreOpen}
-        onClose={() => setRestoreOpen(false)}
-        onStarted={() => {
-          setRestoreSeen(null);
-          setRestore({
-            id: "pending",
-            namespace: `yolab-${app.instance_name}`,
-            started_at: new Date().toISOString(),
-            state: "running",
-          });
-        }}
-      />
 
       <ConfirmDialog
         open={confirmRemove}

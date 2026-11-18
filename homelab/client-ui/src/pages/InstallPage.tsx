@@ -10,12 +10,13 @@ import { Page } from "@/components/AppShell";
 import { Button } from "@/components/ui/button";
 import { buttonClass } from "@/components/ui/button-variants";
 import { Card } from "@/components/ui/card";
-import { Select, Switch } from "@/components/ui/input";
+import { Switch } from "@/components/ui/input";
 import { Row, Section } from "@/components/ui/list";
 import { Banner, Spinner } from "@/components/ui/feedback";
 import { api, streamEvents } from "@/lib/api";
 import { useApi } from "@/lib/useResource";
 import { formatDateTime, generateSecret } from "@/lib/format";
+import { backupPagePath } from "@/lib/backups";
 import Form from "@rjsf/core";
 import type { RJSFSchema } from "@rjsf/utils";
 import validator from "@rjsf/validator-ajv8";
@@ -31,6 +32,9 @@ import {
   snapshotNamespace,
   instanceNameFor,
   readsLiveApp,
+  restoreTargets,
+  runningFromBackup,
+  type RestoreTarget,
 } from "@/lib/install";
 import { AppIconTile } from "@/components/AppIcon";
 import { RestoreData } from "@/components/RestoreData";
@@ -126,8 +130,14 @@ export function InstallPage() {
   const { points: snapshots } = useRestorePoints(
     backupNamespace && copyData ? backupNamespace : null,
   );
-  const [pickedSnapshot, setSnapshot] = useState(origin.snapshot ?? "");
-  const snapshot = pickedSnapshot || snapshots?.[0]?.snapshot_id || "";
+  const snapshot = origin.snapshot ?? "";
+  const snapshotTime =
+    snapshots?.find((s) => s.snapshot_id === snapshot)?.time ?? null;
+  const running = runningFromBackup(backupNamespace, apps.data ?? []);
+  const [target, setTarget] = useState<RestoreTarget | null>(null);
+  const where = target ?? restoreTargets(running)[0];
+  const replacing = origin.mode === "restore" && where === "replace";
+  const waitingForApps = origin.mode === "restore" && !apps.data;
   const [picked, setPicked] = useState<RestoreChoices>(NO_CHOICES);
   const restorePlan = useRestorePlan(
     origin.mode === "restore" ? origin.namespace : null,
@@ -201,8 +211,8 @@ export function InstallPage() {
   const [formData, setFormData] = useState<Record<string, unknown>>({});
   const seeded = useRef<string | null>(null);
   useEffect(() => {
-    if (!appId || !schema.properties) return;
-    const key = `${appId}|${sourceDef ? "source" : "new"}`;
+    if (!appId || !schema.properties || waitingForApps) return;
+    const key = `${appId}|${sourceDef ? "source" : "new"}|${running ?? ""}`;
     if (seeded.current === key) return;
     seeded.current = key;
     const seed = seedForm(
@@ -210,9 +220,10 @@ export function InstallPage() {
       sourceDef ? (sourceDef.config as Record<string, unknown>) : null,
       origin.mode,
       generateSecret,
+      running !== null,
     );
     setFormData(seed);
-  }, [appId, schema, sourceDef, origin.mode]);
+  }, [appId, schema, sourceDef, origin.mode, waitingForApps, running]);
 
   const values = formData;
   const filesCopy =
@@ -247,21 +258,43 @@ export function InstallPage() {
         ? folderCheck.problem
         : "Checking the folder in your file tree…";
 
-  const blocker = installBlocker({
+  const formBlocker = installBlocker({
     instanceName,
     requiredMissing: [...required].some((n) => !String(values[n] ?? "").trim()),
     folderProblem: folderBlock,
     withData: copyData,
     needsBackup: origin.mode === "restore",
     snapshot,
-    snapshotsLoaded: snapshots !== null,
-    snapshotCount: snapshots?.length ?? 0,
+    snapshotsLoaded: true,
+    snapshotCount: snapshot ? 1 : 0,
   });
+  const blocker = replacing
+    ? restorePlan.plan
+      ? null
+      : (restorePlan.error ?? "Reading the backup…")
+    : formBlocker;
 
   async function install() {
     if (!app) return;
     setInstalling(true);
     setError(null);
+
+    if (replacing && running) {
+      try {
+        await api.post("/api/backups/restore", {
+          namespace: origin.namespace,
+          snapshot_id: snapshot,
+          ...(restorePlan.plan
+            ? { choices: choicesFor(restorePlan.plan, "in-place", picked) }
+            : {}),
+        });
+        navigate(`/app/${running}`);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : "The restore did not start.");
+        setInstalling(false);
+      }
+      return;
+    }
 
     const payload = Object.fromEntries(
       Object.entries(values).filter(([name, v]) => {
@@ -595,16 +628,22 @@ export function InstallPage() {
             ? `Update ${sourceName ?? app.name} to ${app.chart_version}`
             : `Install ${app.name}`;
 
+  const restoreLabel = replacing
+    ? `Replace ${running} with this copy`
+    : `Add ${app.name} from this copy`;
+
   const subtitle =
     origin.mode === "duplicate"
       ? "A separate service from the same settings, with its own address and storage."
-      : origin.mode === "restore"
-        ? "Its settings come back from the backup; change any of them before it is installed."
-        : origin.mode === "edit"
-          ? "Applied to the version it runs now. Its files stay as they are."
-          : origin.mode === "update"
-            ? "The settings of the new version, filled in with the ones it has now. Check them, add anything new it asks for, then update. Its files stay as they are."
-            : "Choose how it is set up. You can change these settings later.";
+      : replacing
+        ? `${running} goes back to how it was in this copy, settings included.`
+        : origin.mode === "restore"
+          ? "A new service from this copy. Its settings come back from the copy; change any of them before it is added."
+          : origin.mode === "edit"
+            ? "Applied to the version it runs now. Its files stay as they are."
+            : origin.mode === "update"
+              ? "The settings of the new version, filled in with the ones it has now. Check them, add anything new it asks for, then update. Its files stay as they are."
+              : "Choose how it is set up. You can change these settings later.";
 
   return (
     <Page>
@@ -613,6 +652,11 @@ export function InstallPage() {
           <ArrowLeft className="h-4 w-4" />
           {app.name}
         </button>
+      ) : origin.mode === "restore" && origin.namespace ? (
+        <Link to={backupPagePath(origin.namespace)} className={backLink}>
+          <ArrowLeft className="h-4 w-4" />
+          Its backups
+        </Link>
       ) : changesLiveApp(origin.mode) ? (
         <Link to={`/app/${origin.fromInstance}`} className={backLink}>
           <ArrowLeft className="h-4 w-4" />
@@ -639,27 +683,58 @@ export function InstallPage() {
 
       {notice && <div className="mt-6">{notice}</div>}
 
-      <section className="mt-8">
-        <h2 className="mb-2 px-1 text-sm font-semibold text-fg-muted">
-          Settings
-        </h2>
-        <Card className="p-5">
-          <Form
-            schema={rjsfSchema}
-            uiSchema={rjsfUiSchema}
-            formData={formData}
-            formContext={{ formData }}
-            validator={validator}
-            widgets={widgets}
-            templates={templates}
-            liveValidate={false}
-            showErrorList={false}
-            onChange={(e) => setFormData(e.formData ?? {})}
-          >
-            <></>
-          </Form>
-        </Card>
-      </section>
+      {origin.mode === "restore" && running && (
+        <Section title="Where it goes">
+          {restoreTargets(running).map((t) => (
+            <label
+              key={t}
+              className="flex cursor-pointer items-start gap-3 px-4 py-3 hover:bg-surface-2"
+            >
+              <input
+                type="radio"
+                name="restore-target"
+                checked={where === t}
+                onChange={() => setTarget(t)}
+                className="mt-1 accent-primary"
+              />
+              <span className="min-w-0">
+                <span className="block text-sm font-medium text-fg">
+                  {t === "replace" ? `Replace ${running}` : "As a new service"}
+                </span>
+                <span className="block text-sm text-fg-muted">
+                  {t === "replace"
+                    ? "Same name and address, so phones and bookmarks keep working. What it has now is replaced by this copy."
+                    : `Added next to ${running}, with its own name, address and folder. ${running} stays as it is.`}
+                </span>
+              </span>
+            </label>
+          ))}
+        </Section>
+      )}
+
+      {!replacing && (
+        <section className="mt-8">
+          <h2 className="mb-2 px-1 text-sm font-semibold text-fg-muted">
+            Settings
+          </h2>
+          <Card className="p-5">
+            <Form
+              schema={rjsfSchema}
+              uiSchema={rjsfUiSchema}
+              formData={formData}
+              formContext={{ formData }}
+              validator={validator}
+              widgets={widgets}
+              templates={templates}
+              liveValidate={false}
+              showErrorList={false}
+              onChange={(e) => setFormData(e.formData ?? {})}
+            >
+              <></>
+            </Form>
+          </Card>
+        </section>
+      )}
 
       {origin.mode === "duplicate" && (
         <Section title="Files">
@@ -694,31 +769,18 @@ export function InstallPage() {
       )}
 
       {origin.mode === "restore" && (
-        <Section title="Files">
+        <Section title={replacing ? "What comes back" : "Files"}>
           <Row
-            label="From the backup of"
-            detail={
-              snapshots === null
-                ? "Looking for backups…"
-                : snapshots.length === 0
-                  ? "There is no backup yet. Install it empty, or back it up first."
-                  : undefined
-            }
+            label="From the copy of"
+            detail={snapshotTime ? formatDateTime(snapshotTime) : snapshot}
             trailing={
-              snapshots && snapshots.length > 0 ? (
-                <Select
-                  value={snapshot}
-                  onChange={(e) => setSnapshot(e.target.value)}
-                  aria-label="Backup to copy from"
-                  className="h-9 w-auto max-w-[14rem]"
+              origin.namespace ? (
+                <Link
+                  to={backupPagePath(origin.namespace)}
+                  className="text-sm text-primary"
                 >
-                  {snapshots.map((s, i) => (
-                    <option key={s.snapshot_id} value={s.snapshot_id}>
-                      {i === 0 ? "Latest — " : ""}
-                      {formatDateTime(s.time)}
-                    </option>
-                  ))}
-                </Select>
+                  Pick another moment
+                </Link>
               ) : null
             }
           />
@@ -726,8 +788,8 @@ export function InstallPage() {
             <RestoreData
               plan={restorePlan.plan}
               error={restorePlan.error}
-              mode="reinstall"
-              app={sourceName ?? app.name}
+              mode={replacing ? "in-place" : "reinstall"}
+              app={(replacing ? running : null) ?? sourceName ?? app.name}
               picked={picked}
               onPick={setPicked}
             />
@@ -749,7 +811,7 @@ export function InstallPage() {
                 ? "Applying…"
                 : "Starting…"
             : origin.mode === "restore"
-              ? `Restore ${app.name}`
+              ? restoreLabel
               : origin.mode === "edit"
                 ? "Apply these settings"
                 : origin.mode === "update"

@@ -12,6 +12,8 @@ import {
   seedForm,
   instanceNameFor,
   readsLiveApp,
+  restoreTargets,
+  runningFromBackup,
 } from "./install";
 import type { AppDefinition } from "@/types/apps";
 import type { ConfigSchema } from "./schema";
@@ -230,6 +232,10 @@ describe("keepsSourceAddress", () => {
 
   it("never lets a duplicate take the address its original is still using", () => {
     expect(keepsSourceAddress("duplicate")).toBe(false);
+  });
+
+  it("never lets a backup brought back as a new service take the address of the one still running", () => {
+    expect(keepsSourceAddress("restore", true)).toBe(false);
   });
 });
 
@@ -486,6 +492,17 @@ describe("seedForm", () => {
     expect(seed.subdomain).toBeUndefined();
   });
 
+  it("clears the address of a backup restored next to the service it came from", () => {
+    const seed = seedForm(
+      schema,
+      { subdomain: "files" },
+      "restore",
+      counter().generate,
+      true,
+    );
+    expect(seed.subdomain).toBeUndefined();
+  });
+
   it("fills in defaults for settings the copied app never had", () => {
     const seed = seedForm(
       schema,
@@ -601,5 +618,29 @@ describe("updating an installed app to the newest version", () => {
       auth_mode: "own",
     });
     expect(lengths).toEqual([24]);
+  });
+});
+
+describe("where a restored backup goes", () => {
+  const installed = [
+    { instance_name: "nextcloud" },
+    { instance_name: "gitea" },
+  ];
+
+  it("finds the running service a backup was taken from", () => {
+    expect(runningFromBackup("yolab-nextcloud", installed)).toBe("nextcloud");
+  });
+
+  it("finds nothing for a service that was removed", () => {
+    expect(runningFromBackup("yolab-immich", installed)).toBeNull();
+    expect(runningFromBackup(null, installed)).toBeNull();
+  });
+
+  it("offers to replace a running service first, and a new one as the other choice", () => {
+    expect(restoreTargets("nextcloud")).toEqual(["replace", "new"]);
+  });
+
+  it("can only bring a removed service back as a new one", () => {
+    expect(restoreTargets(null)).toEqual(["new"]);
   });
 });

@@ -1,5 +1,6 @@
 import { useMemo, useState, type ReactNode } from "react";
-import { Package, Search, X } from "lucide-react";
+import { Link } from "react-router-dom";
+import { History, Package, Search, X } from "lucide-react";
 import { Page } from "@/components/AppShell";
 import { Button } from "@/components/ui/button";
 import { Input, Select } from "@/components/ui/input";
@@ -15,7 +16,7 @@ import {
   taglineFor,
 } from "@/catalog/meta";
 import { AppSources } from "@/components/AppSources";
-import { AddFromBackupButton } from "@/components/AddFromBackup";
+import { buttonClass } from "@/components/ui/button-variants";
 import { cn } from "@/lib/utils";
 import { AnimatedList, RollingNumber } from "@/components/motion";
 import {
@@ -190,7 +191,15 @@ export function AppsPage() {
       wide
       title="Service Store"
       subtitle="Everything here runs at home, on your own machines."
-      action={<AddFromBackupButton />}
+      action={
+        <Link
+          to="/system/backups"
+          className={buttonClass({ variant: "secondary", size: "sm" })}
+        >
+          <History className="h-4 w-4" />
+          Add from backup
+        </Link>
+      }
     >
       <div className="relative">
         <Search className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-fg-subtle" />

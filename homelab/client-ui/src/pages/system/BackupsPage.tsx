@@ -8,16 +8,21 @@ import { RecoveryKeyOverlay } from "@/components/RecoveryKeyOverlay";
 import { api } from "@/lib/api";
 import { formatDateTime } from "@/lib/format";
 import { useApi } from "@/lib/useResource";
-import { BackupCopies } from "@/components/BackupCopies";
 import {
+  backupPagePath,
+  backupServices,
+  copiesLabel,
   needsAttention,
   protectionLabel,
   protectionState,
   protectionTone,
-  removedServices,
   usageLabel,
 } from "@/lib/backups";
-import type { BackedUpService, ProtectedApp } from "@/lib/backups";
+import type {
+  BackedUpService,
+  BackupService,
+  ProtectedApp,
+} from "@/lib/backups";
 import { Collapse, RollingNumber, Swap } from "@/components/motion";
 import { cn } from "@/lib/utils";
 
@@ -28,6 +33,11 @@ interface ProtectedApps {
   apps: ProtectedApp[];
 }
 
+interface BackedUpServices {
+  configured: boolean;
+  apps: BackedUpService[];
+}
+
 const TONE_CLASS: Record<string, string> = {
   success: "text-success",
   info: "text-primary",
@@ -35,57 +45,69 @@ const TONE_CLASS: Record<string, string> = {
   muted: "text-fg-subtle",
 };
 
-function AppRow({ app }: { app: ProtectedApp }) {
+function ServiceRow({ service }: { service: BackupService }) {
   const navigate = useNavigate();
-  const state = protectionState(app);
-  const usage = usageLabel(app.size_bytes, app.budget_bytes);
+  const app = service.protection;
+  const state = app ? protectionState(app) : null;
+  const usage = usageLabel(service.sizeBytes, app?.budget_bytes);
   return (
     <Row
-      onClick={() => navigate(`/app/${app.instance_name}`)}
+      onClick={() => navigate(backupPagePath(service.namespace))}
       label={
         <span className="flex items-center gap-2.5">
           <AppIcon
-            appId={app.app_id}
-            name={app.instance_name}
+            appId={service.appId ?? undefined}
+            name={service.name}
             className="h-6 w-6"
           />
-          <span className="truncate">{app.instance_name}</span>
+          <span className="truncate">{service.name}</span>
+          {!service.installed && (
+            <span className="rounded-full border border-border px-2 py-0.5 text-xs font-normal text-fg-subtle">
+              Removed
+            </span>
+          )}
         </span>
       }
       detail={
         <>
-          <Swap
-            id={protectionLabel(state)}
-            className={cn(
-              "inline-block transition-colors duration-300",
-              TONE_CLASS[protectionTone(state)],
-            )}
-          >
-            {protectionLabel(state)}
-          </Swap>
-          {app.last_ok_at && (
+          {state && (
+            <Swap
+              id={protectionLabel(state)}
+              className={cn(
+                "inline-block transition-colors duration-300",
+                TONE_CLASS[protectionTone(state)],
+              )}
+            >
+              {protectionLabel(state)}
+            </Swap>
+          )}
+          {app?.last_ok_at && (
             <span className="font-mono tabular-nums">
               {" · "}
               {formatDateTime(app.last_ok_at)}
             </span>
           )}
+          <span className="font-mono tabular-nums">
+            {state ? " · " : ""}
+            {copiesLabel(service.copies)}
+          </span>
           {usage && (
             <span
               className={cn(
                 "font-mono tabular-nums",
-                app.over_budget && "text-warning",
+                app?.over_budget && "text-warning",
               )}
             >
               {" · "}
               {usage}
             </span>
           )}
-          {app.error && (
+          {app?.error && (
             <span className="mt-1 line-clamp-2 block text-danger">
               {app.error}
             </span>
           )}
-          {!app.error && app.warning && (
+          {!app?.error && app?.warning && (
             <span className="mt-1 line-clamp-2 block text-warning">
               {app.warning}
             </span>
@@ -96,48 +118,15 @@ function AppRow({ app }: { app: ProtectedApp }) {
   );
 }
 
-function RemovedServices() {
-  const backedUp = useApi<{ configured: boolean; apps: BackedUpService[] }>(
-    "backed-up-apps",
-    "/api/backups/apps",
-  );
-  const [open, setOpen] = useState<BackedUpService | null>(null);
-  const removed = removedServices(backedUp.data?.apps ?? []);
-  if (removed.length === 0) return null;
-  return (
-    <Section title="Removed services">
-      {removed.map((s) => (
-        <Row
-          key={s.namespace}
-          label={s.instance_name}
-          detail={
-            <span className="font-mono tabular-nums">
-              {s.versions.length === 1
-                ? "1 copy"
-                : `${s.versions.length} copies`}
-              {s.size_bytes != null && ` · ${usageLabel(s.size_bytes, null)}`}
-            </span>
-          }
-          onClick={() => setOpen(s)}
-        />
-      ))}
-      <BackupCopies
-        namespace={open?.namespace ?? ""}
-        name={open?.instance_name ?? ""}
-        open={open !== null}
-        removed
-        onClose={() => setOpen(null)}
-        onChanged={() => void backedUp.refresh()}
-      />
-    </Section>
-  );
-}
-
 export function BackupsPage() {
   const protectedApps = useApi<ProtectedApps>(
     "protected-apps",
     "/api/backups/protected",
     { pollMs: 10_000 },
+  );
+  const backedUp = useApi<BackedUpServices>(
+    "backed-up-apps",
+    "/api/backups/apps",
   );
   const [recoveryKey, setRecoveryKey] = useState<string | null>(null);
   const [recoveryMandatory, setRecoveryMandatory] = useState(false);
@@ -180,6 +169,7 @@ export function BackupsPage() {
 
   const data = protectedApps.data;
   const apps = data?.apps ?? [];
+  const services = backupServices(apps, backedUp.data?.apps ?? []);
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     const id = window.setInterval(() => setNow(Date.now()), 60_000);
@@ -204,7 +194,7 @@ export function BackupsPage() {
 
       <p className="max-w-lg text-sm text-fg-muted">
         Every service is copied with its own data, encrypted, to storage outside
-        your home. Open one to back it up now or bring it back as it was.
+        your home. Open one to see its copies through time and bring any of them back.
       </p>
 
       <Collapse open={Boolean(error)} className="pt-6">
@@ -255,17 +245,15 @@ export function BackupsPage() {
           </Collapse>
 
           <Section title="Services">
-            {apps.length === 0 ? (
+            {services.length === 0 ? (
               <Row
                 label="Nothing to back up yet"
                 detail="Once you add a service, it is backed up automatically."
               />
             ) : (
-              apps.map((app) => <AppRow key={app.namespace} app={app} />)
+              services.map((s) => <ServiceRow key={s.namespace} service={s} />)
             )}
           </Section>
-
-          <RemovedServices />
 
           <Section title="Recovery key">
             <Row
