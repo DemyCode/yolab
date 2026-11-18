@@ -540,9 +540,7 @@ function BackupsSection({
         <Row
           label="Its backups"
           detail="Every copy through time: bring one back, keep it forever, or give its backups more space"
-          onClick={() =>
-            navigate(backupPagePath(`yolab-${app.instance_name}`))
-          }
+          onClick={() => navigate(backupPagePath(`yolab-${app.instance_name}`))}
         />
       )}
     </Section>

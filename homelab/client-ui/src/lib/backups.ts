@@ -220,9 +220,7 @@ export function timelinePlaces(
   points: RestorePoint[],
   now: number,
 ): Map<string, number> {
-  const ages = points.map((p) =>
-    Math.max(0, now - new Date(p.time).getTime()),
-  );
+  const ages = points.map((p) => Math.max(0, now - new Date(p.time).getTime()));
   const oldest = Math.max(HOUR_MS, ...ages);
   const scale = Math.log1p(oldest / HOUR_MS);
   return new Map(

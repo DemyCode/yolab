@@ -194,7 +194,8 @@ export function BackupsPage() {
 
       <p className="max-w-lg text-sm text-fg-muted">
         Every service is copied with its own data, encrypted, to storage outside
-        your home. Open one to see its copies through time and bring any of them back.
+        your home. Open one to see its copies through time and bring any of them
+        back.
       </p>
 
       <Collapse open={Boolean(error)} className="pt-6">
