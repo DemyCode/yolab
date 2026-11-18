@@ -11,7 +11,7 @@ use crate::backup::common::*;
 use crate::error::Outcome;
 use crate::host::Host;
 use crate::records::Store;
-use crate::routers::folder_backup::{self, FOLDERS_TAG, KEEP_TAG};
+use crate::routers::folder_backup::{self, FOLDERS_TAG};
 
 pub(crate) const SETTINGS_REPO: &str = "cluster-backup";
 pub(crate) const MIN_BUDGET: u64 = 10 << 30;
@@ -42,7 +42,6 @@ pub(crate) struct Point {
     pub snapshot_id: String,
     pub time: String,
     pub run: Option<String>,
-    pub keep: bool,
 }
 
 impl Point {
@@ -84,7 +83,6 @@ pub(crate) fn points_of(snapshots: &Value) -> Vec<Point> {
                     snapshot_id: s["id"].as_str()?.to_string(),
                     time: raw.to_string(),
                     run: folder_backup::run_of(&tags).map(str::to_string),
-                    keep: tags.iter().any(|t| t == KEEP_TAG),
                 },
             ))
         })
@@ -207,7 +205,7 @@ where
     let forced: Vec<bool> = order
         .iter()
         .enumerate()
-        .map(|(i, (p, _))| i == 0 || p.keep || p.legacy())
+        .map(|(i, (p, _))| i == 0 || p.legacy())
         .collect();
     let mut sizer = Sizer {
         order: &order,
@@ -429,17 +427,6 @@ impl<H: Host> Service<'_, H> {
         Ok(!left.is_empty())
     }
 
-    pub(crate) async fn set_keep(&self, snapshot_id: &str, keep: bool) -> anyhow::Result<()> {
-        let flag = if keep { "--add" } else { "--remove" };
-        self.restic(
-            SETTINGS_REPO,
-            &["tag", flag, KEEP_TAG, snapshot_id],
-            RESTIC_TIMEOUT,
-        )
-        .await
-        .map(|_| ())
-    }
-
     pub(crate) async fn frees(&self, snapshot_id: &str) -> anyhow::Result<Option<u64>> {
         let points = self.points().await?;
         let Some(point) = points.iter().find(|p| p.snapshot_id == snapshot_id) else {
@@ -627,49 +614,6 @@ pub(crate) async fn after_run<H: Host>(
     })
 }
 
-pub(crate) fn retagged<'a>(before: &Point, after: &'a [Point]) -> Option<&'a Point> {
-    after.iter().find(|p| match &before.run {
-        Some(run) => p.run.as_ref() == Some(run),
-        None => p.run.is_none() && p.time == before.time,
-    })
-}
-
-pub(crate) async fn keep<H: Host>(
-    b: &Backend<H>,
-    cfg: &BackupConfig,
-    namespace: &str,
-    snapshot_id: &str,
-    keep: bool,
-) -> anyhow::Result<String> {
-    let svc = Service {
-        host: &b.host,
-        cfg,
-        namespace,
-    };
-    let points = svc.points().await?;
-    let Some(before) = points.iter().find(|p| p.snapshot_id == snapshot_id) else {
-        anyhow::bail!("{snapshot_id} is not a backup of {namespace}");
-    };
-    if before.keep == keep {
-        return Ok(snapshot_id.to_string());
-    }
-    svc.set_keep(snapshot_id, keep).await?;
-    let after = svc.points().await?;
-    let Some(now) = retagged(before, &after) else {
-        anyhow::bail!("{snapshot_id} was retagged but cannot be found again");
-    };
-    let new_id = now.snapshot_id.clone();
-    SIZES
-        .update(&b.kube, |all: &mut Sizes| {
-            if let Some(size) = all.get_mut(namespace) {
-                if let Some(added) = size.added.remove(snapshot_id) {
-                    size.added.insert(new_id.clone(), added);
-                }
-            }
-        })
-        .await?;
-    Ok(new_id)
-}
 pub(crate) fn spawn_cleanup<H: Host + Clone + 'static>(
     b: Backend<H>,
     cfg: BackupConfig,
@@ -766,12 +710,11 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    fn point(id: &str, run: Option<&str>, keep: bool) -> Point {
+    fn point(id: &str, run: Option<&str>) -> Point {
         Point {
             snapshot_id: id.into(),
             time: "2026-11-16T03:00:00Z".into(),
             run: run.map(str::to_string),
-            keep,
         }
     }
 
@@ -794,28 +737,11 @@ mod tests {
     }
 
     #[test]
-    fn a_point_is_found_again_after_retagging_gives_it_a_new_id() {
-        let before = point("aaa", Some("run:1"), false);
-        let after = vec![
-            point("bbb", Some("run:2"), false),
-            point("ccc", Some("run:1"), true),
-        ];
-        assert_eq!(retagged(&before, &after).unwrap().snapshot_id, "ccc");
-        let older = point("old", None, false);
-        let after = vec![point("new", None, true)];
-        assert_eq!(
-            retagged(&older, &after).unwrap().snapshot_id,
-            "new",
-            "an older backup has no run, so its time identifies it"
-        );
-    }
-
-    #[test]
     fn points_are_read_newest_first_without_the_nightly_cluster_snapshot() {
         let snapshots = json!([
             {"id": "old", "time": "2026-11-14T03:00:00Z", "tags": ["cluster-backup", "namespace:yolab-a"]},
             {"id": "dr", "time": "2026-11-16T04:00:00Z", "tags": ["cluster-backup", "scope:cluster"]},
-            {"id": "new", "time": "2026-11-16T03:00:00Z", "tags": ["cluster-backup", "namespace:yolab-a", "run:bk-2", "yolab-keep"]},
+            {"id": "new", "time": "2026-11-16T03:00:00Z", "tags": ["cluster-backup", "namespace:yolab-a", "run:bk-2"]},
             {"id": "broken"},
         ]);
         let points = points_of(&snapshots);
@@ -826,13 +752,11 @@ mod tests {
                     snapshot_id: "new".into(),
                     time: "2026-11-16T03:00:00Z".into(),
                     run: Some("bk-2".into()),
-                    keep: true
                 },
                 Point {
                     snapshot_id: "old".into(),
                     time: "2026-11-14T03:00:00Z".into(),
                     run: None,
-                    keep: false
                 },
             ]
         );
@@ -856,7 +780,7 @@ mod tests {
 
     #[test]
     fn folders_no_restore_point_names_are_orphans() {
-        let points = vec![point("p1", Some("bk-1"), false)];
+        let points = vec![point("p1", Some("bk-1"))];
         let folders = FolderSnapshots::from([
             ("bk-1".into(), vec!["f1".into()]),
             ("bk-0".into(), vec!["f0".into()]),
@@ -873,19 +797,18 @@ mod tests {
         assert_eq!(default_budget(u64::MAX), u64::MAX);
     }
 
-    fn aged(id: &str, hours_ago: i64, keep: bool, legacy: bool) -> Point {
+    fn aged(id: &str, hours_ago: i64, legacy: bool) -> Point {
         let now = chrono::DateTime::parse_from_rfc3339("2026-11-16T03:00:00Z").unwrap();
         Point {
             snapshot_id: id.into(),
             time: (now - chrono::Duration::hours(hours_ago)).to_rfc3339(),
             run: (!legacy).then(|| format!("run-{id}")),
-            keep,
         }
     }
 
     fn nightly(count: i64) -> Vec<Point> {
         (0..count)
-            .map(|n| aged(&format!("n{n}"), 24 * n, false, false))
+            .map(|n| aged(&format!("n{n}"), 24 * n, false))
             .collect()
     }
 
@@ -926,19 +849,17 @@ mod tests {
 
     #[tokio::test]
     async fn the_choice_is_the_same_in_hours_as_in_nights() {
-        let hourly: Vec<Point> = (0..4)
-            .map(|h| aged(&format!("h{h}"), h, false, false))
-            .collect();
+        let hourly: Vec<Point> = (0..4).map(|h| aged(&format!("h{h}"), h, false)).collect();
         assert_eq!(dropped(&hourly, 34).await, vec!["h2"]);
     }
 
     #[tokio::test]
     async fn backups_already_doubling_lose_their_oldest() {
         let spaced = [
-            aged("a", 0, false, false),
-            aged("b", 24, false, false),
-            aged("c", 72, false, false),
-            aged("d", 168, false, false),
+            aged("a", 0, false),
+            aged("b", 24, false),
+            aged("c", 72, false),
+            aged("d", 168, false),
         ];
         assert_eq!(dropped(&spaced, 34).await, vec!["d"]);
     }
@@ -982,24 +903,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_kept_or_older_style_backup_counts_in_the_spacing_but_never_goes() {
+    async fn an_older_style_backup_counts_in_the_spacing_but_never_goes() {
         let points = [
-            aged("new", 0, false, false),
-            aged("kept", 24, true, false),
-            aged("mid", 48, false, false),
-            aged("legacy", 72, false, true),
-            aged("old", 96, false, false),
+            aged("new", 0, false),
+            aged("mid", 24, false),
+            aged("legacy", 48, true),
+            aged("old", 72, false),
         ];
-        let gone = dropped(&points, 30).await;
-        assert_eq!(gone, vec!["mid".to_string(), "old".to_string()]);
+        let gone = dropped(&points, 25).await;
+        assert_eq!(gone, vec!["old".to_string()]);
     }
 
     #[tokio::test]
     async fn when_even_the_backups_that_must_stay_do_not_fit_nothing_is_deleted() {
         let points = [
-            aged("big", 0, false, false),
-            aged("a", 24, false, false),
-            aged("b", 48, false, false),
+            aged("big", 0, false),
+            aged("a", 24, false),
+            aged("b", 48, false),
         ];
         let fitted = fit(&points, 50, sized(&[("big", 80), ("a", 10), ("b", 10)]))
             .await
@@ -1010,32 +930,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_kept_backup_over_budget_alone_deletes_nothing() {
-        let points = [
-            aged("new", 0, false, false),
-            aged("pinned", 24, true, false),
-        ];
-        let fitted = fit(&points, 10, sized(&[("pinned", 50), ("new", 5)]))
+    async fn the_budget_is_the_line_when_what_must_stay_is_above_ninety_percent() {
+        let points = [aged("new", 0, false), aged("extra", 24, false)];
+        let fitted = fit(&points, 50, sized(&[("new", 48), ("extra", 10)]))
             .await
             .unwrap();
-        assert!(fitted.drop.is_empty());
-        assert!(fitted.over);
-    }
-
-    #[tokio::test]
-    async fn the_budget_is_the_line_when_what_must_stay_is_above_ninety_percent() {
-        let points = [
-            aged("new", 0, false, false),
-            aged("kept", 24, true, false),
-            aged("extra", 48, false, false),
-        ];
-        let fitted = fit(
-            &points,
-            50,
-            sized(&[("new", 8), ("kept", 40), ("extra", 10)]),
-        )
-        .await
-        .unwrap();
         assert_eq!(fitted.drop, vec!["extra".to_string()]);
         assert_eq!(fitted.size_after, 48);
         assert!(!fitted.over);
@@ -1043,9 +942,9 @@ mod tests {
 
     #[tokio::test]
     async fn a_backup_with_an_unreadable_time_stops_the_cleanup_instead_of_guessing() {
-        let mut bad = aged("bad", 24, false, false);
+        let mut bad = aged("bad", 24, false);
         bad.time = "yesterday".into();
-        let points = [aged("new", 0, false, false), bad];
+        let points = [aged("new", 0, false), bad];
         assert!(fit(&points, 0, sized(&[("new", 10), ("bad", 10)]))
             .await
             .is_err());
@@ -1094,7 +993,7 @@ mod tests {
             ("r1".into(), vec!["f1".into()]),
             ("r2".into(), vec!["f2".into()]),
         ]);
-        let points = vec![point("p2", Some("r2"), false), point("legacy", None, false)];
+        let points = vec![point("p2", Some("r2")), point("legacy", None)];
         assert_eq!(folder_ids(&points, &folders), vec!["f2".to_string()]);
     }
 

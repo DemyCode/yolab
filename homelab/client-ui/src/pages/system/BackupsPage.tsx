@@ -1,32 +1,29 @@
 import { useCallback, useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Banner, Skeleton } from "@/components/ui/feedback";
 import { Row, RowAction, Section } from "@/components/ui/list";
-import { AppIcon } from "@/components/AppIcon";
+import { AppIconTile } from "@/components/AppIcon";
+import { StatusDot } from "@/components/ui/badge";
 import { RecoveryKeyOverlay } from "@/components/RecoveryKeyOverlay";
 import { api } from "@/lib/api";
-import { formatDateTime } from "@/lib/format";
 import { useApi } from "@/lib/useResource";
 import {
   backupPagePath,
   backupServices,
-  copiesLabel,
   needsAttention,
-  protectionLabel,
-  protectionState,
-  protectionTone,
-  usageLabel,
+  STALE_AFTER_HOURS,
+  tileLabel,
+  tileTone,
 } from "@/lib/backups";
 import type {
   BackedUpService,
   BackupService,
   ProtectedApp,
 } from "@/lib/backups";
+import type { CatalogApp } from "@/types/apps";
 import { Collapse, RollingNumber, Swap } from "@/components/motion";
 import { cn } from "@/lib/utils";
-
-const STALE_AFTER_HOURS = 36;
 
 interface ProtectedApps {
   configured: boolean;
@@ -38,83 +35,48 @@ interface BackedUpServices {
   apps: BackedUpService[];
 }
 
-const TONE_CLASS: Record<string, string> = {
-  success: "text-success",
-  info: "text-primary",
-  danger: "text-danger",
-  muted: "text-fg-subtle",
-};
-
-function ServiceRow({ service }: { service: BackupService }) {
-  const navigate = useNavigate();
-  const app = service.protection;
-  const state = app ? protectionState(app) : null;
-  const usage = usageLabel(service.sizeBytes, app?.budget_bytes);
+function BackupTile({
+  service,
+  icon,
+  now,
+}: {
+  service: BackupService;
+  icon?: string;
+  now: number;
+}) {
+  const tone = tileTone(service, now);
+  const label = tileLabel(service, now);
   return (
-    <Row
-      onClick={() => navigate(backupPagePath(service.namespace))}
-      label={
-        <span className="flex items-center gap-2.5">
-          <AppIcon
-            appId={service.appId ?? undefined}
-            name={service.name}
-            className="h-6 w-6"
-          />
-          <span className="truncate">{service.name}</span>
-          {!service.installed && (
-            <span className="rounded-full border border-border px-2 py-0.5 text-xs font-normal text-fg-subtle">
-              Removed
-            </span>
-          )}
-        </span>
-      }
-      detail={
-        <>
-          {state && (
-            <Swap
-              id={protectionLabel(state)}
-              className={cn(
-                "inline-block transition-colors duration-300",
-                TONE_CLASS[protectionTone(state)],
-              )}
-            >
-              {protectionLabel(state)}
-            </Swap>
-          )}
-          {app?.last_ok_at && (
-            <span className="font-mono tabular-nums">
-              {" · "}
-              {formatDateTime(app.last_ok_at)}
-            </span>
-          )}
-          <span className="font-mono tabular-nums">
-            {state ? " · " : ""}
-            {copiesLabel(service.copies)}
-          </span>
-          {usage && (
-            <span
-              className={cn(
-                "font-mono tabular-nums",
-                app?.over_budget && "text-warning",
-              )}
-            >
-              {" · "}
-              {usage}
-            </span>
-          )}
-          {app?.error && (
-            <span className="mt-1 line-clamp-2 block text-danger">
-              {app.error}
-            </span>
-          )}
-          {!app?.error && app?.warning && (
-            <span className="mt-1 line-clamp-2 block text-warning">
-              {app.warning}
-            </span>
-          )}
-        </>
-      }
-    />
+    <Link
+      to={backupPagePath(service.namespace)}
+      className={cn(
+        "group flex flex-col items-center rounded-card p-3 transition-[background-color,opacity,transform] duration-300 hover:bg-surface active:scale-[0.97]",
+        !service.installed && "opacity-70",
+      )}
+    >
+      <div className="relative mb-3">
+        <AppIconTile
+          appId={service.appId ?? undefined}
+          icon={icon}
+          name={service.name}
+          className="shadow-[var(--shadow-card)] transition-all duration-200 group-hover:-translate-y-0.5 group-hover:shadow-[var(--shadow-lift)]"
+        />
+        <StatusDot
+          tone={tone}
+          pulse={tone === "busy"}
+          className="absolute -right-0.5 -top-0.5"
+        />
+      </div>
+      <span className="line-clamp-1 text-sm font-medium text-fg">
+        {service.name}
+      </span>
+      <Swap
+        id={label}
+        className="mt-0.5 line-clamp-2 text-balance text-center text-xs text-fg-muted"
+      >
+        {label}
+      </Swap>
+    </Link>
   );
 }
 
@@ -128,6 +90,7 @@ export function BackupsPage() {
     "backed-up-apps",
     "/api/backups/apps",
   );
+  const catalog = useApi<CatalogApp[]>("catalog", "/api/apps/catalog");
   const [recoveryKey, setRecoveryKey] = useState<string | null>(null);
   const [recoveryMandatory, setRecoveryMandatory] = useState(false);
   const [enabling, setEnabling] = useState(false);
@@ -245,16 +208,30 @@ export function BackupsPage() {
             </Banner>
           </Collapse>
 
-          <Section title="Services">
-            {services.length === 0 ? (
+          {services.length === 0 ? (
+            <Section title="Services">
               <Row
                 label="Nothing to back up yet"
                 detail="Once you add a service, it is backed up automatically."
               />
-            ) : (
-              services.map((s) => <ServiceRow key={s.namespace} service={s} />)
-            )}
-          </Section>
+            </Section>
+          ) : (
+            <section className="mt-8">
+              <h2 className="mb-2 px-1 text-sm font-semibold text-fg-muted">
+                Services
+              </h2>
+              <div className="grid animate-fade-in grid-cols-3 gap-2 sm:grid-cols-4 md:grid-cols-6">
+                {services.map((s) => (
+                  <BackupTile
+                    key={s.namespace}
+                    service={s}
+                    now={now}
+                    icon={catalog.data?.find((c) => c.id === s.appId)?.icon}
+                  />
+                ))}
+              </div>
+            </section>
+          )}
 
           <Section title="Recovery key">
             <Row

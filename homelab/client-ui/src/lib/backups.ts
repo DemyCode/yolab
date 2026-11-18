@@ -22,7 +22,6 @@ export interface ProtectedApp {
 export interface RestorePoint {
   snapshot_id: string;
   time: string;
-  keep?: boolean;
   older?: boolean;
   newest?: boolean;
   added_bytes?: number | null;
@@ -160,10 +159,6 @@ export function serviceName(namespace: string): string {
   return namespace.replace(/^yolab-/, "");
 }
 
-export function canDelete(point: RestorePoint): boolean {
-  return !point.keep;
-}
-
 export interface BackupService {
   namespace: string;
   name: string;
@@ -214,22 +209,9 @@ export function backupPagePath(namespace: string): string {
   return `/system/backups/${encodeURIComponent(namespace)}`;
 }
 
-const HOUR_MS = 3_600_000;
+export const STALE_AFTER_HOURS = 36;
 
-export function timelinePlaces(
-  points: RestorePoint[],
-  now: number,
-): Map<string, number> {
-  const ages = points.map((p) => Math.max(0, now - new Date(p.time).getTime()));
-  const oldest = Math.max(HOUR_MS, ...ages);
-  const scale = Math.log1p(oldest / HOUR_MS);
-  return new Map(
-    points.map((p, i) => [
-      p.snapshot_id,
-      1 - Math.log1p(ages[i] / HOUR_MS) / scale,
-    ]),
-  );
-}
+const HOUR_MS = 3_600_000;
 
 export function ageLabel(iso: string, now: number): string {
   const hours = Math.max(0, (now - new Date(iso).getTime()) / HOUR_MS);
@@ -239,4 +221,27 @@ export function ageLabel(iso: string, now: number): string {
   if (days < 60) return `${Math.round(days)} d ago`;
   if (days < 730) return `${Math.round(days / 30)} mo ago`;
   return `${Math.round(days / 365)} y ago`;
+}
+
+export type TileTone = "ok" | "busy" | "warn" | "error";
+
+export function tileTone(service: BackupService, now: number): TileTone {
+  const app = service.protection;
+  if (!app) return "ok";
+  const state = protectionState(app);
+  if (state === "failed") return "error";
+  if (state === "running" || state === "queued") return "busy";
+  if (isStale(app, now, STALE_AFTER_HOURS)) return "warn";
+  return "ok";
+}
+
+export function tileLabel(service: BackupService, now: number): string {
+  const app = service.protection;
+  if (!app) return `Removed · ${copiesLabel(service.copies)}`;
+  const state = protectionState(app);
+  if (state !== "ok") return protectionLabel(state);
+  const last = app.last_ok_at ? ageLabel(app.last_ok_at, now) : null;
+  return last
+    ? `${copiesLabel(service.copies)} · ${last}`
+    : copiesLabel(service.copies);
 }

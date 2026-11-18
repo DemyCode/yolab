@@ -9,7 +9,6 @@ use crate::error::Outcome;
 pub(crate) const IMAGE: &str =
     "restic/restic:0.19.1@sha256:136600b6ff6843d61d355f7f71f460a166429f35de6fd11b568fece3c9a4d510";
 pub(crate) const FOLDERS_TAG: &str = "yolab-folders";
-pub(crate) const KEEP_TAG: &str = "yolab-keep";
 pub(crate) const RUN_TAG_PREFIX: &str = "run:";
 const DATA: &str = "/data";
 const CACHE: &str = "/cache";

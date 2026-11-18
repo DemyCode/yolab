@@ -65,10 +65,6 @@ pub fn build_router(state: AppState) -> Router {
             get(backups::point_frees),
         )
         .route(
-            "/api/backups/apps/{namespace}/points/{snapshot_id}/keep",
-            axum::routing::put(backups::keep_point),
-        )
-        .route(
             "/api/backups/apps/{namespace}/run-now",
             post(backups::run_app_backup_now),
         )

@@ -386,7 +386,6 @@ pub(crate) fn points_json(
             serde_json::json!({
                 "snapshot_id": p.snapshot_id,
                 "time": p.time,
-                "keep": p.keep,
                 "older": p.legacy(),
                 "newest": i == 0,
                 "added_bytes": size.and_then(|s| s.added.get(&p.snapshot_id)).copied(),
@@ -458,26 +457,6 @@ pub async fn delete_point(
     let cfg = configured(&b).await?;
     backup_points::delete_point(&b, &cfg, &namespace, &snapshot_id).await?;
     Ok(Json(serde_json::json!({ "ok": true })))
-}
-
-#[derive(Deserialize)]
-pub struct KeepRequest {
-    pub keep: bool,
-}
-
-pub async fn keep_point(
-    State(state): State<AppState>,
-    Path((namespace, snapshot_id)): Path<(String, String)>,
-    Json(body): Json<KeepRequest>,
-) -> Result<Json<serde_json::Value>> {
-    crate::routers::install::check_backup_ref(&namespace, &snapshot_id)
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
-    let b = state.backend().await?;
-    let cfg = configured(&b).await?;
-    let id = backup_points::keep(&b, &cfg, &namespace, &snapshot_id, body.keep).await?;
-    Ok(Json(
-        serde_json::json!({ "ok": true, "keep": body.keep, "snapshot_id": id }),
-    ))
 }
 
 #[derive(Deserialize)]

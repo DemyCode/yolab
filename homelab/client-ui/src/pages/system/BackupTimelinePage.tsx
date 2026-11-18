@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { ArrowLeft, RotateCcw } from "lucide-react";
 import { Page } from "@/components/AppShell";
+import { BackupTimeline } from "@/components/BackupTimeline";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Row, RowAction, Section } from "@/components/ui/list";
@@ -15,14 +16,12 @@ import {
   ageLabel,
   budgetToBytes,
   bytesToBudget,
-  canDelete,
   copiesLabel,
   pointPath,
   pointsPath,
   restorePath,
   serviceName,
   sortRestorePoints,
-  timelinePlaces,
   usageLabel,
 } from "@/lib/backups";
 import type { ProtectedApp, RestorePoint, RestorePoints } from "@/lib/backups";
@@ -34,6 +33,8 @@ function message(e: unknown, fallback: string): string {
 }
 
 const LIST_FAILED = "Its backups could not be listed.";
+const OVER_SPACE =
+  "Its newest copy alone needs more than the space set for its backups, so no copy was deleted. Give it more space.";
 
 function useCopies(namespace: string) {
   const [data, setData] = useState<RestorePoints | null>(null);
@@ -82,52 +83,6 @@ async function chartOf(namespace: string, snapshotId: string) {
   return def.app_id;
 }
 
-function Timeline({
-  points,
-  selected,
-  now,
-  onSelect,
-}: {
-  points: RestorePoint[];
-  selected: string | null;
-  now: number;
-  onSelect: (id: string) => void;
-}) {
-  const places = timelinePlaces(points, now);
-  const oldest = points[points.length - 1];
-  return (
-    <div className="rounded-card border border-border px-5 pb-4 pt-8">
-      <div className="relative h-8">
-        <div className="absolute inset-x-0 top-1/2 h-px bg-border" />
-        {points.map((p) => {
-          const x = places.get(p.snapshot_id) ?? 0;
-          const active = p.snapshot_id === selected;
-          return (
-            <button
-              key={p.snapshot_id}
-              type="button"
-              onClick={() => onSelect(p.snapshot_id)}
-              aria-label={formatDateTime(p.time)}
-              aria-pressed={active}
-              title={formatDateTime(p.time)}
-              style={{ left: `${x * 100}%` }}
-              className={cn(
-                "absolute top-1/2 -translate-x-1/2 -translate-y-1/2 rounded-full transition-all duration-200",
-                active ? "h-5 w-5 ring-4 ring-primary/25" : "h-3 w-3",
-                p.keep ? "bg-primary" : active ? "bg-fg" : "bg-fg-subtle",
-              )}
-            />
-          );
-        })}
-      </div>
-      <div className="mt-2 flex justify-between font-mono text-xs tabular-nums text-fg-subtle">
-        <span>{oldest ? ageLabel(oldest.time, now) : ""}</span>
-        <span>now</span>
-      </div>
-    </div>
-  );
-}
-
 function Budget({
   namespace,
   copies,
@@ -165,7 +120,7 @@ function Budget({
       label="Space for its backups"
       detail={
         copies.budget_set
-          ? "When its copies need more than this, as many as fit are kept, spaced so the gaps between them double going back in time. The newest copy and the ones you keep always stay."
+          ? "When its copies need more than this, as many as fit are kept, spaced so the gaps between them double going back in time. The newest copy always stays."
           : "Chosen for you: twice the size of its newest copy, at least 10 GB. Set your own to keep more or fewer copies."
       }
     >
@@ -200,25 +155,21 @@ function Budget({
   );
 }
 
-function DeletePoint({
+function ConfirmDelete({
   namespace,
   point,
   onClose,
-  onDeleted,
+  onConfirm,
 }: {
   namespace: string;
   point: RestorePoint | null;
   onClose: () => void;
-  onDeleted: () => Promise<void>;
+  onConfirm: (point: RestorePoint) => void;
 }) {
   const [frees, setFrees] = useState<{
     id: string;
     bytes: number | null | "failed";
   } | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [failure, setFailure] = useState<{ id: string; text: string } | null>(
-    null,
-  );
   const id = point?.snapshot_id ?? null;
 
   useEffect(() => {
@@ -237,37 +188,23 @@ function DeletePoint({
     };
   }, [namespace, id]);
 
-  async function confirm() {
-    if (!id) return;
-    setBusy(true);
-    setFailure(null);
-    try {
-      await api.del(pointPath(namespace, id));
-      await onDeleted();
-      onClose();
-    } catch (e) {
-      setFailure({ id, text: message(e, "That copy was not deleted.") });
-    } finally {
-      setBusy(false);
-    }
-  }
-
   const current = frees !== null && frees.id === id ? frees.bytes : undefined;
-  const error = failure !== null && failure.id === id ? failure.text : null;
 
   return (
     <ConfirmDialog
       open={point !== null}
       onClose={onClose}
-      onConfirm={() => void confirm()}
+      onConfirm={() => {
+        if (point) onConfirm(point);
+        onClose();
+      }}
       title="Delete this copy?"
       destructive
       confirmLabel="Delete it"
-      busy={busy}
       body={
         <>
           The copy from {point ? formatDateTime(point.time) : ""} is deleted for
-          good. You can no longer go back to it.
+          good, in the background. You can no longer go back to it.
           <p className="mt-3 text-sm text-fg-muted">
             {current === undefined
               ? "Working out how much space it frees…"
@@ -279,7 +216,6 @@ function DeletePoint({
                     ? "It frees almost nothing: its files are shared with other copies."
                     : `It frees about ${formatBytes(current)}.`}
           </p>
-          {error && <p className="mt-2 text-sm text-danger">{error}</p>}
         </>
       }
     />
@@ -289,14 +225,10 @@ function DeletePoint({
 function Moment({
   namespace,
   point,
-  busy,
-  onKeep,
   onDelete,
 }: {
   namespace: string;
   point: RestorePoint;
-  busy: boolean;
-  onKeep: (keep: boolean) => void;
   onDelete: () => void;
 }) {
   const navigate = useNavigate();
@@ -317,7 +249,6 @@ function Moment({
 
   const tags = [
     point.newest ? "Newest" : null,
-    point.keep ? "Kept" : null,
     point.added_bytes != null
       ? `${formatBytes(point.added_bytes)} not in the copy before`
       : null,
@@ -329,36 +260,14 @@ function Moment({
         {formatDateTime(point.time)}
       </p>
       {tags.length > 0 && (
-        <p
-          className={cn(
-            "mt-1 text-sm",
-            point.keep ? "text-primary" : "text-fg-muted",
-          )}
-        >
-          {tags.join(" · ")}
-        </p>
+        <p className="mt-1 text-sm text-fg-muted">{tags.join(" · ")}</p>
       )}
       <div className="mt-4 flex flex-wrap items-center gap-2">
-        <Button
-          onClick={() => void restore()}
-          loading={opening}
-          disabled={busy}
-        >
+        <Button onClick={() => void restore()} loading={opening}>
           <RotateCcw className="h-4 w-4" />
           Restore this copy
         </Button>
-        <Button
-          variant="secondary"
-          onClick={() => onKeep(!point.keep)}
-          disabled={busy}
-        >
-          {point.keep ? "Stop keeping" : "Keep forever"}
-        </Button>
-        {canDelete(point) && (
-          <RowAction onClick={onDelete} disabled={busy}>
-            Delete
-          </RowAction>
-        )}
+        <RowAction onClick={onDelete}>Delete</RowAction>
       </div>
       {failed && <p className="mt-2 text-sm text-danger">{failed}</p>}
     </div>
@@ -380,31 +289,48 @@ export function BackupTimelinePage() {
   const installed = app !== undefined;
 
   const [chosen, setChosen] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<string | null>(null);
-  const [deleting, setDeleting] = useState<RestorePoint | null>(null);
+  const [confirming, setConfirming] = useState<RestorePoint | null>(null);
+  const [deleting, setDeleting] = useState<string[]>([]);
   const [deletingAll, setDeletingAll] = useState(false);
+  const [confirmAll, setConfirmAll] = useState(false);
   const [starting, setStarting] = useState(false);
+  const queue = useRef<Promise<void>>(Promise.resolve());
 
-  const points = data?.points ?? [];
+  const points = (data?.points ?? []).filter(
+    (p) => !deleting.includes(p.snapshot_id),
+  );
   const selected =
     points.find((p) => p.snapshot_id === chosen) ?? points[0] ?? null;
 
-  async function keep(point: RestorePoint, next: boolean) {
-    setBusy(true);
+  function remove(point: RestorePoint) {
     setNote(null);
-    try {
-      const r = await api.put<{ snapshot_id?: string }>(
-        `${pointPath(namespace, point.snapshot_id)}/keep`,
-        { keep: next },
-      );
-      if (r?.snapshot_id) setChosen(r.snapshot_id);
-      await reload();
-    } catch (e) {
-      setNote(message(e, "That did not change."));
-    } finally {
-      setBusy(false);
-    }
+    setDeleting((d) => [...d, point.snapshot_id]);
+    queue.current = queue.current.then(async () => {
+      try {
+        await api.del(pointPath(namespace, point.snapshot_id));
+        await reload();
+      } catch (e) {
+        const what = `The copy from ${formatDateTime(point.time)} was not deleted.`;
+        setNote(message(e, what));
+      } finally {
+        setDeleting((d) => d.filter((id) => id !== point.snapshot_id));
+      }
+    });
+  }
+
+  function removeAll() {
+    setNote(null);
+    setDeletingAll(true);
+    queue.current = queue.current.then(async () => {
+      try {
+        await api.del(`/api/backups/apps/${encodeURIComponent(namespace)}`);
+        navigate("/system/backups");
+      } catch (e) {
+        setNote(message(e, "Its backups were not deleted."));
+        setDeletingAll(false);
+      }
+    });
   }
 
   async function backUpNow() {
@@ -419,18 +345,6 @@ export function BackupTimelinePage() {
       setNote(message(e, "Could not start a backup."));
     } finally {
       setStarting(false);
-    }
-  }
-
-  async function deleteAll() {
-    setBusy(true);
-    setNote(null);
-    try {
-      await api.del(`/api/backups/apps/${encodeURIComponent(namespace)}`);
-      navigate("/system/backups");
-    } catch (e) {
-      setNote(message(e, "Its backups were not deleted."));
-      setBusy(false);
     }
   }
 
@@ -459,14 +373,32 @@ export function BackupTimelinePage() {
         </p>
       </header>
 
+      {app?.error && (
+        <div className="mb-6">
+          <Banner tone="error" title="The last backup failed">
+            {app.error}
+          </Banner>
+        </div>
+      )}
+
       {data?.over_budget && (
         <div className="mb-6">
           <Banner tone="warning" title="More than its space">
-            Its newest copy and the ones you keep need more than the space set
-            for its backups, so no copy was deleted. Give it more space or stop
-            keeping a copy.
+            {OVER_SPACE}
           </Banner>
         </div>
+      )}
+
+      {(deleting.length > 0 || deletingAll) && (
+        <p
+          className="mb-4 flex items-center gap-2 text-sm text-fg-muted"
+          role="status"
+        >
+          <Spinner className="h-4 w-4" />
+          {deletingAll
+            ? "Deleting all its copies in the background…"
+            : `Deleting ${copiesLabel(deleting.length)} in the background…`}
+        </p>
       )}
 
       {data === null && !error ? (
@@ -480,25 +412,19 @@ export function BackupTimelinePage() {
         <p className="py-4 text-sm text-fg-muted">
           There is no copy of this service yet.
         </p>
-      ) : (
+      ) : deletingAll ? null : (
         <>
-          <Timeline
+          <BackupTimeline
             points={points}
             selected={selected?.snapshot_id ?? null}
             now={now}
             onSelect={setChosen}
           />
-          <p className="mt-2 text-xs text-fg-subtle">
-            Recent days are drawn wider than old ones. Filled dots are copies
-            you keep forever.
-          </p>
           {selected && (
             <Moment
               namespace={namespace}
               point={selected}
-              busy={busy}
-              onKeep={(next) => void keep(selected, next)}
-              onDelete={() => setDeleting(selected)}
+              onDelete={() => setConfirming(selected)}
             />
           )}
           <Section title="Every copy">
@@ -516,7 +442,7 @@ export function BackupTimelinePage() {
                     {formatDateTime(p.time)}
                   </span>
                 }
-                detail={ageLabel(p.time, now) + (p.keep ? " · kept" : "")}
+                detail={ageLabel(p.time, now)}
               />
             ))}
           </Section>
@@ -542,10 +468,6 @@ export function BackupTimelinePage() {
               </RowAction>
             }
           />
-          <p className="px-1 pt-2 text-xs text-fg-subtle">
-            A copy you make with Back up now is kept forever until you stop
-            keeping it.
-          </p>
           {data && (
             <Budget
               key={`${data.budget_bytes ?? "auto"}-${data.budget_set ? 1 : 0}`}
@@ -562,35 +484,37 @@ export function BackupTimelinePage() {
         </Section>
       )}
 
-      {!installed && running.data && points.length > 0 && (
+      {!installed && running.data && points.length > 0 && !deletingAll && (
         <Section title="Delete">
           <Row
             label="Delete all its backups"
             detail="This service is no longer installed. Its copies keep taking space until you delete them."
             danger
-            onClick={() => setDeletingAll(true)}
+            onClick={() => setConfirmAll(true)}
           />
         </Section>
       )}
 
-      <DeletePoint
+      <ConfirmDelete
         namespace={namespace}
-        point={deleting}
-        onClose={() => setDeleting(null)}
-        onDeleted={reload}
+        point={confirming}
+        onClose={() => setConfirming(null)}
+        onConfirm={remove}
       />
 
       <ConfirmDialog
-        open={deletingAll}
-        onClose={() => setDeletingAll(false)}
-        onConfirm={() => void deleteAll()}
+        open={confirmAll}
+        onClose={() => setConfirmAll(false)}
+        onConfirm={() => {
+          setConfirmAll(false);
+          removeAll();
+        }}
         title={`Delete every backup of ${name}?`}
         destructive
         confirmLabel="Delete them all"
-        busy={busy}
         body={
           <>
-            Every copy is deleted for good
+            Every copy is deleted for good, in the background
             {data?.size_bytes != null
               ? `, freeing about ${formatBytes(data.size_bytes)}`
               : ""}

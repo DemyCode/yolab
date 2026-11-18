@@ -7,14 +7,14 @@ import {
   protectionTone,
   budgetToBytes,
   bytesToBudget,
-  canDelete,
   pointPath,
   ageLabel,
   backupPagePath,
   backupServices,
   copiesLabel,
   restorePath,
-  timelinePlaces,
+  tileLabel,
+  tileTone,
   serviceName,
   sortRestorePoints,
   usageLabel,
@@ -211,11 +211,6 @@ describe("restore points", () => {
       "/api/backups/apps/yolab-gitea-ab23/points/1a2b3c4d",
     );
   });
-
-  it("never offers to delete a point the user chose to keep", () => {
-    expect(canDelete({ snapshot_id: "a", time: "", keep: true })).toBe(false);
-    expect(canDelete({ snapshot_id: "a", time: "" })).toBe(true);
-  });
 });
 
 describe("backupServices", () => {
@@ -291,36 +286,6 @@ describe("backupServices", () => {
   });
 });
 
-describe("timelinePlaces", () => {
-  const at = (id: string, hoursAgo: number) => ({
-    snapshot_id: id,
-    time: new Date(NOW - hoursAgo * 3_600_000).toISOString(),
-  });
-
-  it("puts the newest copy at the right edge and the oldest at the left", () => {
-    const places = timelinePlaces([at("new", 0), at("old", 24 * 30)], NOW);
-    expect(places.get("new")).toBe(1);
-    expect(places.get("old")).toBe(0);
-  });
-
-  it("stretches recent time so doubling gaps look evenly spaced", () => {
-    const places = timelinePlaces(
-      [at("a", 0), at("b", 24), at("c", 72), at("d", 168), at("e", 360)],
-      NOW,
-    );
-    const xs = ["a", "b", "c", "d", "e"].map((id) => places.get(id)!);
-    const steps = xs.slice(1).map((x, i) => xs[i] - x);
-    const later = steps.slice(1);
-    expect(Math.max(...later) / Math.min(...later)).toBeLessThan(1.6);
-    expect(xs.every((x) => x >= 0 && x <= 1)).toBe(true);
-  });
-
-  it("keeps a single copy, or one from the future, on the line", () => {
-    const places = timelinePlaces([at("only", -2)], NOW);
-    expect(places.get("only")).toBe(1);
-  });
-});
-
 describe("ageLabel", () => {
   it("says how long ago in the largest unit that reads naturally", () => {
     const ago = (h: number) => new Date(NOW - h * 3_600_000).toISOString();
@@ -329,5 +294,41 @@ describe("ageLabel", () => {
     expect(ageLabel(ago(72), NOW)).toBe("3 d ago");
     expect(ageLabel(ago(24 * 120), NOW)).toBe("4 mo ago");
     expect(ageLabel(ago(24 * 1000), NOW)).toBe("3 y ago");
+  });
+});
+
+describe("backup tiles", () => {
+  const service = (protection: ProtectedApp | null) => ({
+    namespace: "yolab-gitea-ab23",
+    name: "gitea-ab23",
+    appId: protection ? "gitea" : null,
+    installed: protection !== null,
+    protection,
+    copies: 4,
+    sizeBytes: null,
+  });
+
+  it("shows how many copies a saved service has and how old the last one is", () => {
+    const s = service(app({ last_ok_at: "2026-09-24T09:00:00Z" }));
+    expect(tileLabel(s, NOW)).toBe("4 copies · 3 h ago");
+    expect(tileTone(s, NOW)).toBe("ok");
+  });
+
+  it("marks a removed service and lights no dot for it", () => {
+    expect(tileLabel(service(null), NOW)).toBe("Removed · 4 copies");
+    expect(tileTone(service(null), NOW)).toBe("ok");
+  });
+
+  it("shows a failed save in red and an old one as a warning", () => {
+    expect(tileTone(service(app({ state: "failed" })), NOW)).toBe("error");
+    expect(tileLabel(service(app({ state: "failed" })), NOW)).toBe(
+      "Last save failed",
+    );
+    const old = app({ last_ok_at: "2026-09-20T03:00:00Z" });
+    expect(tileTone(service(old), NOW)).toBe("warn");
+  });
+
+  it("shows a save in progress as busy", () => {
+    expect(tileTone(service(app({ state: "running" })), NOW)).toBe("busy");
   });
 });
