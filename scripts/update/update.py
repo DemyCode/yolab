@@ -845,6 +845,7 @@ def build_checks(root, attrs):
         "build",
         "--no-link",
         "--impure",
+        "--print-build-logs",
         *(f"{root}#{a.format(system=system)}" for a in attrs),
     ]
     for _ in range(HASH_REPAIRS + 1):

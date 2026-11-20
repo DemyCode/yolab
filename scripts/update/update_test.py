@@ -410,6 +410,17 @@ class HashRepair(unittest.TestCase):
             ):
                 update.build_checks(root, ["checks.{system}.a"])
 
+    def test_every_check_build_streams_its_build_log(self):
+        seen = []
+        with (
+            mock.patch.object(update, "current_system", return_value="x"),
+            mock.patch.object(
+                update, "nix_build", lambda cmd: (seen.append(cmd), (True, ""))[1]
+            ),
+        ):
+            update.build_checks("/x/yolab", ["checks.{system}.a"])
+        self.assertIn("--print-build-logs", seen[0])
+
     def test_yolabs_flake_update_also_builds_its_caddy(self):
         self.assertIn(
             "nixosConfigurations.yolab.config.services.caddy.package",
