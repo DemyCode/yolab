@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 
 use crate::backup::common::*;
 use crate::backup::restore_plan as rf;
-use crate::backup::run::VolumeSnapshot;
+use crate::backup::run::{CatalogVolume, VolumeSnapshot};
 use crate::error::Outcome;
 use crate::host::Host;
 use crate::ops::{self, Claim, Claimed, FAILED, QUEUED, RUNNING, SUCCEEDED};
@@ -241,7 +241,7 @@ async fn restore_inner<H: Host>(
     .await?;
     let restore_as_of = Some(snapshot_time(&b.host, &repo, cfg, snapshot_id).await?);
 
-    let pvcs = catalog_pvcs(&catalog, namespace);
+    let pvcs = catalog_pvcs(&catalog, namespace)?;
     let live = crate::tree::claimed_in(&crate::tree::volumes(&b.kube).await?, namespace);
     let mut saved = SavedFolders::default();
     let mut backed_up = Vec::new();
@@ -438,7 +438,7 @@ pub(crate) async fn older_volume_copies<H: Host>(
     let repo = cfg.restic_repo("cluster-backup");
     let catalog = extract_json_file(host, &repo, cfg, snapshot_id, "catalog.json").await?;
     Ok(copies_saved_before_the_tree(
-        &catalog_pvcs(&catalog, namespace),
+        &catalog_pvcs(&catalog, namespace)?,
         namespace,
     ))
 }
@@ -657,7 +657,7 @@ pub(crate) async fn backup_payload<H: Host>(
 
     let mut volumes = Vec::new();
     let mut saved = SavedFolders::default();
-    for pvc in catalog_pvcs(&catalog, source_namespace) {
+    for pvc in catalog_pvcs(&catalog, source_namespace)? {
         let plan = plan_for(
             &b.host,
             &cfg,
@@ -945,7 +945,7 @@ pub(crate) async fn restore_plan<H: Host>(
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     let (cfg, repo) = open_backups(b).await?;
     let catalog = extract_json_file(&b.host, &repo, &cfg, snapshot_id, "catalog.json").await?;
-    let pvcs = catalog_pvcs(&catalog, namespace);
+    let pvcs = catalog_pvcs(&catalog, namespace)?;
     let as_of = Some(snapshot_time(&b.host, &repo, &cfg, snapshot_id).await?);
     let mut saved = SavedFolders::default();
     let mut backed_up = Vec::new();
@@ -1181,28 +1181,31 @@ struct CatalogPvc {
     folder: Option<String>,
 }
 
-fn catalog_pvcs(catalog: &Value, namespace: &str) -> Vec<CatalogPvc> {
-    catalog["services"]
+fn catalog_pvcs(catalog: &Value, namespace: &str) -> anyhow::Result<Vec<CatalogPvc>> {
+    let Some(service) = catalog["services"]
         .as_array()
         .and_then(|svcs| {
             svcs.iter()
                 .find(|s| s["namespace"].as_str() == Some(namespace))
         })
-        .and_then(|s| s["pvcs"].as_array())
-        .map(|pvcs| {
-            pvcs.iter()
-                .filter_map(|p| {
-                    Some(CatalogPvc {
-                        name: p["name"].as_str()?.to_string(),
-                        capacity: p["capacity"].as_str().unwrap_or("10Gi").to_string(),
-                        snapshot: VolumeSnapshot::recorded_in(p),
-                        store: p["store"].as_str().map(str::to_string),
-                        folder: p["folder"].as_str().map(str::to_string),
-                    })
-                })
-                .collect()
+    else {
+        return Ok(Vec::new());
+    };
+    let volumes: Vec<CatalogVolume> = match &service["pvcs"] {
+        Value::Null => Vec::new(),
+        listed => serde_json::from_value(listed.clone())
+            .with_context(|| format!("the backup's list of {namespace}'s volumes"))?,
+    };
+    Ok(volumes
+        .into_iter()
+        .map(|v| CatalogPvc {
+            snapshot: v.snapshot(),
+            name: v.name,
+            capacity: v.capacity,
+            store: v.store,
+            folder: v.folder,
         })
-        .unwrap_or_default()
+        .collect())
 }
 
 pub(crate) async fn list(client: &Client) -> anyhow::Result<Vec<Value>> {
@@ -1528,7 +1531,7 @@ mod tests {
             ]},
             {"namespace": "yolab-other", "pvcs": [{"name": "other-data", "capacity": "5Gi"}]},
         ]});
-        let pvcs = catalog_pvcs(&catalog, "yolab-gitea");
+        let pvcs = catalog_pvcs(&catalog, "yolab-gitea").unwrap();
         assert_eq!(
             pvcs,
             vec![
@@ -1555,8 +1558,17 @@ mod tests {
                 },
             ]
         );
-        assert!(catalog_pvcs(&catalog, "yolab-nope").is_empty());
-        assert!(catalog_pvcs(&json!({}), "yolab-gitea").is_empty());
+        assert!(catalog_pvcs(&catalog, "yolab-nope").unwrap().is_empty());
+        assert!(catalog_pvcs(&json!({}), "yolab-gitea").unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_volume_entry_without_a_name_is_a_broken_backup_not_a_volume_to_skip() {
+        let catalog = json!({"services": [
+            {"namespace": "yolab-gitea", "pvcs": [{"capacity": "5Gi"}]},
+        ]});
+        let err = catalog_pvcs(&catalog, "yolab-gitea").unwrap_err();
+        assert!(format!("{err:#}").contains("yolab-gitea"), "{err:#}");
     }
 
     #[test]
@@ -1715,7 +1727,7 @@ mod tests {
             {"name": "never"},
         ]}]});
         assert_eq!(
-            copies_saved_before_the_tree(&catalog_pvcs(&catalog, "yolab-a"), "yolab-a"),
+            copies_saved_before_the_tree(&catalog_pvcs(&catalog, "yolab-a").unwrap(), "yolab-a"),
             vec![("volsync/yolab-a/old".to_string(), vec!["v1".to_string()])]
         );
     }

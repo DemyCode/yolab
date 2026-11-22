@@ -468,11 +468,30 @@ pub(crate) struct VolumeSnapshot {
     pub time: String,
 }
 
-impl VolumeSnapshot {
-    pub(crate) fn recorded_in(entry: &Value) -> Option<VolumeSnapshot> {
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct CatalogVolume {
+    pub name: String,
+    #[serde(default = "capacity_not_recorded")]
+    pub capacity: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot_time: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub store: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder: Option<String>,
+}
+
+fn capacity_not_recorded() -> String {
+    "10Gi".to_string()
+}
+
+impl CatalogVolume {
+    pub(crate) fn snapshot(&self) -> Option<VolumeSnapshot> {
         Some(VolumeSnapshot {
-            id: entry["snapshot_id"].as_str()?.to_string(),
-            time: entry["snapshot_time"].as_str()?.to_string(),
+            id: self.snapshot_id.clone()?,
+            time: self.snapshot_time.clone()?,
         })
     }
 }
@@ -514,17 +533,15 @@ fn catalog_pvc(
     capacity: &str,
     pinned: Option<&VolumeSnapshot>,
     in_tree: Option<(&str, &str)>,
-) -> Value {
-    let mut v = json!({ "name": name, "capacity": capacity });
-    if let Some(s) = pinned {
-        v["snapshot_id"] = Value::String(s.id.clone());
-        v["snapshot_time"] = Value::String(s.time.clone());
+) -> CatalogVolume {
+    CatalogVolume {
+        name: name.to_string(),
+        capacity: capacity.to_string(),
+        snapshot_id: pinned.map(|s| s.id.clone()),
+        snapshot_time: pinned.map(|s| s.time.clone()),
+        store: in_tree.map(|(store, _)| store.to_string()),
+        folder: in_tree.map(|(_, folder)| folder.to_string()),
     }
-    if let Some((store, folder)) = in_tree {
-        v["store"] = Value::String(store.to_string());
-        v["folder"] = Value::String(folder.to_string());
-    }
-    v
 }
 
 pub(crate) const STAGING_ROOT: &str = "/var/lib/yolab/backup-staging";
@@ -778,7 +795,7 @@ async fn snapshot_cluster_inner<H: Host>(
             .unwrap_or("")
             .to_string();
 
-        let pvcs: Vec<Value> = pvcs_by_ns
+        let pvcs: Vec<CatalogVolume> = pvcs_by_ns
             .get(ns)
             .map(|list| {
                 list.iter()
@@ -1214,14 +1231,18 @@ mod tests {
             time: "2026-09-14T12:10:05Z".into(),
         };
         assert_eq!(
-            catalog_pvc("data", "5Gi", Some(&snap), None),
+            serde_json::to_value(catalog_pvc("data", "5Gi", Some(&snap), None)).unwrap(),
             json!({"name": "data", "capacity": "5Gi", "snapshot_id": "abc",
                    "snapshot_time": "2026-09-14T12:10:05Z"})
         );
         assert_eq!(
-            catalog_pvc("data", "5Gi", None, None),
+            serde_json::to_value(catalog_pvc("data", "5Gi", None, None)).unwrap(),
             json!({"name": "data", "capacity": "5Gi"})
         );
+    }
+
+    fn read_back(written: CatalogVolume) -> CatalogVolume {
+        serde_json::from_str(&serde_json::to_string(&written).unwrap()).unwrap()
     }
 
     #[test]
@@ -1231,11 +1252,11 @@ mod tests {
             time: "2026-10-12T03:00:00Z".into(),
         };
         assert_eq!(
-            VolumeSnapshot::recorded_in(&catalog_pvc("data", "5Gi", Some(&snap), None)),
+            read_back(catalog_pvc("data", "5Gi", Some(&snap), None)).snapshot(),
             Some(snap)
         );
         assert_eq!(
-            VolumeSnapshot::recorded_in(&catalog_pvc("data", "5Gi", None, None)),
+            read_back(catalog_pvc("data", "5Gi", None, None)).snapshot(),
             None
         );
     }
