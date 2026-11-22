@@ -21,10 +21,6 @@
 
   isFirstNode = k3sCfg.server_addr == "";
 
-  tunnelDomain = lib.removePrefix "https://" (lib.removePrefix "http://" s.tunnelCfg.dns_url);
-  userDomain = lib.concatStringsSep "." (lib.drop 1 (lib.splitString "." tunnelDomain));
-  platformApiUrl = lib.removeSuffix "/" (s.tunnelCfg.platform_api_url or "https://api.yolab.io");
-
   ipv6 = import ./ipv6.nix {inherit lib;};
   yolabRange =
     if (s.tunnelCfg.sub_ipv6 or "") == "" || lib.hasPrefix "[" (s.tunnelCfg.wg_server_endpoint or "")
@@ -37,9 +33,6 @@
     "2606:4700:4700::1111"
     "2001:4860:4860::8888"
   ];
-
-  localApiPort = 3001;
-  localApi = "[::1]:${toString localApiPort}";
 
   flannelVxlanPort = 8472;
   lanSet4 = "yolab-lan4";
@@ -56,6 +49,7 @@
       else builtins.head m;
 in {
   imports = [
+    ./gateway.nix
     ./ceph
     ./ceph/images-store.nix
     ./ceph/filesystem.nix
@@ -130,7 +124,7 @@ in {
           iptables -A nixos-fw -p udp --dport ${toString flannelVxlanPort} -m set --match-set ${lanSet4} src -j nixos-fw-accept
           ip6tables -A nixos-fw -p udp --dport ${toString flannelVxlanPort} -m set --match-set ${lanSet6} src -j nixos-fw-accept
           for pods in cni0 flannel.1 flannel-v6.1; do
-            for port in ${toString localApiPort} ${toString s.sshPort} 2379 2380; do
+            for port in ${toString s.localApiPort} ${toString s.sshPort} 2379 2380; do
               iptables -I nixos-fw 1 -i "$pods" -p tcp --dport "$port" -j nixos-fw-refuse
               ip6tables -I nixos-fw 1 -i "$pods" -p tcp --dport "$port" -j nixos-fw-refuse
             done
@@ -312,122 +306,6 @@ in {
       serviceConfig.TimeoutStartSec = lib.mkForce "1800";
     };
 
-    services.caddy = {
-      enable = true;
-      package = pkgs.caddy.withPlugins {
-        plugins = ["github.com/caddy-dns/acmedns@v0.7.0"];
-        hash = "sha256-ZI3OawB18O3q9P8Ub65AUjTunLdqn316LuXIYk5Qssk=";
-      };
-      configFile = pkgs.writeText "Caddyfile" ''
-        (shared_tls) {
-          tls {
-            dns acmedns {
-              username yolab
-              password {env.YOLAB_ACCOUNT_TOKEN}
-              subdomain {args[0]}
-              server_url ${platformApiUrl}/acme-dns
-            }
-          }
-        }
-
-        (yolab_ui) {
-          header {
-            X-Frame-Options DENY
-            Content-Security-Policy "frame-ancestors 'none'; object-src 'none'; base-uri 'self'"
-            X-Content-Type-Options nosniff
-            Referrer-Policy no-referrer
-            Strict-Transport-Security "max-age=31536000"
-            -Server
-          }
-          handle /api/* {
-            reverse_proxy ${localApi}
-          }
-          handle ${config.yolab.ceph.dashboard.urlPrefix}* {
-            forward_auth ${localApi} {
-              uri /api/auth/check
-            }
-            reverse_proxy ${localApi}
-          }
-          handle {
-            root * ${s.clientUi}
-            try_files {path} /index.html
-            @hashed path_regexp \.[0-9a-zA-Z_-]{8,}\.(js|css|woff2?|png|svg|jpg|webp)$
-            header @hashed Cache-Control "public, max-age=31536000, immutable"
-            @entry path / /index.html
-            header @entry Cache-Control "no-cache"
-            file_server
-          }
-        }
-
-        ${tunnelDomain} {
-          import yolab_ui
-        }
-
-        cluster.${userDomain} {
-          import shared_tls cluster
-          import yolab_ui
-        }
-
-        notify.${userDomain} {
-          import shared_tls notify
-          reverse_proxy [::1]:2586 {
-            flush_interval -1
-          }
-        }
-      '';
-    };
-
-    systemd.services.caddy = {
-      after = [
-        "wireguard-wg0.service"
-        "yolab-caddy-credentials.service"
-      ];
-      wants = [
-        "wireguard-wg0.service"
-        "yolab-caddy-credentials.service"
-      ];
-      serviceConfig.EnvironmentFile = "-/var/lib/yolab/caddy/acme.env";
-    };
-
-    systemd.services.yolab-caddy-credentials = {
-      description = "Give Caddy the key for certificates of the shared names";
-      wantedBy = ["multi-user.target"];
-      before = ["caddy.service"];
-      after = ["local-fs.target"];
-      serviceConfig = {
-        Type = "oneshot";
-        RemainAfterExit = true;
-        TimeoutStartSec = "60s";
-        ExecStart = "${localApiEnv}/bin/local-api shared-names credentials";
-      };
-    };
-
-    services.ntfy-sh = {
-      enable = true;
-      settings = {
-        base-url = "https://notify.${userDomain}";
-        listen-http = "[::1]:2586";
-        behind-proxy = true;
-        auth-default-access = "deny-all";
-        upstream-base-url = "https://ntfy.sh";
-      };
-      environmentFile = "/var/lib/yolab/ntfy/ntfy.env";
-    };
-
-    systemd.services.yolab-ntfy-credentials = {
-      description = "Open the cluster's notification topic in ntfy";
-      wantedBy = ["multi-user.target"];
-      before = ["ntfy-sh.service"];
-      requiredBy = ["ntfy-sh.service"];
-      after = ["local-fs.target"];
-      serviceConfig = {
-        Type = "oneshot";
-        RemainAfterExit = true;
-        TimeoutStartSec = "60s";
-        ExecStart = "${localApiEnv}/bin/local-api notify credentials";
-      };
-    };
-
     systemd.services.yolab-local-api = {
       after = ["network.target"];
       wantedBy = ["multi-user.target"];
@@ -438,6 +316,7 @@ in {
             lib.makeBinPath (with pkgs; [ceph ceph-client lvm2 util-linux xfsprogs e2fsprogs coreutils systemd cryptsetup cifs-utils])
             + ":/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin:/run/wrappers/bin"
           );
+          YOLAB_PORT = toString s.localApiPort;
           YOLAB_MACHINE_DIR = config.yolab.machineDir;
           YOLAB_CONFIG = "${config.yolab.machineDir}/config.toml";
           YOLAB_NODE_IPV6 = s.nodeCfg.sub_ipv6_private;

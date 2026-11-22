@@ -9,7 +9,19 @@
   timers = cfg.systemd.timers;
   isOurs = name: lib.hasPrefix "yolab-" name;
 in {
-  self-healing-timers-can-re-arm = let
+  every-machine-runs-the-gateway-in-front-of-its-api = let
+    api = svcs.yolab-local-api.environment or {};
+  in
+    failOn "every-machine-runs-the-gateway-in-front-of-its-api" {
+      problems =
+        lib.optional (!cfg.services.caddy.enable) "Caddy is not enabled, so nothing serves the UI or proxies the API"
+        ++ lib.optional (!cfg.services.ntfy-sh.enable) "ntfy is not enabled, so alerts have nowhere to go"
+        ++ lib.optional (!(svcs ? yolab-caddy-credentials)) "yolab-caddy-credentials is missing, so Caddy cannot get certificates for the shared names"
+        ++ lib.optional ((api.YOLAB_PORT or "") == "") "yolab-local-api is not told its port, so the gateway and the firewall can name a different one";
+      explain = ''
+        homelab/nixos/gateway.nix must stay imported, and local-api must listen
+        on the port the gateway proxies to:'';
+    };  self-healing-timers-can-re-arm = let
     allowlist = ["yolab-ceph-bootstrap"];
     remainsAfterExit = name: (svcs.${name}.serviceConfig.RemainAfterExit or false) == true;
   in

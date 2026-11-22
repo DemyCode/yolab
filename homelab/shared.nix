@@ -22,6 +22,7 @@ in {
   allowedSshKeys = cfg.allowed_ssh_keys or [];
   rootSshKey = cfg.root_ssh_key or "";
   homelabPasswordHash = cfg.homelab_password_hash or "";
+  localApiPort = 3001;
 
   inherit
     homelabConfig
