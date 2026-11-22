@@ -1,5 +1,5 @@
-use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use chrono::{DateTime, SecondsFormat, Utc};
@@ -15,7 +15,11 @@ const LEASE_SECS: i64 = 30;
 const RENEW_EVERY: Duration = Duration::from_secs(10);
 const ACT_WITHIN_MS: i64 = 20_000;
 
-static IS_ME: AtomicBool = AtomicBool::new(false);
+static RENEWED: OnceLock<Arc<AtomicI64>> = OnceLock::new();
+
+fn held(last_renewed_ms: i64, now: i64) -> bool {
+    last_renewed_ms > 0 && now - last_renewed_ms < ACT_WITHIN_MS
+}
 
 #[derive(Clone)]
 pub struct Leadership {
@@ -28,8 +32,7 @@ impl Leadership {
         if let Some(f) = self.fixed {
             return f;
         }
-        let last = self.last_renewed_ms.load(Ordering::SeqCst);
-        last > 0 && now_ms() - last < ACT_WITHIN_MS
+        held(self.last_renewed_ms.load(Ordering::SeqCst), now_ms())
     }
 
     #[cfg(test)]
@@ -50,7 +53,9 @@ impl Leadership {
 }
 
 pub fn current_holder_is_me() -> bool {
-    IS_ME.load(Ordering::SeqCst)
+    RENEWED
+        .get()
+        .is_some_and(|last| held(last.load(Ordering::SeqCst), now_ms()))
 }
 
 fn now_ms() -> i64 {
@@ -58,7 +63,9 @@ fn now_ms() -> i64 {
 }
 
 pub fn start(identity: String, kube: Kube) -> Leadership {
-    let last = Arc::new(AtomicI64::new(0));
+    let last = RENEWED
+        .get_or_init(|| Arc::new(AtomicI64::new(0)))
+        .clone();
     let handle = Leadership {
         last_renewed_ms: last.clone(),
         fixed: None,
@@ -70,6 +77,7 @@ pub fn start(identity: String, kube: Kube) -> Leadership {
     tokio::spawn(async move {
         let mut seen: Option<(String, Instant)> = None;
         let mut failing = false;
+        let mut holding = false;
         loop {
             let attempt_started = now_ms();
             let attempt = match kube.client().await {
@@ -84,13 +92,13 @@ pub fn start(identity: String, kube: Kube) -> Leadership {
             failing = attempt.is_err();
             match attempt {
                 Ok(true) => {
-                    if !IS_ME.swap(true, Ordering::SeqCst) {
+                    if !std::mem::replace(&mut holding, true) {
                         tracing::info!("leader: {identity} now holds the cluster lease");
                     }
                     last.store(attempt_started, Ordering::SeqCst);
                 }
                 Ok(false) => {
-                    if IS_ME.swap(false, Ordering::SeqCst) {
+                    if std::mem::replace(&mut holding, false) {
                         tracing::warn!("leader: {identity} lost the cluster lease");
                     }
                     last.store(0, Ordering::SeqCst);
@@ -233,6 +241,34 @@ async fn try_acquire(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_lease_not_renewed_for_the_acting_window_is_no_longer_held() {
+        let now = 1_000_000;
+        assert!(held(now - 1_000, now));
+        assert!(!held(now - ACT_WITHIN_MS, now));
+        assert!(!held(0, now), "never renewed is not held");
+    }
+
+    #[test]
+    fn the_status_page_and_the_controllers_read_leadership_the_same_way() {
+        let now = now_ms();
+        let last = RENEWED.get_or_init(|| Arc::new(AtomicI64::new(0)));
+        let controllers = Leadership {
+            last_renewed_ms: last.clone(),
+            fixed: None,
+        };
+        last.store(now - ACT_WITHIN_MS - 1, Ordering::SeqCst);
+        assert!(!controllers.is_leader());
+        assert!(
+            !current_holder_is_me(),
+            "the status page still says leader after the controllers stood down"
+        );
+        last.store(now, Ordering::SeqCst);
+        assert!(controllers.is_leader());
+        assert!(current_holder_is_me());
+        last.store(0, Ordering::SeqCst);
+    }
 
     fn lease(holder: &str, renewed_secs_ago: i64, now: DateTime<Utc>) -> Value {
         json!({
