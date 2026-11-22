@@ -63,9 +63,7 @@ fn now_ms() -> i64 {
 }
 
 pub fn start(identity: String, kube: Kube) -> Leadership {
-    let last = RENEWED
-        .get_or_init(|| Arc::new(AtomicI64::new(0)))
-        .clone();
+    let last = RENEWED.get_or_init(|| Arc::new(AtomicI64::new(0))).clone();
     let handle = Leadership {
         last_renewed_ms: last.clone(),
         fixed: None,

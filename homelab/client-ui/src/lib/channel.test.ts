@@ -14,7 +14,10 @@ describe("switchChannel", () => {
     const fetch = answer(200, {});
     vi.stubGlobal("fetch", fetch);
     expect(await switchChannel(" github:a/b ", " main ")).toBeNull();
-    const [path, init] = fetch.mock.calls[0] as unknown as [string, RequestInit];
+    const [path, init] = fetch.mock.calls[0] as unknown as [
+      string,
+      RequestInit,
+    ];
     expect(path).toBe("/api/update/channel");
     expect(init.method).toBe("PUT");
     expect(JSON.parse(String(init.body))).toEqual({

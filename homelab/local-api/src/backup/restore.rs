@@ -326,9 +326,7 @@ fn restorable(plan: VolumePlan) -> Result<Option<Restorable>, String> {
     match plan {
         VolumePlan::NoBackup => Ok(None),
         VolumePlan::Refuse(why) => Err(why),
-        VolumePlan::FromFolders { snapshot, path } => {
-            Ok(Some(Restorable { snapshot, path }))
-        }
+        VolumePlan::FromFolders { snapshot, path } => Ok(Some(Restorable { snapshot, path })),
     }
 }
 
@@ -443,7 +441,10 @@ pub(crate) async fn older_volume_copies<H: Host>(
     ))
 }
 
-fn copies_saved_before_the_tree(pvcs: &[CatalogPvc], namespace: &str) -> Vec<(String, Vec<String>)> {
+fn copies_saved_before_the_tree(
+    pvcs: &[CatalogPvc],
+    namespace: &str,
+) -> Vec<(String, Vec<String>)> {
     pvcs.iter()
         .filter(|p| p.store.is_none())
         .filter_map(|p| {
@@ -1182,13 +1183,10 @@ struct CatalogPvc {
 }
 
 fn catalog_pvcs(catalog: &Value, namespace: &str) -> anyhow::Result<Vec<CatalogPvc>> {
-    let Some(service) = catalog["services"]
-        .as_array()
-        .and_then(|svcs| {
-            svcs.iter()
-                .find(|s| s["namespace"].as_str() == Some(namespace))
-        })
-    else {
+    let Some(service) = catalog["services"].as_array().and_then(|svcs| {
+        svcs.iter()
+            .find(|s| s["namespace"].as_str() == Some(namespace))
+    }) else {
         return Ok(Vec::new());
     };
     let volumes: Vec<CatalogVolume> = match &service["pvcs"] {
@@ -1905,9 +1903,16 @@ mod tests {
                 store: None,
                 folder: None,
             };
-            let plan = plan_for(&host, &cfg(), "yolab-a", &old, None, &mut SavedFolders::default())
-                .await
-                .unwrap();
+            let plan = plan_for(
+                &host,
+                &cfg(),
+                "yolab-a",
+                &old,
+                None,
+                &mut SavedFolders::default(),
+            )
+            .await
+            .unwrap();
             match plan {
                 VolumePlan::Refuse(why) => {
                     assert!(why.starts_with("old "), "{why}");

@@ -384,9 +384,7 @@ pub async fn list_apps(State(state): State<AppState>) -> Result<Json<Vec<AppInfo
                 .map(|v| v.as_slice())
                 .unwrap_or(&[])
                 .iter()
-                .filter(|p| {
-                    !is_terminating_pod(p) && !is_finished_pod(p)
-                })
+                .filter(|p| !is_terminating_pod(p) && !is_finished_pod(p))
                 .copied()
                 .collect();
             let all_ready = !items.is_empty()

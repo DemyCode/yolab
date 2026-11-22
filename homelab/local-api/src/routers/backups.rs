@@ -72,11 +72,7 @@ pub async fn enable_s3(State(state): State<AppState>) -> Result<Json<serde_json:
     })))
 }
 
-pub(crate) async fn enable<H: Host>(
-    b: &Backend<H>,
-    url: &str,
-    token: &str,
-) -> anyhow::Result<()> {
+pub(crate) async fn enable<H: Host>(b: &Backend<H>, url: &str, token: &str) -> anyhow::Result<()> {
     ensure_master_config_with(&b.kube, url, token).await?;
     Ok(())
 }

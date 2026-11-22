@@ -79,7 +79,8 @@ export default function CustomAppPage() {
         "/api/apps/custom/chart",
         file,
       );
-      if (!d.app) throw new Error("The server did not return the uploaded chart");
+      if (!d.app)
+        throw new Error("The server did not return the uploaded chart");
       setUploadedId(d.app.id);
       setSaved(
         d.has_form

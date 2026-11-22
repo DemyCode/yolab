@@ -603,9 +603,7 @@ mod tests {
             .expect(1)
             .mount(&server)
             .await;
-        delete_if_present(&client, &test_source())
-            .await
-            .unwrap();
+        delete_if_present(&client, &test_source()).await.unwrap();
     }
 
     #[tokio::test]
