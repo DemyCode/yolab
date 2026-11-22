@@ -166,8 +166,8 @@ mod tests {
     use super::*;
 
     const SAMPLE: &str = r#"
-{"__REALTIME_TIMESTAMP":"1788785220245403","PRIORITY":"6","_SYSTEMD_UNIT":"yolab-containerd-store.service","MESSAGE":"images RBD mapped at /dev/rbd0"}
-{"__REALTIME_TIMESTAMP":"1788785232767836","PRIORITY":"4","_SYSTEMD_UNIT":"yolab-containerd-store.service","MESSAGE":"the image store on /dev/rbd0 will not mount and read — rebuilding it"}
+{"__REALTIME_TIMESTAMP":"1788785220245403","PRIORITY":"6","_SYSTEMD_UNIT":"yolab-image-store.service","MESSAGE":"images RBD mapped at /dev/rbd0"}
+{"__REALTIME_TIMESTAMP":"1788785232767836","PRIORITY":"4","_SYSTEMD_UNIT":"yolab-image-store.service","MESSAGE":"the image store on /dev/rbd0 will not mount and read — rebuilding it"}
 {"__REALTIME_TIMESTAMP":"1788785240000000","PRIORITY":"3","SYSLOG_IDENTIFIER":"k3s","MESSAGE":"Failed to test etcd connection"}
 "#;
 
@@ -175,11 +175,11 @@ mod tests {
     fn parses_entries_and_collects_units() {
         let (entries, units) = parse_journal(SAMPLE, None);
         assert_eq!(entries.len(), 3);
-        assert_eq!(entries[0].unit, "yolab-containerd-store.service");
+        assert_eq!(entries[0].unit, "yolab-image-store.service");
         assert_eq!(entries[0].priority, 6);
         assert!(entries[0].timestamp.starts_with("2026-"));
         assert_eq!(entries[2].unit, "k3s");
-        assert!(units.contains("yolab-containerd-store.service"));
+        assert!(units.contains("yolab-image-store.service"));
         assert!(units.contains("k3s"));
     }
 
@@ -294,7 +294,7 @@ mod tests {
         assert_eq!(res.entries[0].message, "images RBD mapped at /dev/rbd0");
         assert_eq!(res.entries[2].unit, "k3s");
         assert!(res.truncated);
-        assert_eq!(res.units, ["k3s", "yolab-containerd-store.service"]);
+        assert_eq!(res.units, ["k3s", "yolab-image-store.service"]);
     }
 
     #[tokio::test]

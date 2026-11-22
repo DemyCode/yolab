@@ -5,7 +5,7 @@ use anyhow::{bail, Result};
 
 use crate::host::Host;
 
-use super::containerd_store::{mount_resting_on, PODS_SLICE};
+use super::image_store::{mount_resting_on, PODS_SLICE};
 
 const SHIM: &str = "containerd-shim-runc-v2";
 const CONTAINERD: &str = "containerd";

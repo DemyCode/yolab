@@ -2,7 +2,7 @@ pub mod bootstrap;
 pub mod ceph_csi;
 mod ceph_shared;
 pub mod cephx;
-pub mod containerd_store;
+pub mod image_store;
 pub mod controllers;
 pub mod csi_secrets;
 pub mod dashboard;
@@ -39,7 +39,7 @@ pub struct StorageEnv {
     pub images_pool: String,
     pub images_share: f64,
     pub images_min_gb: u64,
-    pub images_fs: containerd_store::Filesystem,
+    pub images_fs: image_store::Filesystem,
     pub dashboard_port: u16,
     pub dashboard_prefix: String,
     pub dashboard_password_file: String,
@@ -66,7 +66,7 @@ impl StorageEnv {
             images_pool: or("YOLAB_CEPH_IMAGES_POOL", "images"),
             images_share: s("YOLAB_CEPH_IMAGES_SHARE").parse().unwrap_or(0.25),
             images_min_gb: s("YOLAB_CEPH_IMAGES_MIN_GB").parse().unwrap_or(40),
-            images_fs: containerd_store::Filesystem::parse(&s("YOLAB_CEPH_IMAGES_FS")),
+            images_fs: image_store::Filesystem::parse(&s("YOLAB_CEPH_IMAGES_FS")),
             dashboard_port: s("YOLAB_CEPH_DASHBOARD_PORT").parse().unwrap_or(7000),
             dashboard_prefix: or("YOLAB_CEPH_DASHBOARD_PREFIX", "/ceph-dashboard"),
             dashboard_password_file: or(
@@ -104,8 +104,8 @@ impl StorageEnv {
         }
     }
 
-    pub fn containerd_store_policy(&self) -> containerd_store::ContainerdStorePolicy {
-        containerd_store::ContainerdStorePolicy {
+    pub fn image_store_policy(&self) -> image_store::ImageStorePolicy {
+        image_store::ImageStorePolicy {
             pool_name: self.images_pool.clone(),
             filesystem: self.images_fs,
         }
@@ -140,10 +140,10 @@ async fn image_store_up<H: crate::host::Host>(
             "this machine has no Ceph settings, so it has no image store to start k3s on"
         );
     }
-    let policy = env.containerd_store_policy();
-    match containerd_store::up(host, root(), node, &policy, containerd_store::RETRY).await {
-        containerd_store::Up::Mounted => tracing::info!("image store: mounted, starting k3s"),
-        containerd_store::Up::LeftOnRootDisk(why) => tracing::warn!("image store: {why}"),
+    let policy = env.image_store_policy();
+    match image_store::up(host, root(), node, &policy, image_store::RETRY).await {
+        image_store::Up::Mounted => tracing::info!("image store: mounted, starting k3s"),
+        image_store::Up::LeftOnRootDisk(why) => tracing::warn!("image store: {why}"),
     }
     let started = host
         .systemctl(&["start", "--no-block", controllers::K3S_UNIT])
@@ -302,7 +302,7 @@ mod tests {
         let env = StorageEnv::from_lookup(|k| vars.get(k).map(|v| v.to_string()));
         assert!(env.is_configured());
         assert_eq!(env.images_pool, "imgs");
-        assert_eq!(env.images_fs, containerd_store::Filesystem::Ext4);
+        assert_eq!(env.images_fs, image_store::Filesystem::Ext4);
         assert_eq!(env.images_rbd_policy().pool_name, "imgs");
         assert_eq!(env.dashboard_policy().mon_addr, "fd00:cafe::5");
     }
@@ -344,7 +344,7 @@ mod tests {
         assert_eq!((rbd.share_of_pool, rbd.min_size_gb), (0.5, 80));
         let grow = env.grow_policy();
         assert_eq!((grow.share_of_pool, grow.min_size_gb), (0.5, 80));
-        assert_eq!(env.containerd_store_policy().pool_name, "images");
+        assert_eq!(env.image_store_policy().pool_name, "images");
         assert_eq!(env.dashboard_policy().port, 8443);
     }
 

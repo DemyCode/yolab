@@ -461,7 +461,7 @@ mod tests {
             ("mon", &[]),
             ("system-osd", &["mon"]),
             ("images-rbd", &["system-osd"]),
-            ("containerd-store", &["images-rbd"]),
+            ("image-store", &["images-rbd"]),
         ]);
         assert_eq!(problems_in(&g), Vec::<String>::new());
     }
@@ -479,11 +479,11 @@ mod tests {
 
     #[test]
     fn a_dependency_on_something_unregistered_is_reported() {
-        let g = edges(&[("containerd-store", &["images-rbd"])]);
+        let g = edges(&[("image-store", &["images-rbd"])]);
         let found = problems_in(&g);
         assert_eq!(found.len(), 1, "{found:?}");
         assert!(
-            found[0].contains("containerd-store depends on 'images-rbd'"),
+            found[0].contains("image-store depends on 'images-rbd'"),
             "{found:?}"
         );
     }

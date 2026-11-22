@@ -3,7 +3,7 @@ use serde_json::Value;
 
 use crate::host::Host;
 
-use super::containerd_store::{containerd_root, Filesystem};
+use super::image_store::{containerd_root, Filesystem};
 use super::images_sizing::{self, SizingPolicy};
 
 pub struct GrowPolicy {

@@ -29,7 +29,7 @@ const FS_OP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1800);
 
 const OSD_REQUEST_TIMEOUT_SECS: u32 = 300;
 
-pub struct ContainerdStorePolicy {
+pub struct ImageStorePolicy {
     pub pool_name: String,
     pub filesystem: Filesystem,
 }
@@ -46,7 +46,7 @@ pub async fn attempt<H: Host>(
     host: &H,
     root: &Path,
     node: &str,
-    policy: &ContainerdStorePolicy,
+    policy: &ImageStorePolicy,
 ) -> Result<Attempt<()>> {
     let croot = containerd_root(root);
     let croot_s = croot.to_string_lossy().into_owned();
@@ -305,7 +305,7 @@ async fn step<H: Host>(
     host: &H,
     root: &Path,
     node: &str,
-    policy: &ContainerdStorePolicy,
+    policy: &ImageStorePolicy,
 ) -> Result<Attempt<Up>> {
     let croot_s = containerd_root(root).to_string_lossy().into_owned();
     if is_mountpoint(host, &croot_s).await {
@@ -327,7 +327,7 @@ pub async fn up<H: Host>(
     host: &H,
     root: &Path,
     node: &str,
-    policy: &ContainerdStorePolicy,
+    policy: &ImageStorePolicy,
     retry: std::time::Duration,
 ) -> Up {
     let mut last: Option<String> = None;
@@ -366,8 +366,8 @@ mod tests {
     use crate::host::fake::FakeHost;
     use crate::storage::wait::not_yet;
 
-    fn policy() -> ContainerdStorePolicy {
-        ContainerdStorePolicy {
+    fn policy() -> ImageStorePolicy {
+        ImageStorePolicy {
             pool_name: "images".into(),
             filesystem: Filesystem::Xfs,
         }
