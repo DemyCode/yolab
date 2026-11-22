@@ -21,7 +21,9 @@ in {
       explain = ''
         homelab/nixos/gateway.nix must stay imported, and local-api must listen
         on the port the gateway proxies to:'';
-    };  self-healing-timers-can-re-arm = let
+    };
+
+  self-healing-timers-can-re-arm = let
     allowlist = ["yolab-ceph-bootstrap"];
     remainsAfterExit = name: (svcs.${name}.serviceConfig.RemainAfterExit or false) == true;
   in
