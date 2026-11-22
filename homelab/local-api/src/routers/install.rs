@@ -607,7 +607,8 @@ async fn install_inner<H: Host + 'static>(
         backup: &plan.backup,
         verb: "Installing…",
     };
-    apply_chart(b, cfg, &job, &fill, log).await
+    apply_chart(b, cfg, &job, &fill, log).await?;
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

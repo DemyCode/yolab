@@ -275,11 +275,11 @@ async fn restore_inner<H: Host>(
                     .iter()
                     .find(|c| crate::tree::same_role(&pvc.name, &c.claim))
                     .ok_or_else(|| no_longer_has(&pvc.name))?;
-                backed_up.push((pvc, Restorable { snapshot, path }, into.clone()))
+                backed_up.push((Restorable { snapshot, path }, into.clone()))
             }
         }
     }
-    for (pvc, from, into) in &backed_up {
+    for (from, into) in &backed_up {
         restore_into(
             b,
             cfg,
