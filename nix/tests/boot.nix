@@ -12,6 +12,7 @@
       disko.nixosModules.disko
       ../../homelab/nixos/configuration.nix
       ../../homelab/nixos/disk-config.nix
+      (testLib.mesh "fd00:cafe::1")
       (testLib.machine {configPath = bootConfigPath;})
     ];
 
@@ -24,25 +25,6 @@
     virtualisation.cores = 2;
     virtualisation.emptyDiskImages = [8192 8192];
     virtualisation.diskSize = 8192;
-
-    networking.wireguard.interfaces = lib.mkForce {};
-    networking.interfaces.eth1.ipv6.addresses = [
-      {
-        address = "fd00:cafe::1";
-        prefixLength = 112;
-      }
-    ];
-    systemd.services.wireguard-wg1 = {
-      description = "Stub for the WireGuard mesh (boot VM test)";
-      wantedBy = ["multi-user.target"];
-      after = ["network-online.target"];
-      wants = ["network-online.target"];
-      serviceConfig = {
-        Type = "oneshot";
-        RemainAfterExit = true;
-        ExecStart = "${pkgs.coreutils}/bin/true";
-      };
-    };
 
     systemd.services.k3s-node-ip.environment = {
       YOLAB_NODE_IP_MAX_ATTEMPTS = "2";

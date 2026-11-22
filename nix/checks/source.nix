@@ -2,8 +2,21 @@
   pkgs,
   treeSrc,
   nixosSystems,
+  failOn,
   ...
 }: {
+  vm-tests-share-one-mesh-stub = let
+    dir = ../tests;
+    tests = builtins.filter (n: n != "lib.nix" && pkgs.lib.hasSuffix ".nix" n) (builtins.attrNames (builtins.readDir dir));
+    copies = builtins.filter (n: pkgs.lib.hasInfix "wireguard-wg1" (builtins.readFile (dir + "/${n}"))) tests;
+  in
+    failOn "vm-tests-share-one-mesh-stub" {
+      problems = map (n: "nix/tests/${n} defines its own wireguard-wg1 stub") copies;
+      explain = ''
+        Every VM test stubs the WireGuard mesh with testLib.mesh from
+        nix/tests/lib.nix, so a fix to the stub reaches all of them:'';
+    };
+
   binary-contract = let
     allBins = pkgs.symlinkJoin {
       name = "yolab-all-unit-bins";

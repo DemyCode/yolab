@@ -14,6 +14,7 @@
       disko.nixosModules.disko
       ../../homelab/nixos/configuration.nix
       ../../homelab/nixos/disk-config.nix
+      (testLib.mesh meshAddr)
       (testLib.machine {inherit configPath;})
     ];
 
@@ -26,34 +27,6 @@
     virtualisation.cores = 2;
     virtualisation.emptyDiskImages = [8192 8192];
     virtualisation.diskSize = 8192;
-
-    networking.wireguard.interfaces = lib.mkForce {};
-    networking.interfaces.eth1.ipv6.addresses = [
-      {
-        address = meshAddr;
-        prefixLength = 112;
-      }
-    ];
-    systemd.services.wireguard-wg1 = {
-      description = "Stub for the WireGuard mesh (two-node VM test)";
-      wantedBy = ["multi-user.target"];
-      after = ["network-online.target"];
-      wants = ["network-online.target"];
-      serviceConfig = {
-        Type = "oneshot";
-        RemainAfterExit = true;
-        TimeoutStartSec = "120s";
-        ExecStart = pkgs.writeShellScript "await-mesh" ''
-          for _ in $(seq 1 60); do
-            ${pkgs.iproute2}/bin/ip -6 addr show dev eth1 \
-              | ${pkgs.gnugrep}/bin/grep -q '${meshAddr}' && exit 0
-            sleep 2
-          done
-          echo "mesh address ${meshAddr} never appeared on eth1" >&2
-          exit 1
-        '';
-      };
-    };
 
     networking.useDHCP = lib.mkDefault false;
 
