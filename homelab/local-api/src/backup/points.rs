@@ -391,7 +391,7 @@ impl<H: Host> Service<'_, H> {
     ) -> anyhow::Result<BTreeSet<String>> {
         let mut touched = BTreeSet::new();
         for point in points {
-            for (repo, ids) in crate::backup::restore::legacy_volumes(
+            for (repo, ids) in crate::backup::restore::older_volume_copies(
                 self.host,
                 self.cfg,
                 &point.snapshot_id,

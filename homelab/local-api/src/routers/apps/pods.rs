@@ -136,7 +136,6 @@ pub async fn list_pods(
         });
     Ok(Json(
         pods.iter()
-            .filter(|p| !is_backup_mover_pod(p))
             .map(|p| {
                 let mut info = pod_info(p);
                 info.events = pod_events(&events, &info.name);

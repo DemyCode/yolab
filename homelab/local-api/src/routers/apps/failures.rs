@@ -1,12 +1,5 @@
 use super::*;
 
-pub(crate) fn is_backup_mover_pod(pod: &Value) -> bool {
-    pod["metadata"]["name"]
-        .as_str()
-        .is_some_and(|n| n.starts_with("volsync-"))
-        || pod["metadata"]["labels"]["app.kubernetes.io/created-by"].as_str() == Some("volsync")
-}
-
 pub(crate) fn is_terminating_pod(pod: &Value) -> bool {
     !pod["metadata"]["deletionTimestamp"].is_null()
 }

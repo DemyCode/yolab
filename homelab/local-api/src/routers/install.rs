@@ -607,15 +607,7 @@ async fn install_inner<H: Host + 'static>(
         backup: &plan.backup,
         verb: "Installing…",
     };
-    apply_chart(b, cfg, &job, &fill, log).await?;
-
-    let namespace = format!("yolab-{}", plan.instance_name);
-    if let Err(e) = crate::routers::backups::setup_namespace_backup(b, &namespace).await {
-        log.say(format!(
-            "[WARN] backups are not wired up for this app yet ({e}) — it will be picked up automatically within the hour"
-        ));
-    }
-    Ok(())
+    apply_chart(b, cfg, &job, &fill, log).await
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

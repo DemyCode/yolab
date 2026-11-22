@@ -556,8 +556,8 @@ in {
       "L+ /var/lib/rancher/k3s/agent/etc/kubelet.conf.d/10-yolab-image-gc.conf     - - - - ${./k3s/kubelet-image-gc.yaml}"
       "L+ /var/lib/rancher/k3s/server/manifests/snap-1-crds-rbac.yaml                - - - - ${./external-snapshotter/crds-rbac.yaml}"
       "L+ /var/lib/rancher/k3s/server/manifests/snap-2-controller.yaml               - - - - ${./external-snapshotter/controller.yaml}"
-      "L+ /var/lib/rancher/k3s/server/manifests/volsync.yaml                         - - - - ${./volsync/helmchart.yaml}"
-      "L+ /var/lib/rancher/k3s/server/manifests/volsync-snapshotclass.yaml           - - - - ${./volsync/snapshotclass.yaml}"
+      "r /var/lib/rancher/k3s/server/manifests/volsync.yaml"
+      "r /var/lib/rancher/k3s/server/manifests/volsync-snapshotclass.yaml"
       "L+ /var/lib/rancher/k3s/server/manifests/gpu-device-plugins.yaml               - - - - ${./gpu/device-plugins.yaml}"
     ];
 

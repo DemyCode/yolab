@@ -280,7 +280,6 @@ async fn ensure_app_namespace(
                     ANN_APP_ID: app_id,
                     ANN_CHART_REPO: repo,
                     ANN_CHART_VERSION: chart_version,
-                    "volsync.backube/privileged-movers": "true",
                 },
             },
         }),
@@ -386,7 +385,7 @@ pub async fn list_apps(State(state): State<AppState>) -> Result<Json<Vec<AppInfo
                 .unwrap_or(&[])
                 .iter()
                 .filter(|p| {
-                    !is_backup_mover_pod(p) && !is_terminating_pod(p) && !is_finished_pod(p)
+                    !is_terminating_pod(p) && !is_finished_pod(p)
                 })
                 .copied()
                 .collect();
@@ -1059,50 +1058,6 @@ mod tests {
     }
 
     #[test]
-    fn a_backup_mover_is_not_one_of_the_apps_pods() {
-        assert!(is_backup_mover_pod(&pod(
-            "volsync-src-volsync-filebrowser-data-4k46c"
-        )));
-        assert!(is_backup_mover_pod(&pod(
-            "volsync-dst-volsync-vaultwarden-data-abc12"
-        )));
-    }
-
-    #[test]
-    fn the_volsync_label_is_enough_on_its_own() {
-        assert!(is_backup_mover_pod(&json!({
-            "metadata": {
-                "name": "some-future-mover-name",
-                "labels": {"app.kubernetes.io/created-by": "volsync"}
-            }
-        })));
-    }
-
-    #[test]
-    fn ordinary_app_pods_are_kept() {
-        for name in [
-            "filebrowser-7d9c8b6f5-x2k9p",
-            "vaultwarden-0",
-            "syncthing-abc",
-            "my-backup-tool-123",
-            "",
-        ] {
-            assert!(
-                !is_backup_mover_pod(&pod(name)),
-                "{name} is the app's own pod"
-            );
-        }
-    }
-
-    #[test]
-    fn a_pod_without_labels_is_handled() {
-        assert!(!is_backup_mover_pod(
-            &json!({"metadata": {"name": "app-1"}})
-        ));
-        assert!(!is_backup_mover_pod(&json!({})));
-    }
-
-    #[test]
     fn a_pod_being_deleted_is_terminating() {
         assert!(is_terminating_pod(&json!({
             "metadata": {
@@ -1136,7 +1091,7 @@ mod tests {
 
         let counted: Vec<&Value> = [&ghost, &live]
             .into_iter()
-            .filter(|p| !is_backup_mover_pod(p) && !is_terminating_pod(p))
+            .filter(|p| !is_terminating_pod(p))
             .collect();
 
         assert_eq!(counted.len(), 1, "only the replacement is evidence");
@@ -1182,7 +1137,7 @@ mod tests {
 
         let counted: Vec<&Value> = [&rebase, &app]
             .into_iter()
-            .filter(|p| !is_backup_mover_pod(p) && !is_terminating_pod(p) && !is_finished_pod(p))
+            .filter(|p| !is_terminating_pod(p) && !is_finished_pod(p))
             .collect();
 
         assert_eq!(counted.len(), 1, "only the app's own pod is evidence");
@@ -2826,7 +2781,7 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn the_pods_route_lists_the_apps_pods_but_not_backup_movers() {
+        async fn the_pods_route_lists_every_pod_of_the_app() {
             let (server, kube) = api_server().await;
             Mock::given(method("GET"))
                 .and(path("/api/v1/namespaces/yolab-notes/pods"))
@@ -2835,7 +2790,6 @@ mod tests {
                     vec![
                         json!({ "metadata": { "name": "notes-0" }, "status": { "phase": "Running",
                             "conditions": [{ "type": "Ready", "status": "True" }] } }),
-                        json!({ "metadata": { "name": "volsync-src-notes-x" }, "status": { "phase": "Running" } }),
                     ],
                 )))
                 .mount(&server)

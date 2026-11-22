@@ -482,11 +482,11 @@ mod tests {
         assert!(is_conflict(&busy) && !is_not_found(&busy));
     }
 
-    fn replication_source() -> serde_json::Value {
+    fn test_source() -> serde_json::Value {
         json!({
-            "apiVersion": "volsync.backube/v1alpha1",
-            "kind": "ReplicationSource",
-            "metadata": { "name": "volsync-data", "namespace": "yolab-gitea-ab12" },
+            "apiVersion": "test.yolab.io/v1alpha1",
+            "kind": "TestSource",
+            "metadata": { "name": "test-data", "namespace": "yolab-gitea-ab12" },
             "spec": { "sourcePVC": "data" }
         })
     }
@@ -497,17 +497,17 @@ mod tests {
         let (server, client) = api_server().await;
         Mock::given(method("PATCH"))
             .and(path(
-                "/apis/volsync.backube/v1alpha1/namespaces/yolab-gitea-ab12/replicationsources/volsync-data",
+                "/apis/test.yolab.io/v1alpha1/namespaces/yolab-gitea-ab12/testsources/test-data",
             ))
             .and(query_param("fieldManager", "yolab"))
             .and(query_param("force", "true"))
             .and(header("content-type", "application/apply-patch+yaml"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(replication_source()))
+            .respond_with(ResponseTemplate::new(200).set_body_json(test_source()))
             .expect(1)
             .mount(&server)
             .await;
 
-        apply(&client, &replication_source()).await.unwrap();
+        apply(&client, &test_source()).await.unwrap();
     }
 
     #[tokio::test]
@@ -597,13 +597,13 @@ mod tests {
         let (server, client) = api_server().await;
         Mock::given(method("DELETE"))
             .and(path(
-                "/apis/volsync.backube/v1alpha1/namespaces/yolab-gitea-ab12/replicationsources/volsync-data",
+                "/apis/test.yolab.io/v1alpha1/namespaces/yolab-gitea-ab12/testsources/test-data",
             ))
             .respond_with(ResponseTemplate::new(404).set_body_json(status(404, "NotFound")))
             .expect(1)
             .mount(&server)
             .await;
-        delete_if_present(&client, &replication_source())
+        delete_if_present(&client, &test_source())
             .await
             .unwrap();
     }
@@ -613,21 +613,21 @@ mod tests {
         let (server, client) = api_server().await;
         Mock::given(method("GET"))
             .and(path(
-                "/apis/volsync.backube/v1alpha1/namespaces/yolab-gitea-ab12/replicationsources/volsync-data",
+                "/apis/test.yolab.io/v1alpha1/namespaces/yolab-gitea-ab12/testsources/test-data",
             ))
-            .respond_with(ResponseTemplate::new(200).set_body_json(replication_source()))
+            .respond_with(ResponseTemplate::new(200).set_body_json(test_source()))
             .mount(&server)
             .await;
-        assert!(exists(&client, &replication_source()).await.unwrap());
+        assert!(exists(&client, &test_source()).await.unwrap());
         let other = reference(
-            "volsync.backube/v1alpha1",
-            "ReplicationSource",
+            "test.yolab.io/v1alpha1",
+            "TestSource",
             "yolab-gitea-ab12",
             "nope",
         );
         Mock::given(method("GET"))
             .and(path(
-                "/apis/volsync.backube/v1alpha1/namespaces/yolab-gitea-ab12/replicationsources/nope",
+                "/apis/test.yolab.io/v1alpha1/namespaces/yolab-gitea-ab12/testsources/nope",
             ))
             .respond_with(ResponseTemplate::new(404).set_body_json(status(404, "NotFound")))
             .mount(&server)

@@ -12,7 +12,6 @@ use crate::backup::run::VolumeSnapshot;
 use crate::error::Outcome;
 use crate::host::Host;
 use crate::ops::{self, Claim, Claimed, FAILED, QUEUED, RUNNING, SUCCEEDED};
-use crate::poll::Step;
 use crate::records::Store;
 use crate::runtime::{Ctx, Resource, Scope, Tick};
 use kube::Client;
@@ -24,11 +23,8 @@ pub(crate) const RESTORES: Store = Store {
 };
 const MAX_RESTORES: usize = 50;
 
-const RD_TIMEOUT_SECS: u64 = 3600;
 const TICK_SECS: u64 = 30;
 const MAX_ATTEMPTS: u32 = 3;
-
-const RD_POLL: Duration = Duration::from_secs(10);
 
 #[derive(Clone, Serialize, Deserialize)]
 struct DeploymentScale {
@@ -274,19 +270,12 @@ async fn restore_inner<H: Host>(
                 pvc.name
             ),
             VolumePlan::Refuse(why) => anyhow::bail!("{why}"),
-            VolumePlan::RestoreAsOf(as_of) => {
-                let into = live
-                    .iter()
-                    .find(|c| crate::tree::same_role(&pvc.name, &c.claim))
-                    .ok_or_else(|| no_longer_has(&pvc.name))?;
-                backed_up.push((pvc, Restorable::AsOf(as_of), into.clone()))
-            }
             VolumePlan::FromFolders { snapshot, path } => {
                 let into = live
                     .iter()
                     .find(|c| crate::tree::same_role(&pvc.name, &c.claim))
                     .ok_or_else(|| no_longer_has(&pvc.name))?;
-                backed_up.push((pvc, Restorable::Folders { snapshot, path }, into.clone()))
+                backed_up.push((pvc, Restorable { snapshot, path }, into.clone()))
             }
         }
     }
@@ -297,8 +286,6 @@ async fn restore_inner<H: Host>(
             &VolumeRestore {
                 namespace,
                 source_namespace: namespace,
-                source_pvc: &pvc.name,
-                dest_pvc: &into.claim,
                 dest_folder: &into.folder,
                 from,
                 replace: true,
@@ -326,23 +313,21 @@ async fn restore_inner<H: Host>(
 enum VolumePlan {
     NoBackup,
     Refuse(String),
-    RestoreAsOf(Option<String>),
     FromFolders { snapshot: String, path: String },
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) enum Restorable {
-    AsOf(Option<String>),
-    Folders { snapshot: String, path: String },
+pub(crate) struct Restorable {
+    snapshot: String,
+    path: String,
 }
 
 fn restorable(plan: VolumePlan) -> Result<Option<Restorable>, String> {
     match plan {
         VolumePlan::NoBackup => Ok(None),
         VolumePlan::Refuse(why) => Err(why),
-        VolumePlan::RestoreAsOf(as_of) => Ok(Some(Restorable::AsOf(as_of))),
         VolumePlan::FromFolders { snapshot, path } => {
-            Ok(Some(Restorable::Folders { snapshot, path }))
+            Ok(Some(Restorable { snapshot, path }))
         }
     }
 }
@@ -359,8 +344,7 @@ async fn plan_for<H: Host>(
     saved: &mut SavedFolders,
 ) -> anyhow::Result<VolumePlan> {
     if pvc.store.is_none() {
-        let snaps = volume_snapshots(host, namespace, &pvc.name, cfg).await?;
-        return Ok(plan_volume(&pvc.name, pvc.snapshot.as_ref(), &snaps, as_of));
+        return Ok(VolumePlan::Refuse(saved_before_the_tree(&pvc.name)));
     }
     if saved.0.is_none() {
         saved.0 = Some(folder_snapshots(host, namespace, cfg).await?);
@@ -445,7 +429,7 @@ async fn folder_snapshots<H: Host>(
     Ok(parse_snapshots(&serde_json::from_str(&out.stdout)?))
 }
 
-pub(crate) async fn legacy_volumes<H: Host>(
+pub(crate) async fn older_volume_copies<H: Host>(
     host: &H,
     cfg: &BackupConfig,
     snapshot_id: &str,
@@ -453,10 +437,13 @@ pub(crate) async fn legacy_volumes<H: Host>(
 ) -> anyhow::Result<Vec<(String, Vec<String>)>> {
     let repo = cfg.restic_repo("cluster-backup");
     let catalog = extract_json_file(host, &repo, cfg, snapshot_id, "catalog.json").await?;
-    Ok(legacy_copies(&catalog_pvcs(&catalog, namespace), namespace))
+    Ok(copies_saved_before_the_tree(
+        &catalog_pvcs(&catalog, namespace),
+        namespace,
+    ))
 }
 
-fn legacy_copies(pvcs: &[CatalogPvc], namespace: &str) -> Vec<(String, Vec<String>)> {
+fn copies_saved_before_the_tree(pvcs: &[CatalogPvc], namespace: &str) -> Vec<(String, Vec<String>)> {
     pvcs.iter()
         .filter(|p| p.store.is_none())
         .filter_map(|p| {
@@ -473,64 +460,6 @@ fn legacy_copies(pvcs: &[CatalogPvc], namespace: &str) -> Vec<(String, Vec<Strin
 struct SnapshotEntry {
     id: String,
     time: chrono::DateTime<Utc>,
-}
-
-fn plan_volume(
-    pvc: &str,
-    pinned: Option<&VolumeSnapshot>,
-    snaps: &[SnapshotEntry],
-    cluster_time: Option<&str>,
-) -> VolumePlan {
-    if snaps.is_empty() {
-        return VolumePlan::NoBackup;
-    }
-    if let Some(p) = pinned {
-        return if snaps.iter().any(|s| s.id == p.id) {
-            VolumePlan::RestoreAsOf(Some(p.time.clone()))
-        } else {
-            VolumePlan::Refuse(format!(
-                "the backup of {pvc} this restore point took has since been pruned — pick a newer backup"
-            ))
-        };
-    }
-    let Some(as_of) = cluster_time
-        .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
-        .map(|t| t.with_timezone(&Utc))
-    else {
-        return VolumePlan::RestoreAsOf(None);
-    };
-    if snaps.iter().any(|s| s.time <= as_of) {
-        VolumePlan::RestoreAsOf(cluster_time.map(str::to_string))
-    } else {
-        VolumePlan::Refuse(format!(
-            "{pvc} has no backup taken before this restore point — pick a later backup"
-        ))
-    }
-}
-
-async fn volume_snapshots<H: Host>(
-    host: &H,
-    namespace: &str,
-    pvc: &str,
-    cfg: &BackupConfig,
-) -> anyhow::Result<Vec<SnapshotEntry>> {
-    let repo = cfg.restic_repo(&format!("volsync/{namespace}/{}", pvc));
-    let out = restic_with(
-        host,
-        &repo,
-        cfg,
-        &["snapshots", "--no-lock", "--json"],
-        RESTIC_TIMEOUT,
-    )
-    .await?;
-    if !out.success {
-        let stderr = &out.stderr;
-        if repo_missing(stderr) {
-            return Ok(Vec::new());
-        }
-        anyhow::bail!("{}", stderr.trim());
-    }
-    Ok(parse_snapshots(&serde_json::from_str(&out.stdout)?))
 }
 
 fn parse_snapshots(v: &Value) -> Vec<SnapshotEntry> {
@@ -819,8 +748,6 @@ impl BackupPayload {
                 &VolumeRestore {
                     namespace: dest_namespace,
                     source_namespace: &self.source_namespace,
-                    source_pvc: &pvc.name,
-                    dest_pvc: &into.claimed.claim,
                     dest_folder: &into.claimed.folder,
                     from: &from,
                     replace,
@@ -1038,33 +965,9 @@ pub(crate) async fn restore_plan<H: Host>(
     Ok(rf::plan(&data))
 }
 
-fn destination_spec(
-    secret_name: &str,
-    dest_pvc: &str,
-    restore_as_of: Option<&str>,
-    replace: bool,
-) -> Value {
-    let mut spec = json!({
-        "repository": secret_name,
-        "copyMethod": "Direct",
-        "cacheStorageClassName": "yolab-cephfs",
-        "destinationPVC": dest_pvc,
-        "moverSecurityContext": { "runAsUser": 0, "runAsGroup": 0, "fsGroup": 0 }
-    });
-    if let Some(t) = restore_as_of {
-        spec["restoreAsOf"] = Value::String(t.to_string());
-    }
-    if replace {
-        spec["enableFileDeletion"] = Value::Bool(true);
-    }
-    spec
-}
-
 pub(crate) struct VolumeRestore<'a> {
     pub namespace: &'a str,
     pub source_namespace: &'a str,
-    pub source_pvc: &'a str,
-    pub dest_pvc: &'a str,
     pub dest_folder: &'a str,
     pub from: &'a Restorable,
     pub replace: bool,
@@ -1075,89 +978,24 @@ pub(crate) async fn restore_into<H: Host>(
     cfg: &BackupConfig,
     r: &VolumeRestore<'_>,
 ) -> anyhow::Result<()> {
-    let as_of = match r.from {
-        Restorable::AsOf(as_of) => as_of.as_deref(),
-        Restorable::Folders { snapshot, path } => {
-            return crate::routers::folder_backup::restore(
-                &b.kube,
-                cfg,
-                r.source_namespace,
-                snapshot,
-                &[crate::routers::folder_backup::FolderRestore {
-                    from: path.clone(),
-                    to: r.dest_folder.to_string(),
-                    replace: r.replace,
-                }],
-            )
-            .await;
-        }
-    };
-    let (namespace, source_namespace, source_pvc) = (r.namespace, r.source_namespace, r.source_pvc);
-    let cid = source_pvc;
-    let pvc_repo = cfg.restic_repo(&format!("volsync/{source_namespace}/{cid}"));
-    restic_unlock_with(
-        &b.host,
-        &pvc_repo,
-        &cfg.restic_password,
-        &cfg.access_key_id,
-        &cfg.secret_access_key,
-        false,
-    )
-    .await;
-    allow_privileged_movers(&b.kube, namespace).await;
-
-    restic_secret(&b.kube, namespace, source_namespace, source_pvc, cfg).await?;
-    let secret_name = format!("{cid}{RESTIC_SECRET_SUFFIX}");
-    let restic_spec = destination_spec(&secret_name, r.dest_pvc, as_of, r.replace);
-    let dest_name = format!("restore-{cid}");
-    let manifest = json!({
-        "apiVersion": "volsync.backube/v1alpha1",
-        "kind": "ReplicationDestination",
-        "metadata": {
-            "name": dest_name,
-            "namespace": namespace,
-            "labels": { "app.kubernetes.io/managed-by": "yolab" }
-        },
-        "spec": {
-            "trigger": { "manual": format!("dr-{}", Utc::now().format("%Y%m%d%H%M%S")) },
-            "restic": restic_spec
-        }
-    });
-    crate::k8s::apply(&b.kube, &manifest).await?;
-
-    wait_for_rd(&b.kube, namespace, &dest_name).await?;
-    drop_replication_destination(&b.kube, &dest_name, namespace).await;
-    Ok(())
-}
-
-async fn wait_for_rd(client: &Client, namespace: &str, dest_name: &str) -> anyhow::Result<()> {
-    let destination = crate::k8s::reference(
-        "volsync.backube/v1alpha1",
-        "ReplicationDestination",
-        namespace,
-        dest_name,
-    );
-    let destination = &destination;
-    crate::poll::until(
-        Duration::from_secs(RD_TIMEOUT_SECS),
-        RD_POLL,
-        move || async move {
-            let v = crate::k8s::get(client, destination).await.ok().flatten();
-            match v
-                .as_ref()
-                .and_then(|v| v["status"]["latestMoverStatus"]["result"].as_str())
-            {
-                Some("Successful") => Step::Done(()),
-                Some("Failed") => {
-                    Step::Failed(anyhow::anyhow!("ReplicationDestination reported failure"))
-                }
-                _ => Step::Pending(anyhow::anyhow!(
-                    "restore timed out after {RD_TIMEOUT_SECS}s"
-                )),
-            }
-        },
+    crate::routers::folder_backup::restore(
+        &b.kube,
+        cfg,
+        r.source_namespace,
+        &r.from.snapshot,
+        &[crate::routers::folder_backup::FolderRestore {
+            from: r.from.path.clone(),
+            to: r.dest_folder.to_string(),
+            replace: r.replace,
+        }],
     )
     .await
+}
+
+fn saved_before_the_tree(claim: &str) -> String {
+    format!(
+        "{claim} was backed up the old way, before the file tree, and that copy can no longer be restored — leave it out to restore the rest"
+    )
 }
 
 async fn read_deployment_scales(client: &Client, ns: &str) -> anyhow::Result<Vec<DeploymentScale>> {
@@ -1523,17 +1361,6 @@ mod tests {
     }
 
     #[test]
-    fn replacing_a_volume_deletes_what_the_backup_does_not_have_and_filling_one_keeps_it() {
-        let replace = destination_spec("data-restic", "data", Some("2026-10-12T03:00:00Z"), true);
-        assert_eq!(replace["enableFileDeletion"], true);
-        assert_eq!(replace["restoreAsOf"], "2026-10-12T03:00:00Z");
-        assert_eq!(replace["destinationPVC"], "data");
-        let fill = destination_spec("data-restic", "data", None, false);
-        assert!(fill.get("enableFileDeletion").is_none());
-        assert!(fill.get("restoreAsOf").is_none());
-    }
-
-    #[test]
     fn nothing_worth_reapplying_applies_nothing() {
         let only_chart_owned = json!({"items": [
             {"kind": "Deployment", "metadata": {"name": "gateway"}},
@@ -1673,83 +1500,6 @@ mod tests {
             id: id.into(),
             time: time.into(),
         }
-    }
-
-    #[test]
-    fn a_pinned_snapshot_is_restored_at_its_own_exact_time() {
-        let snaps = [
-            snap("old", "2026-09-13T08:00:00Z"),
-            snap("pinned", "2026-09-14T12:10:05.417123456Z"),
-            snap("newer", "2026-09-15T09:00:00Z"),
-        ];
-        assert_eq!(
-            plan_volume(
-                "data",
-                Some(&pin("pinned", "2026-09-14T12:10:05.417123456Z")),
-                &snaps,
-                Some("2026-09-14T12:10:02Z")
-            ),
-            VolumePlan::RestoreAsOf(Some("2026-09-14T12:10:05.417123456Z".into())),
-            "the pin wins over the cluster snapshot's earlier time"
-        );
-    }
-
-    #[test]
-    fn a_pinned_snapshot_that_was_pruned_refuses_the_restore() {
-        let snaps = [snap("other", "2026-09-15T09:00:00Z")];
-        match plan_volume(
-            "data",
-            Some(&pin("gone", "2026-09-14T12:10:05Z")),
-            &snaps,
-            None,
-        ) {
-            VolumePlan::Refuse(why) => assert!(why.contains("pruned"), "{why}"),
-            other => panic!("{other:?}"),
-        }
-    }
-
-    #[test]
-    fn an_unpinned_volume_whose_only_snapshot_is_too_new_is_refused() {
-        let snaps = [snap("a", "2026-09-14T12:10:05Z")];
-        match plan_volume(
-            "data",
-            None,
-            &snaps,
-            Some("2026-09-14T12:10:02.123456+00:00"),
-        ) {
-            VolumePlan::Refuse(why) => assert!(why.contains("before this restore point"), "{why}"),
-            other => panic!("{other:?}"),
-        }
-    }
-
-    #[test]
-    fn an_unpinned_volume_restores_at_the_cluster_time_when_something_is_old_enough() {
-        let snaps = [
-            snap("a", "2026-09-14T12:10:05Z"),
-            snap("b", "2026-09-14T12:10:02Z"),
-        ];
-        assert_eq!(
-            plan_volume("data", None, &snaps, Some("2026-09-14T12:10:02Z")),
-            VolumePlan::RestoreAsOf(Some("2026-09-14T12:10:02Z".into())),
-            "exactly at the restore point counts"
-        );
-        assert_eq!(
-            plan_volume("data", None, &snaps, None),
-            VolumePlan::RestoreAsOf(None)
-        );
-        assert_eq!(
-            plan_volume("data", None, &snaps, Some("not a time")),
-            VolumePlan::RestoreAsOf(None)
-        );
-    }
-
-    #[test]
-    fn a_volume_with_no_snapshots_at_all_has_no_backup_pinned_or_not() {
-        assert_eq!(plan_volume("data", None, &[], None), VolumePlan::NoBackup);
-        assert_eq!(
-            plan_volume("data", Some(&pin("x", "2026-09-14T12:10:05Z")), &[], None),
-            VolumePlan::NoBackup
-        );
     }
 
     #[test]
@@ -1957,7 +1707,7 @@ mod tests {
     }
 
     #[test]
-    fn only_older_volume_copies_are_forgotten_through_the_catalog() {
+    fn only_copies_saved_before_the_tree_are_forgotten_through_the_catalog() {
         let catalog = json!({"services": [{"namespace": "yolab-a", "pvcs": [
             {"name": "old", "snapshot_id": "v1", "snapshot_time": "2026-10-01T00:00:00Z"},
             {"name": "home", "snapshot_id": "f1", "snapshot_time": "2026-11-16T00:00:00Z",
@@ -1965,7 +1715,7 @@ mod tests {
             {"name": "never"},
         ]}]});
         assert_eq!(
-            legacy_copies(&catalog_pvcs(&catalog, "yolab-a"), "yolab-a"),
+            copies_saved_before_the_tree(&catalog_pvcs(&catalog, "yolab-a"), "yolab-a"),
             vec![("volsync/yolab-a/old".to_string(), vec!["v1".to_string()])]
         );
     }
@@ -2134,18 +1884,26 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn a_failed_mover_fails_the_restore() {
-            let (server, kube) = api_server().await;
-            Mock::given(method("GET"))
-                .and(path("/apis/volsync.backube/v1alpha1/namespaces/yolab-notes/replicationdestinations/rd"))
-                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                    "metadata": { "name": "rd", "namespace": "yolab-notes" },
-                    "status": { "latestMoverStatus": { "result": "Failed" } }
-                })))
-                .mount(&server)
-                .await;
-            let err = wait_for_rd(&kube, "yolab-notes", "rd").await.unwrap_err();
-            assert!(err.to_string().contains("failure"), "{err}");
+        async fn a_volume_saved_before_the_tree_is_refused_without_asking_restic() {
+            let host = FakeHost::new();
+            let old = CatalogPvc {
+                name: "old".into(),
+                capacity: "5Gi".into(),
+                snapshot: Some(pin("v1", "2026-10-01T00:00:00Z")),
+                store: None,
+                folder: None,
+            };
+            let plan = plan_for(&host, &cfg(), "yolab-a", &old, None, &mut SavedFolders::default())
+                .await
+                .unwrap();
+            match plan {
+                VolumePlan::Refuse(why) => {
+                    assert!(why.starts_with("old "), "{why}");
+                    assert!(why.contains("before the file tree"), "{why}");
+                }
+                other => panic!("expected a refusal, got {other:?}"),
+            }
+            assert!(host.calls().is_empty(), "{:?}", host.calls());
         }
 
         #[tokio::test]

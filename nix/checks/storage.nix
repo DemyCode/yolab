@@ -9,6 +9,25 @@
   k3s = svcs.k3s;
   k3sWaitsFor = (k3s.after or []) ++ (k3s.wants or []) ++ (k3s.requires or []);
 in {
+  volsync-is-not-deployed = let
+    rules = cfg.systemd.tmpfiles.rules;
+    manifests = ["volsync.yaml" "volsync-snapshotclass.yaml"];
+    path = m: "/var/lib/rancher/k3s/server/manifests/${m}";
+  in
+    failOn "volsync-is-not-deployed" {
+      problems =
+        map (r: "a tmpfiles rule still links a VolSync manifest: ${r}") (
+          builtins.filter (r: lib.hasPrefix "L" r && lib.hasInfix "volsync" r) rules
+        )
+        ++ map (m: "no tmpfiles rule removes the old link ${path m}, so k3s keeps applying it") (
+          builtins.filter (m: !(builtins.elem "r ${path m}" rules)) manifests
+        );
+      explain = ''
+        Backups and restores run on the file tree with restic; VolSync is gone.
+        Its manifests must not be linked, and the links older systems made
+        must be removed:'';
+    };
+
   k3s-starts-once-on-its-image-store = let
     store = svcs.yolab-image-store or {};
     unit = "yolab-image-store.service";

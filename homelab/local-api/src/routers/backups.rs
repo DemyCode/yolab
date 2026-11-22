@@ -65,10 +65,9 @@ pub async fn enable_s3(State(state): State<AppState>) -> Result<Json<serde_json:
         return Err(anyhow::anyhow!("platform API not configured in config.toml").into());
     };
 
-    let sources = enable(&b, &url, &token).await?;
+    enable(&b, &url, &token).await?;
     Ok(Json(serde_json::json!({
         "provisioned": true,
-        "pvcs_configured": sources,
         "backup": "PVC data + cluster state snapshotted together daily, whenever the last successful backup is more than 24h old",
     })))
 }
@@ -77,16 +76,9 @@ pub(crate) async fn enable<H: Host>(
     b: &Backend<H>,
     url: &str,
     token: &str,
-) -> anyhow::Result<Vec<String>> {
-    let cfg = ensure_master_config_with(&b.kube, url, token).await?;
-    let mut sources: Vec<String> = Vec::new();
-    for pvc in &outside_tree_pvcs(&b.kube).await? {
-        allow_privileged_movers(&b.kube, &pvc.namespace).await;
-        restic_secret(&b.kube, &pvc.namespace, &pvc.namespace, &pvc.name, &cfg).await?;
-        replication_source(&b.kube, pvc, false).await?;
-        sources.push(format!("{}/{}", pvc.namespace, pvc.name));
-    }
-    Ok(sources)
+) -> anyhow::Result<()> {
+    ensure_master_config_with(&b.kube, url, token).await?;
+    Ok(())
 }
 
 fn format_recovery_key(hex: &str) -> String {
@@ -222,24 +214,6 @@ pub async fn app_restore_plan(
     Ok(Json(
         restore::restore_plan(&b, &namespace, &q.snapshot_id).await?,
     ))
-}
-
-pub(crate) async fn setup_namespace_backup<H: Host>(
-    b: &Backend<H>,
-    namespace: &str,
-) -> anyhow::Result<()> {
-    let Some(cfg) = master_config(&b.kube).await? else {
-        return Ok(());
-    };
-    let pvcs = outside_tree_pvcs(&b.kube).await?;
-    for pvc in pvcs.into_iter().filter(|p| p.namespace == namespace) {
-        allow_privileged_movers(&b.kube, &pvc.namespace).await;
-        restic_secret(&b.kube, &pvc.namespace, &pvc.namespace, &pvc.name, &cfg).await?;
-        cfg.unlock(&b.host, &format!("volsync/{}/{}", pvc.namespace, pvc.name))
-            .await;
-        replication_source(&b.kube, &pvc, false).await?;
-    }
-    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -557,11 +531,8 @@ impl crate::runtime::Resource for BackupKeyController {
         };
         let b = ctx.tools.backend().await?;
         if master_config(&b.kube).await?.is_none() {
-            let sources = enable(&b, &url, &token).await?;
-            tracing::info!(
-                "backups turned on automatically; {} volumes protected",
-                sources.len()
-            );
+            enable(&b, &url, &token).await?;
+            tracing::info!("backups turned on automatically");
             return Ok(crate::runtime::Tick::Done);
         }
         Ok(key_refresh_tick(
@@ -593,10 +564,6 @@ pub(crate) async fn sweep_locks<H: Host>(b: &Backend<H>) -> anyhow::Result<crate
     for namespace in managed_namespaces(&b.kube).await? {
         cfg.unlock(&b.host, &crate::routers::folder_backup::store(&namespace))
             .await;
-    }
-    for pvc in outside_tree_pvcs(&b.kube).await? {
-        let path = format!("volsync/{}/{}", pvc.namespace, pvc.name);
-        cfg.unlock(&b.host, &path).await;
     }
     Ok(crate::runtime::Tick::Done)
 }
@@ -711,31 +678,6 @@ mod tests {
                 )))
                 .mount(server)
                 .await;
-            let claim = |ns: &str, name: &str| {
-                json!({
-                    "metadata": { "name": name, "namespace": ns },
-                    "spec": { "resources": { "requests": { "storage": "1Gi" } } }
-                })
-            };
-            Mock::given(method("GET"))
-                .and(path("/api/v1/persistentvolumeclaims"))
-                .respond_with(ResponseTemplate::new(200).set_body_json(list(
-                    "PersistentVolumeClaim",
-                    vec![
-                        claim("yolab-notes", "data"),
-                        claim("yolab-notes", "volsync-data-cache"),
-                        claim("yolab-other", "data"),
-                    ],
-                )))
-                .mount(server)
-                .await;
-            Mock::given(method("GET"))
-                .and(path("/api/v1/persistentvolumes"))
-                .respond_with(
-                    ResponseTemplate::new(200).set_body_json(list("PersistentVolume", vec![])),
-                )
-                .mount(server)
-                .await;
         }
 
         fn unlocked_repos(host: &FakeHost) -> Vec<String> {
@@ -766,8 +708,7 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn the_sweeper_unlocks_the_settings_every_service_store_and_every_volume_outside_the_tree(
-        ) {
+        async fn the_sweeper_unlocks_the_settings_and_every_service_store_and_nothing_else() {
             let (server, kube) = api_server().await;
             config(&server, 200, enabled()).await;
             apps(&server).await;
@@ -782,23 +723,8 @@ mod tests {
                 vec![
                     "s3:https://s3.example/bucket-1/cluster-backup".to_string(),
                     "s3:https://s3.example/bucket-1/services/yolab-notes".to_string(),
-                    "s3:https://s3.example/bucket-1/volsync/yolab-notes/data".to_string(),
                 ]
             );
-        }
-
-        #[tokio::test]
-        async fn a_new_app_is_not_wired_for_backups_while_they_are_off() {
-            let (server, kube) = api_server().await;
-            config(&server, 404, status(404, "NotFound")).await;
-            let b = Backend {
-                kube,
-                host: FakeHost::new(),
-            };
-
-            setup_namespace_backup(&b, "yolab-notes").await.unwrap();
-            assert_eq!(server.received_requests().await.unwrap().len(), 1);
-            assert!(b.host.calls().is_empty());
         }
 
         #[tokio::test]

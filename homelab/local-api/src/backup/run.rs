@@ -313,15 +313,20 @@ pub(crate) struct RunDone {
     warning: Option<String>,
 }
 
-fn split_by_tree(
-    pvcs: Vec<PvcInfo>,
-    in_tree: &[crate::tree::Claimed],
-) -> (Vec<PvcInfo>, Vec<PvcInfo>) {
-    pvcs.into_iter().partition(|p| {
-        in_tree
-            .iter()
-            .any(|c| c.namespace == p.namespace && c.claim == p.name)
-    })
+fn outside_tree_failures(pvcs: &[PvcInfo], in_tree: &[crate::tree::Claimed]) -> Vec<String> {
+    pvcs.iter()
+        .filter(|p| {
+            !in_tree
+                .iter()
+                .any(|c| c.namespace == p.namespace && c.claim == p.name)
+        })
+        .map(|p| {
+            format!(
+                "{} keeps its data the old way, outside the file tree, and is not backed up — uninstall this service and install it again to move it into the tree",
+                p.name
+            )
+        })
+        .collect()
 }
 
 pub(crate) const MANUAL_TRIGGER: &str = "manual";
@@ -362,8 +367,7 @@ async fn run_set<H: Host>(
         .into_iter()
         .filter(|p| &p.namespace == namespace)
         .collect();
-    let (_, outside_tree) = split_by_tree(pvcs, &claimed);
-    let mut failures = Vec::new();
+    let mut failures = outside_tree_failures(&pvcs, &claimed);
     let mut pinned = HashMap::new();
 
     let folders = crate::tree::service_folders(&volumes, namespace);
@@ -391,10 +395,6 @@ async fn run_set<H: Host>(
             Err(e) => failures.push(format!("its folders: {e:#}")),
         }
     }
-
-    let (legacy_failures, legacy_pinned) = sync_outside_tree(b, cfg, &outside_tree).await;
-    failures.extend(legacy_failures);
-    pinned.extend(legacy_pinned);
 
     let (snapshot_id, services) = snapshot_cluster(b, cfg, &pinned, target, run_id).await?;
 
@@ -462,127 +462,6 @@ async fn forget_old_cluster_snapshots<H: Host>(b: &Backend<H>, cfg: &BackupConfi
     }
 }
 
-async fn sync_outside_tree<H: Host>(
-    b: &Backend<H>,
-    cfg: &BackupConfig,
-    pvcs: &[PvcInfo],
-) -> (Vec<String>, PinnedVolumes) {
-    let mut pending = Vec::new();
-    let mut failures = Vec::new();
-    for pvc in pvcs {
-        allow_privileged_movers(&b.kube, &pvc.namespace).await;
-        if let Err(e) = restic_secret(&b.kube, &pvc.namespace, &pvc.namespace, &pvc.name, cfg).await
-        {
-            failures.push(format!(
-                "{}/{}: could not write its backup credentials: {e}",
-                pvc.namespace, pvc.name
-            ));
-            continue;
-        }
-        let before = match replication_source_status(&b.kube, &pvc.namespace, &pvc.name).await {
-            Ok(before) => before,
-            Err(e) => {
-                failures.push(format!(
-                    "{}/{}: could not read its previous upload, so a new one cannot be told apart from it: {e:#}",
-                    pvc.namespace, pvc.name
-                ));
-                continue;
-            }
-        };
-        match replication_source(&b.kube, pvc, true).await {
-            Ok(Some(trigger)) => pending.push(PendingSync {
-                pvc: pvc.clone(),
-                trigger,
-                logs_before: mover_logs(&before),
-            }),
-            Ok(None) => {}
-            Err(e) => failures.push(format!(
-                "{}/{}: could not start: {e}",
-                pvc.namespace, pvc.name
-            )),
-        }
-    }
-    let (sync_failures, synced) = wait_for_volume_syncs(&b.kube, &pending).await;
-    failures.extend(sync_failures);
-
-    let mut pinned = HashMap::new();
-    for (pvc, rs) in &synced {
-        match pin_volume_snapshot(&b.host, cfg, pvc, rs).await {
-            Some(snap) => {
-                pinned.insert((pvc.namespace.clone(), pvc.name.clone()), snap);
-            }
-            None => failures.push(format!(
-                "{}/{}: uploaded, but its snapshot could not be identified",
-                pvc.namespace, pvc.name
-            )),
-        }
-    }
-    (failures, pinned)
-}
-
-const VOLUME_SYNC_TIMEOUT: Duration = Duration::from_secs(4 * 3600);
-const VOLUME_SYNC_POLL: Duration = Duration::from_secs(10);
-
-struct PendingSync {
-    pvc: PvcInfo,
-    trigger: String,
-    logs_before: Option<String>,
-}
-
-#[derive(Debug, PartialEq)]
-enum SyncOutcome {
-    Done,
-    Failed(String),
-    Pending,
-}
-
-async fn replication_source_status(
-    client: &Client,
-    namespace: &str,
-    pvc: &str,
-) -> anyhow::Result<Value> {
-    Ok(crate::k8s::get(
-        client,
-        &crate::k8s::reference(
-            "volsync.backube/v1alpha1",
-            "ReplicationSource",
-            namespace,
-            &replication_source_name(pvc),
-        ),
-    )
-    .await?
-    .unwrap_or(Value::Null))
-}
-
-fn mover_logs(rs: &Value) -> Option<String> {
-    rs["status"]["latestMoverStatus"]["logs"]
-        .as_str()
-        .map(str::to_string)
-}
-
-fn sync_outcome(rs: &Value, trigger: &str, logs_before: Option<&str>) -> SyncOutcome {
-    let status = &rs["status"];
-    let result = status["latestMoverStatus"]["result"].as_str();
-    let logs = status["latestMoverStatus"]["logs"].as_str();
-    if status["lastManualSync"].as_str() == Some(trigger) {
-        return match result {
-            Some("Failed") => SyncOutcome::Failed(last_line(logs)),
-            _ => SyncOutcome::Done,
-        };
-    }
-    if result == Some("Failed") && logs != logs_before {
-        return SyncOutcome::Failed(last_line(logs));
-    }
-    SyncOutcome::Pending
-}
-
-fn last_line(logs: Option<&str>) -> String {
-    logs.and_then(|l| l.lines().rev().find(|x| !x.trim().is_empty()))
-        .unwrap_or("the upload failed")
-        .trim()
-        .to_string()
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct VolumeSnapshot {
     pub id: String,
@@ -598,36 +477,12 @@ impl VolumeSnapshot {
     }
 }
 
-fn saved_snapshot_id(logs: &str) -> Option<String> {
-    logs.lines().rev().find_map(|l| {
-        let rest = l.trim().strip_prefix("snapshot ")?;
-        let id = rest.strip_suffix(" saved")?;
-        (!id.is_empty() && id.bytes().all(|b| b.is_ascii_hexdigit())).then(|| id.to_string())
-    })
-}
-
 fn parse_pinned(v: &Value) -> Option<VolumeSnapshot> {
     let s = v.as_array()?.first()?;
     Some(VolumeSnapshot {
         id: s["id"].as_str()?.to_string(),
         time: s["time"].as_str()?.to_string(),
     })
-}
-
-async fn pin_volume_snapshot<H: Host>(
-    host: &H,
-    cfg: &BackupConfig,
-    pvc: &PvcInfo,
-    rs: &Value,
-) -> Option<VolumeSnapshot> {
-    let short = saved_snapshot_id(mover_logs(rs)?.as_str())?;
-    pin_snapshot(
-        host,
-        cfg,
-        &format!("volsync/{}/{}", pvc.namespace, pvc.name),
-        &short,
-    )
-    .await
 }
 
 async fn pin_snapshot<H: Host>(
@@ -650,57 +505,6 @@ async fn pin_snapshot<H: Host>(
         return None;
     }
     parse_pinned(&serde_json::from_str(&out.stdout).ok()?)
-}
-
-async fn wait_for_volume_syncs(
-    client: &Client,
-    pending: &[PendingSync],
-) -> (Vec<String>, Vec<(PvcInfo, Value)>) {
-    let deadline = std::time::Instant::now() + VOLUME_SYNC_TIMEOUT;
-    let mut waiting: Vec<&PendingSync> = pending.iter().collect();
-    let mut failures = Vec::new();
-    let mut synced = Vec::new();
-    while !waiting.is_empty() {
-        let mut still = Vec::new();
-        for p in waiting {
-            let rs = match replication_source_status(client, &p.pvc.namespace, &p.pvc.name).await {
-                Ok(rs) => rs,
-                Err(e) => {
-                    tracing::warn!(
-                        "{}/{}: could not read the upload's progress this time: {e:#}",
-                        p.pvc.namespace,
-                        p.pvc.name
-                    );
-                    still.push(p);
-                    continue;
-                }
-            };
-            match sync_outcome(&rs, &p.trigger, p.logs_before.as_deref()) {
-                SyncOutcome::Done => synced.push((p.pvc.clone(), rs)),
-                SyncOutcome::Failed(why) => {
-                    failures.push(format!("{}/{}: {why}", p.pvc.namespace, p.pvc.name))
-                }
-                SyncOutcome::Pending => still.push(p),
-            }
-        }
-        waiting = still;
-        if waiting.is_empty() {
-            break;
-        }
-        if std::time::Instant::now() >= deadline {
-            for p in &waiting {
-                failures.push(format!(
-                    "{}/{}: still uploading after {}h",
-                    p.pvc.namespace,
-                    p.pvc.name,
-                    VOLUME_SYNC_TIMEOUT.as_secs() / 3600
-                ));
-            }
-            break;
-        }
-        tokio::time::sleep(VOLUME_SYNC_POLL).await;
-    }
-    (failures, synced)
 }
 
 type PinnedVolumes = HashMap<(String, String), VolumeSnapshot>;
@@ -791,7 +595,6 @@ const CLUSTER_SCOPED_EXPORT: &[(&str, &str)] = &[
     ("rbac.authorization.k8s.io/v1", "ClusterRole"),
     ("rbac.authorization.k8s.io/v1", "ClusterRoleBinding"),
     ("storage.k8s.io/v1", "VolumeAttachment"),
-    ("snapshot.storage.k8s.io/v1", "VolumeSnapshotClass"),
     ("storage.k8s.io/v1", "CSIDriver"),
     ("storage.k8s.io/v1", "CSINode"),
     (
@@ -1342,71 +1145,51 @@ async fn schedule<H: Host + Clone + 'static>(b: &Backend<H>) -> anyhow::Result<T
 mod tests {
     use super::*;
 
-    fn rs(last_manual: &str, result: &str, logs: &str) -> Value {
-        json!({"status": {
-            "lastManualSync": last_manual,
-            "latestMoverStatus": {"result": result, "logs": logs},
-        }})
+    #[test]
+    fn a_volume_outside_the_tree_fails_the_backup_and_says_to_reinstall() {
+        let pvcs = vec![
+            PvcInfo {
+                namespace: "yolab-notes".into(),
+                name: "home".into(),
+                capacity: "100Ti".into(),
+            },
+            PvcInfo {
+                namespace: "yolab-notes".into(),
+                name: "old-data".into(),
+                capacity: "5Gi".into(),
+            },
+        ];
+        let in_tree = vec![crate::tree::Claimed {
+            namespace: "yolab-notes".into(),
+            claim: "home".into(),
+            folder: "notes".into(),
+        }];
+        let failures = outside_tree_failures(&pvcs, &in_tree);
+        assert_eq!(failures.len(), 1, "{failures:?}");
+        assert!(failures[0].starts_with("old-data "), "{}", failures[0]);
+        assert!(failures[0].contains("install it again"), "{}", failures[0]);
     }
 
     #[test]
-    fn a_volume_is_backed_up_only_once_volsync_records_this_trigger() {
-        let old = rs("backup-1", "Successful", "snapshot a saved");
-        assert_eq!(
-            sync_outcome(&old, "backup-2", Some("snapshot a saved")),
-            SyncOutcome::Pending,
-            "the previous run's success is not this run's"
-        );
-        let new = rs("backup-2", "Successful", "snapshot b saved");
-        assert_eq!(
-            sync_outcome(&new, "backup-2", Some("snapshot a saved")),
-            SyncOutcome::Done
-        );
+    fn a_service_whose_volumes_are_all_in_the_tree_has_nothing_outside_it() {
+        let pvcs = vec![PvcInfo {
+            namespace: "yolab-notes".into(),
+            name: "home".into(),
+            capacity: "100Ti".into(),
+        }];
+        let in_tree = vec![crate::tree::Claimed {
+            namespace: "yolab-notes".into(),
+            claim: "home".into(),
+            folder: "notes".into(),
+        }];
+        assert!(outside_tree_failures(&pvcs, &in_tree).is_empty());
     }
 
     #[test]
-    fn a_new_failure_fails_the_volume_but_an_old_one_does_not() {
-        let stale = rs("backup-1", "Failed", "old error");
-        assert_eq!(
-            sync_outcome(&stale, "backup-2", Some("old error")),
-            SyncOutcome::Pending
-        );
-        let fresh = rs(
-            "backup-1",
-            "Failed",
-            "...\nFatal: unable to open repository\n",
-        );
-        assert_eq!(
-            sync_outcome(&fresh, "backup-2", Some("old error")),
-            SyncOutcome::Failed("Fatal: unable to open repository".into())
-        );
-    }
-
-    #[test]
-    fn the_saved_snapshot_is_read_from_the_mover_log() {
-        let logs = "=== Initialize Dir ===\ncreated restic repository 9bc0b3e83e at s3:https://x\n\
-                    no parent snapshot found, will read all files\n\
-                    Added to the repository: 669.094 MiB (628.814 MiB stored)\n\
-                    processed 2158 files, 680.417 MiB in 0:20\nsnapshot f46c4413 saved\n\
-                    Restic completed in 25s";
-        assert_eq!(saved_snapshot_id(logs), Some("f46c4413".into()));
-    }
-
-    #[test]
-    fn a_log_without_a_saved_snapshot_pins_nothing() {
-        assert_eq!(
-            saved_snapshot_id("Fatal: repository is already locked"),
-            None
-        );
-        assert_eq!(saved_snapshot_id("snapshot  saved"), None);
-        assert_eq!(saved_snapshot_id("snapshot not-hex saved"), None);
-        assert_eq!(saved_snapshot_id(""), None);
-    }
-
-    #[test]
-    fn the_last_saved_snapshot_wins_when_a_mover_retried() {
-        let logs = "snapshot aaaa1111 saved\nerror: prune failed\nsnapshot bbbb2222 saved";
-        assert_eq!(saved_snapshot_id(logs), Some("bbbb2222".into()));
+    fn the_cluster_export_no_longer_asks_for_volume_snapshot_classes() {
+        assert!(!CLUSTER_SCOPED_EXPORT
+            .iter()
+            .any(|(api, _)| api.starts_with("snapshot.storage.k8s.io")));
     }
 
     #[test]
@@ -1454,14 +1237,6 @@ mod tests {
         assert_eq!(
             VolumeSnapshot::recorded_in(&catalog_pvc("data", "5Gi", None, None)),
             None
-        );
-    }
-
-    #[test]
-    fn a_source_that_cannot_be_read_is_still_pending() {
-        assert_eq!(
-            sync_outcome(&Value::Null, "backup-2", None),
-            SyncOutcome::Pending
         );
     }
 
@@ -1994,35 +1769,6 @@ mod tests {
             assert!(b.host.ran("k3s etcd-snapshot save --name=yolab-bk-1"));
             assert!(server.received_requests().await.unwrap().is_empty());
             assert!(!dir.path().join("etcd.db").exists());
-        }
-
-        #[tokio::test]
-        async fn a_missing_replication_source_reads_as_null() {
-            let (server, kube) = api_server().await;
-            Mock::given(method("GET"))
-                .respond_with(ResponseTemplate::new(404).set_body_json(status(404, "NotFound")))
-                .mount(&server)
-                .await;
-            assert_eq!(
-                replication_source_status(&kube, "yolab-notes", "data")
-                    .await
-                    .unwrap(),
-                Value::Null
-            );
-        }
-
-        #[tokio::test]
-        async fn an_unreadable_replication_source_is_an_error_not_a_volume_never_backed_up() {
-            let (server, kube) = api_server().await;
-            Mock::given(method("GET"))
-                .respond_with(
-                    ResponseTemplate::new(500).set_body_json(status(500, "InternalError")),
-                )
-                .mount(&server)
-                .await;
-            assert!(replication_source_status(&kube, "yolab-notes", "data")
-                .await
-                .is_err());
         }
     }
 }
