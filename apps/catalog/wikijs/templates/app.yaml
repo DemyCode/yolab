@@ -30,7 +30,7 @@ spec:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
       {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
       - name: server
-        image: linuxserver/wikijs:2.5.317@sha256:78ab548191ed412efd5849a897be93cb05708bb7b132b2a6c690c02234862e4d
+        image: linuxserver/wikijs:2.5.317@sha256:cc4d796a746304d2189de7f815f86462e9762164347972f47fdd67a6b743413e
         imagePullPolicy: IfNotPresent
         securityContext:
           runAsUser: 1000

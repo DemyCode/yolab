@@ -52,7 +52,7 @@ spec:
     spec:
       containers:
       - name: app
-        image: ghcr.io/wavelog/wavelog:3.2.5@sha256:e371b599572bbd50b019acf8bf54009df7042bbd8f238d905a540d6e956b2c25
+        image: ghcr.io/wavelog/wavelog:3.2.5@sha256:eb582a20ff496fccb25fda5d752dae9ed3728b213a6a45ed06214bbf0401b4c6
         imagePullPolicy: IfNotPresent
         env:
         - name: CI_ENV
@@ -109,7 +109,7 @@ spec:
     spec:
       containers:
       - name: wavelog-db
-        image: mariadb:11.8@sha256:c4124d1afa875e47f2892edf26b482fa54f796e2f342d3717a04ca091a22a9bd
+        image: mariadb:11.8@sha256:e1d5495f445654134f226f55a41ce0da227116f6f27f283101f405c794d841fc
         imagePullPolicy: IfNotPresent
         env:
         - name: MARIADB_RANDOM_ROOT_PASSWORD

@@ -39,7 +39,7 @@ spec:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
       {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
       - name: web
-        image: ghcr.io/raylabshq/gitea-mirror:v3.51.5@sha256:00e8c4d67fc1c403dfa2eeb03e5d9454d6ab69dc710ec3caeacaaa848a12ddac
+        image: ghcr.io/raylabshq/gitea-mirror:v3.54.0@sha256:be5600216ff8a152ea7ddd9152c68cc94b56886e85bf44fe67853ee1bcac2ada
         imagePullPolicy: IfNotPresent
         env:
         - name: APP_SEED

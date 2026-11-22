@@ -34,7 +34,7 @@ spec:
       {{- include "authelia.embed.container" . | nindent 6 }}
       {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
       - name: server
-        image: ghcr.io/lissy93/web-check:2.4.0@sha256:3f46c4fdc6c41aac57b6e1965b6afaf4d19239ececdc7b4c12a89211890eaec8
+        image: ghcr.io/lissy93/web-check:2.4.2@sha256:611e1cd4709888fc43accd3c71a998f448567a793f404dc0398d73a0dd4df0f6
         imagePullPolicy: IfNotPresent
         ports:
         - containerPort: 3000

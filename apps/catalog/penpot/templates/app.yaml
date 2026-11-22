@@ -39,7 +39,7 @@ spec:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
       {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
       - name: penpot-frontend
-        image: penpotapp/frontend:2.19.0@sha256:20d98bed840ba947af25f0c634c1cf0913ca3d02e27eb9cb7f7f6569b65e2b78
+        image: penpotapp/frontend:2.19.3@sha256:d22ce9f6f4859adbc726f45965da0d4b083817b0c13ca4a49aa3e927901cccb9
         imagePullPolicy: IfNotPresent
         env:
         - name: PENPOT_FLAGS
@@ -77,7 +77,7 @@ spec:
     spec:
       containers:
       - name: penpot-backend
-        image: penpotapp/backend:2.19.0@sha256:b2dc4f516de4aab825f1804211e4124f93bafd40bb848822ab303f162cb3b187
+        image: penpotapp/backend:2.19.3@sha256:31ebb4dabd104c2ed3ae736dcf5a6043a0660ddaac7bcd8501c28036fb4b578c
         imagePullPolicy: IfNotPresent
         env:
         - name: APP_SEED
@@ -137,7 +137,7 @@ spec:
     spec:
       containers:
       - name: penpot-exporter
-        image: penpotapp/exporter:2.19.0@sha256:63b9f5d23c80f3b952f5d7feba71a45ac8bb05281e877071f6bba625bb51db66
+        image: penpotapp/exporter:2.19.3@sha256:1705d70e79f3530b3cee65d0cdbee3c5f44f26d62f5ad43bac7945dce4c7b653
         imagePullPolicy: IfNotPresent
         env:
         - name: APP_SEED
@@ -180,7 +180,7 @@ spec:
     spec:
       containers:
       - name: penpot-mcp
-        image: penpotapp/mcp:2.19.0@sha256:83f87b53be118fd3b2a98159c2e77585859195b0f99b6edeb5b73fca642a75d8
+        image: penpotapp/mcp:2.19.3@sha256:01ee7620262379c337a9f77e3149d860330d261ffc640d89af60dc8bd45aef94
         imagePullPolicy: IfNotPresent
         env:
         - name: APP_SEED
@@ -215,7 +215,7 @@ spec:
     spec:
       containers:
       - name: penpot-postgres
-        image: postgres:15@sha256:1aac5b49cefd627f02816141ca4ad012d6cc19460dfe02a9b5168a105be3fc53
+        image: postgres:15@sha256:10f9e886f772e9d6484350b043bcf990ead67ae5d9988ddce265d72a299055d5
         imagePullPolicy: IfNotPresent
         env:
         - name: APP_SEED
@@ -280,7 +280,7 @@ spec:
     spec:
       containers:
       - name: penpot-valkey
-        image: valkey/valkey:8.1.11@sha256:8f836008e0986c36adf50da714c7060cf689dbb335f61fe077939d90fa650809
+        image: valkey/valkey:8.1.12@sha256:5032c4dd7abe08d6fd9382054608183e2bf1f7e3895ef619b8784698454325f7
         imagePullPolicy: IfNotPresent
         env:
         - name: APP_SEED

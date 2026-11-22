@@ -48,7 +48,7 @@ spec:
     spec:
       containers:
       - name: librespeed
-        image: lscr.io/linuxserver/librespeed:latest@sha256:98ddd2a1357f961392789e078d5511dd09cb7461f87a26e6fc9cfb6e69ba96a4
+        image: lscr.io/linuxserver/librespeed:latest@sha256:ad54c25a773cd7bfad5fd5dd82a4987a899edb0a9762e285c842eeb16bef4244
         imagePullPolicy: IfNotPresent
         readinessProbe:
           timeoutSeconds: 5
@@ -120,7 +120,7 @@ spec:
     spec:
       containers:
       - name: postgres
-        image: postgres:17-alpine@sha256:3540c0362c809df084ffac0ae69fe794515f9de92692f02178bcdce0ef0302ac
+        image: postgres:17-alpine@sha256:526f86d93c6ea08fd3f1fe5605650cacc781b2c6013169a0ad8f42c7d3d84f32
         imagePullPolicy: IfNotPresent
         readinessProbe:
           timeoutSeconds: 5

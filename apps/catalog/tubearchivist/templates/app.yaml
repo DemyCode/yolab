@@ -160,7 +160,7 @@ spec:
     spec:
       containers:
       - name: elasticsearch
-        image: elasticsearch:8.19.23@sha256:ef5cafd961d7e273f13fed8def82e63c5ae0491106b5eecb5a69aa12d64f089b
+        image: elasticsearch:8.19.25@sha256:d609f45c5b8ac4f97090d4029520a256581c8f0b70b6cc28aa82255aa98b9bec
         imagePullPolicy: IfNotPresent
         env:
         - name: APP_PASSWORD

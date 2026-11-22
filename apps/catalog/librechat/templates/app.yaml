@@ -169,7 +169,7 @@ spec:
     spec:
       containers:
       - name: mongodb
-        image: mongo:8.3.13@sha256:e16e606f792ea89d2b4907b54e5e31eb86a7a23e27231dce3a982cc8f2d73cd2
+        image: mongo:8.3.17@sha256:747773029b84309981a3624a1af64ffc8c4d792283cc0834f26fe01fc6d28b34
         imagePullPolicy: IfNotPresent
         args:
         - mongod
@@ -248,7 +248,7 @@ spec:
     spec:
       containers:
       - name: meilisearch
-        image: getmeili/meilisearch:v1.56.2@sha256:9600db22be3fcbf3d506176d3a73dd70a65c5719d9aa1d2837355b75afb8f4fb
+        image: getmeili/meilisearch:v1.57.0@sha256:91bf09897482c17205c8faeca8daa8d57999fb9de20d862763cdfa92ba4ec790
         imagePullPolicy: IfNotPresent
         env:
         - name: MEILI_HOST

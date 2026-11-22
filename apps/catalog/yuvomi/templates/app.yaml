@@ -39,7 +39,7 @@ spec:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
       {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
       - name: web
-        image: ghcr.io/ulsklyc/yuvomi:2.88.0@sha256:3b86d5ebe113f15b49159704a18295b7dec344c6e82360c44d802cb805e07302
+        image: ghcr.io/ulsklyc/yuvomi:2.93.0@sha256:530a6fdff7602d80f1a4b96b5071af5e65e6beaa1333a534650276f5c0e92887
         imagePullPolicy: IfNotPresent
         env:
         - name: APP_SEED

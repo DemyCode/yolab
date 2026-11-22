@@ -34,7 +34,7 @@ spec:
       {{- include "authelia.embed.container" . | nindent 6 }}
       {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
       - name: app
-        image: linuxserver/sqlitebrowser:3.13.1@sha256:94c6ea5579ee6f78d2453aa6903caba343ad7fe9118940a5cbdab42ba22c0f83
+        image: linuxserver/sqlitebrowser:3.13.1@sha256:5a7f74ac3878b14b71891caff746e4c3413fafa51dadd2e1dd9a5157dea59452
         imagePullPolicy: IfNotPresent
         env:
         - name: PUID

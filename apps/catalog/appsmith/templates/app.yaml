@@ -61,7 +61,7 @@ spec:
     spec:
       containers:
       - name: app
-        image: appsmith/appsmith-ce:v2.6.0@sha256:30587f97f617a0d086b7c878dff618c530033e6239ed84bf8fc9565db661503b
+        image: appsmith/appsmith-ce:v2.7.2@sha256:1f456089b75edec495c005f0e94858aa5c6d1408fcac5f7c1e2d85d69bd1592d
         imagePullPolicy: IfNotPresent
         env:
         - name: APP_PASSWORD

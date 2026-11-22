@@ -30,7 +30,7 @@ spec:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
       {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
       - name: app
-        image: dedicatedcode/reitti:5.10.0@sha256:d7e2fa65fbfeac2d630a6bdc9d42935b4404bdd19fc98d9629c554d31748a400
+        image: dedicatedcode/reitti:5.12.0@sha256:21ec8bf319ed6d542617e026dd21605fdc9c41799431a4650a0c3087db40673c
         imagePullPolicy: IfNotPresent
         env:
         - name: POSTGIS_USER
@@ -74,7 +74,7 @@ spec:
     spec:
       containers:
       - name: postgis
-        image: imresamu/postgis:17-3.5-alpine@sha256:c7e4985375d8a9583e9bbdb33d0182138fa9a24d22ba9d7cc19362c4827b9038
+        image: imresamu/postgis:17-3.5-alpine@sha256:614ed4229d157f75f1f5f1fe409301fed61ab1b6e2c96193a3601eee9611ebb8
         imagePullPolicy: IfNotPresent
         env:
         - name: POSTGRES_USER
@@ -136,7 +136,7 @@ spec:
     spec:
       containers:
       - name: redis
-        image: redis:7.4.12-alpine@sha256:7b1753b4c5ad8458906c272a8132b8c15f5557b000379eb115fb239706a384b7
+        image: redis:7.4.12-alpine@sha256:7f7d30b7fdd09467bac58198a1f166dd69789d348d4fe859cccb20e0cf287fbe
         imagePullPolicy: IfNotPresent
         securityContext:
           runAsUser: 1000
@@ -192,7 +192,7 @@ spec:
     spec:
       containers:
       - name: tile-cache
-        image: dedicatedcode/reitti-tile-cache:5.10.0@sha256:f7c73b1f35ede60fc70f5a182fa4c3409c13f2e9d6a0aa5d2513a8084ff93820
+        image: dedicatedcode/reitti-tile-cache:5.12.0@sha256:851662e184a9c2b88dc1758a9098dc565cccfa252512abce1b43a75faac156c2
         imagePullPolicy: IfNotPresent
         readinessProbe:
           timeoutSeconds: 5

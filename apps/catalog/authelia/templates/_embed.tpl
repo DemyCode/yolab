@@ -3,7 +3,7 @@
 {{- end -}}
 
 {{- define "authelia.image.redis" -}}
-{{- (((.Values.yolab).images).authelia_sessions) | default "redis:7.4-alpine@sha256:7b1753b4c5ad8458906c272a8132b8c15f5557b000379eb115fb239706a384b7" -}}
+{{- (((.Values.yolab).images).authelia_sessions) | default "redis:7.4-alpine@sha256:7f7d30b7fdd09467bac58198a1f166dd69789d348d4fe859cccb20e0cf287fbe" -}}
 {{- end -}}
 
 {{- define "authelia.image.busybox" -}}

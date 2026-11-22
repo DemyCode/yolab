@@ -3,11 +3,11 @@ name: mastodon
 description: "Your own corner of the fediverse — a social server you run"
 home: https://joinmastodon.org
 type: application
-version: 0.1.46
+version: 0.1.47
 
 dependencies:
   - name: yolab-common
-    version: "0.1.42"
+    version: "0.1.43"
     repository: "oci://ghcr.io/demycode/charts"
 
 annotations:

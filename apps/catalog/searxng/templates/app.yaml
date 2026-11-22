@@ -30,7 +30,7 @@ spec:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
       {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
       - name: searxng
-        image: searxng/searxng:latest@sha256:287af61f1a13e86d02974fcde91a3413a9945788de38b61ffbc491d81a19bcc2
+        image: searxng/searxng:latest@sha256:8140a62838a141721e5031070e2e1a2edd4b91f1730e285716da197d76a40182
         imagePullPolicy: IfNotPresent
         readinessProbe:
           timeoutSeconds: 5

@@ -6,7 +6,7 @@
     version = "0.1.0";
     src = ./client-ui;
     npmDepsFetcherVersion = 2;
-    npmDepsHash = "sha256-8UH5Fy/L853jPgv0G17Km14Pf69JdE0JoAm1KuHRWZU=";
+    npmDepsHash = "sha256-PSOjWXJuzbkMrSmkQPy+kQayjE0UU4U1xczculmJY/w=";
     npmFlags = ["--legacy-peer-deps"];
   };
 in {

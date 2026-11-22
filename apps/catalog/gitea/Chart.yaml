@@ -3,14 +3,14 @@ name: gitea
 description: "Lightweight self-hosted Git service"
 home: https://about.gitea.com
 type: application
-version: 0.1.46
+version: 0.1.47
 
 dependencies:
   - name: yolab-common
-    version: "0.1.42"
+    version: "0.1.43"
     repository: "oci://ghcr.io/demycode/charts"
   - name: authelia
-    version: "0.2.8"
+    version: "0.2.9"
     repository: oci://ghcr.io/demycode/charts
 
 annotations:

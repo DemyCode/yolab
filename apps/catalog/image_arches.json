@@ -1,13 +1,13 @@
 {
-  "2fauth/2fauth:latest@sha256:9cd2d70937980c77d34f03b2f57a2b8f626adeb8f35b6b5c8ecc0525c073ae57": [
+  "2fauth/2fauth:latest@sha256:6774efa7c612e424eb17a54e2373524d9a04af6cad7e38d85d76fed87f6a48bd": [
     "amd64",
     "arm64"
   ],
-  "agent0ai/agent-zero:v2.15@sha256:05d6ab347bd7db4b6bd5a7d902c9965281ff852ff23f29fffcc1c8919e628bd8": [
+  "agent0ai/agent-zero:v2.16@sha256:0490714bf25bf481ea50d59ead21acec04344cee410a86b4e159908cb92ed8a2": [
     "amd64",
     "arm64"
   ],
-  "akaunting/akaunting:3.3.0@sha256:af69b0343db9b9f7979e15c4be3d50ee502e38edb71190953db7b280d10d0edb": [
+  "akaunting/akaunting:3.3.1@sha256:468ea4f89ad25bc85890909726577ab6bf3515d3bb2d7bb3aded42cbf93263c4": [
     "amd64",
     "arm64"
   ],
@@ -23,7 +23,7 @@
     "amd64",
     "arm64"
   ],
-  "amruthpillai/reactive-resume:latest@sha256:0dcd0c372e78935ba04c9bb04fa0811177ee7fc4b961ce08acce49e13a1ac2a2": [
+  "amruthpillai/reactive-resume:latest@sha256:af6747abf38a38d23c00caa2405115f0b64c92a6b379810d7739dcd5af133b77": [
     "amd64",
     "arm64"
   ],
@@ -35,19 +35,19 @@
     "amd64",
     "arm64"
   ],
-  "apache/tika:3.3.3.0@sha256:326b238b37904c94ff61fed87afe0af72e6a29fa715933b10af97b7d56f1d4cb": [
+  "apache/tika:3.3.3.1@sha256:3049611264bb18cf66e6629f59818cad75ea5d46f770c504ae46537949838c67": [
     "amd64",
     "arm64"
   ],
-  "appflowyinc/appflowy_cloud:latest@sha256:2a29e56a611d6e00162226129d5bd16c3e0b36e24eb4cf409db2c8a6fc3a9b08": [
+  "appflowyinc/appflowy_cloud:latest@sha256:0a7ed5d3e8e5948b1b3f9a6e2e8001249fc0dd931b29336f750dedd7d72edf87": [
     "amd64",
     "arm64"
   ],
-  "appflowyinc/appflowy_web:latest@sha256:e71d5d314b9a7972cf6c765460f6dbca6b6183709ec2425dc8cb6d19610c7acb": [
+  "appflowyinc/appflowy_web:latest@sha256:c0cec44bb86af97696c104c80f9bf6f551bd546d2c12df75bb3747d5f52cf0fd": [
     "amd64",
     "arm64"
   ],
-  "appflowyinc/appflowy_worker:latest@sha256:06d4f95b5c25e3a070686266fff9345c1897b53ea2ac2b61f2564f1e5f0c715e": [
+  "appflowyinc/appflowy_worker:latest@sha256:c78cb5e422a97b00f96d690c7ba1177a9cdb96ffe5a2cd4acbadaa4add6dfd3d": [
     "amd64",
     "arm64"
   ],
@@ -55,7 +55,7 @@
     "amd64",
     "arm64"
   ],
-  "appsmith/appsmith-ce:v2.6.0@sha256:30587f97f617a0d086b7c878dff618c530033e6239ed84bf8fc9565db661503b": [
+  "appsmith/appsmith-ce:v2.7.2@sha256:1f456089b75edec495c005f0e94858aa5c6d1408fcac5f7c1e2d85d69bd1592d": [
     "amd64",
     "arm64"
   ],
@@ -71,7 +71,7 @@
     "amd64",
     "arm64"
   ],
-  "binwiederhier/ntfy:latest@sha256:1875ddcf815c8a3c981d6d78c67a93452d0abba79b1ab9520b1f5f5238902bd7": [
+  "binwiederhier/ntfy:latest@sha256:038da2be5e668fee6d36a62884eea48975e1b71c29a56964e5298c1b9165a573": [
     "amd64",
     "arm64"
   ],
@@ -107,11 +107,11 @@
     "amd64",
     "arm64"
   ],
-  "cgr.dev/chainguard/minio-client:latest-dev@sha256:fe649f71872c299489deb3cb9e057e5d2f76a45c85b7599f7c21616ac80b5e63": [
+  "cgr.dev/chainguard/minio-client:latest-dev@sha256:242581d345b69d17d2c43eed9b2eef0fe0a281489c13d7733281616bcb6cc192": [
     "amd64",
     "arm64"
   ],
-  "cgr.dev/chainguard/minio:latest@sha256:fb893e36fc369d41e92f678b17ec27378fa5bf0576aeef7ac15460c13629ab5a": [
+  "cgr.dev/chainguard/minio:latest@sha256:e9cf6b99c226e9539ed0f14b6f00e37b07da153c7ba1f4f8709c807574b471ec": [
     "amd64",
     "arm64"
   ],
@@ -155,11 +155,11 @@
     "amd64",
     "arm64"
   ],
-  "dedicatedcode/reitti-tile-cache:5.10.0@sha256:f7c73b1f35ede60fc70f5a182fa4c3409c13f2e9d6a0aa5d2513a8084ff93820": [
+  "dedicatedcode/reitti-tile-cache:5.12.0@sha256:851662e184a9c2b88dc1758a9098dc565cccfa252512abce1b43a75faac156c2": [
     "amd64",
     "arm64"
   ],
-  "dedicatedcode/reitti:5.10.0@sha256:d7e2fa65fbfeac2d630a6bdc9d42935b4404bdd19fc98d9629c554d31748a400": [
+  "dedicatedcode/reitti:5.12.0@sha256:21ec8bf319ed6d542617e026dd21605fdc9c41799431a4650a0c3087db40673c": [
     "amd64",
     "arm64"
   ],
@@ -195,7 +195,7 @@
     "amd64",
     "arm64"
   ],
-  "docker.io/osminogin/tor-simple:0.4.9.16@sha256:ba01af2d9197c5fbcf462e90906e1a0c7cb023abe6ed2efe10b23b46ca971f80": [
+  "docker.io/osminogin/tor-simple:0.4.9.17@sha256:46111caf16b334e556d90d504352adecba78408b68c88c2a3045e475ce857b34": [
     "amd64",
     "arm64"
   ],
@@ -203,7 +203,7 @@
     "amd64",
     "arm64"
   ],
-  "docker.io/tailscale/tailscale:v1.104.4@sha256:ed6480b33c6eb67c9cbd203ed42b9fb57e361986725b6856def71b7a3d9e276c": [
+  "docker.io/tailscale/tailscale:v1.104.7@sha256:72c1e19e0aedca96b8533bbb0b4368564410ff20b17e53b804eb6c1f04a31be4": [
     "amd64",
     "arm64"
   ],
@@ -219,7 +219,7 @@
     "amd64",
     "arm64"
   ],
-  "docuseal/docuseal:3.3.6@sha256:df78e750ec0df42c121225875714487998048c9c80f412c1d5a0b9290887ba5c": [
+  "docuseal/docuseal:3.3.8@sha256:d67335c0cb3142818a39878ab67a0d0af2a653220e2203b042796dd1321a4a9c": [
     "amd64",
     "arm64"
   ],
@@ -239,7 +239,7 @@
     "amd64",
     "arm64"
   ],
-  "eclipse-mosquitto:2.1.2-alpine@sha256:75d6662dee52c947dc9dd9c29f1d8d7ffef78ddaf38001caa09755681e8bbc98": [
+  "eclipse-mosquitto:2.1.4-alpine@sha256:fa12172a051310efe5bcb7a6a11b77bd5faacb82cbacd7742aa758bf024fd8e4": [
     "amd64",
     "arm64"
   ],
@@ -247,7 +247,7 @@
     "amd64",
     "arm64"
   ],
-  "elasticsearch:8.19.23@sha256:ef5cafd961d7e273f13fed8def82e63c5ae0491106b5eecb5a69aa12d64f089b": [
+  "elasticsearch:8.19.25@sha256:d609f45c5b8ac4f97090d4029520a256581c8f0b70b6cc28aa82255aa98b9bec": [
     "amd64",
     "arm64"
   ],
@@ -259,7 +259,7 @@
     "amd64",
     "arm64"
   ],
-  "etherpad/etherpad:3.3.16@sha256:72759acc995ee66c7b4eb8e93fe017b882b29005beb86320fc12bd7334d0e4d3": [
+  "etherpad/etherpad:3.3.20@sha256:1bbefc349b98bf63994ff54ddfff0984fac046e51ad896d67a6c8a178336cf9c": [
     "amd64",
     "arm64"
   ],
@@ -267,11 +267,11 @@
     "amd64",
     "arm64"
   ],
-  "fireflyiii/core:latest@sha256:d51ab6a3a7b91a5c892441578e0da7f2935f84f36bd1151fc3833acc6e060871": [
+  "fireflyiii/core:latest@sha256:1cb7e7bc050323e7b97a2cae2de1f48ac492d2b048fb092cdcc6f020417aea56": [
     "amd64",
     "arm64"
   ],
-  "fireflyiii/data-importer:version-2.3.5@sha256:59f2f26ddf6eb55e84ce0d571259c9aabd6ddfcc23dd4d3825ab01ad79e34930": [
+  "fireflyiii/data-importer:version-2.3.5@sha256:ed964a235ed215d3b7f314d73122e2bb9adb9577889face56b72c1f5ddbd67eb": [
     "amd64",
     "arm64"
   ],
@@ -283,7 +283,7 @@
     "amd64",
     "arm64"
   ],
-  "freikin/dawarich:latest@sha256:b8ee8d9fdff92a9d6ca570f98e0e875624f4bfb24b61363f8246bba124d5849d": [
+  "freikin/dawarich:latest@sha256:c9c6a9c04fa2ad11c438fc0b0ea3b7d95fc7e6d8c7a3cfa98bf1fc5aef2dbfd4": [
     "amd64",
     "arm64"
   ],
@@ -299,7 +299,7 @@
     "amd64",
     "arm64"
   ],
-  "getmeili/meilisearch:v1.56.2@sha256:9600db22be3fcbf3d506176d3a73dd70a65c5719d9aa1d2837355b75afb8f4fb": [
+  "getmeili/meilisearch:v1.57.0@sha256:91bf09897482c17205c8faeca8daa8d57999fb9de20d862763cdfa92ba4ec790": [
     "amd64",
     "arm64"
   ],
@@ -331,7 +331,7 @@
     "amd64",
     "arm64"
   ],
-  "ghcr.io/advplyr/audiobookshelf:latest@sha256:b897c33f05972fb1bf484f7487bc878fa91ec8691335c1db6e2929c3a7658efa": [
+  "ghcr.io/advplyr/audiobookshelf:latest@sha256:60064c23f32fd9099fd39e82c5132c51701d1221135bbca04cd099b589e1edc3": [
     "amd64",
     "arm64"
   ],
@@ -339,23 +339,23 @@
     "amd64",
     "arm64"
   ],
-  "ghcr.io/alam00000/bentopdf:v2.8.11@sha256:b107c37d9f1f27b7edae28d262e526d8e225541a7cc26005b84dbab42c904105": [
+  "ghcr.io/alam00000/bentopdf:v2.8.12@sha256:beec9d0e0ccb96e59dbff6d26bd7c954c89c880a8c0be5c85004ecc707736516": [
     "amd64",
     "arm64"
   ],
-  "ghcr.io/alexta69/metube:latest@sha256:96dfbf0d5b2944e4ee38f6ce1b34bb0e75a1a3c74eaefd93424ed11284cb72b2": [
+  "ghcr.io/alexta69/metube:latest@sha256:55ce41ab9a78069dc42bd808b20a96aeef4199560a02698a2205ea8a2bc4fef1": [
     "amd64",
     "arm64"
   ],
-  "ghcr.io/anomalyco/opencode:1.19.5@sha256:f4cfe16d91efbbfca01a51c44094fba4cf82e15c7fa17de5f11f9059699b1e6e": [
+  "ghcr.io/anomalyco/opencode:1.19.6@sha256:de0dcdfb45b47080f9c01770cdd1c7af514cc2fb3dcd6cc3253b792fadb92dfa": [
     "amd64",
     "arm64"
   ],
-  "ghcr.io/athombv/homey-shs:13.5.4@sha256:cc59bfe7f0ae8caeca75b57a0d95225f938f0b46d6efe24fda914eb2032d4973": [
+  "ghcr.io/athombv/homey-shs:13.5.4@sha256:dbe1f5d3acd994869d18dd75930e96d9e35e824ecbde4fd66efe49bfd8c9301f": [
     "amd64",
     "arm64"
   ],
-  "ghcr.io/autobrr/autobrr:v1.90.0@sha256:72bb5fe5e8c73f85660f92502d9015b21b07156495f039b55864633b9f8b7a89": [
+  "ghcr.io/autobrr/autobrr:v1.91.0@sha256:c8ad1fe513d852bf00a0c751530ba205ba74196d68b0ece41a4e7d2138a80185": [
     "amd64",
     "arm64"
   ],
@@ -363,7 +363,7 @@
     "amd64",
     "arm64"
   ],
-  "ghcr.io/basecamp/once-campfire:1.5.8@sha256:4d92aad32f0a284d0a91d476e33a15be7f73d18a5e3fe2bd061ac891c351594e": [
+  "ghcr.io/basecamp/once-campfire:1.5.13@sha256:64dfb3be216a6db904df064637ee6b323b7d5183ce14771b1e16dcab0f537745": [
     "amd64",
     "arm64"
   ],
@@ -391,7 +391,7 @@
     "amd64",
     "arm64"
   ],
-  "ghcr.io/blakeblackshear/frigate:stable@sha256:fd60f99ffd4eb6c42360ed4e14953e270586f239309ab3983e55b2e97ffac09a": [
+  "ghcr.io/blakeblackshear/frigate:stable@sha256:d1a3e0008557bb3f3314d442ecd4ba68e9b16ab7872d64612649f7a6e5156635": [
     "amd64",
     "arm64"
   ],
@@ -399,7 +399,7 @@
     "amd64",
     "arm64"
   ],
-  "ghcr.io/browserless/chromium:v2.61.0@sha256:bacd4022297429ff64f5e4d67b062263139a4fee4d5b49a480a022a072fb22d4": [
+  "ghcr.io/browserless/chromium:v2.64.1@sha256:7bd994f88f284af98c81f33a88c9b91e755acc6e231a9dc919f15845563e4022": [
     "amd64",
     "arm64"
   ],
@@ -415,7 +415,7 @@
     "amd64",
     "arm64"
   ],
-  "ghcr.io/cleanuparr/cleanuparr:2.11.0@sha256:1898c3219e7e7ecaf9fcb8474691b6d67d56d0798b01b85690975bae14df11b5": [
+  "ghcr.io/cleanuparr/cleanuparr:2.11.1@sha256:923c2fe435e22fc58d261bacd2d6bbd8eb1ba3f95358803a8e4d3287ffd919d3": [
     "amd64",
     "arm64"
   ],
@@ -430,7 +430,7 @@
     "amd64",
     "arm64"
   ],
-  "ghcr.io/cryptoadvance/specter-desktop:v2.1.11@sha256:ff9acfeac0919e91bd440bb414170da28395afa75c891fc81696139a3d1f0e2a": [
+  "ghcr.io/cryptoadvance/specter-desktop:v2.3.0@sha256:583735f94ae2556a0b089edcacc282431688d9670bacbce097391eff683086e6": [
     "amd64",
     "arm64"
   ],
@@ -446,7 +446,7 @@
     "amd64",
     "arm64"
   ],
-  "ghcr.io/dgtlmoon/changedetection.io:latest@sha256:47b1e9cc3eff820e6022b655e3fcc948625f60c1770ae8b9c30aa3bf104dc255": [
+  "ghcr.io/dgtlmoon/changedetection.io:latest@sha256:b6aae2572a0bf1a671b1b202365ddcfe16a31fa8a60be89df606705731b55f8b": [
     "amd64",
     "arm64"
   ],
@@ -474,7 +474,7 @@
     "amd64",
     "arm64"
   ],
-  "ghcr.io/ellite/wallos:latest@sha256:182d4be4dae26834cc5cec3686bb142e78b0a139a0eb1059355d061d8c0de3e5": [
+  "ghcr.io/ellite/wallos:latest@sha256:de82c41215a761d33a38a3672526b3ce47d0fe7acb84f5c2a4cb2342c710cf4c": [
     "amd64",
     "arm64"
   ],
@@ -482,7 +482,7 @@
     "amd64",
     "arm64"
   ],
-  "ghcr.io/fccview/jotty:1.29.2@sha256:5295d8a85aada46519ed6a1822d5989a373583f42017a346e8a62b44d75af71a": [
+  "ghcr.io/fccview/jotty:1.30.0@sha256:4face8fd1049d1ec3813f3da949d69fb68703f0f8421902a7a2de8ba3f1d61a6": [
     "amd64",
     "arm64"
   ],
@@ -490,7 +490,7 @@
     "amd64",
     "arm64"
   ],
-  "ghcr.io/foldergram/foldergram:1.3.1@sha256:c6098c97deb1e49d96fe7678459ccb533d13f697a2cbf8a734f02794d85d4fbb": [
+  "ghcr.io/foldergram/foldergram:1.3.3@sha256:1bbd0f9be7e4c6f5084cc870b6784e8ad08cd8b1b66d4d7b505eaff26e449ba3": [
     "amd64",
     "arm64"
   ],
@@ -506,11 +506,11 @@
     "amd64",
     "arm64"
   ],
-  "ghcr.io/getalby/hub:v1.24.6@sha256:4bb27770ff2b68ab8342f75909dfcb59db0ca8f903045967e44c908b7f6f85f7": [
+  "ghcr.io/getalby/hub:v1.24.8@sha256:b8a24a55b733717b45605633e864d92e81f85470d8ce4e2040d3e2e42acad460": [
     "amd64",
     "arm64"
   ],
-  "ghcr.io/gethomepage/homepage:latest@sha256:19c5c09184458a41b7b5915e71463a39f36cd33540f41bdbed008791b8182d5f": [
+  "ghcr.io/gethomepage/homepage:latest@sha256:019d8f063a7299e7c1c51ee4a70b692291809af3244894fbec2c2ac7d1f71b18": [
     "amd64",
     "arm64"
   ],
@@ -530,15 +530,15 @@
     "amd64",
     "arm64"
   ],
-  "ghcr.io/hargata/lubelogger:v1.7.4@sha256:483a9d7582c4e6258615fd822b3de4193b4fcc4230d0a92432c6d407faf75af2": [
+  "ghcr.io/hargata/lubelogger:v1.7.5@sha256:cdfd841eea84b652cca5401dc7edfca9f400970ab472025246f92323b2ce36e1": [
     "amd64",
     "arm64"
   ],
-  "ghcr.io/homarr-labs/homarr:v2.12.0@sha256:44c480afe9df57ce9de44cb664aec53199ea19926ebdd4e590c7b2c2c0a5ef79": [
+  "ghcr.io/homarr-labs/homarr:v2.13.1@sha256:7b3ab85bad2656be6c940b9d26117254edb6d998aeb5b66dfdc795f2e737802a": [
     "amd64",
     "arm64"
   ],
-  "ghcr.io/home-assistant/home-assistant:stable@sha256:6785d1eca68747a524c156faae1b139ed415c07357386ae6fe17291986e59e82": [
+  "ghcr.io/home-assistant/home-assistant:stable@sha256:493a07e8f6530fc640223f4a0a5248f20a61ca2f718bb1d31efbf08a2c5ea28f": [
     "amd64",
     "arm64"
   ],
@@ -553,13 +553,13 @@
   "ghcr.io/immich-app/immich-machine-learning:release-cuda@sha256:2c2721c54c5e245b095eea3eb0cda743d112a3f537555b39e2e9a112879a50c1": [
     "amd64"
   ],
-  "ghcr.io/immich-app/immich-machine-learning:release-openvino@sha256:035c30de002da9d4d4ae3872107bb9d8e195ead1c1f9fd470a2b0149ed37aec1": [
+  "ghcr.io/immich-app/immich-machine-learning:release-openvino@sha256:97f60b06c5938c326d3ba416bcf24bc94d233f34554c05f3b76336f98ffd5ea9": [
     "amd64"
   ],
-  "ghcr.io/immich-app/immich-machine-learning:release-rocm@sha256:03b4105bdd486a08c762a5da7cb9432cf0b0cd5d5309c9180a8d88f723218be9": [
+  "ghcr.io/immich-app/immich-machine-learning:release-rocm@sha256:d6910817cb774b1211b2475eb5844af783386eaed00106dea1f0fee9d6184042": [
     "amd64"
   ],
-  "ghcr.io/immich-app/immich-machine-learning:release@sha256:14367bfb374b8576ddf49abd67c5ca0190a4c7fcf6303cdad65d7f7bf1a50bc2": [
+  "ghcr.io/immich-app/immich-machine-learning:release@sha256:739405742a79bd7447227c553bb62ed5491aa36acf00bc667af7f9c93b6fae91": [
     "amd64",
     "arm64"
   ],
@@ -587,7 +587,7 @@
     "amd64",
     "arm64"
   ],
-  "ghcr.io/karakeep-app/karakeep:release@sha256:69ae5315c618b7c14c1af3e34c6e211acdb231793af424ecd1cab0b70691d987": [
+  "ghcr.io/karakeep-app/karakeep:release@sha256:6f7d32ef296ddf1fc7c67ff56b8a201b7006a6a47b92b202afee1338841b353d": [
     "amd64",
     "arm64"
   ],
@@ -595,11 +595,11 @@
     "amd64",
     "arm64"
   ],
-  "ghcr.io/kittendevv/invio-backend:v2.4.1@sha256:7d3a3bbae9b682038f1ab3453b019a5a3893d0a4e7fd1934854442dac1a09651": [
+  "ghcr.io/kittendevv/invio-backend:v2.5.0@sha256:723f780c2704739d5ab8ee5fd67444619854b8de0cb4b4513dbbb19a840af793": [
     "amd64",
     "arm64"
   ],
-  "ghcr.io/kittendevv/invio-frontend:v2.4.1@sha256:22244b93397802e19326f8d36f9b0a864e1dd7b253648f6274d5287c783b37e4": [
+  "ghcr.io/kittendevv/invio-frontend:v2.5.0@sha256:400e8ddc16f84e0ede35e2097b58c7171492aeda56edb769abaebf0406fabef7": [
     "amd64",
     "arm64"
   ],
@@ -607,15 +607,15 @@
     "amd64",
     "arm64"
   ],
-  "ghcr.io/linkwarden/linkwarden:latest@sha256:0664c28a039bda8ffa6663389e8536b2fc717219e329f85b83faca7efed3b144": [
+  "ghcr.io/linkwarden/linkwarden:latest@sha256:7c11fde57d1a0c819b6de0079966eba3a33584d718464af7dacde22bd470ae46": [
     "amd64",
     "arm64"
   ],
-  "ghcr.io/linuxserver/bookstack:latest@sha256:2ece67eeffcc8601f2c3d44c77d787ce49b1e0becfcb2c4bd8ce9b69fa8393ed": [
+  "ghcr.io/linuxserver/bookstack:latest@sha256:5e44313f320a8a6f92f171b1beca4748f3e0a5110a4f4c19047cb4b4e43695a2": [
     "amd64",
     "arm64"
   ],
-  "ghcr.io/linuxserver/calibre-web:latest@sha256:8eabbc9ac4d7fcbc252434493078ba22e4e8c3aa461e11b102020b040c5fc3e6": [
+  "ghcr.io/linuxserver/calibre-web:latest@sha256:adb69d75b9c252e580fc691096f858833b901b5d106ae4080fb476bab104d946": [
     "amd64",
     "arm64"
   ],
@@ -623,7 +623,7 @@
     "amd64",
     "arm64"
   ],
-  "ghcr.io/linuxserver/code-server:latest@sha256:29f84131fa023c006fcfea9afbf0a5f9959c1a0532cf865d8dc8dae69e3c4a17": [
+  "ghcr.io/linuxserver/code-server:latest@sha256:20ffca4512fcfc85dcd5612fb769233c1553192392d2ec417f0859135805f40c": [
     "amd64",
     "arm64"
   ],
@@ -635,7 +635,7 @@
     "amd64",
     "arm64"
   ],
-  "ghcr.io/lissy93/web-check:2.4.0@sha256:3f46c4fdc6c41aac57b6e1965b6afaf4d19239ececdc7b4c12a89211890eaec8": [
+  "ghcr.io/lissy93/web-check:2.4.2@sha256:611e1cd4709888fc43accd3c71a998f448567a793f404dc0398d73a0dd4df0f6": [
     "amd64",
     "arm64"
   ],
@@ -671,11 +671,11 @@
     "amd64",
     "arm64"
   ],
-  "ghcr.io/mealie-recipes/mealie:latest@sha256:90f83da6f3ab0a421efc827118a556168573930105f13fa3321768f42163d784": [
+  "ghcr.io/mealie-recipes/mealie:latest@sha256:97e21ac96e9a8d1ee15aaf558ba3f14998936b9d6f334e40ebb4c6c2127dc12f": [
     "amd64",
     "arm64"
   ],
-  "ghcr.io/monetr/monetr:1.22.0@sha256:194387ae7ec127c706db65d73a0939532d1c7f23709c8c9d70b776d271e5f996": [
+  "ghcr.io/monetr/monetr:1.22.2@sha256:1fa52987204233385ff6227710514474075bf94358f57563979a3c0d0f9addb3": [
     "amd64",
     "arm64"
   ],
@@ -683,23 +683,23 @@
     "amd64",
     "arm64"
   ],
-  "ghcr.io/music-assistant/server:2.10.9@sha256:4ac0d5844363fbbefd6a61251df09d96cd546e05e01b8c1cc1a28803f0935e07": [
+  "ghcr.io/music-assistant/server:2.10.12@sha256:7eb272e2e13da9a5d61dcbc4e1fcfc734776222b23f2825a9b5690d4427cfafb": [
     "amd64",
     "arm64"
   ],
-  "ghcr.io/open-webui/open-webui:main@sha256:59b912d4246103c7285de0e9a5f2f6586614c06b4c4e46edc51a8f29e7b099a5": [
+  "ghcr.io/open-webui/open-webui:main@sha256:d6c085678f7e3f474aa2a92ac9831cb68759dcfd951de250ebbb37dac5cd0255": [
     "amd64",
     "arm64"
   ],
-  "ghcr.io/openclaw/openclaw:latest@sha256:55294524dac01370288fb4beb16714b60f75cec0e96e07e662054cf29900965a": [
+  "ghcr.io/openclaw/openclaw:latest@sha256:65e229536a2698f0ab211c8a3d1c5c8e2685d19379d153e95f93ff76f22779cf": [
     "amd64",
     "arm64"
   ],
-  "ghcr.io/paperclipai/paperclip:2026.1106.0@sha256:d6584f05cf57a4b26c117eb083725f18c1fe69ddafa7d16c9f8cce83f6fa17da": [
+  "ghcr.io/paperclipai/paperclip:2026.1117.0@sha256:bdf38d10544dc6c831e16dc027f23ad586353ef3be1a1b2c6979e63b956aceb1": [
     "amd64",
     "arm64"
   ],
-  "ghcr.io/paperless-ngx/paperless-ngx:latest@sha256:d704e84f88300eb6ab001ab15720a2330ff99169cf9f94d6b8fcc44b63a84c84": [
+  "ghcr.io/paperless-ngx/paperless-ngx:latest@sha256:8508853b8a0f8394074260957d0be186c8c64f346973b24a7583de4580f306b9": [
     "amd64",
     "arm64"
   ],
@@ -727,11 +727,11 @@
     "amd64",
     "arm64"
   ],
-  "ghcr.io/raylabshq/gitea-mirror:v3.51.5@sha256:00e8c4d67fc1c403dfa2eeb03e5d9454d6ab69dc710ec3caeacaaa848a12ddac": [
+  "ghcr.io/raylabshq/gitea-mirror:v3.54.0@sha256:be5600216ff8a152ea7ddd9152c68cc94b56886e85bf44fe67853ee1bcac2ada": [
     "amd64",
     "arm64"
   ],
-  "ghcr.io/readur/readur:3.1.2@sha256:6883b5cf1528b374b2e3b3026f5f28e76e487811783beaeb495f539208a5406b": [
+  "ghcr.io/readur/readur:3.1.3@sha256:9d8d5ab180709ec2a0560fae0d6e8a14ed7ef221aa582f2e1691968f3d5da4d2": [
     "amd64",
     "arm64"
   ],
@@ -751,7 +751,7 @@
     "amd64",
     "arm64"
   ],
-  "ghcr.io/richardr1126/openreader:5.4.1@sha256:96f4351cd57adeb718707d8647bb5cef73ece71bbb66361024e8b6771f525352": [
+  "ghcr.io/richardr1126/openreader:5.5.1@sha256:1ea270da8b349938cdc1d802b7bed51047451ce417bd143a4429758d8c4722d6": [
     "amd64",
     "arm64"
   ],
@@ -775,7 +775,7 @@
     "amd64",
     "arm64"
   ],
-  "ghcr.io/seerr-team/seerr:v3.5.1@sha256:d8fab675b55ad293ded98fd71efcfd46054cbad9746534ae1cc4794a88c0b3be": [
+  "ghcr.io/seerr-team/seerr:v3.5.2@sha256:aadee014b40e28cf9aa4928bc9d1183a6eb08f8c44d543cddc9efdcb16549be2": [
     "amd64",
     "arm64"
   ],
@@ -787,7 +787,7 @@
     "amd64",
     "arm64"
   ],
-  "ghcr.io/stirling-tools/stirling-pdf:latest@sha256:ed7b1775c6706b5e5ea24fa6155f078eff1027bd35a17d21834e4407036025e6": [
+  "ghcr.io/stirling-tools/stirling-pdf:latest@sha256:972ffc10fbd63a9e7178253a49050c7658e0d4e03b2701005c3e12e210d2e068": [
     "amd64",
     "arm64"
   ],
@@ -807,7 +807,7 @@
     "amd64",
     "arm64"
   ],
-  "ghcr.io/thelounge/thelounge:4.5.2@sha256:16eaa53fd6bfc648d99f5c38ae391bd5404079e876856ef9793e4397630b27c2": [
+  "ghcr.io/thelounge/thelounge:4.5.2@sha256:5c3776545c24c8e04ce9520d8aab7320209043aad246ac710dc3339bfda4c772": [
     "amd64",
     "arm64"
   ],
@@ -815,11 +815,11 @@
     "amd64",
     "arm64"
   ],
-  "ghcr.io/timothepoznanski/poznote-mcp:6.146.0@sha256:66b932c36df771b1fff3ce06c80aea1324ba3adebf5adeab2c4cc5c7c2af4b58": [
+  "ghcr.io/timothepoznanski/poznote-mcp:6.155.1@sha256:cc937d7d7a81db6a4ced80a410dbdd33b4ffc507759b72411710f2e7929479fb": [
     "amd64",
     "arm64"
   ],
-  "ghcr.io/timothepoznanski/poznote:6.146.0@sha256:9936cde944695d44c7428593812d5a1af98baf426c0ec1d75004e82cf6629aaa": [
+  "ghcr.io/timothepoznanski/poznote:6.155.1@sha256:6e6d9497aaf3efab0d2674d8524e48c0dd17e717919d8c083cc0850216ddbd57": [
     "amd64",
     "arm64"
   ],
@@ -831,15 +831,15 @@
     "amd64",
     "arm64"
   ],
-  "ghcr.io/ulsklyc/yuvomi:2.88.0@sha256:3b86d5ebe113f15b49159704a18295b7dec344c6e82360c44d802cb805e07302": [
+  "ghcr.io/ulsklyc/yuvomi:2.93.0@sha256:530a6fdff7602d80f1a4b96b5071af5e65e6beaa1333a534650276f5c0e92887": [
     "amd64",
     "arm64"
   ],
-  "ghcr.io/umami-software/umami:postgresql-latest@sha256:e69d1a7932e9dab0fc523edc7be1f3a53f3c261f57856fc2167ae74a8fc022e8": [
+  "ghcr.io/umami-software/umami:postgresql-latest@sha256:b64f40400d77bcadd39cf5c62a1e368c99524ca442024f96e1133355a19a5dbc": [
     "amd64",
     "arm64"
   ],
-  "ghcr.io/usememos/memos:stable@sha256:087e7dc6b76b31fcd1107a5767398b2a310ced209adb791efd8760c745dc8034": [
+  "ghcr.io/usememos/memos:stable@sha256:5dcd6e6b973a55b964f2fe2ccdaa33319463ab448a23404ebb5d2acbd19299ba": [
     "amd64",
     "arm64"
   ],
@@ -847,7 +847,7 @@
     "amd64",
     "arm64"
   ],
-  "ghcr.io/wavelog/wavelog:3.2.5@sha256:e371b599572bbd50b019acf8bf54009df7042bbd8f238d905a540d6e956b2c25": [
+  "ghcr.io/wavelog/wavelog:3.2.5@sha256:eb582a20ff496fccb25fda5d752dae9ed3728b213a6a45ed06214bbf0401b4c6": [
     "amd64",
     "arm64"
   ],
@@ -867,11 +867,11 @@
     "amd64",
     "arm64"
   ],
-  "ghostfolio/ghostfolio:3.99.0@sha256:6aeba7b9df7a18bc4f39810444b1f18af012a7fe323cec20640b7c28661fc47c": [
+  "ghostfolio/ghostfolio:3.100.0@sha256:1bc2ff4740410dd2c3bdde95738268f4c619cf4eeec491e3967bec18c95130b1": [
     "amd64",
     "arm64"
   ],
-  "gitlab/gitlab-ce:19.5.3-ce.0@sha256:6863d156a1a477bd6f69fc674b671d0163cd8b06bf63bb17cc4a4a803b78b27c": [
+  "gitlab/gitlab-ce:19.6.1-ce.0@sha256:d3727f8b1a1ee6de44916bb9113f3dc40339dba2d6a6ad6ef331d0f239004056": [
     "amd64",
     "arm64"
   ],
@@ -879,7 +879,7 @@
     "amd64",
     "arm64"
   ],
-  "grafana/grafana:latest@sha256:488984b716c0862639f91a698adbe2862677a5a07bad42da5f03f3030883b205": [
+  "grafana/grafana:latest@sha256:0615ec4fbd4072004b7d86b46ded63013a74b7d6eb1119273dd89e8fa25c13cf": [
     "amd64",
     "arm64"
   ],
@@ -887,7 +887,7 @@
     "amd64",
     "arm64"
   ],
-  "gtstef/filebrowser:2.1.4-beta@sha256:d7ae18aa7e8ff81695a35a2c1af399f0c437339241ad90be446c5e71314c0c31": [
+  "gtstef/filebrowser:2.1.5-beta@sha256:ad68b009f69e66d65a66d5f83f67b9bb5cae588614ac415dc0b23132b939f177": [
     "amd64",
     "arm64"
   ],
@@ -899,18 +899,18 @@
     "amd64",
     "arm64"
   ],
-  "imresamu/postgis:17-3.5-alpine@sha256:c7e4985375d8a9583e9bbdb33d0182138fa9a24d22ba9d7cc19362c4827b9038": [
+  "imresamu/postgis:17-3.5-alpine@sha256:614ed4229d157f75f1f5f1fe409301fed61ab1b6e2c96193a3601eee9611ebb8": [
     "amd64",
     "arm64"
   ],
-  "influxdb:2.9.1-alpine@sha256:cc8083573dc3969c191d1bfb768954eaf7a4c615af12e661034fd4f63c7b5570": [
+  "influxdb:2.10.1-alpine@sha256:6df3d6c5b8530ed149ecdd66086d251f40295330aa0620ae0bfdbbf3ddab4fdc": [
     "amd64",
     "arm64"
   ],
-  "interaapps/pastefy:7.2.6@sha256:d2abe24232aa54023c472b033fe50cc8db0df8769bbe8099575d2bdaeed3ecb0": [
+  "interaapps/pastefy:7.2.7@sha256:ff990286fab282039d7a5c926b3f51d8a20426eca118b653dd7483ec4a67644e": [
     "amd64"
   ],
-  "invoiceninja/invoiceninja-debian:5.13.53@sha256:217a0f2d45403b9562f90af51762cdd22bc6d9728c9a8751571ff6bfefc51f64": [
+  "invoiceninja/invoiceninja-debian:5.13.56@sha256:9493a8e1fb538c9d89a68470f964388613fe957c52692e2b75f2295b2b8737c7": [
     "amd64",
     "arm64"
   ],
@@ -918,7 +918,7 @@
     "amd64",
     "arm64"
   ],
-  "itzg/minecraft-server:latest@sha256:d3415f085e10f522969d3a580247ff23b4ccd8d5b152ca08280fb13395dd15bc": [
+  "itzg/minecraft-server:latest@sha256:eb30f3c5b8b5fad2e05182762bf020abfae130c800ae6572d36aae4cff6b3a12": [
     "amd64",
     "arm64"
   ],
@@ -953,7 +953,7 @@
     "amd64",
     "arm64"
   ],
-  "langflowai/langflow:1.13.1@sha256:9f5220634256d243756d9a59a7210f3e71010eb2dfb20841ccbaae56a22a4267": [
+  "langflowai/langflow:1.13.3@sha256:0dea79f5a557e1602b5514973484332f479cdb6b71cceb098536ecc231b02d7d": [
     "amd64",
     "arm64"
   ],
@@ -965,15 +965,15 @@
     "amd64",
     "arm64"
   ],
-  "linuxserver/babybuddy:version-v2.11.0@sha256:4ffb1fdb8d284f5928394086e9d83d989930942af3786962bde7696100df78e2": [
+  "linuxserver/babybuddy:version-v2.11.0@sha256:e0c9c6502c1b75ceb5e007b22a618bfe1ddc22aab15baef7e2ce0b1904461a32": [
     "amd64",
     "arm64"
   ],
-  "linuxserver/bazarr:1.6.2@sha256:7ef0e58216900dbce30b123e0eb65f5cb30e36f126de9474acdd2022fb069c54": [
+  "linuxserver/bazarr:1.6.2@sha256:e0c5d45965242830c5eeddaafe9ae2b5e8ca3f6c01ecda9ee9364f550921dc50": [
     "amd64",
     "arm64"
   ],
-  "linuxserver/emby:version-4.10.2.0@sha256:53a11e2882cf9de4dccfd82289b0781846f522022b6810c1723b8304c89e37e1": [
+  "linuxserver/emby:version-4.10.2.0@sha256:7de8f6c5c47a128c387fae67c4d6ff2dfce347cf1219e8fcb01315871446ade4": [
     "amd64",
     "arm64"
   ],
@@ -985,15 +985,15 @@
     "amd64",
     "arm64"
   ],
-  "linuxserver/heimdall:2.8.4@sha256:6abf244e7bfef9c9383d1a9292d602a65f71e5abfe741d65b14622a927da733c": [
+  "linuxserver/heimdall:2.8.4@sha256:51693bcb3a46e619592a4f7aad65d6610f8bda80c3b167d03254a96a944e8aed": [
     "amd64",
     "arm64"
   ],
-  "linuxserver/jackett:0.24.3042@sha256:4449c813592f6169dbb38bf0e966775e618905a267cd46538901060c6bb978d1": [
+  "linuxserver/jackett:0.24.3082@sha256:a2ab09d9469b549ead5fb1175e741467f1e89a700c7e9963f8a97b37b16d55c1": [
     "amd64",
     "arm64"
   ],
-  "linuxserver/kimai:version-2.71.0@sha256:5bd5b7a820af12d54a920b3397f1abf50a2b2d5a6dc3533ba354a8b7a3aac707": [
+  "linuxserver/kimai:version-2.72.0@sha256:b8ed95215b0044617e984b4b04c0e4939a7e39bfa5d7b0be3dda4d9ff59fae8f": [
     "amd64",
     "arm64"
   ],
@@ -1001,90 +1001,90 @@
     "amd64",
     "arm64"
   ],
-  "linuxserver/lidarr:3.1.6@sha256:d5707cfe084da21a3864c7ef0edd9c0543b5e26c79c551f84dad5ef8683af8c7": [
+  "linuxserver/lidarr:3.1.6@sha256:8fb40ada166dd1880cb1b166df5bcbb081107523f20ab60df05c313e2052a467": [
     "amd64",
     "arm64"
   ],
-  "linuxserver/mastodon:version-v4.7.5@sha256:866240fe799c56ef1eef3780af7ebd0e516d30286208a6c83dcfe0484be85893": [
+  "linuxserver/mastodon:version-v4.7.6@sha256:41d7d18cb26c8e8c1d1011e1b6469147d1dd1a6de6dbfe459b9d42b99041a710": [
     "amd64",
     "arm64"
   ],
-  "linuxserver/mstream:6.33.1@sha256:5d83debb1105c495c0e16f06e0b6592b65b441553ab6d2ed44806845cbc5a628": [
+  "linuxserver/mstream:6.34.0@sha256:37da3830617a65e9c4b731a8155b4397d72876a60efab6043b69f5fc8cf67944": [
     "amd64",
     "arm64"
   ],
-  "linuxserver/obsidian:1.15.0@sha256:c0e24740ba1518380f824e6e70f85655fd00e7ba3946866eab8f6bf5a3208af1": [
+  "linuxserver/obsidian:1.15.1@sha256:de6f29048621ee475bf14a7554eabf4799d83b2181566a4fdc9f58c009d6a1dc": [
     "amd64",
     "arm64"
   ],
   "linuxserver/onlyoffice:version-v9.4.0@sha256:3ed1abd99c17a8263bc83edc8eaab42460d9fdf6b60b9b32dd9631659f22cb20": [
     "amd64"
   ],
-  "linuxserver/pairdrop:version-v1.11.2@sha256:447e348a5c52776c7c92435b472502e4ad62e08d954b2b7f26737cb588badb6b": [
+  "linuxserver/pairdrop:version-v1.11.2@sha256:60daccfe8b940964fecac81995fda0d9d28f7b983ec50c0dfd56aec65db3cf12": [
     "amd64",
     "arm64"
   ],
-  "linuxserver/plex:1.43.5@sha256:d6e045dac4ea2ccb94e0aa4441e02dbec9c9d306d650814eb33d20ad497a2107": [
+  "linuxserver/plex:1.43.5@sha256:9a1325bf0b34a50993a04be0bdcc7fab841d2a78161bd11b4db4ff8478a7ac2a": [
     "amd64",
     "arm64"
   ],
-  "linuxserver/prowlarr:version-2.7.0.5723@sha256:431d7efebcef466e56adaa40a7a2fa2b0e85159a037b8bf465eaadbf0cf5bedf": [
+  "linuxserver/prowlarr:version-2.7.0.5723@sha256:6660787a99b2e58203539583663c973b48979fc00ff2cb78dc0ea17429e1f6ef": [
     "amd64",
     "arm64"
   ],
-  "linuxserver/pyload-ng:0.5.0@sha256:e23d626a425183f6a63a906aeea75e212c496ea823bc5363a29691730055984e": [
+  "linuxserver/pyload-ng:0.5.0@sha256:35e6bb2eadf5aea1872ef88324ba9dffb26eccbe119832d5849c46a593c8935e": [
     "amd64",
     "arm64"
   ],
-  "linuxserver/radarr:version-6.4.4.10685@sha256:51a9ac2a9eb47afc833541e5fd6c11b86eb9f810694c22fa2429e3078e9194b2": [
+  "linuxserver/radarr:version-6.4.4.10685@sha256:7a20f20de63706eee2ff6e4ac1f989a70c961f456aa47ccb6c78f2bb7657d9ae": [
     "amd64",
     "arm64"
   ],
-  "linuxserver/remmina:1.4.43@sha256:6e9b9238da570521b82f0d7b8ec8cc899df433c73f4d461446b54a714d51bbd4": [
+  "linuxserver/remmina:1.4.43@sha256:3fa9aeac212d318a33402033bb7d62c75fb1cf0568c742beb403c41e09e3b532": [
     "amd64",
     "arm64"
   ],
-  "linuxserver/sabnzbd:5.1.3@sha256:693c208f697d0b411410edd92a98b52c8c754c01f5c078a975cbc892044260f5": [
+  "linuxserver/sabnzbd:5.1.3@sha256:d225bbab93f54784c115a3b1d89711e469b1969c9f32aa6ebb11fb03b5804431": [
     "amd64",
     "arm64"
   ],
-  "linuxserver/sonarr:version-4.0.20.3014@sha256:673dc4609a5672bc8e46069c86ffcea283a86b48d34a6c93d8da8c24a1b87571": [
+  "linuxserver/sonarr:version-4.0.20.3014@sha256:c7d1df25e428da6c9ace05daea0d34e59522978a3843ea1944812f855af4086c": [
     "amd64",
     "arm64"
   ],
-  "linuxserver/speedtest-tracker:version-v1.15.1@sha256:3851956ddff5b230a096c5414bfdf005e91aff3af48da9bcb4327dc41eff49e4": [
+  "linuxserver/speedtest-tracker:version-v1.15.1@sha256:132d35a355474be17822e2ff3df4866407187ca978a768935fea06f52ae24493": [
     "amd64",
     "arm64"
   ],
-  "linuxserver/sqlitebrowser:3.13.1@sha256:94c6ea5579ee6f78d2453aa6903caba343ad7fe9118940a5cbdab42ba22c0f83": [
+  "linuxserver/sqlitebrowser:3.13.1@sha256:5a7f74ac3878b14b71891caff746e4c3413fafa51dadd2e1dd9a5157dea59452": [
     "amd64",
     "arm64"
   ],
-  "linuxserver/syslog-ng:4.11.0@sha256:002dd3e7cc6c586f61731d8288aff862c2d7644e7337f86750cd4526a26e5e96": [
+  "linuxserver/syslog-ng:4.11.0@sha256:4cd324bc74da788bbd5461f617329c58312c0f48aab764808b276fa6dedc6fbe": [
     "amd64",
     "arm64"
   ],
-  "linuxserver/tautulli:2.18.2@sha256:7ca2e262712700ae28ca5b32f9cebf1168e3ea3bfcd97a8da6e040f5ca6227a5": [
+  "linuxserver/tautulli:2.19.1@sha256:5e8f80cc18f03c606a3567c8a9b37d80812ed8017d2e2f8ff2e2a91b54a3aef1": [
     "amd64",
     "arm64"
   ],
-  "linuxserver/transmission:4.1.4@sha256:fb8fe625941cf15eb69aba4e5c0a678e035ddb11605fd85af4516a4e641f2687": [
+  "linuxserver/transmission:4.1.4@sha256:5baf08cd73a566699f35baad3c4a84ba7d7057220566c5fb29969bf2292dc2ff": [
     "amd64",
     "arm64"
   ],
-  "linuxserver/unifi-network-application:version-10.6.109@sha256:3a6a1b86b30070fb2e635e44047801626bc224e7c129c2310f236efaa38c58aa": [
+  "linuxserver/unifi-network-application:version-10.6.109@sha256:053a608b25f578bb92b7b4f59e3835f6cc6dd0c7500c30b24ac0e27e1742ab20": [
     "amd64",
     "arm64"
   ],
-  "linuxserver/wikijs:2.5.317@sha256:78ab548191ed412efd5849a897be93cb05708bb7b132b2a6c690c02234862e4d": [
+  "linuxserver/wikijs:2.5.317@sha256:cc4d796a746304d2189de7f815f86462e9762164347972f47fdd67a6b743413e": [
     "amd64",
     "arm64"
   ],
-  "linuxserver/your_spotify:version-1.20.0@sha256:ca770e8e80699acef99ef73c93de16e55f2f8c498e2fe49473e5946138a3bc01": [
+  "linuxserver/your_spotify:version-1.20.0@sha256:f328c5db15286d3b9571e6a20d2ca6b9c8a61876ec53a49a15f0df92d378982b": [
     "amd64",
     "arm64"
   ],
-  "lissy93/domain-locker:0.3.7@sha256:3cf3f33fa383771fa0fc57437c998d92534dbc71a604b5257c7bbd753c389d2f": [
+  "lissy93/domain-locker:0.3.8@sha256:bc105a12c1889e0240d09e4b2fc9a6da81a3ef40e06cb398bb72142f54325f41": [
     "amd64",
     "arm64"
   ],
@@ -1092,7 +1092,7 @@
     "amd64",
     "arm64"
   ],
-  "lobehub/lobehub:2.3.2@sha256:0161f88a26a1c0c8e553ea6305e6269c912b7169efaa87b1142c8092cc7612cf": [
+  "lobehub/lobehub:2.3.4@sha256:33fe4f6721c82dbda67d2d17ec96aeb4c32b3dc8d6611b70c970788353c29959": [
     "amd64",
     "arm64"
   ],
@@ -1100,7 +1100,7 @@
     "amd64",
     "arm64"
   ],
-  "louislam/uptime-kuma:2.5.11@sha256:7554dba313c84e44fee921ef3b5626ba1c711e412e82815e8c957517026112a9": [
+  "louislam/uptime-kuma:2.5.12@sha256:8e4b6bef96417ec98a35dc103c99cc64fc229a01e584e56d95d9004d2003c02a": [
     "amd64",
     "arm64"
   ],
@@ -1108,11 +1108,11 @@
     "amd64",
     "arm64"
   ],
-  "lscr.io/linuxserver/grocy:latest@sha256:e4e34a0a84f407b1bcd2c3b6cd1999bf99bcad1defa8847adea7dc82a9cd6b8c": [
+  "lscr.io/linuxserver/grocy:latest@sha256:ef5ea5094aa2ed32df74528c4bdd94713679038c97add02045d881550c2a59a8": [
     "amd64",
     "arm64"
   ],
-  "lscr.io/linuxserver/jellyfin:latest@sha256:b7eabe1f098f4e850bfd63d6721369117195410a471db1a41748ab768b81a639": [
+  "lscr.io/linuxserver/jellyfin:latest@sha256:b10044530553b2506f06279bf0b5223f9534f434f87a277da4b8fa8ac386cb58": [
     "amd64",
     "arm64"
   ],
@@ -1120,7 +1120,7 @@
     "amd64",
     "arm64"
   ],
-  "lscr.io/linuxserver/librespeed:latest@sha256:98ddd2a1357f961392789e078d5511dd09cb7461f87a26e6fc9cfb6e69ba96a4": [
+  "lscr.io/linuxserver/librespeed:latest@sha256:ad54c25a773cd7bfad5fd5dd82a4987a899edb0a9762e285c842eeb16bef4244": [
     "amd64",
     "arm64"
   ],
@@ -1128,47 +1128,47 @@
     "amd64",
     "arm64"
   ],
-  "makeplane/plane-admin:v1.4.3@sha256:45c95253282508a6c8fc633926231d7c0da003275f09c492bc60ed3cdab83208": [
+  "makeplane/plane-admin:v1.5.0@sha256:3857dc1000f08446375c277674ccda119ab092562f454e935bdba3aca5c5f4ee": [
     "amd64",
     "arm64"
   ],
-  "makeplane/plane-backend:v1.4.3@sha256:9b75bf46cf4ffa94272a337450ab96a4577f2b81ceff00def11f5c71eb8dd743": [
+  "makeplane/plane-backend:v1.5.0@sha256:386f659e0e43c9cb29050fb71439f04f40c5c7e1d93cca2c810bc7e2b1134daf": [
     "amd64",
     "arm64"
   ],
-  "makeplane/plane-frontend:v1.4.3@sha256:95ce1418b7b92ba5ce64e6f6d8a1c8bf7ad664018786bd79fc40a2e5094cf0c5": [
+  "makeplane/plane-frontend:v1.5.0@sha256:d6e8afb888431c8d2bc77d4ff7244a5cd28f8c674aa46f114315b8300014b8ce": [
     "amd64",
     "arm64"
   ],
-  "makeplane/plane-live:v1.4.3@sha256:30741b6d6552533ba3fa80c43a0282e2d6be7769f2840ce9792c1fdacdbce91e": [
+  "makeplane/plane-live:v1.5.0@sha256:f285e6979ed213b39207fcdf62abee9b5bde5dcc3731b4346d71e3a4f595810f": [
     "amd64",
     "arm64"
   ],
-  "makeplane/plane-space:v1.4.3@sha256:af9b955874a2ea44f5121bc669200074428081301f950a8e4eeaf1a140e98a88": [
+  "makeplane/plane-space:v1.5.0@sha256:e7fd925a61796c4e37c2c42b39bf0c660dd0d4ca220705df70bee9f5e28e9273": [
     "amd64",
     "arm64"
   ],
-  "mariadb:10.11.19@sha256:d769e37960821dfdcf096954f6e7ac89f747e116c1bba98e48edd265dfc7deae": [
+  "mariadb:10.11.19@sha256:e5fe75b2b9de0eb9f6f9a4d9c97272fb3a7480e389ccd487a786bab2a12cc0d7": [
     "amd64",
     "arm64"
   ],
-  "mariadb:10.11@sha256:d769e37960821dfdcf096954f6e7ac89f747e116c1bba98e48edd265dfc7deae": [
+  "mariadb:10.11@sha256:e5fe75b2b9de0eb9f6f9a4d9c97272fb3a7480e389ccd487a786bab2a12cc0d7": [
     "amd64",
     "arm64"
   ],
-  "mariadb:11.8.9@sha256:c4124d1afa875e47f2892edf26b482fa54f796e2f342d3717a04ca091a22a9bd": [
+  "mariadb:11.8.9@sha256:e1d5495f445654134f226f55a41ce0da227116f6f27f283101f405c794d841fc": [
     "amd64",
     "arm64"
   ],
-  "mariadb:11.8@sha256:c4124d1afa875e47f2892edf26b482fa54f796e2f342d3717a04ca091a22a9bd": [
+  "mariadb:11.8@sha256:e1d5495f445654134f226f55a41ce0da227116f6f27f283101f405c794d841fc": [
     "amd64",
     "arm64"
   ],
-  "mariadb:11@sha256:c4124d1afa875e47f2892edf26b482fa54f796e2f342d3717a04ca091a22a9bd": [
+  "mariadb:11@sha256:e1d5495f445654134f226f55a41ce0da227116f6f27f283101f405c794d841fc": [
     "amd64",
     "arm64"
   ],
-  "mariadb:12.3.3@sha256:d46e102fa8b9b72bfcdeb56f9dd538742092119dc8b11f31fe662605cd234cd9": [
+  "mariadb:12.3.3@sha256:4aaf88b3106382c8c18e49f0cec60267be618fc22f858c4503afb2a2555afed3": [
     "amd64",
     "arm64"
   ],
@@ -1176,7 +1176,7 @@
     "amd64",
     "arm64"
   ],
-  "matrixdotorg/synapse:v1.164.2@sha256:f0df87cff259872637b4b5e5174b9977e5e3046dd421505407803b5e45c5f842": [
+  "matrixdotorg/synapse:v1.165.0@sha256:673b4223c81a7634fd07d832b939a58f97081cfdaae7cdd2d1664cdcf7611b62": [
     "amd64",
     "arm64"
   ],
@@ -1196,15 +1196,15 @@
     "amd64",
     "arm64"
   ],
-  "mintplexlabs/anythingllm:1.19.0@sha256:daf5a6ae9d363ed578e7d41e2d0668c7eaa604bd90b0ff27435f893b0906833e": [
+  "mintplexlabs/anythingllm:1.20.0@sha256:3e2b7bc8eb0f73a130fc575f1372bd4e7189e399a63c037497fc183c141fc0ae": [
     "amd64",
     "arm64"
   ],
-  "mongo:7.0@sha256:8bb4442761a63a8dda452744082cdac9644b429807eb977b42324a63cef59ca4": [
+  "mongo:7.0@sha256:41e8195b2791692695e1dc9bd21cd51d0a3af05fff8ace9304a5c1acf94f1ae1": [
     "amd64",
     "arm64"
   ],
-  "mongo:8.3.13@sha256:e16e606f792ea89d2b4907b54e5e31eb86a7a23e27231dce3a982cc8f2d73cd2": [
+  "mongo:8.3.17@sha256:747773029b84309981a3624a1af64ffc8c4d792283cc0834f26fe01fc6d28b34": [
     "amd64",
     "arm64"
   ],
@@ -1219,7 +1219,7 @@
     "amd64",
     "arm64"
   ],
-  "n8nio/n8n:latest@sha256:6723b440354bb8e1395a1ecee12685fe03923f897bf6e4d5bb2c6c2bd2051697": [
+  "n8nio/n8n:latest@sha256:fabce3e9678a07d2dde83bd8f5124017f3ec457d0a3fc6b63bb4cec465d63861": [
     "amd64",
     "arm64"
   ],
@@ -1227,15 +1227,15 @@
     "amd64",
     "arm64"
   ],
-  "nginx:1.31-alpine@sha256:713fc2ebfd92e8217db451477182ee91944b123d2b1ee9fd5a8c6e91ca6c3a11": [
+  "nginx:1.31-alpine@sha256:fb4658584bd9a916ffb6f6e365f97c25cfdb2923801f551ea08356e695f14ff7": [
     "amd64",
     "arm64"
   ],
-  "nginx:1.31.8-alpine@sha256:713fc2ebfd92e8217db451477182ee91944b123d2b1ee9fd5a8c6e91ca6c3a11": [
+  "nginx:1.31.9-alpine@sha256:fb4658584bd9a916ffb6f6e365f97c25cfdb2923801f551ea08356e695f14ff7": [
     "amd64",
     "arm64"
   ],
-  "nginx:1.31@sha256:165ddde8751e75a1c907d24ef10d9f6deb08b57e0fe56caf67512486aff76d82": [
+  "nginx:1.31@sha256:84f7876d21d154885f99554d7ae325d8c2213f9169726ea7ab60642f2573a787": [
     "amd64",
     "arm64"
   ],
@@ -1247,11 +1247,11 @@
     "amd64",
     "arm64"
   ],
-  "nocodb/nocodb:2026.10.1@sha256:8c2dd06896d95e750d55010e529972c22c1ee73b22dce321b1d2de2e7d5cd6ae": [
+  "nocodb/nocodb:2026.10.2@sha256:c8fd5e028cfd3932fefaae775ea25bf1949ea64b8a042e6582892a14bc216fa9": [
     "amd64",
     "arm64"
   ],
-  "nodered/node-red:5.0.9@sha256:2ccd38b4066648bd5e17430c50a2f8102c566a82fd4f2fc5c342e61664d6896f": [
+  "nodered/node-red:5.0.10@sha256:3622786c15b6f57f61bf1d0ece59d06a18b742c5c8955f588d189b6bee8dc97d": [
     "amd64",
     "arm64"
   ],
@@ -1270,11 +1270,11 @@
     "amd64",
     "arm64"
   ],
-  "outlinewiki/outline:1.12.0@sha256:25d6a2ced2f1f0cf03c09abd776d87ba31941ed96d3a99992aa84b3bd0afc074": [
+  "outlinewiki/outline:1.13.0@sha256:4583bb244dbb4464d8a632c75044d3b2f9fe44382b6a4b84d97995f473b823e4": [
     "amd64",
     "arm64"
   ],
-  "owncloud/server:11.1.0@sha256:60f13cb41959d9a4abc44535409d113107efb64b83764efbcc3530c12c4de98d": [
+  "owncloud/server:11.1.0@sha256:208b0a99ecbfdab752d5953de1de5525c79cb4f1b74d76a5e008869c893486ab": [
     "amd64",
     "arm64"
   ],
@@ -1282,19 +1282,19 @@
     "amd64",
     "arm64"
   ],
-  "penpotapp/backend:2.19.0@sha256:b2dc4f516de4aab825f1804211e4124f93bafd40bb848822ab303f162cb3b187": [
+  "penpotapp/backend:2.19.3@sha256:31ebb4dabd104c2ed3ae736dcf5a6043a0660ddaac7bcd8501c28036fb4b578c": [
     "amd64",
     "arm64"
   ],
-  "penpotapp/exporter:2.19.0@sha256:63b9f5d23c80f3b952f5d7feba71a45ac8bb05281e877071f6bba625bb51db66": [
+  "penpotapp/exporter:2.19.3@sha256:1705d70e79f3530b3cee65d0cdbee3c5f44f26d62f5ad43bac7945dce4c7b653": [
     "amd64",
     "arm64"
   ],
-  "penpotapp/frontend:2.19.0@sha256:20d98bed840ba947af25f0c634c1cf0913ca3d02e27eb9cb7f7f6569b65e2b78": [
+  "penpotapp/frontend:2.19.3@sha256:d22ce9f6f4859adbc726f45965da0d4b083817b0c13ca4a49aa3e927901cccb9": [
     "amd64",
     "arm64"
   ],
-  "penpotapp/mcp:2.19.0@sha256:83f87b53be118fd3b2a98159c2e77585859195b0f99b6edeb5b73fca642a75d8": [
+  "penpotapp/mcp:2.19.3@sha256:01ee7620262379c337a9f77e3149d860330d261ffc640d89af60dc8bd45aef94": [
     "amd64",
     "arm64"
   ],
@@ -1302,11 +1302,11 @@
     "amd64",
     "arm64"
   ],
-  "pgvector/pgvector:0.8.7-pg17@sha256:7d0a41464797aeb9862dfdc0bbf1526b82cfd324cdd8036df19e3545f4a9ccb8": [
+  "pgvector/pgvector:0.8.7-pg17@sha256:b513c48566e4777cd3370451400000c78eda6a08131d68f4c31d4a76f27bd8fd": [
     "amd64",
     "arm64"
   ],
-  "pgvector/pgvector:pg16@sha256:0dd3149a06e4579a0d70d8fef9945636cd514005e7237deb27f9b67886f8dc4f": [
+  "pgvector/pgvector:pg16@sha256:484e838076e04939d27d3e176e91c86eea96236126023be8d3059761122e579f": [
     "amd64",
     "arm64"
   ],
@@ -1325,47 +1325,47 @@
     "amd64",
     "arm64"
   ],
-  "postgres:15-alpine@sha256:aae6554de426ae1990f1a939ff183a0299146cf7142a6f4c379c3357af9cc2d8": [
+  "postgres:15-alpine@sha256:e18480a22d6e48f4d816a6696769b1ec09ac73a824c5649e49c7d8b684913f3d": [
     "amd64",
     "arm64"
   ],
-  "postgres:15@sha256:1aac5b49cefd627f02816141ca4ad012d6cc19460dfe02a9b5168a105be3fc53": [
+  "postgres:15@sha256:10f9e886f772e9d6484350b043bcf990ead67ae5d9988ddce265d72a299055d5": [
     "amd64",
     "arm64"
   ],
-  "postgres:16-alpine@sha256:aa6cb33cf4c19c765cefcf48d96176258800870a9a1e930ad126200f9d825139": [
+  "postgres:16-alpine@sha256:1d5b02d3a9941fbd52437db4107f8c52d6297dac553ca1e5c299ebb3756b4857": [
     "amd64",
     "arm64"
   ],
-  "postgres:16.15-trixie@sha256:f9a7b9ebf6f56201f949db745e47bc423c0f0f8294bafe991cc10bf74b029657": [
+  "postgres:16.16-trixie@sha256:3950ad7c3148ca2175ef1b6c36c9efbf78957ae8fbe8b3a5d7c35af50500382f": [
     "amd64",
     "arm64"
   ],
-  "postgres:16.15@sha256:f9a7b9ebf6f56201f949db745e47bc423c0f0f8294bafe991cc10bf74b029657": [
+  "postgres:16.16@sha256:3950ad7c3148ca2175ef1b6c36c9efbf78957ae8fbe8b3a5d7c35af50500382f": [
     "amd64",
     "arm64"
   ],
-  "postgres:17-alpine@sha256:3540c0362c809df084ffac0ae69fe794515f9de92692f02178bcdce0ef0302ac": [
+  "postgres:17-alpine@sha256:526f86d93c6ea08fd3f1fe5605650cacc781b2c6013169a0ad8f42c7d3d84f32": [
     "amd64",
     "arm64"
   ],
-  "postgres:17.11-alpine@sha256:3540c0362c809df084ffac0ae69fe794515f9de92692f02178bcdce0ef0302ac": [
+  "postgres:17.12-alpine@sha256:526f86d93c6ea08fd3f1fe5605650cacc781b2c6013169a0ad8f42c7d3d84f32": [
     "amd64",
     "arm64"
   ],
-  "postgres:17.11@sha256:ff87138949ad9a46f32ff23bd6852b52ce024a13dffe9b4087be98292cdd3b4f": [
+  "postgres:17.12@sha256:b60e90042aa6b8dbecd58e224b3e36114dbf8ad754465264c2476ad58a86e45c": [
     "amd64",
     "arm64"
   ],
-  "postgres:18.6-alpine3.23@sha256:a0cbdbbcc57f7317ca183ac9d10eb3af72b5b05b2f25acad58e765bd2b139099": [
+  "postgres:18.7-alpine3.23@sha256:f3ee138d5fce80ffaeb315b8bea7610f0c4f2304fb2aceb4ec8e457b92fc41a0": [
     "amd64",
     "arm64"
   ],
-  "postgres:18.6-alpine@sha256:123b17998ccaf47e53b502e8c6a1e79afd8f579c6f3eec83c563da026f957395": [
+  "postgres:18.7-alpine@sha256:ff64c9e3bdf8e2120107d3559de8db314e8305f7e38c5105903c6295876738ff": [
     "amd64",
     "arm64"
   ],
-  "privatebin/nginx-fpm-alpine:2.1.1@sha256:9fbcc4d5671b974cafb55948d6fc3ab9eaf77f0c39271a50a16dd71bd4c4d3e6": [
+  "privatebin/nginx-fpm-alpine:2.1.1@sha256:023fe5d30c67aa1f015b4007a644d65474a300bf908725a10c8d0d64abe0086a": [
     "amd64",
     "arm64"
   ],
@@ -1373,7 +1373,7 @@
     "amd64",
     "arm64"
   ],
-  "python:3.15-alpine@sha256:a0f2e268f2ce8f3709611a90054ec6a8ae31f6251f5896b8648b9bb99835e30a": [
+  "python:3.15-alpine@sha256:0f9552bb28711333da16915ec146f5e6bb44a7fdac9ced15dc17c2e0206346dd": [
     "amd64",
     "arm64"
   ],
@@ -1381,7 +1381,7 @@
     "amd64",
     "arm64"
   ],
-  "quay.io/jupyter/base-notebook:lab-4.6.6@sha256:bee24ca0a6bea91a88951184582af54360e1d4ededf12d08817cbb49d8831781": [
+  "quay.io/jupyter/base-notebook:lab-4.6.6@sha256:21eeabb12e91285915285c112ba8084dca64a363b8464cb910808448b7d20cd5": [
     "amd64",
     "arm64"
   ],
@@ -1397,7 +1397,7 @@
     "amd64",
     "arm64"
   ],
-  "redis:6-alpine@sha256:bb3686b504e6780e6878f187f1b8275236183d7ef514a248802f60106adf571a": [
+  "redis:6-alpine@sha256:3f9c6e23ed6bea3b41d0ef709fc164c1a0b7c00d5a21a60e0e9c33ada5496881": [
     "amd64",
     "arm64"
   ],
@@ -1405,15 +1405,15 @@
     "amd64",
     "arm64"
   ],
-  "redis:7-alpine@sha256:7b1753b4c5ad8458906c272a8132b8c15f5557b000379eb115fb239706a384b7": [
+  "redis:7-alpine@sha256:7f7d30b7fdd09467bac58198a1f166dd69789d348d4fe859cccb20e0cf287fbe": [
     "amd64",
     "arm64"
   ],
-  "redis:7.4-alpine@sha256:7b1753b4c5ad8458906c272a8132b8c15f5557b000379eb115fb239706a384b7": [
+  "redis:7.4-alpine@sha256:7f7d30b7fdd09467bac58198a1f166dd69789d348d4fe859cccb20e0cf287fbe": [
     "amd64",
     "arm64"
   ],
-  "redis:7.4.12-alpine@sha256:7b1753b4c5ad8458906c272a8132b8c15f5557b000379eb115fb239706a384b7": [
+  "redis:7.4.12-alpine@sha256:7f7d30b7fdd09467bac58198a1f166dd69789d348d4fe859cccb20e0cf287fbe": [
     "amd64",
     "arm64"
   ],
@@ -1421,7 +1421,7 @@
     "amd64",
     "arm64"
   ],
-  "redis:8.10.3-alpine@sha256:71885d8cc6e42f2bc0aa2eb853bfc4be200b5108a46ac50e117ae1df0531fb80": [
+  "redis:8.10.3-alpine@sha256:7958cfbb9d152f87dadfbc89f1b0b15938f0b81ff8982feb327476f4911935c3": [
     "amd64",
     "arm64"
   ],
@@ -1445,7 +1445,7 @@
     "amd64",
     "arm64"
   ],
-  "rotki/rotki:v1.44.2@sha256:b9dba08f80c7676b7975eb0b1a78769fd6ac10e626fb435dfd40a7e2885dad02": [
+  "rotki/rotki:v1.44.3@sha256:4f07e8114b4450665b64a964ffa106dfb3c36a50e3664c93b8aafe1c1e1a0735": [
     "amd64",
     "arm64"
   ],
@@ -1465,14 +1465,15 @@
     "amd64",
     "arm64"
   ],
-  "seafileltd/sdoc-server:2.0.11@sha256:ec9a7d0baa61835b903a8815baca00e63cebfc5a63577ab167181a37aa93c7c3": [
-    "amd64"
-  ],
-  "seafileltd/seafile-mc:13.0.29@sha256:9506f49d5e5065082c134e6348498eed5a5866ddbd94bd5a3e479a6c285bc61a": [
+  "seafileltd/sdoc-server:2.0.14@sha256:1a1d5520b418a6141959570db47bf6357e44c51eaf08f6688ff8d0397b17373d": [
     "amd64",
     "arm64"
   ],
-  "searxng/searxng:latest@sha256:287af61f1a13e86d02974fcde91a3413a9945788de38b61ffbc491d81a19bcc2": [
+  "seafileltd/seafile-mc:13.0.30@sha256:fe1f111e93f81e673eeec2d0365fe2462d41de2d44cddc652ee4a1145f2f3938": [
+    "amd64",
+    "arm64"
+  ],
+  "searxng/searxng:latest@sha256:8140a62838a141721e5031070e2e1a2edd4b91f1730e285716da197d76a40182": [
     "amd64",
     "arm64"
   ],
@@ -1515,7 +1516,7 @@
   "teamspeak:3.13.9@sha256:88335936d0969ffb7182c292f72319167db3722770a8db0c175b4e6fb8bc03ad": [
     "amd64"
   ],
-  "thetorproject/snowflake-proxy:v2.15.3@sha256:045186c89b7b97e2a6c5d0f463583750ece9ccdf3461ed4f92f063f5ad65e958": [
+  "thetorproject/snowflake-proxy:v2.15.4@sha256:7d442bc13392fd3f4ab67ff7c457773ccfc4996e25f14c67081b9375c690e367": [
     "amd64",
     "arm64"
   ],
@@ -1527,7 +1528,7 @@
     "amd64",
     "arm64"
   ],
-  "tomsquest/docker-radicale:3.9.0.0@sha256:2f215d0e6a78ff68c280975af6ce580b05976f70c62b51640397e3eb5a7aa0e9": [
+  "tomsquest/docker-radicale:3.9.2.0@sha256:cc586f75ec709d45d15dfbf20e53bab99e85ee5a4d7beafc7bbf852b2f07a2da": [
     "amd64",
     "arm64"
   ],
@@ -1551,27 +1552,27 @@
     "amd64",
     "arm64"
   ],
-  "twentycrm/twenty:v2.57.1@sha256:c18a4fb9d3cb6cb12d0ed580203c0eff1bd6500d11127b4df55ec47d4a7e24ba": [
+  "twentycrm/twenty:v2.60.1@sha256:b190e54ca434ea1ee47fe73b8d76e77d0bf3c6f734fcec58e414108d6867939c": [
     "amd64",
     "arm64"
   ],
-  "vabene1111/recipes:2.7.2@sha256:1b6d43c3c0f5d2888aa564d9daf29883212b79ad496f59f3c684c099eb1a57b9": [
+  "vabene1111/recipes:2.7.6@sha256:6c467bf484044a0305ff39bed5badb48b58bb963d4276fc248e101921151895b": [
     "amd64",
     "arm64"
   ],
-  "valkey/valkey:7.2.15-alpine@sha256:f8c1a646f4b31ae4dc3980ff06723a20b533ea1123b9796d450d78ed53ad6d3e": [
+  "valkey/valkey:7.2.16-alpine@sha256:3056ae42eccb4cf4ef5e5a403a68f6dbd8038774456086c152961bb79a467c6d": [
     "amd64",
     "arm64"
   ],
-  "valkey/valkey:8.1.11@sha256:8f836008e0986c36adf50da714c7060cf689dbb335f61fe077939d90fa650809": [
+  "valkey/valkey:8.1.12@sha256:5032c4dd7abe08d6fd9382054608183e2bf1f7e3895ef619b8784698454325f7": [
     "amd64",
     "arm64"
   ],
-  "valkey/valkey:8@sha256:8f836008e0986c36adf50da714c7060cf689dbb335f61fe077939d90fa650809": [
+  "valkey/valkey:8@sha256:5032c4dd7abe08d6fd9382054608183e2bf1f7e3895ef619b8784698454325f7": [
     "amd64",
     "arm64"
   ],
-  "valkey/valkey:9@sha256:3add1a336a920ea54770a001ab6feb3da5fceea96a40373a3a2cd469b815f0b7": [
+  "valkey/valkey:9@sha256:1c2b25b09f354c66fe994733acdf12fcfd4bdf6f3bd92b88a93a70378d884056": [
     "amd64",
     "arm64"
   ],
@@ -1579,7 +1580,7 @@
     "amd64",
     "arm64"
   ],
-  "vectorim/element-web:v1.12.33@sha256:b0aa4b5a4fc1afaaff62e2dbd0c92d57e2b20724f3ccb2fef53aae949088c3d2": [
+  "vectorim/element-web:v1.12.35@sha256:406b48b80153818284a235fa3600b2a5b5b6b0aa0e4ef4896b36d8d3461352f3": [
     "amd64",
     "arm64"
   ],
@@ -1595,15 +1596,15 @@
     "amd64",
     "arm64"
   ],
-  "voidic/snort:v0.5.4@sha256:9ea5f2d60108984cb56992c7842950e02a3b31d610a6cb79ca9c43b46cbc1057": [
+  "voidic/snort:v0.5.6@sha256:b680ecc8ccf7a76a59b61a403204dc2c796c8b7a013afd754e9e4df2bfa4c6ef": [
     "amd64",
     "arm64"
   ],
-  "wallabag/wallabag:latest@sha256:2e9d9fbbba6feee060109351d1235386fa4ac495f98c82d94a250d56feaeaeeb": [
+  "wallabag/wallabag:latest@sha256:9055d92d6e7973abea2d902ecb5459f6063fce05595eaef37f6750e49ff8cdee": [
     "amd64",
     "arm64"
   ],
-  "wealthfolio/wealthfolio:3.12.0@sha256:5790528fcd9795b571176cad78bcca09e3fa5875ec20968356586939e154c3cb": [
+  "wealthfolio/wealthfolio:3.13.1@sha256:a51bf08440ec3c517b728e4d5a7d9134cc564e1749eec45bd4f0b7f39573336e": [
     "amd64",
     "arm64"
   ],
@@ -1611,7 +1612,7 @@
     "amd64",
     "arm64"
   ],
-  "wordpress:7.1.4@sha256:9001ea7dafd2bc3f05d068e6413b0edd2a116eeed4dfe9e08b6bd718dee4960a": [
+  "wordpress:7.1.5@sha256:2e5145737f46b8fd53f333a05eb3a4f21321c90e20475b7827082dd5f75b62b0": [
     "amd64",
     "arm64"
   ],

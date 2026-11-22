@@ -43,7 +43,7 @@ spec:
       containers:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
       - name: openclaw
-        image: ghcr.io/openclaw/openclaw:latest@sha256:55294524dac01370288fb4beb16714b60f75cec0e96e07e662054cf29900965a
+        image: ghcr.io/openclaw/openclaw:latest@sha256:65e229536a2698f0ab211c8a3d1c5c8e2685d19379d153e95f93ff76f22779cf
         imagePullPolicy: IfNotPresent
         env:
           # This chart never grants any Kubernetes permission beyond the pod's

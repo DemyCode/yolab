@@ -30,7 +30,7 @@ spec:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
       {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
       - name: monetr
-        image: ghcr.io/monetr/monetr:1.22.0@sha256:194387ae7ec127c706db65d73a0939532d1c7f23709c8c9d70b776d271e5f996
+        image: ghcr.io/monetr/monetr:1.22.2@sha256:1fa52987204233385ff6227710514474075bf94358f57563979a3c0d0f9addb3
         imagePullPolicy: IfNotPresent
         args:
         - serve
@@ -97,7 +97,7 @@ spec:
     spec:
       containers:
       - name: db
-        image: postgres:17.11@sha256:ff87138949ad9a46f32ff23bd6852b52ce024a13dffe9b4087be98292cdd3b4f
+        image: postgres:17.12@sha256:b60e90042aa6b8dbecd58e224b3e36114dbf8ad754465264c2476ad58a86e45c
         imagePullPolicy: IfNotPresent
         env:
         - name: POSTGRES_PASSWORD
@@ -159,7 +159,7 @@ spec:
     spec:
       containers:
       - name: valkey
-        image: valkey/valkey:9@sha256:3add1a336a920ea54770a001ab6feb3da5fceea96a40373a3a2cd469b815f0b7
+        image: valkey/valkey:9@sha256:1c2b25b09f354c66fe994733acdf12fcfd4bdf6f3bd92b88a93a70378d884056
         imagePullPolicy: IfNotPresent
         securityContext:
           runAsUser: 1000

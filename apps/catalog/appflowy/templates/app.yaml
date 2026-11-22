@@ -49,7 +49,7 @@ spec:
       containers:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
       - name: app
-        image: appflowyinc/appflowy_web:latest@sha256:e71d5d314b9a7972cf6c765460f6dbca6b6183709ec2425dc8cb6d19610c7acb
+        image: appflowyinc/appflowy_web:latest@sha256:c0cec44bb86af97696c104c80f9bf6f551bd546d2c12df75bb3747d5f52cf0fd
         imagePullPolicy: IfNotPresent
         readinessProbe:
           timeoutSeconds: 5
@@ -90,7 +90,7 @@ spec:
       initContainers:
       
       - name: prepare-database
-        image: pgvector/pgvector:pg16@sha256:0dd3149a06e4579a0d70d8fef9945636cd514005e7237deb27f9b67886f8dc4f
+        image: pgvector/pgvector:pg16@sha256:484e838076e04939d27d3e176e91c86eea96236126023be8d3059761122e579f
         imagePullPolicy: IfNotPresent
         command:
         - /bin/sh
@@ -117,7 +117,7 @@ spec:
           value: postgres://appflowy:appflowy@postgres.{{ .Release.Namespace }}.svc.cluster.local:5432/appflowy
       containers:
       - name: cloud
-        image: appflowyinc/appflowy_cloud:latest@sha256:2a29e56a611d6e00162226129d5bd16c3e0b36e24eb4cf409db2c8a6fc3a9b08
+        image: appflowyinc/appflowy_cloud:latest@sha256:0a7ed5d3e8e5948b1b3f9a6e2e8001249fc0dd931b29336f750dedd7d72edf87
         imagePullPolicy: IfNotPresent
         readinessProbe:
           timeoutSeconds: 5
@@ -209,7 +209,7 @@ spec:
     spec:
       containers:
       - name: worker
-        image: appflowyinc/appflowy_worker:latest@sha256:06d4f95b5c25e3a070686266fff9345c1897b53ea2ac2b61f2564f1e5f0c715e
+        image: appflowyinc/appflowy_worker:latest@sha256:c78cb5e422a97b00f96d690c7ba1177a9cdb96ffe5a2cd4acbadaa4add6dfd3d
         imagePullPolicy: IfNotPresent
         env:
         - name: RUST_LOG
@@ -352,7 +352,7 @@ spec:
     spec:
       containers:
       - name: minio
-        image: cgr.dev/chainguard/minio:latest@sha256:fb893e36fc369d41e92f678b17ec27378fa5bf0576aeef7ac15460c13629ab5a
+        image: cgr.dev/chainguard/minio:latest@sha256:e9cf6b99c226e9539ed0f14b6f00e37b07da153c7ba1f4f8709c807574b471ec
         imagePullPolicy: IfNotPresent
         securityContext:
           runAsUser: 0
@@ -419,7 +419,7 @@ spec:
     spec:
       containers:
       - name: postgres
-        image: pgvector/pgvector:pg16@sha256:0dd3149a06e4579a0d70d8fef9945636cd514005e7237deb27f9b67886f8dc4f
+        image: pgvector/pgvector:pg16@sha256:484e838076e04939d27d3e176e91c86eea96236126023be8d3059761122e579f
         imagePullPolicy: IfNotPresent
         readinessProbe:
           timeoutSeconds: 5
@@ -481,7 +481,7 @@ spec:
         kubernetes.io/arch: amd64
       containers:
       - name: redis
-        image: redis:7.4-alpine@sha256:7b1753b4c5ad8458906c272a8132b8c15f5557b000379eb115fb239706a384b7
+        image: redis:7.4-alpine@sha256:7f7d30b7fdd09467bac58198a1f166dd69789d348d4fe859cccb20e0cf287fbe
         imagePullPolicy: IfNotPresent
         readinessProbe:
           timeoutSeconds: 5

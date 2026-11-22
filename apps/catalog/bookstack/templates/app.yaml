@@ -60,7 +60,7 @@ spec:
       {{- include "yolab-common.yolabEnvInit" . | nindent 6 }}
       containers:
       - name: bookstack
-        image: ghcr.io/linuxserver/bookstack:latest@sha256:2ece67eeffcc8601f2c3d44c77d787ce49b1e0becfcb2c4bd8ce9b69fa8393ed
+        image: ghcr.io/linuxserver/bookstack:latest@sha256:5e44313f320a8a6f92f171b1beca4748f3e0a5110a4f4c19047cb4b4e43695a2
         imagePullPolicy: IfNotPresent
         command:
           - /bin/sh
@@ -137,7 +137,7 @@ spec:
     spec:
       containers:
         - name: mariadb
-          image: mariadb:11@sha256:c4124d1afa875e47f2892edf26b482fa54f796e2f342d3717a04ca091a22a9bd
+          image: mariadb:11@sha256:e1d5495f445654134f226f55a41ce0da227116f6f27f283101f405c794d841fc
           imagePullPolicy: IfNotPresent
           env:
             - name: MARIADB_USER

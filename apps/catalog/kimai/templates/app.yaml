@@ -67,7 +67,7 @@ spec:
             subPath: yolab-state
       containers:
         - name: kimai
-          image: linuxserver/kimai:version-2.71.0@sha256:5bd5b7a820af12d54a920b3397f1abf50a2b2d5a6dc3533ba354a8b7a3aac707
+          image: linuxserver/kimai:version-2.72.0@sha256:b8ed95215b0044617e984b4b04c0e4939a7e39bfa5d7b0be3dda4d9ff59fae8f
           imagePullPolicy: IfNotPresent
           # TRUSTED_HOSTS is a Symfony allow-list: a request whose Host header is not
           # on it is rejected outright, so the app is unreachable without the real
@@ -147,7 +147,7 @@ spec:
     spec:
       containers:
         - name: mariadb
-          image: mariadb:11.8@sha256:c4124d1afa875e47f2892edf26b482fa54f796e2f342d3717a04ca091a22a9bd
+          image: mariadb:11.8@sha256:e1d5495f445654134f226f55a41ce0da227116f6f27f283101f405c794d841fc
           imagePullPolicy: IfNotPresent
           env:
             - name: MARIADB_ROOT_PASSWORD

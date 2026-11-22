@@ -32,7 +32,7 @@ spec:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
       {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
       - name: server
-        image: twentycrm/twenty:v2.57.1@sha256:c18a4fb9d3cb6cb12d0ed580203c0eff1bd6500d11127b4df55ec47d4a7e24ba
+        image: twentycrm/twenty:v2.60.1@sha256:b190e54ca434ea1ee47fe73b8d76e77d0bf3c6f734fcec58e414108d6867939c
         imagePullPolicy: IfNotPresent
         env:
         - name: NODE_PORT
@@ -91,7 +91,7 @@ spec:
     spec:
       containers:
       - name: worker
-        image: twentycrm/twenty:v2.57.1@sha256:c18a4fb9d3cb6cb12d0ed580203c0eff1bd6500d11127b4df55ec47d4a7e24ba
+        image: twentycrm/twenty:v2.60.1@sha256:b190e54ca434ea1ee47fe73b8d76e77d0bf3c6f734fcec58e414108d6867939c
         imagePullPolicy: IfNotPresent
         args:
         - yarn
@@ -142,7 +142,7 @@ spec:
     spec:
       containers:
       - name: db
-        image: postgres:16.15@sha256:f9a7b9ebf6f56201f949db745e47bc423c0f0f8294bafe991cc10bf74b029657
+        image: postgres:16.16@sha256:3950ad7c3148ca2175ef1b6c36c9efbf78957ae8fbe8b3a5d7c35af50500382f
         imagePullPolicy: IfNotPresent
         env:
         - name: POSTGRES_DB

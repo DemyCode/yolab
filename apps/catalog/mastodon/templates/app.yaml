@@ -2,7 +2,7 @@
 ---
 {{ include "yolab-common.uninstallHook" . }}
 ---
-{{- $img := "linuxserver/mastodon:version-v4.7.5@sha256:866240fe799c56ef1eef3780af7ebd0e516d30286208a6c83dcfe0484be85893" }}
+{{- $img := "linuxserver/mastodon:version-v4.7.6@sha256:41d7d18cb26c8e8c1d1011e1b6469147d1dd1a6de6dbfe459b9d42b99041a710" }}
 {{- $db := "mastodon" }}
 {{ include "yolab-common.homeVolume" $ }}
 ---
@@ -351,7 +351,7 @@ spec:
     spec:
       containers:
         - name: postgres
-          image: postgres:17-alpine@sha256:3540c0362c809df084ffac0ae69fe794515f9de92692f02178bcdce0ef0302ac
+          image: postgres:17-alpine@sha256:526f86d93c6ea08fd3f1fe5605650cacc781b2c6013169a0ad8f42c7d3d84f32
           imagePullPolicy: IfNotPresent
           readinessProbe:
             timeoutSeconds: 5
@@ -410,7 +410,7 @@ spec:
         kubernetes.io/arch: amd64
       containers:
         - name: redis
-          image: redis:7.4-alpine@sha256:7b1753b4c5ad8458906c272a8132b8c15f5557b000379eb115fb239706a384b7
+          image: redis:7.4-alpine@sha256:7f7d30b7fdd09467bac58198a1f166dd69789d348d4fe859cccb20e0cf287fbe
           imagePullPolicy: IfNotPresent
           readinessProbe:
             timeoutSeconds: 5

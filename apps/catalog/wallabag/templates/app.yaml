@@ -62,7 +62,7 @@ spec:
       {{- include "yolab-common.yolabEnvInit" . | nindent 6 }}
       containers:
       - name: wallabag
-        image: wallabag/wallabag:latest@sha256:2e9d9fbbba6feee060109351d1235386fa4ac495f98c82d94a250d56feaeaeeb
+        image: wallabag/wallabag:latest@sha256:9055d92d6e7973abea2d902ecb5459f6063fce05595eaef37f6750e49ff8cdee
         imagePullPolicy: IfNotPresent
         command:
           - /bin/sh

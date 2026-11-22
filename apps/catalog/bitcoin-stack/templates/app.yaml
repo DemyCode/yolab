@@ -440,7 +440,7 @@ spec:
             mountPath: /backend/cache
             subPath: "mempool"
       - name: db
-        image: mariadb:10.11.19@sha256:d769e37960821dfdcf096954f6e7ac89f747e116c1bba98e48edd265dfc7deae
+        image: mariadb:10.11.19@sha256:e5fe75b2b9de0eb9f6f9a4d9c97272fb3a7480e389ccd487a786bab2a12cc0d7
         imagePullPolicy: IfNotPresent
         securityContext:
           runAsUser: 1000
@@ -590,7 +590,7 @@ spec:
         fsGroup: 1000
       containers:
       - name: web
-        image: ghcr.io/cryptoadvance/specter-desktop:v2.1.11@sha256:ff9acfeac0919e91bd440bb414170da28395afa75c891fc81696139a3d1f0e2a
+        image: ghcr.io/cryptoadvance/specter-desktop:v2.3.0@sha256:583735f94ae2556a0b089edcacc282431688d9670bacbce097391eff683086e6
         imagePullPolicy: IfNotPresent
         securityContext:
           runAsUser: 1000

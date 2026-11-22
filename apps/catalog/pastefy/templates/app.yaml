@@ -52,7 +52,7 @@ spec:
     spec:
       containers:
       - name: db
-        image: mariadb:11.8.9@sha256:c4124d1afa875e47f2892edf26b482fa54f796e2f342d3717a04ca091a22a9bd
+        image: mariadb:11.8.9@sha256:e1d5495f445654134f226f55a41ce0da227116f6f27f283101f405c794d841fc
         imagePullPolicy: IfNotPresent
         env:
         - name: MYSQL_ROOT_PASSWORD
@@ -114,7 +114,7 @@ spec:
         kubernetes.io/arch: amd64
       containers:
       - name: app
-        image: interaapps/pastefy:7.2.6@sha256:d2abe24232aa54023c472b033fe50cc8db0df8769bbe8099575d2bdaeed3ecb0
+        image: interaapps/pastefy:7.2.7@sha256:ff990286fab282039d7a5c926b3f51d8a20426eca118b653dd7483ec4a67644e
         imagePullPolicy: IfNotPresent
         env:
         - name: HTTP_SERVER_CORS

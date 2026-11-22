@@ -126,7 +126,7 @@ spec:
     spec:
       containers:
       - name: plausible_db
-        image: postgres:16-alpine@sha256:aa6cb33cf4c19c765cefcf48d96176258800870a9a1e930ad126200f9d825139
+        image: postgres:16-alpine@sha256:1d5b02d3a9941fbd52437db4107f8c52d6297dac553ca1e5c299ebb3756b4857
         imagePullPolicy: IfNotPresent
         env:
         - name: POSTGRES_PASSWORD

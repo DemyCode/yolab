@@ -30,7 +30,7 @@ spec:
       {{- include "yolab-common.gatewayContainers" . | nindent 6 }}
       {{- include "yolab-common.privateAccessContainers" . | nindent 6 }}
       - name: server
-        image: linuxserver/emby:version-4.10.2.0@sha256:53a11e2882cf9de4dccfd82289b0781846f522022b6810c1723b8304c89e37e1
+        image: linuxserver/emby:version-4.10.2.0@sha256:7de8f6c5c47a128c387fae67c4d6ff2dfce347cf1219e8fcb01315871446ade4
         imagePullPolicy: IfNotPresent
         env:
         - name: TZ
