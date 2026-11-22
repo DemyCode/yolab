@@ -75,18 +75,11 @@ export default function CustomAppPage() {
     setSaved(null);
     setUploadedId(null);
     try {
-      const res = await fetch("/api/apps/custom/chart", {
-        method: "POST",
-        headers: { "Content-Type": "application/octet-stream" },
-        body: file,
-      });
-      const d = (await res.json()) as {
-        error?: string;
-        app?: CustomApp;
-        has_form?: boolean;
-      };
-      if (!res.ok || !d.app)
-        throw new Error(d.error ?? `Server error ${res.status}`);
+      const d = await api.upload<{ app?: CustomApp; has_form?: boolean }>(
+        "/api/apps/custom/chart",
+        file,
+      );
+      if (!d.app) throw new Error("The server did not return the uploaded chart");
       setUploadedId(d.app.id);
       setSaved(
         d.has_form

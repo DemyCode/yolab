@@ -65,6 +65,12 @@ export const api = {
       body: body === undefined ? undefined : JSON.stringify(body),
     }),
   del: <T>(path: string) => request<T>(path, { method: "DELETE" }),
+  upload: <T>(path: string, body: Blob) =>
+    request<T>(path, {
+      method: "POST",
+      headers: { "Content-Type": "application/octet-stream" },
+      body,
+    }),
 };
 
 export interface StreamResult {

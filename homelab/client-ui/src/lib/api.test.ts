@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { streamEvents } from "./api";
+import { api, streamEvents } from "./api";
 
 type Read = () => Promise<{ done: boolean; value?: Uint8Array }>;
 
@@ -91,5 +91,39 @@ describe("streamEvents", () => {
     );
     const result = await streamEvents("/api/apps/gitea", {}, () => {});
     expect(result.dropped).toBe(true);
+  });
+});
+
+describe("api.upload", () => {
+  it("sends the file as raw bytes, not JSON", async () => {
+    const fetch = vi.fn(
+      async () => new Response(JSON.stringify({ app: { id: "x" } })),
+    );
+    vi.stubGlobal("fetch", fetch);
+    const file = new Blob(["chart bytes"]);
+    expect(await api.upload("/api/apps/custom/chart", file)).toEqual({
+      app: { id: "x" },
+    });
+    const [, init] = fetch.mock.calls[0] as unknown as [string, RequestInit];
+    expect(init.method).toBe("POST");
+    expect(init.body).toBe(file);
+    expect(new Headers(init.headers).get("Content-Type")).toBe(
+      "application/octet-stream",
+    );
+  });
+
+  it("turns the server's refusal into an error carrying its reason", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(JSON.stringify({ error: "not a chart" }), {
+            status: 400,
+          }),
+      ),
+    );
+    await expect(
+      api.upload("/api/apps/custom/chart", new Blob(["x"])),
+    ).rejects.toThrow("not a chart");
   });
 });

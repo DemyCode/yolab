@@ -12,7 +12,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
-import { streamEvents } from "@/lib/api";
+import { api, streamEvents } from "@/lib/api";
+import { switchChannel } from "@/lib/channel";
 import { useApi } from "@/lib/useResource";
 import { Swap } from "@/components/motion";
 import type { StatusInfo, RebuildLog, ChannelInfo } from "@/types/status";
@@ -83,6 +84,7 @@ export function UpdatesPage() {
     }
   }
   const [channelSaving, setChannelSaving] = useState(false);
+  const [channelError, setChannelError] = useState<string | null>(null);
 
   const [rebootConfirm, setRebootConfirm] = useState(false);
   const [rebooting, setRebooting] = useState(false);
@@ -100,8 +102,7 @@ export function UpdatesPage() {
     async function tick() {
       if (cancelled) return;
       try {
-        const r = await fetch("/api/rebuild-log");
-        const d = (await r.json()) as RebuildLog;
+        const d = await api.get<RebuildLog>("/api/rebuild-log");
         if (cancelled) return;
         const newLines = (d.log ?? []).slice(rebuildOffsetRef.current);
         rebuildOffsetRef.current = (d.log ?? []).length;
@@ -123,9 +124,9 @@ export function UpdatesPage() {
   }
 
   useEffect(() => {
-    fetch("/api/rebuild-log")
-      .then((r) => r.json())
-      .then((d: RebuildLog) => {
+    api
+      .get<RebuildLog>("/api/rebuild-log")
+      .then((d) => {
         if (d.running) {
           setLog(d.log ?? []);
           rebuildOffsetRef.current = (d.log ?? []).length;
@@ -161,7 +162,7 @@ export function UpdatesPage() {
     setRebooting(true);
     setRebootConfirm(false);
     try {
-      await fetch("/api/system/reboot/all", { method: "POST" });
+      await api.post("/api/system/reboot/all");
       // eslint-disable-next-line no-empty
     } catch {}
   }
@@ -169,20 +170,15 @@ export function UpdatesPage() {
   async function saveChannelAndUpdate() {
     if (!editUrl.trim() || !editRef.trim()) return;
     setChannelSaving(true);
-    try {
-      await fetch("/api/update/channel", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          url: editUrl.trim(),
-          ref: editRef.trim(),
-        }),
-      });
-      void channelRes.refresh();
-      setChannelOpen(false);
-    } finally {
-      setChannelSaving(false);
+    setChannelError(null);
+    const failed = await switchChannel(editUrl, editRef);
+    setChannelSaving(false);
+    if (failed) {
+      setChannelError(failed);
+      return;
     }
+    void channelRes.refresh();
+    setChannelOpen(false);
     void runUpdate();
   }
 
@@ -346,6 +342,12 @@ export function UpdatesPage() {
                   </Button>
                 </div>
               </div>
+
+              {channelError && (
+                <p role="alert" className="text-sm text-danger">
+                  {channelError}
+                </p>
+              )}
 
               <p className="text-xs text-fg-subtle">
                 This machine builds from the flake URL, not a checkout — its own
