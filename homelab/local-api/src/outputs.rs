@@ -221,7 +221,7 @@ pub async fn rescan_all(
 
 pub struct OutputsController;
 
-impl crate::runtime::Controller for OutputsController {
+impl crate::runtime::Resource for OutputsController {
     fn name(&self) -> &'static str {
         "outputs"
     }
@@ -234,7 +234,7 @@ impl crate::runtime::Controller for OutputsController {
     fn depends_on(&self) -> &'static [&'static str] {
         &[crate::runtime::KUBE_API]
     }
-    async fn reconcile(&self, ctx: &crate::runtime::Ctx) -> anyhow::Result<crate::runtime::Tick> {
+    async fn converge(&self, ctx: &crate::runtime::Ctx) -> anyhow::Result<crate::runtime::Tick> {
         let catalog_dir = crate::config::Config::from_env().catalog_dir();
         let failed = rescan_all(&ctx.tools.kube().await?, &catalog_dir).await?;
         if failed.is_empty() {

@@ -511,7 +511,7 @@ pub async fn delete_all_backups(
 
 pub struct LockSweeperController;
 
-impl crate::runtime::Controller for LockSweeperController {
+impl crate::runtime::Resource for LockSweeperController {
     fn name(&self) -> &'static str {
         "backup-lock-sweeper"
     }
@@ -527,7 +527,7 @@ impl crate::runtime::Controller for LockSweeperController {
     fn not_before_uptime(&self) -> std::time::Duration {
         std::time::Duration::from_secs(300)
     }
-    async fn reconcile(&self, ctx: &crate::runtime::Ctx) -> anyhow::Result<crate::runtime::Tick> {
+    async fn converge(&self, ctx: &crate::runtime::Ctx) -> anyhow::Result<crate::runtime::Tick> {
         sweep_locks(&ctx.tools.backend().await?).await
     }
 }
@@ -536,7 +536,7 @@ pub struct BackupKeyController {
     pub config: Config,
 }
 
-impl crate::runtime::Controller for BackupKeyController {
+impl crate::runtime::Resource for BackupKeyController {
     fn name(&self) -> &'static str {
         "backup-key"
     }
@@ -549,7 +549,7 @@ impl crate::runtime::Controller for BackupKeyController {
     fn depends_on(&self) -> &'static [&'static str] {
         &[crate::runtime::KUBE_API]
     }
-    async fn reconcile(&self, ctx: &crate::runtime::Ctx) -> anyhow::Result<crate::runtime::Tick> {
+    async fn converge(&self, ctx: &crate::runtime::Ctx) -> anyhow::Result<crate::runtime::Tick> {
         let Some((url, token)) = ye_creds(&self.config) else {
             return Ok(crate::runtime::Tick::Idle(
                 "this machine is not connected to the YoLab platform".into(),

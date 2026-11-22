@@ -219,7 +219,7 @@ impl MeshPathsController {
     }
 }
 
-impl crate::runtime::Controller for MeshPathsController {
+impl crate::runtime::Resource for MeshPathsController {
     fn name(&self) -> &'static str {
         "mesh-paths"
     }
@@ -229,7 +229,7 @@ impl crate::runtime::Controller for MeshPathsController {
     fn interval(&self) -> Duration {
         FAST_TICK
     }
-    async fn reconcile(&self, ctx: &crate::runtime::Ctx) -> anyhow::Result<crate::runtime::Tick> {
+    async fn converge(&self, ctx: &crate::runtime::Ctx) -> anyhow::Result<crate::runtime::Tick> {
         let mut blackhole = self.blackhole.lock().await;
         reconcile_local(&ctx.tools.host, &mut blackhole).await?;
         Ok(crate::runtime::Tick::Done)
@@ -248,7 +248,7 @@ impl MeshDiscoveryController {
     }
 }
 
-impl crate::runtime::Controller for MeshDiscoveryController {
+impl crate::runtime::Resource for MeshDiscoveryController {
     fn name(&self) -> &'static str {
         "mesh-discovery"
     }
@@ -261,7 +261,7 @@ impl crate::runtime::Controller for MeshDiscoveryController {
     fn depends_on(&self) -> &'static [&'static str] {
         &[crate::runtime::KUBE_API]
     }
-    async fn reconcile(&self, ctx: &crate::runtime::Ctx) -> anyhow::Result<crate::runtime::Tick> {
+    async fn converge(&self, ctx: &crate::runtime::Ctx) -> anyhow::Result<crate::runtime::Tick> {
         let mut last_probe = self.last_probe.lock().await;
         let cfg = crate::config::Config::from_env();
         let peers = peer_addresses(&ctx.tools.kube, &cfg.node_ipv6).await;

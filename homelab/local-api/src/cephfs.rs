@@ -4,7 +4,7 @@ use anyhow::Result;
 
 use crate::ceph::model::{FsEntry, OsdStat};
 use crate::host::Host;
-use crate::runtime::{Activity, Controller, Ctx, Scope, Tick};
+use crate::runtime::{Activity, Ctx, Resource, Scope, Tick};
 
 pub(crate) const FS_NAME: &str = "yolab-fs";
 pub(crate) const META_POOL: &str = "yolab-fs-metadata";
@@ -21,7 +21,7 @@ fn has_named(entries: &[FsEntry], name: &str) -> bool {
 
 pub struct CephFsController;
 
-impl Controller for CephFsController {
+impl Resource for CephFsController {
     fn name(&self) -> &'static str {
         "cephfs"
     }
@@ -37,7 +37,7 @@ impl Controller for CephFsController {
     fn pauses_during(&self) -> &'static [Activity] {
         &[Activity::Restore]
     }
-    async fn reconcile(&self, ctx: &Ctx) -> Result<Tick> {
+    async fn converge(&self, ctx: &Ctx) -> Result<Tick> {
         ensure(&ctx.tools.host).await
     }
 }

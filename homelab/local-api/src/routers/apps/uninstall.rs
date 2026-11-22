@@ -360,7 +360,7 @@ pub(crate) async fn registered_uninstalls(
 
 pub struct UninstallsController;
 
-impl crate::runtime::Controller for UninstallsController {
+impl crate::runtime::Resource for UninstallsController {
     fn name(&self) -> &'static str {
         "uninstalls"
     }
@@ -373,7 +373,7 @@ impl crate::runtime::Controller for UninstallsController {
     fn depends_on(&self) -> &'static [&'static str] {
         &[crate::runtime::KUBE_API]
     }
-    async fn reconcile(&self, ctx: &crate::runtime::Ctx) -> anyhow::Result<crate::runtime::Tick> {
+    async fn converge(&self, ctx: &crate::runtime::Ctx) -> anyhow::Result<crate::runtime::Tick> {
         finish_uninstalls(&ctx.tools.backend().await?).await
     }
 }

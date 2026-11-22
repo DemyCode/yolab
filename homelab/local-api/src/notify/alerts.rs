@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use super::{publish_everywhere, topic, Notification, Tunnel};
 use crate::backup::common::Backend;
 use crate::host::Host;
-use crate::runtime::{Controller, Ctx, Scope, Tick};
+use crate::runtime::{Ctx, Resource, Scope, Tick};
 
 const NAME: &str = "notifier";
 const STATE_FILE: &str = "var/lib/yolab/ntfy/alerts.json";
@@ -303,7 +303,7 @@ pub struct NotifierController {
     pub config: crate::config::Config,
 }
 
-impl Controller for NotifierController {
+impl Resource for NotifierController {
     fn name(&self) -> &'static str {
         NAME
     }
@@ -316,7 +316,7 @@ impl Controller for NotifierController {
     fn not_before_uptime(&self) -> Duration {
         Duration::from_secs(180)
     }
-    async fn reconcile(&self, ctx: &Ctx) -> Result<Tick> {
+    async fn converge(&self, ctx: &Ctx) -> Result<Tick> {
         let root = Path::new("/");
         let tunnel = Tunnel::read(&self.config.config_path)?;
         if !tunnel.enabled {

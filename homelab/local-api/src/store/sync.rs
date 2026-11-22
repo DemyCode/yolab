@@ -6,7 +6,7 @@ use axum::body::Bytes;
 use axum::http::StatusCode;
 
 use crate::auth::CLUSTER_AUTH_HEADER;
-use crate::runtime::{Controller, Ctx, Scope, Tick};
+use crate::runtime::{Ctx, Resource, Scope, Tick};
 
 use super::{default_path, locked, Store};
 
@@ -48,7 +48,7 @@ pub async fn handler(body: Bytes) -> Result<Vec<u8>, (StatusCode, String)> {
 
 pub struct StoreSyncController;
 
-impl Controller for StoreSyncController {
+impl Resource for StoreSyncController {
     fn name(&self) -> &'static str {
         "store-sync"
     }
@@ -61,7 +61,7 @@ impl Controller for StoreSyncController {
         INTERVAL
     }
 
-    async fn reconcile(&self, ctx: &Ctx) -> anyhow::Result<Tick> {
+    async fn converge(&self, ctx: &Ctx) -> anyhow::Result<Tick> {
         let cfg = crate::config::Config::from_env();
         let peers = crate::mesh::peer_addresses(&ctx.tools.kube, &cfg.node_ipv6).await;
         if peers.is_empty() {

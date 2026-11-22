@@ -8,7 +8,7 @@ use serde_json::Value;
 use crate::backup::common::*;
 use crate::host::Host;
 use crate::records::Store;
-use crate::runtime::{Activity, Controller, Ctx, Scope, Tick};
+use crate::runtime::{Activity, Ctx, Resource, Scope, Tick};
 
 pub(crate) const CHECKS: Store = Store {
     name: "yolab-backup-checks",
@@ -179,7 +179,7 @@ pub(crate) fn stores_to_check(services: impl IntoIterator<Item = String>) -> Vec
 
 pub struct BackupCheckController;
 
-impl Controller for BackupCheckController {
+impl Resource for BackupCheckController {
     fn name(&self) -> &'static str {
         "backup-check"
     }
@@ -198,7 +198,7 @@ impl Controller for BackupCheckController {
     fn not_before_uptime(&self) -> Duration {
         Duration::from_secs(600)
     }
-    async fn reconcile(&self, ctx: &Ctx) -> anyhow::Result<Tick> {
+    async fn converge(&self, ctx: &Ctx) -> anyhow::Result<Tick> {
         check_due(&ctx.tools.backend().await?).await
     }
 }

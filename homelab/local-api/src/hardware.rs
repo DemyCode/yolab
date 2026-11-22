@@ -275,7 +275,7 @@ impl HardwareLabelsController {
     }
 }
 
-impl crate::runtime::Controller for HardwareLabelsController {
+impl crate::runtime::Resource for HardwareLabelsController {
     fn name(&self) -> &'static str {
         "hardware-labels"
     }
@@ -288,7 +288,7 @@ impl crate::runtime::Controller for HardwareLabelsController {
     fn depends_on(&self) -> &'static [&'static str] {
         &[crate::runtime::KUBE_API]
     }
-    async fn reconcile(&self, ctx: &crate::runtime::Ctx) -> anyhow::Result<crate::runtime::Tick> {
+    async fn converge(&self, ctx: &crate::runtime::Ctx) -> anyhow::Result<crate::runtime::Tick> {
         use k8s_openapi::api::core::v1::Node;
         let client = self.kube.client().await?;
         let node = kube::Api::<Node>::all(client.clone())
@@ -677,7 +677,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_tick_labels_the_node_with_what_this_machine_offers() {
-        use crate::runtime::Controller as _;
+        use crate::runtime::Resource as _;
         let (server, client) = crate::k8s::testing::api_server().await;
         crate::k8s::testing::serve(
             &server,
@@ -696,7 +696,7 @@ mod tests {
         };
 
         controller
-            .reconcile(&crate::runtime::Ctx {
+            .converge(&crate::runtime::Ctx {
                 node: "node1".into(),
                 tools: crate::tools::Tools::unreachable(),
             })

@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use kube::Client;
 
 use crate::backup::common::{apply_secret, MASTER_NS, MASTER_SECRET};
-use crate::runtime::{Controller, Ctx, Scope, Tick};
+use crate::runtime::{Ctx, Resource, Scope, Tick};
 
 const NAME: &str = "backup-credentials";
 const COPY: &str = "var/lib/yolab/backup-config.json";
@@ -62,7 +62,7 @@ fn write_copy(root: &Path, credentials: &Credentials) -> Result<()> {
 
 pub struct BackupCredentialsController;
 
-impl Controller for BackupCredentialsController {
+impl Resource for BackupCredentialsController {
     fn name(&self) -> &'static str {
         NAME
     }
@@ -75,7 +75,7 @@ impl Controller for BackupCredentialsController {
     fn depends_on(&self) -> &'static [&'static str] {
         &[crate::runtime::KUBE_API]
     }
-    async fn reconcile(&self, ctx: &Ctx) -> Result<Tick> {
+    async fn converge(&self, ctx: &Ctx) -> Result<Tick> {
         sync(&ctx.tools.kube().await?, Path::new("/")).await
     }
 }

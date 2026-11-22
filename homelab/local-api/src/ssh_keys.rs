@@ -10,7 +10,7 @@ use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::runtime::{Controller, Ctx, Scope, Tick};
+use crate::runtime::{Ctx, Resource, Scope, Tick};
 use crate::store::SshKey;
 
 pub const LOGIN_USER: &str = "homelab";
@@ -204,7 +204,7 @@ fn apply() -> anyhow::Result<bool> {
 
 pub struct SshKeysController;
 
-impl Controller for SshKeysController {
+impl Resource for SshKeysController {
     fn name(&self) -> &'static str {
         "ssh-keys"
     }
@@ -217,7 +217,7 @@ impl Controller for SshKeysController {
         Duration::from_secs(30)
     }
 
-    async fn reconcile(&self, _ctx: &Ctx) -> anyhow::Result<Tick> {
+    async fn converge(&self, _ctx: &Ctx) -> anyhow::Result<Tick> {
         if apply()? {
             Ok(Tick::Done)
         } else {

@@ -10,7 +10,7 @@ use anyhow::{Context, Result};
 use crate::error::Outcome;
 use crate::host::Host;
 use crate::notify::Tunnel;
-use crate::runtime::{Controller, Ctx, Scope, Tick};
+use crate::runtime::{Ctx, Resource, Scope, Tick};
 use record::VdiskRecord;
 
 pub const NAME: &str = "vdisks";
@@ -154,7 +154,7 @@ pub struct VdisksController<H> {
     pub http: crate::http::Client,
 }
 
-impl<H: Host + 'static> Controller for VdisksController<H> {
+impl<H: Host + 'static> Resource for VdisksController<H> {
     fn name(&self) -> &'static str {
         NAME
     }
@@ -167,7 +167,7 @@ impl<H: Host + 'static> Controller for VdisksController<H> {
     fn depends_on(&self) -> &'static [&'static str] {
         &[crate::runtime::CEPH]
     }
-    async fn reconcile(&self, ctx: &Ctx) -> Result<Tick> {
+    async fn converge(&self, ctx: &Ctx) -> Result<Tick> {
         let host = &self.host;
         let root = Path::new("/");
         let records = record::list(host)

@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::Notify;
 
 use super::status::Phase;
-use super::{activity, leader, Controller, Ctx, Requirement, Scope, Tick};
+use super::{activity, leader, Ctx, Requirement, Scope, Tick};
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 #[serde(tag = "state", content = "reason", rename_all = "snake_case")]
@@ -52,13 +52,11 @@ pub trait Resource: Send + Sync + 'static {
         Duration::ZERO
     }
 
-    fn check(&self, ctx: &Ctx) -> impl Future<Output = State> + Send;
+    fn check(&self, _ctx: &Ctx) -> impl Future<Output = State> + Send {
+        async { State::Unchecked }
+    }
 
     fn converge(&self, ctx: &Ctx) -> impl Future<Output = anyhow::Result<Tick>> + Send;
-}
-
-pub struct ControllerResource<C> {
-    inner: C,
 }
 
 pub(crate) async fn preflight(
@@ -86,46 +84,6 @@ pub(crate) async fn preflight(
         anyhow::bail!("not running {name}: {why}");
     }
     Ok(node)
-}
-
-impl<C: Controller> ControllerResource<C> {
-    pub fn new(inner: C) -> Self {
-        Self { inner }
-    }
-}
-
-impl<C: Controller> Resource for ControllerResource<C> {
-    fn name(&self) -> &'static str {
-        self.inner.name()
-    }
-
-    fn depends_on(&self) -> &[&'static str] {
-        self.inner.depends_on()
-    }
-
-    fn scope(&self) -> Scope {
-        self.inner.scope()
-    }
-
-    fn interval(&self) -> Duration {
-        self.inner.interval()
-    }
-
-    fn pauses_during(&self) -> &'static [activity::Activity] {
-        self.inner.pauses_during()
-    }
-
-    fn not_before_uptime(&self) -> Duration {
-        self.inner.not_before_uptime()
-    }
-
-    async fn check(&self, _ctx: &Ctx) -> State {
-        State::Unchecked
-    }
-
-    async fn converge(&self, ctx: &Ctx) -> anyhow::Result<Tick> {
-        self.inner.reconcile(ctx).await
-    }
 }
 
 pub struct Observed(pub Requirement);
@@ -630,9 +588,9 @@ mod tests {
         converges: Arc<AtomicU32>,
     }
 
-    impl Controller for Plain {
+    impl Resource for Plain {
         fn name(&self) -> &'static str {
-            "test-adapted-controller"
+            "test-unchecked-resource"
         }
         fn scope(&self) -> Scope {
             Scope::Node
@@ -640,47 +598,59 @@ mod tests {
         fn interval(&self) -> Duration {
             Duration::from_secs(1)
         }
-        async fn reconcile(&self, _ctx: &Ctx) -> anyhow::Result<Tick> {
+        async fn converge(&self, _ctx: &Ctx) -> anyhow::Result<Tick> {
             self.converges.fetch_add(1, Ordering::SeqCst);
             Ok(Tick::Done)
         }
     }
 
+    #[tokio::test]
+    async fn a_resource_that_does_not_check_is_unchecked_not_ready() {
+        let plain = Plain {
+            converges: Arc::new(AtomicU32::new(0)),
+        };
+        let ctx = Ctx {
+            node: "test-node".into(),
+            tools: crate::tools::Tools::unreachable(),
+        };
+        assert_eq!(plain.check(&ctx).await, State::Unchecked);
+    }
+
     #[tokio::test(start_paused = true)]
-    async fn an_adapted_controller_keeps_running_and_holds_its_readiness_steady() {
+    async fn a_resource_without_a_check_keeps_running_and_holds_its_readiness_steady() {
         let converges = Arc::new(AtomicU32::new(0));
         spawn(
-            ControllerResource::new(Plain {
+            Plain {
                 converges: converges.clone(),
-            }),
+            },
             leader::Leadership::fixed_for_tests(true),
             crate::tools::Tools::unreachable(),
         );
 
         for _ in 0..60 {
             tokio::time::sleep(Duration::from_secs(1)).await;
-            if state_of("test-adapted-controller") == Some(State::Ready) {
+            if state_of("test-unchecked-resource") == Some(State::Ready) {
                 break;
             }
         }
         assert_eq!(
-            state_of("test-adapted-controller"),
+            state_of("test-unchecked-resource"),
             Some(State::Ready),
-            "a controller that converged cleanly never became ready"
+            "a resource that converged cleanly never became ready"
         );
 
         let before = converges.load(Ordering::SeqCst);
         for _ in 0..20 {
             tokio::time::sleep(Duration::from_secs(1)).await;
             assert_eq!(
-                state_of("test-adapted-controller"),
+                state_of("test-unchecked-resource"),
                 Some(State::Ready),
                 "readiness flapped between passes"
             );
         }
         assert!(
             converges.load(Ordering::SeqCst) > before,
-            "the adapted controller stopped running once it was ready"
+            "the resource stopped running once it was ready"
         );
     }
 
@@ -744,7 +714,7 @@ mod tests {
 
     struct NeedsCeph;
 
-    impl Controller for NeedsCeph {
+    impl Resource for NeedsCeph {
         fn name(&self) -> &'static str {
             "test-needs-ceph"
         }
@@ -757,15 +727,14 @@ mod tests {
         fn depends_on(&self) -> &'static [&'static str] {
             &[crate::runtime::CEPH]
         }
-        async fn reconcile(&self, _ctx: &Ctx) -> anyhow::Result<Tick> {
+        async fn converge(&self, _ctx: &Ctx) -> anyhow::Result<Tick> {
             Ok(Tick::Done)
         }
     }
 
     #[test]
-    fn a_controllers_requirements_become_edges_to_observed_resources() {
-        let r = ControllerResource::new(NeedsCeph);
-        assert_eq!(r.depends_on(), &["ceph"]);
+    fn a_resources_requirements_become_edges_to_observed_resources() {
+        assert_eq!(NeedsCeph.depends_on(), &["ceph"]);
     }
 
     #[test]

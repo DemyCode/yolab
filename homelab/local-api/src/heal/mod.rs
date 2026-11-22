@@ -16,7 +16,7 @@ use crate::ceph::destructive::APP_DATA_POOLS;
 use crate::ceph::model::{self, PgsByPool};
 use crate::error::Outcome;
 use crate::host::Host;
-use crate::runtime::{Controller, Ctx, Scope, Tick};
+use crate::runtime::{Ctx, Resource, Scope, Tick};
 use crate::system::now_secs;
 use crate::AppState;
 use member::{Begin, Layout, PhaseView, PrepareRequest, Preparing, ResetView};
@@ -770,7 +770,7 @@ pub struct HealController {
     pub config: crate::config::Config,
 }
 
-impl Controller for HealController {
+impl Resource for HealController {
     fn name(&self) -> &'static str {
         NAME
     }
@@ -780,7 +780,7 @@ impl Controller for HealController {
     fn interval(&self) -> Duration {
         TICK
     }
-    async fn reconcile(&self, ctx: &Ctx) -> Result<Tick> {
+    async fn converge(&self, ctx: &Ctx) -> Result<Tick> {
         let boot_id = boot_id().await?;
         tick(
             &ctx.tools.host,

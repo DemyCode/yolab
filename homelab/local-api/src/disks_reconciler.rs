@@ -343,7 +343,7 @@ async fn lv_osd_attempt<H: Host>(host: &H, dev: &str) -> Result<crate::storage::
 
 pub struct DisksController;
 
-impl crate::runtime::Controller for DisksController {
+impl crate::runtime::Resource for DisksController {
     fn name(&self) -> &'static str {
         "disks"
     }
@@ -359,7 +359,7 @@ impl crate::runtime::Controller for DisksController {
     fn pauses_during(&self) -> &'static [crate::runtime::Activity] {
         &[crate::runtime::Activity::Restore]
     }
-    async fn reconcile(&self, ctx: &crate::runtime::Ctx) -> anyhow::Result<crate::runtime::Tick> {
+    async fn converge(&self, ctx: &crate::runtime::Ctx) -> anyhow::Result<crate::runtime::Tick> {
         if ctx.node.is_empty() {
             anyhow::bail!("cannot determine this node's name");
         }

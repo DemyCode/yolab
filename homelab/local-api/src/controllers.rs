@@ -48,7 +48,7 @@ pub struct Entry {
     built_name: BuiltName,
 }
 
-fn entry<C: runtime::Controller>(name: &'static str, needs: Needs, make: fn(&Setup) -> C) -> Entry {
+fn entry<C: runtime::Resource>(name: &'static str, needs: Needs, make: fn(&Setup) -> C) -> Entry {
     Entry {
         name,
         needs,
@@ -172,7 +172,7 @@ fn runs_here(entry: &Entry, env: &StorageEnv) -> bool {
 
 fn spawn_observed(leader: &Leadership, tools: &Tools) {
     for r in runtime::Requirement::ALL {
-        runtime::resource::spawn(
+        runtime::spawn(
             runtime::resource::Observed(r),
             leader.clone(),
             tools.clone(),

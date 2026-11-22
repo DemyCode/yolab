@@ -4,7 +4,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 
 use crate::notify::Tunnel;
-use crate::runtime::{Controller, Ctx, Scope, Tick};
+use crate::runtime::{Ctx, Resource, Scope, Tick};
 
 const NAME: &str = "shared-names";
 pub const NAMES: &[&str] = &["cluster", "notify"];
@@ -50,7 +50,7 @@ pub struct SharedNamesController {
     pub config: crate::config::Config,
 }
 
-impl Controller for SharedNamesController {
+impl Resource for SharedNamesController {
     fn name(&self) -> &'static str {
         NAME
     }
@@ -60,7 +60,7 @@ impl Controller for SharedNamesController {
     fn interval(&self) -> Duration {
         Duration::from_secs(600)
     }
-    async fn reconcile(&self, ctx: &Ctx) -> Result<Tick> {
+    async fn converge(&self, ctx: &Ctx) -> Result<Tick> {
         let tunnel = Tunnel::read(&self.config.config_path)?;
         if !tunnel.enabled || tunnel.tunnel_id.is_empty() {
             return Ok(Tick::Idle(

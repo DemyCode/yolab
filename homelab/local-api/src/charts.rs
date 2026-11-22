@@ -485,7 +485,7 @@ fn stars_due(last: &std::sync::atomic::AtomicU64, now: u64) -> bool {
 
 pub struct ChartSyncController;
 
-impl crate::runtime::Controller for ChartSyncController {
+impl crate::runtime::Resource for ChartSyncController {
     fn name(&self) -> &'static str {
         "chart-sync"
     }
@@ -498,7 +498,7 @@ impl crate::runtime::Controller for ChartSyncController {
     fn depends_on(&self) -> &'static [&'static str] {
         &[crate::runtime::KUBE_API]
     }
-    async fn reconcile(&self, ctx: &crate::runtime::Ctx) -> anyhow::Result<crate::runtime::Tick> {
+    async fn converge(&self, ctx: &crate::runtime::Ctx) -> anyhow::Result<crate::runtime::Tick> {
         let b = ctx.tools.backend().await?;
         sync_all(&b.kube, &b.host).await
     }

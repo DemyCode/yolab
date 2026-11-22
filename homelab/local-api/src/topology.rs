@@ -180,7 +180,7 @@ pub(crate) async fn observe<H: Host>(b: &Backend<H>) -> Option<Topology> {
 
 pub struct TopologyController;
 
-impl crate::runtime::Controller for TopologyController {
+impl crate::runtime::Resource for TopologyController {
     fn name(&self) -> &'static str {
         "topology"
     }
@@ -196,7 +196,7 @@ impl crate::runtime::Controller for TopologyController {
     fn pauses_during(&self) -> &'static [crate::runtime::Activity] {
         &[crate::runtime::Activity::Restore]
     }
-    async fn reconcile(&self, ctx: &crate::runtime::Ctx) -> anyhow::Result<crate::runtime::Tick> {
+    async fn converge(&self, ctx: &crate::runtime::Ctx) -> anyhow::Result<crate::runtime::Tick> {
         tick(&ctx.tools.backend().await?).await;
         Ok(crate::runtime::Tick::Done)
     }

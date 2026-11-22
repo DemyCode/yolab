@@ -997,7 +997,7 @@ pub(crate) async fn drive_installs<H: Host + 'static>(
 
 pub struct InstallsController;
 
-impl crate::runtime::Controller for InstallsController {
+impl crate::runtime::Resource for InstallsController {
     fn name(&self) -> &'static str {
         "installs"
     }
@@ -1010,7 +1010,7 @@ impl crate::runtime::Controller for InstallsController {
     fn depends_on(&self) -> &'static [&'static str] {
         &[crate::runtime::KUBE_API]
     }
-    async fn reconcile(&self, ctx: &crate::runtime::Ctx) -> anyhow::Result<crate::runtime::Tick> {
+    async fn converge(&self, ctx: &crate::runtime::Ctx) -> anyhow::Result<crate::runtime::Tick> {
         let cfg = Config::from_env();
         drive_installs(&ctx.tools.backend().await?, &cfg, &ctx.tools.http).await
     }

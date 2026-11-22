@@ -7,13 +7,13 @@ pub mod status;
 pub mod watch;
 
 use std::collections::HashMap;
-use std::future::Future;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use tokio::sync::Notify;
 
 pub use activity::Activity;
+pub use resource::{spawn, Resource, State};
 use status::Registry;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
@@ -72,22 +72,6 @@ pub struct Ctx {
     pub tools: crate::tools::Tools,
 }
 
-pub trait Controller: Send + Sync + 'static {
-    fn name(&self) -> &'static str;
-    fn scope(&self) -> Scope;
-    fn interval(&self) -> Duration;
-    fn depends_on(&self) -> &'static [&'static str] {
-        &[]
-    }
-    fn pauses_during(&self) -> &'static [Activity] {
-        &[]
-    }
-    fn not_before_uptime(&self) -> Duration {
-        Duration::ZERO
-    }
-    fn reconcile(&self, ctx: &Ctx) -> impl Future<Output = anyhow::Result<Tick>> + Send;
-}
-
 const MIN_GAP: Duration = Duration::from_secs(2);
 
 const RECHECK: Duration = Duration::from_secs(15);
@@ -144,10 +128,6 @@ fn uptime() -> Option<Duration> {
     Some(Duration::from_secs_f64(secs))
 }
 
-pub fn spawn<C: Controller>(controller: C, leader: leader::Leadership, tools: crate::tools::Tools) {
-    resource::spawn(resource::ControllerResource::new(controller), leader, tools);
-}
-
 async fn wait_or_wake(notify: &Notify, d: Duration) {
     tokio::select! {
         _ = tokio::time::sleep(d) => {}
@@ -155,17 +135,17 @@ async fn wait_or_wake(notify: &Notify, d: Duration) {
     }
 }
 
-pub async fn run_once<C: Controller>(controller: &C) -> anyhow::Result<Tick> {
+pub async fn run_once<R: Resource>(resource: &R) -> anyhow::Result<Tick> {
     let tools = crate::tools::Tools::real();
     let node = resource::preflight(
         &tools,
-        controller.name(),
-        controller.scope(),
-        controller.depends_on(),
-        controller.pauses_during(),
+        resource.name(),
+        resource.scope(),
+        resource.depends_on(),
+        resource.pauses_during(),
     )
     .await?;
-    controller.reconcile(&Ctx { node, tools }).await
+    resource.converge(&Ctx { node, tools }).await
 }
 
 #[cfg(test)]
@@ -191,7 +171,7 @@ mod tests {
         runs: Arc<AtomicU32>,
     }
 
-    impl Controller for Flaky {
+    impl Resource for Flaky {
         fn name(&self) -> &'static str {
             "test-flaky"
         }
@@ -201,7 +181,7 @@ mod tests {
         fn interval(&self) -> Duration {
             Duration::from_secs(1)
         }
-        async fn reconcile(&self, _ctx: &Ctx) -> anyhow::Result<Tick> {
+        async fn converge(&self, _ctx: &Ctx) -> anyhow::Result<Tick> {
             let n = self.runs.fetch_add(1, Ordering::SeqCst);
             match n {
                 0 => panic!("first tick panics"),
@@ -239,7 +219,7 @@ mod tests {
         runs: Arc<AtomicU32>,
     }
 
-    impl Controller for Clustered {
+    impl Resource for Clustered {
         fn name(&self) -> &'static str {
             "test-clustered"
         }
@@ -249,7 +229,7 @@ mod tests {
         fn interval(&self) -> Duration {
             Duration::from_secs(1)
         }
-        async fn reconcile(&self, _ctx: &Ctx) -> anyhow::Result<Tick> {
+        async fn converge(&self, _ctx: &Ctx) -> anyhow::Result<Tick> {
             self.runs.fetch_add(1, Ordering::SeqCst);
             Ok(Tick::Done)
         }
@@ -275,7 +255,7 @@ mod tests {
         runs: Arc<AtomicU32>,
     }
 
-    impl Controller for Woken {
+    impl Resource for Woken {
         fn name(&self) -> &'static str {
             "test-woken"
         }
@@ -285,7 +265,7 @@ mod tests {
         fn interval(&self) -> Duration {
             Duration::from_secs(3600)
         }
-        async fn reconcile(&self, _ctx: &Ctx) -> anyhow::Result<Tick> {
+        async fn converge(&self, _ctx: &Ctx) -> anyhow::Result<Tick> {
             self.runs.fetch_add(1, Ordering::SeqCst);
             Ok(Tick::Done)
         }
@@ -310,7 +290,7 @@ mod tests {
         runs: Arc<AtomicU32>,
     }
 
-    impl Controller for Impatient {
+    impl Resource for Impatient {
         fn name(&self) -> &'static str {
             "test-impatient"
         }
@@ -320,7 +300,7 @@ mod tests {
         fn interval(&self) -> Duration {
             Duration::from_secs(3600)
         }
-        async fn reconcile(&self, _ctx: &Ctx) -> anyhow::Result<Tick> {
+        async fn converge(&self, _ctx: &Ctx) -> anyhow::Result<Tick> {
             match self.runs.fetch_add(1, Ordering::SeqCst) {
                 0 => Ok(Tick::RequeueAfter(Duration::from_secs(10))),
                 _ => Ok(Tick::Idle("nothing left to do".into())),

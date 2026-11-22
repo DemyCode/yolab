@@ -5,7 +5,7 @@ use anyhow::Result;
 
 use crate::error::Outcome;
 use crate::host::Host;
-use crate::runtime::{lock, Controller, Ctx, Scope, Tick};
+use crate::runtime::{lock, Ctx, Resource, Scope, Tick};
 
 use super::{
     bootstrap, csi_secrets, dashboard, images_grow, images_rbd, keys, lock_name, mon_member, osd,
@@ -80,7 +80,7 @@ macro_rules! storage_controller {
             pub env: StorageEnv,
         }
 
-        impl Controller for $ty {
+        impl Resource for $ty {
             fn name(&self) -> &'static str {
                 $name
             }
@@ -96,7 +96,7 @@ macro_rules! storage_controller {
             fn depends_on(&self) -> &'static [&'static str] {
                 &[$($req),*]
             }
-            async fn reconcile(&self, ctx: &Ctx) -> Result<Tick> {
+            async fn converge(&self, ctx: &Ctx) -> Result<Tick> {
                 let $env = &self.env;
                 let $node = ctx.node.as_str();
                 let $host = &ctx.tools.host;
@@ -164,7 +164,7 @@ storage_controller! {
 
 pub struct CsiSecretsController;
 
-impl Controller for CsiSecretsController {
+impl Resource for CsiSecretsController {
     fn name(&self) -> &'static str {
         "csi-secrets"
     }
@@ -177,7 +177,7 @@ impl Controller for CsiSecretsController {
     fn depends_on(&self) -> &'static [&'static str] {
         &[crate::runtime::CEPH, crate::runtime::KUBE_API]
     }
-    async fn reconcile(&self, ctx: &Ctx) -> Result<Tick> {
+    async fn converge(&self, ctx: &Ctx) -> Result<Tick> {
         locked("csi-secrets", || async {
             csi_secrets::run(&ctx.tools.backend().await?).await
         })
@@ -187,7 +187,7 @@ impl Controller for CsiSecretsController {
 
 pub struct CephKeysController;
 
-impl Controller for CephKeysController {
+impl Resource for CephKeysController {
     fn name(&self) -> &'static str {
         "ceph-keys"
     }
@@ -200,7 +200,7 @@ impl Controller for CephKeysController {
     fn depends_on(&self) -> &'static [&'static str] {
         &[crate::runtime::CEPH]
     }
-    async fn reconcile(&self, ctx: &Ctx) -> Result<Tick> {
+    async fn converge(&self, ctx: &Ctx) -> Result<Tick> {
         let daemons = ["mgr", "mds"];
         let mut problems = Vec::new();
         for daemon in daemons {
@@ -231,7 +231,7 @@ pub struct CephJoinController {
     pub env: StorageEnv,
 }
 
-impl Controller for CephJoinController {
+impl Resource for CephJoinController {
     fn name(&self) -> &'static str {
         "ceph-join"
     }
@@ -244,7 +244,7 @@ impl Controller for CephJoinController {
     fn not_before_uptime(&self) -> Duration {
         Duration::from_secs(60)
     }
-    async fn reconcile(&self, ctx: &Ctx) -> Result<Tick> {
+    async fn converge(&self, ctx: &Ctx) -> Result<Tick> {
         if self.env.join_seed_addr.is_empty() {
             return Ok(Tick::Idle("this machine created the cluster".into()));
         }
@@ -276,7 +276,7 @@ pub struct CsiRecoveryController;
 
 const CSI_RECOVERED_MARKER: &str = "/run/yolab/csi-recovered-this-boot";
 
-impl Controller for CsiRecoveryController {
+impl Resource for CsiRecoveryController {
     fn name(&self) -> &'static str {
         "csi-recovery"
     }
@@ -289,7 +289,7 @@ impl Controller for CsiRecoveryController {
     fn depends_on(&self) -> &'static [&'static str] {
         &[crate::runtime::KUBE_API]
     }
-    async fn reconcile(&self, ctx: &Ctx) -> Result<Tick> {
+    async fn converge(&self, ctx: &Ctx) -> Result<Tick> {
         once_per_boot(
             std::path::Path::new(CSI_RECOVERED_MARKER),
             &ctx.tools.kube().await?,

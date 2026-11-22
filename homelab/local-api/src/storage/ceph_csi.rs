@@ -4,7 +4,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use kube::Client;
 
-use crate::runtime::{Controller, Ctx, Scope, Tick};
+use crate::runtime::{Ctx, Resource, Scope, Tick};
 
 pub const MANIFESTS_ENV: &str = "YOLAB_CEPH_CSI_MANIFESTS";
 
@@ -17,7 +17,7 @@ pub async fn apply_manifests(client: &Client, path: &Path) -> Result<Tick> {
 
 pub struct CephCsiController;
 
-impl Controller for CephCsiController {
+impl Resource for CephCsiController {
     fn name(&self) -> &'static str {
         "ceph-csi"
     }
@@ -30,7 +30,7 @@ impl Controller for CephCsiController {
     fn depends_on(&self) -> &'static [&'static str] {
         &[crate::runtime::KUBE_API]
     }
-    async fn reconcile(&self, ctx: &Ctx) -> Result<Tick> {
+    async fn converge(&self, ctx: &Ctx) -> Result<Tick> {
         let path = std::env::var(MANIFESTS_ENV).with_context(|| {
             format!("{MANIFESTS_ENV} is not set; the NixOS module names the CSI manifests")
         })?;

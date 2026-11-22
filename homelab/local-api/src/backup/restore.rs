@@ -14,7 +14,7 @@ use crate::host::Host;
 use crate::ops::{self, Claim, Claimed, FAILED, QUEUED, RUNNING, SUCCEEDED};
 use crate::poll::Step;
 use crate::records::Store;
-use crate::runtime::{Controller, Ctx, Scope, Tick};
+use crate::runtime::{Ctx, Resource, Scope, Tick};
 use kube::Client;
 
 pub(crate) const RESTORES: Store = Store {
@@ -1419,7 +1419,7 @@ fn begin_attempt(s: &mut RestoreSet) {
 
 pub struct RestoresController;
 
-impl Controller for RestoresController {
+impl Resource for RestoresController {
     fn name(&self) -> &'static str {
         "restores"
     }
@@ -1432,7 +1432,7 @@ impl Controller for RestoresController {
     fn depends_on(&self) -> &'static [&'static str] {
         &[crate::runtime::KUBE_API]
     }
-    async fn reconcile(&self, ctx: &Ctx) -> anyhow::Result<Tick> {
+    async fn converge(&self, ctx: &Ctx) -> anyhow::Result<Tick> {
         drive_next(&ctx.tools.backend().await?).await
     }
 }

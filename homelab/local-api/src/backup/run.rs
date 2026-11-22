@@ -11,7 +11,7 @@ use crate::host::Host;
 use crate::ops::{self, Claim, Claimed, FAILED, QUEUED, RUNNING, SUCCEEDED};
 use crate::records::Store;
 use crate::routers::apps::{ANN_APP_ID, ANN_CHART_REPO, ANN_CHART_VERSION};
-use crate::runtime::{Activity, Controller, Ctx, Scope, Tick};
+use crate::runtime::{Activity, Ctx, Resource, Scope, Tick};
 use chrono::{DateTime, Utc};
 use kube::Client;
 
@@ -1247,7 +1247,7 @@ pub(crate) async fn app_backup_status(client: &Client) -> HashMap<String, (Optio
 
 pub struct BackupSchedulerController;
 
-impl Controller for BackupSchedulerController {
+impl Resource for BackupSchedulerController {
     fn name(&self) -> &'static str {
         "backup-scheduler"
     }
@@ -1266,7 +1266,7 @@ impl Controller for BackupSchedulerController {
     fn not_before_uptime(&self) -> Duration {
         Duration::from_secs(60)
     }
-    async fn reconcile(&self, ctx: &Ctx) -> anyhow::Result<Tick> {
+    async fn converge(&self, ctx: &Ctx) -> anyhow::Result<Tick> {
         schedule(&ctx.tools.backend().await?).await
     }
 }
