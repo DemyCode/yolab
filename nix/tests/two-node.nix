@@ -209,7 +209,7 @@ in
         # These two assertions used to be written against systemd .timer units.
         # Commit 998caf8 dropped the timers when the controller runtime landed
         # and the assertions stayed, naming units that no longer existed — see
-        # tests-name-units-that-exist in nix/checks.nix.
+        # tests-name-units-that-exist in nix/checks/source.nix.
         with step([node1, node2], "yolabd keeps supervising and does not hot-loop"):
             assert_yolabd_is_ticking(
                 [node1, node2],

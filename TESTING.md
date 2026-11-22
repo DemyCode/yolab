@@ -8,7 +8,7 @@ forever.
 
 | tier | where | needs | runs |
 |---|---|---|---|
-| 1. Nix invariants | `nix/checks.nix` | nothing | every push |
+| 1. Nix invariants | `nix/checks/*.nix` | nothing | every push |
 | 2. Rust unit | `#[cfg(test)] mod tests` beside the code | nothing | every push |
 | 3. Rust seam | same, driven by `host::fake::FakeHost` | nothing | every push |
 | 4. Rust surface | `surface.rs` + `testkit.rs`, the real axum router | nothing | every push |
@@ -35,9 +35,9 @@ without a cluster.
 
 `heal/` is the reference: generic over `H: Host, N: Network`, with both faked.
 Code that names `RealHost` or `crate::kubectl::` directly has stepped around the
-seam and cannot be tested at this tier at all. `host-seam-ratchet` in
-`nix/checks.nix` holds a per-file budget for that, and the budget may only
-shrink.
+seam and cannot be tested at this tier at all.
+`only-entry-points-touch-the-machine` in `nix/checks/source.nix` refuses it
+everywhere except the entry points that build the real machine access.
 
 ## 4. Surface tests
 
