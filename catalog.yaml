@@ -27,7 +27,7 @@ charts:
   - name: agent-zero
     version: "0.1.32"
   - name: airtrail
-    version: "0.1.30"
+    version: "0.1.31"
   - name: akaunting
     version: "0.1.29"
   - name: albyhub
@@ -633,7 +633,7 @@ charts:
   - name: toshi-moto
     version: "0.1.29"
   - name: transmission
-    version: "0.1.36"
+    version: "0.1.37"
   - name: transmute
     version: "0.1.29"
   - name: trilium-notes
