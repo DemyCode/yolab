@@ -1,12 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { NavLink, Outlet } from "react-router-dom";
-import {
-  ArrowLeftRight,
-  Home,
-  LayoutGrid,
-  LogOut,
-  Server,
-} from "lucide-react";
+import { ArrowLeftRight, Home, LayoutGrid, LogOut, Server } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { api } from "@/lib/api";
 import { Wordmark } from "@/components/Logo";

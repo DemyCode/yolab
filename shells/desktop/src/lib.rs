@@ -277,7 +277,9 @@ mod desktop_entry {
         let exe = match std::env::current_exe() {
             Ok(exe) => exe,
             Err(e) => {
-                eprintln!("could not find this program's path, the window keeps the generic icon: {e}");
+                eprintln!(
+                    "could not find this program's path, the window keeps the generic icon: {e}"
+                );
                 return;
             }
         };
@@ -407,10 +409,8 @@ mod tests {
         use std::path::Path;
 
         fn scratch(name: &str) -> std::path::PathBuf {
-            let dir = std::env::temp_dir().join(format!(
-                "yolab-desktop-test-{name}-{}",
-                std::process::id()
-            ));
+            let dir = std::env::temp_dir()
+                .join(format!("yolab-desktop-test-{name}-{}", std::process::id()));
             match std::fs::remove_dir_all(&dir) {
                 Ok(()) => {}
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -425,8 +425,7 @@ mod tests {
                 serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
             assert_eq!(conf["identifier"], APP_ID);
             assert_eq!(conf["app"]["enableGTKAppId"], true);
-            assert!(entry_path(Path::new("/d"))
-                .ends_with(format!("applications/{APP_ID}.desktop")));
+            assert!(entry_path(Path::new("/d")).ends_with(format!("applications/{APP_ID}.desktop")));
         }
 
         #[test]
@@ -436,12 +435,18 @@ mod tests {
             let icon = std::fs::read(icon_path(&home)).unwrap();
             assert_eq!(icon, include_bytes!("../icons/icon.png"));
             let entry = std::fs::read_to_string(entry_path(&home)).unwrap();
-            assert!(entry.contains("Exec=\"/nix/store/x/bin/yolab-desktop\""), "{entry}");
+            assert!(
+                entry.contains("Exec=\"/nix/store/x/bin/yolab-desktop\""),
+                "{entry}"
+            );
             assert!(
                 entry.contains(&format!("Icon={}", icon_path(&home).display())),
                 "{entry}"
             );
-            assert!(entry.contains("NoDisplay=true"), "must not add a menu entry: {entry}");
+            assert!(
+                entry.contains("NoDisplay=true"),
+                "must not add a menu entry: {entry}"
+            );
             std::fs::remove_dir_all(&home).unwrap();
         }
 

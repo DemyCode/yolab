@@ -12,8 +12,6 @@ export function inYolabShell(
   return w.__YOLAB_SHELL__ === true;
 }
 
-export function changeServer(
-  w: { location: { href: string } } = window,
-): void {
+export function changeServer(w: { location: { href: string } } = window): void {
   w.location.href = CHANGE_ADDRESS_URL;
 }
