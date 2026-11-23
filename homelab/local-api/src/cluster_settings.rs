@@ -150,7 +150,10 @@ mod tests {
             ..monthly_10gb()
         };
         automatic.write_changes(&mut store).unwrap();
-        assert_eq!(ClusterSettings::read(&store).unwrap().backup_budget_bytes, None);
+        assert_eq!(
+            ClusterSettings::read(&store).unwrap().backup_budget_bytes,
+            None
+        );
     }
 
     #[test]

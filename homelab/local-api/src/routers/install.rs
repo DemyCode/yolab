@@ -1079,7 +1079,16 @@ mod tests {
 
     #[test]
     fn a_fresh_install_releases_under_its_own_instance_name() {
-        let plan = plan("gitea", "gitea-ab12", Map::new(), None, None, &no_schema(), BackupPolicy::default()).unwrap();
+        let plan = plan(
+            "gitea",
+            "gitea-ab12",
+            Map::new(),
+            None,
+            None,
+            &no_schema(),
+            BackupPolicy::default(),
+        )
+        .unwrap();
         assert_eq!(plan.release, "gitea-ab12");
     }
 
@@ -1131,7 +1140,16 @@ mod tests {
     #[test]
     fn a_fresh_install_takes_the_newest_chart_from_the_catalog() {
         assert_eq!(pin_chart(None), Ok(ChartPin::Newest));
-        let plan = plan("gitea", "gitea-ab12", Map::new(), None, None, &no_schema(), BackupPolicy::default()).unwrap();
+        let plan = plan(
+            "gitea",
+            "gitea-ab12",
+            Map::new(),
+            None,
+            None,
+            &no_schema(),
+            BackupPolicy::default(),
+        )
+        .unwrap();
         assert_eq!(plan.chart, ChartPin::Newest);
         assert_eq!(plan.chart.recorded(), None);
     }

@@ -495,9 +495,11 @@ mod tests {
     fn the_latest_change_to_a_setting_wins_on_every_machine() {
         let mut a = Store::new("node1");
         let mut b = Store::new("node2");
-        a.set_setting("backup.budget_bytes", &Some(5u64 << 30)).unwrap();
+        a.set_setting("backup.budget_bytes", &Some(5u64 << 30))
+            .unwrap();
         b.merge(&mut a).unwrap();
-        b.set_setting("backup.budget_bytes", &Some(10u64 << 30)).unwrap();
+        b.set_setting("backup.budget_bytes", &Some(10u64 << 30))
+            .unwrap();
         a.merge(&mut b).unwrap();
         b.merge(&mut a).unwrap();
         for store in [&a, &b] {
@@ -513,7 +515,8 @@ mod tests {
         let mut a = Store::new("node1");
         let mut b = Store::new("node2");
         a.set_setting("backup.schedule", &"0 3 1 * *").unwrap();
-        b.set_setting("backup.budget_bytes", &Some(10u64 << 30)).unwrap();
+        b.set_setting("backup.budget_bytes", &Some(10u64 << 30))
+            .unwrap();
         a.merge(&mut b).unwrap();
         b.merge(&mut a).unwrap();
         assert_eq!(a.settings().unwrap(), b.settings().unwrap());
@@ -522,7 +525,12 @@ mod tests {
 
     #[test]
     fn a_setting_never_written_reads_as_absent() {
-        assert_eq!(Store::new("node1").setting::<String>("backup.schedule").unwrap(), None);
+        assert_eq!(
+            Store::new("node1")
+                .setting::<String>("backup.schedule")
+                .unwrap(),
+            None
+        );
     }
 
     #[test]

@@ -4748,7 +4748,9 @@ class Ipv4OnlyReadiness(unittest.TestCase):
 
     def test_a_probe_that_connects_to_loopback_from_inside_passes(self):
         probe = {
-            "exec": {"command": ["curl", "-s", "-o", "/dev/null", "http://127.0.0.1:9095/"]},
+            "exec": {
+                "command": ["curl", "-s", "-o", "/dev/null", "http://127.0.0.1:9095/"]
+            },
             "timeoutSeconds": 5,
         }
         self.assertEqual(ipv4_only_failures("transmission", "server", probe), [])

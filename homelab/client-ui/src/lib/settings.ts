@@ -9,8 +9,7 @@ export interface ClusterSettings {
 export const SETTINGS_PATH = "/api/settings";
 
 export type Saved =
-  | { ok: true; settings: ClusterSettings }
-  | { ok: false; error: string };
+  { ok: true; settings: ClusterSettings } | { ok: false; error: string };
 
 export async function saveSettings(next: ClusterSettings): Promise<Saved> {
   try {
