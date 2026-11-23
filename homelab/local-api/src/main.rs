@@ -48,6 +48,7 @@ mod topology;
 mod tree;
 mod tree_list;
 mod vdisk;
+mod volsync_removal;
 
 use std::sync::Arc;
 

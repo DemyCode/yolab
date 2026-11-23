@@ -86,6 +86,9 @@ pub fn table() -> Vec<Entry> {
         entry("backup-lock-sweeper", Nothing, |_| {
             backups::LockSweeperController
         }),
+        entry(crate::volsync_removal::NAME, Nothing, |_| {
+            crate::volsync_removal::VolsyncRemovalController
+        }),
         entry("backup-check", Nothing, |_| {
             backup_check::BackupCheckController
         }),
@@ -248,6 +251,11 @@ mod tests {
         assert!(!unconfigured.is_configured());
         assert!(!runs_here(osd, &unconfigured));
         assert!(runs_here(backups, &unconfigured));
+    }
+
+    #[test]
+    fn the_volsync_removal_controller_is_registered() {
+        assert!(names().contains(&crate::volsync_removal::NAME));
     }
 
     #[test]
