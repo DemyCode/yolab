@@ -783,6 +783,7 @@ def check(app, docs, fail, chart_yaml="", schema=None, arches=None, home=RELEASE
     check_caddy_dns(app, docs, fail)
     check_caddy_reloads(app, docs, fail)
     check_probe_timeouts(app, docs, fail)
+    check_ipv4_only_readiness(app, docs, fail)
     check_host_access(app, docs, fail)
     check_privilege(app, docs, fail)
 
@@ -988,6 +989,31 @@ def check_probe_timeouts(app, docs, fail):
                         f"{timeout}s; a busy small machine answers slower, so "
                         f"set timeoutSeconds to at least {PROBE_TIMEOUT_FLOOR}",
                     )
+
+
+LISTENS_ON_IPV4_ONLY = {
+    "airtrail": "app",
+    "transmission": "server",
+}
+
+
+def check_ipv4_only_readiness(app, docs, fail):
+    name = LISTENS_ON_IPV4_ONLY.get(app)
+    if name is None:
+        return
+    for pod_name, spec in pod_specs(docs):
+        for c in spec.get("containers") or []:
+            if c["name"] != name:
+                continue
+            probe = c.get("readinessProbe") or {}
+            script = " ".join((probe.get("exec") or {}).get("command") or [])
+            if "127.0.0.1" not in script:
+                fail(
+                    app,
+                    f"pod {pod_name}: {name} listens on IPv4 only, but its readinessProbe "
+                    f"does not connect to 127.0.0.1 from inside the container; the "
+                    f"kubelet dials the pod's IPv6 address, so it never reads Ready",
+                )
 
 
 ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]*$")

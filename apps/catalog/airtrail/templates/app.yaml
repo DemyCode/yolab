@@ -41,8 +41,11 @@ spec:
         - containerPort: 3000
         readinessProbe:
           timeoutSeconds: 5
-          tcpSocket:
-            port: 3000
+          exec:
+            command:
+            - node
+            - -e
+            - require('net').connect(3000,'127.0.0.1').on('connect',function(){process.exit(0)}).on('error',function(){process.exit(1)})
         volumeMounts:
         - name: data
           mountPath: /app/uploads

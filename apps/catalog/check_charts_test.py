@@ -4713,6 +4713,55 @@ class ProbeTimeouts(unittest.TestCase):
         )
 
 
+def ipv4_only_failures(app, name, probe):
+    deployment = {
+        "kind": "Deployment",
+        "metadata": {"name": "gateway"},
+        "spec": {
+            "template": {
+                "spec": {"containers": [{"name": name, "readinessProbe": probe}]}
+            }
+        },
+    }
+    found = []
+    check_charts.check_ipv4_only_readiness(
+        app, [deployment], lambda app, msg: found.append(msg)
+    )
+    return found
+
+
+class Ipv4OnlyReadiness(unittest.TestCase):
+    def test_a_tcp_probe_on_an_app_that_listens_on_ipv4_only_is_reported(self):
+        found = ipv4_only_failures(
+            "airtrail", "app", {"tcpSocket": {"port": 3000}, "timeoutSeconds": 5}
+        )
+        self.assertEqual(len(found), 1)
+        self.assertIn("IPv6", found[0])
+
+    def test_an_http_probe_on_an_app_that_listens_on_ipv4_only_is_reported(self):
+        found = ipv4_only_failures(
+            "transmission",
+            "server",
+            {"httpGet": {"path": "/", "port": 9095}, "timeoutSeconds": 5},
+        )
+        self.assertEqual(len(found), 1)
+
+    def test_a_probe_that_connects_to_loopback_from_inside_passes(self):
+        probe = {
+            "exec": {"command": ["curl", "-s", "-o", "/dev/null", "http://127.0.0.1:9095/"]},
+            "timeoutSeconds": 5,
+        }
+        self.assertEqual(ipv4_only_failures("transmission", "server", probe), [])
+
+    def test_an_app_that_listens_on_ipv6_may_keep_its_tcp_probe(self):
+        probe = {"tcpSocket": {"port": 80}, "timeoutSeconds": 5}
+        self.assertEqual(ipv4_only_failures("demo", "app", probe), [])
+
+    def test_only_the_container_that_listens_on_ipv4_only_is_checked(self):
+        probe = {"tcpSocket": {"port": 443}, "timeoutSeconds": 5}
+        self.assertEqual(ipv4_only_failures("airtrail", "caddy", probe), [])
+
+
 class JupyterLabKeepsWhatItShows(RenderedChart):
     CHART = "jupyterlab"
 

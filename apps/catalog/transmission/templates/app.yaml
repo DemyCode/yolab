@@ -99,8 +99,13 @@ spec:
         - containerPort: 9095
         readinessProbe:
           timeoutSeconds: 5
-          tcpSocket:
-            port: 9095
+          exec:
+            command:
+            - curl
+            - -s
+            - -o
+            - /dev/null
+            - http://127.0.0.1:9095/
         volumeMounts:
         - name: data
           mountPath: /config
