@@ -468,7 +468,11 @@ mod tests {
 
     #[test]
     fn internal_webview_urls_are_left_to_the_webview() {
-        for internal in ["about:blank", "data:text/plain,hi", "blob:https://cluster.1.yolab.io/x"] {
+        for internal in [
+            "about:blank",
+            "data:text/plain,hi",
+            "blob:https://cluster.1.yolab.io/x",
+        ] {
             assert_eq!(routed(internal), Route::Load, "{internal}");
         }
     }
