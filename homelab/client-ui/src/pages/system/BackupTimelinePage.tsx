@@ -25,11 +25,7 @@ import {
   spaceToFit,
   usageLabel,
 } from "@/lib/backups";
-import type {
-  ProtectedApp,
-  RestorePoint,
-  RestorePoints,
-} from "@/lib/backups";
+import type { ProtectedApp, RestorePoint, RestorePoints } from "@/lib/backups";
 import { DEFAULT_SPACE_BYTES } from "@/lib/settings";
 import type { AppDefinition } from "@/types/apps";
 import { cn } from "@/lib/utils";

@@ -307,4 +307,3 @@ export function serviceBanner(
   if (isStale(app, now, STALE_AFTER_HOURS)) return { kind: "stale" };
   return null;
 }
-

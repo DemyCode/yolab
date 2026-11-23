@@ -1170,7 +1170,10 @@ mod tests {
     #[test]
     fn a_backup_missing_a_part_deletes_no_older_copy() {
         let err = incomplete(&["its folders: timed out".into()]).unwrap_err();
-        assert!(err.to_string().contains("no older copy was deleted"), "{err}");
+        assert!(
+            err.to_string().contains("no older copy was deleted"),
+            "{err}"
+        );
         assert!(err.to_string().contains("its folders: timed out"), "{err}");
     }
 
