@@ -47,6 +47,11 @@ const UpdatesPage = lazy(() =>
 const LogsPage = lazy(() =>
   import("@/pages/system/LogsPage").then((m) => ({ default: m.LogsPage })),
 );
+const SettingsPage = lazy(() =>
+  import("@/pages/system/SettingsPage").then((m) => ({
+    default: m.SettingsPage,
+  })),
+);
 
 function OldBoxPath() {
   const { pathname } = useLocation();
@@ -155,6 +160,19 @@ export default function App() {
                 >
                   <Suspense fallback={<Loading />}>
                     <UpdatesPage />
+                  </Suspense>
+                </SystemSubPage>
+              }
+            />
+            <Route
+              path="/system/settings"
+              element={
+                <SystemSubPage
+                  title="Settings"
+                  subtitle="How YoLab behaves on all your machines."
+                >
+                  <Suspense fallback={<Loading />}>
+                    <SettingsPage />
                   </Suspense>
                 </SystemSubPage>
               }

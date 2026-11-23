@@ -103,6 +103,10 @@ pub fn build_router(state: AppState) -> Router {
             get(crate::ssh_keys::list).post(crate::ssh_keys::add),
         )
         .route("/api/ssh/keys/remove", post(crate::ssh_keys::remove))
+        .route(
+            "/api/settings",
+            get(crate::cluster_settings::get).put(crate::cluster_settings::put),
+        )
         .route("/api/notifications", get(notify::get_subscription))
         .route("/api/notifications/test", post(notify::post_test))
         .route("/api/notifications/deliver", post(notify::post_deliver))

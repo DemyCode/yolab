@@ -564,6 +564,10 @@ pub async fn install_app(
     let Some(instance_name) = unique_instance_name(&b.kube, &body.instance_name).await else {
         return refuse("could not derive a unique name for this app".into());
     };
+    let new_backup = match crate::cluster_settings::current() {
+        Ok(settings) => settings.new_service_backup(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")).into_response(),
+    };
     let plan = match install::plan(
         &id,
         &instance_name,
@@ -571,6 +575,7 @@ pub async fn install_app(
         source.as_ref(),
         sources.data,
         &app,
+        new_backup,
     ) {
         Ok(p) => p,
         Err(e) => return refuse(e),

@@ -6,6 +6,7 @@ mod ceph;
 mod ceph_cli;
 mod cephfs;
 mod charts;
+mod cluster_settings;
 mod config;
 mod controllers;
 mod cron;

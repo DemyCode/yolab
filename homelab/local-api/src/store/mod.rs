@@ -24,6 +24,7 @@ const STORAGE_POLICY_KEY: &str = "policy:storage";
 const REVOKED_PREFIX: &str = "revoked:";
 const SESSION_KEY: &str = "secret:session";
 const SSH_KEY_PREFIX: &str = "ssh_key:";
+const SETTING_PREFIX: &str = "setting:";
 
 const DISKS_SEEDED_KEY: &str = "meta:disks_seeded";
 const MACHINES_SEEDED_KEY: &str = "meta:machines_seeded";
@@ -390,10 +391,25 @@ impl Store {
         self.collection(SSH_KEY_PREFIX)
     }
 
+    pub fn set_setting<T: Serialize>(&mut self, name: &str, value: &T) -> Result<(), StoreError> {
+        self.write_at(&format!("{SETTING_PREFIX}{name}"), value, Origin::User)
+    }
+
+    pub fn setting<T: DeserializeOwned>(&self, name: &str) -> Result<Option<T>, StoreError> {
+        Ok(self
+            .read_at::<T>(&format!("{SETTING_PREFIX}{name}"))?
+            .map(|e| e.value))
+    }
+
+    pub fn settings(&self) -> Result<BTreeMap<String, Entry<Value>>, StoreError> {
+        self.collection(SETTING_PREFIX)
+    }
+
     pub fn debug_json(&self) -> Result<Value, StoreError> {
         Ok(serde_json::json!({
             "revoked_sessions": self.revoked_sessions()?.len(),
             "ssh_keys": self.ssh_keys()?,
+            "settings": self.settings()?,
             "disk_claims": self.disk_claims()?,
             "machines": self.machines()?,
             "storage_policy": self.read_at::<StoragePolicy>(STORAGE_POLICY_KEY)?,
@@ -461,6 +477,52 @@ mod tests {
             .unwrap()
             .get(&format!("{node}--{disk_id}"))
             .map(|e| e.value.clone())
+    }
+
+    #[test]
+    fn a_setting_changed_on_one_machine_is_read_on_the_other_after_they_sync() {
+        let mut a = Store::new("node1");
+        a.set_setting("backup.schedule", &"0 3 1 * *").unwrap();
+        let mut b = Store::new("node2");
+        b.merge(&mut a).unwrap();
+        assert_eq!(
+            b.setting::<String>("backup.schedule").unwrap().as_deref(),
+            Some("0 3 1 * *")
+        );
+    }
+
+    #[test]
+    fn the_latest_change_to_a_setting_wins_on_every_machine() {
+        let mut a = Store::new("node1");
+        let mut b = Store::new("node2");
+        a.set_setting("backup.budget_bytes", &Some(5u64 << 30)).unwrap();
+        b.merge(&mut a).unwrap();
+        b.set_setting("backup.budget_bytes", &Some(10u64 << 30)).unwrap();
+        a.merge(&mut b).unwrap();
+        b.merge(&mut a).unwrap();
+        for store in [&a, &b] {
+            assert_eq!(
+                store.setting::<Option<u64>>("backup.budget_bytes").unwrap(),
+                Some(Some(10u64 << 30))
+            );
+        }
+    }
+
+    #[test]
+    fn two_settings_changed_on_machines_that_cannot_reach_each_other_both_survive() {
+        let mut a = Store::new("node1");
+        let mut b = Store::new("node2");
+        a.set_setting("backup.schedule", &"0 3 1 * *").unwrap();
+        b.set_setting("backup.budget_bytes", &Some(10u64 << 30)).unwrap();
+        a.merge(&mut b).unwrap();
+        b.merge(&mut a).unwrap();
+        assert_eq!(a.settings().unwrap(), b.settings().unwrap());
+        assert_eq!(a.settings().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn a_setting_never_written_reads_as_absent() {
+        assert_eq!(Store::new("node1").setting::<String>("backup.schedule").unwrap(), None);
     }
 
     #[test]

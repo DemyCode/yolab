@@ -296,6 +296,7 @@ pub(crate) fn plan(
     source: Option<&Source>,
     data: Option<DataOrigin>,
     app: &crate::appschema::AppSchema,
+    new_backup: BackupPolicy,
 ) -> Result<InstallPlan, String> {
     let mut plan = InstallPlan {
         app_id: app_id.to_string(),
@@ -305,7 +306,7 @@ pub(crate) fn plan(
             .unwrap_or(instance_name)
             .to_string(),
         config,
-        backup: BackupPolicy::default(),
+        backup: new_backup,
         data,
         chart: pin_chart(source)?,
     };
@@ -1078,7 +1079,7 @@ mod tests {
 
     #[test]
     fn a_fresh_install_releases_under_its_own_instance_name() {
-        let plan = plan("gitea", "gitea-ab12", Map::new(), None, None, &no_schema()).unwrap();
+        let plan = plan("gitea", "gitea-ab12", Map::new(), None, None, &no_schema(), BackupPolicy::default()).unwrap();
         assert_eq!(plan.release, "gitea-ab12");
     }
 
@@ -1094,6 +1095,7 @@ mod tests {
             Some(&copied(&def)),
             None,
             &no_schema(),
+            BackupPolicy::default(),
         )
         .unwrap();
         assert_eq!(plan.instance_name, "gitea-ef56");
@@ -1120,6 +1122,7 @@ mod tests {
             })),
             None,
             &no_schema(),
+            BackupPolicy::default(),
         )
         .unwrap();
         assert_eq!(plan.release, "gitea-ab12");
@@ -1128,7 +1131,7 @@ mod tests {
     #[test]
     fn a_fresh_install_takes_the_newest_chart_from_the_catalog() {
         assert_eq!(pin_chart(None), Ok(ChartPin::Newest));
-        let plan = plan("gitea", "gitea-ab12", Map::new(), None, None, &no_schema()).unwrap();
+        let plan = plan("gitea", "gitea-ab12", Map::new(), None, None, &no_schema(), BackupPolicy::default()).unwrap();
         assert_eq!(plan.chart, ChartPin::Newest);
         assert_eq!(plan.chart.recorded(), None);
     }
@@ -1162,6 +1165,7 @@ mod tests {
             Some(&copied(&def)),
             None,
             &no_schema(),
+            BackupPolicy::default(),
         )
         .unwrap();
         assert_eq!(
@@ -1198,6 +1202,7 @@ mod tests {
             Some(&copied(&def)),
             None,
             &no_schema(),
+            BackupPolicy::default(),
         )
         .unwrap_err();
         assert!(err.contains("version"), "{err}");
@@ -1388,6 +1393,7 @@ mod tests {
             None,
             None,
             &no_schema(),
+            BackupPolicy::default(),
         )
         .unwrap();
         assert_eq!(plan.config, config);
@@ -1414,6 +1420,7 @@ mod tests {
             Some(&copied(&source)),
             None,
             &app,
+            BackupPolicy::default(),
         )
         .unwrap();
         assert_eq!(plan.config["admin_password"], json!("original"));
@@ -1435,6 +1442,51 @@ mod tests {
             Some(&copied(&source)),
             None,
             &no_schema(),
+            BackupPolicy::default(),
+        )
+        .unwrap();
+        assert_eq!(plan.backup, source.backup);
+    }
+
+    fn monthly_within_10_gb() -> BackupPolicy {
+        BackupPolicy {
+            enabled: true,
+            schedule: "0 3 1 * *".into(),
+            budget_bytes: Some(10 << 30),
+        }
+    }
+
+    #[test]
+    fn a_fresh_install_backs_up_the_way_the_cluster_settings_say() {
+        let plan = plan(
+            "gitea",
+            "gitea-ab12",
+            Map::new(),
+            None,
+            None,
+            &no_schema(),
+            monthly_within_10_gb(),
+        )
+        .unwrap();
+        assert_eq!(plan.backup, monthly_within_10_gb());
+    }
+
+    #[test]
+    fn a_copy_keeps_the_originals_backup_policy_over_the_cluster_settings() {
+        let mut source = definition("gitea");
+        source.backup = BackupPolicy {
+            enabled: false,
+            schedule: "0 5 * * 0".into(),
+            budget_bytes: None,
+        };
+        let plan = plan(
+            "gitea",
+            "gitea-cd34",
+            Map::new(),
+            Some(&copied(&source)),
+            None,
+            &no_schema(),
+            monthly_within_10_gb(),
         )
         .unwrap();
         assert_eq!(plan.backup, source.backup);
@@ -1450,6 +1502,7 @@ mod tests {
             Some(&copied(&source)),
             None,
             &no_schema(),
+            BackupPolicy::default(),
         )
         .unwrap_err();
         assert!(err.contains("nextcloud") && err.contains("gitea"), "{err}");

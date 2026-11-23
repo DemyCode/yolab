@@ -48,6 +48,7 @@ pub(crate) const ROUTE_TABLE: &[(&str, &[&str])] = &[
     ("/api/heal/peer/undo", &["POST"]),
     ("/api/ssh/keys", &["GET", "POST"]),
     ("/api/ssh/keys/remove", &["POST"]),
+    ("/api/settings", &["GET", "PUT"]),
     ("/api/notifications", &["GET"]),
     ("/api/notifications/test", &["POST"]),
     ("/api/notifications/deliver", &["POST"]),

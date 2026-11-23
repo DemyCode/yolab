@@ -9,6 +9,7 @@ import {
   LogOut,
   Server,
   ScrollText,
+  SlidersHorizontal,
   Wrench,
 } from "lucide-react";
 import { Page } from "@/components/AppShell";
@@ -223,6 +224,12 @@ export function SystemPage() {
           detail={nodesDetail}
         />
         <NavRow to="/system/updates" icon={Wrench} label="Updates" />
+        <NavRow
+          to="/system/settings"
+          icon={SlidersHorizontal}
+          label="Settings"
+          detail="Defaults for new services, on all your machines"
+        />
         {status.data?.console_url && (
           <NavRow
             onClick={openConsole}
