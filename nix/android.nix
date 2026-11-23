@@ -67,19 +67,85 @@
 
   cargoVendorDir = rust.craneLib.vendorCargoDeps {inherit src;};
 
-  cargoOffline = ''
+  cargoHome = ''
     export CARGO_HOME=$TMPDIR/cargo
     mkdir -p "$CARGO_HOME"
-    # -L DEREFERENCES. crane's vendor directory is nothing but symlinks into the
-    # store — one per crate — so a plain `cp -r` copies the links and every
-    # target is still read-only. The failure is then identical to having not
-    # copied at all, except the path in the error looks writable, which is a
-    # genuinely misleading place to end up.
-    cp -rL ${cargoVendorDir} "$TMPDIR/vendor"
-    chmod -R u+w "$TMPDIR/vendor"
     sed "s|${cargoVendorDir}|$TMPDIR/vendor|g" \
       ${cargoVendorDir}/config.toml > "$CARGO_HOME/config.toml"
   '';
+
+  cargoOffline = ''
+    cp -rL ${cargoVendorDir} "$TMPDIR/vendor"
+    chmod -R u+w "$TMPDIR/vendor"
+    ${cargoHome}
+  '';
+
+  gradleSetup = ''
+    export HOME=$TMPDIR
+    export ANDROID_USER_HOME=$TMPDIR/.android
+    export GRADLE_USER_HOME=$TMPDIR/gradle
+    mkdir -p "$GRADLE_USER_HOME/caches"
+    cp -r ${gradleDeps}/modules-2 "$GRADLE_USER_HOME/caches/"
+    chmod -R u+w "$GRADLE_USER_HOME"
+    ${aapt2Override}
+  '';
+
+  stubSrc = pkgs.runCommand "yolab-desktop-source" {} ''
+    mkdir -p $out/src $out/ui $out/icons
+    cp ${stubInputs}/Cargo.toml ${stubInputs}/Cargo.lock ${stubInputs}/build.rs ${stubInputs}/tauri.conf.json $out/
+    cp ${stubInputs}/icons/icon.png $out/icons/
+    echo '<!doctype html><title>YoLab</title>' > $out/ui/index.html
+    cat > $out/src/lib.rs <<'EOF'
+    #[cfg_attr(mobile, tauri::mobile_entry_point)]
+    pub fn run() {
+        tauri::Builder::default()
+            .run(tauri::generate_context!())
+            .expect("stub");
+    }
+    EOF
+    echo 'fn main() { yolab_desktop_lib::run() }' > $out/src/main.rs
+  '';
+
+  stubInputs = pkgs.lib.fileset.toSource {
+    root = ../shells/desktop;
+    fileset = pkgs.lib.fileset.unions [
+      ../shells/desktop/Cargo.toml
+      ../shells/desktop/Cargo.lock
+      ../shells/desktop/build.rs
+      ../shells/desktop/tauri.conf.json
+      ../shells/desktop/icons/icon.png
+    ];
+  };
+
+  rustBuildCache = pkgs.stdenv.mkDerivation (
+    {
+      pname = "yolab-android-rust-build-cache";
+      version = "0.1.0";
+      src = stubSrc;
+      inherit nativeBuildInputs;
+
+      buildPhase = ''
+        runHook preBuild
+        ${cargoOffline}
+        ${gradleSetup}
+        cargo tauri android init --ci
+        ${gradlewShim}
+        cargo tauri android build --apk
+        runHook postBuild
+      '';
+
+      installPhase = ''
+        runHook preInstall
+        rm -rf gen/android/app/build gen/android/build gen/android/.gradle
+        mkdir -p $out
+        tar --zstd -cf $out/build.tar.zst -C "$TMPDIR" "$(basename "$PWD")" vendor
+        runHook postInstall
+      '';
+
+      dontFixup = true;
+    }
+    // commonEnv
+  );
 
   gradlewShim = ''
     printf '#!/bin/sh\nexec gradle "$@"\n' > gen/android/gradlew
@@ -99,6 +165,7 @@
     pkgs.gradle_9
     pkgs.pkg-config
     pkgs.nodejs
+    pkgs.zstd
   ];
 
   gradleDeps = pkgs.stdenv.mkDerivation (
@@ -155,16 +222,19 @@ in
 
       buildPhase = ''
         runHook preBuild
-        export HOME=$TMPDIR
-        export ANDROID_USER_HOME=$TMPDIR/.android
-        export GRADLE_USER_HOME=$TMPDIR/gradle
-        ${cargoOffline}
-        mkdir -p "$GRADLE_USER_HOME/caches"
-        cp -r ${gradleDeps}/modules-2 "$GRADLE_USER_HOME/caches/"
-        chmod -R u+w "$GRADLE_USER_HOME"
-        ${aapt2Override}
+        here=$(basename "$PWD")
+        cd "$TMPDIR"
+        mv "$here" real-src
+        tar --zstd -xf ${rustBuildCache}/build.tar.zst
+        rm -rf "$here/src" "$here/ui"
+        cp -r real-src/. "$here/"
+        rm -rf real-src
+        cd "$here"
+        rm -rf target/release/.fingerprint/yolab-desktop-* target/*/release/.fingerprint/yolab-desktop-*
+        find src ui build.rs -exec touch {} +
+        ${cargoHome}
+        ${gradleSetup}
 
-        cargo tauri android init --ci
         touch "$TMPDIR/before-icons"
         cargo tauri icon icons/icon.png
         new_icons=$(find gen/android -path '*/res/*' -name 'ic_launcher*.png' -newer "$TMPDIR/before-icons")
