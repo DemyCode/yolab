@@ -4605,6 +4605,10 @@ class ClientsGetPastTheLogin(RenderedChart):
         settings = container_of(gateway, "settings")["command"][2]
         self.assertIn('.["rpc-port"] = 9095', settings)
 
+    def test_transmission_never_asks_a_router_to_open_its_peer_port(self):
+        _, settings = self.transmission()
+        self.assertIn('.["port-forwarding-enabled"] = false', settings)
+
     def test_an_openai_client_with_the_key_gets_past_the_login(self):
         for chart in ("localai", "kokoro"):
             with self.subTest(chart):

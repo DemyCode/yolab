@@ -51,7 +51,7 @@ spec:
           if [ ! -s "$pw" ]; then
             tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 32 > "$pw"
           fi
-          jq --arg d "$DOWNLOADS" '.["download-dir"] = $d | .["incomplete-dir"] = ($d + "/.incomplete") | .["rpc-port"] = 9095' "$f" > "$f.new"
+          jq --arg d "$DOWNLOADS" '.["download-dir"] = $d | .["incomplete-dir"] = ($d + "/.incomplete") | .["rpc-port"] = 9095 | .["port-forwarding-enabled"] = false' "$f" > "$f.new"
           mv "$f.new" "$f"
           chown 1000:1000 "$f" "$pw"
           chmod 600 "$pw"
