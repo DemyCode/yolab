@@ -343,7 +343,11 @@ pub fn run() {
 
     let builder = tauri::Builder::default()
         .manage(LaunchOnce::new())
-        .plugin(tauri_plugin_opener::init())
+        .plugin(
+            tauri_plugin_opener::Builder::new()
+                .open_js_links_on_click(false)
+                .build(),
+        )
         .manage(Attempts::new())
         .invoke_handler(tauri::generate_handler![stored_url, launch_url, connect]);
 
@@ -467,6 +471,13 @@ mod tests {
         for internal in ["about:blank", "data:text/plain,hi", "blob:https://cluster.1.yolab.io/x"] {
             assert_eq!(routed(internal), Route::Load, "{internal}");
         }
+    }
+
+    #[test]
+    fn the_opener_plugin_injects_no_click_script_that_the_remote_box_page_cannot_use() {
+        let source = include_str!("lib.rs");
+        assert!(source.contains(".open_js_links_on_click(false)"));
+        assert!(!source.contains(concat!("tauri_plugin_opener::", "init()")));
     }
 
     #[test]
