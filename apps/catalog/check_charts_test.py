@@ -4599,7 +4599,9 @@ class ClientsGetPastTheLogin(RenderedChart):
         gateway = self.deployments(self.render("transmission"))["gateway"]
         server = container_of(gateway, "server")
         self.assertIn("exec /init", server["command"][2])
-        self.assertEqual(server["readinessProbe"]["tcpSocket"]["port"], 9095)
+        self.assertIn(
+            "http://127.0.0.1:9095/", server["readinessProbe"]["exec"]["command"]
+        )
         settings = container_of(gateway, "settings")["command"][2]
         self.assertIn('.["rpc-port"] = 9095', settings)
 
