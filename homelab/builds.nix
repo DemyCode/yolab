@@ -2,42 +2,66 @@
   pkgs,
   rust,
 }: let
-  npmArgs = {
-    version = "0.1.0";
-    src = ./client-ui;
+  inherit (pkgs) nodejs;
+  version = "0.1.0";
+
+  nodeModules = pkgs.buildNpmPackage {
+    pname = "client-ui-node-modules";
+    inherit version nodejs;
+    src = pkgs.lib.fileset.toSource {
+      root = ./client-ui;
+      fileset = pkgs.lib.fileset.unions [
+        ./client-ui/package.json
+        ./client-ui/package-lock.json
+      ];
+    };
     npmDepsFetcherVersion = 2;
     npmDepsHash = "sha256-PSOjWXJuzbkMrSmkQPy+kQayjE0UU4U1xczculmJY/w=";
     npmFlags = ["--legacy-peer-deps"];
+    dontNpmBuild = true;
+    installPhase = ''
+      runHook preInstall
+      mkdir -p $out
+      cp -r node_modules $out/node_modules
+      runHook postInstall
+    '';
   };
+
+  withNodeModules = pname: run:
+    pkgs.stdenv.mkDerivation {
+      inherit pname version;
+      src = ./client-ui;
+      nativeBuildInputs = [nodejs];
+      configurePhase = ''
+        runHook preConfigure
+        export HOME=$TMPDIR
+        cp -r ${nodeModules}/node_modules node_modules
+        chmod -R u+w node_modules
+        runHook postConfigure
+      '';
+      buildPhase = ''
+        runHook preBuild
+        ${run}
+        runHook postBuild
+      '';
+      dontInstall = true;
+      passthru = {inherit nodeModules;};
+    };
 in {
-  clientUi = pkgs.buildNpmPackage (npmArgs
-    // {
-      pname = "client-ui";
-      installPhase = ''
-        npm run build
-        cp -r dist $out
-      '';
-    });
+  clientUi = withNodeModules "client-ui" ''
+    npm run build
+    cp -r dist $out
+  '';
 
-  clientUiTests = pkgs.buildNpmPackage (npmArgs
-    // {
-      pname = "client-ui-tests";
-      dontNpmBuild = true;
-      installPhase = ''
-        npm run test
-        touch $out
-      '';
-    });
+  clientUiTests = withNodeModules "client-ui-tests" ''
+    npm run test
+    touch $out
+  '';
 
-  clientUiLint = pkgs.buildNpmPackage (npmArgs
-    // {
-      pname = "client-ui-lint";
-      dontNpmBuild = true;
-      installPhase = ''
-        npm run lint
-        touch $out
-      '';
-    });
+  clientUiLint = withNodeModules "client-ui-lint" ''
+    npm run lint
+    touch $out
+  '';
 
   localApiEnv = rust.crates.local-api.package;
 }
