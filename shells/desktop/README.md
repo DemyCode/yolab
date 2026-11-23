@@ -19,8 +19,10 @@ system update ships the interface with it and no app release is needed.
 The one thing the shell owns is the address. On first launch it asks for it,
 stores it, and from then on opens straight into the box, after checking the name
 resolves and something answers. If not, the address screen stays up with the
-reason. On desktop, the box window has a native Server → Change address… menu,
-which works even when the box page does not load.
+reason. The box UI shows "Change server" (sidebar and System page) only inside
+this app: the app marks the page with window.__YOLAB_SHELL__ and catches the
+yolab-shell://change-address link instead of loading it, so this works on
+Android too and needs no IPC between the remote page and the app.
 
 ## Layout
 

@@ -5,6 +5,7 @@ import {
   Cloud,
   CreditCard,
   Database,
+  ArrowLeftRight,
   ExternalLink,
   LogOut,
   Server,
@@ -24,6 +25,7 @@ import { ThemeControl } from "@/components/ThemeControl";
 import { creditStatus, formatEuros } from "@/lib/format";
 import { formatCephBytes } from "@/lib/storage";
 import { cn } from "@/lib/utils";
+import { changeServer, inYolabShell } from "@/lib/shell";
 import type { StorageOverview } from "@/types/storage";
 import type { NodeInfo } from "@/types/nodes";
 import type { StatusInfo } from "@/types/status";
@@ -266,6 +268,14 @@ export function SystemPage() {
       </Card>
 
       <Card className="overflow-hidden p-0">
+        {inYolabShell() && (
+          <NavRow
+            onClick={() => changeServer()}
+            icon={ArrowLeftRight}
+            label="Change server"
+            detail="Open a different YoLab address in this app"
+          />
+        )}
         <NavRow
           onClick={() => void signOut()}
           icon={LogOut}

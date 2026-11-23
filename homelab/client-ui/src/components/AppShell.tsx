@@ -1,10 +1,17 @@
 import { useEffect, useRef, useState } from "react";
 import { NavLink, Outlet } from "react-router-dom";
-import { Home, LayoutGrid, LogOut, Server } from "lucide-react";
+import {
+  ArrowLeftRight,
+  Home,
+  LayoutGrid,
+  LogOut,
+  Server,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 import { api } from "@/lib/api";
 import { Wordmark } from "@/components/Logo";
 import { ThemeControl } from "@/components/ThemeControl";
+import { changeServer, inYolabShell } from "@/lib/shell";
 
 const NAV = [
   { to: "/", icon: Home, label: "Home", end: true },
@@ -82,6 +89,18 @@ export function AppShell({ onLogout }: { onLogout: () => void }) {
 
         <div className="space-y-3 border-t border-border pt-3">
           <ThemeControl compact />
+          {inYolabShell() && (
+            <button
+              onClick={() => changeServer()}
+              className="flex w-full items-center gap-3 rounded-control px-3 py-2.5 text-sm text-fg-muted transition-colors hover:bg-surface-2 hover:text-fg"
+            >
+              <ArrowLeftRight
+                className="h-[18px] w-[18px] shrink-0"
+                strokeWidth={1.75}
+              />
+              Change server
+            </button>
+          )}
           <button
             onClick={() => void signOut()}
             className="flex w-full items-center gap-3 rounded-control px-3 py-2.5 text-sm text-fg-muted transition-colors hover:bg-surface-2 hover:text-fg"

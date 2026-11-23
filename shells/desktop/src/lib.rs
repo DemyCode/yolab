@@ -6,8 +6,8 @@ use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 const STORE_FILE: &str = "server.txt";
 const SUPERSEDED: &str = "superseded";
 
-#[cfg(desktop)]
-const CHANGE_ADDRESS: &str = "change-address";
+const SHELL_FLAG_SCRIPT: &str = "window.__YOLAB_SHELL__ = true;";
+const CHANGE_ADDRESS_URL: &str = "yolab-shell://change-address";
 
 struct LaunchOnce(AtomicBool);
 
@@ -173,20 +173,16 @@ fn open_setup_window(app: &tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(desktop)]
-fn box_menu(app: &tauri::AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
-    use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
-    let change = MenuItemBuilder::with_id(CHANGE_ADDRESS, "Change address…").build(app)?;
-    let server = SubmenuBuilder::new(app, "Server").item(&change).build()?;
-    MenuBuilder::new(app).item(&server).build()
+pub(crate) fn is_change_address(url: &url::Url) -> bool {
+    url.as_str() == CHANGE_ADDRESS_URL
 }
 
-#[cfg(desktop)]
 fn change_address(app: &tauri::AppHandle) -> Result<(), String> {
+    open_setup_window(app)?;
     if let Some(w) = app.get_webview_window("main") {
         w.destroy().map_err(|e| e.to_string())?;
     }
-    open_setup_window(app)
+    Ok(())
 }
 
 fn open_box_window(app: &tauri::AppHandle, url: &str) -> Result<(), String> {
@@ -195,9 +191,26 @@ fn open_box_window(app: &tauri::AppHandle, url: &str) -> Result<(), String> {
         .title("YoLab")
         .inner_size(1100.0, 780.0)
         .min_inner_size(420.0, 480.0);
-    #[cfg(desktop)]
-    let builder = builder.menu(box_menu(app).map_err(|e| e.to_string())?);
-    builder.build().map_err(|e| e.to_string())?;
+    let handle = app.clone();
+    builder
+        .initialization_script(SHELL_FLAG_SCRIPT)
+        .on_navigation(move |target| {
+            if !is_change_address(target) {
+                return true;
+            }
+            let app = handle.clone();
+            let queued = handle.run_on_main_thread(move || {
+                if let Err(e) = change_address(&app) {
+                    eprintln!("could not go back to the address screen: {e}");
+                }
+            });
+            if let Err(e) = queued {
+                eprintln!("could not go back to the address screen: {e}");
+            }
+            false
+        })
+        .build()
+        .map_err(|e| e.to_string())?;
 
     if let Some(setup) = app.get_webview_window("setup") {
         setup.destroy().map_err(|e| e.to_string())?;
@@ -287,15 +300,6 @@ pub fn run() {
         .manage(Attempts::new())
         .invoke_handler(tauri::generate_handler![stored_url, launch_url, connect]);
 
-    #[cfg(desktop)]
-    let builder = builder.on_menu_event(|app, event| {
-        if *event.id() == CHANGE_ADDRESS {
-            if let Err(e) = change_address(app) {
-                eprintln!("could not go back to the address screen: {e}");
-            }
-        }
-    });
-
     builder
         .setup(|app| {
             open_setup_window(app.handle())?;
@@ -307,7 +311,7 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{normalise_url, reach, Attempts, LaunchOnce};
+    use super::{is_change_address, normalise_url, reach, Attempts, LaunchOnce};
     use std::net::TcpListener;
 
     #[test]
@@ -370,6 +374,15 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         reach(&format!("http://127.0.0.1:{port}")).unwrap();
+    }
+
+    #[test]
+    fn only_the_change_address_link_is_caught_every_other_page_loads() {
+        let caught = |u: &str| is_change_address(&url::Url::parse(u).unwrap());
+        assert!(caught("yolab-shell://change-address"));
+        assert!(!caught("yolab-shell://something-else"));
+        assert!(!caught("https://cluster.1.yolab.io/system"));
+        assert!(!caught("https://change-address"));
     }
 
     #[test]
