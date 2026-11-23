@@ -105,7 +105,7 @@ charts:
   - name: cloudflared
     version: "0.1.30"
   - name: cobalt
-    version: "0.1.32"
+    version: "0.1.33"
   - name: code-server
     version: "0.1.43"
   - name: convertx
