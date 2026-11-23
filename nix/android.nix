@@ -166,8 +166,20 @@ in
 
         cargo tauri android init --ci
         touch "$TMPDIR/before-icons"
-        cargo tauri icon icons/icon.png --ic-launcher-bg-color '#2b56f5'
-        test -n "$(find gen/android/app/src/main/res -name 'ic_launcher*.png' -newer "$TMPDIR/before-icons" -print -quit)"
+        cargo tauri icon icons/icon.png
+        new_icons=$(find gen/android -path '*/res/*' -name 'ic_launcher*.png' -newer "$TMPDIR/before-icons")
+        if [ -z "$new_icons" ]; then
+          echo "cargo tauri icon wrote no Android launcher icons under gen/android" >&2
+          exit 1
+        fi
+        echo "$new_icons"
+        bg_files=$(grep -rl 'name="ic_launcher_background"' gen/android --include='*.xml' || [ $? -eq 1 ])
+        if [ -n "$bg_files" ]; then
+          sed -i 's|\(name="ic_launcher_background"[^>]*>\)[^<]*|\1#2B56F5|' $bg_files
+          grep -H 'name="ic_launcher_background"' $bg_files >&2
+        else
+          echo "no ic_launcher_background colour in gen/android: the launcher shows the full tile icon" >&2
+        fi
         ${gradlewShim}
         cargo tauri android build --apk
 
