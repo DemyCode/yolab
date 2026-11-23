@@ -12,7 +12,7 @@ const BACKUP_BUDGET: &str = "backup.budget_bytes";
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct ClusterSettings {
     pub backup_schedule: String,
-    pub backup_budget_bytes: Option<u64>,
+    pub backup_budget_bytes: u64,
 }
 
 impl Default for ClusterSettings {
@@ -20,7 +20,9 @@ impl Default for ClusterSettings {
         let policy = BackupPolicy::default();
         ClusterSettings {
             backup_schedule: policy.schedule,
-            backup_budget_bytes: policy.budget_bytes,
+            backup_budget_bytes: policy
+                .budget_bytes
+                .unwrap_or(crate::backup::points::DEFAULT_BUDGET),
         }
     }
 }
@@ -33,7 +35,7 @@ impl ClusterSettings {
                 .setting::<String>(BACKUP_SCHEDULE)?
                 .unwrap_or(built_in.backup_schedule),
             backup_budget_bytes: store
-                .setting::<Option<u64>>(BACKUP_BUDGET)?
+                .setting::<u64>(BACKUP_BUDGET)?
                 .unwrap_or(built_in.backup_budget_bytes),
         })
     }
@@ -64,7 +66,7 @@ impl ClusterSettings {
         BackupPolicy {
             enabled: true,
             schedule: self.backup_schedule.clone(),
-            budget_bytes: self.backup_budget_bytes,
+            budget_bytes: Some(self.backup_budget_bytes),
         }
     }
 }
@@ -107,19 +109,21 @@ pub async fn put(Json(body): Json<ClusterSettings>) -> Response {
 mod tests {
     use super::*;
 
-    const GB: u64 = 1 << 30;
+    const GB: u64 = 1_000_000_000;
 
     fn monthly_10gb() -> ClusterSettings {
         ClusterSettings {
             backup_schedule: "0 3 1 * *".into(),
-            backup_budget_bytes: Some(10 * GB),
+            backup_budget_bytes: 10 * GB,
         }
     }
 
     #[test]
-    fn a_cluster_nobody_configured_backs_new_services_up_the_way_it_always_did() {
+    fn a_cluster_nobody_configured_backs_new_services_up_monthly_within_10_gb() {
         let settings = ClusterSettings::read(&Store::new("node1")).unwrap();
         assert_eq!(settings.new_service_backup(), BackupPolicy::default());
+        assert_eq!(settings.backup_schedule, "0 3 1 * *");
+        assert_eq!(settings.backup_budget_bytes, 10_000_000_000);
     }
 
     #[test]
@@ -142,21 +146,6 @@ mod tests {
     }
 
     #[test]
-    fn going_back_to_letting_yolab_choose_the_space_is_remembered() {
-        let mut store = Store::new("node1");
-        monthly_10gb().write_changes(&mut store).unwrap();
-        let automatic = ClusterSettings {
-            backup_budget_bytes: None,
-            ..monthly_10gb()
-        };
-        automatic.write_changes(&mut store).unwrap();
-        assert_eq!(
-            ClusterSettings::read(&store).unwrap().backup_budget_bytes,
-            None
-        );
-    }
-
-    #[test]
     fn saving_what_is_already_there_writes_nothing() {
         let mut store = Store::new("node1");
         assert!(monthly_10gb().write_changes(&mut store).unwrap());
@@ -171,7 +160,7 @@ mod tests {
     fn only_the_setting_that_changed_is_written() {
         let mut store = Store::new("node1");
         ClusterSettings {
-            backup_budget_bytes: Some(10 * GB),
+            backup_budget_bytes: 20 * GB,
             ..ClusterSettings::default()
         }
         .write_changes(&mut store)
@@ -196,7 +185,7 @@ mod tests {
     #[test]
     fn a_space_of_nothing_is_refused() {
         let err = ClusterSettings {
-            backup_budget_bytes: Some(0),
+            backup_budget_bytes: 0,
             ..monthly_10gb()
         }
         .checked()

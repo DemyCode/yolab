@@ -57,6 +57,10 @@ pub fn build_router(state: AppState) -> Router {
             axum::routing::put(backups::set_budget),
         )
         .route(
+            "/api/backups/apps/{namespace}/prune",
+            post(backups::prune),
+        )
+        .route(
             "/api/backups/apps/{namespace}/points/{snapshot_id}",
             axum::routing::delete(backups::delete_point),
         )

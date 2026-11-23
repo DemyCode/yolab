@@ -33,8 +33,8 @@ impl Default for BackupPolicy {
     fn default() -> Self {
         Self {
             enabled: true,
-            schedule: "0 3 * * *".to_string(),
-            budget_bytes: None,
+            schedule: "0 3 1 * *".to_string(),
+            budget_bytes: Some(crate::backup::points::DEFAULT_BUDGET),
         }
     }
 }

@@ -80,7 +80,7 @@ impl Default for AppBackupStatus {
     fn default() -> Self {
         Self {
             enabled: true,
-            schedule: "0 3 * * *".to_string(),
+            schedule: BackupPolicy::default().schedule,
             last_ok_at: None,
             running: false,
         }

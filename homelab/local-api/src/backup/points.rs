@@ -14,7 +14,7 @@ use crate::records::Store;
 use crate::routers::folder_backup::{self, FOLDERS_TAG};
 
 pub(crate) const SETTINGS_REPO: &str = "cluster-backup";
-pub(crate) const MIN_BUDGET: u64 = 10 << 30;
+pub(crate) const DEFAULT_BUDGET: u64 = 10_000_000_000;
 const PRUNE_TIMEOUT: Duration = Duration::from_secs(3600);
 const STATS_TIMEOUT: Duration = Duration::from_secs(900);
 
@@ -119,10 +119,6 @@ pub(crate) fn orphans(points: &[Point], folders: &FolderSnapshots) -> Vec<String
 
 pub(crate) fn still_there(ids: Vec<String>, there: &HashSet<String>) -> Vec<String> {
     ids.into_iter().filter(|id| there.contains(id)).collect()
-}
-
-pub(crate) fn default_budget(newest_bytes: u64) -> u64 {
-    newest_bytes.saturating_mul(2).max(MIN_BUDGET)
 }
 
 fn seconds(point: &Point) -> anyhow::Result<i64> {
@@ -462,7 +458,7 @@ impl<H: Host> Service<'_, H> {
             }
             None => 0,
         };
-        let budget_bytes = budget.unwrap_or_else(|| default_budget(newest));
+        let budget_bytes = budget.unwrap_or(DEFAULT_BUDGET);
         let mut known: BTreeMap<String, u64> =
             previous.map(|p| p.added.clone()).unwrap_or_default();
         known.retain(|id, _| points.iter().any(|p| &p.snapshot_id == id));
@@ -543,12 +539,55 @@ pub(crate) struct AfterRun {
     pub dropped: usize,
 }
 
+static THINNING: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
+
+struct Thinning(String);
+
+impl Thinning {
+    fn claim(namespace: &str) -> anyhow::Result<Self> {
+        let mut busy = THINNING
+            .lock()
+            .expect("the thinning registry is never poisoned");
+        if !busy.insert(namespace.to_string()) {
+            anyhow::bail!("{namespace} is already being pruned; try again once it is done");
+        }
+        Ok(Thinning(namespace.to_string()))
+    }
+}
+
+impl Drop for Thinning {
+    fn drop(&mut self) {
+        THINNING
+            .lock()
+            .expect("the thinning registry is never poisoned")
+            .remove(&self.0);
+    }
+}
+
 pub(crate) async fn after_run<H: Host>(
     b: &Backend<H>,
     cfg: &BackupConfig,
     namespace: &str,
     new_point: &str,
 ) -> anyhow::Result<AfterRun> {
+    thin(b, cfg, namespace, Some(new_point)).await
+}
+
+pub(crate) async fn prune_now<H: Host>(
+    b: &Backend<H>,
+    cfg: &BackupConfig,
+    namespace: &str,
+) -> anyhow::Result<AfterRun> {
+    thin(b, cfg, namespace, None).await
+}
+
+async fn thin<H: Host>(
+    b: &Backend<H>,
+    cfg: &BackupConfig,
+    namespace: &str,
+    new_point: Option<&str>,
+) -> anyhow::Result<AfterRun> {
+    let _claim = Thinning::claim(namespace)?;
     let svc = Service {
         host: &b.host,
         cfg,
@@ -560,13 +599,19 @@ pub(crate) async fn after_run<H: Host>(
     let had_orphans = svc.drop_orphans(&points, &folders).await?;
 
     let fresh: Vec<Point> = points.iter().filter(|p| !p.legacy()).cloned().collect();
-    let with_new = svc.measure_points(&fresh, &folders).await?;
-    let without: Vec<Point> = fresh
-        .iter()
-        .filter(|p| p.snapshot_id != new_point)
-        .cloned()
-        .collect();
-    let added = with_new.saturating_sub(svc.measure_points(&without, &folders).await?);
+    let added = match new_point {
+        Some(id) => {
+            let with_new = svc.measure_points(&fresh, &folders).await?;
+            let without: Vec<Point> = fresh
+                .iter()
+                .filter(|p| p.snapshot_id != id)
+                .cloned()
+                .collect();
+            let without = svc.measure_points(&without, &folders).await?;
+            Some((id, with_new.saturating_sub(without)))
+        }
+        None => None,
+    };
     let newest = match fresh.first() {
         Some(p) => {
             svc.measure_points(std::slice::from_ref(p), &folders)
@@ -576,7 +621,7 @@ pub(crate) async fn after_run<H: Host>(
     };
     let budget = budget_of(&b.kube, namespace)
         .await?
-        .unwrap_or_else(|| default_budget(newest));
+        .unwrap_or(DEFAULT_BUDGET);
 
     let planned = fit(&points, budget, |kept| {
         let ids = folder_ids(&kept, &folders);
@@ -598,7 +643,9 @@ pub(crate) async fn after_run<H: Host>(
     }
     let mut known: BTreeMap<String, u64> = previous.map(|p| p.added).unwrap_or_default();
     known.retain(|id, _| points.iter().any(|p| &p.snapshot_id == id) && !planned.drop.contains(id));
-    known.insert(new_point.to_string(), added);
+    if let Some((id, bytes)) = added {
+        known.insert(id.to_string(), bytes);
+    }
     let size = ServiceSize {
         size_bytes: planned.size_after,
         newest_bytes: newest,
@@ -789,12 +836,28 @@ mod tests {
     }
 
     #[test]
-    fn the_default_budget_is_twice_the_newest_point_and_never_under_ten_gigabytes() {
-        assert_eq!(MIN_BUDGET, 10 << 30);
-        assert_eq!(default_budget(0), MIN_BUDGET);
-        assert_eq!(default_budget(100), MIN_BUDGET);
-        assert_eq!(default_budget(10 << 30), 20 << 30);
-        assert_eq!(default_budget(u64::MAX), u64::MAX);
+    fn a_service_cannot_be_pruned_twice_at_once() {
+        let first = Thinning::claim("yolab-twice-at-once").unwrap();
+        let err = Thinning::claim("yolab-twice-at-once").err().unwrap();
+        assert!(err.to_string().contains("already being pruned"), "{err}");
+        drop(first);
+    }
+
+    #[test]
+    fn a_service_can_be_pruned_again_once_the_last_prune_ends() {
+        drop(Thinning::claim("yolab-again-after").unwrap());
+        assert!(Thinning::claim("yolab-again-after").is_ok());
+    }
+
+    #[test]
+    fn pruning_one_service_does_not_hold_up_another() {
+        let _one = Thinning::claim("yolab-prune-one").unwrap();
+        assert!(Thinning::claim("yolab-prune-two").is_ok());
+    }
+
+    #[test]
+    fn a_service_with_no_space_of_its_own_gets_ten_gigabytes() {
+        assert_eq!(DEFAULT_BUDGET, 10_000_000_000);
     }
 
     fn aged(id: &str, hours_ago: i64, legacy: bool) -> Point {

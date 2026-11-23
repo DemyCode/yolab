@@ -431,14 +431,14 @@ pub async fn delete_point(
 
 #[derive(Deserialize)]
 pub struct BudgetRequest {
-    pub budget_bytes: Option<u64>,
+    pub budget_bytes: u64,
 }
 
-pub(crate) fn checked_budget(budget: Option<u64>) -> anyhow::Result<Option<u64>> {
-    match budget {
-        Some(0) => anyhow::bail!("a budget of nothing would delete every backup but the newest"),
-        other => Ok(other),
+pub(crate) fn checked_budget(budget: u64) -> anyhow::Result<u64> {
+    if budget == 0 {
+        anyhow::bail!("a budget of nothing would delete every backup but the newest");
     }
+    Ok(budget)
 }
 
 pub async fn set_budget(
@@ -450,7 +450,7 @@ pub async fn set_budget(
     let budget = checked_budget(body.budget_bytes)?;
     let b = state.backend().await?;
     let mut def = crate::routers::apps::read_definition(&b.kube, &namespace).await?;
-    def.backup.budget_bytes = budget;
+    def.backup.budget_bytes = Some(budget);
     let app = crate::routers::apps::installed_schema(
         &b.kube,
         &namespace,
@@ -466,6 +466,22 @@ pub async fn set_budget(
     Ok(Json(
         serde_json::json!({ "ok": true, "budget_bytes": budget }),
     ))
+}
+
+pub async fn prune(
+    State(state): State<AppState>,
+    Path(namespace): Path<String>,
+) -> Result<Json<serde_json::Value>> {
+    app_namespace(&namespace)?;
+    let b = state.backend().await?;
+    let cfg = configured(&b).await?;
+    let done = backup_points::prune_now(&b, &cfg, &namespace).await?;
+    Ok(Json(serde_json::json!({
+        "deleted": done.dropped,
+        "size_bytes": done.size.size_bytes,
+        "budget_bytes": done.size.budget_bytes,
+        "over_budget": done.size.over_budget,
+    })))
 }
 
 pub async fn delete_all_backups(

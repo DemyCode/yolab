@@ -495,17 +495,17 @@ mod tests {
     fn the_latest_change_to_a_setting_wins_on_every_machine() {
         let mut a = Store::new("node1");
         let mut b = Store::new("node2");
-        a.set_setting("backup.budget_bytes", &Some(5u64 << 30))
+        a.set_setting("backup.budget_bytes", &(5u64 << 30))
             .unwrap();
         b.merge(&mut a).unwrap();
-        b.set_setting("backup.budget_bytes", &Some(10u64 << 30))
+        b.set_setting("backup.budget_bytes", &(10u64 << 30))
             .unwrap();
         a.merge(&mut b).unwrap();
         b.merge(&mut a).unwrap();
         for store in [&a, &b] {
             assert_eq!(
-                store.setting::<Option<u64>>("backup.budget_bytes").unwrap(),
-                Some(Some(10u64 << 30))
+                store.setting::<u64>("backup.budget_bytes").unwrap(),
+                Some(10u64 << 30)
             );
         }
     }
@@ -515,7 +515,7 @@ mod tests {
         let mut a = Store::new("node1");
         let mut b = Store::new("node2");
         a.set_setting("backup.schedule", &"0 3 1 * *").unwrap();
-        b.set_setting("backup.budget_bytes", &Some(10u64 << 30))
+        b.set_setting("backup.budget_bytes", &(10u64 << 30))
             .unwrap();
         a.merge(&mut b).unwrap();
         b.merge(&mut a).unwrap();
