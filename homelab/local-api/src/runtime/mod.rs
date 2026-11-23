@@ -13,7 +13,7 @@ use std::time::Duration;
 use tokio::sync::Notify;
 
 pub use activity::Activity;
-pub use resource::{spawn, Resource, State};
+pub use resource::{spawn, Resource};
 use status::Registry;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
