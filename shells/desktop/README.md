@@ -17,7 +17,10 @@ local-api changes. The UI is also always the version that box is running, so a
 system update ships the interface with it and no app release is needed.
 
 The one thing the shell owns is the address. On first launch it asks for it,
-stores it, and from then on opens straight into the box.
+stores it, and from then on opens straight into the box, after checking the name
+resolves and something answers. If not, the address screen stays up with the
+reason. On desktop, the box window has a native Server → Change address… menu,
+which works even when the box page does not load.
 
 ## Layout
 

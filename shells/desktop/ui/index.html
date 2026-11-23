@@ -63,7 +63,8 @@
         cursor: pointer;
       }
       button[disabled] { opacity: 0.6; cursor: default; }
-      .err { color: #c0392b; font-size: 0.85rem; min-height: 1.2rem; margin-top: 0.5rem; }
+      .status { color: var(--muted); font-size: 0.85rem; margin-top: 0.5rem; overflow-wrap: anywhere; }
+      .err { overflow-wrap: anywhere; color: #c0392b; font-size: 0.85rem; min-height: 1.2rem; margin-top: 0.5rem; }
     </style>
   </head>
   <body>
@@ -81,6 +82,7 @@
         placeholder="https://your-box.example"
       />
       <button id="go">Connect</button>
+      <div class="status" id="status"></div>
       <div class="err" id="err"></div>
     </main>
     <script type="module">
@@ -88,32 +90,38 @@
       const input = document.getElementById("url");
       const button = document.getElementById("go");
       const err = document.getElementById("err");
+      const status = document.getElementById("status");
+      let latest = 0;
 
-      // Prefill with whatever was stored, so "Change server" opens with the
-      // current address rather than an empty box someone has to retype.
-      invoke("stored_url").then((u) => {
-        if (u) input.value = u;
-      });
-
-      async function connect() {
+      async function connect(url) {
+        const mine = ++latest;
         err.textContent = "";
-        button.disabled = true;
+        status.textContent = `Connecting to ${url}…`;
         try {
-          await invoke("connect", { url: input.value });
+          await invoke("connect", { url });
         } catch (e) {
-          // The Rust side rejects anything it will not navigate to, and its
-          // message says which rule was broken. Showing it verbatim beats a
-          // generic "invalid address" that leaves someone guessing.
+          if (mine !== latest) return;
+          status.textContent = "";
           err.textContent = String(e);
-          button.disabled = false;
+          input.focus();
+          input.select();
         }
       }
 
-      button.addEventListener("click", connect);
+      button.addEventListener("click", () => connect(input.value));
       input.addEventListener("keydown", (e) => {
-        if (e.key === "Enter") connect();
+        if (e.key === "Enter") connect(input.value);
       });
-      input.focus();
+
+      const launch = await invoke("launch_url");
+      if (launch) {
+        input.value = launch;
+        connect(launch);
+      } else {
+        const stored = await invoke("stored_url");
+        if (stored) input.value = stored;
+        input.focus();
+      }
     </script>
   </body>
 </html>

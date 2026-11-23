@@ -165,6 +165,9 @@ in
         ${aapt2Override}
 
         cargo tauri android init --ci
+        touch "$TMPDIR/before-icons"
+        cargo tauri icon icons/icon.png --ic-launcher-bg-color '#2b56f5'
+        test -n "$(find gen/android/app/src/main/res -name 'ic_launcher*.png' -newer "$TMPDIR/before-icons" -print -quit)"
         ${gradlewShim}
         cargo tauri android build --apk
 
