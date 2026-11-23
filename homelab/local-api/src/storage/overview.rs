@@ -311,8 +311,29 @@ pub struct Usage {
     pub unreadable: u32,
 }
 
-pub(crate) fn unsized_folders(pvs: &[Value]) -> u32 {
-    crate::tree::claimed(pvs).len() as u32
+pub(crate) fn folder_rows(
+    owned: Vec<crate::tree::Claimed>,
+    measured: Result<Vec<Option<u64>>, crate::tree_list::ListError>,
+) -> Vec<(String, Option<u64>)> {
+    match measured {
+        Ok(sizes) if sizes.len() == owned.len() => owned
+            .into_iter()
+            .map(|c| c.namespace)
+            .zip(sizes)
+            .collect(),
+        Ok(sizes) => {
+            tracing::warn!(
+                "{} tree folders were asked for but {} sizes came back",
+                owned.len(),
+                sizes.len()
+            );
+            owned.into_iter().map(|c| (c.namespace, None)).collect()
+        }
+        Err(e) => {
+            tracing::warn!("tree folder sizes: {e}");
+            owned.into_iter().map(|c| (c.namespace, None)).collect()
+        }
+    }
 }
 
 pub(crate) fn tally(sizes: Vec<(String, Option<u64>)>) -> Usage {
@@ -336,8 +357,11 @@ pub(crate) fn tally(sizes: Vec<(String, Option<u64>)>) -> Usage {
     Usage { apps, unreadable }
 }
 
-pub(crate) async fn usage<H: Host>(host: &H, volumes: Vec<AppVolume>) -> Usage {
-    let sizes = stream::iter(volumes)
+pub(crate) async fn subvolume_sizes<H: Host>(
+    host: &H,
+    volumes: Vec<AppVolume>,
+) -> Vec<(String, Option<u64>)> {
+    stream::iter(volumes)
         .map(|v| async move {
             let size = host
                 .ceph_json(&[
@@ -356,8 +380,7 @@ pub(crate) async fn usage<H: Host>(host: &H, volumes: Vec<AppVolume>) -> Usage {
         })
         .buffer_unordered(PARALLEL_LOOKUPS)
         .collect()
-        .await;
-    tally(sizes)
+        .await
 }
 
 pub async fn usage_handler(State(state): State<AppState>) -> (StatusCode, Json<Value>) {
@@ -370,9 +393,14 @@ pub async fn usage_handler(State(state): State<AppState>) -> (StatusCode, Json<V
         Ok(Err(e)) => return failed(e),
         Err(_) => return failed("the cluster did not list volumes in time"),
     };
-    let mut u = usage(&state.host, app_volumes(&pvs)).await;
-    u.unreadable += unsized_folders(&pvs);
-    (StatusCode::OK, Json(json!(u)))
+    let owned = crate::tree::owned(&pvs);
+    let folders: Vec<String> = owned.iter().map(|c| c.folder.clone()).collect();
+    let (mut sizes, measured) = tokio::join!(
+        subvolume_sizes(&state.host, app_volumes(&pvs)),
+        crate::tree_list::folder_sizes(folders),
+    );
+    sizes.extend(folder_rows(owned, measured));
+    (StatusCode::OK, Json(json!(tally(sizes))))
 }
 
 #[cfg(test)]
@@ -609,7 +637,7 @@ mod tests {
     }
 
     #[test]
-    fn a_folder_of_the_tree_has_no_subvolume_to_size_so_it_is_counted_unreadable() {
+    fn a_folder_of_the_tree_has_no_subvolume_so_it_is_sized_from_the_tree_instead() {
         let tree = json!({"kind": "PersistentVolume", "spec": {
             "claimRef": {"namespace": "yolab-immich", "name": "immich-data"},
             "csi": {
@@ -622,7 +650,56 @@ mod tests {
         assert!(app_volumes(&pvs)
             .iter()
             .all(|v| v.namespace == "yolab-gitea"));
-        assert_eq!(unsized_folders(&pvs), 1);
+        assert_eq!(crate::tree::owned(&pvs).len(), 1);
+    }
+
+    fn own(namespace: &str, folder: &str) -> crate::tree::Claimed {
+        crate::tree::Claimed {
+            namespace: namespace.into(),
+            claim: format!("{folder}-data"),
+            folder: folder.into(),
+        }
+    }
+
+    #[test]
+    fn a_services_tree_folder_counts_toward_what_it_uses() {
+        let mut sizes = vec![("yolab-copyparty".to_string(), Some(21_300_000))];
+        sizes.extend(folder_rows(
+            vec![own("yolab-copyparty", "copyparty")],
+            Ok(vec![Some(167_000_000_000)]),
+        ));
+        let u = tally(sizes);
+        assert_eq!(
+            (u.apps[0].bytes, u.unreadable),
+            (167_021_300_000, 0)
+        );
+    }
+
+    #[test]
+    fn when_the_tree_cannot_be_read_its_folders_are_counted_unreadable_not_zero() {
+        let rows = folder_rows(
+            vec![own("yolab-a", "a"), own("yolab-b", "b")],
+            Err(crate::tree_list::ListError::Unavailable("down".into())),
+        );
+        assert_eq!(
+            rows,
+            vec![("yolab-a".to_string(), None), ("yolab-b".to_string(), None)]
+        );
+    }
+
+    #[test]
+    fn a_folder_gone_from_the_tree_is_unreadable_and_the_others_still_count() {
+        let u = tally(folder_rows(
+            vec![own("yolab-a", "a"), own("yolab-b", "b")],
+            Ok(vec![None, Some(7)]),
+        ));
+        assert_eq!((u.apps.len(), u.apps[0].bytes, u.unreadable), (1, 7, 1));
+    }
+
+    #[test]
+    fn sizes_that_do_not_match_the_folders_asked_for_are_not_trusted() {
+        let rows = folder_rows(vec![own("yolab-a", "a")], Ok(vec![]));
+        assert_eq!(rows, vec![("yolab-a".to_string(), None)]);
     }
 
     #[test]
@@ -666,7 +743,7 @@ mod tests {
                 r#"{"bytes_used": 42}"#,
             )
             .fail("ceph fs subvolume info yolab-fs csi-vol-b", "ENOENT");
-        let u = usage(
+        let sizes = subvolume_sizes(
             &host,
             vec![
                 AppVolume {
@@ -680,6 +757,7 @@ mod tests {
             ],
         )
         .await;
+        let u = tally(sizes);
         assert_eq!((u.apps[0].bytes, u.unreadable), (42, 1));
     }
 }

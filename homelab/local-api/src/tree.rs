@@ -88,6 +88,26 @@ pub(crate) fn claimed(volumes: &[Value]) -> Vec<Claimed> {
         .collect()
 }
 
+pub(crate) fn owned(volumes: &[Value]) -> Vec<Claimed> {
+    let own: Vec<Claimed> = claimed(volumes)
+        .into_iter()
+        .filter(|c| !c.claim.starts_with(FILES_CLAIM_PREFIX))
+        .collect();
+    let inside = |c: &Claimed, o: &Claimed| {
+        c.namespace == o.namespace
+            && c.folder != o.folder
+            && (o.folder.is_empty() || c.folder.starts_with(&format!("{}/", o.folder)))
+    };
+    let mut out: Vec<Claimed> = own
+        .iter()
+        .filter(|c| !own.iter().any(|o| inside(c, o)))
+        .cloned()
+        .collect();
+    out.sort_by(|a, b| (&a.namespace, &a.folder).cmp(&(&b.namespace, &b.folder)));
+    out.dedup_by(|a, b| a.namespace == b.namespace && a.folder == b.folder);
+    out
+}
+
 pub(crate) fn claimed_in(volumes: &[Value], namespace: &str) -> Vec<Claimed> {
     claimed(volumes)
         .into_iter()
@@ -668,6 +688,64 @@ mod tests {
             "metadata": { "name": claim, "namespace": namespace },
             "spec": { "volumeName": format!("{namespace}.{claim}") },
         })
+    }
+
+    fn folders(owned: Vec<Claimed>) -> Vec<(String, String)> {
+        owned.into_iter().map(|c| (c.namespace, c.folder)).collect()
+    }
+
+    #[test]
+    fn a_services_own_folders_are_what_it_owns() {
+        let pvs = vec![
+            volume_in("yolab-copyparty", "copyparty-data", "/tree/copyparty"),
+            volume_in("yolab-media", "media-data", "/tree/media.jellyfin"),
+        ];
+        assert_eq!(
+            folders(owned(&pvs)),
+            vec![
+                ("yolab-copyparty".into(), "copyparty".into()),
+                ("yolab-media".into(), "media.jellyfin".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_folder_attached_from_elsewhere_is_not_counted_as_owned() {
+        let pvs = vec![
+            volume_in("yolab-filebrowser", "content-1a2b3c4d", "/tree"),
+            volume_in("yolab-filebrowser", "content-5e6f7a8b", "/tree/copyparty"),
+            volume_in("yolab-filebrowser", "filebrowser-data", "/tree/filebrowser"),
+        ];
+        assert_eq!(
+            folders(owned(&pvs)),
+            vec![("yolab-filebrowser".into(), "filebrowser".into())]
+        );
+    }
+
+    #[test]
+    fn a_folder_inside_another_of_the_same_service_is_not_counted_twice() {
+        let pvs = vec![
+            volume_in("yolab-a", "a-data", "/tree/a"),
+            volume_in("yolab-a", "a-cache", "/tree/a/cache"),
+            volume_in("yolab-a", "a-again", "/tree/a"),
+            volume_in("yolab-ab", "ab-data", "/tree/ab"),
+        ];
+        assert_eq!(
+            folders(owned(&pvs)),
+            vec![
+                ("yolab-a".into(), "a".into()),
+                ("yolab-ab".into(), "ab".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_same_folder_owned_by_two_services_counts_for_each() {
+        let pvs = vec![
+            volume_in("yolab-a", "a-data", "/tree/shared"),
+            volume_in("yolab-b", "b-data", "/tree/shared"),
+        ];
+        assert_eq!(owned(&pvs).len(), 2);
     }
 
     #[test]

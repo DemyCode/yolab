@@ -49,6 +49,8 @@ type OpenDirFn = unsafe extern "C" fn(Mount, *const c_char, *mut Dir) -> c_int;
 type ReadDirFn = unsafe extern "C" fn(Mount, Dir, *mut Dirent) -> c_int;
 type CloseDirFn = unsafe extern "C" fn(Mount, Dir) -> c_int;
 type ShutdownFn = unsafe extern "C" fn(Mount);
+type GetXattrFn =
+    unsafe extern "C" fn(Mount, *const c_char, *const c_char, *mut c_void, usize) -> c_int;
 
 struct Lib {
     create: CreateFn,
@@ -60,6 +62,7 @@ struct Lib {
     readdir: ReadDirFn,
     closedir: CloseDirFn,
     shutdown: ShutdownFn,
+    getxattr: GetXattrFn,
 }
 
 fn dl_error() -> String {
@@ -96,6 +99,7 @@ fn load(path: &str) -> Result<Lib, String> {
         readdir: symbol!(h, path, ReadDirFn, "ceph_readdir_r"),
         closedir: symbol!(h, path, CloseDirFn, "ceph_closedir"),
         shutdown: symbol!(h, path, ShutdownFn, "ceph_shutdown"),
+        getxattr: symbol!(h, path, GetXattrFn, "ceph_getxattr"),
     })
 }
 
@@ -217,6 +221,45 @@ impl Session {
         unsafe { (self.lib.closedir)(self.handle, dir) };
         outcome.map(|()| found)
     }
+
+    fn size(&self, path: &str) -> Result<u64, ListError> {
+        let c = CString::new(in_tree(path))
+            .map_err(|_| ListError::Missing(format!("{path:?} is not a folder name")))?;
+        let mut buf = [0u8; 32];
+        let ret = unsafe {
+            (self.lib.getxattr)(
+                self.handle,
+                c.as_ptr(),
+                RBYTES.as_ptr(),
+                buf.as_mut_ptr().cast(),
+                buf.len(),
+            )
+        };
+        if ret == -ENOENT || ret == -ENOTDIR {
+            return Err(ListError::Missing(format!(
+                "{path:?} is not a folder in the tree"
+            )));
+        }
+        if ret < 0 {
+            return Err(failed("read the folder size", ret));
+        }
+        parse_rbytes(&buf[..ret as usize])
+    }
+}
+
+const RBYTES: &CStr = c"ceph.dir.rbytes";
+
+pub(crate) fn parse_rbytes(raw: &[u8]) -> Result<u64, ListError> {
+    std::str::from_utf8(raw)
+        .ok()
+        .map(|t| t.trim_end_matches('\0').trim())
+        .and_then(|t| t.parse().ok())
+        .ok_or_else(|| {
+            ListError::Unavailable(format!(
+                "the folder size {:?} is not a number",
+                String::from_utf8_lossy(raw)
+            ))
+        })
 }
 
 pub(crate) fn in_tree(path: &str) -> String {
@@ -262,7 +305,7 @@ pub(crate) fn listing(path: &str, entries: Vec<(String, u8)>) -> Listing {
 
 static SESSION: Mutex<Option<Session>> = Mutex::new(None);
 
-fn list_blocking(path: &str) -> Result<Vec<(String, u8)>, ListError> {
+fn with_session<T>(ask: impl FnOnce(&Session) -> Result<T, ListError>) -> Result<T, ListError> {
     let mut held = match SESSION.try_lock() {
         Ok(guard) => guard,
         Err(TryLockError::WouldBlock) => {
@@ -281,11 +324,48 @@ fn list_blocking(path: &str) -> Result<Vec<(String, u8)>, ListError> {
         *held = Some(connect(lib)?);
     }
     let session = held.as_ref().expect("a session was just set");
-    let result = before_any_folder(path, session.entries(path));
+    let result = ask(session);
     if matches!(result, Err(ListError::Unavailable(_))) {
         *held = None;
     }
     result
+}
+
+fn list_blocking(path: &str) -> Result<Vec<(String, u8)>, ListError> {
+    with_session(|session| before_any_folder(path, session.entries(path)))
+}
+
+pub(crate) fn sizes_of(
+    folders: &[String],
+    size: impl Fn(&str) -> Result<u64, ListError>,
+) -> Result<Vec<Option<u64>>, ListError> {
+    let mut out = Vec::with_capacity(folders.len());
+    for folder in folders {
+        match size(folder) {
+            Ok(bytes) => out.push(Some(bytes)),
+            Err(ListError::Missing(m)) => {
+                tracing::warn!("folder size: {m}");
+                out.push(None);
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(out)
+}
+
+pub(crate) async fn folder_sizes(folders: Vec<String>) -> Result<Vec<Option<u64>>, ListError> {
+    let work =
+        tokio::task::spawn_blocking(move || with_session(|s| sizes_of(&folders, |f| s.size(f))));
+    match tokio::time::timeout(TIMEOUT * 2, work).await {
+        Ok(Ok(found)) => found,
+        Ok(Err(e)) => Err(ListError::Unavailable(format!(
+            "measuring the tree folders failed: {e}"
+        ))),
+        Err(_) => Err(ListError::Unavailable(format!(
+            "the file tree did not answer within {}s",
+            (TIMEOUT * 2).as_secs()
+        ))),
+    }
 }
 
 pub(crate) async fn folders(path: String) -> Result<Listing, ListError> {
@@ -386,6 +466,49 @@ mod tests {
         let l = listing("", many);
         assert_eq!(l.folders.len(), LIMIT);
         assert!(l.truncated);
+    }
+
+    #[test]
+    fn a_folder_size_is_read_from_its_recursive_byte_count() {
+        assert_eq!(parse_rbytes(b"167018303488"), Ok(167_018_303_488));
+        assert_eq!(parse_rbytes(b"0"), Ok(0));
+    }
+
+    #[test]
+    fn a_folder_size_ending_in_nul_still_reads() {
+        assert_eq!(parse_rbytes(b"4096\0"), Ok(4096));
+    }
+
+    #[test]
+    fn a_folder_size_that_is_not_a_number_is_an_error_not_zero() {
+        assert!(matches!(parse_rbytes(b""), Err(ListError::Unavailable(_))));
+        assert!(matches!(
+            parse_rbytes(b"lots"),
+            Err(ListError::Unavailable(_))
+        ));
+    }
+
+    #[test]
+    fn every_folder_asked_for_gets_a_size_in_order() {
+        let folders = vec!["a".to_string(), "gone".to_string(), "b".to_string()];
+        let sizes = sizes_of(&folders, |f| match f {
+            "a" => Ok(1),
+            "b" => Ok(2),
+            _ => Err(ListError::Missing("gone".into())),
+        });
+        assert_eq!(sizes, Ok(vec![Some(1), None, Some(2)]));
+    }
+
+    #[test]
+    fn a_tree_that_stops_answering_fails_the_whole_measure() {
+        let folders = vec!["a".to_string(), "b".to_string()];
+        let sizes = sizes_of(&folders, |_| Err(ListError::Unavailable("down".into())));
+        assert_eq!(sizes, Err(ListError::Unavailable("down".into())));
+    }
+
+    #[test]
+    fn the_size_attribute_is_the_recursive_byte_count() {
+        assert_eq!(RBYTES.to_str(), Ok("ceph.dir.rbytes"));
     }
 
     #[test]
