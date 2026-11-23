@@ -146,10 +146,20 @@ mod tests {
     }
 
     #[test]
+    fn saving_the_defaults_on_a_cluster_nobody_configured_writes_nothing() {
+        let mut store = Store::new("node1");
+        assert!(!monthly_10gb().write_changes(&mut store).unwrap());
+    }
+
+    #[test]
     fn saving_what_is_already_there_writes_nothing() {
         let mut store = Store::new("node1");
-        assert!(monthly_10gb().write_changes(&mut store).unwrap());
-        assert!(!monthly_10gb().write_changes(&mut store).unwrap());
+        let weekly_20gb = ClusterSettings {
+            backup_schedule: "0 3 * * 0".into(),
+            backup_budget_bytes: 20 * GB,
+        };
+        assert!(weekly_20gb.write_changes(&mut store).unwrap());
+        assert!(!weekly_20gb.write_changes(&mut store).unwrap());
         assert!(!ClusterSettings::read(&store)
             .unwrap()
             .write_changes(&mut store)
