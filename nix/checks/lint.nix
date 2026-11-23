@@ -1,10 +1,20 @@
 {
   pkgs,
+  lib,
   treeSrc,
   treefmtEval,
+  nixosSystems,
+  failOn,
   ...
 }: {
   formatting = treefmtEval.config.build.check treeSrc;
+
+  nixos-warnings = failOn "nixos-warnings" {
+    explain = "NixOS printed warnings while building these machines. Warnings fail the checks like errors:";
+    problems = lib.concatLists (lib.mapAttrsToList
+      (name: system: map (w: "${name}: ${w}") system.config.warnings)
+      nixosSystems);
+  };
   shellcheck =
     pkgs.runCommand "shellcheck"
     {

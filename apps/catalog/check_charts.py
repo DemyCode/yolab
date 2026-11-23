@@ -360,7 +360,14 @@ def render(chart_dir, library_tgz, workdir, extra=None):
     shutil.rmtree(staged, ignore_errors=True)
     if out.returncode != 0:
         return None, out.stderr.strip()
+    warned = helm_warnings(out.stderr)
+    if warned:
+        return None, "helm warned:\n" + "\n".join(warned)
     return out.stdout, None
+
+
+def helm_warnings(stderr):
+    return [line for line in stderr.splitlines() if "warning" in line.lower()]
 
 
 def check_db_init_is_idempotent(app, script, container, fail):

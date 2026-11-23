@@ -33,17 +33,18 @@
     cargoArtifacts = craneLib.buildDepsOnly args;
 
     covArgs = args // {pname = "${pname}-coverage";};
+    strict = args // {CARGO_BUILD_WARNINGS = "deny";};
   in {
     inherit args cargoArtifacts;
 
-    package = craneLib.buildPackage (args
+    package = craneLib.buildPackage (strict
       // {
         inherit cargoArtifacts;
         doCheck = false;
       });
-    tests = craneLib.cargoTest (args // {inherit cargoArtifacts;});
+    tests = craneLib.cargoTest (strict // {inherit cargoArtifacts;});
 
-    clippy = craneLib.cargoClippy (args
+    clippy = craneLib.cargoClippy (strict
       // {
         inherit cargoArtifacts;
         pname = "${pname}-clippy";

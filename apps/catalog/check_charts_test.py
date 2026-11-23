@@ -4985,3 +4985,21 @@ class EveryWebAddressIsAnOutput(unittest.TestCase):
                 "uri",
                 f"{name} has no url link",
             )
+
+
+class HelmWarningsFail(unittest.TestCase):
+    def test_a_render_that_warns_is_a_failed_render(self):
+        self.assertEqual(
+            check_charts.helm_warnings("coalesce.go: warning: cannot overwrite x\n"),
+            ["coalesce.go: warning: cannot overwrite x"],
+        )
+
+    def test_helm_prints_warnings_in_capitals_too(self):
+        self.assertEqual(
+            check_charts.helm_warnings("WARNING: kubeconfig is group-readable"),
+            ["WARNING: kubeconfig is group-readable"],
+        )
+
+    def test_a_quiet_render_has_no_warnings(self):
+        self.assertEqual(check_charts.helm_warnings(""), [])
+        self.assertEqual(check_charts.helm_warnings("rendered 3 manifests\n"), [])

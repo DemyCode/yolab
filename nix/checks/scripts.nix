@@ -63,8 +63,8 @@
       # helm needs a writable home, and the sandbox has none.
       export HOME=$PWD/home
       mkdir -p "$HOME"
-      (cd ./catalog && python3 -m unittest check_charts_test)
-      python3 ./catalog/check_charts.py
+      (cd ./catalog && python3 -W error -m unittest check_charts_test)
+      python3 -W error ./catalog/check_charts.py
       touch $out
     '';
 
@@ -76,7 +76,7 @@
     }
     ''
       cp -r "$src" ./update
-      (cd ./update && python3 -m unittest update_test)
+      (cd ./update && python3 -W error -m unittest update_test)
       touch $out
     '';
   ceph-csi-manifest =
@@ -87,7 +87,7 @@
     }
     ''
       cp -r "$src" ./ceph-csi
-      (cd ./ceph-csi && python3 -m unittest cephfs_test)
+      (cd ./ceph-csi && python3 -W error -m unittest cephfs_test)
       touch $out
     '';
 }
