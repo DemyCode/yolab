@@ -202,7 +202,6 @@ export function NodesPage() {
           )}
         </CardContent>
       </Card>
-
     </div>
   );
 }

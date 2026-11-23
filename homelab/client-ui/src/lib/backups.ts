@@ -225,10 +225,7 @@ export function ageLabel(iso: string, now: number): string {
 
 export type ServiceTone = "ok" | "busy" | "warn" | "error";
 
-export function serviceTone(
-  service: BackupService,
-  now: number,
-): ServiceTone {
+export function serviceTone(service: BackupService, now: number): ServiceTone {
   const app = service.protection;
   if (!app) return "ok";
   const state = protectionState(app);

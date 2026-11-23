@@ -495,8 +495,7 @@ mod tests {
     fn the_latest_change_to_a_setting_wins_on_every_machine() {
         let mut a = Store::new("node1");
         let mut b = Store::new("node2");
-        a.set_setting("backup.budget_bytes", &(5u64 << 30))
-            .unwrap();
+        a.set_setting("backup.budget_bytes", &(5u64 << 30)).unwrap();
         b.merge(&mut a).unwrap();
         b.set_setting("backup.budget_bytes", &(10u64 << 30))
             .unwrap();

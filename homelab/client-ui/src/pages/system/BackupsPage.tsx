@@ -169,8 +169,8 @@ export function BackupsPage() {
             <span className="font-mono tabular-nums text-fg">
               {formatBytes(total)}
             </span>{" "}
-            of encrypted copies, kept outside your home. You pay for this
-            space, so the biggest services are listed first.
+            of encrypted copies, kept outside your home. You pay for this space,
+            so the biggest services are listed first.
           </>
         ) : (
           "Every service is copied with its own data, encrypted, to storage outside your home."

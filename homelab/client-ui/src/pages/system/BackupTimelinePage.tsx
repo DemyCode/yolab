@@ -249,9 +249,7 @@ export function BackupTimelinePage() {
   const installed = app !== undefined;
 
   const [chosen, setChosen] = useState<string | null>(null);
-  const [note, setNote] = useState<{ ok: boolean; text: string } | null>(
-    null,
-  );
+  const [note, setNote] = useState<{ ok: boolean; text: string } | null>(null);
   const [confirming, setConfirming] = useState<RestorePoint | null>(null);
   const [deleting, setDeleting] = useState<string[]>([]);
   const [deletingAll, setDeletingAll] = useState(false);
@@ -473,8 +471,8 @@ export function BackupTimelinePage() {
               </Button>
             }
           >
-            Anything changed in {name} since its last copy is not saved
-            anywhere else yet.
+            Anything changed in {name} since its last copy is not saved anywhere
+            else yet.
           </Banner>
         </div>
       )}

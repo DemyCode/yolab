@@ -333,9 +333,9 @@ describe("the services list", () => {
   it("says a service with backups off still keeps its old copies", () => {
     const off = service(app({ enabled: false }));
     expect(serviceDetail(off, NOW)).toBe("Backups off · 4 copies kept");
-    expect(serviceDetail(service(app({ enabled: false }), { copies: 0 }), NOW)).toBe(
-      "Backups off",
-    );
+    expect(
+      serviceDetail(service(app({ enabled: false }), { copies: 0 }), NOW),
+    ).toBe("Backups off");
   });
 
   it("flags a service whose copies need more than its space", () => {
@@ -476,8 +476,6 @@ describe("pruning", () => {
         budget_bytes: 10_000_000_000,
         over_budget: true,
       }),
-    ).toBe(
-      "Nothing deleted: its newest copy alone needs more than 10 GB.",
-    );
+    ).toBe("Nothing deleted: its newest copy alone needs more than 10 GB.");
   });
 });
