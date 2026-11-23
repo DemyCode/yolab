@@ -130,8 +130,15 @@ export function availableActions(
   if (state === "removing" || restoring) return new Set<AppAction>();
   switch (state) {
     case "failed":
-      return new Set<AppAction>(["retry", "settings", "remove"]);
+      return new Set<AppAction>(["retry", "update", "settings", "remove"]);
     case "starting":
+      return new Set<AppAction>([
+        "update",
+        "settings",
+        "duplicate",
+        "restore",
+        "remove",
+      ]);
     case "copying":
       return new Set<AppAction>(["settings", "duplicate", "restore", "remove"]);
     case "stopped":

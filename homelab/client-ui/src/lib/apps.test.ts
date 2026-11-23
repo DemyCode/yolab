@@ -294,12 +294,21 @@ describe("newerVersion", () => {
 });
 
 describe("availableActions", () => {
-  it("offers a failed install a retry, new settings and removal", () => {
+  it("offers a failed install a retry, an update, new settings and removal", () => {
     expect([...availableActions("failed", false)].sort()).toEqual([
       "remove",
       "retry",
       "settings",
+      "update",
     ]);
+  });
+
+  it("offers the update to an app stuck starting, since a newer chart is often its fix", () => {
+    expect(availableActions("starting", false).has("update")).toBe(true);
+  });
+
+  it("does not update an app while its data is still being copied", () => {
+    expect(availableActions("copying", false).has("update")).toBe(false);
   });
 
   it("lets settings change in every state but removal", () => {
