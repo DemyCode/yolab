@@ -165,7 +165,10 @@ mod tests {
     fn everything() -> Found {
         Found {
             replications: vec![replication("yolab-memos-44vc", "volsync-memos-44vc-data")],
-            caches: vec![pvc("yolab-memos-44vc", "volsync-src-volsync-memos-44vc-data-cache")],
+            caches: vec![pvc(
+                "yolab-memos-44vc",
+                "volsync-src-volsync-memos-44vc-data-cache",
+            )],
             chart: true,
             crds: CRDS.to_vec(),
             namespace: true,
@@ -218,8 +221,14 @@ mod tests {
 
     #[test]
     fn only_volsync_caches_are_taken_for_caches() {
-        assert!(is_cache(&pvc("yolab-a", "volsync-src-volsync-a-data-cache")));
-        assert!(is_cache(&pvc("yolab-a", "volsync-dst-volsync-a-data-cache")));
+        assert!(is_cache(&pvc(
+            "yolab-a",
+            "volsync-src-volsync-a-data-cache"
+        )));
+        assert!(is_cache(&pvc(
+            "yolab-a",
+            "volsync-dst-volsync-a-data-cache"
+        )));
         assert!(!is_cache(&pvc("yolab-a", "a-data")));
         assert!(!is_cache(&pvc("yolab-volsync", "volsync-notes")));
     }
