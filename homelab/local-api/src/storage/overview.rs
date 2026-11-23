@@ -316,11 +316,9 @@ pub(crate) fn folder_rows(
     measured: Result<Vec<Option<u64>>, crate::tree_list::ListError>,
 ) -> Vec<(String, Option<u64>)> {
     match measured {
-        Ok(sizes) if sizes.len() == owned.len() => owned
-            .into_iter()
-            .map(|c| c.namespace)
-            .zip(sizes)
-            .collect(),
+        Ok(sizes) if sizes.len() == owned.len() => {
+            owned.into_iter().map(|c| c.namespace).zip(sizes).collect()
+        }
         Ok(sizes) => {
             tracing::warn!(
                 "{} tree folders were asked for but {} sizes came back",
@@ -669,10 +667,7 @@ mod tests {
             Ok(vec![Some(167_000_000_000)]),
         ));
         let u = tally(sizes);
-        assert_eq!(
-            (u.apps[0].bytes, u.unreadable),
-            (167_021_300_000, 0)
-        );
+        assert_eq!((u.apps[0].bytes, u.unreadable), (167_021_300_000, 0));
     }
 
     #[test]
