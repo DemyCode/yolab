@@ -189,6 +189,7 @@ in {
         "ceph-mgr-${host}.service"
         "ceph-mds-${host}.service"
       ];
+      wants = ["network-online.target"];
       restartIfChanged = false;
       stopIfChanged = false;
       path = with pkgs; [procps util-linux coreutils systemd];
