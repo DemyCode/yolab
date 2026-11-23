@@ -4770,7 +4770,6 @@ class Ipv4OnlyReadiness(unittest.TestCase):
         self.assertEqual(ipv4_only_failures("airtrail", "caddy", probe), [])
 
 
-
 class CobaltReadsReady(RenderedChart):
     CHART = "cobalt"
 

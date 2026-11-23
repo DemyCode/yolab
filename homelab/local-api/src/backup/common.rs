@@ -454,7 +454,11 @@ mod tests {
     fn a_forget_waits_for_another_command_s_lock_instead_of_failing_at_once() {
         let (args, timeout) = wait_for_lock(&["forget", "abc123"], Duration::from_secs(300));
         assert_eq!(args, ["forget", "abc123", "--retry-lock", "300s"]);
-        assert_eq!(timeout, Duration::from_secs(600), "the wait must not eat the command's own time");
+        assert_eq!(
+            timeout,
+            Duration::from_secs(600),
+            "the wait must not eat the command's own time"
+        );
     }
 
     #[test]
