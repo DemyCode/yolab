@@ -313,6 +313,17 @@ pub(crate) struct RunDone {
     warning: Option<String>,
 }
 
+fn incomplete(failures: &[String]) -> anyhow::Result<()> {
+    if failures.is_empty() {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "the service settings were saved, but {} part(s) did not back up, so no older copy was deleted: {}",
+        failures.len(),
+        failures.join("; ")
+    )
+}
+
 fn outside_tree_failures(pvcs: &[PvcInfo], in_tree: &[crate::tree::Claimed]) -> Vec<String> {
     pvcs.iter()
         .filter(|p| {
@@ -399,6 +410,7 @@ async fn run_set<H: Host>(
     let (snapshot_id, services) = snapshot_cluster(b, cfg, &pinned, target, run_id).await?;
 
     let name = namespace.strip_prefix("yolab-").unwrap_or(namespace);
+    incomplete(&failures)?;
     let warning = match crate::backup::points::after_run(b, cfg, namespace, &snapshot_id).await {
         Ok(done) => {
             if done.dropped > 0 {
@@ -414,13 +426,6 @@ async fn run_set<H: Host>(
         )),
     };
 
-    if !failures.is_empty() {
-        anyhow::bail!(
-            "the service settings were saved, but {} part(s) did not back up: {}",
-            failures.len(),
-            failures.join("; ")
-        );
-    }
     Ok(RunDone {
         snapshot_id,
         services,
@@ -1161,6 +1166,18 @@ async fn schedule<H: Host + Clone + 'static>(b: &Backend<H>) -> anyhow::Result<T
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_backup_missing_a_part_deletes_no_older_copy() {
+        let err = incomplete(&["its folders: timed out".into()]).unwrap_err();
+        assert!(err.to_string().contains("no older copy was deleted"), "{err}");
+        assert!(err.to_string().contains("its folders: timed out"), "{err}");
+    }
+
+    #[test]
+    fn a_complete_backup_goes_on_to_thin_older_copies() {
+        assert!(incomplete(&[]).is_ok());
+    }
 
     #[test]
     fn a_volume_outside_the_tree_fails_the_backup_and_says_to_reinstall() {
