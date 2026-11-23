@@ -9,13 +9,16 @@ import {
   FRAMES,
   SCALES,
   ageHours,
+  ageMarks,
   frameRange,
-  shortAge,
+  spread,
+  tickLabel,
   type Frame,
   type TimeScale,
 } from "@/lib/timeline";
 
 const HEIGHT = 120;
+const LABEL_GAP_PX = 56;
 
 function token(name: string, fallback: string): string {
   const value = getComputedStyle(document.documentElement)
@@ -89,7 +92,16 @@ export function BackupTimeline({
           stroke: muted,
           grid: { stroke: border, width: 1 },
           ticks: { stroke: border, width: 1 },
-          values: (_u, splits) => splits.map((h) => shortAge(h)),
+          filter: (_u, splits) => splits,
+          ...(scale === "even" && {
+            splits: (u: uPlot, _axis: number, min: number, max: number) =>
+              spread(
+                ageMarks(min, max),
+                (h) => u.valToPos(h, "x"),
+                LABEL_GAP_PX,
+              ),
+          }),
+          values: (_u, splits) => splits.map(tickLabel),
         },
         { show: false },
       ],

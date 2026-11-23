@@ -51,6 +51,56 @@ export function shortAge(hours: number): string {
   if (hours < 48) return `${Math.round(hours)} h`;
   const days = hours / 24;
   if (days < 60) return `${Math.round(days)} d`;
-  if (days < 730) return `${Math.round(days / 30)} mo`;
+  if (days < 365) return `${Math.round(days / 30)} mo`;
   return `${Math.round(days / 365)} y`;
+}
+
+const DAY = 24;
+
+export const AGE_MARKS: number[] = [
+  5 / 60,
+  15 / 60,
+  1,
+  3,
+  6,
+  12,
+  DAY,
+  2 * DAY,
+  3 * DAY,
+  7 * DAY,
+  14 * DAY,
+  30 * DAY,
+  60 * DAY,
+  90 * DAY,
+  180 * DAY,
+  365 * DAY,
+  2 * 365 * DAY,
+  5 * 365 * DAY,
+];
+
+export function ageMarks(lo: number, hi: number): number[] {
+  const marks = AGE_MARKS.filter((h) => h >= lo && h <= hi);
+  return marks.length >= 2 ? marks : [lo, hi];
+}
+
+export function spread(
+  marks: number[],
+  position: (hours: number) => number,
+  minGap: number,
+): number[] {
+  const kept: number[] = [];
+  let last = -Infinity;
+  for (const h of marks) {
+    const at = position(h);
+    if (at - last >= minGap) {
+      kept.push(h);
+      last = at;
+    }
+  }
+  return kept;
+}
+
+export function tickLabel(hours: number | null | undefined): string | null {
+  if (hours == null) return null;
+  return hours <= 0 ? "now" : shortAge(hours);
 }
