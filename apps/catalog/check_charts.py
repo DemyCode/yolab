@@ -1000,6 +1000,7 @@ def check_probe_timeouts(app, docs, fail):
 
 LISTENS_ON_IPV4_ONLY = {
     "airtrail": "app",
+    "cobalt": "web",
     "transmission": "server",
 }
 

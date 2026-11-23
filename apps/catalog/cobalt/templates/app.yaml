@@ -50,8 +50,13 @@ spec:
         - containerPort: 9001
         readinessProbe:
           timeoutSeconds: 5
-          tcpSocket:
-            port: 9001
+          exec:
+            command:
+            - wget
+            - -q
+            - -O
+            - /dev/null
+            - http://127.0.0.1:9001/
       volumes:
       {{- include "yolab-common.gatewayVolumes" . | nindent 6 }}
       {{- include "authelia.embed.volumes" . | nindent 6 }}

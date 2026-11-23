@@ -4770,6 +4770,17 @@ class Ipv4OnlyReadiness(unittest.TestCase):
         self.assertEqual(ipv4_only_failures("airtrail", "caddy", probe), [])
 
 
+
+class CobaltReadsReady(RenderedChart):
+    CHART = "cobalt"
+
+    def test_the_web_ui_on_ipv4_only_is_probed_from_inside_on_loopback(self):
+        spec = self.deployments(self.docs())["gateway"]
+        probe = container_of(spec, "web")["readinessProbe"]
+        self.assertNotIn("tcpSocket", probe)
+        self.assertIn("http://127.0.0.1:9001/", probe["exec"]["command"])
+
+
 class JupyterLabKeepsWhatItShows(RenderedChart):
     CHART = "jupyterlab"
 

@@ -2,7 +2,7 @@ apiVersion: v2
 name: cobalt
 description: Best way to save what you love
 type: application
-version: 0.1.32
+version: 0.1.33
 appVersion: '11.5'
 dependencies:
   - name: yolab-common
