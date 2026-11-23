@@ -308,22 +308,3 @@ export function serviceBanner(
   return null;
 }
 
-export interface PruneResult {
-  deleted: number;
-  size_bytes: number;
-  budget_bytes: number;
-  over_budget: boolean;
-}
-
-export function prunePath(namespace: string): string {
-  return `/api/backups/apps/${encodeURIComponent(namespace)}/prune`;
-}
-
-export function pruneLabel(result: PruneResult): string {
-  const used = `${formatBytes(result.size_bytes)} of ${formatBytes(result.budget_bytes)} used`;
-  if (result.over_budget) {
-    return `Nothing deleted: its newest copy alone needs more than ${formatBytes(result.budget_bytes)}.`;
-  }
-  if (result.deleted === 0) return `Already within its space · ${used}`;
-  return `Deleted ${copiesLabel(result.deleted)} · ${used}`;
-}

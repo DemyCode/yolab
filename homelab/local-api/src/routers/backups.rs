@@ -468,22 +468,6 @@ pub async fn set_budget(
     ))
 }
 
-pub async fn prune(
-    State(state): State<AppState>,
-    Path(namespace): Path<String>,
-) -> Result<Json<serde_json::Value>> {
-    app_namespace(&namespace)?;
-    let b = state.backend().await?;
-    let cfg = configured(&b).await?;
-    let done = backup_points::prune_now(&b, &cfg, &namespace).await?;
-    Ok(Json(serde_json::json!({
-        "deleted": done.dropped,
-        "size_bytes": done.size.size_bytes,
-        "budget_bytes": done.size.budget_bytes,
-        "over_budget": done.size.over_budget,
-    })))
-}
-
 pub async fn delete_all_backups(
     State(state): State<AppState>,
     Path(namespace): Path<String>,

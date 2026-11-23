@@ -8,8 +8,6 @@ import {
   budgetToBytes,
   bytesToBudget,
   pointPath,
-  pruneLabel,
-  prunePath,
   ageLabel,
   backupPagePath,
   backupServices,
@@ -438,44 +436,5 @@ describe("spaceToFit", () => {
   it("rounds up to the next whole gigabyte so no copy has to go", () => {
     expect(spaceToFit(167_182_292_770)).toBe(168_000_000_000);
     expect(spaceToFit(10)).toBe(1_000_000_000);
-  });
-});
-
-describe("pruning", () => {
-  it("addresses the prune of one service", () => {
-    expect(prunePath("yolab-a b")).toBe("/api/backups/apps/yolab-a%20b/prune");
-  });
-
-  it("says how many copies went and what is left", () => {
-    expect(
-      pruneLabel({
-        deleted: 3,
-        size_bytes: 9_500_000_000,
-        budget_bytes: 10_000_000_000,
-        over_budget: false,
-      }),
-    ).toBe("Deleted 3 copies · 9.5 GB of 10 GB used");
-  });
-
-  it("says when there was nothing to delete", () => {
-    expect(
-      pruneLabel({
-        deleted: 0,
-        size_bytes: 1_000_000_000,
-        budget_bytes: 10_000_000_000,
-        over_budget: false,
-      }),
-    ).toBe("Already within its space · 1 GB of 10 GB used");
-  });
-
-  it("explains why nothing went when the newest copy alone is too big", () => {
-    expect(
-      pruneLabel({
-        deleted: 0,
-        size_bytes: 167_000_000_000,
-        budget_bytes: 10_000_000_000,
-        over_budget: true,
-      }),
-    ).toBe("Nothing deleted: its newest copy alone needs more than 10 GB.");
   });
 });

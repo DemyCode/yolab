@@ -22,7 +22,6 @@ pub(crate) const ROUTE_TABLE: &[(&str, &[&str])] = &[
     ("/api/backups/apps", &["GET"]),
     ("/api/backups/apps/{namespace}", &["DELETE"]),
     ("/api/backups/apps/{namespace}/budget", &["PUT"]),
-    ("/api/backups/apps/{namespace}/prune", &["POST"]),
     (
         "/api/backups/apps/{namespace}/points/{snapshot_id}",
         &["DELETE"],

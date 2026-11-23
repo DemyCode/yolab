@@ -18,8 +18,6 @@ import {
   copiesLabel,
   pointPath,
   pointsPath,
-  pruneLabel,
-  prunePath,
   restorePath,
   serviceBanner,
   serviceName,
@@ -29,7 +27,6 @@ import {
 } from "@/lib/backups";
 import type {
   ProtectedApp,
-  PruneResult,
   RestorePoint,
   RestorePoints,
 } from "@/lib/backups";
@@ -256,7 +253,6 @@ export function BackupTimelinePage() {
   const [confirmAll, setConfirmAll] = useState(false);
   const [starting, setStarting] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [pruning, setPruning] = useState(false);
   const queue = useRef<Promise<void>>(Promise.resolve());
 
   const points = (data?.points ?? []).filter(
@@ -355,20 +351,6 @@ export function BackupTimelinePage() {
     }
   }
 
-  async function prune() {
-    setPruning(true);
-    setNote(null);
-    try {
-      const result = await api.post<PruneResult>(prunePath(namespace));
-      await reload();
-      setNote({ ok: !result.over_budget, text: pruneLabel(result) });
-    } catch (e) {
-      fail(e, "Its backups were not pruned.");
-    } finally {
-      setPruning(false);
-    }
-  }
-
   return (
     <Page>
       <Link
@@ -448,10 +430,11 @@ export function BackupTimelinePage() {
               </div>
             }
           >
-            Its copies take {formatBytes(banner.sizeBytes)} but its space is{" "}
-            {formatBytes(banner.budgetBytes)}. Nothing can be deleted to fit,
-            because the newest copy always stays. Give it more space, or turn
-            its backups off and delete all its backups.
+            Its newest copy alone is bigger than its{" "}
+            {formatBytes(banner.budgetBytes)} of space, so after each backup
+            only that newest copy is kept. Give it more space to keep older
+            copies too, or turn its backups off and delete all its backups to
+            stop paying for them.
           </Banner>
         </div>
       )}
@@ -549,17 +532,9 @@ export function BackupTimelinePage() {
               key={space}
               label="Space for its backups"
               bytes={space}
-              detail="After every backup, copies are deleted until the rest fit, keeping them spread back through time. The newest copy always stays. Prune does it now."
+              detail="After every backup, copies are deleted until the rest fit, keeping them spread back through time. The newest copy always stays."
               busy={saving}
               onSave={(bytes) => void saveSpace(bytes)}
-              action={
-                <RowAction
-                  onClick={() => void prune()}
-                  disabled={pruning || backingUp || points.length < 2}
-                >
-                  {pruning ? "Pruning…" : "Prune now"}
-                </RowAction>
-              }
             />
           )}
         </Section>

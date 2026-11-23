@@ -221,7 +221,14 @@ where
     let floor: Vec<usize> = (0..n).filter(|&i| forced[i]).collect();
     let floor_size = sizer.size(&floor).await?;
     if floor_size > budget {
-        return Ok(keep_all);
+        return Ok(Fit {
+            drop: (0..n)
+                .filter(|i| !forced[*i])
+                .map(|i| order[i].0.snapshot_id.clone())
+                .collect(),
+            size_after: floor_size,
+            over: true,
+        });
     }
     let filled = budget / 100 * FILL_PERCENT + budget % 100 * FILL_PERCENT / 100;
     let target = if floor_size <= filled { filled } else { budget };
@@ -570,23 +577,6 @@ pub(crate) async fn after_run<H: Host>(
     namespace: &str,
     new_point: &str,
 ) -> anyhow::Result<AfterRun> {
-    thin(b, cfg, namespace, Some(new_point)).await
-}
-
-pub(crate) async fn prune_now<H: Host>(
-    b: &Backend<H>,
-    cfg: &BackupConfig,
-    namespace: &str,
-) -> anyhow::Result<AfterRun> {
-    thin(b, cfg, namespace, None).await
-}
-
-async fn thin<H: Host>(
-    b: &Backend<H>,
-    cfg: &BackupConfig,
-    namespace: &str,
-    new_point: Option<&str>,
-) -> anyhow::Result<AfterRun> {
     let _claim = Thinning::claim(namespace)?;
     let svc = Service {
         host: &b.host,
@@ -599,19 +589,14 @@ async fn thin<H: Host>(
     let had_orphans = svc.drop_orphans(&points, &folders).await?;
 
     let fresh: Vec<Point> = points.iter().filter(|p| !p.legacy()).cloned().collect();
-    let added = match new_point {
-        Some(id) => {
-            let with_new = svc.measure_points(&fresh, &folders).await?;
-            let without: Vec<Point> = fresh
-                .iter()
-                .filter(|p| p.snapshot_id != id)
-                .cloned()
-                .collect();
-            let without = svc.measure_points(&without, &folders).await?;
-            Some((id, with_new.saturating_sub(without)))
-        }
-        None => None,
-    };
+    let with_new = svc.measure_points(&fresh, &folders).await?;
+    let without: Vec<Point> = fresh
+        .iter()
+        .filter(|p| p.snapshot_id != new_point)
+        .cloned()
+        .collect();
+    let without = svc.measure_points(&without, &folders).await?;
+    let added = with_new.saturating_sub(without);
     let newest = match fresh.first() {
         Some(p) => {
             svc.measure_points(std::slice::from_ref(p), &folders)
@@ -643,9 +628,7 @@ async fn thin<H: Host>(
     }
     let mut known: BTreeMap<String, u64> = previous.map(|p| p.added).unwrap_or_default();
     known.retain(|id, _| points.iter().any(|p| &p.snapshot_id == id) && !planned.drop.contains(id));
-    if let Some((id, bytes)) = added {
-        known.insert(id.to_string(), bytes);
-    }
+    known.insert(new_point.to_string(), added);
     let size = ServiceSize {
         size_bytes: planned.size_after,
         newest_bytes: newest,
@@ -978,7 +961,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn when_even_the_backups_that_must_stay_do_not_fit_nothing_is_deleted() {
+    async fn when_the_newest_copy_alone_does_not_fit_every_other_copy_goes() {
         let points = [
             aged("big", 0, false),
             aged("a", 24, false),
@@ -987,8 +970,32 @@ mod tests {
         let fitted = fit(&points, 50, sized(&[("big", 80), ("a", 10), ("b", 10)]))
             .await
             .unwrap();
-        assert!(fitted.drop.is_empty());
-        assert_eq!(fitted.size_after, 100);
+        assert_eq!(fitted.drop, vec!["a".to_string(), "b".to_string()]);
+        assert_eq!(fitted.size_after, 80);
+        assert!(fitted.over);
+    }
+
+    #[tokio::test]
+    async fn a_newest_copy_too_big_for_its_space_still_stays() {
+        let points = [aged("big", 0, false), aged("a", 24, false)];
+        let fitted = fit(&points, 10, sized(&[("big", 167), ("a", 1)]))
+            .await
+            .unwrap();
+        assert_eq!(fitted.drop, vec!["a".to_string()]);
+        assert!(fitted.over);
+    }
+
+    #[tokio::test]
+    async fn older_style_copies_stay_even_when_the_newest_alone_does_not_fit() {
+        let points = [
+            aged("big", 0, false),
+            aged("a", 24, false),
+            aged("old", 48, true),
+        ];
+        let fitted = fit(&points, 50, sized(&[("big", 80), ("a", 10), ("old", 10)]))
+            .await
+            .unwrap();
+        assert_eq!(fitted.drop, vec!["a".to_string()]);
         assert!(fitted.over);
     }
 
