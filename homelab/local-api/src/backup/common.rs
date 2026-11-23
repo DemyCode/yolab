@@ -108,6 +108,22 @@ fn restic_env<'a>(
     ]
 }
 
+const LOCKING_COMMANDS: [&str; 6] = ["backup", "restore", "check", "forget", "prune", "repair"];
+
+pub(crate) fn wait_for_lock(args: &[&str], timeout: Duration) -> (Vec<String>, Duration) {
+    let mut out: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+    let locks = args
+        .first()
+        .is_some_and(|command| LOCKING_COMMANDS.contains(command))
+        && !args.contains(&"--no-lock");
+    if !locks {
+        return (out, timeout);
+    }
+    out.push("--retry-lock".to_string());
+    out.push(format!("{}s", timeout.as_secs()));
+    (out, timeout * 2)
+}
+
 pub(crate) async fn restic_with<H: Host>(
     host: &H,
     repo: &str,
@@ -121,7 +137,9 @@ pub(crate) async fn restic_with<H: Host>(
         &cfg.access_key_id,
         &cfg.secret_access_key,
     );
-    Ok(host.run_cmd_env("restic", args, &env, timeout).await?)
+    let (args, timeout) = wait_for_lock(args, timeout);
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    Ok(host.run_cmd_env("restic", &args, &env, timeout).await?)
 }
 
 pub(crate) async fn restic_unlock_with<H: Host>(
@@ -431,6 +449,35 @@ pub(crate) async fn hold_daemonsets(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_forget_waits_for_another_command_s_lock_instead_of_failing_at_once() {
+        let (args, timeout) = wait_for_lock(&["forget", "abc123"], Duration::from_secs(300));
+        assert_eq!(args, ["forget", "abc123", "--retry-lock", "300s"]);
+        assert_eq!(timeout, Duration::from_secs(600), "the wait must not eat the command's own time");
+    }
+
+    #[test]
+    fn every_command_that_takes_a_lock_waits_for_it() {
+        for command in ["backup", "restore", "check", "forget", "prune", "repair"] {
+            let (args, _) = wait_for_lock(&[command], Duration::from_secs(60));
+            assert!(args.contains(&"--retry-lock".to_string()), "{command}");
+        }
+    }
+
+    #[test]
+    fn lock_free_commands_are_passed_through_untouched() {
+        for args in [
+            &["snapshots", "--no-lock", "--json"][..],
+            &["stats", "--no-lock", "--mode", "raw-data"][..],
+            &["init"][..],
+            &["unlock"][..],
+        ] {
+            let (out, timeout) = wait_for_lock(args, Duration::from_secs(60));
+            assert_eq!(out, args, "{args:?}");
+            assert_eq!(timeout, Duration::from_secs(60));
+        }
+    }
 
     #[test]
     fn every_snapshots_listing_passes_no_lock() {
