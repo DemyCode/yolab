@@ -177,6 +177,43 @@ pub(crate) fn is_change_address(url: &url::Url) -> bool {
     url.as_str() == CHANGE_ADDRESS_URL
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Route {
+    Load,
+    ChangeAddress,
+    SystemBrowser,
+}
+
+pub(crate) fn route(box_url: &url::Url, target: &url::Url) -> Route {
+    if is_change_address(target) {
+        return Route::ChangeAddress;
+    }
+    match target.scheme() {
+        "http" | "https" if target.origin() == box_url.origin() => Route::Load,
+        "http" | "https" | "mailto" | "tel" => Route::SystemBrowser,
+        _ => Route::Load,
+    }
+}
+
+fn open_in_system_browser(app: &tauri::AppHandle, target: &url::Url) {
+    use tauri_plugin_opener::OpenerExt;
+    if let Err(e) = app.opener().open_url(target.as_str(), None::<&str>) {
+        eprintln!("could not open {target} in the system browser: {e}");
+    }
+}
+
+fn go_back_to_address_screen(app: &tauri::AppHandle) {
+    let handle = app.clone();
+    let queued = app.run_on_main_thread(move || {
+        if let Err(e) = change_address(&handle) {
+            eprintln!("could not go back to the address screen: {e}");
+        }
+    });
+    if let Err(e) = queued {
+        eprintln!("could not go back to the address screen: {e}");
+    }
+}
+
 fn change_address(app: &tauri::AppHandle) -> Result<(), String> {
     open_setup_window(app)?;
     if let Some(w) = app.get_webview_window("main") {
@@ -186,31 +223,38 @@ fn change_address(app: &tauri::AppHandle) -> Result<(), String> {
 }
 
 fn open_box_window(app: &tauri::AppHandle, url: &str) -> Result<(), String> {
-    let parsed = url::Url::parse(url).map_err(|e| e.to_string())?;
-    let builder = WebviewWindowBuilder::new(app, "main", WebviewUrl::External(parsed))
+    let box_url = url::Url::parse(url).map_err(|e| e.to_string())?;
+    let builder = WebviewWindowBuilder::new(app, "main", WebviewUrl::External(box_url.clone()))
         .title("YoLab")
         .inner_size(1100.0, 780.0)
-        .min_inner_size(420.0, 480.0);
+        .min_inner_size(420.0, 480.0)
+        .initialization_script(SHELL_FLAG_SCRIPT);
+
     let handle = app.clone();
-    builder
-        .initialization_script(SHELL_FLAG_SCRIPT)
-        .on_navigation(move |target| {
-            if !is_change_address(target) {
-                return true;
-            }
-            let app = handle.clone();
-            let queued = handle.run_on_main_thread(move || {
-                if let Err(e) = change_address(&app) {
-                    eprintln!("could not go back to the address screen: {e}");
-                }
-            });
-            if let Err(e) = queued {
-                eprintln!("could not go back to the address screen: {e}");
-            }
+    let builder = builder.on_navigation(move |target| match route(&box_url, target) {
+        Route::Load => true,
+        Route::ChangeAddress => {
+            go_back_to_address_screen(&handle);
             false
+        }
+        Route::SystemBrowser => {
+            open_in_system_browser(&handle, target);
+            false
+        }
+    });
+
+    #[cfg(desktop)]
+    let builder = {
+        let handle = app.clone();
+        builder.on_new_window(move |target, _features| {
+            if matches!(target.scheme(), "http" | "https" | "mailto" | "tel") {
+                open_in_system_browser(&handle, &target);
+            }
+            tauri::webview::NewWindowResponse::Deny
         })
-        .build()
-        .map_err(|e| e.to_string())?;
+    };
+
+    builder.build().map_err(|e| e.to_string())?;
 
     if let Some(setup) = app.get_webview_window("setup") {
         setup.destroy().map_err(|e| e.to_string())?;
@@ -299,6 +343,7 @@ pub fn run() {
 
     let builder = tauri::Builder::default()
         .manage(LaunchOnce::new())
+        .plugin(tauri_plugin_opener::init())
         .manage(Attempts::new())
         .invoke_handler(tauri::generate_handler![stored_url, launch_url, connect]);
 
@@ -313,7 +358,7 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_change_address, normalise_url, reach, Attempts, LaunchOnce};
+    use super::{is_change_address, normalise_url, reach, route, Attempts, LaunchOnce, Route};
     use std::net::TcpListener;
 
     #[test]
@@ -385,6 +430,43 @@ mod tests {
         assert!(!caught("yolab-shell://something-else"));
         assert!(!caught("https://cluster.1.yolab.io/system"));
         assert!(!caught("https://change-address"));
+    }
+
+    fn routed(target: &str) -> Route {
+        let box_url = url::Url::parse("https://cluster.1.yolab.io").unwrap();
+        route(&box_url, &url::Url::parse(target).unwrap())
+    }
+
+    #[test]
+    fn pages_on_the_box_load_inside_the_app() {
+        assert_eq!(routed("https://cluster.1.yolab.io/system"), Route::Load);
+        assert_eq!(routed("https://cluster.1.yolab.io:443/add"), Route::Load);
+    }
+
+    #[test]
+    fn other_websites_open_in_the_system_browser() {
+        for other in [
+            "https://github.com/transmission/transmission",
+            "https://transmission.1.yolab.io/",
+            "https://node1.1.yolab.io/",
+            "http://cluster.1.yolab.io/",
+            "https://cluster.1.yolab.io:8443/",
+            "mailto:someone@example.com",
+        ] {
+            assert_eq!(routed(other), Route::SystemBrowser, "{other}");
+        }
+    }
+
+    #[test]
+    fn the_change_address_link_wins_over_every_other_rule() {
+        assert_eq!(routed("yolab-shell://change-address"), Route::ChangeAddress);
+    }
+
+    #[test]
+    fn internal_webview_urls_are_left_to_the_webview() {
+        for internal in ["about:blank", "data:text/plain,hi", "blob:https://cluster.1.yolab.io/x"] {
+            assert_eq!(routed(internal), Route::Load, "{internal}");
+        }
     }
 
     #[test]

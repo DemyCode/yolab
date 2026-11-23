@@ -23,6 +23,8 @@ reason. The box UI shows "Change server" (sidebar and System page) only inside
 this app: the app marks the page with window.__YOLAB_SHELL__ and catches the
 yolab-shell://change-address link instead of loading it, so this works on
 Android too and needs no IPC between the remote page and the app.
+Links to any other origin (other sites, service subdomains, other nodes) and
+every new-window request open in the system browser instead of inside the app.
 
 ## Layout
 
