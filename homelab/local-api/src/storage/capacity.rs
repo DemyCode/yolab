@@ -169,7 +169,10 @@ mod tests {
         ];
         let free = free_for_new_data(&osds, 2, Spread::Disk) as f64;
         let smaller_left = 192.0 * GB as f64 * FULL_RATIO - 43.0 * GB as f64;
-        assert!((free - smaller_left).abs() < 2.0, "{free} vs {smaller_left}");
+        assert!(
+            (free - smaller_left).abs() < 2.0,
+            "{free} vs {smaller_left}"
+        );
     }
 
     #[test]

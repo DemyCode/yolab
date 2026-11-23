@@ -522,7 +522,14 @@ mod tests {
     #[test]
     fn there_is_no_space_figure_before_the_app_pool_exists() {
         let no_pools = json!({"pools": []});
-        let o = assemble(&status(), &no_pools, &tree(), &json!([]), &rules(), "images");
+        let o = assemble(
+            &status(),
+            &no_pools,
+            &tree(),
+            &json!([]),
+            &rules(),
+            "images",
+        );
         assert_eq!(o.space, None);
     }
 
