@@ -111,6 +111,7 @@ static SIGS: &[Sig] = &[
         &[req("name", Str), req("weight", Float)],
     ),
     sig(&["osd", "crush", "rule", "ls"], &[]),
+    sig(&["osd", "crush", "rule", "dump"], &[opt("name", Str)]),
     sig(
         &["osd", "primary-affinity"],
         &[req("id", Osd), req("weight", Float)],
@@ -434,6 +435,10 @@ mod tests {
         assert_eq!(
             sent(&["df", "-f", "json"]),
             json!({"prefix": "df", "format": "json"})
+        );
+        assert_eq!(
+            sent(&["osd", "crush", "rule", "dump", "-f", "json"]),
+            json!({"prefix": "osd crush rule dump", "format": "json"})
         );
         assert_eq!(
             sent(&["health", "detail"]),

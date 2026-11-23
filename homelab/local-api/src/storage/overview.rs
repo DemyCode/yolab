@@ -156,7 +156,12 @@ fn parse_pools(df: &Value, detail: &Value) -> Vec<Pool> {
         .collect()
 }
 
-fn space_of(pools: &[Pool], osds: &[Osd], images_pool: &str) -> Option<Space> {
+fn space_of(
+    pools: &[Pool],
+    osds: &[Osd],
+    images_pool: &str,
+    spread: crate::storage::capacity::Spread,
+) -> Option<Space> {
     let data = pools.iter().find(|p| p.name == DATA_POOL)?;
     let stored = |pred: &dyn Fn(&Pool) -> bool| -> u64 {
         pools
@@ -168,7 +173,7 @@ fn space_of(pools: &[Pool], osds: &[Osd], images_pool: &str) -> Option<Space> {
     let is_app = |p: &Pool| p.name == DATA_POOL || p.name == META_POOL;
     let is_images = |p: &Pool| p.name == images_pool;
     Some(Space {
-        free_bytes: data.max_avail_bytes,
+        free_bytes: crate::storage::capacity::free_for_new_data(osds, data.copies, spread),
         apps_bytes: stored(&is_app),
         images_bytes: stored(&is_images),
         other_bytes: stored(&|p| !is_app(p) && !is_images(p)),
@@ -186,16 +191,18 @@ pub(crate) fn assemble(
     df: &Value,
     tree: &Value,
     detail: &Value,
+    rules: &Value,
     images_pool: &str,
 ) -> Overview {
     let osds = parse_osds(tree);
     let pools = parse_pools(df, detail);
+    let spread = crate::storage::capacity::spread_of(rules, detail, DATA_POOL);
     Overview {
         health: status["health"]["status"]
             .as_str()
             .unwrap_or("")
             .to_string(),
-        space: space_of(&pools, &osds, images_pool),
+        space: space_of(&pools, &osds, images_pool, spread),
         raw: parse_raw(status),
         osds,
         pools,
@@ -203,13 +210,14 @@ pub(crate) fn assemble(
 }
 
 pub(crate) async fn read<H: Host>(host: &H, images_pool: &str) -> anyhow::Result<Overview> {
-    let (status, df, tree, detail) = tokio::try_join!(
+    let (status, df, tree, detail, rules) = tokio::try_join!(
         host.ceph_json(&["status"]),
         host.ceph_json(&["df"]),
         host.ceph_json(&["osd", "df", "tree"]),
         host.ceph_json(&["osd", "pool", "ls", "detail"]),
+        host.ceph_json(&["osd", "crush", "rule", "dump"]),
     )?;
-    Ok(assemble(&status, &df, &tree, &detail, images_pool))
+    Ok(assemble(&status, &df, &tree, &detail, &rules, images_pool))
 }
 
 fn failed(e: impl std::fmt::Display) -> (StatusCode, Json<Value>) {
@@ -427,10 +435,10 @@ mod tests {
 
     fn detail() -> Value {
         json!([
-            {"pool_id": 1, "pool_name": ".mgr", "size": 2, "min_size": 1},
-            {"pool_id": 2, "pool_name": "yolab-fs-metadata", "size": 2, "min_size": 1},
-            {"pool_id": 3, "pool_name": "yolab-fs-data0", "size": 2, "min_size": 1},
-            {"pool_id": 4, "pool_name": "images", "size": 2, "min_size": 1}
+            {"pool_id": 1, "pool_name": ".mgr", "size": 2, "min_size": 1, "crush_rule": 0},
+            {"pool_id": 2, "pool_name": "yolab-fs-metadata", "size": 2, "min_size": 1, "crush_rule": 0},
+            {"pool_id": 3, "pool_name": "yolab-fs-data0", "size": 2, "min_size": 1, "crush_rule": 0},
+            {"pool_id": 4, "pool_name": "images", "size": 2, "min_size": 1, "crush_rule": 0}
         ])
     }
 
@@ -450,8 +458,16 @@ mod tests {
         ]})
     }
 
+    fn rules() -> Value {
+        json!([{"rule_id": 0, "rule_name": "replicated_rule", "steps": [
+            {"op": "take", "item": -1, "item_name": "default"},
+            {"op": "chooseleaf_firstn", "num": 0, "type": "host"},
+            {"op": "emit"}
+        ]}])
+    }
+
     fn overview() -> Overview {
-        assemble(&status(), &df(), &tree(), &detail(), "images")
+        assemble(&status(), &df(), &tree(), &detail(), &rules(), "images")
     }
 
     #[test]
@@ -469,8 +485,10 @@ mod tests {
     }
 
     #[test]
-    fn free_space_is_cephs_own_max_avail_for_the_app_data_pool() {
-        assert_eq!(overview().space.unwrap().free_bytes, 1200);
+    fn free_space_is_what_both_copies_still_fit_not_cephs_estimate() {
+        let free = overview().space.unwrap().free_bytes;
+        assert_ne!(free, 1200);
+        assert_eq!(free, 921);
     }
 
     #[test]
@@ -486,7 +504,7 @@ mod tests {
 
     #[test]
     fn the_configured_images_pool_name_is_honoured() {
-        let o = assemble(&status(), &df(), &tree(), &detail(), "imgs");
+        let o = assemble(&status(), &df(), &tree(), &detail(), &rules(), "imgs");
         let s = o.space.unwrap();
         assert_eq!((s.images_bytes, s.other_bytes), (0, 100));
     }
@@ -504,7 +522,7 @@ mod tests {
     #[test]
     fn there_is_no_space_figure_before_the_app_pool_exists() {
         let no_pools = json!({"pools": []});
-        let o = assemble(&status(), &no_pools, &tree(), &json!([]), "images");
+        let o = assemble(&status(), &no_pools, &tree(), &json!([]), &rules(), "images");
         assert_eq!(o.space, None);
     }
 
@@ -565,13 +583,14 @@ mod tests {
             .ok("ceph df", &df().to_string())
             .ok("ceph osd df tree", &tree().to_string())
             .ok("ceph osd pool ls detail", &detail().to_string())
+            .ok("ceph osd crush rule dump", &rules().to_string())
     }
 
     #[tokio::test]
-    async fn read_asks_ceph_four_questions_and_nothing_per_disk() {
+    async fn read_asks_ceph_five_questions_and_nothing_per_disk() {
         let host = answering();
         read(&host, "images").await.unwrap();
-        assert_eq!(host.calls().len(), 4);
+        assert_eq!(host.calls().len(), 5);
         assert!(!host.ran("ok-to-stop") && !host.ran("safe-to-destroy"));
     }
 
@@ -581,7 +600,8 @@ mod tests {
             .ok("ceph status", &status().to_string())
             .fail("ceph df", "timed out")
             .ok("ceph osd df tree", &tree().to_string())
-            .ok("ceph osd pool ls detail", &detail().to_string());
+            .ok("ceph osd pool ls detail", &detail().to_string())
+            .ok("ceph osd crush rule dump", &rules().to_string());
         assert!(read(&host, "images").await.is_err());
     }
 

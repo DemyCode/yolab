@@ -1,4 +1,5 @@
 pub mod bootstrap;
+pub(crate) mod capacity;
 pub mod ceph_csi;
 mod ceph_shared;
 pub mod cephx;
