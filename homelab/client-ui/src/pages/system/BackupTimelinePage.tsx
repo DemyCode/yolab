@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { ArrowLeft, RotateCcw } from "lucide-react";
+import { ArrowLeft } from "lucide-react";
 import { Page } from "@/components/AppShell";
 import { BackupTimeline } from "@/components/BackupTimeline";
+import { ScheduleRow, SpaceRow } from "@/components/BackupPolicyRows";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { Switch } from "@/components/ui/input";
 import { Row, RowAction, Section } from "@/components/ui/list";
 import { ConfirmDialog } from "@/components/ui/sheet";
 import { Banner, Spinner } from "@/components/ui/feedback";
@@ -14,17 +15,25 @@ import { useApi } from "@/lib/useResource";
 import { useNow } from "@/lib/useNow";
 import {
   ageLabel,
-  budgetToBytes,
-  bytesToBudget,
   copiesLabel,
   pointPath,
   pointsPath,
+  pruneLabel,
+  prunePath,
   restorePath,
+  serviceBanner,
   serviceName,
   sortRestorePoints,
+  spaceToFit,
   usageLabel,
 } from "@/lib/backups";
-import type { ProtectedApp, RestorePoint, RestorePoints } from "@/lib/backups";
+import type {
+  ProtectedApp,
+  PruneResult,
+  RestorePoint,
+  RestorePoints,
+} from "@/lib/backups";
+import { DEFAULT_SPACE_BYTES } from "@/lib/settings";
 import type { AppDefinition } from "@/types/apps";
 import { cn } from "@/lib/utils";
 
@@ -33,8 +42,6 @@ function message(e: unknown, fallback: string): string {
 }
 
 const LIST_FAILED = "Its backups could not be listed.";
-const OVER_SPACE =
-  "Its newest copy alone needs more than the space set for its backups, so no copy was deleted. Give it more space.";
 
 function useCopies(namespace: string) {
   const [data, setData] = useState<RestorePoints | null>(null);
@@ -81,78 +88,6 @@ async function chartOf(namespace: string, snapshotId: string) {
     throw new Error("That backup does not say which service it is.");
   }
   return def.app_id;
-}
-
-function Budget({
-  namespace,
-  copies,
-  onSaved,
-}: {
-  namespace: string;
-  copies: RestorePoints;
-  onSaved: () => Promise<void>;
-}) {
-  const [draft, setDraft] = useState(
-    copies.budget_bytes ? bytesToBudget(copies.budget_bytes) : "",
-  );
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const wanted = budgetToBytes(draft);
-
-  async function save(budget: number | null) {
-    setBusy(true);
-    setError(null);
-    try {
-      await api.put(
-        `/api/backups/apps/${encodeURIComponent(namespace)}/budget`,
-        { budget_bytes: budget },
-      );
-      await onSaved();
-    } catch (e) {
-      setError(message(e, "The space was not saved."));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <Row
-      label="Space for its backups"
-      detail={
-        copies.budget_set
-          ? "When its copies need more than this, as many as fit are kept, spaced so the gaps between them double going back in time. The newest copy always stays."
-          : "Chosen for you: twice the size of its newest copy, at least 10 GB. Set your own to keep more or fewer copies."
-      }
-    >
-      <div className="mt-3 flex flex-wrap items-center gap-2">
-        <div className="flex items-center gap-2">
-          <Input
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            inputMode="decimal"
-            aria-label="Space in GB"
-            className="h-9 w-24 font-mono tabular-nums"
-          />
-          <span className="text-sm text-fg-muted">GB</span>
-        </div>
-        <Button
-          variant="secondary"
-          size="sm"
-          onClick={() => void save(wanted)}
-          loading={busy}
-          disabled={wanted === null || wanted === copies.budget_bytes}
-        >
-          Save
-        </Button>
-        {copies.budget_set && (
-          <RowAction onClick={() => void save(null)} disabled={busy}>
-            Let YoLab choose
-          </RowAction>
-        )}
-      </div>
-      {error && <p className="mt-2 text-xs text-danger">{error}</p>}
-    </Row>
-  );
 }
 
 function ConfirmDelete({
@@ -222,13 +157,19 @@ function ConfirmDelete({
   );
 }
 
-function Moment({
+function CopyRow({
   namespace,
   point,
+  selected,
+  now,
+  onSelect,
   onDelete,
 }: {
   namespace: string;
   point: RestorePoint;
+  selected: boolean;
+  now: number;
+  onSelect: () => void;
   onDelete: () => void;
 }) {
   const navigate = useNavigate();
@@ -247,30 +188,49 @@ function Moment({
     }
   }
 
-  const tags = [
+  const detail = [
+    ageLabel(point.time, now),
     point.newest ? "Newest" : null,
     point.added_bytes != null
       ? `${formatBytes(point.added_bytes)} not in the copy before`
       : null,
-  ].filter(Boolean);
+  ]
+    .filter(Boolean)
+    .join(" · ");
 
   return (
-    <div className="mt-4 rounded-card border border-border p-5">
-      <p className="font-mono text-lg tabular-nums text-fg">
-        {formatDateTime(point.time)}
-      </p>
-      {tags.length > 0 && (
-        <p className="mt-1 text-sm text-fg-muted">{tags.join(" · ")}</p>
+    <Row
+      label={
+        <button
+          type="button"
+          onClick={onSelect}
+          aria-pressed={selected}
+          className={cn(
+            "font-mono tabular-nums hover:underline",
+            selected && "text-primary",
+          )}
+        >
+          {formatDateTime(point.time)}
+        </button>
+      }
+      detail={detail}
+      trailing={
+        <RowAction onClick={() => void restore()} disabled={opening}>
+          {opening ? "Opening…" : "Restore"}
+        </RowAction>
+      }
+    >
+      {(selected || failed) && (
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          {selected && (
+            <RowAction danger onClick={onDelete}>
+              Delete this copy
+            </RowAction>
+          )}
+          {failed && <span className="text-sm text-danger">{failed}</span>}
+        </div>
       )}
-      <div className="mt-4 flex flex-wrap items-center gap-2">
-        <Button onClick={() => void restore()} loading={opening}>
-          <RotateCcw className="h-4 w-4" />
-          Restore this copy
-        </Button>
-        <RowAction onClick={onDelete}>Delete</RowAction>
-      </div>
-      {failed && <p className="mt-2 text-sm text-danger">{failed}</p>}
-    </div>
+    </Row>
   );
 }
 
@@ -289,12 +249,16 @@ export function BackupTimelinePage() {
   const installed = app !== undefined;
 
   const [chosen, setChosen] = useState<string | null>(null);
-  const [note, setNote] = useState<string | null>(null);
+  const [note, setNote] = useState<{ ok: boolean; text: string } | null>(
+    null,
+  );
   const [confirming, setConfirming] = useState<RestorePoint | null>(null);
   const [deleting, setDeleting] = useState<string[]>([]);
   const [deletingAll, setDeletingAll] = useState(false);
   const [confirmAll, setConfirmAll] = useState(false);
   const [starting, setStarting] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [pruning, setPruning] = useState(false);
   const queue = useRef<Promise<void>>(Promise.resolve());
 
   const points = (data?.points ?? []).filter(
@@ -302,6 +266,15 @@ export function BackupTimelinePage() {
   );
   const selected =
     points.find((p) => p.snapshot_id === chosen) ?? points[0] ?? null;
+  const space = data?.budget_bytes ?? DEFAULT_SPACE_BYTES;
+  const backingUp =
+    starting || app?.state === "running" || app?.state === "queued";
+  const banner = serviceBanner(app, data, now);
+  const usage = data ? usageLabel(data.size_bytes, data.budget_bytes) : null;
+
+  function fail(e: unknown, fallback: string) {
+    setNote({ ok: false, text: message(e, fallback) });
+  }
 
   function remove(point: RestorePoint) {
     setNote(null);
@@ -311,8 +284,7 @@ export function BackupTimelinePage() {
         await api.del(pointPath(namespace, point.snapshot_id));
         await reload();
       } catch (e) {
-        const what = `The copy from ${formatDateTime(point.time)} was not deleted.`;
-        setNote(message(e, what));
+        fail(e, `The copy from ${formatDateTime(point.time)} was not deleted.`);
       } finally {
         setDeleting((d) => d.filter((id) => id !== point.snapshot_id));
       }
@@ -325,9 +297,14 @@ export function BackupTimelinePage() {
     queue.current = queue.current.then(async () => {
       try {
         await api.del(`/api/backups/apps/${encodeURIComponent(namespace)}`);
-        navigate("/system/backups");
+        if (installed) {
+          await reload();
+          setDeletingAll(false);
+        } else {
+          navigate("/system/backups");
+        }
       } catch (e) {
-        setNote(message(e, "Its backups were not deleted."));
+        fail(e, "Its backups were not deleted.");
         setDeletingAll(false);
       }
     });
@@ -342,15 +319,57 @@ export function BackupTimelinePage() {
       );
       await running.refresh();
     } catch (e) {
-      setNote(message(e, "Could not start a backup."));
+      fail(e, "Could not start a backup.");
     } finally {
       setStarting(false);
     }
   }
 
-  const saving =
-    starting || app?.state === "running" || app?.state === "queued";
-  const usage = data ? usageLabel(data.size_bytes, data.budget_bytes) : null;
+  async function savePolicy(next: { enabled: boolean; schedule: string }) {
+    if (!app) return;
+    setSaving(true);
+    setNote(null);
+    try {
+      await api.put(`/api/apps/${app.instance_name}/backup`, next);
+      await running.refresh();
+      setNote({ ok: true, text: "Saved" });
+    } catch (e) {
+      fail(e, "That was not saved.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function saveSpace(bytes: number) {
+    setSaving(true);
+    setNote(null);
+    try {
+      await api.put(
+        `/api/backups/apps/${encodeURIComponent(namespace)}/budget`,
+        { budget_bytes: bytes },
+      );
+      await reload();
+      setNote({ ok: true, text: "Saved" });
+    } catch (e) {
+      fail(e, "The space was not saved.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function prune() {
+    setPruning(true);
+    setNote(null);
+    try {
+      const result = await api.post<PruneResult>(prunePath(namespace));
+      await reload();
+      setNote({ ok: !result.over_budget, text: pruneLabel(result) });
+    } catch (e) {
+      fail(e, "Its backups were not pruned.");
+    } finally {
+      setPruning(false);
+    }
+  }
 
   return (
     <Page>
@@ -366,25 +385,96 @@ export function BackupTimelinePage() {
           {name}
         </h1>
         <p className="mt-1 text-sm text-fg-muted">
-          {data
-            ? `${copiesLabel(points.length)}${usage ? ` · ${usage}` : ""}`
-            : "Each copy is a moment you can bring this service back to."}
-          {!installed && running.data ? " · removed" : ""}
+          {[
+            data ? copiesLabel(points.length) : null,
+            usage,
+            !installed && running.data ? "Removed" : null,
+            installed && app && !app.enabled ? "Backups off" : null,
+          ]
+            .filter(Boolean)
+            .join(" · ") ||
+            "Each copy is a moment you can bring this service back to."}
         </p>
       </header>
 
-      {app?.error && (
+      {banner?.kind === "failed" && (
         <div className="mb-6">
-          <Banner tone="error" title="The last backup failed">
-            {app.error}
+          <Banner
+            tone="error"
+            title="The last backup failed"
+            action={
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => void backUpNow()}
+                loading={backingUp}
+              >
+                Try again
+              </Button>
+            }
+          >
+            {banner.error}
           </Banner>
         </div>
       )}
-
-      {data?.over_budget && (
+      {banner?.kind === "over" && (
         <div className="mb-6">
-          <Banner tone="warning" title="More than its space">
-            {OVER_SPACE}
+          <Banner
+            tone="warning"
+            title="Its newest copy alone needs more than its space"
+            action={
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => void saveSpace(spaceToFit(banner.sizeBytes))}
+                  loading={saving}
+                >
+                  Give it {formatBytes(spaceToFit(banner.sizeBytes))}
+                </Button>
+                {app?.enabled && (
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() =>
+                      void savePolicy({
+                        enabled: false,
+                        schedule: app.schedule,
+                      })
+                    }
+                    loading={saving}
+                  >
+                    Turn off its backups
+                  </Button>
+                )}
+              </div>
+            }
+          >
+            Its copies take {formatBytes(banner.sizeBytes)} but its space is{" "}
+            {formatBytes(banner.budgetBytes)}. Nothing can be deleted to fit,
+            because the newest copy always stays. Give it more space, or turn
+            its backups off and delete all its backups.
+          </Banner>
+        </div>
+      )}
+      {banner?.kind === "stale" && (
+        <div className="mb-6">
+          <Banner
+            tone="warning"
+            title="No recent backup"
+            action={
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => void backUpNow()}
+                loading={backingUp}
+              >
+                Back up now
+              </Button>
+            }
+          >
+            Anything changed in {name} since its last copy is not saved
+            anywhere else yet.
           </Banner>
         </div>
       )}
@@ -401,94 +491,151 @@ export function BackupTimelinePage() {
         </p>
       )}
 
+      {installed && app && (
+        <Section
+          title="Backing up"
+          action={
+            note && (
+              <span
+                className={cn(
+                  "text-xs",
+                  note.ok ? "text-success" : "text-danger",
+                )}
+                role="status"
+              >
+                {note.text}
+              </span>
+            )
+          }
+        >
+          <Row
+            label="Back up automatically"
+            trailing={
+              <Switch
+                checked={app.enabled}
+                onChange={(enabled) =>
+                  void savePolicy({ enabled, schedule: app.schedule })
+                }
+                label="Back up automatically"
+                disabled={saving}
+              />
+            }
+          />
+          {app.enabled && (
+            <ScheduleRow
+              key={app.schedule}
+              schedule={app.schedule}
+              busy={saving}
+              onSave={(schedule) =>
+                void savePolicy({ enabled: app.enabled, schedule })
+              }
+            />
+          )}
+          <Row
+            label="Last backup"
+            detail={
+              backingUp
+                ? "Backing up now…"
+                : app.last_ok_at
+                  ? formatDateTime(app.last_ok_at)
+                  : "Not backed up yet"
+            }
+            trailing={
+              <RowAction onClick={() => void backUpNow()} disabled={backingUp}>
+                {backingUp ? "Backing up…" : "Back up now"}
+              </RowAction>
+            }
+          />
+          {data && (
+            <SpaceRow
+              key={space}
+              label="Space for its backups"
+              bytes={space}
+              detail="After every backup, copies are deleted until the rest fit, keeping them spread back through time. The newest copy always stays. Prune does it now."
+              busy={saving}
+              onSave={(bytes) => void saveSpace(bytes)}
+              action={
+                <RowAction
+                  onClick={() => void prune()}
+                  disabled={pruning || backingUp || points.length < 2}
+                >
+                  {pruning ? "Pruning…" : "Prune now"}
+                </RowAction>
+              }
+            />
+          )}
+        </Section>
+      )}
+
+      {!installed && note && (
+        <p
+          className={cn(
+            "mt-3 text-sm",
+            note.ok ? "text-success" : "text-danger",
+          )}
+          role="status"
+        >
+          {note.text}
+        </p>
+      )}
+
       {data === null && !error ? (
-        <div className="flex items-center gap-2 py-4 text-sm text-fg-muted">
+        <div className="mt-8 flex items-center gap-2 text-sm text-fg-muted">
           <Spinner className="h-4 w-4" />
           Looking for its backups…
         </div>
       ) : error && data === null ? (
-        <p className="py-4 text-sm text-danger">{error}</p>
-      ) : points.length === 0 ? (
-        <p className="py-4 text-sm text-fg-muted">
-          There is no copy of this service yet.
-        </p>
-      ) : deletingAll ? null : (
-        <>
-          <BackupTimeline
-            points={points}
-            selected={selected?.snapshot_id ?? null}
-            now={now}
-            onSelect={setChosen}
+        <p className="mt-8 text-sm text-danger">{error}</p>
+      ) : deletingAll ? null : points.length === 0 ? (
+        <Section title="Copies">
+          <Row
+            label="No copy yet"
+            detail={
+              installed
+                ? "Back up now to make the first one."
+                : "Every copy of this service has been deleted."
+            }
           />
-          {selected && (
-            <Moment
-              namespace={namespace}
-              point={selected}
-              onDelete={() => setConfirming(selected)}
-            />
+        </Section>
+      ) : (
+        <>
+          {points.length > 1 && (
+            <div className="mt-8">
+              <BackupTimeline
+                points={points}
+                selected={selected?.snapshot_id ?? null}
+                now={now}
+                onSelect={setChosen}
+              />
+            </div>
           )}
-          <Section title="Every copy">
+          <Section title="Copies">
             {points.map((p) => (
-              <Row
+              <CopyRow
                 key={p.snapshot_id}
-                onClick={() => setChosen(p.snapshot_id)}
-                label={
-                  <span
-                    className={cn(
-                      "font-mono tabular-nums",
-                      p.snapshot_id === selected?.snapshot_id && "text-primary",
-                    )}
-                  >
-                    {formatDateTime(p.time)}
-                  </span>
-                }
-                detail={ageLabel(p.time, now)}
+                namespace={namespace}
+                point={p}
+                selected={p.snapshot_id === selected?.snapshot_id}
+                now={now}
+                onSelect={() => setChosen(p.snapshot_id)}
+                onDelete={() => setConfirming(p)}
               />
             ))}
           </Section>
         </>
       )}
 
-      {note && <p className="mt-3 text-sm text-danger">{note}</p>}
-
-      {installed && (
-        <Section title="Backing up">
-          <Row
-            label="Last backup"
-            detail={
-              saving
-                ? "Backing up now…"
-                : app?.last_ok_at
-                  ? formatDateTime(app.last_ok_at)
-                  : "Not backed up yet"
-            }
-            trailing={
-              <RowAction onClick={() => void backUpNow()} disabled={saving}>
-                {saving ? "Backing up…" : "Back up now"}
-              </RowAction>
-            }
-          />
-          {data && (
-            <Budget
-              key={`${data.budget_bytes ?? "auto"}-${data.budget_set ? 1 : 0}`}
-              namespace={namespace}
-              copies={data}
-              onSaved={reload}
-            />
-          )}
-          <Row
-            label={`Open ${name}`}
-            detail="Its schedule and the rest of its settings"
-            onClick={() => navigate(`/app/${name}`)}
-          />
-        </Section>
-      )}
-
-      {!installed && running.data && points.length > 0 && !deletingAll && (
+      {running.data && points.length > 0 && !deletingAll && (
         <Section title="Delete">
           <Row
             label="Delete all its backups"
-            detail="This service is no longer installed. Its copies keep taking space until you delete them."
+            detail={
+              !installed
+                ? "This service is no longer installed. Its copies keep taking space until you delete them."
+                : app?.enabled
+                  ? "Frees the space its copies take. Its next backup starts a new copy, so turn its backups off first to stop paying for them."
+                  : "Frees the space its copies take. Its backups are off, so no new copy is made."
+            }
             danger
             onClick={() => setConfirmAll(true)}
           />
@@ -518,7 +665,7 @@ export function BackupTimelinePage() {
             {data?.size_bytes != null
               ? `, freeing about ${formatBytes(data.size_bytes)}`
               : ""}
-            . {name} can no longer be brought back.
+            . {name} can no longer be brought back to any of them.
           </>
         }
       />

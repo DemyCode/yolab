@@ -228,7 +228,7 @@ export function SystemPage() {
           to="/system/settings"
           icon={SlidersHorizontal}
           label="Settings"
-          detail="Defaults for new services, on all your machines"
+          detail="Backups of new services and SSH access, on all your machines"
         />
         {status.data?.console_url && (
           <NavRow

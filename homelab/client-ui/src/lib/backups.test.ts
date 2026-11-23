@@ -8,18 +8,25 @@ import {
   budgetToBytes,
   bytesToBudget,
   pointPath,
+  pruneLabel,
+  prunePath,
   ageLabel,
   backupPagePath,
   backupServices,
   copiesLabel,
   restorePath,
-  tileLabel,
-  tileTone,
+  byStorage,
+  scheduleLabel,
+  serviceBanner,
+  serviceDetail,
+  serviceTone,
+  spaceToFit,
+  storageTotal,
   serviceName,
   sortRestorePoints,
   usageLabel,
 } from "./backups";
-import type { ProtectedApp } from "./backups";
+import type { BackupService, ProtectedApp, RestorePoints } from "./backups";
 
 function app(over: Partial<ProtectedApp> = {}): ProtectedApp {
   return {
@@ -297,8 +304,11 @@ describe("ageLabel", () => {
   });
 });
 
-describe("backup tiles", () => {
-  const service = (protection: ProtectedApp | null) => ({
+describe("the services list", () => {
+  const service = (
+    protection: ProtectedApp | null,
+    over: Partial<BackupService> = {},
+  ): BackupService => ({
     namespace: "yolab-gitea-ab23",
     name: "gitea-ab23",
     appId: protection ? "gitea" : null,
@@ -306,29 +316,168 @@ describe("backup tiles", () => {
     protection,
     copies: 4,
     sizeBytes: null,
+    ...over,
   });
 
-  it("shows how many copies a saved service has and how old the last one is", () => {
+  it("says when a saved service was last saved and how often it is", () => {
     const s = service(app({ last_ok_at: "2026-09-24T09:00:00Z" }));
-    expect(tileLabel(s, NOW)).toBe("4 copies · 3 h ago");
-    expect(tileTone(s, NOW)).toBe("ok");
+    expect(serviceDetail(s, NOW)).toBe("Saved 3 h ago · Every day at 03:00");
+    expect(serviceTone(s, NOW)).toBe("ok");
   });
 
-  it("marks a removed service and lights no dot for it", () => {
-    expect(tileLabel(service(null), NOW)).toBe("Removed · 4 copies");
-    expect(tileTone(service(null), NOW)).toBe("ok");
+  it("says how many copies a removed service still leaves behind", () => {
+    expect(serviceDetail(service(null), NOW)).toBe("Removed · 4 copies left");
+    expect(serviceTone(service(null), NOW)).toBe("ok");
   });
 
-  it("shows a failed save in red and an old one as a warning", () => {
-    expect(tileTone(service(app({ state: "failed" })), NOW)).toBe("error");
-    expect(tileLabel(service(app({ state: "failed" })), NOW)).toBe(
+  it("says a service with backups off still keeps its old copies", () => {
+    const off = service(app({ enabled: false }));
+    expect(serviceDetail(off, NOW)).toBe("Backups off · 4 copies kept");
+    expect(serviceDetail(service(app({ enabled: false }), { copies: 0 }), NOW)).toBe(
+      "Backups off",
+    );
+  });
+
+  it("flags a service whose copies need more than its space", () => {
+    const over = service(app({ over_budget: true }));
+    expect(serviceDetail(over, NOW)).toContain("More than its space");
+    expect(serviceTone(over, NOW)).toBe("warn");
+  });
+
+  it("shows a failed save in red, an old one and a running one apart", () => {
+    expect(serviceTone(service(app({ state: "failed" })), NOW)).toBe("error");
+    expect(serviceDetail(service(app({ state: "failed" })), NOW)).toBe(
       "Last save failed",
     );
     const old = app({ last_ok_at: "2026-09-20T03:00:00Z" });
-    expect(tileTone(service(old), NOW)).toBe("warn");
+    expect(serviceTone(service(old), NOW)).toBe("warn");
+    expect(serviceTone(service(app({ state: "running" })), NOW)).toBe("busy");
   });
 
-  it("shows a save in progress as busy", () => {
-    expect(tileTone(service(app({ state: "running" })), NOW)).toBe("busy");
+  it("puts what takes the most backup storage first, unmeasured last", () => {
+    const got = byStorage([
+      service(app(), { name: "small", sizeBytes: 5 }),
+      service(app(), { name: "unknown", sizeBytes: null }),
+      service(app(), { name: "big", sizeBytes: 167e9 }),
+      service(app(), { name: "also-small", sizeBytes: 5 }),
+    ]);
+    expect(got.map((s) => s.name)).toEqual([
+      "big",
+      "also-small",
+      "small",
+      "unknown",
+    ]);
+  });
+
+  it("adds up the storage every service's backups take", () => {
+    expect(
+      storageTotal([
+        service(app(), { sizeBytes: 2 }),
+        service(null, { sizeBytes: 3 }),
+        service(app(), { sizeBytes: null }),
+      ]),
+    ).toBe(5);
+    expect(storageTotal([service(app())])).toBeNull();
+  });
+
+  it("names a preset schedule and shows any other one as it was written", () => {
+    expect(scheduleLabel("0 3 1 * *")).toBe("On the 1st of each month");
+    expect(scheduleLabel("15 4 * * 2")).toBe("Custom: 15 4 * * 2");
+  });
+});
+
+describe("serviceBanner", () => {
+  const copies = (over: Partial<RestorePoints> = {}): RestorePoints => ({
+    configured: true,
+    points: [],
+    ...over,
+  });
+
+  it("shows nothing for a removed service or a healthy one", () => {
+    expect(serviceBanner(undefined, copies(), NOW)).toBeNull();
+    expect(serviceBanner(app(), copies(), NOW)).toBeNull();
+  });
+
+  it("puts a failed backup above everything else", () => {
+    const got = serviceBanner(
+      app({ state: "failed", error: "disk full" }),
+      copies({ over_budget: true, size_bytes: 9, budget_bytes: 1 }),
+      NOW,
+    );
+    expect(got).toEqual({ kind: "failed", error: "disk full" });
+  });
+
+  it("then copies that need more than their space, with both sizes", () => {
+    expect(
+      serviceBanner(
+        app({ last_ok_at: "2026-09-01T03:00:00Z" }),
+        copies({ over_budget: true, size_bytes: 9, budget_bytes: 1 }),
+        NOW,
+      ),
+    ).toEqual({ kind: "over", sizeBytes: 9, budgetBytes: 1 });
+  });
+
+  it("then a service with no recent copy", () => {
+    expect(
+      serviceBanner(app({ last_ok_at: "2026-09-01T03:00:00Z" }), copies(), NOW),
+    ).toEqual({ kind: "stale" });
+  });
+
+  it("never nags about a service whose backups were turned off", () => {
+    expect(
+      serviceBanner(
+        app({ enabled: false, state: "failed", last_ok_at: null }),
+        copies(),
+        NOW,
+      ),
+    ).toBeNull();
+  });
+});
+
+describe("spaceToFit", () => {
+  it("rounds up to the next whole gigabyte so no copy has to go", () => {
+    expect(spaceToFit(167_182_292_770)).toBe(168_000_000_000);
+    expect(spaceToFit(10)).toBe(1_000_000_000);
+  });
+});
+
+describe("pruning", () => {
+  it("addresses the prune of one service", () => {
+    expect(prunePath("yolab-a b")).toBe("/api/backups/apps/yolab-a%20b/prune");
+  });
+
+  it("says how many copies went and what is left", () => {
+    expect(
+      pruneLabel({
+        deleted: 3,
+        size_bytes: 9_500_000_000,
+        budget_bytes: 10_000_000_000,
+        over_budget: false,
+      }),
+    ).toBe("Deleted 3 copies · 9.5 GB of 10 GB used");
+  });
+
+  it("says when there was nothing to delete", () => {
+    expect(
+      pruneLabel({
+        deleted: 0,
+        size_bytes: 1_000_000_000,
+        budget_bytes: 10_000_000_000,
+        over_budget: false,
+      }),
+    ).toBe("Already within its space · 1 GB of 10 GB used");
+  });
+
+  it("explains why nothing went when the newest copy alone is too big", () => {
+    expect(
+      pruneLabel({
+        deleted: 0,
+        size_bytes: 167_000_000_000,
+        budget_bytes: 10_000_000_000,
+        over_budget: true,
+      }),
+    ).toBe(
+      "Nothing deleted: its newest copy alone needs more than 10 GB.",
+    );
   });
 });

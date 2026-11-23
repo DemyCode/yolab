@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { useCallback, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Banner, Skeleton } from "@/components/ui/feedback";
 import { Row, RowAction, Section } from "@/components/ui/list";
@@ -7,14 +7,18 @@ import { AppIconTile } from "@/components/AppIcon";
 import { StatusDot } from "@/components/ui/badge";
 import { RecoveryKeyOverlay } from "@/components/RecoveryKeyOverlay";
 import { api } from "@/lib/api";
+import { formatBytes } from "@/lib/format";
 import { useApi } from "@/lib/useResource";
+import { useNow } from "@/lib/useNow";
 import {
   backupPagePath,
   backupServices,
+  byStorage,
   needsAttention,
+  serviceDetail,
+  serviceTone,
   STALE_AFTER_HOURS,
-  tileLabel,
-  tileTone,
+  storageTotal,
 } from "@/lib/backups";
 import type {
   BackedUpService,
@@ -22,8 +26,7 @@ import type {
   ProtectedApp,
 } from "@/lib/backups";
 import type { CatalogApp } from "@/types/apps";
-import { Collapse, RollingNumber, Swap } from "@/components/motion";
-import { cn } from "@/lib/utils";
+import { Collapse, RollingNumber } from "@/components/motion";
 
 interface ProtectedApps {
   configured: boolean;
@@ -35,7 +38,7 @@ interface BackedUpServices {
   apps: BackedUpService[];
 }
 
-function BackupTile({
+function ServiceRow({
   service,
   icon,
   now,
@@ -44,43 +47,47 @@ function BackupTile({
   icon?: string;
   now: number;
 }) {
-  const tone = tileTone(service, now);
-  const label = tileLabel(service, now);
+  const navigate = useNavigate();
+  const tone = serviceTone(service, now);
   return (
-    <Link
-      to={backupPagePath(service.namespace)}
-      className={cn(
-        "group flex flex-col items-center rounded-card p-3 transition-[background-color,opacity,transform] duration-300 hover:bg-surface active:scale-[0.97]",
-        !service.installed && "opacity-70",
-      )}
-    >
-      <div className="relative mb-3">
-        <AppIconTile
-          appId={service.appId ?? undefined}
-          icon={icon}
-          name={service.name}
-          className="shadow-[var(--shadow-card)] transition-all duration-200 group-hover:-translate-y-0.5 group-hover:shadow-[var(--shadow-lift)]"
-        />
-        <StatusDot
-          tone={tone}
-          pulse={tone === "busy"}
-          className="absolute -right-0.5 -top-0.5"
-        />
-      </div>
-      <span className="line-clamp-1 text-sm font-medium text-fg">
-        {service.name}
-      </span>
-      <Swap
-        id={label}
-        className="mt-0.5 line-clamp-2 text-balance text-center text-xs text-fg-muted"
-      >
-        {label}
-      </Swap>
-    </Link>
+    <Row
+      onClick={() => navigate(backupPagePath(service.namespace))}
+      label={
+        <span className="flex items-center gap-3">
+          <span className="relative shrink-0">
+            <AppIconTile
+              appId={service.appId ?? undefined}
+              icon={icon}
+              name={service.name}
+              size="sm"
+            />
+            {tone !== "ok" && (
+              <StatusDot
+                tone={tone}
+                pulse={tone === "busy"}
+                className="absolute -right-0.5 -top-0.5"
+              />
+            )}
+          </span>
+          <span className="min-w-0">
+            <span className="block truncate">{service.name}</span>
+            <span className="block truncate text-sm font-normal text-fg-muted">
+              {serviceDetail(service, now)}
+            </span>
+          </span>
+        </span>
+      }
+      trailing={
+        <span className="shrink-0 font-mono text-sm tabular-nums text-fg-muted">
+          {service.sizeBytes != null ? formatBytes(service.sizeBytes) : "—"}
+        </span>
+      }
+    />
   );
 }
 
 export function BackupsPage() {
+  const navigate = useNavigate();
   const protectedApps = useApi<ProtectedApps>(
     "protected-apps",
     "/api/backups/protected",
@@ -91,6 +98,7 @@ export function BackupsPage() {
     "/api/backups/apps",
   );
   const catalog = useApi<CatalogApp[]>("catalog", "/api/apps/catalog");
+  const now = useNow(60_000);
   const [recoveryKey, setRecoveryKey] = useState<string | null>(null);
   const [recoveryMandatory, setRecoveryMandatory] = useState(false);
   const [enabling, setEnabling] = useState(false);
@@ -132,13 +140,13 @@ export function BackupsPage() {
 
   const data = protectedApps.data;
   const apps = data?.apps ?? [];
-  const services = backupServices(apps, backedUp.data?.apps ?? []);
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    const id = window.setInterval(() => setNow(Date.now()), 60_000);
-    return () => clearInterval(id);
-  }, []);
+  const services = byStorage(backupServices(apps, backedUp.data?.apps ?? []));
+  const installed = services.filter((s) => s.installed);
+  const removed = services.filter((s) => !s.installed);
+  const total = storageTotal(services);
   const attention = needsAttention(apps, now, STALE_AFTER_HOURS);
+  const icon = (s: BackupService) =>
+    catalog.data?.find((c) => c.id === s.appId)?.icon;
 
   return (
     <div className="max-w-3xl">
@@ -156,9 +164,17 @@ export function BackupsPage() {
       )}
 
       <p className="max-w-lg text-sm text-fg-muted">
-        Every service is copied with its own data, encrypted, to storage outside
-        your home. Open one to see its copies through time and bring any of them
-        back.
+        {total != null ? (
+          <>
+            <span className="font-mono tabular-nums text-fg">
+              {formatBytes(total)}
+            </span>{" "}
+            of encrypted copies, kept outside your home. You pay for this
+            space, so the biggest services are listed first.
+          </>
+        ) : (
+          "Every service is copied with its own data, encrypted, to storage outside your home."
+        )}
       </p>
 
       <Collapse open={Boolean(error)} className="pt-6">
@@ -203,37 +219,48 @@ export function BackupsPage() {
             >
               Anything changed in {attention.length === 1 ? "it" : "them"} since
               the last good copy is not saved anywhere else yet. Open{" "}
-              {attention.length === 1 ? "it" : "each one"} to back up now or see
-              what went wrong.
+              {attention.length === 1 ? "it" : "each one"} below to back up now
+              or see what went wrong.
             </Banner>
           </Collapse>
 
-          {services.length === 0 ? (
-            <Section title="Services">
+          <Section title="Services">
+            {installed.length === 0 ? (
               <Row
                 label="Nothing to back up yet"
                 detail="Once you add a service, it is backed up automatically."
               />
+            ) : (
+              installed.map((s) => (
+                <ServiceRow
+                  key={s.namespace}
+                  service={s}
+                  icon={icon(s)}
+                  now={now}
+                />
+              ))
+            )}
+          </Section>
+
+          {removed.length > 0 && (
+            <Section title="Removed services">
+              {removed.map((s) => (
+                <ServiceRow
+                  key={s.namespace}
+                  service={s}
+                  icon={icon(s)}
+                  now={now}
+                />
+              ))}
             </Section>
-          ) : (
-            <section className="mt-8">
-              <h2 className="mb-2 px-1 text-sm font-semibold text-fg-muted">
-                Services
-              </h2>
-              <div className="grid animate-fade-in grid-cols-3 gap-2 sm:grid-cols-4 md:grid-cols-6">
-                {services.map((s) => (
-                  <BackupTile
-                    key={s.namespace}
-                    service={s}
-                    now={now}
-                    icon={catalog.data?.find((c) => c.id === s.appId)?.icon}
-                  />
-                ))}
-              </div>
-            </section>
           )}
 
-          <Section title="Recovery key">
+          <Section title="For every service">
+            <Row
+              label="Defaults for new services"
+              detail="How often a new service is backed up and how much space its copies get"
+              onClick={() => navigate("/system/settings")}
+            />
             <Row
               label="Recovery key"
               detail="Your backups can only be read with it. Keep a copy somewhere other than this machine."

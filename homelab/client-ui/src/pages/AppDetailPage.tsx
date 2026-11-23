@@ -16,7 +16,6 @@ import {
   Skeleton,
   Spinner,
 } from "@/components/ui/feedback";
-import { Input, Select, Switch } from "@/components/ui/input";
 import {
   DisclosureRow,
   Row,
@@ -25,7 +24,7 @@ import {
   ValueRow,
 } from "@/components/ui/list";
 import { api, streamEvents } from "@/lib/api";
-import { BACKUP_PRESETS, backupPagePath } from "@/lib/backups";
+import { backupPagePath, scheduleLabel } from "@/lib/backups";
 import { formatDateTime, relativeTime } from "@/lib/format";
 import { useApi } from "@/lib/useResource";
 import {
@@ -376,173 +375,29 @@ function TechnicalDetails({ app }: { app: AppInfo }) {
   );
 }
 
-function BackupsSection({
-  app,
-  canBackUp,
-  canRestore,
-  onChanged,
-}: {
-  app: AppInfo;
-  canBackUp: boolean;
-  canRestore: boolean;
-  onChanged: () => Promise<unknown>;
-}) {
+function BackupsSection({ app, canOpen }: { app: AppInfo; canOpen: boolean }) {
   const navigate = useNavigate();
-  const [pending, setPending] = useState<{
-    enabled: boolean;
-    schedule: string;
-  } | null>(null);
-  const [starting, setStarting] = useState(false);
-  const [custom, setCustom] = useState(
-    !BACKUP_PRESETS.some((p) => p.cron === app.backup.schedule),
-  );
-  const [draft, setDraft] = useState(app.backup.schedule);
-  const [note, setNote] = useState<{ ok: boolean; text: string } | null>(null);
-
-  const enabled = pending?.enabled ?? app.backup.enabled;
-  const schedule = pending?.schedule ?? app.backup.schedule;
-  const running = starting || app.backup.running;
-
-  async function save(next: { enabled: boolean; schedule: string }) {
-    setPending(next);
-    setNote(null);
-    try {
-      await api.put(`/api/apps/${app.instance_name}/backup`, next);
-      setNote({ ok: true, text: "Saved" });
-      await onChanged();
-    } catch (e) {
-      setNote({
-        ok: false,
-        text: e instanceof Error ? e.message : "Could not save that.",
-      });
-    } finally {
-      setPending(null);
-    }
-  }
-
-  async function backupNow() {
-    setStarting(true);
-    setNote(null);
-    try {
-      await api.post(`/api/backups/apps/yolab-${app.instance_name}/run-now`);
-      await onChanged();
-    } catch (e) {
-      setNote({
-        ok: false,
-        text: e instanceof Error ? e.message : "Could not start a backup.",
-      });
-    } finally {
-      setStarting(false);
-    }
-  }
-
   const last = app.backup.last_ok_at;
+  const detail = !app.backup.enabled
+    ? "Off"
+    : app.backup.running
+      ? "Backing up now…"
+      : [
+          scheduleLabel(app.backup.schedule),
+          last ? `last saved ${relativeTime(last)}` : "not saved yet",
+        ].join(" · ");
 
   return (
-    <Section
-      title="Backups"
-      action={
-        note && (
-          <span
-            className={cn("text-xs", note.ok ? "text-success" : "text-danger")}
-            role="status"
-          >
-            {note.text}
-          </span>
-        )
-      }
-    >
+    <Section title="Backups">
       <Row
-        label="Back up automatically"
-        trailing={
-          <Switch
-            checked={enabled}
-            onChange={(v) => void save({ enabled: v, schedule })}
-            label="Back up automatically"
-          />
+        label="Its backups"
+        detail={detail}
+        onClick={
+          canOpen
+            ? () => navigate(backupPagePath(`yolab-${app.instance_name}`))
+            : undefined
         }
       />
-      {enabled && (
-        <Row
-          label="How often"
-          trailing={
-            <Select
-              value={custom ? "__custom" : schedule}
-              onChange={(e) => {
-                if (e.target.value === "__custom") {
-                  setDraft(schedule);
-                  setCustom(true);
-                  return;
-                }
-                setCustom(false);
-                void save({ enabled, schedule: e.target.value });
-              }}
-              aria-label="How often"
-              className="h-9 w-auto max-w-[14rem]"
-            >
-              {BACKUP_PRESETS.map((p) => (
-                <option key={p.cron} value={p.cron}>
-                  {p.label}
-                </option>
-              ))}
-              <option value="__custom">Custom…</option>
-            </Select>
-          }
-        >
-          {custom && (
-            <div className="mt-3">
-              <div className="flex gap-2">
-                <Input
-                  value={draft}
-                  onChange={(e) => setDraft(e.target.value)}
-                  aria-label="Custom schedule"
-                  spellCheck={false}
-                  className="h-9 font-mono"
-                />
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  onClick={() => void save({ enabled, schedule: draft })}
-                  disabled={!draft.trim() || draft === schedule}
-                >
-                  Save
-                </Button>
-              </div>
-              <p className="mt-1.5 text-xs text-fg-subtle">
-                Minute, hour, day, month, weekday, in the server&rsquo;s time.{" "}
-                <code className="font-mono">0 3 * * *</code> is every day at
-                03:00.
-              </p>
-            </div>
-          )}
-        </Row>
-      )}
-      <Row
-        label="Last backup"
-        detail={
-          running ? (
-            "Backing up now…"
-          ) : last ? (
-            <span title={formatDateTime(last)}>{relativeTime(last)}</span>
-          ) : (
-            "Not backed up yet"
-          )
-        }
-        trailing={
-          canBackUp ? (
-            <RowAction onClick={() => void backupNow()} disabled={running}>
-              {running ? "Backing up…" : "Back up now"}
-            </RowAction>
-          ) : null
-        }
-      />
-      {canRestore && (
-        <Row
-          label="Its backups"
-          detail="Every copy through time: bring one back, delete one, or give its backups more space"
-          onClick={() => navigate(backupPagePath(`yolab-${app.instance_name}`))}
-        />
-      )}
     </Section>
   );
 }
@@ -894,9 +749,7 @@ export function AppDetailPage() {
       {!quiet && (
         <BackupsSection
           app={app}
-          canBackUp={actions.has("backup")}
-          canRestore={actions.has("restore")}
-          onChanged={() => apps.refresh()}
+          canOpen={actions.has("backup") || actions.has("restore")}
         />
       )}
 

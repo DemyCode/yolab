@@ -1,5 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { isPreset, saveSettings, SETTINGS_PATH } from "./settings";
+import {
+  DEFAULT_SPACE_BYTES,
+  isPreset,
+  saveSettings,
+  SETTINGS_PATH,
+} from "./settings";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -29,14 +34,6 @@ describe("saveSettings", () => {
     expect(path).toBe(SETTINGS_PATH);
     expect(init.method).toBe("PUT");
     expect(JSON.parse(String(init.body))).toEqual(monthly10);
-  });
-
-  it("sends a space left to YoLab as null, not as zero", async () => {
-    const fetch = answer(200, { ...monthly10, backup_budget_bytes: null });
-    vi.stubGlobal("fetch", fetch);
-    await saveSettings({ ...monthly10, backup_budget_bytes: null });
-    const [, init] = fetch.mock.calls[0] as unknown as [string, RequestInit];
-    expect(JSON.parse(String(init.body)).backup_budget_bytes).toBeNull();
   });
 
   it("returns the server's reason when it refuses a setting", async () => {
@@ -69,5 +66,11 @@ describe("isPreset", () => {
 
   it("treats any other cron line as a custom schedule", () => {
     expect(isPreset("15 4 * * 2")).toBe(false);
+  });
+});
+
+describe("DEFAULT_SPACE_BYTES", () => {
+  it("is the 10 GB a service gets when it has no space of its own", () => {
+    expect(DEFAULT_SPACE_BYTES).toBe(10_000_000_000);
   });
 });

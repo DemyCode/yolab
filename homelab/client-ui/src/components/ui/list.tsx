@@ -139,10 +139,12 @@ export function RowAction({
   children,
   onClick,
   disabled,
+  danger,
 }: {
   children: ReactNode;
   onClick: () => void;
   disabled?: boolean;
+  danger?: boolean;
 }) {
   return (
     <button
@@ -150,7 +152,10 @@ export function RowAction({
       onClick={onClick}
       disabled={disabled}
       className={cn(
-        "inline-flex shrink-0 items-center gap-1.5 rounded-control px-2.5 py-1.5 text-sm font-medium text-primary transition-colors hover:bg-primary-soft",
+        "inline-flex shrink-0 items-center gap-1.5 rounded-control px-2.5 py-1.5 text-sm font-medium transition-colors",
+        danger
+          ? "text-danger hover:bg-danger-soft"
+          : "text-primary hover:bg-primary-soft",
         focusRing,
         "disabled:pointer-events-none disabled:opacity-60",
       )}

@@ -10,7 +10,6 @@ import {
 import type { NodeInfo, NodeLink } from "@/types/nodes";
 import type { PathStatus } from "@/types/mesh";
 import { useApi } from "@/lib/useResource";
-import { SshKeysCard } from "@/components/SshKeysCard";
 import { hardwareDetail, hardwareLabel } from "@/lib/hardware";
 import { AnimatedList, RollingNumber, Swap } from "@/components/motion";
 
@@ -204,7 +203,6 @@ export function NodesPage() {
         </CardContent>
       </Card>
 
-      <SshKeysCard />
     </div>
   );
 }

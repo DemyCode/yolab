@@ -3,10 +3,12 @@ import { BACKUP_PRESETS } from "./backups";
 
 export interface ClusterSettings {
   backup_schedule: string;
-  backup_budget_bytes: number | null;
+  backup_budget_bytes: number;
 }
 
 export const SETTINGS_PATH = "/api/settings";
+
+export const DEFAULT_SPACE_BYTES = 10_000_000_000;
 
 export type Saved =
   { ok: true; settings: ClusterSettings } | { ok: false; error: string };

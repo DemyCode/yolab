@@ -223,25 +223,110 @@ export function ageLabel(iso: string, now: number): string {
   return `${Math.round(days / 365)} y ago`;
 }
 
-export type TileTone = "ok" | "busy" | "warn" | "error";
+export type ServiceTone = "ok" | "busy" | "warn" | "error";
 
-export function tileTone(service: BackupService, now: number): TileTone {
+export function serviceTone(
+  service: BackupService,
+  now: number,
+): ServiceTone {
   const app = service.protection;
   if (!app) return "ok";
   const state = protectionState(app);
   if (state === "failed") return "error";
   if (state === "running" || state === "queued") return "busy";
-  if (isStale(app, now, STALE_AFTER_HOURS)) return "warn";
+  if (isStale(app, now, STALE_AFTER_HOURS) || app.over_budget) return "warn";
   return "ok";
 }
 
-export function tileLabel(service: BackupService, now: number): string {
+export function scheduleLabel(cron: string): string {
+  return (
+    BACKUP_PRESETS.find((p) => p.cron === cron)?.label ?? `Custom: ${cron}`
+  );
+}
+
+export function serviceDetail(service: BackupService, now: number): string {
   const app = service.protection;
-  if (!app) return `Removed · ${copiesLabel(service.copies)}`;
+  if (!app) return `Removed · ${copiesLabel(service.copies)} left`;
   const state = protectionState(app);
+  if (state === "off") {
+    return service.copies > 0
+      ? `Backups off · ${copiesLabel(service.copies)} kept`
+      : "Backups off";
+  }
   if (state !== "ok") return protectionLabel(state);
-  const last = app.last_ok_at ? ageLabel(app.last_ok_at, now) : null;
-  return last
-    ? `${copiesLabel(service.copies)} · ${last}`
-    : copiesLabel(service.copies);
+  const saved = app.last_ok_at
+    ? `Saved ${ageLabel(app.last_ok_at, now)}`
+    : "Saved";
+  const over = app.over_budget ? " · More than its space" : "";
+  return `${saved} · ${scheduleLabel(app.schedule)}${over}`;
+}
+
+export function byStorage(services: BackupService[]): BackupService[] {
+  return services
+    .slice()
+    .sort(
+      (a, b) =>
+        (b.sizeBytes ?? -1) - (a.sizeBytes ?? -1) ||
+        a.name.localeCompare(b.name),
+    );
+}
+
+export function storageTotal(services: BackupService[]): number | null {
+  const known = services.filter((s) => s.sizeBytes != null);
+  if (known.length === 0) return null;
+  return known.reduce((sum, s) => sum + (s.sizeBytes ?? 0), 0);
+}
+
+export function spaceToFit(sizeBytes: number): number {
+  return Math.max(1, Math.ceil(sizeBytes / GB)) * GB;
+}
+
+export type ServiceBanner =
+  | { kind: "failed"; error: string }
+  | { kind: "over"; sizeBytes: number; budgetBytes: number }
+  | { kind: "stale" }
+  | null;
+
+export function serviceBanner(
+  app: ProtectedApp | undefined,
+  copies: RestorePoints | null,
+  now: number,
+): ServiceBanner {
+  if (!app) return null;
+  if (app.enabled && app.state === "failed") {
+    return { kind: "failed", error: app.error ?? "The last backup failed." };
+  }
+  if (
+    copies?.over_budget &&
+    copies.size_bytes != null &&
+    copies.budget_bytes != null
+  ) {
+    return {
+      kind: "over",
+      sizeBytes: copies.size_bytes,
+      budgetBytes: copies.budget_bytes,
+    };
+  }
+  if (isStale(app, now, STALE_AFTER_HOURS)) return { kind: "stale" };
+  return null;
+}
+
+export interface PruneResult {
+  deleted: number;
+  size_bytes: number;
+  budget_bytes: number;
+  over_budget: boolean;
+}
+
+export function prunePath(namespace: string): string {
+  return `/api/backups/apps/${encodeURIComponent(namespace)}/prune`;
+}
+
+export function pruneLabel(result: PruneResult): string {
+  const used = `${formatBytes(result.size_bytes)} of ${formatBytes(result.budget_bytes)} used`;
+  if (result.over_budget) {
+    return `Nothing deleted: its newest copy alone needs more than ${formatBytes(result.budget_bytes)}.`;
+  }
+  if (result.deleted === 0) return `Already within its space · ${used}`;
+  return `Deleted ${copiesLabel(result.deleted)} · ${used}`;
 }
