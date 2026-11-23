@@ -1535,7 +1535,8 @@ mod tests {
             Map::new(),
             Some(&copied(&source)),
             None,
-            &no_schema()
+            &no_schema(),
+            BackupPolicy::default()
         )
         .is_ok());
         assert_eq!(same_app("gitea", "", "that backup"), Ok(()));
