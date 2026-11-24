@@ -13,7 +13,7 @@ import { Card } from "@/components/ui/card";
 import { Switch } from "@/components/ui/input";
 import { Row, Section } from "@/components/ui/list";
 import { Banner, Spinner } from "@/components/ui/feedback";
-import { api, streamEvents } from "@/lib/api";
+import { api, ApiError, streamEvents } from "@/lib/api";
 import { useApi } from "@/lib/useResource";
 import { formatDateTime, generateSecret } from "@/lib/format";
 import { backupPagePath } from "@/lib/backups";
@@ -31,7 +31,6 @@ import {
   seedForm,
   snapshotNamespace,
   instanceNameFor,
-  readsLiveApp,
   restoreTargets,
   runningFromBackup,
   type RestoreTarget,
@@ -67,8 +66,12 @@ import type {
   DomainResponse,
 } from "@/types/apps";
 
+function reasonOf(e: unknown, fallback: string): string {
+  return e instanceof ApiError ? e.message : fallback;
+}
+
 export function InstallPage() {
-  const { appId } = useParams<{ appId: string }>();
+  const appId = useParams<"appId">().appId!;
   const navigate = useNavigate();
 
   const catalog = useApi<CatalogApp[]>("catalog", "/api/apps/catalog");
@@ -77,21 +80,25 @@ export function InstallPage() {
   const stats = useApi<AppStats[]>("store-stats", "/api/store/stats");
   const statsMap = useMemo(() => statsById(stats.data), [stats.data]);
 
-  const cached = catalog.data?.find((a) => a.id === appId);
+  const catalogApps = catalog.data ?? [];
+  const installedApps = apps.data ?? [];
+  const cached = catalogApps.find((a) => a.id === appId);
 
   const [fresh, setFresh] = useState<CatalogApp | null>(null);
+  const [refreshError, setRefreshError] = useState<string | null>(null);
   useEffect(() => {
-    if (!appId) return;
     let cancelled = false;
-    void (async () => {
-      try {
-        const r = await api.post<{ app: CatalogApp | null }>(
-          `/api/apps/catalog/${appId}/refresh`,
-        );
-        if (!cancelled && r?.app) setFresh(r.app);
-        // eslint-disable-next-line no-empty
-      } catch {}
-    })();
+    api
+      .post<{ app: CatalogApp | null }>(`/api/apps/catalog/${appId}/refresh`)
+      .then(
+        (r) => {
+          if (!cancelled && r.app) setFresh(r.app);
+        },
+        (e: unknown) => {
+          if (!cancelled)
+            setRefreshError(reasonOf(e, "The catalog did not answer."));
+        },
+      );
     return () => {
       cancelled = true;
     };
@@ -130,13 +137,14 @@ export function InstallPage() {
   const { points: snapshots } = useRestorePoints(
     backupNamespace && copyData ? backupNamespace : null,
   );
-  const snapshot = origin.snapshot ?? "";
+  const snapshot = origin.mode === "restore" ? origin.snapshot : "";
   const snapshotTime =
     snapshots?.find((s) => s.snapshot_id === snapshot)?.time ?? null;
-  const running = runningFromBackup(backupNamespace, apps.data ?? []);
+  const running = runningFromBackup(backupNamespace, installedApps);
   const [target, setTarget] = useState<RestoreTarget | null>(null);
   const where = target ?? restoreTargets(running)[0];
-  const replacing = origin.mode === "restore" && where === "replace";
+  const replacing =
+    origin.mode === "restore" && running !== null && where === "replace";
   const waitingForApps = origin.mode === "restore" && !apps.data && !apps.error;
   const [picked, setPicked] = useState<RestoreChoices>(NO_CHOICES);
   const restorePlan = useRestorePlan(
@@ -144,20 +152,25 @@ export function InstallPage() {
     snapshot,
   );
 
+  const [sourceError, setSourceError] = useState<string | null>(null);
   useEffect(() => {
     if (origin.mode === "fresh") return;
     let cancelled = false;
-    const url = readsLiveApp(origin.mode)
-      ? `/api/apps/${origin.fromInstance}/definition`
-      : `/api/backups/apps/${origin.namespace}/definition?snapshot_id=${encodeURIComponent(origin.snapshot ?? "")}`;
-    void api
-      .get<AppDefinition>(url)
-      .then((d) => {
+    const url =
+      origin.mode === "restore"
+        ? `/api/backups/apps/${origin.namespace}/definition?snapshot_id=${encodeURIComponent(origin.snapshot)}`
+        : `/api/apps/${origin.fromInstance}/definition`;
+    api.get<AppDefinition>(url).then(
+      (d) => {
         if (!cancelled) setSourceDef(d);
-      })
-      .catch(() => {
-        if (!cancelled) setSourceDef(null);
-      });
+      },
+      (e: unknown) => {
+        if (!cancelled)
+          setSourceError(
+            `Its settings could not be read: ${reasonOf(e, "the server did not answer")}`,
+          );
+      },
+    );
     return () => {
       cancelled = true;
     };
@@ -167,14 +180,17 @@ export function InstallPage() {
   useEffect(() => {
     if (origin.mode !== "edit") return;
     let cancelled = false;
-    void api
-      .get<object>(`/api/apps/${origin.fromInstance}/schema`)
-      .then((s) => {
+    api.get<object>(`/api/apps/${origin.fromInstance}/schema`).then(
+      (s) => {
         if (!cancelled) setLiveSchema(s);
-      })
-      .catch(() => {
-        if (!cancelled) setLiveSchema(null);
-      });
+      },
+      (e: unknown) => {
+        if (!cancelled)
+          setSourceError(
+            `Its settings form could not be read: ${reasonOf(e, "the server did not answer")}`,
+          );
+      },
+    );
     return () => {
       cancelled = true;
     };
@@ -193,10 +209,8 @@ export function InstallPage() {
   const [error, setError] = useState<string | null>(null);
   const [started, setStarted] = useState<string | null>(null);
 
-  const installedOfThisApp = (apps.data ?? []).filter(
-    (a) => a.app_id === appId,
-  );
-  const instanceName = instanceNameFor(origin.mode, appId ?? "", sourceDef);
+  const installedOfThisApp = installedApps.filter((a) => a.app_id === appId);
+  const instanceName = instanceNameFor(origin.mode, appId, sourceDef);
 
   const rjsfSchema = useMemo(
     () => ({ type: "object", ...schema }) as RJSFSchema,
@@ -211,7 +225,7 @@ export function InstallPage() {
   const [formData, setFormData] = useState<Record<string, unknown>>({});
   const seeded = useRef<string | null>(null);
   useEffect(() => {
-    if (!appId || !schema.properties || waitingForApps) return;
+    if (!schema.properties || waitingForApps) return;
     const key = `${appId}|${sourceDef ? "source" : "new"}|${running ?? ""}`;
     if (seeded.current === key) return;
     seeded.current = key;
@@ -268,29 +282,28 @@ export function InstallPage() {
     snapshotsLoaded: true,
     snapshotCount: snapshot ? 1 : 0,
   });
-  const blocker = replacing
-    ? restorePlan.plan
-      ? null
-      : (restorePlan.error ?? "Reading the backup…")
-    : formBlocker;
+  const blocker = sourceError
+    ? sourceError
+    : replacing
+      ? restorePlan.plan
+        ? null
+        : (restorePlan.error ?? "Reading the backup…")
+      : formBlocker;
 
-  async function install() {
-    if (!app) return;
+  async function install(app: CatalogApp) {
     setInstalling(true);
     setError(null);
 
-    if (replacing && running) {
+    if (replacing) {
       try {
         await api.post("/api/backups/restore", {
           namespace: origin.namespace,
           snapshot_id: snapshot,
-          ...(restorePlan.plan
-            ? { choices: choicesFor(restorePlan.plan, "in-place", picked) }
-            : {}),
+          choices: choicesFor(restorePlan.plan!, "in-place", picked),
         });
         navigate(`/app/${running}`);
       } catch (e) {
-        setError(e instanceof Error ? e.message : "The restore did not start.");
+        setError(reasonOf(e, "The restore did not start."));
         setInstalling(false);
       }
       return;
@@ -318,12 +331,7 @@ export function InstallPage() {
       if (result.ok) {
         navigate(`/app/${instanceName}`);
       } else {
-        setError(
-          result.error ??
-            (origin.mode === "update"
-              ? "It still runs the version it had."
-              : "The new settings were not applied."),
-        );
+        setError(result.error);
         setInstalling(false);
       }
       return;
@@ -338,7 +346,6 @@ export function InstallPage() {
           source: installSource(
             origin,
             copyData,
-            snapshot,
             origin.mode === "restore" && restorePlan.plan
               ? choicesFor(restorePlan.plan, "reinstall", picked)
               : undefined,
@@ -348,7 +355,7 @@ export function InstallPage() {
       if (generatedSecrets.length > 0) setStarted(begun.instance_name);
       else navigate(`/app/${begun.instance_name}`);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "The install could not start.");
+      setError(reasonOf(e, "The install could not start."));
       setInstalling(false);
     }
   }
@@ -367,7 +374,7 @@ export function InstallPage() {
     return (
       <Page title="Service not found">
         <p className="text-sm text-fg-muted">
-          That service is not in the catalog any more.
+          {refreshError ?? "That service is not in the catalog any more."}
         </p>
         <Link
           to="/add"
@@ -406,7 +413,7 @@ export function InstallPage() {
                 <div key={name}>
                   <div className="text-xs text-fg-muted">{title}</div>
                   <code className="block break-all font-mono text-sm text-fg">
-                    {String(values[name] ?? "")}
+                    {String(values[name])}
                   </code>
                 </div>
               ))}
@@ -424,10 +431,13 @@ export function InstallPage() {
     );
   }
 
-  const sourceName =
-    origin.mode === "duplicate"
-      ? (sourceDef?.instance_name ?? origin.fromInstance)
-      : (sourceDef?.instance_name ?? origin.namespace);
+  const shownName =
+    sourceDef?.instance_name ??
+    (origin.mode === "duplicate"
+      ? origin.fromInstance
+      : origin.mode === "restore"
+        ? origin.namespace
+        : app.name);
 
   const notice = error ? (
     <Banner
@@ -461,7 +471,7 @@ export function InstallPage() {
     const website = home && home !== repo ? home : null;
     const updated = app.pushed_at ? updatedAgo(app.pushed_at) : null;
     const explains = app.description && app.description !== tagline;
-    const similar = similarApps(app, catalog.data ?? [], statsMap);
+    const similar = similarApps(app, catalogApps, statsMap);
     const factLink =
       "inline-flex items-center gap-1.5 rounded-control transition-colors hover:text-fg focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary";
 
@@ -575,7 +585,7 @@ export function InstallPage() {
             </section>
           )}
 
-          <PackMembers members={packMemberEntries(app, catalog.data ?? [])} />
+          <PackMembers members={packMemberEntries(app, catalogApps)} />
 
           {installedOfThisApp.length > 0 && (
             <Section title="You already run">
@@ -604,8 +614,7 @@ export function InstallPage() {
                   key={`${other.repo}/${other.id}`}
                   app={other}
                   count={
-                    (apps.data ?? []).filter((a) => a.app_id === other.id)
-                      .length
+                    installedApps.filter((a) => a.app_id === other.id).length
                   }
                   stats={statsMap.get(other.id)}
                 />
@@ -619,13 +628,13 @@ export function InstallPage() {
 
   const heading =
     origin.mode === "duplicate"
-      ? `Duplicate ${sourceName ?? app.name}`
+      ? `Duplicate ${shownName}`
       : origin.mode === "restore"
-        ? `Restore ${sourceName ?? app.name}`
+        ? `Restore ${shownName}`
         : origin.mode === "edit"
-          ? `Settings of ${sourceName ?? app.name}`
+          ? `Settings of ${shownName}`
           : origin.mode === "update"
-            ? `Update ${sourceName ?? app.name} to ${app.chart_version}`
+            ? `Update ${shownName} to ${app.chart_version}`
             : `Install ${app.name}`;
 
   const restoreLabel = replacing
@@ -652,20 +661,20 @@ export function InstallPage() {
           <ArrowLeft className="h-4 w-4" />
           {app.name}
         </button>
-      ) : origin.mode === "restore" && origin.namespace ? (
+      ) : origin.mode === "restore" ? (
         <Link to={backupPagePath(origin.namespace)} className={backLink}>
           <ArrowLeft className="h-4 w-4" />
           Its backups
         </Link>
-      ) : changesLiveApp(origin.mode) ? (
-        <Link to={`/app/${origin.fromInstance}`} className={backLink}>
-          <ArrowLeft className="h-4 w-4" />
-          {sourceName ?? app.name}
-        </Link>
-      ) : (
+      ) : origin.mode === "duplicate" ? (
         <Link to="/add" className={backLink}>
           <ArrowLeft className="h-4 w-4" />
           All services
+        </Link>
+      ) : (
+        <Link to={`/app/${origin.fromInstance}`} className={backLink}>
+          <ArrowLeft className="h-4 w-4" />
+          {shownName}
         </Link>
       )}
 
@@ -728,7 +737,9 @@ export function InstallPage() {
               templates={templates}
               liveValidate={false}
               showErrorList={false}
-              onChange={(e) => setFormData(e.formData ?? {})}
+              onChange={(e) =>
+                setFormData(e.formData as Record<string, unknown>)
+              }
             >
               <></>
             </Form>
@@ -774,14 +785,12 @@ export function InstallPage() {
             label="From the copy of"
             detail={snapshotTime ? formatDateTime(snapshotTime) : snapshot}
             trailing={
-              origin.namespace ? (
-                <Link
-                  to={backupPagePath(origin.namespace)}
-                  className="text-sm text-primary"
-                >
-                  Pick another moment
-                </Link>
-              ) : null
+              <Link
+                to={backupPagePath(origin.namespace)}
+                className="text-sm text-primary"
+              >
+                Pick another moment
+              </Link>
             }
           />
           {snapshot && (
@@ -789,7 +798,7 @@ export function InstallPage() {
               plan={restorePlan.plan}
               error={restorePlan.error}
               mode={replacing ? "in-place" : "reinstall"}
-              app={(replacing ? running : null) ?? sourceName ?? app.name}
+              app={replacing ? running : shownName}
               picked={picked}
               onPick={setPicked}
             />
@@ -801,7 +810,7 @@ export function InstallPage() {
         <Button
           full
           size="lg"
-          onClick={() => void install()}
+          onClick={() => void install(app)}
           disabled={blocker !== null || installing}
         >
           {installing

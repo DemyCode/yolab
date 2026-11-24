@@ -9,12 +9,10 @@ import {
 
 export type InstallMode = "fresh" | "duplicate" | "restore" | "edit" | "update";
 
-export interface InstallOrigin {
-  mode: InstallMode;
-  fromInstance: string | null;
-  namespace: string | null;
-  snapshot: string | null;
-}
+export type InstallOrigin =
+  | { mode: "fresh" }
+  | { mode: "duplicate" | "edit" | "update"; fromInstance: string }
+  | { mode: "restore"; namespace: string; snapshot: string };
 
 export interface InstallSourcePayload {
   kind: "duplicate" | "backup";
@@ -28,32 +26,22 @@ export interface InstallSourcePayload {
 export function installOrigin(params: URLSearchParams): InstallOrigin {
   const updating = params.get("update");
   if (updating) {
-    return {
-      mode: "update",
-      fromInstance: updating,
-      namespace: null,
-      snapshot: null,
-    };
+    return { mode: "update", fromInstance: updating };
   }
   const editing = params.get("edit");
   if (editing) {
-    return {
-      mode: "edit",
-      fromInstance: editing,
-      namespace: null,
-      snapshot: null,
-    };
+    return { mode: "edit", fromInstance: editing };
   }
   const fromInstance = params.get("from");
   const namespace = params.get("restore");
   const snapshot = params.get("snapshot");
   if (fromInstance) {
-    return { mode: "duplicate", fromInstance, namespace: null, snapshot: null };
+    return { mode: "duplicate", fromInstance };
   }
   if (namespace && snapshot) {
-    return { mode: "restore", fromInstance: null, namespace, snapshot };
+    return { mode: "restore", namespace, snapshot };
   }
-  return { mode: "fresh", fromInstance: null, namespace: null, snapshot: null };
+  return { mode: "fresh" };
 }
 
 export function copiesDataByDefault(mode: InstallMode): boolean {
@@ -67,21 +55,20 @@ export function snapshotNamespace(origin: InstallOrigin): string | null {
 export function installSource(
   origin: InstallOrigin,
   withData: boolean,
-  snapshot: string,
   choices?: RestoreChoices,
 ): InstallSourcePayload | undefined {
   if (origin.mode === "duplicate") {
     return {
       kind: "duplicate",
-      from_instance: origin.fromInstance ?? "",
+      from_instance: origin.fromInstance,
       with_data: withData,
     };
   }
   if (origin.mode === "restore") {
     return {
       kind: "backup",
-      namespace: origin.namespace ?? "",
-      snapshot_id: snapshot || (origin.snapshot ?? ""),
+      namespace: origin.namespace,
+      snapshot_id: origin.snapshot,
       with_data: withData,
       ...(choices ? { choices } : {}),
     };
@@ -123,10 +110,6 @@ export function keepsSourceAddress(
 ): boolean {
   if (mode === "restore") return !sourceRuns;
   return changesLiveApp(mode);
-}
-
-export function readsLiveApp(mode: InstallMode): boolean {
-  return mode === "duplicate" || changesLiveApp(mode);
 }
 
 export function changesLiveApp(mode: InstallMode): boolean {

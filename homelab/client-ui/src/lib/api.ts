@@ -73,11 +73,8 @@ export const api = {
     }),
 };
 
-export interface StreamResult {
-  ok: boolean;
-  error?: string;
-  dropped?: boolean;
-}
+export type StreamResult =
+  { ok: true } | { ok: false; error: string; dropped?: boolean };
 
 const DROPPED: StreamResult = {
   ok: false,

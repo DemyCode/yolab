@@ -33,8 +33,7 @@ describe("streamEvents", () => {
       ),
     );
     const result = await streamEvents("/api/apps/gitea", {}, () => {});
-    expect(result.ok).toBe(true);
-    expect(result.dropped).toBeUndefined();
+    expect(result).toEqual({ ok: true });
   });
 
   it("reports the server's own failure as a failure, not as a dropped connection", async () => {
@@ -54,8 +53,7 @@ describe("streamEvents", () => {
       vi.fn(async () => streaming(frames("Installing…"))),
     );
     const result = await streamEvents("/api/apps/gitea", {}, () => {});
-    expect(result.ok).toBe(false);
-    expect(result.dropped).toBe(true);
+    expect(result).toMatchObject({ ok: false, dropped: true });
   });
 
   it("treats a connection that breaks mid-stream as dropped instead of throwing", async () => {
@@ -79,7 +77,7 @@ describe("streamEvents", () => {
       lines.push(l),
     );
     expect(lines).toEqual(["Installing…"]);
-    expect(result.dropped).toBe(true);
+    expect(result).toMatchObject({ ok: false, dropped: true });
   });
 
   it("treats a request that never got through as dropped instead of throwing", async () => {
@@ -90,7 +88,7 @@ describe("streamEvents", () => {
       }),
     );
     const result = await streamEvents("/api/apps/gitea", {}, () => {});
-    expect(result.dropped).toBe(true);
+    expect(result).toMatchObject({ ok: false, dropped: true });
   });
 });
 

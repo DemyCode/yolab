@@ -11,12 +11,10 @@ import {
   stripInstanceId,
   seedForm,
   instanceNameFor,
-  readsLiveApp,
   restoreTargets,
   runningFromBackup,
 } from "./install";
 import type { AppDefinition } from "@/types/apps";
-import type { InstallOrigin } from "./install";
 import type { ConfigSchema } from "./schema";
 
 function definition(over: Partial<AppDefinition> = {}): AppDefinition {
@@ -49,17 +47,18 @@ describe("installOrigin", () => {
 
   it("reads a duplicate", () => {
     const origin = installOrigin(params("from=gitea-ab12"));
-    expect(origin.mode).toBe("duplicate");
-    expect(origin.fromInstance).toBe("gitea-ab12");
+    expect(origin).toEqual({ mode: "duplicate", fromInstance: "gitea-ab12" });
   });
 
   it("reads a restore", () => {
     const origin = installOrigin(
       params("restore=yolab-gitea-ab12&snapshot=d1"),
     );
-    expect(origin.mode).toBe("restore");
-    expect(origin.namespace).toBe("yolab-gitea-ab12");
-    expect(origin.snapshot).toBe("d1");
+    expect(origin).toEqual({
+      mode: "restore",
+      namespace: "yolab-gitea-ab12",
+      snapshot: "d1",
+    });
   });
 
   it("is not a restore without the backup to restore from", () => {
@@ -139,14 +138,13 @@ describe("a copy's files folder", () => {
 
 describe("installSource", () => {
   it("sends nothing for a plain install", () => {
-    expect(installSource(installOrigin(params("")), false, "")).toBeUndefined();
+    expect(installSource(installOrigin(params("")), false)).toBeUndefined();
   });
 
   it("duplicates without data", () => {
     const source = installSource(
       installOrigin(params("from=gitea-ab12")),
       false,
-      "",
     );
     expect(source).toEqual({
       kind: "duplicate",
@@ -159,7 +157,6 @@ describe("installSource", () => {
     const source = installSource(
       installOrigin(params("from=gitea-ab12")),
       true,
-      "",
     );
     expect(source).toEqual({
       kind: "duplicate",
@@ -172,7 +169,6 @@ describe("installSource", () => {
     const source = installSource(
       installOrigin(params("restore=yolab-gitea-ab12&snapshot=d1")),
       true,
-      "d1",
     );
     expect(source).toEqual({
       kind: "backup",
@@ -186,7 +182,6 @@ describe("installSource", () => {
     const source = installSource(
       installOrigin(params("restore=yolab-gitea-ab12&snapshot=d1")),
       false,
-      "d1",
     );
     expect(source).toEqual({
       kind: "backup",
@@ -204,7 +199,6 @@ describe("installSource", () => {
       installSource(
         installOrigin(params("restore=yolab-gitea-ab12&snapshot=d1")),
         true,
-        "d1",
         choices,
       ),
     ).toEqual({
@@ -216,11 +210,10 @@ describe("installSource", () => {
     });
   });
 
-  it("falls back to the backup the restore was started from", () => {
+  it("restores from the backup the restore was started from", () => {
     const source = installSource(
       installOrigin(params("restore=yolab-gitea-ab12&snapshot=d1")),
       false,
-      "",
     );
     expect(source).toMatchObject({ snapshot_id: "d1" });
   });
@@ -551,8 +544,7 @@ describe("seedForm with the YoLab address switch", () => {
 describe("changing the settings of an installed app", () => {
   it("reads an edit from the address", () => {
     const origin = installOrigin(params("edit=gitea-ab12"));
-    expect(origin.mode).toBe("edit");
-    expect(origin.fromInstance).toBe("gitea-ab12");
+    expect(origin).toEqual({ mode: "edit", fromInstance: "gitea-ab12" });
   });
 
   it("keeps the app's own name and address", () => {
@@ -560,16 +552,10 @@ describe("changing the settings of an installed app", () => {
     expect(keepsSourceAddress("edit")).toBe(true);
   });
 
-  it("reads the running app's settings, as a duplicate does", () => {
-    expect(readsLiveApp("edit")).toBe(true);
-    expect(readsLiveApp("duplicate")).toBe(true);
-    expect(readsLiveApp("restore")).toBe(false);
-  });
-
   it("never copies files or names a source to install from", () => {
     expect(copiesDataByDefault("edit")).toBe(false);
     expect(
-      installSource(installOrigin(params("edit=gitea-ab12")), false, ""),
+      installSource(installOrigin(params("edit=gitea-ab12")), false),
     ).toBeUndefined();
   });
 });
@@ -577,8 +563,7 @@ describe("changing the settings of an installed app", () => {
 describe("updating an installed app to the newest version", () => {
   it("reads an update from the address", () => {
     const origin = installOrigin(params("update=gitea-ab12"));
-    expect(origin.mode).toBe("update");
-    expect(origin.fromInstance).toBe("gitea-ab12");
+    expect(origin).toEqual({ mode: "update", fromInstance: "gitea-ab12" });
   });
 
   it("changes the running app in place, as an edit does", () => {
@@ -587,9 +572,8 @@ describe("updating an installed app to the newest version", () => {
     expect(changesLiveApp("duplicate")).toBe(false);
     expect(instanceNameFor("update", "gitea", definition())).toBe("gitea-ab12");
     expect(keepsSourceAddress("update")).toBe(true);
-    expect(readsLiveApp("update")).toBe(true);
     expect(
-      installSource(installOrigin(params("update=gitea-ab12")), false, ""),
+      installSource(installOrigin(params("update=gitea-ab12")), false),
     ).toBeUndefined();
   });
 
@@ -647,28 +631,6 @@ describe("where a restored backup goes", () => {
 });
 
 describe("install edge cases", () => {
-  const origin = (over: Partial<InstallOrigin>): InstallOrigin => ({
-    mode: "fresh",
-    fromInstance: null,
-    namespace: null,
-    snapshot: null,
-    ...over,
-  });
-
-  it("sends empty names when the origin lost them", () => {
-    expect(installSource(origin({ mode: "duplicate" }), true, "")).toEqual({
-      kind: "duplicate",
-      from_instance: "",
-      with_data: true,
-    });
-    expect(installSource(origin({ mode: "restore" }), false, "")).toEqual({
-      kind: "backup",
-      namespace: "",
-      snapshot_id: "",
-      with_data: false,
-    });
-  });
-
   it("a folder switch on without a folder chosen copies into a new folder", () => {
     expect(filesFolderCopy({ files_folder_existing: true }, {})).toEqual({
       kind: "new",
