@@ -1231,3 +1231,29 @@ async fn an_lv_attempt_on_a_bare_lv_name_refuses_a_disk_whose_label_cannot_be_re
     let why = not_yet(lv_osd_attempt(&host, dev).await.unwrap());
     assert!(why.starts_with("/dev/lv-unknown: "), "{why}");
 }
+
+#[tokio::test]
+async fn a_tick_that_cannot_list_the_disks_is_an_error() {
+    let err = DisksController
+        .converge(&ctx(FakeHost::new(), "node-nolsblk"))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "could not read the disk list from lsblk — skipping this tick"
+    );
+}
+
+#[test]
+fn a_device_is_compared_by_what_its_name_resolves_to() {
+    assert_eq!(canonical_device("null"), "/dev/null");
+    assert_eq!(canonical_device("/dev/null"), "/dev/null");
+    assert_eq!(canonical_device("/dev/yolab-none"), "/dev/yolab-none");
+}
+
+#[tokio::test]
+async fn a_full_device_path_is_wiped_as_it_is() {
+    let host = FakeHost::new().fail("ceph-volume lvm zap", "device busy");
+    wipe_device(&host, "/dev/mapper/x", a_receipt_for(61).await).await;
+    assert!(host.ran("ceph-volume lvm zap --destroy /dev/mapper/x"));
+}

@@ -127,7 +127,10 @@ impl LocalRecord {
     }
 
     fn save(&self, heal: &Heal) -> Result<()> {
-        crate::config::write_private_file(&self.path, &serde_json::to_vec_pretty(heal)?)
+        crate::config::write_private_file(
+            &self.path,
+            &serde_json::to_vec_pretty(heal).expect("a heal record is plain data"),
+        )
     }
 }
 
@@ -202,7 +205,7 @@ pub(crate) struct RealNetwork {
 }
 
 impl RealNetwork {
-    fn from_config(cfg: &crate::config::Config) -> Self {
+    fn from_config(cfg: &crate::config::Config, kube: crate::k8s::Kube) -> Self {
         let platform_url = std::fs::read_to_string(&cfg.config_path)
             .map_err(anyhow::Error::from)
             .and_then(|text| Ok(toml::from_str::<toml::Table>(&text)?))
@@ -218,7 +221,7 @@ impl RealNetwork {
             })
             .unwrap_or_default();
         Self {
-            kube: crate::k8s::Kube::from_environment(),
+            kube,
             client: crate::http::client(),
             port: cfg.port,
             token: cfg.cluster_token(),
@@ -784,8 +787,8 @@ impl Resource for HealController {
         let boot_id = boot_id().await?;
         tick(
             &ctx.tools.host,
-            &RealNetwork::from_config(&self.config),
-            &LocalRecord::under(Path::new("/")),
+            &RealNetwork::from_config(&self.config, ctx.tools.kube.clone()),
+            &LocalRecord::under(crate::storage::root()),
             &boot_id,
             now_secs(),
         )
@@ -794,9 +797,11 @@ impl Resource for HealController {
 }
 
 async fn boot_id() -> Result<String> {
-    let id = tokio::fs::read_to_string("/proc/sys/kernel/random/boot_id")
-        .await
-        .context("read this boot's id")?;
+    let id = tokio::fs::read_to_string(crate::storage::on_machine(
+        "/proc/sys/kernel/random/boot_id",
+    ))
+    .await
+    .context("read this boot's id")?;
     let id = id.trim();
     if id.is_empty() {
         bail!("this boot has no id — a heal cannot tell whether a restart happened");
@@ -915,7 +920,7 @@ async fn run_step<H: Host, N: Network>(
                 restart_this_machine(host).await?;
                 return Ok(Restarting);
             }
-            rebuild_step(host, net, heal).await
+            rebuild_step(net, heal).await
         }
         Step::Undo => {
             let mut stuck = Vec::new();
@@ -990,7 +995,7 @@ async fn prepare_step<N: Network>(net: &N, heal: &Heal, now: u64) -> Result<Step
     Ok(StepResult::NotYet(waiting.join("; ")))
 }
 
-async fn rebuild_step<H: Host, N: Network>(_host: &H, net: &N, heal: &Heal) -> Result<StepResult> {
+async fn rebuild_step<N: Network>(net: &N, heal: &Heal) -> Result<StepResult> {
     let mut waiting = Vec::new();
     for m in heal.members.iter().filter(|m| m.name != heal.driver) {
         let Ok(info) = net.peer(&m.addr).await else {
@@ -1085,7 +1090,7 @@ fn error(status: StatusCode, e: impl std::fmt::Display) -> (StatusCode, Json<Val
 }
 
 async fn uptime_secs() -> u64 {
-    tokio::fs::read_to_string("/proc/uptime")
+    tokio::fs::read_to_string(crate::storage::on_machine("/proc/uptime"))
         .await
         .ok_or_warn("read /proc/uptime")
         .and_then(|s| s.split_whitespace().next()?.parse::<f64>().ok())
@@ -1099,8 +1104,12 @@ pub(crate) struct View {
     pub peer_addrs: Vec<String>,
 }
 
-pub(crate) async fn current_view<H: Host>(host: &H, cfg: &crate::config::Config) -> View {
-    let net = RealNetwork::from_config(cfg);
+pub(crate) async fn current_view<H: Host>(
+    host: &H,
+    kube: &crate::k8s::Kube,
+    cfg: &crate::config::Config,
+) -> View {
+    let net = RealNetwork::from_config(cfg, kube.clone());
     let me = crate::system::hostname();
     let s = survey(host, &net, &me, &cfg.node_ipv6, uptime_secs().await).await;
     View {
@@ -1115,8 +1124,8 @@ pub(crate) async fn current_view<H: Host>(host: &H, cfg: &crate::config::Config)
 }
 
 pub async fn get_status(State(s): State<AppState>) -> (StatusCode, Json<Value>) {
-    let net = RealNetwork::from_config(&s.config);
-    let local = match LocalRecord::under(Path::new("/")).load() {
+    let net = RealNetwork::from_config(&s.config, s.kube.clone());
+    let local = match LocalRecord::under(crate::storage::root()).load() {
         Ok(h) => h,
         Err(e) => return error(StatusCode::SERVICE_UNAVAILABLE, format!("{e:#}")),
     };
@@ -1129,13 +1138,13 @@ pub async fn post_heal(
     State(s): State<AppState>,
     Json(request): Json<HealRequest>,
 ) -> (StatusCode, Json<Value>) {
-    let net = RealNetwork::from_config(&s.config);
+    let net = RealNetwork::from_config(&s.config, s.kube.clone());
     let me = crate::system::hostname();
     let id = crate::backup::common::random_hex(8);
     match start_heal(
         &s.host,
         &net,
-        &LocalRecord::under(Path::new("/")),
+        &LocalRecord::under(crate::storage::root()),
         &me,
         &s.config.node_ipv6,
         &request,

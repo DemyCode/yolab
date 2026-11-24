@@ -1,7 +1,7 @@
 use std::path::Path;
 
 pub fn hostname() -> String {
-    hostname_in(Path::new("/"))
+    hostname_in(crate::storage::root())
 }
 
 pub fn now_secs() -> u64 {

@@ -336,7 +336,7 @@ impl Resource for NotifierController {
             ));
         }
         let topic = topic(&self.config.config_path)?;
-        let view = crate::heal::current_view(&ctx.tools.host, &self.config).await;
+        let view = crate::heal::current_view(&ctx.tools.host, &ctx.tools.kube, &self.config).await;
         let quiet = !sends_for_cluster(&ctx.node, &view.answering);
         let backend = ctx.tools.backend().await;
         let sources = [

@@ -879,3 +879,59 @@ async fn a_removal_stops_when_a_record_or_the_run_folder_cannot_be_removed() {
     assert_eq!(err.to_string(), "remove the virtual disk's run directory");
     assert!(host.ran("ceph config-key rm yolab/vdisks/1"));
 }
+
+#[tokio::test]
+async fn a_disk_attached_here_with_its_record_is_kept_attached() {
+    std::fs::create_dir_all(stack::run_dir(crate::storage::root(), 1)).unwrap();
+    let host = FakeHost::new()
+        .ok(
+            "ceph config-key dump yolab/vdisks/",
+            &records(&[rec(1, "node1", false)]),
+        )
+        .ok("ceph config-key dump yolab/disks/", "{}")
+        .ok("ceph config-key dump yolab/vdisk-status/", "{}")
+        .ok("ceph config-key set", "");
+    let (_dir, c) = controller(
+        host.clone(),
+        &format!("http://[::1]:{}", crate::testkit::closed_port()),
+    );
+    c.converge(&ctx("node1")).await.unwrap();
+    assert!(!host.ran("losetup"));
+    assert!(host.ran("ceph config-key set yolab/vdisk-status/1 Could not connect yet"));
+}
+
+#[tokio::test]
+async fn a_switched_off_disk_the_platform_will_not_delete_stays_recorded() {
+    let server = platform_deletes(503).await;
+    let root = tempfile::tempdir().unwrap();
+    let host = switched_off_host();
+    assert!(step(
+        &host,
+        root.path(),
+        &client(),
+        &tunnel(&server.uri()),
+        rec(1, "node1", false)
+    )
+    .await
+    .is_err());
+    assert!(!host.ran("ceph config-key rm"));
+}
+
+#[tokio::test]
+async fn a_disk_that_attaches_wakes_the_disks_controller_and_reads_connected() {
+    let root = tempfile::tempdir().unwrap();
+    let host = stack::machine_tests::attaches(root.path(), false, "", "")
+        .ok("ceph config-key dump yolab/disks/", "{}")
+        .ok("ceph osd tree", r#"{"nodes":[]}"#);
+    let status = step(
+        &host,
+        root.path(),
+        &client(),
+        &tunnel("http://[::1]:9"),
+        rec(1, "node1", true),
+    )
+    .await
+    .unwrap();
+    assert_eq!(status, CONNECTED);
+    assert!(host.ran("vgchange -ay"));
+}

@@ -19,12 +19,24 @@ use crate::{
     AppState,
 };
 
-static IS_UPDATING: AtomicBool = AtomicBool::new(false);
+#[cfg(not(test))]
+fn updating() -> &'static AtomicBool {
+    static IS_UPDATING: AtomicBool = AtomicBool::new(false);
+    &IS_UPDATING
+}
 
-pub(crate) struct UpdateGuard;
+#[cfg(test)]
+fn updating() -> &'static AtomicBool {
+    thread_local! {
+        static IS_UPDATING: &'static AtomicBool = Box::leak(Box::new(AtomicBool::new(false)));
+    }
+    IS_UPDATING.with(|flag| *flag)
+}
+
+pub(crate) struct UpdateGuard(&'static AtomicBool);
 impl Drop for UpdateGuard {
     fn drop(&mut self) {
-        IS_UPDATING.store(false, Ordering::SeqCst);
+        self.0.store(false, Ordering::SeqCst);
     }
 }
 
@@ -35,10 +47,10 @@ fn heal_holds(cfg: &Config) -> Option<String> {
 }
 
 pub(crate) fn exclusive() -> Option<UpdateGuard> {
-    IS_UPDATING
-        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+    let flag = updating();
+    flag.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
         .ok()
-        .map(|_| UpdateGuard)
+        .map(|_| UpdateGuard(flag))
 }
 
 pub async fn get_channel(State(state): State<AppState>) -> Json<Channel> {
@@ -111,23 +123,20 @@ pub async fn update(State(state): State<AppState>) -> Response {
         )
             .into_response();
     }
-    if IS_UPDATING
-        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-        .is_err()
-    {
+    let Some(guard) = exclusive() else {
         return (
             StatusCode::CONFLICT,
             Json(serde_json::json!({"error": "Update already in progress"})),
         )
             .into_response();
-    }
+    };
 
     let cfg = state.config.clone();
     let host = state.host.clone();
     let (tx, rx) = tokio::sync::mpsc::channel::<String>(256);
 
     tokio::spawn(async move {
-        let _guard = UpdateGuard;
+        let _guard = guard;
         run_update(&host, &cfg, &tx).await;
     });
 
@@ -140,12 +149,9 @@ pub async fn trigger_update(State(state): State<AppState>) -> Json<serde_json::V
     if let Some(why) = heal_holds(&state.config) {
         return Json(serde_json::json!({ "error": why }));
     }
-    if IS_UPDATING
-        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-        .is_err()
-    {
+    let Some(guard) = exclusive() else {
         return Json(serde_json::json!({"error": "already updating"}));
-    }
+    };
 
     let cfg = state.config.clone();
     let host = state.host.clone();
@@ -170,7 +176,7 @@ pub async fn trigger_update(State(state): State<AppState>) -> Json<serde_json::V
     });
 
     tokio::spawn(async move {
-        let _guard = UpdateGuard;
+        let _guard = guard;
         run_update(&host, &cfg, &tx).await;
     });
 

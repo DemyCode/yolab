@@ -131,26 +131,21 @@ pub(super) fn disk_id(device: &str) -> String {
 pub(super) fn stable_id_for(device: &str) -> Option<String> {
     let target =
         std::fs::canonicalize(crate::storage::on_machine(&format!("/dev/{device}"))).ok()?;
-    let mut best: Option<(usize, String)> = None;
-    for entry in std::fs::read_dir(crate::storage::on_machine(BY_ID_DIR))
+    std::fs::read_dir(crate::storage::on_machine(BY_ID_DIR))
         .ok()?
         .flatten()
-    {
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if name.ends_with("-part") || name.contains("-part") {
-            continue;
-        }
-        let Some(rank) = ID_PREFIXES.iter().position(|p| name.starts_with(p)) else {
-            continue;
-        };
-        if std::fs::canonicalize(entry.path()).ok().as_deref() != Some(target.as_path()) {
-            continue;
-        }
-        if best.as_ref().is_none_or(|(r, _)| rank < *r) {
-            best = Some((rank, name));
-        }
-    }
-    best.map(|(_, name)| name)
+        .filter_map(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.contains("-part") {
+                return None;
+            }
+            let rank = ID_PREFIXES.iter().position(|p| name.starts_with(p))?;
+            let same =
+                std::fs::canonicalize(entry.path()).ok().as_deref() == Some(target.as_path());
+            same.then_some((rank, name))
+        })
+        .min()
+        .map(|(_, name)| name)
 }
 
 pub(super) fn disk_id_from(device: &str, stable: Option<&str>) -> String {

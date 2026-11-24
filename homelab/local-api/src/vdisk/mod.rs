@@ -225,11 +225,11 @@ async fn step<H: Host>(
     mut rec: VdiskRecord,
 ) -> Result<String> {
     let off = switched_off(host, &rec).await?;
+    if off && (!rec.is_provisioned() || !still_held(host, root, &rec).await?) {
+        finish_removal(host, root, client, tunnel, &rec).await?;
+        return Ok(String::new());
+    }
     if !rec.is_provisioned() {
-        if off {
-            finish_removal(host, root, client, tunnel, &rec).await?;
-            return Ok(String::new());
-        }
         let found = platform::list(client, tunnel)
             .await?
             .into_iter()
@@ -243,21 +243,6 @@ async fn step<H: Host>(
             }
             Some(_) => return Ok(PREPARING.into()),
             None => anyhow::bail!("the platform has no Storage Box for this virtual disk"),
-        }
-    }
-
-    if off {
-        let known = host.osd_ids().await.context("list the cluster's OSDs")?;
-        let tree = host
-            .ceph_json(&["osd", "tree"])
-            .await
-            .context("read the CRUSH tree")?;
-        let mut holding = crush_children(&tree, &record::crush_bucket(rec.id));
-        holding.extend(osd_on(root, rec.id));
-        holding.extend(rec.osd_id);
-        if !removal_must_wait(&holding, &known) {
-            finish_removal(host, root, client, tunnel, &rec).await?;
-            return Ok(String::new());
         }
     }
 
@@ -359,6 +344,18 @@ async fn switched_off<H: Host>(host: &H, rec: &VdiskRecord) -> Result<bool> {
 
 pub(crate) fn removal_must_wait(holding: &[i64], known: &[i64]) -> bool {
     holding.iter().any(|osd| known.contains(osd))
+}
+
+async fn still_held<H: Host>(host: &H, root: &Path, rec: &VdiskRecord) -> Result<bool> {
+    let known = host.osd_ids().await.context("list the cluster's OSDs")?;
+    let tree = host
+        .ceph_json(&["osd", "tree"])
+        .await
+        .context("read the CRUSH tree")?;
+    let mut holding = crush_children(&tree, &record::crush_bucket(rec.id));
+    holding.extend(osd_on(root, rec.id));
+    holding.extend(rec.osd_id);
+    Ok(removal_must_wait(&holding, &known))
 }
 
 async fn finish_removal<H: Host>(

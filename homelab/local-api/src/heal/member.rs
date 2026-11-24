@@ -23,7 +23,7 @@ pub(crate) struct Layout {
 impl Layout {
     pub fn from_config(cfg: &crate::config::Config) -> Self {
         Self {
-            root: PathBuf::from("/"),
+            root: crate::storage::root().to_path_buf(),
             machine_dir: PathBuf::from(&cfg.machine_dir),
             flake: cfg.flake_ref(),
         }

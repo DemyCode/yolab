@@ -423,7 +423,12 @@ async fn formatting_stops_at_the_first_step_that_fails() {
     }
 }
 
-fn attaches(root: &Path, formatted: bool, content: &str, failing: &str) -> FakeHost {
+pub(in crate::vdisk) fn attaches(
+    root: &Path,
+    formatted: bool,
+    content: &str,
+    failing: &str,
+) -> FakeHost {
     let osd = dev(root, &record::osd_dev(1));
     let formatted = if formatted { ok("1") } else { Err(NO_KEY) };
     script(

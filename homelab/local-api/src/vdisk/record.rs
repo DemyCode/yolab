@@ -116,10 +116,15 @@ async fn remove_key<H: Host>(host: &H, key: &str) -> Result<(), CmdError> {
 }
 
 pub async fn forget<H: Host>(host: &H, id: i64) -> Result<(), CmdError> {
-    remove_key(host, &format!("{KEYS}{id}")).await?;
-    remove_key(host, &format!("{FORMATTED}{id}")).await?;
-    remove_key(host, &format!("{STATUS}{id}")).await?;
-    remove_key(host, &record_key(id)).await
+    for key in [
+        format!("{KEYS}{id}"),
+        format!("{FORMATTED}{id}"),
+        format!("{STATUS}{id}"),
+        record_key(id),
+    ] {
+        remove_key(host, &key).await?;
+    }
+    Ok(())
 }
 
 pub async fn is_formatted<H: Host>(host: &H, id: i64) -> Result<bool, CmdError> {

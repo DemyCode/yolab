@@ -492,7 +492,7 @@ pub fn attached_here(root: &Path) -> Result<Vec<i64>> {
 }
 
 #[cfg(test)]
-mod machine_tests;
+pub(super) mod machine_tests;
 
 #[cfg(test)]
 mod tests {

@@ -22,6 +22,7 @@ struct FakeNetwork {
     platform: Option<Vec<PlatformNode>>,
     platform_down: bool,
     kubernetes: Mutex<Option<KubeNodes>>,
+    kubernetes_error: bool,
     calls: Mutex<Vec<String>>,
 }
 
@@ -185,7 +186,12 @@ impl Network for FakeNetwork {
     }
 
     fn kubernetes_nodes(&self) -> impl Future<Output = Result<Option<KubeNodes>>> + Send + '_ {
-        async move { Ok(self.kubernetes.lock().unwrap().clone()) }
+        async move {
+            if self.kubernetes_error {
+                bail!("the API server timed out");
+            }
+            Ok(self.kubernetes.lock().unwrap().clone())
+        }
     }
 }
 
@@ -711,6 +717,9 @@ fn backups_stop_only_when_app_data_is_lost() {
     lost.insert("yolab-fs-data0".into(), BTreeSet::from(["3.1".to_string()]));
     assert!(blocked_by_loss(&lost).is_some());
 }
+
+mod handlers;
+mod steps;
 
 mod real_network {
     use super::*;
