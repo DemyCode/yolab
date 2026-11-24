@@ -2014,7 +2014,7 @@ mod tests {
             assert!(crate::k8s::testing::asked(&server, "/api/v1/nodes").await);
 
             let shown = list_sets(&kube).await;
-            assert_eq!(shown[0]["state"], "succeeded");
+            assert_eq!(shown[0]["state"], "restorable");
             assert!(app_backup_status(&kube).await.is_empty());
 
             assert!(matches!(schedule(&b).await.unwrap(), Tick::Idle(_)));
