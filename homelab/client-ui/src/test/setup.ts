@@ -2,6 +2,7 @@ import { cleanup } from "@testing-library/react";
 import { afterEach, vi } from "vitest";
 import { forgetPending } from "@/lib/inflight";
 import { forgetAll } from "@/lib/localCache";
+import { forgetListings } from "@/lib/treeFolder";
 
 Object.defineProperty(window, "matchMedia", {
   configurable: true,
@@ -18,6 +19,7 @@ afterEach(() => {
   cleanup();
   forgetAll();
   forgetPending();
+  forgetListings();
   localStorage.clear();
   vi.useRealTimers();
   vi.unstubAllGlobals();

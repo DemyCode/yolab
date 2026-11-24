@@ -168,3 +168,7 @@ export function folderAllowed(pattern: unknown, value: string): boolean {
     return true;
   }
 }
+
+export function forgetListings(): void {
+  cache.clear();
+}

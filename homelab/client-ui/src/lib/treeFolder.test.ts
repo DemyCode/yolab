@@ -10,6 +10,7 @@ import {
   folderTrail,
   isRootFolder,
   joinFolder,
+  forgetListings,
   listFolders,
   ROOT_FOLDER,
   shownFolder,
@@ -258,6 +259,20 @@ describe("tree folder edge cases", () => {
       "photos",
       "photos-old",
     ]);
+  });
+
+  it("asks again once the listings are forgotten", async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({ path: "", folders: [], truncated: false }),
+        ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    await listFolders("forget-test");
+    forgetListings();
+    await listFolders("forget-test");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it("lists a folder once for a while, and asks again after a failure", async () => {
