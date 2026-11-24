@@ -39,7 +39,7 @@ fn strip_port(raw: &str) -> Option<String> {
     let raw = raw.trim();
     let raw = raw.split('/').next().unwrap_or(raw);
     let host = if let Some(rest) = raw.strip_prefix('[') {
-        rest.split(']').next()?
+        rest.split(']').next().unwrap_or_default()
     } else {
         raw.rsplit_once(':').map(|(h, _)| h).unwrap_or(raw)
     };
@@ -201,6 +201,46 @@ mod tests {
             let res = api.get("/api/cluster/ceph-join").await;
             assert_eq!(res.json()["fsid"], "abc-123", "{}", res.body);
             assert_eq!(res.json()["mon_addrs"], json!(["fd00::1"]));
+        }
+
+        #[tokio::test]
+        async fn any_part_ceph_will_not_give_means_no_bundle_at_all() {
+            let no_dump = FakeHost::new()
+                .ok("ceph fsid", r#"{"fsid": "abc-123"}"#)
+                .fail("ceph mon dump", "timed out");
+            assert!(bundle(&no_dump).await.is_err());
+            for refused in [
+                "ceph auth get mon.",
+                "ceph auth get client.admin",
+                "ceph auth get client.bootstrap-osd",
+            ] {
+                let host = FakeHost::new()
+                    .ok("ceph fsid", r#"{"fsid": "abc-123"}"#)
+                    .ok("ceph mon dump", DUMP)
+                    .ok("ceph auth get", KEY)
+                    .fail(refused, "Error EACCES: access denied");
+                assert!(bundle(&host).await.is_err(), "{refused}");
+            }
+        }
+
+        #[tokio::test]
+        async fn the_bundle_route_answers_with_the_error_when_ceph_is_down() {
+            let api = crate::testkit::TestApi::with_kube_and_host(
+                crate::k8s::testing::unreachable(),
+                FakeHost::new().fail("ceph fsid", "timed out"),
+            )
+            .login()
+            .await;
+            let res = api.get("/api/cluster/ceph-join").await;
+            assert!(!res.status.is_success());
+            assert!(
+                res.json()["error"]
+                    .as_str()
+                    .unwrap()
+                    .contains("not reachable"),
+                "{}",
+                res.body
+            );
         }
 
         #[tokio::test]

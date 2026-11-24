@@ -130,6 +130,18 @@ mod tests {
             .collect()
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn every_page_answers_even_when_the_cluster_is_gone() {
+        let api = TestApi::without_cluster().login().await;
+        for (path, methods) in ROUTE_TABLE {
+            if !methods.contains(&"GET") || PUBLIC_ROUTES.contains(path) {
+                continue;
+            }
+            let res = api.get(&concrete(path)).await;
+            assert!(res.reached_handler(), "{path} -> {}", res.status);
+        }
+    }
+
     #[test]
     #[should_panic(expected = "unknown method in ROUTE_TABLE: PATCH")]
     fn a_method_the_auth_checks_cannot_send_fails_the_route_table_check() {

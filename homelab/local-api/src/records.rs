@@ -321,9 +321,7 @@ mod tests {
         let r: Result<Vec<String>, _> = STORE.read(&client).await;
         assert!(r.is_err());
 
-        let wrote = STORE
-            .update(&client, |v: &mut Vec<String>| v.push("new".into()))
-            .await;
+        let wrote = STORE.update(&client, Vec::<String>::clear).await;
         assert!(wrote.is_err());
         assert!(writes(&server, "PUT").await.is_empty());
         assert!(writes(&server, "POST").await.is_empty());
@@ -461,6 +459,59 @@ mod tests {
         assert!(std::error::Error::source(&contended).is_none());
         let cluster = RecordError::from(kube::Error::LinesCodecMaxLineLengthExceeded);
         assert!(std::error::Error::source(&cluster).is_some());
+        assert_eq!(
+            cluster.to_string(),
+            kube::Error::LinesCodecMaxLineLengthExceeded.to_string()
+        );
+    }
+
+    #[derive(Default, serde::Deserialize)]
+    struct Unwritable;
+
+    impl serde::Serialize for Unwritable {
+        fn serialize<S: serde::Serializer>(&self, _: S) -> Result<S::Ok, S::Error> {
+            Err(serde::ser::Error::custom("this value has no JSON form"))
+        }
+    }
+
+    #[tokio::test]
+    async fn records_that_cannot_be_written_as_json_are_refused_before_any_write() {
+        let (server, client) = api_server().await;
+        get_answers(&server, 200, cm("null", "5"), Some(1)).await;
+        get_answers(&server, 404, status(404, "NotFound"), None).await;
+        let err = STORE
+            .update(&client, std::mem::drop::<&mut Unwritable>)
+            .await
+            .err()
+            .unwrap();
+        assert!(err.to_string().contains("no JSON form"), "{err}");
+
+        let unkeyable = STORE
+            .update(
+                &client,
+                |m: &mut std::collections::BTreeMap<(u8, u8), u8>| {
+                    m.insert((1, 2), 3);
+                },
+            )
+            .await;
+        assert!(unkeyable.is_err());
+        assert!(writes(&server, "POST").await.is_empty());
+        assert!(writes(&server, "PUT").await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_write_the_cluster_refuses_outright_is_an_error_not_a_retry() {
+        let (server, client) = api_server().await;
+        get_answers(&server, 200, cm("[]", "5"), None).await;
+        Mock::given(method("PUT"))
+            .respond_with(ResponseTemplate::new(403).set_body_json(status(403, "Forbidden")))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let r = STORE
+            .update(&client, |v: &mut Vec<String>| v.push("a".into()))
+            .await;
+        assert!(matches!(r, Err(RecordError::Cluster(_))));
     }
 
     #[tokio::test]

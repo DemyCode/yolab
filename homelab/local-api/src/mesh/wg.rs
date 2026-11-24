@@ -228,6 +228,19 @@ mod tests {
         }
 
         #[tokio::test]
+        async fn every_wg_call_fails_when_the_interface_is_gone_or_wg_cannot_start() {
+            let gone = FakeHost::new().fail("wg", "Unable to access interface: No such device");
+            assert!(self_public_key(&gone).await.is_err());
+            assert!(listen_port(&gone).await.is_err());
+            assert!(set_peer(&gone, "P=", None, "fd00::9/128", 25)
+                .await
+                .is_err());
+            assert!(remove_peer(&gone, "P=").await.is_err());
+            let missing = FakeHost::new().unstartable("wg");
+            assert!(peers(&missing).await.is_err());
+        }
+
+        #[tokio::test]
         async fn a_peer_is_set_with_its_endpoint_only_when_one_is_known() {
             let host = FakeHost::new().ok("wg set", "");
             set_peer(

@@ -60,6 +60,14 @@ impl TestApi {
         Self::with_config_and_kube(body, crate::k8s::testing::unreachable())
     }
 
+    pub fn without_cluster() -> Self {
+        Self::build(
+            &provisioned_config(),
+            crate::k8s::Kube::from_environment(),
+            crate::host::fake::FakeHost::new(),
+        )
+    }
+
     pub fn with_kube(kube: kube::Client) -> Self {
         Self::with_config_and_kube(&provisioned_config(), kube)
     }
@@ -75,20 +83,24 @@ impl TestApi {
     ) -> Self {
         Self::build(
             &config_with_tunnel(&format!("platform_api_url = \"{platform_url}\"\n")),
-            kube,
+            crate::k8s::Kube::with(kube),
             host,
         )
     }
 
     pub fn with_kube_and_host(kube: kube::Client, host: crate::host::fake::FakeHost) -> Self {
-        Self::build(&provisioned_config(), kube, host)
+        Self::build(&provisioned_config(), crate::k8s::Kube::with(kube), host)
     }
 
     fn with_config_and_kube(body: &str, kube: kube::Client) -> Self {
-        Self::build(body, kube, crate::host::fake::FakeHost::new())
+        Self::build(
+            body,
+            crate::k8s::Kube::with(kube),
+            crate::host::fake::FakeHost::new(),
+        )
     }
 
-    fn build(body: &str, kube: kube::Client, host: crate::host::fake::FakeHost) -> Self {
+    fn build(body: &str, kube: crate::k8s::Kube, host: crate::host::fake::FakeHost) -> Self {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("config.toml");
         std::fs::write(&path, body).expect("write config");
@@ -98,7 +110,7 @@ impl TestApi {
             router: crate::router::build_router(AppState {
                 config,
                 auth,
-                kube: crate::k8s::Kube::with(kube),
+                kube,
                 http: crate::http::Client::new(),
                 proxy_http: crate::http::Client::new(),
                 host: host.clone(),
@@ -210,8 +222,23 @@ fn logs_off() -> bool {
     std::env::var_os("YOLAB_TEST_LOGS").is_some_and(|v| v == "off")
 }
 
+struct LogSink;
+
+impl tracing::log::Log for LogSink {
+    fn enabled(&self, _: &tracing::log::Metadata) -> bool {
+        true
+    }
+    fn log(&self, _: &tracing::log::Record) {}
+    fn flush(&self) {}
+}
+
+static LOG_SINK: LogSink = LogSink;
+
 extern "C" fn format_every_log_line() {
     if logs_off() {
+        tracing::log::set_logger(&LOG_SINK)
+            .expect("nothing else sets the log logger before the tests start");
+        tracing::log::set_max_level(tracing::log::LevelFilter::Trace);
         return;
     }
     let subscriber = tracing_subscriber::fmt()
@@ -226,6 +253,7 @@ extern "C" fn format_every_log_line() {
 fn every_log_line_is_formatted_in_tests_unless_the_run_turns_logs_off() {
     assert_eq!(tracing::enabled!(tracing::Level::TRACE), !logs_off());
     tracing::trace!("formatted {}", 1);
+    tracing::log::logger().flush();
 }
 
 pub(crate) const PEER: &str = "::1";

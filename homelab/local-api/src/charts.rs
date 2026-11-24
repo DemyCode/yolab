@@ -18,7 +18,9 @@ pub fn cache_root() -> PathBuf {
 pub fn cache_root() -> PathBuf {
     testing::CACHE_ROOT
         .with(|root| root.borrow().clone())
-        .unwrap_or_else(|| PathBuf::from(CACHE_DIR))
+        .unwrap_or_else(|| {
+            std::env::temp_dir().join(format!("yolab-test-charts-{}", std::process::id()))
+        })
 }
 
 #[cfg(test)]

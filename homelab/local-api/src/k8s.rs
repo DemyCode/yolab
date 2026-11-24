@@ -6,6 +6,7 @@ use tokio::sync::OnceCell;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 pub const FIELD_MANAGER: &str = "yolab";
 
+#[cfg_attr(test, allow(dead_code))]
 pub async fn client() -> anyhow::Result<Client> {
     static CLIENT: OnceCell<Client> = OnceCell::const_new();
     let client = CLIENT
@@ -42,7 +43,10 @@ impl Kube {
     pub async fn client(&self) -> anyhow::Result<Client> {
         match &self.0 {
             Some(client) => Ok(client.clone()),
+            #[cfg(not(test))]
             None => client().await,
+            #[cfg(test)]
+            None => anyhow::bail!("this test runs without a cluster"),
         }
     }
 }
