@@ -3443,7 +3443,10 @@ mod tests {
             assert_eq!(found[0].app_id, "notes");
         }
 
-        async fn install(api: &TestApi, app: &str, body: Value) -> crate::testkit::Res {
+        async fn install(api: &TestApi, app: &str, mut body: Value) -> crate::testkit::Res {
+            if body.get("config").is_none() {
+                body["config"] = json!({});
+            }
             api.post(&format!("/api/apps/{app}"), &body.to_string())
                 .await
         }
