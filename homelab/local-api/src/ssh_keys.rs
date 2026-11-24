@@ -170,10 +170,9 @@ pub fn keys_file() -> PathBuf {
 
 #[cfg(test)]
 pub fn keys_file() -> PathBuf {
-    std::env::temp_dir().join(format!(
-        "yolab-test-ssh-{}/{LOGIN_USER}.keys",
-        std::process::id()
-    ))
+    PathBuf::from(crate::testkit::thread_dir(&format!(
+        "ssh/{LOGIN_USER}.keys"
+    )))
 }
 
 pub fn sync_file(path: &Path, wanted: &str) -> anyhow::Result<bool> {

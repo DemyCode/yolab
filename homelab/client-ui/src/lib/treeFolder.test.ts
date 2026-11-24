@@ -159,7 +159,7 @@ describe("checking the chosen folder", () => {
 
   it("says so when the tree cannot be read rather than letting it through", async () => {
     const down = async (): Promise<FolderListing> => {
-      throw new ApiError(503, "the file tree did not answer within 20s");
+      throw new ApiError(503, "the file tree did not answer in time");
     };
     expect(
       await folderProblem([{ title: "Folder", value: "immich-83uz" }], down),
@@ -177,7 +177,7 @@ describe("the whole file tree", () => {
 
   it("is a folder that is always there", async () => {
     const down = async (): Promise<FolderListing> => {
-      throw new ApiError(503, "the file tree did not answer within 20s");
+      throw new ApiError(503, "the file tree did not answer in time");
     };
     expect(
       await folderProblem([{ title: "Folder", value: ROOT_FOLDER }], down),

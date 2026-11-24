@@ -487,7 +487,7 @@ pub fn default_path() -> PathBuf {
 
 #[cfg(test)]
 pub fn default_path() -> PathBuf {
-    std::env::temp_dir().join(format!("yolab-test-store-{}.automerge", std::process::id()))
+    PathBuf::from(crate::testkit::thread_dir("store.automerge"))
 }
 
 fn debug_path(path: &Path) -> PathBuf {

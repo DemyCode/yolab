@@ -105,13 +105,20 @@ async fn off_thread<T: Send + 'static>(
     what: &str,
     work: impl FnOnce() -> Result<T, ListError> + Send + 'static,
 ) -> Result<T, ListError> {
-    match tokio::time::timeout(TIMEOUT * 2, tokio::task::spawn_blocking(work)).await {
+    off_thread_within(TIMEOUT * 2, what, work).await
+}
+
+async fn off_thread_within<T: Send + 'static>(
+    limit: Duration,
+    what: &str,
+    work: impl FnOnce() -> Result<T, ListError> + Send + 'static,
+) -> Result<T, ListError> {
+    match tokio::time::timeout(limit, tokio::task::spawn_blocking(work)).await {
         Ok(Ok(found)) => found,
         Ok(Err(e)) => Err(ListError::Unavailable(format!("{what} failed: {e}"))),
-        Err(_) => Err(ListError::Unavailable(format!(
-            "the file tree did not answer within {}s",
-            (TIMEOUT * 2).as_secs()
-        ))),
+        Err(_) => Err(ListError::Unavailable(
+            "the file tree did not answer in time".into(),
+        )),
     }
 }
 
@@ -319,10 +326,10 @@ mod tests {
         );
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn a_tree_that_does_not_answer_in_time_is_unavailable() {
         let (release, wait) = std::sync::mpsc::channel::<()>();
-        let slow = off_thread("listing", move || {
+        let slow = off_thread_within(Duration::from_millis(20), "listing", move || {
             wait.recv().expect("the test releases the work");
             Ok(())
         })
@@ -331,7 +338,7 @@ mod tests {
         assert_eq!(
             slow,
             Err(ListError::Unavailable(
-                "the file tree did not answer within 20s".into()
+                "the file tree did not answer in time".into()
             ))
         );
     }
