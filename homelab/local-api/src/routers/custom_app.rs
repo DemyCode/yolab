@@ -1366,4 +1366,263 @@ spec:
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert!(host.calls().is_empty());
     }
+
+    mod uploads {
+        use super::*;
+        use crate::host::fake::FakeHost;
+
+        const TGZ: &[u8] = b"\x1f\x8b\x08 a chart";
+
+        fn copy_tree(from: &std::path::Path, to: &std::path::Path) {
+            std::fs::create_dir_all(to).unwrap();
+            for entry in std::fs::read_dir(from).unwrap().flatten() {
+                let target = to.join(entry.file_name());
+                if entry.path().is_dir() {
+                    copy_tree(&entry.path(), &target);
+                } else {
+                    std::fs::copy(entry.path(), target).unwrap();
+                }
+            }
+        }
+
+        fn copying(host: FakeHost) -> FakeHost {
+            host.effect("cp -r", |_: &str, args: &[&str]| {
+                let from = std::path::Path::new(args[1]);
+                let into = std::path::Path::new(args[2]);
+                let to = if into.is_dir() {
+                    into.join(from.file_name().unwrap())
+                } else {
+                    into.to_path_buf()
+                };
+                copy_tree(from, &to);
+            })
+        }
+
+        fn unpacking(files: Vec<(&'static str, &'static str)>) -> FakeHost {
+            FakeHost::new()
+                .ok("tar -xzf", "")
+                .effect("tar -xzf", move |_: &str, args: &[&str]| {
+                    let dest = std::path::Path::new(args[3]).join("mychart");
+                    std::fs::create_dir_all(&dest).unwrap();
+                    for (name, body) in &files {
+                        std::fs::write(dest.join(name), body).unwrap();
+                    }
+                })
+        }
+
+        const CHART: &str = "apiVersion: v2\nname: mychart\ndescription: Mine\nversion: 0.1.0\nannotations:\n  yolab.io/display-name: My Chart\n  yolab.io/icon: box\ndependencies:\n  - name: yolab-common\n";
+
+        const RENDERED: &str = "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: web\n  namespace: yolab-mychart\n";
+
+        struct Dirs {
+            catalog: tempfile::TempDir,
+            custom: tempfile::TempDir,
+        }
+
+        fn dirs() -> Dirs {
+            let catalog = tempfile::tempdir().unwrap();
+            let lib = catalog.path().join("yolab-common");
+            std::fs::create_dir_all(&lib).unwrap();
+            std::fs::write(
+                lib.join("Chart.yaml"),
+                "name: yolab-common\ntype: library\n",
+            )
+            .unwrap();
+            Dirs {
+                catalog,
+                custom: tempfile::tempdir().unwrap(),
+            }
+        }
+
+        async fn uploaded(host: FakeHost, body: &[u8]) -> (StatusCode, Value, Dirs) {
+            let d = dirs();
+            let (code, Json(said)) = upload(&host, d.catalog.path(), d.custom.path(), body).await;
+            (code, said, d)
+        }
+
+        fn good() -> FakeHost {
+            copying(
+                unpacking(vec![("Chart.yaml", CHART), ("values.schema.json", "{}")])
+                    .ok("cp -r", "")
+                    .ok("helm template", RENDERED),
+            )
+        }
+
+        #[tokio::test]
+        async fn an_uploaded_chart_is_checked_vendored_and_kept_as_a_custom_service() {
+            let (code, said, d) = uploaded(good(), TGZ).await;
+            assert_eq!(code, StatusCode::OK, "{said}");
+            assert_eq!(said["app"]["id"], "mychart");
+            assert_eq!(said["app"]["display_name"], "My Chart");
+            assert_eq!(said["app"]["icon"], "box");
+            assert_eq!(said["has_form"], true);
+            let kept = d.custom.path().join("mychart");
+            assert!(kept.join("Chart.yaml").is_file());
+            assert!(kept.join("charts/yolab-common/Chart.yaml").is_file());
+            let details: CustomApp = serde_json::from_str(
+                &std::fs::read_to_string(kept.join("yolab-custom.json")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(details.description, "Mine");
+
+            let again = copying(
+                unpacking(vec![("Chart.yaml", "name: mychart\n")])
+                    .ok("cp -r", "")
+                    .ok("helm template", RENDERED),
+            );
+            let (code, said) = {
+                let (code, Json(said)) =
+                    upload(&again, d.catalog.path(), d.custom.path(), TGZ).await;
+                (code, said)
+            };
+            assert_eq!(code, StatusCode::OK, "{said}");
+            assert_eq!(said["app"]["display_name"], "mychart");
+            assert_eq!(said["has_form"], false);
+        }
+
+        async fn refused(host: FakeHost, body: &[u8]) -> (StatusCode, String) {
+            let (code, said, _d) = uploaded(host, body).await;
+            (code, said["error"].as_str().unwrap_or_default().to_string())
+        }
+
+        #[tokio::test]
+        async fn an_upload_that_is_not_a_safe_chart_is_refused_with_why() {
+            let cases: Vec<(FakeHost, &[u8], StatusCode, &str)> = vec![
+                (
+                    FakeHost::new(),
+                    &b"plain text"[..],
+                    StatusCode::BAD_REQUEST,
+                    "is not a .zip or a .tgz",
+                ),
+                (
+                    FakeHost::new().fail("tar -xzf", "corrupt"),
+                    TGZ,
+                    StatusCode::BAD_REQUEST,
+                    "could not unpack that archive",
+                ),
+                (
+                    FakeHost::new().fail("unzip", "corrupt"),
+                    &b"PK\x03\x04 zip"[..],
+                    StatusCode::BAD_REQUEST,
+                    "could not unpack that archive",
+                ),
+                (
+                    FakeHost::new().unstartable("tar -xzf"),
+                    TGZ,
+                    StatusCode::BAD_REQUEST,
+                    "could not run tar",
+                ),
+                (
+                    FakeHost::new().ok("tar -xzf", ""),
+                    TGZ,
+                    StatusCode::BAD_REQUEST,
+                    "no Chart.yaml",
+                ),
+                (
+                    unpacking(vec![("Chart.yaml", "name: [")]),
+                    TGZ,
+                    StatusCode::BAD_REQUEST,
+                    "Chart.yaml is not valid",
+                ),
+                (
+                    unpacking(vec![("Chart.yaml", "name: Bad_Name\n")]),
+                    TGZ,
+                    StatusCode::BAD_REQUEST,
+                    "cannot be used as an app id",
+                ),
+                (
+                    copying(
+                        unpacking(vec![("Chart.yaml", CHART)])
+                            .ok("cp -r", "")
+                            .fail("helm template", "template: bad"),
+                    ),
+                    TGZ,
+                    StatusCode::BAD_REQUEST,
+                    "this chart does not render",
+                ),
+                (
+                    copying(unpacking(vec![("Chart.yaml", CHART)]).ok("cp -r", "").ok(
+                        "helm template",
+                        "apiVersion: v1\nkind: Namespace\nmetadata:\n  name: x\n",
+                    )),
+                    TGZ,
+                    StatusCode::BAD_REQUEST,
+                    "applies to the whole cluster",
+                ),
+                (
+                    unpacking(vec![("Chart.yaml", CHART)]).fail("cp -r", "disk full"),
+                    TGZ,
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "could not add",
+                ),
+                (
+                    unpacking(vec![("Chart.yaml", "name: mychart\n")])
+                        .ok("helm template", RENDERED)
+                        .fail("cp -r", "disk full"),
+                    TGZ,
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "disk full",
+                ),
+            ];
+            for (host, body, code, why) in cases {
+                let (got, said) = refused(host, body).await;
+                assert_eq!(got, code, "{why}: {said}");
+                assert!(said.contains(why), "{why}: {said}");
+            }
+        }
+
+        #[tokio::test]
+        async fn custom_services_are_saved_listed_and_removed_over_http() {
+            let _cache = crate::charts::testing::cache_in_temp();
+            let api = crate::testkit::TestApi::with_kube_and_host(
+                crate::k8s::testing::unreachable(),
+                FakeHost::new(),
+            )
+            .login()
+            .await;
+            let save = |body: Value| {
+                let api = &api;
+                async move { api.post("/api/apps/custom", &body.to_string()).await }
+            };
+            for bad in [
+                serde_json::json!({ "id": "-x", "display_name": "X", "yaml": POD }),
+                serde_json::json!({ "id": "hello", "display_name": " ", "yaml": POD }),
+                serde_json::json!({ "id": "hello", "display_name": "Hello", "yaml": "kind: [" }),
+            ] {
+                assert_eq!(
+                    save(bad.clone()).await.status,
+                    StatusCode::BAD_REQUEST,
+                    "{bad}"
+                );
+            }
+            let res = save(serde_json::json!({
+                "id": "hello", "display_name": "Hello", "yaml": POD, "port": 8080
+            }))
+            .await;
+            assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+            assert_eq!(res.json()["app"]["id"], "hello");
+            let res = api.get("/api/apps/custom").await;
+            assert_eq!(res.json()[0]["display_name"], "Hello", "{}", res.body);
+            assert_eq!(
+                api.send("DELETE", "/api/apps/custom/hello", None)
+                    .await
+                    .status,
+                StatusCode::OK
+            );
+            assert_eq!(
+                api.send("DELETE", "/api/apps/custom/hello", None)
+                    .await
+                    .status,
+                StatusCode::BAD_REQUEST
+            );
+            assert_eq!(
+                api.send("DELETE", "/api/apps/custom/Bad_Id", None)
+                    .await
+                    .status,
+                StatusCode::BAD_REQUEST
+            );
+            let res = api.post("/api/apps/custom/chart", "plain text").await;
+            assert_eq!(res.status, StatusCode::BAD_REQUEST, "{}", res.body);
+        }
+    }
 }
