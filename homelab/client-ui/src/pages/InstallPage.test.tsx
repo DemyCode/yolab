@@ -64,6 +64,12 @@ const go = () =>
     name: /^(Install|Add|Replace|Apply|Update|Starting|Applying|Updating)/,
   });
 
+const ready = () =>
+  waitFor(() => {
+    expect(blocker()).toBeNull();
+    expect(go()).toHaveProperty("disabled", false);
+  });
+
 beforeEach(() => {
   window.scrollTo = vi.fn() as unknown as typeof window.scrollTo;
 });
@@ -244,7 +250,7 @@ describe("InstallPage, a fresh install", () => {
       target: { value: "x" },
     });
     fireEvent.change(screen.getByLabelText(/Extra/), { target: { value: "" } });
-    await waitFor(() => expect(blocker()).toBeNull());
+    await ready();
     fireEvent.click(go());
     await waitFor(() => expect(where()).toBe("/app/gitea-x1y2"));
     expect(server.sent("POST", "/api/apps/gitea")[0].body).toEqual({
@@ -273,7 +279,7 @@ describe("InstallPage, a fresh install", () => {
       "POST /api/apps/gitea": { instance_name: "gitea-x1y2" },
     });
     open("?step=settings");
-    await waitFor(() => expect(blocker()).toBeNull());
+    await ready();
     fireEvent.click(go());
     expect(
       await screen.findByRole("heading", { name: "Installing Gitea" }),
@@ -294,7 +300,7 @@ describe("InstallPage, a fresh install", () => {
     fireEvent.change(await screen.findByLabelText(/Site title/), {
       target: { value: "Code" },
     });
-    await waitFor(() => expect(blocker()).toBeNull());
+    await ready();
     fireEvent.click(go());
     expect(await screen.findByText("name taken")).toBeTruthy();
     expect(screen.getByText("The install could not start")).toBeTruthy();
@@ -336,7 +342,7 @@ describe("InstallPage, a fresh install", () => {
     expect(await screen.findByText("Pick the files folder.")).toBeTruthy();
     fireEvent.mouseDown(await screen.findByRole("option", { name: /books/ }));
     fireEvent.click(await screen.findByRole("button", { name: /^Use / }));
-    await waitFor(() => expect(blocker()).toBeNull());
+    await ready();
   });
 });
 
@@ -492,7 +498,7 @@ describe("InstallPage, restoring a removed service", () => {
         .getByRole("link", { name: "Pick another moment" })
         .getAttribute("href"),
     ).toBe(`/system/backups/${NS}`);
-    await waitFor(() => expect(blocker()).toBeNull());
+    await ready();
     expect(go().textContent).toBe("Add Gitea from this copy");
     fireEvent.click(go());
     await waitFor(() => expect(where()).toBe("/app/gitea"));
@@ -529,7 +535,7 @@ describe("InstallPage, restoring a removed service", () => {
     });
     open(`?restore=${NS}&snapshot=s1`);
     await screen.findByRole("heading", { name: "Restore gitea" });
-    await waitFor(() => expect(blocker()).toBeNull());
+    await ready();
     fireEvent.click(go());
     await waitFor(() =>
       expect(server.sent("POST", "/api/apps/gitea")).toHaveLength(1),
@@ -555,7 +561,7 @@ describe("InstallPage, restoring a service that still runs", () => {
     ).toBeTruthy();
     expect(screen.queryByText("Settings")).toBeNull();
     expect(screen.getByText("What comes back")).toBeTruthy();
-    await waitFor(() => expect(blocker()).toBeNull());
+    await ready();
     expect(go().textContent).toBe("Replace gitea with this copy");
     fireEvent.click(go());
     await waitFor(() =>
@@ -566,7 +572,7 @@ describe("InstallPage, restoring a service that still runs", () => {
       snapshot_id: "s1",
       choices: { data: { data: "replace" } },
     });
-    expect(where()).toBe("/app/gitea");
+    await waitFor(() => expect(where()).toBe("/app/gitea"));
   });
 
   it("waits for the copy, then says why it could not be read", async () => {
@@ -589,7 +595,7 @@ describe("InstallPage, restoring a service that still runs", () => {
       "POST /api/backups/restore": reply(409, '{"error":"busy"}'),
     });
     open(`?restore=${NS}&snapshot=s1`);
-    await waitFor(() => expect(blocker()).toBeNull());
+    await ready();
     fireEvent.click(go());
     expect(await screen.findByText("busy")).toBeTruthy();
     server.routes["POST /api/backups/restore"] = () => Promise.reject("x");
@@ -639,7 +645,7 @@ describe("InstallPage, changing a running service", () => {
       await screen.findByRole("heading", { name: "Settings of gitea-ab12" }),
     ).toBeTruthy();
     expect(screen.getByText(/Applied to the version it runs now/)).toBeTruthy();
-    await waitFor(() => expect(blocker()).toBeNull());
+    await ready();
     expect(go().textContent).toBe("Apply these settings");
     fireEvent.click(go());
     expect(screen.getByRole("button", { name: "Applying…" })).toBeTruthy();
@@ -669,7 +675,7 @@ describe("InstallPage, changing a running service", () => {
     });
     open("?edit=gitea-ab12");
     await screen.findByRole("heading", { name: "Settings of gitea-ab12" });
-    await waitFor(() => expect(blocker()).toBeNull());
+    await ready();
     fireEvent.click(go());
     expect(await screen.findByText("helm refused")).toBeTruthy();
     expect(screen.getByText("The new settings were not applied")).toBeTruthy();
@@ -719,7 +725,7 @@ describe("InstallPage, changing a running service", () => {
       }),
     ).toBeTruthy();
     expect(screen.getByText(/The settings of the new version/)).toBeTruthy();
-    await waitFor(() => expect(blocker()).toBeNull());
+    await ready();
     expect(go().textContent).toBe("Update to 1.0.0");
     fireEvent.click(go());
     expect(screen.getByRole("button", { name: "Updating…" })).toBeTruthy();
@@ -739,7 +745,7 @@ describe("InstallPage, changing a running service", () => {
     });
     open("?update=gitea-ab12");
     await screen.findByRole("heading", { name: "Update gitea-ab12 to 1.0.0" });
-    await waitFor(() => expect(blocker()).toBeNull());
+    await ready();
     fireEvent.click(go());
     expect(await screen.findByText("chart broken")).toBeTruthy();
     expect(screen.getByText("The update did not finish")).toBeTruthy();

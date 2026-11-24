@@ -963,7 +963,9 @@ describe("StoragePage, technical details", () => {
     open();
     await details();
     expect(await screen.findByText("Asking Ceph…")).toBeTruthy();
-    expect(screen.getAllByText("…").length).toBeGreaterThanOrEqual(4);
+    await waitFor(() =>
+      expect(screen.getAllByText("…").length).toBeGreaterThanOrEqual(4),
+    );
     expect(
       screen.queryByRole("button", { name: /Copy ceph status/ }),
     ).toBeNull();

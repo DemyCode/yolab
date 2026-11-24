@@ -19,7 +19,7 @@ import {
   MovementBanner,
   MovementSummary,
 } from "./DataMovement";
-import { fakeServer, never, settle } from "@/test/server";
+import { fakeServer, never } from "@/test/server";
 import { Where } from "@/test/Where";
 import type { Movement, MovementJob } from "@/types/storage";
 
@@ -189,8 +189,7 @@ describe("DataMovementCard", () => {
   it("shows nothing until there is movement", async () => {
     moving(movement({ state: "settled" }));
     const { container } = render(<DataMovementCard />);
-    await settle();
-    expect(container.innerHTML).toBe("");
+    await waitFor(() => expect(container.innerHTML).toBe(""));
   });
 
   it("shows one job's progress in bytes, how long is left, and that it is safe", async () => {
@@ -261,13 +260,11 @@ describe("DrainProgress", () => {
     first.unmount();
     moving(movement({ jobs: [job({ progress: null })] }));
     const second = render(<DrainProgress />);
-    await settle();
-    expect(second.container.innerHTML).toBe("");
+    await waitFor(() => expect(second.container.innerHTML).toBe(""));
     second.unmount();
     moving(movement({ jobs: [job({ kind: "rebuild" })] }));
     const third = render(<DrainProgress />);
-    await settle();
-    expect(third.container.innerHTML).toBe("");
+    await waitFor(() => expect(third.container.innerHTML).toBe(""));
   });
 });
 
@@ -282,8 +279,7 @@ describe("MovementBanner", () => {
     first.unmount();
     moving(movement());
     const second = render(<MovementBanner />);
-    await settle();
-    expect(second.container.innerHTML).toBe("");
+    await waitFor(() => expect(second.container.innerHTML).toBe(""));
   });
 });
 
@@ -322,7 +318,6 @@ describe("MovementSummary", () => {
   it("is nothing once settled", async () => {
     moving(movement({ state: "settled" }));
     const second = render(<MovementSummary />);
-    await settle();
-    expect(second.container.innerHTML).toBe("");
+    await waitFor(() => expect(second.container.innerHTML).toBe(""));
   });
 });

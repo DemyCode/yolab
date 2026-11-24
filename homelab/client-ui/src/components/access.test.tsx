@@ -28,8 +28,7 @@ describe("AppAccess", () => {
     fakeServer({ "GET /api/apps/a/outputs": { outputs: [] } });
     const { container } = render(<AppAccess instanceName="a" links={[]} />);
     expect(screen.getByLabelText("Loading")).toBeTruthy();
-    await settle();
-    expect(container.innerHTML).toBe("");
+    await waitFor(() => expect(container.innerHTML).toBe(""));
   });
 
   it("lists links with open and copy, and waits on outputs not yet reported", async () => {
@@ -119,7 +118,7 @@ describe("AppAccess", () => {
     await waitFor(() =>
       expect(server.sent("POST", "/api/apps/a/scan-outputs")).toHaveLength(1),
     );
-    await settle();
+    await screen.findByRole("button", { name: "Check again" });
     expect(screen.getByText(/could not be loaded right now/)).toBeTruthy();
     server.routes["POST /api/apps/a/scan-outputs"] = {
       outputs: [out({ title: "Back" })],

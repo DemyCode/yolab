@@ -8,6 +8,12 @@ import type { StoreComment } from "@/lib/store";
 const official = catalogApp({ id: "gitea", name: "Gitea", repo: "official" });
 const custom = catalogApp({ id: "mine", repo: "community" });
 
+async function usable(name: string) {
+  const button = await screen.findByRole("button", { name });
+  await waitFor(() => expect(button).toHaveProperty("disabled", false));
+  return button;
+}
+
 describe("HeartButton", () => {
   it("is not offered for services outside the official catalog", () => {
     const server = fakeServer({});
@@ -22,9 +28,7 @@ describe("HeartButton", () => {
       "PUT /api/store/apps/gitea/heart": undefined,
     });
     render(<HeartButton app={official} count={2} />);
-    const give = await screen.findByRole("button", {
-      name: "Give Gitea a heart",
-    });
+    const give = await usable("Give Gitea a heart");
     expect(give.getAttribute("aria-pressed")).toBe("false");
     fireEvent.click(give);
     const back = await screen.findByRole("button", {
@@ -177,7 +181,7 @@ describe("AppComments", () => {
     fireEvent.click(post);
     expect(screen.getByRole("button", { name: "Posting…" })).toBeTruthy();
     expect(await screen.findByText("Nice")).toBeTruthy();
-    expect((box as HTMLTextAreaElement).value).toBe("");
+    await waitFor(() => expect((box as HTMLTextAreaElement).value).toBe(""));
     expect(
       server.sent("POST", "/api/store/apps/gitea/comments")[0].body,
     ).toEqual({ body: "Nice" });
@@ -247,9 +251,7 @@ describe("HeartButton refusal when giving", () => {
       "PUT /api/store/apps/gitea/heart": reply(503, '{"error":"busy"}'),
     });
     render(<HeartButton app={official} count={4} />);
-    fireEvent.click(
-      await screen.findByRole("button", { name: "Give Gitea a heart" }),
-    );
+    fireEvent.click(await usable("Give Gitea a heart"));
     expect(await screen.findByText("busy")).toBeTruthy();
     expect(
       screen.getByRole("button", { name: "Give Gitea a heart" }).textContent,

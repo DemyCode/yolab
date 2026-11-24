@@ -304,7 +304,9 @@ describe("ForceHealCard", () => {
     serve(status({ problems: ["ceph_no_quorum"] }, { lost_groups: null }));
     renderAt(<ForceHealCard />);
     await screen.findByText("Storage has lost its quorum");
-    expect(screen.queryByText(/groups? of files/)).toBeNull();
+    await waitFor(() =>
+      expect(screen.queryByText(/groups? of files/)).toBeNull(),
+    );
   });
 
   it("heals only after every gone machine and HEAL are typed", async () => {
