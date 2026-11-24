@@ -343,4 +343,239 @@ mod tests {
         let response = answer(Err(anyhow::anyhow!("connection refused")));
         assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
     }
+
+    mod over_http {
+        use super::*;
+        use crate::testkit::TestApi;
+
+        const ALL: [(&str, &str, Option<&str>); 7] = [
+            ("GET", "/api/store/stats", None),
+            ("GET", "/api/store/apps/gitea/heart", None),
+            (
+                "PUT",
+                "/api/store/apps/gitea/heart",
+                Some(r#"{"hearted":true}"#),
+            ),
+            ("GET", "/api/store/apps/gitea/comments", None),
+            (
+                "POST",
+                "/api/store/apps/gitea/comments",
+                Some(r#"{"body":"hi"}"#),
+            ),
+            ("DELETE", "/api/store/comments/5", None),
+            ("POST", "/api/store/comments/5/report", None),
+        ];
+
+        async fn signed_in(platform_url: &str) -> TestApi {
+            TestApi::with_platform(crate::k8s::testing::unreachable(), platform_url)
+                .login()
+                .await
+        }
+
+        #[tokio::test]
+        async fn every_store_call_is_refused_while_the_server_is_not_connected() {
+            let api = TestApi::provisioned().login().await;
+            for (verb, uri, body) in ALL {
+                let res = api.send(verb, uri, body).await;
+                assert_eq!(res.status, StatusCode::SERVICE_UNAVAILABLE, "{verb} {uri}");
+                assert_eq!(
+                    res.json()["detail"],
+                    "this server is not connected to the YoLab platform"
+                );
+            }
+        }
+
+        #[tokio::test]
+        async fn a_name_that_is_not_an_app_id_is_refused_before_asking_the_platform() {
+            let platform = MockServer::start().await;
+            let api = signed_in(&platform.uri()).await;
+            for (verb, uri, body) in [
+                ("GET", "/api/store/apps/Immich/heart", None),
+                (
+                    "PUT",
+                    "/api/store/apps/Immich/heart",
+                    Some(r#"{"hearted":true}"#),
+                ),
+                ("GET", "/api/store/apps/Immich/comments", None),
+                (
+                    "POST",
+                    "/api/store/apps/Immich/comments",
+                    Some(r#"{"body":"hi"}"#),
+                ),
+            ] {
+                let res = api.send(verb, uri, body).await;
+                assert_eq!(res.status, StatusCode::BAD_REQUEST, "{verb} {uri}");
+                assert_eq!(res.json()["detail"], "that is not an app id");
+            }
+            assert!(platform.received_requests().await.unwrap().is_empty());
+        }
+
+        async fn answers(platform: &MockServer, verb: &str, at: &str, reply: ResponseTemplate) {
+            Mock::given(method(verb))
+                .and(path(at))
+                .and(header("authorization", "Bearer cluster-tok"))
+                .respond_with(reply)
+                .mount(platform)
+                .await;
+        }
+
+        #[tokio::test]
+        async fn store_calls_reach_the_platform_with_this_servers_token_and_come_back_as_they_are()
+        {
+            let platform = MockServer::start().await;
+            let ok = |v: Value| ResponseTemplate::new(200).set_body_json(v);
+            answers(
+                &platform,
+                "GET",
+                "/catalog/stats",
+                ok(json!({ "installs": 3 })),
+            )
+            .await;
+            answers(
+                &platform,
+                "GET",
+                "/catalog/apps/gitea/heart",
+                ResponseTemplate::new(200),
+            )
+            .await;
+            Mock::given(method("PUT"))
+                .and(path("/catalog/apps/gitea/heart"))
+                .and(body_json(json!({ "hearted": false })))
+                .respond_with(ok(json!({ "hearted": false })))
+                .mount(&platform)
+                .await;
+            answers(
+                &platform,
+                "GET",
+                "/catalog/apps/gitea/comments",
+                ok(json!([])),
+            )
+            .await;
+            Mock::given(method("POST"))
+                .and(path("/catalog/apps/gitea/comments"))
+                .and(body_json(json!({ "body": "hi" })))
+                .respond_with(ResponseTemplate::new(201).set_body_json(json!({ "id": 1 })))
+                .mount(&platform)
+                .await;
+            answers(
+                &platform,
+                "DELETE",
+                "/catalog/comments/5",
+                ResponseTemplate::new(204),
+            )
+            .await;
+            answers(
+                &platform,
+                "POST",
+                "/catalog/comments/5/report",
+                ResponseTemplate::new(500).set_body_string("boom"),
+            )
+            .await;
+            let api = signed_in(&platform.uri()).await;
+
+            let res = api.get("/api/store/stats").await;
+            assert_eq!(
+                (res.status, res.json()),
+                (StatusCode::OK, json!({ "installs": 3 }))
+            );
+            let res = api.get("/api/store/apps/gitea/heart").await;
+            assert_eq!((res.status, res.body.as_str()), (StatusCode::OK, "null"));
+            let res = api
+                .send(
+                    "PUT",
+                    "/api/store/apps/gitea/heart",
+                    Some(r#"{"hearted":"yes"}"#),
+                )
+                .await;
+            assert_eq!(res.json(), json!({ "hearted": false }), "{}", res.body);
+            let res = api.get("/api/store/apps/gitea/comments").await;
+            assert_eq!(res.json(), json!([]));
+            let res = api
+                .post("/api/store/apps/gitea/comments", r#"{"body":"hi"}"#)
+                .await;
+            assert_eq!(
+                (res.status, res.json()),
+                (StatusCode::CREATED, json!({ "id": 1 }))
+            );
+            let res = api.send("DELETE", "/api/store/comments/5", None).await;
+            assert_eq!(
+                (res.status, res.body.as_str()),
+                (StatusCode::NO_CONTENT, "")
+            );
+            let res = api.send("POST", "/api/store/comments/5/report", None).await;
+            assert_eq!(
+                (res.status, res.json()),
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    json!({ "detail": "boom" })
+                )
+            );
+        }
+
+        #[tokio::test]
+        async fn a_platform_that_does_not_answer_is_a_bad_gateway() {
+            let port = crate::testkit::closed_port();
+            let api = signed_in(&format!("http://[::1]:{port}")).await;
+            let res = api.get("/api/store/stats").await;
+            assert_eq!(res.status, StatusCode::BAD_GATEWAY);
+            assert!(
+                res.json()["detail"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("the YoLab platform did not answer"),
+                "{}",
+                res.body
+            );
+        }
+
+        const SETTINGS_PATH: &str =
+            "/api/v1/namespaces/kube-system/configmaps/yolab-store-settings";
+
+        #[tokio::test]
+        async fn sharing_installs_reads_on_until_turned_off_and_the_choice_is_kept_in_the_cluster()
+        {
+            let (server, kube) = crate::k8s::testing::api_server().await;
+            Mock::given(method("GET"))
+                .and(path(SETTINGS_PATH))
+                .respond_with(
+                    ResponseTemplate::new(404)
+                        .set_body_json(crate::k8s::testing::status(404, "NotFound")),
+                )
+                .mount(&server)
+                .await;
+            crate::k8s::testing::accept_patches(&server).await;
+            let api = TestApi::with_kube(kube).login().await;
+
+            let res = api.get("/api/store/settings").await;
+            assert_eq!(
+                res.json(),
+                json!({ "share_installs": true }),
+                "{}",
+                res.body
+            );
+            let res = api
+                .send(
+                    "PUT",
+                    "/api/store/settings",
+                    Some(r#"{"share_installs":false}"#),
+                )
+                .await;
+            assert_eq!(
+                res.json(),
+                json!({ "share_installs": false }),
+                "{}",
+                res.body
+            );
+            let patches = crate::k8s::testing::patched(&server).await;
+            assert_eq!(patches[0]["data"]["share_installs"], "false");
+        }
+
+        #[tokio::test]
+        async fn the_setting_cannot_be_read_while_the_cluster_is_down() {
+            let api = TestApi::provisioned().login().await;
+            let res = api.get("/api/store/settings").await;
+            assert!(!res.status.is_success(), "{}", res.body);
+            assert!(!share_installs(&crate::k8s::testing::unreachable()).await);
+        }
+    }
 }

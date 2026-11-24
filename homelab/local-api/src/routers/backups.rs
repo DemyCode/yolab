@@ -749,59 +749,6 @@ mod tests {
             };
             assert!(protected_apps(&b).await.is_err());
         }
-    }
-
-    mod against_the_platform {
-        use super::*;
-        use wiremock::matchers::{header, method, path};
-        use wiremock::{Mock, MockServer, ResponseTemplate};
-
-        #[tokio::test]
-        async fn storage_the_platform_has_not_made_yet_is_not_provisioned() {
-            let server = MockServer::start().await;
-            Mock::given(method("GET"))
-                .and(path("/storage/s3"))
-                .and(header("authorization", "Bearer tok"))
-                .respond_with(ResponseTemplate::new(404))
-                .mount(&server)
-                .await;
-            assert_eq!(
-                s3_status(&crate::http::Client::new(), &server.uri(), "tok")
-                    .await
-                    .unwrap(),
-                serde_json::json!({ "provisioned": false })
-            );
-        }
-
-        #[tokio::test]
-        async fn provisioned_storage_is_passed_through() {
-            let server = MockServer::start().await;
-            Mock::given(method("GET"))
-                .and(path("/storage/s3"))
-                .respond_with(
-                    ResponseTemplate::new(200)
-                        .set_body_json(serde_json::json!({ "bucket_name": "b" })),
-                )
-                .mount(&server)
-                .await;
-            let v = s3_status(&crate::http::Client::new(), &server.uri(), "tok")
-                .await
-                .unwrap();
-            assert_eq!(v["provisioned"], true);
-            assert_eq!(v["s3"]["bucket_name"], "b");
-        }
-
-        #[tokio::test]
-        async fn a_platform_error_is_an_error_not_unprovisioned() {
-            let server = MockServer::start().await;
-            Mock::given(method("GET"))
-                .respond_with(ResponseTemplate::new(502))
-                .mount(&server)
-                .await;
-            assert!(s3_status(&crate::http::Client::new(), &server.uri(), "tok")
-                .await
-                .is_err());
-        }
 
         const ACK_PATH: &str = "/api/v1/namespaces/kube-system/secrets/yolab-backup-key-ack";
 
@@ -929,6 +876,59 @@ mod tests {
                     res.body
                 );
             }
+        }
+    }
+
+    mod against_the_platform {
+        use super::*;
+        use wiremock::matchers::{header, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        #[tokio::test]
+        async fn storage_the_platform_has_not_made_yet_is_not_provisioned() {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/storage/s3"))
+                .and(header("authorization", "Bearer tok"))
+                .respond_with(ResponseTemplate::new(404))
+                .mount(&server)
+                .await;
+            assert_eq!(
+                s3_status(&crate::http::Client::new(), &server.uri(), "tok")
+                    .await
+                    .unwrap(),
+                serde_json::json!({ "provisioned": false })
+            );
+        }
+
+        #[tokio::test]
+        async fn provisioned_storage_is_passed_through() {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/storage/s3"))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_json(serde_json::json!({ "bucket_name": "b" })),
+                )
+                .mount(&server)
+                .await;
+            let v = s3_status(&crate::http::Client::new(), &server.uri(), "tok")
+                .await
+                .unwrap();
+            assert_eq!(v["provisioned"], true);
+            assert_eq!(v["s3"]["bucket_name"], "b");
+        }
+
+        #[tokio::test]
+        async fn a_platform_error_is_an_error_not_unprovisioned() {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .respond_with(ResponseTemplate::new(502))
+                .mount(&server)
+                .await;
+            assert!(s3_status(&crate::http::Client::new(), &server.uri(), "tok")
+                .await
+                .is_err());
         }
     }
 }

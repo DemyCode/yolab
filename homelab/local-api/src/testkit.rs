@@ -21,9 +21,13 @@ const OFF_BOX: &str = "[fd00:cafe::9]:40000";
 const LOOPBACK: &str = "127.0.0.1:40000";
 
 fn provisioned_config() -> String {
+    config_with_tunnel("")
+}
+
+fn config_with_tunnel(extra: &str) -> String {
     format!(
         "[homelab]\nhostname = \"yolab\"\nhomelab_password_hash = \"{PASSWORD_HASH}\"\n\
-         [tunnel]\naccount_token = \"{ACCOUNT_TOKEN}\"\n[node.k3s]\ntoken = \"{K3S_TOKEN}\"\n"
+         [tunnel]\naccount_token = \"{ACCOUNT_TOKEN}\"\n{extra}[node.k3s]\ntoken = \"{K3S_TOKEN}\"\n"
     )
 }
 
@@ -58,6 +62,14 @@ impl TestApi {
 
     pub fn with_kube(kube: kube::Client) -> Self {
         Self::with_config_and_kube(&provisioned_config(), kube)
+    }
+
+    pub fn with_platform(kube: kube::Client, platform_url: &str) -> Self {
+        Self::build(
+            &config_with_tunnel(&format!("platform_api_url = \"{platform_url}\"\n")),
+            kube,
+            crate::host::fake::FakeHost::new(),
+        )
     }
 
     pub fn with_kube_and_host(kube: kube::Client, host: crate::host::fake::FakeHost) -> Self {
