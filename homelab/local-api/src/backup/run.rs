@@ -1860,7 +1860,20 @@ mod tests {
         async fn a_service(
             pvcs: Vec<Value>,
         ) -> (MockServer, Client, crate::records::testing::Kept) {
+            a_service_whose_settings_answer(pvcs, 404, status(404, "NotFound")).await
+        }
+
+        async fn a_service_whose_settings_answer(
+            pvcs: Vec<Value>,
+            code: u16,
+            settings: Value,
+        ) -> (MockServer, Client, crate::records::testing::Kept) {
             let (server, kube) = api_server().await;
+            Mock::given(method("GET"))
+                .and(path("/api/v1/namespaces/yolab-notes/secrets/yolab-config"))
+                .respond_with(ResponseTemplate::new(code).set_body_json(settings))
+                .mount(&server)
+                .await;
             config(&server, 200, enabled()).await;
             let kept = crate::records::testing::kept(&server, "yolab-backups").await;
             serve(
@@ -2124,14 +2137,9 @@ mod tests {
 
         #[tokio::test]
         async fn a_service_the_scheduler_cannot_read_or_that_is_not_due_is_skipped() {
-            let (server, kube, kept) = a_service(vec![]).await;
-            Mock::given(method("GET"))
-                .and(path("/api/v1/namespaces/yolab-notes/secrets/yolab-config"))
-                .respond_with(
-                    ResponseTemplate::new(503).set_body_json(status(503, "ServiceUnavailable")),
-                )
-                .mount(&server)
-                .await;
+            let (_server, kube, kept) =
+                a_service_whose_settings_answer(vec![], 503, status(503, "ServiceUnavailable"))
+                    .await;
             let b = Backend {
                 kube,
                 host: restic(),
