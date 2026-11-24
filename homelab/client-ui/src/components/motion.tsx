@@ -116,9 +116,8 @@ export function AnimatedList<T>({
       if (row.leaving || !exiting.current.has(row.key)) return;
       exiting.current.delete(row.key);
       const el = nodes.current.get(row.key);
-      if (!el) return;
-      el.style.pointerEvents = "";
-      el.getAnimations?.().forEach((a) => a.cancel());
+      el?.style.removeProperty("pointer-events");
+      el?.getAnimations?.().forEach((a) => a.cancel());
     });
     before.current = new Map();
   }, [rows]);
