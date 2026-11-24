@@ -502,6 +502,15 @@ mod tests {
         }
 
         #[test]
+        fn an_icon_folder_that_cannot_be_made_is_reported() {
+            let home = scratch("unmakeable");
+            std::os::unix::fs::symlink(home.join("gone"), home.join("icons")).unwrap();
+            assert!(install(&home, Path::new("/bin/yolab-desktop")).is_err());
+            assert!(!entry_path(&home).exists());
+            std::fs::remove_dir_all(&home).unwrap();
+        }
+
+        #[test]
         fn an_icon_that_cannot_be_read_is_reported_instead_of_overwritten() {
             let home = scratch("blocked");
             std::fs::create_dir_all(icon_path(&home)).unwrap();
