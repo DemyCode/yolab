@@ -213,3 +213,36 @@ pub(super) async fn follow_pod_logs(
     }
     Ok(futures::stream::select_all(streams).boxed())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn a_container_without_any_state_has_not_started() {
+        assert_eq!(container_state(&json!({})), "not started");
+        assert_eq!(
+            container_state(&json!({ "state": { "waiting": {} } })),
+            "waiting"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_log_stream_says_why_it_cannot_follow_a_pod() {
+        let api = crate::testkit::TestApi::without_cluster().login().await;
+        let res = api.get("/api/apps/notes/logs/notes-0").await;
+        assert!(
+            res.body.contains("[yolab] could not read the logs:"),
+            "{}",
+            res.body
+        );
+        let (_server, kube) = crate::k8s::testing::api_server().await;
+        let res = crate::testkit::TestApi::with_kube(kube)
+            .login()
+            .await
+            .get("/api/apps/notes/logs/notes-0")
+            .await;
+        assert!(res.body.contains("could not read the logs"), "{}", res.body);
+    }
+}

@@ -1085,3 +1085,456 @@ mod tests {
         assert!(raw_size(&json!({})).is_err());
     }
 }
+
+#[cfg(test)]
+mod against_restic {
+    use super::*;
+    use crate::host::fake::FakeHost;
+    use crate::k8s::testing::{api_server, status};
+    use serde_json::json;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    const NS: &str = "yolab-notes";
+    const SIZES_PATH: &str = "/api/v1/namespaces/kube-system/configmaps/yolab-backup-sizes";
+
+    fn cfg() -> BackupConfig {
+        BackupConfig {
+            access_key_id: "key".into(),
+            secret_access_key: "secret".into(),
+            bucket: "b".into(),
+            endpoint: "https://s3.example".into(),
+            restic_password: "pw".into(),
+        }
+    }
+
+    fn points_json(ns: &str) -> String {
+        json!([
+            { "id": "p2", "time": "2026-11-20T03:00:00Z", "tags": [namespace_tag(ns), "run:r2"] },
+            { "id": "p1", "time": "2026-11-10T03:00:00Z", "tags": [namespace_tag(ns), "run:r1"] },
+            { "id": "old", "time": "2026-11-01T03:00:00Z", "tags": [namespace_tag(ns)] }
+        ])
+        .to_string()
+    }
+
+    fn folders_json() -> String {
+        json!([
+            { "id": "f2", "tags": [FOLDERS_TAG, "run:r2"] },
+            { "id": "f1", "tags": [FOLDERS_TAG, "run:r1"] },
+            { "id": "fx", "tags": [FOLDERS_TAG, "run:gone"] }
+        ])
+        .to_string()
+    }
+
+    fn restic() -> FakeHost {
+        restic_for(NS, &folders_json())
+    }
+
+    fn restic_for(ns: &str, folders: &str) -> FakeHost {
+        FakeHost::new()
+            .ok(
+                &format!(
+                    "restic snapshots --no-lock --json --tag {}",
+                    namespace_tag(ns)
+                ),
+                &points_json(ns),
+            )
+            .ok(
+                &format!("restic snapshots --no-lock --json --tag {FOLDERS_TAG}"),
+                folders,
+            )
+            .ok("restic stats", r#"{"total_size": 100}"#)
+            .ok("restic forget", "")
+            .ok("restic restore", "")
+            .ok("restic unlock", "")
+            .ok("restic prune", "")
+    }
+
+    fn sized(size: u64, added: &[(&str, u64)]) -> ServiceSize {
+        ServiceSize {
+            size_bytes: size,
+            added: added.iter().map(|(k, v)| (k.to_string(), *v)).collect(),
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn a_service_s_backups_are_listed_newest_first_with_their_folders() {
+        let host = restic();
+        let cfg = cfg();
+        let svc = Service {
+            host: &host,
+            cfg: &cfg,
+            namespace: NS,
+        };
+        let ids: Vec<String> = svc
+            .points()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|p| p.snapshot_id)
+            .collect();
+        assert_eq!(ids, ["p2", "p1", "old"]);
+        let folders = svc.folders().await.unwrap();
+        assert_eq!(folders["r1"], ["f1"]);
+        assert_eq!(folders["gone"], ["fx"]);
+        assert_eq!(svc.measure(&[]).await.unwrap(), 0);
+        assert_eq!(svc.measure(&["f1".into()]).await.unwrap(), 100);
+    }
+
+    #[tokio::test]
+    async fn what_deleting_one_backup_frees_is_measured_and_older_style_ones_are_not() {
+        let host = restic();
+        let cfg = cfg();
+        let svc = Service {
+            host: &host,
+            cfg: &cfg,
+            namespace: NS,
+        };
+        assert_eq!(svc.frees("p1").await.unwrap(), Some(0));
+        assert_eq!(svc.frees("old").await.unwrap(), None);
+        let err = svc.frees("nope").await.unwrap_err();
+        assert_eq!(err.to_string(), "nope is not a backup of yolab-notes");
+    }
+
+    #[tokio::test]
+    async fn the_size_counts_only_new_style_backups_and_forgets_sizes_of_deleted_ones() {
+        let host = restic();
+        let cfg = cfg();
+        let svc = Service {
+            host: &host,
+            cfg: &cfg,
+            namespace: NS,
+        };
+        let size = svc
+            .sized(Some(50), Some(&sized(0, &[("p1", 5), ("deleted", 7)])))
+            .await
+            .unwrap();
+        assert_eq!(size.size_bytes, 100);
+        assert_eq!(size.newest_bytes, 100);
+        assert_eq!(size.budget_bytes, 50);
+        assert!(size.over_budget);
+        assert_eq!(size.added, BTreeMap::from([("p1".to_string(), 5)]));
+        let roomy = svc.sized(None, None).await.unwrap();
+        assert_eq!(roomy.budget_bytes, DEFAULT_BUDGET);
+        assert!(!roomy.over_budget);
+    }
+
+    #[tokio::test]
+    async fn a_service_without_backups_is_empty_and_measures_nothing() {
+        let host = FakeHost::new().fail(
+            "restic snapshots",
+            "Fatal: unable to open config file: Stat: The specified key does not exist.",
+        );
+        let cfg = cfg();
+        let svc = Service {
+            host: &host,
+            cfg: &cfg,
+            namespace: NS,
+        };
+        assert!(svc.points().await.unwrap().is_empty());
+        assert!(svc.folders().await.unwrap().is_empty());
+        let size = svc.sized(None, None).await.unwrap();
+        assert_eq!((size.size_bytes, size.newest_bytes), (0, 0));
+    }
+
+    #[tokio::test]
+    async fn restic_failures_are_errors_not_empty_answers() {
+        let cfg = cfg();
+        let down = FakeHost::new().fail("restic snapshots", "connection refused");
+        let svc = Service {
+            host: &down,
+            cfg: &cfg,
+            namespace: NS,
+        };
+        assert_eq!(
+            svc.points().await.unwrap_err().to_string(),
+            "restic snapshots: connection refused"
+        );
+        let garbled = FakeHost::new().ok("restic snapshots", "not json");
+        assert!(Service {
+            host: &garbled,
+            cfg: &cfg,
+            namespace: NS
+        }
+        .points()
+        .await
+        .is_err());
+        let missing = FakeHost::new().unstartable("restic");
+        let svc = Service {
+            host: &missing,
+            cfg: &cfg,
+            namespace: NS,
+        };
+        assert!(svc.points().await.is_err());
+        assert!(svc.measure(&["f1".into()]).await.is_err());
+        let stats_fail = FakeHost::new().fail("restic stats", "no such snapshot");
+        let svc = Service {
+            host: &stats_fail,
+            cfg: &cfg,
+            namespace: NS,
+        };
+        assert_eq!(
+            svc.measure(&["f1".into()]).await.unwrap_err().to_string(),
+            "restic stats: no such snapshot"
+        );
+        let stats_garbled = FakeHost::new().ok("restic stats", "{}");
+        let svc = Service {
+            host: &stats_garbled,
+            cfg: &cfg,
+            namespace: NS,
+        };
+        assert!(svc.measure(&["f1".into()]).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn deleting_one_backup_forgets_its_settings_and_its_folders() {
+        let b = Backend {
+            kube: crate::k8s::testing::unreachable(),
+            host: restic(),
+        };
+        delete_point(&b, &cfg(), NS, "p1").await.unwrap();
+        assert!(b.host.ran("restic forget p1"));
+        assert!(b.host.ran("restic forget f1"));
+        assert!(!b.host.ran("restic forget f2"));
+        let err = delete_point(&b, &cfg(), NS, "nope").await.unwrap_err();
+        assert_eq!(err.to_string(), "nope is not a backup of yolab-notes");
+    }
+
+    #[tokio::test]
+    async fn deleting_every_backup_also_drops_folders_no_backup_names() {
+        let b = Backend {
+            kube: crate::k8s::testing::unreachable(),
+            host: restic(),
+        };
+        assert_eq!(delete_all(&b, &cfg(), NS).await.unwrap(), 3);
+        for id in ["p2", "p1", "old", "f2", "f1", "fx"] {
+            assert!(b.host.ran(&format!("restic forget {id}")), "{id}");
+        }
+        let broken = Backend {
+            kube: crate::k8s::testing::unreachable(),
+            host: restic().fail("restic forget", "repository is locked"),
+        };
+        assert!(delete_all(&broken, &cfg(), NS).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_prune_that_fails_or_cannot_start_waits_for_the_next_one() {
+        prune(
+            &FakeHost::new().fail("restic prune", "locked"),
+            &cfg(),
+            "services/yolab-p1",
+        )
+        .await;
+        prune(
+            &FakeHost::new().unstartable("restic prune"),
+            &cfg(),
+            "services/yolab-p2",
+        )
+        .await;
+        let ok = FakeHost::new().ok("restic", "");
+        prune(&ok, &cfg(), "services/yolab-p3").await;
+        assert!(ok.ran("restic prune"));
+    }
+
+    async fn sizes_are(server: &MockServer, code: u16, sizes: Option<Value>) {
+        let body = match sizes {
+            Some(s) => json!({
+                "apiVersion": "v1", "kind": "ConfigMap",
+                "metadata": { "name": "yolab-backup-sizes", "namespace": "kube-system", "resourceVersion": "3" },
+                "data": { "services": s.to_string() }
+            }),
+            None => status(code, "NotFound"),
+        };
+        Mock::given(method("GET"))
+            .and(path(SIZES_PATH))
+            .respond_with(ResponseTemplate::new(code).set_body_json(body))
+            .mount(server)
+            .await;
+    }
+
+    async fn budget_is(server: &MockServer, ns: &str, budget: Option<u64>) {
+        use base64::Engine as _;
+        let response = match budget {
+            None => ResponseTemplate::new(404).set_body_json(status(404, "NotFound")),
+            Some(bytes) => {
+                let def = json!({
+                    "schema": 1, "app_id": "notes", "instance_name": "notes", "config": {},
+                    "backup": { "enabled": true, "schedule": "0 3 * * *", "budget_bytes": bytes }
+                })
+                .to_string();
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "apiVersion": "v1", "kind": "Secret", "metadata": { "name": "yolab-config" },
+                    "data": { "app.json": base64::engine::general_purpose::STANDARD.encode(def) }
+                }))
+            }
+        };
+        Mock::given(method("GET"))
+            .and(path(format!(
+                "/api/v1/namespaces/{ns}/secrets/yolab-config"
+            )))
+            .respond_with(response)
+            .mount(server)
+            .await;
+    }
+
+    async fn accept_writes(server: &MockServer) {
+        for (verb, code) in [("PUT", 200), ("POST", 201)] {
+            Mock::given(method(verb))
+                .respond_with(ResponseTemplate::new(code).set_body_json(json!({
+                    "apiVersion": "v1", "kind": "ConfigMap", "metadata": { "name": "yolab-backup-sizes" }
+                })))
+                .mount(server)
+                .await;
+        }
+    }
+
+    async fn written_sizes(server: &MockServer) -> Vec<Value> {
+        server
+            .received_requests()
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|r| matches!(r.method.as_str(), "PUT" | "POST"))
+            .filter_map(|r| serde_json::from_slice::<Value>(&r.body).ok())
+            .filter_map(|v| {
+                v["data"]["services"]
+                    .as_str()
+                    .and_then(|s| serde_json::from_str(s).ok())
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn after_a_backup_the_space_is_thinned_to_the_budget_and_the_size_recorded() {
+        let (server, kube) = api_server().await;
+        let ns = "yolab-thinned";
+        sizes_are(&server, 200, Some(json!({ ns: sized(10, &[("p1", 4)]) }))).await;
+        budget_is(&server, ns, Some(50)).await;
+        accept_writes(&server).await;
+        let b = Backend {
+            kube,
+            host: restic_for(ns, &folders_json()),
+        };
+        let after = after_run(&b, &cfg(), ns, "p2").await.unwrap();
+        assert_eq!(after.dropped, 1);
+        assert!(after.size.over_budget);
+        assert!(b.host.ran("restic forget p1"));
+        assert!(b.host.ran("restic forget fx"));
+        assert!(b.host.ran("restic prune"));
+        let recorded = written_sizes(&server).await;
+        assert_eq!(recorded[0][ns]["added"], json!({ "p2": 0 }));
+    }
+
+    #[tokio::test]
+    async fn after_a_backup_that_fits_nothing_is_dropped() {
+        let (server, kube) = api_server().await;
+        let ns = "yolab-roomy";
+        sizes_are(&server, 404, None).await;
+        budget_is(&server, ns, None).await;
+        accept_writes(&server).await;
+        let b = Backend {
+            kube,
+            host: restic_for(ns, "[]"),
+        };
+        let after = after_run(&b, &cfg(), ns, "p2").await.unwrap();
+        assert_eq!(after.dropped, 0);
+        assert!(!after.size.over_budget);
+        assert!(!b.host.ran("restic forget"));
+    }
+
+    #[tokio::test]
+    async fn a_second_thinning_of_the_same_service_waits_for_the_first() {
+        let b = Backend {
+            kube: crate::k8s::testing::unreachable(),
+            host: restic(),
+        };
+        let _first = Thinning::claim("yolab-busy").unwrap();
+        let err = after_run(&b, &cfg(), "yolab-busy", "p2")
+            .await
+            .err()
+            .unwrap();
+        assert!(err.to_string().contains("already being pruned"), "{err}");
+        assert!(after_run(&b, &cfg(), "yolab-unreachable", "p2")
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn refreshing_records_the_size_or_removes_an_empty_one() {
+        let (server, kube) = api_server().await;
+        sizes_are(&server, 404, None).await;
+        budget_is(&server, NS, None).await;
+        accept_writes(&server).await;
+        refresh(
+            &Backend {
+                kube: kube.clone(),
+                host: restic(),
+            },
+            &cfg(),
+            NS,
+        )
+        .await;
+        assert_eq!(written_sizes(&server).await[0][NS]["size_bytes"], 100);
+
+        let (server, kube) = api_server().await;
+        sizes_are(&server, 200, Some(json!({ NS: sized(10, &[]) }))).await;
+        budget_is(&server, NS, None).await;
+        accept_writes(&server).await;
+        let empty = FakeHost::new().fail("restic snapshots", "unable to open config file");
+        refresh(&Backend { kube, host: empty }, &cfg(), NS).await;
+        assert_eq!(written_sizes(&server).await, vec![json!({})]);
+    }
+
+    #[tokio::test]
+    async fn a_refresh_that_cannot_read_or_measure_changes_nothing() {
+        let (server, kube) = api_server().await;
+        sizes_are(&server, 503, None).await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/namespaces/yolab-notes/secrets/yolab-config"))
+            .respond_with(
+                ResponseTemplate::new(503).set_body_json(status(503, "ServiceUnavailable")),
+            )
+            .mount(&server)
+            .await;
+        refresh(
+            &Backend {
+                kube,
+                host: restic(),
+            },
+            &cfg(),
+            NS,
+        )
+        .await;
+        assert!(written_sizes(&server).await.is_empty());
+
+        let (server, kube) = api_server().await;
+        sizes_are(&server, 404, None).await;
+        budget_is(&server, NS, None).await;
+        let down = FakeHost::new().fail("restic snapshots", "connection refused");
+        refresh(&Backend { kube, host: down }, &cfg(), NS).await;
+        assert!(written_sizes(&server).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_cleanup_after_a_delete_prunes_each_touched_store_then_refreshes() {
+        let host = restic();
+        let b = Backend {
+            kube: crate::k8s::testing::unreachable(),
+            host: host.clone(),
+        };
+        spawn_cleanup(
+            b,
+            cfg(),
+            NS.into(),
+            BTreeSet::from(["services/yolab-cleanup-test".to_string()]),
+        );
+        for _ in 0..1000 {
+            if host.ran("restic prune") {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(host.ran("restic prune"));
+    }
+}

@@ -2231,6 +2231,266 @@ mod tests {
             );
         }
 
+        async fn namespace_deletes(server: &MockServer) {
+            Mock::given(method("DELETE"))
+                .and(path(NS_PATH))
+                .respond_with(ResponseTemplate::new(404).set_body_json(gone()))
+                .mount(server)
+                .await;
+        }
+
+        #[tokio::test]
+        async fn the_uninstall_route_registers_the_removal_and_answers_at_once() {
+            let (server, kube) = api_server().await;
+            namespace_is(&server, 200, ns(json!({}), "Active")).await;
+            volumes_are(&server, vec![]).await;
+            Mock::given(method("PATCH"))
+                .and(path(NS_PATH))
+                .respond_with(ResponseTemplate::new(200).set_body_json(ns(json!({}), "Active")))
+                .expect(1)
+                .mount(&server)
+                .await;
+            let api = crate::testkit::TestApi::with_kube(kube).login().await;
+            let res = api
+                .send("DELETE", "/api/apps/notes?delete_backups=true", None)
+                .await;
+            assert_eq!(res.status, axum::http::StatusCode::ACCEPTED, "{}", res.body);
+            assert_eq!(res.json(), json!({ "ok": true }));
+        }
+
+        #[tokio::test]
+        async fn uninstalling_a_service_that_is_already_gone_is_still_accepted() {
+            let (server, kube) = api_server().await;
+            namespace_is(&server, 404, gone()).await;
+            volumes_are(&server, vec![]).await;
+            let api = crate::testkit::TestApi::with_kube(kube).login().await;
+            let res = api.send("DELETE", "/api/apps/notes", None).await;
+            assert_eq!(res.status, axum::http::StatusCode::ACCEPTED, "{}", res.body);
+            let res = api.get("/api/apps/notes/data").await;
+            assert!(res.status.is_success(), "{}", res.body);
+        }
+
+        #[tokio::test]
+        async fn without_a_cluster_neither_the_uninstall_nor_the_data_route_can_answer() {
+            let api = crate::testkit::TestApi::without_cluster().login().await;
+            assert!(!api
+                .send("DELETE", "/api/apps/notes", None)
+                .await
+                .status
+                .is_success());
+            assert!(!api.get("/api/apps/notes/data").await.status.is_success());
+            let (server, kube) = api_server().await;
+            Mock::given(method("GET"))
+                .and(path("/api/v1/persistentvolumes"))
+                .respond_with(
+                    ResponseTemplate::new(503).set_body_json(status(503, "ServiceUnavailable")),
+                )
+                .mount(&server)
+                .await;
+            let api = crate::testkit::TestApi::with_kube(kube).login().await;
+            assert!(!api
+                .send("DELETE", "/api/apps/notes", None)
+                .await
+                .status
+                .is_success());
+            assert!(!api.get("/api/apps/notes/data").await.status.is_success());
+        }
+
+        #[tokio::test]
+        async fn backups_asked_to_go_with_the_service_are_kept_when_they_cannot_be_reached() {
+            for (code, body) in [
+                (404, gone()),
+                (503, status(503, "ServiceUnavailable")),
+                (
+                    200,
+                    crate::k8s::testing::secret_with("restic_password", "pw"),
+                ),
+            ] {
+                let (server, kube) = api_server().await;
+                namespace_is(
+                    &server,
+                    200,
+                    ns(json!({ ANN_DELETE_BACKUPS: "true" }), "Terminating"),
+                )
+                .await;
+                namespace_deletes(&server).await;
+                volumes_are(&server, vec![]).await;
+                Mock::given(method("GET"))
+                    .and(path(
+                        "/api/v1/namespaces/kube-system/secrets/yolab-backup-config",
+                    ))
+                    .respond_with(ResponseTemplate::new(code).set_body_json(body))
+                    .mount(&server)
+                    .await;
+                let b = Backend {
+                    kube,
+                    host: FakeHost::new(),
+                };
+                drive_teardown(&b, "notes", "yolab-notes").await.unwrap();
+                assert!(
+                    crate::k8s::testing::asked(&server, "yolab-backup-config").await,
+                    "{code}"
+                );
+            }
+        }
+
+        #[tokio::test]
+        async fn a_helm_that_cannot_start_does_not_stop_the_teardown_and_the_saved_release_is_used()
+        {
+            use base64::Engine as _;
+            let (server, kube) = api_server().await;
+            namespace_is(&server, 200, ns(json!({}), "Active")).await;
+            namespace_deletes(&server).await;
+            volumes_are(&server, vec![]).await;
+            let saved = json!({
+                "schema": 1, "app_id": "notes", "instance_name": "notes",
+                "release": "notes-old", "config": {}
+            })
+            .to_string();
+            Mock::given(method("GET"))
+                .and(path("/api/v1/namespaces/yolab-notes/secrets/yolab-config"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "apiVersion": "v1", "kind": "Secret", "metadata": { "name": "yolab-config" },
+                    "data": { "app.json": base64::engine::general_purpose::STANDARD.encode(saved) }
+                })))
+                .mount(&server)
+                .await;
+            let b = Backend {
+                kube,
+                host: FakeHost::new().unstartable("helm uninstall"),
+            };
+            run_teardown(&b, "notes", "yolab-notes").await.unwrap();
+            assert!(b
+                .host
+                .calls()
+                .iter()
+                .any(|c| c.starts_with("helm uninstall notes-old -n yolab-notes")));
+        }
+
+        #[tokio::test]
+        async fn a_service_whose_namespace_is_already_gone_is_torn_down_without_helm_guessing() {
+            let (server, kube) = api_server().await;
+            namespace_is(&server, 404, gone()).await;
+            namespace_deletes(&server).await;
+            volumes_are(&server, vec![]).await;
+            no_saved_settings(&server).await;
+            let b = Backend {
+                kube,
+                host: FakeHost::new().ok("helm uninstall", ""),
+            };
+            run_teardown(&b, "notes", "yolab-notes").await.unwrap();
+            assert!(b.host.ran("helm uninstall notes -n yolab-notes"));
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn a_namespace_that_will_not_delete_is_tried_four_times_then_left() {
+            let (server, kube) = api_server().await;
+            Mock::given(method("DELETE"))
+                .and(path(NS_PATH))
+                .respond_with(
+                    ResponseTemplate::new(503).set_body_json(status(503, "ServiceUnavailable")),
+                )
+                .expect(u64::from(NAMESPACE_DELETE_ATTEMPTS))
+                .mount(&server)
+                .await;
+            delete_namespace_with_retry(&kube, "yolab-notes").await;
+        }
+
+        #[tokio::test]
+        async fn the_uninstall_claim_refused_for_another_reason_is_an_error() {
+            let (server, kube) = api_server().await;
+            namespace_is(&server, 200, ns(json!({}), "Active")).await;
+            Mock::given(method("PATCH"))
+                .and(path(NS_PATH))
+                .respond_with(ResponseTemplate::new(404).set_body_json(gone()))
+                .up_to_n_times(1)
+                .mount(&server)
+                .await;
+            Mock::given(method("PATCH"))
+                .and(path(NS_PATH))
+                .respond_with(
+                    ResponseTemplate::new(500).set_body_json(status(500, "InternalError")),
+                )
+                .mount(&server)
+                .await;
+            assert!(!register_uninstall(&kube, "yolab-notes", &[], false)
+                .await
+                .unwrap());
+            assert!(register_uninstall(&kube, "yolab-notes", &[], false)
+                .await
+                .is_err());
+        }
+
+        #[tokio::test]
+        async fn the_background_finisher_tears_down_every_registered_removal() {
+            use crate::runtime::Resource as _;
+            let controller = UninstallsController;
+            assert_eq!(controller.scope(), crate::runtime::Scope::Cluster);
+            assert_eq!(controller.interval(), std::time::Duration::from_secs(60));
+            assert_eq!(controller.depends_on(), &[crate::runtime::KUBE_API]);
+
+            let (server, kube) = api_server().await;
+            Mock::given(method("GET"))
+                .and(path("/api/v1/namespaces"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(list(
+                    "Namespace",
+                    vec![
+                        ns(json!({ ANN_UNINSTALLING: "2026-11-24T10:00:00Z" }), "Terminating"),
+                        json!({ "metadata": { "name": "yolab-broken", "annotations": { ANN_UNINSTALLING: "x" } } }),
+                    ],
+                )))
+                .mount(&server)
+                .await;
+            namespace_is(
+                &server,
+                200,
+                ns(json!({ ANN_UNINSTALLING: "x" }), "Terminating"),
+            )
+            .await;
+            Mock::given(method("GET"))
+                .and(path("/api/v1/namespaces/yolab-broken"))
+                .respond_with(
+                    ResponseTemplate::new(503).set_body_json(status(503, "ServiceUnavailable")),
+                )
+                .mount(&server)
+                .await;
+            namespace_deletes(&server).await;
+            volumes_are(&server, vec![]).await;
+            Mock::given(method("PATCH"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(ns(json!({}), "Active")))
+                .mount(&server)
+                .await;
+            let b = Backend {
+                kube,
+                host: FakeHost::new(),
+            };
+            assert!(matches!(
+                finish_uninstalls(&b).await.unwrap(),
+                crate::runtime::Tick::Done
+            ));
+
+            let (quiet, kube) = api_server().await;
+            Mock::given(method("GET"))
+                .and(path("/api/v1/namespaces"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(list("Namespace", vec![])))
+                .mount(&quiet)
+                .await;
+            let b = Backend {
+                kube,
+                host: FakeHost::new(),
+            };
+            assert!(matches!(
+                finish_uninstalls(&b).await.unwrap(),
+                crate::runtime::Tick::Idle(_)
+            ));
+
+            let ctx = crate::runtime::Ctx {
+                node: "node1".into(),
+                tools: crate::tools::Tools::unreachable(),
+            };
+            assert!(controller.converge(&ctx).await.is_err());
+        }
+
         async fn volumes_are(server: &MockServer, pvs: Vec<Value>) {
             Mock::given(method("GET"))
                 .and(path("/api/v1/persistentvolumes"))
