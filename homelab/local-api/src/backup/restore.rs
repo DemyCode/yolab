@@ -2002,6 +2002,467 @@ mod tests {
             );
         }
 
+        const CONFIG_PATH: &str = "/api/v1/namespaces/kube-system/secrets/yolab-backup-config";
+
+        async fn enabled(server: &MockServer) {
+            Mock::given(method("GET"))
+                .and(path(CONFIG_PATH))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_json(crate::k8s::testing::secret_with("restic_password", "pw")),
+                )
+                .mount(server)
+                .await;
+        }
+
+        fn catalog(pvcs: Value, definition: Value) -> String {
+            json!({
+                "namespaces": ["yolab-notes"],
+                "services": [
+                    {
+                        "namespace": "yolab-notes", "app_id": "notes",
+                        "chart_repo": "https://charts.example", "chart_version": "1.2.3",
+                        "service_name": "notes", "pvcs": pvcs, "definition": definition
+                    },
+                    { "namespace": "yolab-other", "app_id": "", "pvcs": null }
+                ]
+            })
+            .to_string()
+        }
+
+        fn settings() -> String {
+            use base64::Engine as _;
+            let config = base64::engine::general_purpose::STANDARD.encode(r#"{"title":"Mine"}"#);
+            json!({
+                "apiVersion": "v1", "kind": "List",
+                "items": [
+                    {
+                        "apiVersion": "v1", "kind": "Secret",
+                        "metadata": { "name": "yolab-config", "namespace": "yolab-notes" },
+                        "data": { "config.json": config }
+                    },
+                    {
+                        "apiVersion": "v1", "kind": "ConfigMap",
+                        "metadata": { "name": "settings", "namespace": "yolab-notes" },
+                        "data": { "a": "b" }
+                    }
+                ]
+            })
+            .to_string()
+        }
+
+        fn saving(files: Vec<(&'static str, String)>) -> impl Fn(&str, &[&str]) + Send + Sync {
+            move |_: &str, args: &[&str]| {
+                let after = |flag: &str| {
+                    args.iter()
+                        .position(|a| *a == flag)
+                        .map(|i| args[i + 1].to_string())
+                };
+                let (Some(target), Some(include)) = (after("--target"), after("--include")) else {
+                    return;
+                };
+                let name = include.trim_start_matches("**/");
+                if let Some((_, body)) = files.iter().find(|(f, _)| *f == name) {
+                    let dir = format!("{target}/var/lib/yolab/backup-staging/bk-1");
+                    std::fs::create_dir_all(&dir).unwrap();
+                    std::fs::write(format!("{dir}/{name}"), body).unwrap();
+                }
+            }
+        }
+
+        fn restic_holding(files: Vec<(&'static str, String)>) -> FakeHost {
+            FakeHost::new()
+                .ok("restic unlock", "")
+                .ok("restic restore", "")
+                .effect("restic restore", saving(files))
+                .ok(
+                    "restic snapshots --no-lock abc123 --json",
+                    r#"[{"id":"abc123","time":"2026-11-20T00:00:00Z"}]"#,
+                )
+                .ok(
+                    "restic snapshots --no-lock --json --tag yolab-folders",
+                    r#"[{"id":"f1","time":"2026-11-19T00:00:00Z"},{"id":"f2","time":"2026-11-21T00:00:00Z"}]"#,
+                )
+        }
+
+        fn backed_up_service() -> FakeHost {
+            restic_holding(vec![
+                ("catalog.json", catalog(json!([]), Value::Null)),
+                ("yolab-notes.yaml", settings()),
+            ])
+        }
+
+        async fn running_service() -> (MockServer, Client, crate::records::testing::Kept) {
+            let (server, kube) = api_server().await;
+            enabled(&server).await;
+            let kept = crate::records::testing::kept(&server, "yolab-restores").await;
+            Mock::given(method("GET"))
+                .and(path("/apis/apps/v1/namespaces/yolab-notes/deployments"))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_json(list("Deployment", vec![deployment("web", 3)])),
+                )
+                .mount(&server)
+                .await;
+            scaled("web", 0).mount(&server).await;
+            scaled("web", 3).mount(&server).await;
+            daemonsets(&["engine"]).mount(&server).await;
+            held("engine", true).mount(&server).await;
+            held("engine", false).mount(&server).await;
+            Mock::given(method("GET"))
+                .and(path("/api/v1/persistentvolumes"))
+                .respond_with(
+                    ResponseTemplate::new(200).set_body_json(list("PersistentVolume", vec![])),
+                )
+                .mount(&server)
+                .await;
+            crate::k8s::testing::accept_patches(&server).await;
+            (server, kube, kept)
+        }
+
+        #[tokio::test]
+        async fn a_restore_puts_the_settings_back_and_starts_the_service_again() {
+            let (server, kube, kept) = running_service().await;
+            let b = Backend {
+                kube: kube.clone(),
+                host: backed_up_service(),
+            };
+            let id = start(&b, "yolab-notes", Some("abc123".into()), Default::default())
+                .await
+                .unwrap();
+            assert!(running_anywhere(&kube).await.unwrap());
+            assert_eq!(drive_next(&b).await.unwrap(), Tick::Done);
+            let sets = kept.data("sets");
+            assert_eq!(sets[0]["id"], id.as_str());
+            assert_eq!(sets[0]["state"], SUCCEEDED, "{sets}");
+            assert_eq!(sets[0]["scaled_deployments"][0]["replicas"], 3);
+            let patched = crate::k8s::testing::patched(&server).await;
+            assert!(
+                patched.iter().any(|p| p["metadata"]["name"] == "settings"),
+                "{patched:?}"
+            );
+            assert!(patched.iter().any(|p| p["spec"]["replicas"] == 0));
+            assert!(!running_anywhere(&kube).await.unwrap());
+            let shown = super::super::list(&kube).await.unwrap();
+            assert_eq!(shown[0]["state"], SUCCEEDED);
+            assert!(matches!(drive_next(&b).await.unwrap(), Tick::Idle(_)));
+        }
+
+        #[tokio::test]
+        async fn a_volume_saved_before_the_tree_fails_the_restore_and_scales_the_service_back() {
+            let (server, kube, kept) = running_service().await;
+            let pvcs = json!([{ "name": "data", "capacity": "1Gi", "snapshot_id": "old1", "snapshot_time": "t" }]);
+            let host = restic_holding(vec![
+                ("catalog.json", catalog(pvcs, Value::Null)),
+                ("yolab-notes.yaml", settings()),
+            ]);
+            let b = Backend { kube, host };
+            start(&b, "yolab-notes", Some("abc123".into()), Default::default())
+                .await
+                .unwrap();
+            drive_next(&b).await.unwrap();
+            let sets = kept.data("sets");
+            assert_eq!(sets[0]["state"], FAILED);
+            assert!(
+                sets[0]["error"]
+                    .as_str()
+                    .unwrap()
+                    .contains("before the file tree"),
+                "{sets}"
+            );
+            let patched = crate::k8s::testing::patched(&server).await;
+            assert!(
+                patched.iter().any(|p| p["spec"]["replicas"] == 3),
+                "{patched:?}"
+            );
+        }
+
+        #[tokio::test]
+        async fn a_restore_without_a_named_snapshot_takes_the_newest_holding_the_service() {
+            let (_server, kube, kept) = running_service().await;
+            let host = FakeHost::new()
+                .ok("restic unlock", "")
+                .ok(
+                    "restic snapshots --no-lock --json --tag cluster-backup",
+                    r#"[
+                        {"id":"aaa111","time":"2026-11-01T00:00:00Z","tags":["cluster-backup"]},
+                        {"id":"bbb222","time":"2026-11-02T00:00:00Z","tags":["cluster-backup"]}
+                    ]"#,
+                )
+                .ok(
+                    "restic find",
+                    r#"[
+                        {"snapshot":"aaa111","matches":[{"path":"/s/yolab-notes.yaml"}]},
+                        {"snapshot":"bbb222","matches":[{"path":"/s/yolab-notes.yaml"}]}
+                    ]"#,
+                );
+            let b = Backend { kube, host };
+            start(&b, "yolab-notes", None, Default::default())
+                .await
+                .unwrap();
+            assert_eq!(kept.data("sets")[0]["snapshot_id"], "bbb222");
+            assert!(start(&b, "yolab-gone", None, Default::default())
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("no cluster-backup snapshot"));
+        }
+
+        #[tokio::test]
+        async fn backups_that_were_never_set_up_or_never_written_list_no_versions() {
+            let (server, kube) = api_server().await;
+            Mock::given(method("GET"))
+                .and(path(CONFIG_PATH))
+                .respond_with(ResponseTemplate::new(404).set_body_json(status(404, "NotFound")))
+                .mount(&server)
+                .await;
+            let b = Backend {
+                kube,
+                host: FakeHost::new(),
+            };
+            assert_eq!(
+                backup_versions(&b).await.unwrap(),
+                BackupVersions::default()
+            );
+            assert!(start(&b, "yolab-notes", None, Default::default())
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("backup not configured"));
+            assert!(definition_from_backup(&b, "yolab-notes", "abc123")
+                .await
+                .is_err());
+
+            let (server, kube) = api_server().await;
+            enabled(&server).await;
+            let missing = FakeHost::new().ok("restic unlock", "").fail(
+                "restic snapshots",
+                "Fatal: unable to open config file: does not exist",
+            );
+            let b = Backend {
+                kube: kube.clone(),
+                host: missing,
+            };
+            let found = backup_versions(&b).await.unwrap();
+            assert!(found.configured);
+            assert!(found.apps.is_empty());
+            assert!(start(&b, "yolab-notes", None, Default::default())
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("no cluster-backup snapshot"));
+
+            let broken = FakeHost::new()
+                .ok("restic unlock", "")
+                .fail("restic snapshots", "wrong password");
+            let err = backup_versions(&Backend {
+                kube: kube.clone(),
+                host: broken,
+            })
+            .await
+            .unwrap_err()
+            .to_string();
+            assert!(err.ends_with("wrong password"), "{err}");
+            let garbled = FakeHost::new()
+                .ok("restic unlock", "")
+                .ok("restic snapshots", "{");
+            let err = backup_versions(&Backend {
+                kube: kube.clone(),
+                host: garbled,
+            })
+            .await
+            .unwrap_err()
+            .to_string();
+            assert!(err.contains("unreadable output"), "{err}");
+
+            let listed = FakeHost::new()
+                .ok("restic unlock", "")
+                .ok(
+                    "restic snapshots",
+                    r#"[{"id":"aaa111","time":"2026-11-01T00:00:00Z","tags":["cluster-backup"]}]"#,
+                )
+                .fail("restic find", "Fatal: unable to open config file");
+            let found = backup_versions(&Backend { kube, host: listed })
+                .await
+                .unwrap();
+            assert!(found.apps.is_empty());
+        }
+
+        #[tokio::test]
+        async fn a_backups_settings_come_back_from_its_catalog_or_its_saved_config() {
+            let (server, kube) = api_server().await;
+            enabled(&server).await;
+            let b = Backend {
+                kube: kube.clone(),
+                host: backed_up_service(),
+            };
+            let def = definition_from_backup(&b, "yolab-notes", "abc123")
+                .await
+                .unwrap();
+            assert_eq!(def.app_id, "notes");
+            assert_eq!(def.instance_name, "notes");
+            assert_eq!(def.config["title"], "Mine");
+            let err = definition_from_backup(&b, "yolab-missing", "abc123")
+                .await
+                .unwrap_err();
+            assert!(err.to_string().contains("is not in backup"), "{err}");
+            assert!(definition_from_backup(&b, "kube-system", "abc123")
+                .await
+                .is_err());
+            assert!(definition_from_backup(&b, "yolab-notes", "not-hex")
+                .await
+                .is_err());
+
+            let saved = serde_json::to_value(&def).unwrap();
+            let b = Backend {
+                kube: kube.clone(),
+                host: restic_holding(vec![("catalog.json", catalog(json!([]), saved))]),
+            };
+            let again = definition_from_backup(&b, "yolab-notes", "abc123")
+                .await
+                .unwrap();
+            assert_eq!(again.config["title"], "Mine");
+
+            let b = Backend {
+                kube: kube.clone(),
+                host: restic_holding(vec![(
+                    "catalog.json",
+                    catalog(json!([]), json!({ "bad": 1 })),
+                )]),
+            };
+            let bare = definition_from_backup(&b, "yolab-notes", "abc123")
+                .await
+                .unwrap();
+            assert!(bare.config.is_empty());
+            assert_eq!(
+                kept_from_backup(&b, "yolab-notes", "abc123").await.unwrap(),
+                (None, None)
+            );
+
+            let b = Backend {
+                kube: kube.clone(),
+                host: backed_up_service(),
+            };
+            let (chart, schema) = kept_from_backup(&b, "yolab-notes", "abc123").await.unwrap();
+            assert!(chart.is_none() && schema.is_none());
+
+            let b = Backend {
+                kube,
+                host: FakeHost::new()
+                    .ok("restic unlock", "")
+                    .fail("restic restore", "no such snapshot"),
+            };
+            let err = definition_from_backup(&b, "yolab-notes", "abc123")
+                .await
+                .unwrap_err();
+            assert!(
+                err.to_string().starts_with("restic restore failed:"),
+                "{err}"
+            );
+        }
+
+        #[tokio::test]
+        async fn a_backup_payload_plans_each_volume_and_reapplies_only_what_the_chart_does_not_own()
+        {
+            let (server, kube) = api_server().await;
+            enabled(&server).await;
+            crate::k8s::testing::accept_patches(&server).await;
+            let pvcs = json!([
+                { "name": "data", "capacity": "1Gi", "store": "services/yolab-notes", "folder": "notes" },
+                { "name": "cache", "capacity": "1Gi", "store": "services/yolab-notes", "folder": "notes.cache",
+                  "snapshot_id": "gone", "snapshot_time": "t" },
+                { "name": "old", "capacity": "1Gi", "snapshot_id": "o1", "snapshot_time": "t" }
+            ]);
+            let host = restic_holding(vec![
+                ("catalog.json", catalog(pvcs, Value::Null)),
+                ("yolab-notes.yaml", settings()),
+            ]);
+            let b = Backend {
+                kube: kube.clone(),
+                host,
+            };
+            let payload = backup_payload(&b, "yolab-notes", "abc123", Default::default())
+                .await
+                .unwrap();
+            assert_eq!(payload.app_id(), "notes");
+            let planned: Vec<_> = payload
+                .volumes
+                .iter()
+                .map(|(p, plan)| (p.name.as_str(), plan.clone()))
+                .collect();
+            assert_eq!(
+                planned[0],
+                (
+                    "data",
+                    Ok(Restorable {
+                        snapshot: "f1".into(),
+                        path: "/data/notes".into()
+                    })
+                )
+            );
+            assert!(planned[1]
+                .1
+                .as_ref()
+                .unwrap_err()
+                .contains("has since been deleted"));
+            assert!(planned[2]
+                .1
+                .as_ref()
+                .unwrap_err()
+                .contains("before the file tree"));
+            payload.reapply(&kube).await.unwrap();
+            let patched = crate::k8s::testing::patched(&server).await;
+            assert_eq!(patched.len(), 1, "{patched:?}");
+            assert_eq!(patched[0]["metadata"]["name"], "settings");
+
+            let plan = restore_plan(&b, "yolab-notes", "abc123").await.unwrap();
+            assert_eq!(
+                serde_json::to_value(&plan).unwrap()["data"]
+                    .as_array()
+                    .map(Vec::len),
+                Some(3)
+            );
+            let older = older_volume_copies(&b.host, &cfg(), "abc123", "yolab-notes")
+                .await
+                .unwrap();
+            assert_eq!(
+                older,
+                vec![(
+                    "volsync/yolab-notes/old".to_string(),
+                    vec!["o1".to_string()]
+                )]
+            );
+
+            let err = backup_payload(&b, "yolab-other", "abc123", Default::default())
+                .await
+                .err()
+                .unwrap();
+            assert!(err.to_string().contains("is not in backup"), "{err}");
+            let b = Backend {
+                kube,
+                host: restic_holding(vec![("catalog.json", catalog(json!([]), Value::Null))]),
+            };
+            let err = backup_payload(&b, "yolab-notes", "abc123", Default::default())
+                .await
+                .err()
+                .unwrap();
+            assert!(err.to_string().contains("has no saved settings"), "{err}");
+        }
+
+        #[tokio::test]
+        async fn the_restores_controller_runs_for_the_cluster_and_needs_its_api() {
+            let c = RestoresController;
+            assert_eq!(c.name(), "restores");
+            assert_eq!(c.scope(), Scope::Cluster);
+            assert_eq!(c.interval(), Duration::from_secs(TICK_SECS));
+            assert_eq!(c.depends_on(), &[crate::runtime::KUBE_API]);
+            let ctx = Ctx {
+                node: "node1".into(),
+                tools: crate::tools::Tools::unreachable(),
+            };
+            assert!(c.converge(&ctx).await.is_err());
+        }
+
         #[tokio::test]
         async fn nothing_queued_runs_nothing() {
             let (server, tick) = drive_one(json!({

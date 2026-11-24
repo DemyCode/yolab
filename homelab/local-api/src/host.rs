@@ -563,7 +563,11 @@ pub(crate) mod fake {
                         .map(|(k, v)| (k.to_string(), v.to_string()))
                         .collect(),
                 ));
-                Ok(output_of(me.answer(&cmd)))
+                let out = output_of(me.answer(&cmd));
+                if out.success {
+                    me.apply_effects(bin, args);
+                }
+                Ok(out)
             }
         }
 
