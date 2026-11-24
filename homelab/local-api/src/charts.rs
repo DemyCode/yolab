@@ -7,11 +7,9 @@ use crate::host::Host;
 const REPO_CM: &str = "yolab-chart-repos";
 const REPO_NS: &str = "kube-system";
 
-pub const CACHE_DIR: &str = "/var/lib/yolab/charts";
-
 #[cfg(not(test))]
 pub fn cache_root() -> PathBuf {
-    PathBuf::from(CACHE_DIR)
+    PathBuf::from("/var/lib/yolab/charts")
 }
 
 #[cfg(test)]

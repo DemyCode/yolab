@@ -350,7 +350,10 @@ pub(super) fn clone_percent(events: &[Value], namespace: &str, pvc: &str) -> Opt
         }
     }
     let (_, message) = latest?;
-    let rest = message.split("percentage cloned=").nth(1)?;
+    let rest = message
+        .split("percentage cloned=")
+        .nth(1)
+        .unwrap_or_default();
     let number: String = rest
         .chars()
         .take_while(|c| c.is_ascii_digit() || *c == '.')
@@ -411,4 +414,219 @@ pub(crate) async fn clear_install_failed(client: &Client, ns: &str) {
     set_install_failed(client, ns, Value::Null)
         .await
         .warn_on_err(format!("{ns}: could not clear the failed-install mark"));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::k8s::testing::{accept_patches, api_server, patched, serve_logs};
+    use serde_json::json;
+
+    fn waiting_pod(reason: &str) -> Value {
+        json!({ "status": { "phase": "Running", "containerStatuses": [
+            { "name": "app", "state": { "waiting": { "reason": reason } } }
+        ] } })
+    }
+
+    #[test]
+    fn an_unknown_wait_still_says_it_is_getting_ready_and_a_healthy_pod_says_nothing() {
+        assert_eq!(
+            explain_app_state(&[&waiting_pod("Weird")]),
+            "Getting ready…"
+        );
+        let healthy = json!({ "status": { "phase": "Running", "containerStatuses": [
+            { "name": "app", "ready": true, "state": { "running": {} } }
+        ] } });
+        assert_eq!(explain_app_state(&[&healthy]), "");
+    }
+
+    #[test]
+    fn a_full_disk_is_named_as_lack_of_room() {
+        assert_eq!(
+            install_failure_headline("write: No space left on device"),
+            "There is not enough room on the server for it."
+        );
+    }
+
+    #[test]
+    fn go_durations_read_every_unit_and_refuse_unknown_ones() {
+        assert_eq!(go_duration("1h2m3s"), Some(chrono::Duration::seconds(3723)));
+        assert_eq!(
+            go_duration("250ms"),
+            Some(chrono::Duration::milliseconds(250))
+        );
+        assert_eq!(go_duration("5d"), None);
+        assert_eq!(go_duration("m"), None);
+        assert_eq!(go_duration(" "), None);
+    }
+
+    #[test]
+    fn the_next_restart_needs_a_back_off_message_and_a_readable_end_time() {
+        let waiting = json!({ "message": "back-off 10s restarting failed container" });
+        let ended = json!({ "finishedAt": "2026-11-24T10:00:00Z" });
+        assert_eq!(
+            next_restart(&waiting, &ended).as_deref(),
+            Some("2026-11-24T10:00:10Z")
+        );
+        assert_eq!(next_restart(&json!({}), &ended), None);
+        assert_eq!(next_restart(&waiting, &json!({})), None);
+        assert_eq!(
+            next_restart(&waiting, &json!({ "finishedAt": "yesterday" })),
+            None
+        );
+    }
+
+    fn failure(reason: &str, said: &str, exit_code: Option<i64>) -> ContainerFailure {
+        ContainerFailure {
+            pod: "notes-0".into(),
+            container: "app".into(),
+            init: false,
+            said: said.into(),
+            exit_code,
+            previous: true,
+            reason: reason.into(),
+            retry_at: None,
+        }
+    }
+
+    #[test]
+    fn a_refused_download_and_a_silent_stop_are_each_described() {
+        assert_eq!(
+            failure("ErrImagePull", "pull access denied", None).headline(),
+            "Its program could not be downloaded: the place it comes from refused access."
+        );
+        assert_eq!(
+            failure("Error", "", None).describe(""),
+            "app stopped and left no message"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failure_that_already_says_why_needs_no_log() {
+        let said = explain_failure(
+            &crate::k8s::testing::unreachable(),
+            "yolab-notes",
+            &failure("Error", "bad config", Some(1)),
+        )
+        .await;
+        assert_eq!(said, "app: bad config");
+    }
+
+    #[tokio::test]
+    async fn a_silent_failure_is_explained_by_its_last_log_lines_or_its_exit_code() {
+        let (server, kube) = api_server().await;
+        serve_logs(
+            &server,
+            "/api/v1/namespaces/yolab-notes/pods/notes-0",
+            "app",
+            "\nstarting\npanic: no db\n",
+        )
+        .await;
+        let said = explain_failure(&kube, "yolab-notes", &failure("Error", "", Some(2))).await;
+        assert_eq!(said, "app: starting\npanic: no db");
+        let (_empty, nothing) = api_server().await;
+        let said = explain_failure(&nothing, "yolab-notes", &failure("Error", "", Some(2))).await;
+        assert_eq!(said, "app stopped with exit code 2 and left no message");
+    }
+
+    #[test]
+    fn the_copy_progress_comes_from_the_latest_event_about_that_volume() {
+        let event = |kind: &str, ns: &str, name: &str, message: Value, at: Value| {
+            json!({
+                "involvedObject": { "kind": kind, "namespace": ns, "name": name },
+                "message": message,
+                "eventTime": at,
+            })
+        };
+        let events = vec![
+            event(
+                "Pod",
+                "yolab-notes",
+                "data",
+                json!("percentage cloned=1"),
+                json!("a"),
+            ),
+            event(
+                "PersistentVolumeClaim",
+                "yolab-other",
+                "data",
+                json!("percentage cloned=2"),
+                json!("a"),
+            ),
+            event(
+                "PersistentVolumeClaim",
+                "yolab-notes",
+                "other",
+                json!("percentage cloned=3"),
+                json!("a"),
+            ),
+            event(
+                "PersistentVolumeClaim",
+                "yolab-notes",
+                "data",
+                Value::Null,
+                json!("a"),
+            ),
+            event(
+                "PersistentVolumeClaim",
+                "yolab-notes",
+                "data",
+                json!("Provisioning"),
+                json!("a"),
+            ),
+            event(
+                "PersistentVolumeClaim",
+                "yolab-notes",
+                "data",
+                json!("percentage cloned=40.6"),
+                json!("2026-11-24T10:00:00Z"),
+            ),
+            event(
+                "PersistentVolumeClaim",
+                "yolab-notes",
+                "data",
+                json!("percentage cloned=20"),
+                Value::Null,
+            ),
+        ];
+        assert_eq!(clone_percent(&events, "yolab-notes", "data"), Some(41));
+        assert_eq!(clone_percent(&events[..5], "yolab-notes", "data"), None);
+    }
+
+    #[test]
+    fn only_a_namespace_with_a_volume_being_cloned_is_copying() {
+        let cloning = json!({
+            "metadata": { "name": "data", "creationTimestamp": "2026-11-24T10:00:00Z" },
+            "spec": { "dataSource": { "kind": "VolumeSnapshot" } },
+            "status": { "phase": "Pending" }
+        });
+        let bound = json!({ "metadata": { "name": "data" }, "status": { "phase": "Bound" } });
+        let mut by_ns = std::collections::HashMap::new();
+        by_ns.insert("yolab-notes", vec![&bound]);
+        assert_eq!(copying_data("yolab-notes", &by_ns, &[]), None);
+        assert_eq!(copying_data("yolab-gone", &by_ns, &[]), None);
+        by_ns.insert("yolab-notes", vec![&cloning]);
+        assert_eq!(
+            copying_data("yolab-notes", &by_ns, &[]),
+            Some((
+                "Copying this app's files…".into(),
+                Some("2026-11-24T10:00:00Z".into())
+            ))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_install_is_marked_on_its_namespace_and_cleared_later() {
+        let (server, kube) = api_server().await;
+        accept_patches(&server).await;
+        mark_install_failed(&kube, "yolab-notes", "helm timed out").await;
+        clear_install_failed(&kube, "yolab-notes").await;
+        let sent = patched(&server).await;
+        assert_eq!(
+            sent[0]["metadata"]["annotations"][ANN_INSTALL_FAILED],
+            "helm timed out"
+        );
+        assert!(sent[1]["metadata"]["annotations"][ANN_INSTALL_FAILED].is_null());
+        mark_install_failed(&crate::k8s::testing::unreachable(), "yolab-notes", "x").await;
+    }
 }
