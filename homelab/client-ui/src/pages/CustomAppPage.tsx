@@ -68,6 +68,7 @@ export default function CustomAppPage() {
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState<string | null>(null);
   const [uploadedId, setUploadedId] = useState<string | null>(null);
+  const custom = apps.data ?? [];
 
   async function uploadChart(file: File) {
     setBusy(true);
@@ -266,7 +267,7 @@ export default function CustomAppPage() {
           </label>
         </div>
 
-        <label className="block">
+        <div className="block">
           <div className="mb-1 flex items-center justify-between">
             <span className="text-sm font-medium text-fg">Kubernetes YAML</span>
             <button
@@ -291,7 +292,7 @@ export default function CustomAppPage() {
             own. Anything that reaches outside that namespace is refused, and it
             will say which line.
           </span>
-        </label>
+        </div>
 
         {error && (
           <p className="flex items-start gap-2 rounded-control border border-danger-soft bg-danger-soft p-3 text-sm text-danger">
@@ -320,7 +321,7 @@ export default function CustomAppPage() {
           )}
         </div>
 
-        {(apps.data?.length ?? 0) > 0 && (
+        {custom.length > 0 && (
           <section className="mt-8">
             <h2 className="mb-2 text-sm font-semibold text-fg-muted">
               Your own services
@@ -328,7 +329,7 @@ export default function CustomAppPage() {
             <ul className="divide-y divide-border rounded-card border border-border bg-surface">
               <AnimatedList
                 as="li"
-                items={apps.data ?? []}
+                items={custom}
                 keyOf={(a) => a.id}
                 itemClassName="flex items-center gap-3 p-3"
               >
