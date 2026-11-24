@@ -192,7 +192,6 @@ mod tests {
         assert!(check(&issue(KEY, HASH, "id2", 2000), HASH, &["id1"]).is_some());
     }
 
-    #[test]
     fn signed(body: &str) -> String {
         let mac = hex::encode(hmac_sha256(KEY.as_bytes(), body.as_bytes()));
         format!("{body}.{mac}")

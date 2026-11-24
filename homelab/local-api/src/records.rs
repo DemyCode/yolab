@@ -480,7 +480,7 @@ mod tests {
         get_answers(&server, 200, cm("null", "5"), Some(1)).await;
         get_answers(&server, 404, status(404, "NotFound"), None).await;
         let err = STORE
-            .update(&client, std::mem::drop::<&mut Unwritable>)
+            .update(&client, std::mem::take::<Unwritable>)
             .await
             .err()
             .unwrap();

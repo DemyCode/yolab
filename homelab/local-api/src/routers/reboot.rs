@@ -121,6 +121,67 @@ mod tests {
         assert!(host.ran("systemctl reboot"));
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn a_reboot_whose_systemctl_cannot_start_does_not_panic_the_task() {
+        let host = FakeHost::new().unstartable("systemctl reboot");
+        spawn_reboot_on(host.clone()).await.unwrap();
+        assert!(host.calls().contains(&"systemctl reboot".to_string()));
+    }
+
+    async fn settle() {
+        tokio::time::sleep(Duration::from_secs(REBOOT_DELAY_SECS + 1)).await;
+        for _ in 0..10 {
+            tokio::task::yield_now().await;
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_reboot_route_answers_then_restarts_this_machine() {
+        let host = FakeHost::new().ok("systemctl reboot", "");
+        let api = crate::testkit::TestApi::with_kube_and_host(
+            crate::k8s::testing::unreachable(),
+            host.clone(),
+        )
+        .login()
+        .await;
+        let res = api.post("/api/system/reboot", "").await;
+        assert_eq!(res.json()["status"], "rebooting");
+        settle().await;
+        assert!(host.ran("systemctl reboot"));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn rebooting_everything_alone_restarts_only_this_machine() {
+        let api = crate::testkit::TestApi::without_cluster().login().await;
+        let res = api.post("/api/system/reboot/all", "").await;
+        assert_eq!(res.json()["order"], "one machine at a time, this one last");
+        settle().await;
+        assert!(api.host.calls().contains(&"systemctl reboot".to_string()));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_machine_that_will_not_reboot_stops_the_round_before_this_one() {
+        let (server, kube) = crate::k8s::testing::api_server().await;
+        crate::k8s::testing::serve(
+            &server,
+            "/api/v1/nodes",
+            200,
+            crate::k8s::testing::list(
+                "Node",
+                vec![serde_json::json!({
+                    "metadata": { "name": "yolab-n2" },
+                    "status": { "addresses": [{ "type": "InternalIP", "address": "fd00:dead::2" }] }
+                })],
+            ),
+        )
+        .await;
+        let api = crate::testkit::TestApi::with_kube(kube).login().await;
+        api.post("/api/system/reboot/all", "").await;
+        tokio::time::sleep(SETTLE_TIMEOUT).await;
+        settle().await;
+        assert!(!api.host.ran("systemctl reboot"));
+    }
+
     fn fleet(port: u16) -> RebootFleet {
         RebootFleet {
             client: crate::testkit::http(),

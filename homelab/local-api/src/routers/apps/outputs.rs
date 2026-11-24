@@ -66,3 +66,63 @@ pub async fn scan_outputs(
 ) -> Result<Json<OutputsResponse>> {
     outputs_of(&state, &instance_name, true).await
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::k8s::testing::{api_server, serve, status};
+    use crate::testkit::TestApi;
+    use serde_json::json;
+
+    async fn a_service_with_nothing_remembered() -> (wiremock::MockServer, TestApi) {
+        let (server, kube) = api_server().await;
+        serve(
+            &server,
+            "/api/v1/namespaces/yolab-notes",
+            200,
+            json!({ "apiVersion": "v1", "kind": "Namespace", "metadata": { "name": "yolab-notes" } }),
+        )
+        .await;
+        for missing in [
+            "/api/v1/namespaces/yolab-notes/configmaps/yolab-schema",
+            "/api/v1/namespaces/yolab-notes/secrets/yolab-outputs",
+        ] {
+            serve(&server, missing, 404, status(404, "NotFound")).await;
+        }
+        (server, TestApi::with_kube(kube).login().await)
+    }
+
+    #[tokio::test]
+    async fn a_service_without_outputs_shows_none_read_or_rescanned() {
+        let (_server, api) = a_service_with_nothing_remembered().await;
+        let res = api.get("/api/apps/notes/outputs").await;
+        assert_eq!(res.json(), json!({ "outputs": [] }), "{}", res.body);
+        let res = api.post("/api/apps/notes/scan-outputs", "").await;
+        assert_eq!(res.json(), json!({ "outputs": [] }), "{}", res.body);
+    }
+
+    #[tokio::test]
+    async fn the_outputs_of_a_service_that_is_not_there_are_an_error() {
+        let (server, kube) = api_server().await;
+        serve(
+            &server,
+            "/api/v1/namespaces/yolab-gone",
+            404,
+            status(404, "NotFound"),
+        )
+        .await;
+        let api = TestApi::with_kube(kube).login().await;
+        let res = api.get("/api/apps/gone/outputs").await;
+        assert_eq!(
+            res.json()["error"],
+            "yolab-gone does not exist",
+            "{}",
+            res.body
+        );
+        let res = TestApi::without_cluster()
+            .login()
+            .await
+            .post("/api/apps/gone/scan-outputs", "")
+            .await;
+        assert!(!res.status.is_success());
+    }
+}

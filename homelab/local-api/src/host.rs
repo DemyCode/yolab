@@ -519,7 +519,9 @@ pub(crate) mod fake {
         ) -> impl Future<Output = HostResult<CommandOutput>> + Send + 'a {
             let me = self.clone();
             async move {
-                let out = output_of(me.answer(&format!("systemctl {}", args.join(" "))));
+                let cmd = format!("systemctl {}", args.join(" "));
+                me.refuse_to_start(&cmd)?;
+                let out = output_of(me.answer(&cmd));
                 if out.success {
                     me.apply_effects("systemctl", args);
                 }
