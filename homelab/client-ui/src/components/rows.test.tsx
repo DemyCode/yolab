@@ -23,6 +23,7 @@ import { SettingsPage } from "@/pages/system/SettingsPage";
 import { fakeServer, never, reply } from "@/test/server";
 import { renderAt } from "@/test/render";
 import { appInfo, catalogApp } from "@/test/fixtures";
+import type { AppInfo } from "@/types/apps";
 
 function clipboard(writeText: (t: string) => Promise<void>) {
   Object.defineProperty(navigator, "clipboard", {
@@ -447,7 +448,7 @@ describe("SettingsPage", () => {
 });
 
 describe("AppTile", () => {
-  const tone = (status: string, over = {}) => {
+  const tone = (status: AppInfo["status"], over = {}) => {
     const { container, unmount } = renderAt(
       <AppTile app={appInfo({ status, ...over })} name="Gitea" icon="" />,
     );

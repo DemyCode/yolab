@@ -3,5 +3,6 @@
   "src/test/server.ts": "the fake server the tests script; it answers only what the tests ask of it",
   "src/test/render.tsx": "mounts a page under a router for the tests; it is the harness, not the app",
   "src/test/setup.ts": "resets the browser between tests; it is the harness, not the app",
-  "src/test/fixtures.ts": "builds sample data for the tests; it is the harness, not the app"
+  "src/test/fixtures.ts": "builds sample data for the tests; it is the harness, not the app",
+  "src/test/Where.tsx": "shows the router location so tests can see where a click went; it is the harness, not the app"
 }

@@ -1,11 +1,7 @@
 import { render } from "@testing-library/react";
 import type { ReactElement } from "react";
-import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
-
-function Where() {
-  const { pathname, search } = useLocation();
-  return <output data-testid="where">{pathname + search}</output>;
-}
+import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { Where } from "./Where";
 
 export function renderAt(
   ui: ReactElement,
