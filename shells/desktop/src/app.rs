@@ -1,8 +1,8 @@
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 
 use crate::{
-    normalise_url, opens_outside, reach, read_remembered, remember, route, Attempts, LaunchOnce,
-    Route, SHELL_FLAG_SCRIPT, STORE_FILE, SUPERSEDED,
+    normalise_url, reach, read_remembered, remember, route, Attempts, LaunchOnce, Route,
+    SHELL_FLAG_SCRIPT, STORE_FILE, SUPERSEDED,
 };
 
 fn store_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
@@ -118,7 +118,7 @@ fn open_box_window(app: &tauri::AppHandle, url: &str) -> Result<(), String> {
     let builder = {
         let handle = app.clone();
         builder.on_new_window(move |target, _features| {
-            if opens_outside(&target) {
+            if crate::opens_outside(&target) {
                 open_in_system_browser(&handle, &target);
             }
             tauri::webview::NewWindowResponse::Deny
