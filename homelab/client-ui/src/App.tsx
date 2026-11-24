@@ -18,7 +18,7 @@ import CustomAppPage from "@/pages/CustomAppPage";
 import { AppDetailPage } from "@/pages/AppDetailPage";
 import { SystemPage } from "@/pages/system/SystemPage";
 import { SystemSubPage } from "@/pages/system/SystemSubPage";
-import { api, setUnauthorizedHandler } from "@/lib/api";
+import { api, ApiError, setUnauthorizedHandler } from "@/lib/api";
 import { forgetAll } from "@/lib/localCache";
 
 const StoragePage = lazy(() =>
@@ -84,11 +84,7 @@ export default function App() {
       .get("/api/status")
       .then(() => setLoggedIn(true))
       .catch((e: unknown) => {
-        const unauthorized =
-          typeof e === "object" && e !== null && "status" in e
-            ? (e as { status: number }).status === 401
-            : false;
-        setLoggedIn(!unauthorized);
+        setLoggedIn(!(e instanceof ApiError && e.isUnauthorized));
       });
   }, []);
 
