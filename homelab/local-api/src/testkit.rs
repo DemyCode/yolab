@@ -206,7 +206,14 @@ impl TestApi {
 #[link_section = ".init_array"]
 static FORMAT_EVERY_LOG_LINE: extern "C" fn() = format_every_log_line;
 
+fn logs_off() -> bool {
+    std::env::var_os("YOLAB_TEST_LOGS").is_some_and(|v| v == "off")
+}
+
 extern "C" fn format_every_log_line() {
+    if logs_off() {
+        return;
+    }
     let subscriber = tracing_subscriber::fmt()
         .with_max_level(tracing::Level::TRACE)
         .with_writer(std::io::sink)
@@ -216,8 +223,8 @@ extern "C" fn format_every_log_line() {
 }
 
 #[test]
-fn every_log_line_is_formatted_in_tests_so_a_broken_message_fails_them() {
-    assert!(tracing::enabled!(tracing::Level::TRACE));
+fn every_log_line_is_formatted_in_tests_unless_the_run_turns_logs_off() {
+    assert_eq!(tracing::enabled!(tracing::Level::TRACE), !logs_off());
     tracing::trace!("formatted {}", 1);
 }
 

@@ -71,6 +71,8 @@ mod tests {
         assert_eq!(read_dns_url(&empty), None);
         let (_d, bad) = config_with("not valid toml {{{");
         assert_eq!(read_dns_url(&bad), None);
+        let (_d, no_url) = config_with("[tunnel]\nenabled = true\n");
+        assert_eq!(read_dns_url(&no_url), None);
     }
 
     #[test]
@@ -122,5 +124,17 @@ mod tests {
             host.calls().is_empty(),
             "qrencode must not run without a URL"
         );
+    }
+
+    #[tokio::test]
+    async fn a_banner_that_cannot_be_written_is_an_error() {
+        let issue_dir = tempfile::tempdir().unwrap();
+        assert!(run(
+            &FakeHost::new(),
+            "/nonexistent/config.toml",
+            issue_dir.path()
+        )
+        .await
+        .is_err());
     }
 }

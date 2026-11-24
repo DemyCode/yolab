@@ -202,6 +202,8 @@ mod tests {
         assert_eq!(why("a-5 * * * *"), "minute: 'a' is not a number");
         assert_eq!(why("1-b * * * *"), "minute: 'b' is not a number");
         assert_eq!(why("noon * * * *"), "minute: 'noon' is not a number");
+        assert!(why("0 24 * * *").starts_with("hour:"));
+        assert!(why("0 0 * 13 *").starts_with("month:"));
     }
 
     #[test]

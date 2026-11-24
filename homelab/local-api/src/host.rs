@@ -308,6 +308,7 @@ pub(crate) mod fake {
         script: Arc<Mutex<Script>>,
         envs: Arc<Mutex<Vec<(String, Env)>>>,
         effects: Arc<Mutex<Vec<(String, Effect)>>>,
+        unstartable: Arc<Mutex<Vec<String>>>,
     }
 
     impl FakeHost {
@@ -335,6 +336,28 @@ pub(crate) mod fake {
         pub fn fail(self, prefix: &str, err: &str) -> Self {
             self.push(prefix, Err(err.to_string()));
             self
+        }
+
+        pub fn unstartable(self, prefix: &str) -> Self {
+            self.unstartable.lock().unwrap().push(prefix.to_string());
+            self
+        }
+
+        fn refuse_to_start(&self, cmd: &str) -> HostResult<()> {
+            let blocked = self
+                .unstartable
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|p| cmd.starts_with(p.as_str()));
+            if !blocked {
+                return Ok(());
+            }
+            self.calls.lock().unwrap().push(cmd.to_string());
+            Err(CmdError::Spawn {
+                cmd: cmd.to_string(),
+                source: std::io::Error::from(std::io::ErrorKind::NotFound),
+            })
         }
 
         pub fn effect(
@@ -511,7 +534,9 @@ pub(crate) mod fake {
         ) -> impl Future<Output = HostResult<CommandOutput>> + Send + 'a {
             let me = self.clone();
             async move {
-                let out = output_of(me.answer(&format!("{bin} {}", args.join(" "))));
+                let cmd = format!("{bin} {}", args.join(" "));
+                me.refuse_to_start(&cmd)?;
+                let out = output_of(me.answer(&cmd));
                 if out.success {
                     me.apply_effects(bin, args);
                 }
@@ -529,6 +554,7 @@ pub(crate) mod fake {
             let me = self.clone();
             async move {
                 let cmd = format!("{bin} {}", args.join(" "));
+                me.refuse_to_start(&cmd)?;
                 me.envs.lock().unwrap().push((
                     cmd.clone(),
                     env.iter()

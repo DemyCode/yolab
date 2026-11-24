@@ -68,6 +68,7 @@
         doInstallCargoArtifacts = false;
         buildPhaseCargoCommand = ''
           cargo llvm-cov --release --no-report
+          YOLAB_TEST_LOGS=off cargo llvm-cov --release --no-report
           cargo llvm-cov report --release --html --output-dir "$out" ${ignoreUntested}
           cargo llvm-cov report --release --json --output-path regions.json ${ignoreUntested}
           echo "Uncovered regions (line:column):"

@@ -71,12 +71,9 @@ pub async fn run<H: Host>(host: &H, private_ipv6: &str, root: &Path) -> Result<(
     let dir = root.join("etc/rancher/k3s");
     std::fs::create_dir_all(&dir)?;
     let path = dir.join("config.yaml");
-    std::fs::write(&path, node_ip_line(private_ipv6, &ipv4))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
-    }
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::write(&path, node_ip_line(private_ipv6, &ipv4))
+        .and_then(|()| std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)))?;
     Ok(())
 }
 
@@ -190,5 +187,34 @@ mod tests {
         let err = run(&host, "fd00:cafe::1", dir.path()).await.unwrap_err();
 
         assert!(err.to_string().contains("no IPv4 route"));
+    }
+
+    #[tokio::test]
+    async fn a_config_folder_that_cannot_be_made_or_written_is_an_error() {
+        let ip = "1.1.1.1 via 10.0.0.1 dev eth0 src 10.0.0.42 uid 0";
+        let blocked = tempfile::tempdir().unwrap();
+        std::fs::write(blocked.path().join("etc"), "").unwrap();
+        let host = FakeHost::new().ok("ip -4 route get 1.1.1.1", ip);
+        assert!(run(&host, "fd00:cafe::1", blocked.path()).await.is_err());
+
+        let taken = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(taken.path().join("etc/rancher/k3s/config.yaml")).unwrap();
+        assert!(run(&host, "fd00:cafe::1", taken.path()).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn the_config_is_readable_only_by_root() {
+        use std::os::unix::fs::PermissionsExt;
+        let host = FakeHost::new().ok(
+            "ip -4 route get 1.1.1.1",
+            "1.1.1.1 via 10.0.0.1 dev eth0 src 10.0.0.42 uid 0",
+        );
+        let dir = tempfile::tempdir().unwrap();
+        run(&host, "fd00:cafe::1", dir.path()).await.unwrap();
+        let mode = std::fs::metadata(dir.path().join("etc/rancher/k3s/config.yaml"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
     }
 }

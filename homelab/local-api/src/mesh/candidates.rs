@@ -147,4 +147,11 @@ mod tests {
             vec!["192.168.1.50", "2a01:e0a:1::42"]
         );
     }
+
+    #[tokio::test]
+    async fn an_ip_command_that_cannot_start_is_an_error() {
+        let host = crate::host::fake::FakeHost::new().unstartable("ip -j addr show");
+        let err = local_addresses(&host).await.unwrap_err();
+        assert!(format!("{err:#}").contains("run ip -j addr"), "{err:#}");
+    }
 }
