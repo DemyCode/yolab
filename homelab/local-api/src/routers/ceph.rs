@@ -1475,6 +1475,7 @@ mod dashboard_route_tests {
 #[cfg(test)]
 mod machine_health_tests {
     use super::*;
+    use serde_json::json;
 
     const DF: &str = "Filesystem     1024-blocks      Used Available Capacity Mounted on\n\
                       /dev/mapper/pool-root 61890000 14000000  44000000      24% /\n";

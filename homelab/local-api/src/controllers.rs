@@ -80,7 +80,9 @@ pub fn table() -> Vec<Entry> {
         entry("installs", Nothing, |_| install::InstallsController),
         entry("outputs", Nothing, |_| crate::outputs::OutputsController),
         entry("store-sync", Nothing, |_| {
-            crate::store::sync::StoreSyncController
+            crate::store::sync::StoreSyncController {
+                config: Config::from_env(),
+            }
         }),
         entry("ssh-keys", Nothing, |_| crate::ssh_keys::SshKeysController),
         entry("backup-lock-sweeper", Nothing, |_| {
@@ -120,7 +122,7 @@ pub fn table() -> Vec<Entry> {
             crate::mesh::MeshPathsController::new()
         }),
         entry("mesh-discovery", Nothing, |_| {
-            crate::mesh::MeshDiscoveryController::new()
+            crate::mesh::MeshDiscoveryController::new(Config::from_env())
         }),
         entry("hardware-labels", Nothing, |_| {
             crate::hardware::HardwareLabelsController::real()

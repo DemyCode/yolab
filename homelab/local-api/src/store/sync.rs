@@ -46,7 +46,9 @@ pub async fn handler(body: Bytes) -> Result<Vec<u8>, (StatusCode, String)> {
     Ok(reply)
 }
 
-pub struct StoreSyncController;
+pub struct StoreSyncController {
+    pub config: crate::config::Config,
+}
 
 impl Resource for StoreSyncController {
     fn name(&self) -> &'static str {
@@ -62,7 +64,7 @@ impl Resource for StoreSyncController {
     }
 
     async fn converge(&self, ctx: &Ctx) -> anyhow::Result<Tick> {
-        let cfg = crate::config::Config::from_env();
+        let cfg = &self.config;
         let peers = crate::mesh::peer_addresses(&ctx.tools.kube, &cfg.node_ipv6).await;
         if peers.is_empty() {
             return Ok(Tick::Idle(
@@ -295,4 +297,6 @@ mod tests {
             .contains("not a readable desired-state document"));
         assert_eq!(lock(&store).disk_claims().unwrap().len(), 1);
     }
+
+    mod endpoints;
 }

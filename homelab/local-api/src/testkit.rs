@@ -51,6 +51,7 @@ pub(crate) struct TestApi {
     _dir: tempfile::TempDir,
     session: Option<String>,
     peer: &'static str,
+    headers: Vec<(&'static str, String)>,
     cluster_token: Option<String>,
     pub host: crate::host::fake::FakeHost,
 }
@@ -118,6 +119,7 @@ impl TestApi {
             _dir: dir,
             session: None,
             peer: OFF_BOX,
+            headers: Vec::new(),
             cluster_token: None,
             host,
         }
@@ -135,6 +137,11 @@ impl TestApi {
 
     pub fn over_loopback(mut self) -> Self {
         self.peer = LOOPBACK;
+        self
+    }
+
+    pub fn with_header(mut self, name: &'static str, value: &str) -> Self {
+        self.headers.push((name, value.to_string()));
         self
     }
 
@@ -181,6 +188,9 @@ impl TestApi {
         }
         if let Some(token) = &self.cluster_token {
             req = req.header(crate::auth::CLUSTER_AUTH_HEADER, token.as_str());
+        }
+        for (name, value) in &self.headers {
+            req = req.header(*name, value.as_str());
         }
         let mut req = req
             .body(

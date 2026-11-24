@@ -113,7 +113,12 @@ const PEER_CACHE: &str = "/var/lib/yolab/mesh-peers.json";
 
 pub(crate) async fn peer_addresses(kube: &crate::k8s::Kube, self_ip: &str) -> Vec<String> {
     let kube = kube.client().await.ok();
-    peer_addresses_from(kube.as_ref(), std::path::Path::new(PEER_CACHE), self_ip).await
+    peer_addresses_from(
+        kube.as_ref(),
+        &crate::storage::on_machine(PEER_CACHE),
+        self_ip,
+    )
+    .await
 }
 
 async fn peer_addresses_from(
@@ -123,14 +128,13 @@ async fn peer_addresses_from(
 ) -> Vec<String> {
     match live_peer_addresses(kube, self_ip).await {
         Some(peers) => {
-            if let Ok(json) = serde_json::to_string(&peers) {
-                let written = cache
-                    .parent()
-                    .map(std::fs::create_dir_all)
-                    .transpose()
-                    .and_then(|_| std::fs::write(cache, json));
-                written.warn_on_err("mesh: cache the peer list");
-            }
+            let json = serde_json::to_string(&peers).expect("a list of addresses serializes");
+            let written = cache
+                .parent()
+                .map(std::fs::create_dir_all)
+                .transpose()
+                .and_then(|_| std::fs::write(cache, json));
+            written.warn_on_err("mesh: cache the peer list");
             peers
         }
         None => {
@@ -237,12 +241,14 @@ impl crate::runtime::Resource for MeshPathsController {
 }
 
 pub struct MeshDiscoveryController {
+    config: crate::config::Config,
     last_probe: tokio::sync::Mutex<HashMap<String, Instant>>,
 }
 
 impl MeshDiscoveryController {
-    pub fn new() -> Self {
+    pub fn new(config: crate::config::Config) -> Self {
         Self {
+            config,
             last_probe: tokio::sync::Mutex::new(HashMap::new()),
         }
     }
@@ -263,7 +269,7 @@ impl crate::runtime::Resource for MeshDiscoveryController {
     }
     async fn converge(&self, ctx: &crate::runtime::Ctx) -> anyhow::Result<crate::runtime::Tick> {
         let mut last_probe = self.last_probe.lock().await;
-        let cfg = crate::config::Config::from_env();
+        let cfg = &self.config;
         let peers = peer_addresses(&ctx.tools.kube, &cfg.node_ipv6).await;
         tick(
             &ctx.tools.host,
@@ -1141,4 +1147,6 @@ mod tests {
             .unwrap();
         assert!(!host.ran("wg set"));
     }
+
+    mod more;
 }
