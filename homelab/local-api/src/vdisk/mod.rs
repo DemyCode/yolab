@@ -169,7 +169,7 @@ impl<H: Host + 'static> Resource for VdisksController<H> {
     }
     async fn converge(&self, ctx: &Ctx) -> Result<Tick> {
         let host = &self.host;
-        let root = Path::new("/");
+        let root = crate::storage::root();
         let records = record::list(host)
             .await
             .context("read the virtual disk records")?;
@@ -395,6 +395,9 @@ async fn finish_removal<H: Host>(
     tracing::info!("virtual disk {}: deleted", rec.id);
     Ok(())
 }
+
+#[cfg(test)]
+mod controller_tests;
 
 #[cfg(test)]
 mod tests {

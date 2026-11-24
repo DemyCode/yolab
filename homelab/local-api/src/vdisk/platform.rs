@@ -181,6 +181,117 @@ mod tests {
         );
     }
 
+    fn offline() -> Tunnel {
+        Tunnel {
+            enabled: true,
+            platform_api_url: format!("http://[::1]:{}", crate::testkit::closed_port()),
+            account_token: "tok".into(),
+            tunnel_id: "t".into(),
+            host: String::new(),
+        }
+    }
+
+    fn unconnected() -> Tunnel {
+        Tunnel {
+            account_token: String::new(),
+            ..offline()
+        }
+    }
+
+    #[tokio::test]
+    async fn nothing_is_asked_of_the_platform_by_a_machine_not_connected_to_it() {
+        let c = Client::new();
+        let t = unconnected();
+        let why =
+            "this machine is not connected to the YoLab platform, which provides virtual disks";
+        assert_eq!(create(&c, &t, "bx11").await.unwrap_err().to_string(), why);
+        assert_eq!(list(&c, &t).await.unwrap_err().to_string(), why);
+        assert_eq!(offers(&c, &t).await.unwrap_err().to_string(), why);
+        assert_eq!(delete(&c, &t, 3).await.unwrap_err().to_string(), why);
+    }
+
+    #[tokio::test]
+    async fn a_platform_that_cannot_be_reached_says_what_was_being_done() {
+        let c = Client::new();
+        let t = offline();
+        assert_eq!(
+            create(&c, &t, "bx11").await.unwrap_err().to_string(),
+            "reach the platform to buy a virtual disk"
+        );
+        assert_eq!(
+            list(&c, &t).await.unwrap_err().to_string(),
+            "reach the platform to list virtual disks"
+        );
+        assert_eq!(
+            offers(&c, &t).await.unwrap_err().to_string(),
+            "reach the platform for virtual disk prices"
+        );
+        assert_eq!(
+            delete(&c, &t, 3).await.unwrap_err().to_string(),
+            "reach the platform to delete a virtual disk"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_virtual_disks_are_listed_with_the_account_token() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/storage/volume"))
+            .and(header("authorization", "Bearer tok"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                { "id": 3, "host": "u3.example", "username": "u3", "password": "pw",
+                  "box_type": "bx11", "size_gb": 900, "status": "active" }
+            ])))
+            .mount(&server)
+            .await;
+        let got = list(&Client::new(), &tunnel(&server)).await.unwrap();
+        assert_eq!(got.len(), 1);
+        assert!(got[0].is_ready());
+    }
+
+    #[tokio::test]
+    async fn a_listing_or_prices_the_platform_refuses_or_garbles_is_an_error() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/storage/volume"))
+            .respond_with(ResponseTemplate::new(500).set_body_string(" boom "))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/storage/volume/offers"))
+            .respond_with(ResponseTemplate::new(403).set_body_string("no"))
+            .mount(&server)
+            .await;
+        assert_eq!(
+            list(&Client::new(), &tunnel(&server))
+                .await
+                .unwrap_err()
+                .to_string(),
+            "the platform refused to list virtual disks (500 Internal Server Error): boom"
+        );
+        assert_eq!(
+            offers(&Client::new(), &tunnel(&server))
+                .await
+                .unwrap_err()
+                .to_string(),
+            "the platform refused to give virtual disk prices (403 Forbidden): no"
+        );
+
+        let garbled = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/storage/volume"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("[{"))
+            .mount(&garbled)
+            .await;
+        assert_eq!(
+            list(&Client::new(), &tunnel(&garbled))
+                .await
+                .unwrap_err()
+                .to_string(),
+            "read the platform's list of virtual disks"
+        );
+    }
+
     #[tokio::test]
     async fn deleting_a_box_the_platform_no_longer_has_counts_as_done() {
         let server = MockServer::start().await;

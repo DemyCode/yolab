@@ -1472,9 +1472,9 @@ fn plan_create(
     if let Some(reason) = refuse_osd_creation(d) {
         return CreatePlan::Blocked(reason);
     }
-    let Some(dev_path) = d.dev_path() else {
-        return CreatePlan::Blocked("This disk disappeared before it could be set up.");
-    };
+    let dev_path = d
+        .dev_path()
+        .expect("refuse_osd_creation refuses a disk without a device");
     if !retry_due(attempts, since_last_attempt) {
         return CreatePlan::Waiting;
     }
@@ -1503,6 +1503,9 @@ fn refuse_osd_creation(d: &Disk) -> Option<&'static str> {
             )
         }
         Ownership::Foreign | Ownership::Blank => {}
+    }
+    if d.dev_path().is_none() {
+        return Some("This disk disappeared before it could be set up.");
     }
     if d.mounted {
         return Some("This machine is using this disk for something else.");

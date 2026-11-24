@@ -77,7 +77,7 @@ pub fn osd_dev(id: i64) -> String {
 }
 
 pub fn id_of_osd_dev(path: &str) -> Option<i64> {
-    let name = path.rsplit('/').next()?;
+    let name = path.rsplit('/').next().unwrap_or(path);
     name.strip_prefix("yolab_vdisk_")?
         .strip_suffix("-osd")?
         .parse::<i64>()
@@ -103,8 +103,7 @@ pub async fn list<H: Host>(host: &H) -> Result<Vec<VdiskRecord>, CmdError> {
 }
 
 pub async fn save<H: Host>(host: &H, record: &VdiskRecord) -> Result<(), CmdError> {
-    let raw = serde_json::to_string(record)
-        .map_err(|e| CmdError::parse(format!("config-key {}", record_key(record.id)), e))?;
+    let raw = serde_json::to_string(record).expect("a virtual disk record is plain data");
     settings::set(host, &record_key(record.id), &raw).await
 }
 
@@ -154,6 +153,93 @@ pub async fn set_status<H: Host>(host: &H, id: i64, message: &str) -> Result<(),
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use crate::host::fake::FakeHost;
+
+    fn rec() -> VdiskRecord {
+        VdiskRecord {
+            id: 4,
+            node: "node1".into(),
+            box_type: "bx11".into(),
+            size_gb: 900,
+            host: String::new(),
+            username: String::new(),
+            password: String::new(),
+            osd_id: Some(2),
+        }
+    }
+
+    #[tokio::test]
+    async fn records_are_listed_from_the_cluster_settings_and_a_garbled_one_is_an_error() {
+        let host = FakeHost::new().ok(
+            "ceph config-key dump yolab/vdisks/",
+            &serde_json::json!({ "yolab/vdisks/4": serde_json::to_string(&rec()).unwrap() })
+                .to_string(),
+        );
+        assert_eq!(list(&host).await.unwrap(), vec![rec()]);
+
+        let garbled = FakeHost::new().ok(
+            "ceph config-key dump yolab/vdisks/",
+            r#"{"yolab/vdisks/4":"not json"}"#,
+        );
+        assert!(list(&garbled)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("config-key yolab/vdisks/4"));
+    }
+
+    #[tokio::test]
+    async fn a_record_its_key_its_status_and_its_format_mark_live_in_the_cluster_settings() {
+        let host = FakeHost::new()
+            .ok("ceph config-key set", "")
+            .ok("ceph config-key get yolab/vdisk-keys/4", "k")
+            .ok("ceph config-key get yolab/vdisk-formatted/4", "1");
+        save(&host, &rec()).await.unwrap();
+        store_key(&host, 4, "k").await.unwrap();
+        mark_formatted(&host, 4).await.unwrap();
+        set_status(&host, 4, "Connected").await.unwrap();
+        assert_eq!(key(&host, 4).await.unwrap(), Some("k".to_string()));
+        assert!(is_formatted(&host, 4).await.unwrap());
+        assert!(host.ran(&format!(
+            "ceph config-key set yolab/vdisks/4 {}",
+            serde_json::to_string(&rec()).unwrap()
+        )));
+        assert!(host.ran("ceph config-key set yolab/vdisk-keys/4 k"));
+        assert!(host.ran("ceph config-key set yolab/vdisk-formatted/4 1"));
+        assert!(host.ran("ceph config-key set yolab/vdisk-status/4 Connected"));
+
+        let down = FakeHost::new().fail("ceph config-key get", "timed out");
+        assert!(is_formatted(&down, 4).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn forgetting_a_disk_removes_every_key_and_an_already_missing_one_is_fine() {
+        let host = FakeHost::new().ok("ceph config-key rm", "").fail(
+            "ceph config-key rm yolab/vdisk-formatted/4",
+            "Error ENOENT: no such key",
+        );
+        forget(&host, 4).await.unwrap();
+        for key in [
+            "yolab/vdisk-keys/4",
+            "yolab/vdisk-formatted/4",
+            "yolab/vdisk-status/4",
+            "yolab/vdisks/4",
+        ] {
+            assert!(host.ran(&format!("ceph config-key rm {key}")), "{key}");
+        }
+
+        let refused = FakeHost::new().fail("ceph config-key rm", "EACCES");
+        assert!(forget(&refused, 4).await.is_err());
+        assert!(!refused.ran("yolab/vdisks/4"));
+    }
+
+    #[test]
+    fn a_device_name_without_the_lv_suffix_is_no_virtual_disk() {
+        assert_eq!(id_of_osd_dev("yolab_vdisk_9-osd"), Some(9));
+        assert_eq!(id_of_osd_dev("/dev/mapper/yolab_vdisk_9"), None);
+        assert_eq!(id_of_osd_dev("/dev/mapper/yolab_vdisk_x-osd"), None);
+    }
 
     #[test]
     fn a_virtual_disks_id_names_its_disk_and_its_crush_host_alike() {

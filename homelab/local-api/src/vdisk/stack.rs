@@ -492,6 +492,9 @@ pub fn attached_here(root: &Path) -> Result<Vec<i64>> {
 }
 
 #[cfg(test)]
+mod machine_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::host::fake::FakeHost;
