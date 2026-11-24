@@ -56,7 +56,7 @@ pub(crate) struct TestApi {
 }
 
 impl TestApi {
-    fn with_config(body: &str) -> Self {
+    pub fn with_config(body: &str) -> Self {
         Self::with_config_and_kube(body, crate::k8s::testing::unreachable())
     }
 
@@ -65,10 +65,18 @@ impl TestApi {
     }
 
     pub fn with_platform(kube: kube::Client, platform_url: &str) -> Self {
+        Self::with_platform_and_host(kube, platform_url, crate::host::fake::FakeHost::new())
+    }
+
+    pub fn with_platform_and_host(
+        kube: kube::Client,
+        platform_url: &str,
+        host: crate::host::fake::FakeHost,
+    ) -> Self {
         Self::build(
             &config_with_tunnel(&format!("platform_api_url = \"{platform_url}\"\n")),
             kube,
-            crate::host::fake::FakeHost::new(),
+            host,
         )
     }
 

@@ -373,4 +373,133 @@ token = "deadbeef"
             );
         }
     }
+
+    mod over_http {
+        use crate::testkit::TestApi;
+        use serde_json::json;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        #[tokio::test]
+        async fn each_machine_is_listed_with_its_address_roles_and_readiness() {
+            let (server, kube) = crate::k8s::testing::api_server().await;
+            crate::k8s::testing::serve(
+                &server,
+                "/api/v1/nodes",
+                200,
+                crate::k8s::testing::list(
+                    "Node",
+                    vec![
+                        json!({
+                            "metadata": {
+                                "name": "yolab-n1",
+                                "creationTimestamp": "2026-11-01T10:00:00Z",
+                                "labels": {
+                                    "node-role.kubernetes.io/control-plane": "true",
+                                    "kubernetes.io/arch": "amd64"
+                                }
+                            },
+                            "status": {
+                                "addresses": [
+                                    { "type": "Hostname", "address": "yolab-n1" },
+                                    { "type": "InternalIP", "address": "fd00:cafe::1" }
+                                ],
+                                "conditions": [{ "type": "Ready", "status": "True" }]
+                            }
+                        }),
+                        json!({ "metadata": { "name": "yolab-n2" } }),
+                    ],
+                ),
+            )
+            .await;
+            let api = TestApi::with_kube(kube).login().await;
+
+            let res = api.get("/api/nodes").await;
+            let nodes = res.json();
+            assert_eq!(nodes[0]["name"], "yolab-n1", "{}", res.body);
+            assert_eq!(nodes[0]["ip"], "fd00:cafe::1");
+            assert_eq!(nodes[0]["ready"], true);
+            assert_eq!(nodes[0]["roles"], json!(["control-plane"]));
+            assert_eq!(nodes[0]["joined_at"], "2026-11-01T10:00:00Z");
+            assert_eq!(nodes[0]["hardware"]["arch"], "amd64");
+            assert_eq!(nodes[1]["ip"], "");
+            assert_eq!(nodes[1]["ready"], false);
+            assert_eq!(nodes[1]["roles"], json!([]));
+            assert_eq!(nodes[1]["joined_at"], "");
+        }
+
+        #[tokio::test]
+        async fn the_machine_list_is_an_error_while_the_cluster_is_down() {
+            let api = TestApi::provisioned().login().await;
+            assert!(!api.get("/api/nodes").await.status.is_success());
+        }
+
+        #[tokio::test]
+        async fn machine_links_come_from_the_platform_s_records() {
+            let platform = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/tunnels"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+                    { "dns_records": [{ "name": "node1", "fqdn": "node1.6.yolab.io" }] },
+                    { "dns_records": [{ "name": "node2" }] },
+                    { "name": "no records" }
+                ])))
+                .mount(&platform)
+                .await;
+            let api = TestApi::with_platform(crate::k8s::testing::unreachable(), &platform.uri())
+                .login()
+                .await;
+            let res = api.get("/api/nodes/links").await;
+            assert_eq!(
+                res.json(),
+                json!([{ "name": "node1", "url": "https://node1.6.yolab.io" }]),
+                "{}",
+                res.body
+            );
+        }
+
+        #[tokio::test]
+        async fn a_server_without_a_tunnel_section_has_no_machine_links() {
+            let api = TestApi::with_config("[homelab]\nhostname = \"yolab\"\n").over_loopback();
+            let res = api.get("/api/nodes/links").await;
+            assert_eq!(
+                res.json()["error"],
+                "missing [tunnel] in config",
+                "{}",
+                res.body
+            );
+        }
+
+        #[tokio::test]
+        async fn a_joining_machine_is_handed_this_server_s_address_and_tokens() {
+            let api = TestApi::with_config(&format!(
+                "[homelab]\nhostname = \"yolab\"\nhomelab_password_hash = \"{}\"\n\
+                 [tunnel]\naccount_token = \"acct\"\n\
+                 [node]\nsub_ipv6_private = \"fd00:cafe::1\"\n[node.k3s]\ntoken = \"k3s\"\n",
+                crate::testkit::PASSWORD_HASH
+            ))
+            .login()
+            .await;
+            let res = api.get("/api/cluster/join-info").await;
+            assert_eq!(
+                res.json()["server_addr"],
+                "https://[fd00:cafe::1]:6443",
+                "{}",
+                res.body
+            );
+            assert_eq!(res.json()["k3s_token"], "k3s");
+        }
+
+        #[tokio::test]
+        async fn join_info_reads_this_server_s_config() {
+            let api = TestApi::provisioned().login().await;
+            let res = api.get("/api/cluster/join-info").await;
+            assert_eq!(
+                res.json()["error"],
+                "missing node.sub_ipv6_private",
+                "{}",
+                res.body
+            );
+        }
+    }
 }

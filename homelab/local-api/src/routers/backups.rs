@@ -750,6 +750,95 @@ mod tests {
             assert!(protected_apps(&b).await.is_err());
         }
 
+        const RESTORES_PATH: &str = "/api/v1/namespaces/kube-system/configmaps/yolab-restores";
+
+        async fn no_restores(server: &MockServer) {
+            Mock::given(method("GET"))
+                .and(path(RESTORES_PATH))
+                .respond_with(ResponseTemplate::new(404).set_body_json(status(404, "NotFound")))
+                .mount(server)
+                .await;
+        }
+
+        #[tokio::test]
+        async fn turning_backups_on_needs_the_platform_to_provide_storage() {
+            let (server, kube) = api_server().await;
+            no_restores(&server).await;
+            let api = crate::testkit::TestApi::with_kube(kube).login().await;
+            let res = api.post("/api/backups/s3/enable", "").await;
+            assert_eq!(
+                res.json()["error"],
+                "platform API not configured in config.toml",
+                "{}",
+                res.body
+            );
+        }
+
+        #[tokio::test]
+        async fn turning_backups_on_again_keeps_the_storage_they_already_have() {
+            let (server, kube) = api_server().await;
+            no_restores(&server).await;
+            config(&server, 200, enabled()).await;
+            let platform = MockServer::start().await;
+            let api = crate::testkit::TestApi::with_platform(kube, &platform.uri())
+                .login()
+                .await;
+            let res = api.post("/api/backups/s3/enable", "").await;
+            assert_eq!(res.json()["provisioned"], true, "{}", res.body);
+            assert!(platform.received_requests().await.unwrap().is_empty());
+        }
+
+        #[tokio::test]
+        async fn backups_cannot_be_turned_on_while_a_restore_runs() {
+            let (server, kube) = api_server().await;
+            Mock::given(method("GET"))
+                .and(path(RESTORES_PATH))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "apiVersion": "v1", "kind": "ConfigMap",
+                    "metadata": { "name": "yolab-restores", "namespace": "kube-system" },
+                    "data": { "sets": json!([{
+                        "id": "r1", "namespace": "yolab-notes",
+                        "started_at": "2026-11-24T10:00:00Z", "state": "queued",
+                        "owner": "", "heartbeat": ""
+                    }]).to_string() }
+                })))
+                .mount(&server)
+                .await;
+            let api = crate::testkit::TestApi::with_kube(kube).login().await;
+            let res = api.post("/api/backups/s3/enable", "").await;
+            assert_eq!(
+                res.json()["error"],
+                "A restore is in progress — try again once it finishes.",
+                "{}",
+                res.body
+            );
+        }
+
+        #[tokio::test]
+        async fn the_storage_status_says_what_the_platform_has_provided() {
+            let (_server, kube) = api_server().await;
+            let api = crate::testkit::TestApi::with_kube(kube.clone())
+                .login()
+                .await;
+            let res = api.get("/api/backups/s3").await;
+            assert_eq!(
+                res.json(),
+                json!({ "provisioned": false, "reason": "platform API not configured" })
+            );
+
+            let platform = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/storage/s3"))
+                .respond_with(ResponseTemplate::new(404))
+                .mount(&platform)
+                .await;
+            let api = crate::testkit::TestApi::with_platform(kube, &platform.uri())
+                .login()
+                .await;
+            let res = api.get("/api/backups/s3").await;
+            assert_eq!(res.json(), json!({ "provisioned": false }), "{}", res.body);
+        }
+
         const ACK_PATH: &str = "/api/v1/namespaces/kube-system/secrets/yolab-backup-key-ack";
 
         async fn signed_in(kube: kube::Client, host: FakeHost) -> crate::testkit::TestApi {

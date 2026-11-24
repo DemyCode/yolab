@@ -58,12 +58,12 @@ pub struct ConsoleLink {
     pub url: String,
 }
 
-pub(crate) fn console_link_url(console: &str, token: &str) -> Option<String> {
+pub(crate) fn console_link_url(console: &str, token: &str) -> String {
     let token = token.trim();
     if token.is_empty() {
-        return Some(console.to_string());
+        return console.to_string();
     }
-    Some(format!("{console}/#token={}", percent_encode(token)))
+    format!("{console}/#token={}", percent_encode(token))
 }
 
 fn percent_encode(s: &str) -> String {
@@ -86,10 +86,9 @@ pub async fn console_link(State(state): State<AppState>) -> Result<Json<ConsoleL
         .ok_or_else(|| anyhow::anyhow!("no console URL for this server"))?;
 
     let token = crate::config::read_account_token(&state.config.config_path);
-    let url = console_link_url(&console, &token)
-        .ok_or_else(|| anyhow::anyhow!("could not build the console link"))?;
-
-    Ok(Json(ConsoleLink { url }))
+    Ok(Json(ConsoleLink {
+        url: console_link_url(&console, &token),
+    }))
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
@@ -233,7 +232,7 @@ mod tests {
 
     #[test]
     fn the_token_goes_in_the_fragment_never_the_query() {
-        let url = console_link_url("https://console.example", "tok-123").unwrap();
+        let url = console_link_url("https://console.example", "tok-123");
         assert!(url.contains("#token=tok-123"), "{url}");
         assert!(
             !url.contains("?token="),
@@ -245,7 +244,7 @@ mod tests {
 
     #[test]
     fn a_token_with_awkward_characters_is_encoded() {
-        let url = console_link_url("https://console.example", "a b&c#d").unwrap();
+        let url = console_link_url("https://console.example", "a b&c#d");
         assert!(!url.contains("a b"), "{url}");
         assert!(
             url.matches('#').count() == 1,
@@ -256,8 +255,8 @@ mod tests {
     #[test]
     fn without_a_token_the_link_still_points_at_the_console() {
         assert_eq!(
-            console_link_url("https://console.example", "   ").as_deref(),
-            Some("https://console.example")
+            console_link_url("https://console.example", "   "),
+            "https://console.example"
         );
     }
 
@@ -288,6 +287,67 @@ mod tests {
     fn anything_unrecognisable_yields_no_link() {
         for bad in ["", "   ", "not a url", "api.yolab.io", "https://api."] {
             assert_eq!(console_url_from_api(bad), None, "{bad:?}");
+        }
+    }
+
+    mod over_http {
+        use crate::testkit::TestApi;
+        use axum::http::StatusCode;
+        use serde_json::json;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        #[tokio::test]
+        async fn a_server_that_is_not_connected_has_no_console_and_no_balance() {
+            let api = TestApi::provisioned().login().await;
+            let res = api.get("/api/status").await;
+            assert_eq!(
+                res.json(),
+                json!({ "commit_hash": "", "commit_date": "" }),
+                "{}",
+                res.body
+            );
+            let res = api.get("/api/console/link").await;
+            assert_eq!(res.json()["error"], "no console URL for this server");
+            let res = api.get("/api/billing/balance").await;
+            assert_eq!(
+                res.json()["error"],
+                "this server is not connected to the YoLab platform"
+            );
+        }
+
+        #[tokio::test]
+        async fn a_connected_server_links_to_its_console_and_reads_its_balance() {
+            let platform = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/billing/balance"))
+                .respond_with(
+                    ResponseTemplate::new(200).set_body_json(json!({ "balance_cents": 500 })),
+                )
+                .mount(&platform)
+                .await;
+            let at_platform =
+                TestApi::with_platform(crate::k8s::testing::unreachable(), &platform.uri())
+                    .login()
+                    .await;
+            let res = at_platform.get("/api/billing/balance").await;
+            assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+            assert_eq!(res.json()["credit_cents"], 500);
+
+            let at_api =
+                TestApi::with_platform(crate::k8s::testing::unreachable(), "https://api.yolab.io")
+                    .login()
+                    .await;
+            let res = at_api.get("/api/status").await;
+            assert_eq!(res.json()["console_url"], "https://console.yolab.io");
+            let res = at_api.get("/api/console/link").await;
+            assert_eq!(
+                res.json()["url"],
+                format!(
+                    "https://console.yolab.io/#token={}",
+                    crate::testkit::ACCOUNT_TOKEN
+                )
+            );
         }
     }
 }

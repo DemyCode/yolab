@@ -452,10 +452,16 @@ pub fn locked() -> std::sync::MutexGuard<'static, Store> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+#[cfg(not(test))]
 pub fn default_path() -> PathBuf {
     std::env::var("YOLAB_STORE_FILE")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("/var/lib/yolab/store.automerge"))
+}
+
+#[cfg(test)]
+pub fn default_path() -> PathBuf {
+    std::env::temp_dir().join(format!("yolab-test-store-{}.automerge", std::process::id()))
 }
 
 fn debug_path(path: &Path) -> PathBuf {
@@ -933,5 +939,12 @@ mod tests {
                 .map(String::as_str),
             Some("OFF")
         );
+    }
+
+    #[test]
+    fn tests_never_write_the_machine_s_own_store() {
+        let path = default_path();
+        assert!(path.starts_with(std::env::temp_dir()), "{}", path.display());
+        assert!(!path.starts_with("/var/lib/yolab"));
     }
 }

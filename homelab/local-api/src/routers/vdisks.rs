@@ -198,4 +198,227 @@ mod tests {
         assert!(!json.contains("u2.your-storagebox.de"));
         assert!(json.contains("\"disk_id\":\"vdisk-2\""));
     }
+
+    mod over_http {
+        use super::*;
+        use crate::host::fake::FakeHost;
+        use crate::testkit::TestApi;
+        use serde_json::json;
+        use wiremock::matchers::{body_json, header, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        fn machines() -> String {
+            json!({ "yolab/disk-status/node1": "{}" }).to_string()
+        }
+
+        async fn signed_in(host: FakeHost) -> TestApi {
+            TestApi::with_kube_and_host(crate::k8s::testing::unreachable(), host)
+                .login()
+                .await
+        }
+
+        #[tokio::test]
+        async fn the_page_lists_each_virtual_disk_in_order_with_its_state() {
+            let records = json!({
+                "yolab/vdisks/7": json!({ "id": 7, "node": "node1", "box_type": "bx11", "size_gb": 1000 }).to_string(),
+                "yolab/vdisks/3": json!({
+                    "id": 3, "node": "node1", "box_type": "bx21", "size_gb": 5000,
+                    "host": "u1.example", "username": "u1", "password": "pw"
+                }).to_string()
+            })
+            .to_string();
+            let statuses = json!({ "yolab/vdisk-status/3": crate::vdisk::CONNECTED }).to_string();
+            let host = FakeHost::new()
+                .ok("ceph config-key dump yolab/vdisks/", &records)
+                .ok("ceph config-key dump yolab/vdisk-status/", &statuses);
+            let api = signed_in(host).await;
+
+            let res = api.get("/api/vdisks").await;
+            let list = res.json();
+            assert_eq!(list[0]["id"], 3, "{}", res.body);
+            assert_eq!(list[0]["state"], "connected");
+            assert_eq!(list[1]["id"], 7);
+            assert_eq!(list[1]["state"], "provisioning");
+            assert!(!res.body.contains("pw"));
+        }
+
+        #[tokio::test]
+        async fn the_list_is_an_error_while_ceph_cannot_be_read() {
+            let api = signed_in(FakeHost::new().fail("ceph config-key dump", "timed out")).await;
+            assert!(!api.get("/api/vdisks").await.status.is_success());
+        }
+
+        #[tokio::test]
+        async fn prices_come_from_the_platform_and_need_a_connection() {
+            let platform = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/storage/volume/offers"))
+                .and(header("authorization", "Bearer cluster-tok"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+                    { "box_type": "bx11", "size_gb": 1000, "monthly_cents": 400 }
+                ])))
+                .mount(&platform)
+                .await;
+            let api = TestApi::with_platform(crate::k8s::testing::unreachable(), &platform.uri())
+                .login()
+                .await;
+            let res = api.get("/api/vdisks/offers").await;
+            assert_eq!(res.json()[0]["monthly_cents"], 400, "{}", res.body);
+
+            let offline = TestApi::provisioned().login().await;
+            let res = offline.get("/api/vdisks/offers").await;
+            assert!(
+                res.json()["error"]
+                    .as_str()
+                    .unwrap()
+                    .contains("not connected"),
+                "{}",
+                res.body
+            );
+        }
+
+        async fn buy(api: &TestApi, body: &str) -> crate::testkit::Res {
+            api.post("/api/vdisks", body).await
+        }
+
+        #[tokio::test]
+        async fn a_purchase_is_refused_for_an_unknown_size_or_machine_or_a_silent_cluster() {
+            let api = signed_in(
+                FakeHost::new().ok("ceph config-key dump yolab/disk-status/", &machines()),
+            )
+            .await;
+            let res = buy(&api, r#"{"node":"node1","box_type":"bx99"}"#).await;
+            assert_eq!(res.status, StatusCode::BAD_REQUEST);
+            assert!(res.json()["error"]
+                .as_str()
+                .unwrap()
+                .contains("box_type must be one of"));
+            let res = buy(&api, r#"{"node":"node9","box_type":"bx11"}"#).await;
+            assert_eq!(res.status, StatusCode::BAD_REQUEST);
+
+            let silent = signed_in(FakeHost::new().fail("ceph config-key dump", "timed out")).await;
+            let res = buy(&silent, r#"{"node":"node1","box_type":"bx11"}"#).await;
+            assert_eq!(res.status, StatusCode::SERVICE_UNAVAILABLE);
+            assert!(res.json()["error"]
+                .as_str()
+                .unwrap()
+                .starts_with("the storage cluster did not answer"));
+        }
+
+        async fn platform_selling(volume: serde_json::Value) -> MockServer {
+            let platform = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/storage/volume"))
+                .and(body_json(json!({ "box_type": "bx11" })))
+                .respond_with(ResponseTemplate::new(200).set_body_json(volume))
+                .mount(&platform)
+                .await;
+            platform
+        }
+
+        async fn at(platform: &MockServer, host: FakeHost) -> TestApi {
+            TestApi::with_platform_and_host(
+                crate::k8s::testing::unreachable(),
+                &platform.uri(),
+                host,
+            )
+            .login()
+            .await
+        }
+
+        #[tokio::test]
+        async fn a_bought_disk_is_recorded_and_switched_on() {
+            let platform = platform_selling(json!({
+                "id": 12, "box_type": "bx11", "size_gb": 1000, "status": "active",
+                "host": "u12.example", "username": "u12", "password": "pw"
+            }))
+            .await;
+            let host = FakeHost::new()
+                .ok("ceph config-key dump yolab/disk-status/", &machines())
+                .ok("ceph config-key set", "");
+            let api = at(&platform, host).await;
+
+            let res = buy(&api, r#"{"node":"node1","box_type":"bx11"}"#).await;
+            assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+            assert_eq!(res.json()["disk_id"], "vdisk-12");
+            assert_eq!(res.json()["ready"], true);
+            assert!(api.host.ran("ceph config-key set yolab/vdisks/12"));
+            assert!(api
+                .host
+                .ran("ceph config-key set yolab/disks/node1--vdisk-12 ON"));
+        }
+
+        #[tokio::test]
+        async fn a_disk_still_being_made_is_recorded_without_its_login() {
+            let platform = platform_selling(json!({
+                "id": 13, "box_type": "bx11", "size_gb": 1000, "status": "pending",
+                "host": "u13.example", "username": "u13", "password": "pw"
+            }))
+            .await;
+            let host = FakeHost::new()
+                .ok("ceph config-key dump yolab/disk-status/", &machines())
+                .ok("ceph config-key set", "");
+            let api = at(&platform, host).await;
+
+            let res = buy(&api, r#"{"node":"node1","box_type":"bx11"}"#).await;
+            assert_eq!(res.json()["ready"], false, "{}", res.body);
+            assert!(!api.host.calls().iter().any(|c| c.contains("u13.example")));
+        }
+
+        #[tokio::test]
+        async fn a_purchase_the_platform_refuses_is_a_bad_gateway() {
+            let platform = MockServer::start().await;
+            Mock::given(method("POST"))
+                .respond_with(ResponseTemplate::new(402).set_body_string("no credit"))
+                .mount(&platform)
+                .await;
+            let host = FakeHost::new().ok("ceph config-key dump yolab/disk-status/", &machines());
+            let api = at(&platform, host).await;
+            let res = buy(&api, r#"{"node":"node1","box_type":"bx11"}"#).await;
+            assert_eq!(res.status, StatusCode::BAD_GATEWAY);
+            assert!(res.json()["error"].as_str().unwrap().contains("no credit"));
+        }
+
+        #[tokio::test]
+        async fn a_bought_disk_that_cannot_be_recorded_says_to_delete_it_so_it_is_not_billed() {
+            let platform = platform_selling(json!({
+                "id": 14, "box_type": "bx11", "size_gb": 1000, "status": "active",
+                "host": "h", "username": "u", "password": "p"
+            }))
+            .await;
+            let host = FakeHost::new()
+                .ok("ceph config-key dump yolab/disk-status/", &machines())
+                .fail("ceph config-key set", "Error EACCES: access denied");
+            let api = at(&platform, host).await;
+            let res = buy(&api, r#"{"node":"node1","box_type":"bx11"}"#).await;
+            assert_eq!(res.status, StatusCode::INTERNAL_SERVER_ERROR);
+            assert!(res.json()["error"]
+                .as_str()
+                .unwrap()
+                .contains("so it is not billed"));
+        }
+
+        #[tokio::test]
+        async fn a_recorded_disk_whose_switch_cannot_be_saved_is_an_error() {
+            let platform = platform_selling(json!({
+                "id": 15, "box_type": "bx11", "size_gb": 1000, "status": "active",
+                "host": "h", "username": "u", "password": "p"
+            }))
+            .await;
+            let host = FakeHost::new()
+                .ok("ceph config-key dump yolab/disk-status/", &machines())
+                .ok("ceph config-key set yolab/vdisks/", "")
+                .fail(
+                    "ceph config-key set yolab/disks/",
+                    "Error EACCES: access denied",
+                );
+            let api = at(&platform, host).await;
+            let res = buy(&api, r#"{"node":"node1","box_type":"bx11"}"#).await;
+            assert_eq!(res.status, StatusCode::INTERNAL_SERVER_ERROR);
+            assert!(res.json()["error"]
+                .as_str()
+                .unwrap()
+                .contains("could not be saved"));
+        }
+    }
 }

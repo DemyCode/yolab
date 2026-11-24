@@ -276,6 +276,121 @@ mod tests {
         assert!(host.ran("ceph config-key set"));
     }
 
+    #[tokio::test]
+    async fn a_switch_is_saved_in_the_cluster_settings_under_its_machine() {
+        let host = FakeHost::new().ok("ceph config-key set", "");
+        record_switch(&host, "node1", "dev-sdb", "ON")
+            .await
+            .unwrap();
+        record_switch(&host, "node1", "dev-sdc", "OFF")
+            .await
+            .unwrap();
+        assert!(host.ran("ceph config-key set yolab/disks/node1--dev-sdb ON"));
+        assert!(host.ran("ceph config-key set yolab/disks/node1--dev-sdc OFF"));
+    }
+
+    #[tokio::test]
+    async fn only_on_and_off_are_switch_positions() {
+        let host = FakeHost::new();
+        let refused = record_switch(&host, "node1", "dev-sdb", "maybe").await;
+        assert_eq!(refused.unwrap_err(), "desired must be ON or OFF");
+        assert!(host.calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn forgetting_a_disk_removes_its_record_and_an_absent_one_is_already_forgotten() {
+        let host = FakeHost::new().ok("ceph config-key rm", "");
+        forget_disk(&host, "node1", "dev-sdb").await.unwrap();
+        assert!(host.ran("ceph config-key rm yolab/disks/node1--dev-sdb"));
+
+        let gone = FakeHost::new().fail("ceph config-key rm", "Error ENOENT: no such key");
+        forget_disk(&gone, "node1", "dev-sdb").await.unwrap();
+
+        let down = FakeHost::new().fail("ceph config-key rm", "Error EACCES: access denied");
+        let err = forget_disk(&down, "node1", "dev-sdb").await.unwrap_err();
+        assert!(err.contains("could not be removed"), "{err}");
+    }
+
+    mod over_http {
+        use super::*;
+        use crate::testkit::TestApi;
+
+        async fn signed_in(host: FakeHost) -> TestApi {
+            TestApi::with_kube_and_host(crate::k8s::testing::unreachable(), host)
+                .login()
+                .await
+        }
+
+        #[tokio::test]
+        async fn the_disks_page_lists_each_machine_s_disks_with_their_switch() {
+            let desired = serde_json::json!({ "yolab/disks/node1--dev-sdb": "ON" }).to_string();
+            let status = serde_json::json!({
+                "yolab/disk-status/node1": serde_json::json!({
+                    "disks": {
+                        "dev-sdb": { "device": "/dev/sdb", "size_bytes": 1000, "phase": "Ready" },
+                        "dev-sdc": { "device": "/dev/sdc", "size_bytes": 2000 }
+                    }
+                }).to_string(),
+                "yolab/disk-status/node2": "not json"
+            })
+            .to_string();
+            let host = FakeHost::new()
+                .ok("ceph config-key dump yolab/disks/", &desired)
+                .ok("ceph config-key dump yolab/disk-status/", &status);
+            let api = signed_in(host).await;
+
+            let res = api.get("/api/disks").await;
+            let node1 = res.json()["node1"].clone();
+            assert_eq!(node1.as_array().map(Vec::len), Some(2), "{}", res.body);
+            let sdb = node1
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|d| d["id"] == "dev-sdb")
+                .cloned()
+                .unwrap();
+            assert_eq!(sdb["desired"], "ON");
+            assert_eq!(sdb["phase"], "Ready");
+            assert!(res.json().get("node2").is_none());
+        }
+
+        #[tokio::test]
+        async fn the_disks_page_is_an_error_while_ceph_cannot_be_read() {
+            let api = signed_in(FakeHost::new().fail("ceph config-key dump", "timed out")).await;
+            assert!(!api.get("/api/disks").await.status.is_success());
+        }
+
+        #[tokio::test]
+        async fn a_switch_over_http_answers_ok_or_the_reason() {
+            let api = signed_in(FakeHost::new().ok("ceph config-key set", "")).await;
+            let res = api
+                .send(
+                    "PUT",
+                    "/api/disks/node1/dev-sdb",
+                    Some(r#"{"desired":"OFF"}"#),
+                )
+                .await;
+            assert_eq!(
+                res.json(),
+                serde_json::json!({ "ok": true }),
+                "{}",
+                res.body
+            );
+            let res = api
+                .send(
+                    "PUT",
+                    "/api/disks/node1/system",
+                    Some(r#"{"desired":"OFF"}"#),
+                )
+                .await;
+            assert_eq!(res.json()["ok"], false);
+            assert!(res.json()["error"]
+                .as_str()
+                .unwrap()
+                .contains("system disk"));
+        }
+    }
+
     #[test]
     fn a_node_scoped_key_splits_into_node_and_disk() {
         assert_eq!(
