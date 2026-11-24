@@ -42,10 +42,27 @@ function useCopies(namespace: string) {
 
   const fetchCopies = useCallback(async () => {
     const d = await api.get<RestorePoints>(pointsPath(namespace));
-    return { ...d, points: sortRestorePoints(d.points ?? []) };
+    return { ...d, points: sortRestorePoints(d.points) };
   }, [namespace]);
 
-  const load = useCallback(async () => {
+  useEffect(() => {
+    let cancelled = false;
+    fetchCopies().then(
+      (d) => {
+        if (cancelled) return;
+        setData(d);
+        setError(null);
+      },
+      (e: unknown) => {
+        if (!cancelled) setError(message(e, LIST_FAILED));
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [fetchCopies]);
+
+  const reload = useCallback(async () => {
     try {
       setData(await fetchCopies());
       setError(null);
@@ -54,23 +71,7 @@ function useCopies(namespace: string) {
     }
   }, [fetchCopies]);
 
-  useEffect(() => {
-    let cancelled = false;
-    fetchCopies()
-      .then((d) => {
-        if (cancelled) return;
-        setData(d);
-        setError(null);
-      })
-      .catch((e: unknown) => {
-        if (!cancelled) setError(message(e, LIST_FAILED));
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [fetchCopies]);
-
-  return { data, error, reload: load };
+  return { data, error, reload };
 }
 
 async function chartOf(namespace: string, snapshotId: string) {
@@ -90,7 +91,7 @@ function ConfirmDelete({
   onConfirm,
 }: {
   namespace: string;
-  point: RestorePoint | null;
+  point: RestorePoint;
   onClose: () => void;
   onConfirm: (point: RestorePoint) => void;
 }) {
@@ -98,10 +99,9 @@ function ConfirmDelete({
     id: string;
     bytes: number | null | "failed";
   } | null>(null);
-  const id = point?.snapshot_id ?? null;
+  const id = point.snapshot_id;
 
   useEffect(() => {
-    if (!id) return;
     let cancelled = false;
     api
       .get<{ frees_bytes: number | null }>(`${pointPath(namespace, id)}/frees`)
@@ -120,10 +120,10 @@ function ConfirmDelete({
 
   return (
     <ConfirmDialog
-      open={point !== null}
+      open
       onClose={onClose}
       onConfirm={() => {
-        if (point) onConfirm(point);
+        onConfirm(point);
         onClose();
       }}
       title="Delete this copy?"
@@ -131,8 +131,8 @@ function ConfirmDelete({
       confirmLabel="Delete it"
       body={
         <>
-          The copy from {point ? formatDateTime(point.time) : ""} is deleted for
-          good, in the background. You can no longer go back to it.
+          The copy from {formatDateTime(point.time)} is deleted for good, in the
+          background. You can no longer go back to it.
           <p className="mt-3 text-sm text-fg-muted">
             {current === undefined
               ? "Working out how much space it frees…"
@@ -228,7 +228,7 @@ function CopyRow({
 }
 
 export function BackupTimelinePage() {
-  const { namespace = "" } = useParams<{ namespace: string }>();
+  const namespace = useParams<"namespace">().namespace!;
   const navigate = useNavigate();
   const now = useNow(60_000);
   const { data, error, reload } = useCopies(namespace);
@@ -254,8 +254,9 @@ export function BackupTimelinePage() {
   const points = (data?.points ?? []).filter(
     (p) => !deleting.includes(p.snapshot_id),
   );
-  const selected =
-    points.find((p) => p.snapshot_id === chosen) ?? points[0] ?? null;
+  const selectedId =
+    (points.find((p) => p.snapshot_id === chosen) ?? points[0])?.snapshot_id ??
+    null;
   const space = data?.budget_bytes ?? DEFAULT_SPACE_BYTES;
   const backingUp =
     starting || app?.state === "running" || app?.state === "queued";
@@ -315,12 +316,14 @@ export function BackupTimelinePage() {
     }
   }
 
-  async function savePolicy(next: { enabled: boolean; schedule: string }) {
-    if (!app) return;
+  async function savePolicy(
+    instance: string,
+    next: { enabled: boolean; schedule: string },
+  ) {
     setSaving(true);
     setNote(null);
     try {
-      await api.put(`/api/apps/${app.instance_name}/backup`, next);
+      await api.put(`/api/apps/${instance}/backup`, next);
       await running.refresh();
       setNote({ ok: true, text: "Saved" });
     } catch (e) {
@@ -365,7 +368,7 @@ export function BackupTimelinePage() {
             data ? copiesLabel(points.length) : null,
             usage,
             !installed && running.data ? "Removed" : null,
-            installed && app && !app.enabled ? "Backups off" : null,
+            installed && !app.enabled ? "Backups off" : null,
           ]
             .filter(Boolean)
             .join(" · ") ||
@@ -413,7 +416,7 @@ export function BackupTimelinePage() {
                     variant="secondary"
                     size="sm"
                     onClick={() =>
-                      void savePolicy({
+                      void savePolicy(app.instance_name, {
                         enabled: false,
                         schedule: app.schedule,
                       })
@@ -468,7 +471,7 @@ export function BackupTimelinePage() {
         </p>
       )}
 
-      {installed && app && (
+      {installed && (
         <Section
           title="Backing up"
           action={
@@ -491,7 +494,10 @@ export function BackupTimelinePage() {
               <Switch
                 checked={app.enabled}
                 onChange={(enabled) =>
-                  void savePolicy({ enabled, schedule: app.schedule })
+                  void savePolicy(app.instance_name, {
+                    enabled,
+                    schedule: app.schedule,
+                  })
                 }
                 label="Back up automatically"
                 disabled={saving}
@@ -504,7 +510,10 @@ export function BackupTimelinePage() {
               schedule={app.schedule}
               busy={saving}
               onSave={(schedule) =>
-                void savePolicy({ enabled: app.enabled, schedule })
+                void savePolicy(app.instance_name, {
+                  enabled: app.enabled,
+                  schedule,
+                })
               }
             />
           )}
@@ -537,14 +546,14 @@ export function BackupTimelinePage() {
       )}
 
       {!installed && note && (
-        <p
-          className={cn(
-            "mt-3 text-sm",
-            note.ok ? "text-success" : "text-danger",
-          )}
-          role="status"
-        >
+        <p className="mt-3 text-sm text-danger" role="status">
           {note.text}
+        </p>
+      )}
+
+      {data !== null && error && (
+        <p className="mt-8 text-sm text-danger" role="alert">
+          {error}
         </p>
       )}
 
@@ -572,7 +581,7 @@ export function BackupTimelinePage() {
             <div className="mt-8">
               <BackupTimeline
                 points={points}
-                selected={selected?.snapshot_id ?? null}
+                selected={selectedId}
                 now={now}
                 onSelect={setChosen}
               />
@@ -584,7 +593,7 @@ export function BackupTimelinePage() {
                 key={p.snapshot_id}
                 namespace={namespace}
                 point={p}
-                selected={p.snapshot_id === selected?.snapshot_id}
+                selected={p.snapshot_id === selectedId}
                 now={now}
                 onSelect={() => setChosen(p.snapshot_id)}
                 onDelete={() => setConfirming(p)}
@@ -611,12 +620,14 @@ export function BackupTimelinePage() {
         </Section>
       )}
 
-      <ConfirmDelete
-        namespace={namespace}
-        point={confirming}
-        onClose={() => setConfirming(null)}
-        onConfirm={remove}
-      />
+      {confirming && (
+        <ConfirmDelete
+          namespace={namespace}
+          point={confirming}
+          onClose={() => setConfirming(null)}
+          onConfirm={remove}
+        />
+      )}
 
       <ConfirmDialog
         open={confirmAll}
