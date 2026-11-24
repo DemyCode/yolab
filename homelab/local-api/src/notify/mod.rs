@@ -496,4 +496,92 @@ token = "abcdef0123456789"
         assert!(sent.is_err());
         assert!(peer.received_requests().await.unwrap().is_empty());
     }
+
+    fn on_the_platform(dns_url: &str) -> crate::testkit::TestApi {
+        crate::testkit::TestApi::with_config(&crate::testkit::config_with_tunnel(&format!(
+            "enabled = true\ndns_url = \"{dns_url}\"\n"
+        )))
+    }
+
+    #[tokio::test]
+    async fn the_subscription_names_the_clusters_topic_under_the_users_zone() {
+        let api = on_the_platform("https://node1.6.yolab.io").login().await;
+        let res = api.get("/api/notifications").await;
+        let body = res.json();
+        assert_eq!(body["available"], true, "{}", res.body);
+        let topic = body["subscription"]["topic"].as_str().unwrap().to_string();
+        assert_eq!(
+            body["subscription"]["web_url"],
+            format!("https://notify.6.yolab.io/{topic}")
+        );
+    }
+
+    #[tokio::test]
+    async fn without_the_platform_or_a_public_name_there_is_nothing_to_subscribe_to() {
+        let off = crate::testkit::TestApi::provisioned().login().await;
+        assert_eq!(
+            off.get("/api/notifications").await.json()["reason"],
+            "this machine is not connected to the YoLab platform"
+        );
+        let bare = on_the_platform("https://node1").login().await;
+        assert_eq!(
+            bare.get("/api/notifications").await.json()["reason"],
+            "this machine has no public name"
+        );
+        let unreadable = crate::testkit::TestApi::with_config("[homelab]\n");
+        let res = unreadable.over_loopback().get("/api/notifications").await;
+        assert_eq!(res.json()["available"], false, "{}", res.body);
+        let no_token = crate::testkit::TestApi::with_config("[tunnel]\nenabled = true\n");
+        let res = no_token.over_loopback().get("/api/notifications").await;
+        assert!(
+            res.json()["reason"]
+                .as_str()
+                .unwrap()
+                .contains("[node.k3s] token"),
+            "{}",
+            res.body
+        );
+    }
+
+    #[tokio::test]
+    async fn a_test_or_relayed_notification_without_a_running_ntfy_says_why() {
+        let api = on_the_platform("https://node1.6.yolab.io").login().await;
+        let res = api.post("/api/notifications/test", "").await;
+        assert_eq!(res.status, StatusCode::SERVICE_UNAVAILABLE);
+        assert!(
+            res.json()["error"].as_str().unwrap().contains("ntfy"),
+            "{}",
+            res.body
+        );
+        let res = api
+            .post(
+                "/api/notifications/deliver",
+                &serde_json::to_string(&note(None)).unwrap(),
+            )
+            .await;
+        assert_eq!(res.status, StatusCode::SERVICE_UNAVAILABLE);
+        let unconfigured = crate::testkit::TestApi::with_config("[homelab]\n").over_loopback();
+        let res = unconfigured.post("/api/notifications/test", "").await;
+        assert_eq!(res.status, StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[test]
+    fn the_ntfy_credentials_hold_only_the_clusters_topic() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("config.toml");
+        std::fs::write(&config, CONFIG).unwrap();
+        write_ntfy_env(dir.path(), config.to_str().unwrap()).unwrap();
+        let env = std::fs::read_to_string(dir.path().join(ENV_FILE)).unwrap();
+        let topic = topic_from_config(CONFIG).unwrap();
+        assert_eq!(env, format!("NTFY_AUTH_ACCESS='*:{topic}:rw'\n"));
+        assert!(write_ntfy_env(dir.path(), "/nonexistent/config.toml").is_err());
+        assert!(topic_from_config("not = [toml").is_err());
+    }
+
+    #[tokio::test]
+    async fn the_notify_command_knows_only_credentials() {
+        assert_eq!(run(&["nope".to_string()]).await, 2);
+        assert_eq!(run(&[]).await, 2);
+        assert_eq!(run(&["credentials".to_string()]).await, 1);
+    }
 }

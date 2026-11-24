@@ -429,10 +429,26 @@ fn disk_key(node: &str, disk_id: &str) -> String {
     )
 }
 
+#[cfg(not(test))]
+fn this_node() -> String {
+    let node = crate::system::hostname();
+    assert!(
+        !node.is_empty(),
+        "/etc/hostname is missing or empty, so this machine cannot sign the changes it makes to \
+         the store"
+    );
+    node
+}
+
+#[cfg(test)]
+fn this_node() -> String {
+    "test-node".into()
+}
+
 pub fn shared() -> &'static Mutex<Store> {
     static SHARED: OnceLock<Mutex<Store>> = OnceLock::new();
     SHARED.get_or_init(|| {
-        let node = crate::system::hostname();
+        let node = this_node();
         let path = default_path();
         let store = Store::open(&node, &path).unwrap_or_else(|e| {
             tracing::error!(
@@ -939,6 +955,16 @@ mod tests {
                 .map(String::as_str),
             Some("OFF")
         );
+    }
+
+    #[test]
+    fn every_change_the_shared_store_signs_can_be_read_back() {
+        let stamp = crate::store::hlc::Hlc {
+            millis: 1,
+            counter: 0,
+            node: this_node(),
+        };
+        assert!(crate::store::hlc::Hlc::decode(&stamp.encode()).is_some());
     }
 
     #[test]

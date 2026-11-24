@@ -24,7 +24,7 @@ fn provisioned_config() -> String {
     config_with_tunnel("")
 }
 
-fn config_with_tunnel(extra: &str) -> String {
+pub(crate) fn config_with_tunnel(extra: &str) -> String {
     format!(
         "[homelab]\nhostname = \"yolab\"\nhomelab_password_hash = \"{PASSWORD_HASH}\"\n\
          [tunnel]\naccount_token = \"{ACCOUNT_TOKEN}\"\n{extra}[node.k3s]\ntoken = \"{K3S_TOKEN}\"\n"

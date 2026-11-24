@@ -101,6 +101,16 @@ fn notification(change: &Change, tunnel: &Tunnel) -> Notification {
     }
 }
 
+#[cfg(not(test))]
+fn state_root() -> PathBuf {
+    PathBuf::from("/")
+}
+
+#[cfg(test)]
+fn state_root() -> PathBuf {
+    std::env::temp_dir().join(format!("yolab-test-notifier-{}", std::process::id()))
+}
+
 fn state_path(root: &Path) -> PathBuf {
     root.join(STATE_FILE)
 }
@@ -317,7 +327,8 @@ impl Resource for NotifierController {
         Duration::from_secs(180)
     }
     async fn converge(&self, ctx: &Ctx) -> Result<Tick> {
-        let root = Path::new("/");
+        let root = state_root();
+        let root = root.as_path();
         let tunnel = Tunnel::read(&self.config.config_path)?;
         if !tunnel.enabled {
             return Ok(Tick::Idle(
@@ -639,5 +650,182 @@ mod tests {
         assert!(load(dir.path()).unwrap().is_empty());
         save(dir.path(), &sent(&["disk:sdb"])).unwrap();
         assert_eq!(load(dir.path()).unwrap(), sent(&["disk:sdb"]));
+    }
+
+    #[test]
+    fn tests_never_write_the_machine_s_own_alert_state() {
+        assert!(state_root().starts_with(std::env::temp_dir()));
+    }
+
+    #[test]
+    fn each_storage_problem_has_a_plain_title_and_unknown_ones_keep_their_name() {
+        let titles: Vec<String> = [
+            "machines_gone",
+            "ceph_no_quorum",
+            "kubernetes_down",
+            "data_unreachable",
+            "something_new",
+        ]
+        .iter()
+        .map(|p| heal_alert(p).title)
+        .collect();
+        assert_eq!(
+            titles,
+            [
+                "A machine does not answer",
+                "Storage has lost its quorum",
+                "The cluster is not answering",
+                "Some of your files have no reachable copy",
+                "something_new",
+            ]
+        );
+        let source = heal_source(&["machines_gone"], true);
+        assert!(source.silent);
+        assert_eq!(source.alerts.unwrap()[0].key, "heal:machines_gone");
+    }
+
+    #[test]
+    fn a_cluster_problem_without_a_shared_address_opens_this_machine() {
+        let mut bare = tunnel();
+        bare.host = "node1".into();
+        let raised = notification(&Change::Raised(heal_alert("machines_gone")), &bare);
+        assert_eq!(
+            raised.click.as_deref(),
+            Some("https://node1/system/storage")
+        );
+    }
+
+    #[test]
+    fn an_unreadable_or_unopenable_state_file_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(state_path(dir.path()).parent().unwrap()).unwrap();
+        std::fs::write(state_path(dir.path()), "{broken").unwrap();
+        assert!(load(dir.path()).is_err());
+        std::fs::remove_file(state_path(dir.path())).unwrap();
+        std::fs::create_dir(state_path(dir.path())).unwrap();
+        assert!(load(dir.path()).is_err());
+        assert!(save(dir.path(), &BTreeMap::new()).is_err());
+    }
+
+    #[test]
+    fn a_disk_source_is_never_silent() {
+        let source = disk_source();
+        assert_eq!(source.prefix, "disk:");
+        assert!(!source.silent);
+        assert!(source.alerts.is_some());
+    }
+
+    #[tokio::test]
+    async fn backup_alerts_are_unknown_when_any_record_cannot_be_read() {
+        use crate::k8s::testing::{api_server, list, serve, status};
+        let unreachable: anyhow::Result<Backend<crate::host::fake::FakeHost>> =
+            Err(anyhow::anyhow!("no cluster"));
+        assert!(backup_source(&unreachable, false).await.alerts.is_none());
+
+        let sets = "/api/v1/namespaces/kube-system/configmaps/yolab-backups";
+        let checks = "/api/v1/namespaces/kube-system/configmaps/yolab-backup-checks";
+        let namespaces = "/api/v1/namespaces";
+        let gone = status(404, "NotFound");
+        let down = status(503, "ServiceUnavailable");
+        let empty = list("Namespace", vec![]);
+        for (sets_code, ns_code, checks_code, known) in [
+            (503, 200, 404, false),
+            (404, 503, 404, false),
+            (404, 200, 503, false),
+            (404, 200, 404, true),
+        ] {
+            let (server, kube) = api_server().await;
+            serve(
+                &server,
+                sets,
+                sets_code,
+                if sets_code == 404 {
+                    gone.clone()
+                } else {
+                    down.clone()
+                },
+            )
+            .await;
+            serve(
+                &server,
+                namespaces,
+                ns_code,
+                if ns_code == 200 {
+                    empty.clone()
+                } else {
+                    down.clone()
+                },
+            )
+            .await;
+            serve(
+                &server,
+                checks,
+                checks_code,
+                if checks_code == 404 {
+                    gone.clone()
+                } else {
+                    down.clone()
+                },
+            )
+            .await;
+            let b = Ok(Backend {
+                kube,
+                host: crate::host::fake::FakeHost::new(),
+            });
+            let source = backup_source(&b, true).await;
+            assert_eq!(
+                source.alerts.is_some(),
+                known,
+                "{sets_code} {ns_code} {checks_code}"
+            );
+            assert!(source.silent);
+        }
+    }
+
+    fn controller(config: &str) -> (tempfile::TempDir, NotifierController) {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("config.toml");
+        std::fs::write(&file, config).unwrap();
+        let config = crate::config::Config::for_test(&file);
+        (dir, NotifierController { config })
+    }
+
+    fn ctx() -> Ctx {
+        Ctx {
+            node: "node1".into(),
+            tools: crate::tools::Tools::unreachable(),
+        }
+    }
+
+    #[tokio::test]
+    async fn the_notifier_waits_after_boot_and_is_idle_off_the_platform() {
+        let (_dir, c) = controller("[tunnel]\nenabled = false\n");
+        assert_eq!(c.name(), "notifier");
+        assert_eq!(c.scope(), Scope::Node);
+        assert_eq!(c.interval(), Duration::from_secs(120));
+        assert_eq!(c.not_before_uptime(), Duration::from_secs(180));
+        let t = c.converge(&ctx()).await.unwrap();
+        assert!(
+            matches!(t, Tick::Idle(why) if why == "this machine is not connected to the YoLab platform")
+        );
+        let (_dir, broken) = controller("[tunnel]\nenabled = true\n");
+        assert!(
+            broken.converge(&ctx()).await.is_err(),
+            "no topic without a k3s token"
+        );
+        let (_dir, missing) = controller("");
+        assert!(missing.converge(&ctx()).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn the_notifier_sends_what_changed_or_says_it_will_retry() {
+        let (_dir, c) = controller(
+            "[tunnel]\nenabled = true\ndns_url = \"https://node1.6.yolab.io\"\n[node.k3s]\ntoken = \"t\"\n",
+        );
+        match c.converge(&ctx()).await {
+            Ok(t) => assert!(matches!(t, Tick::Idle(_) | Tick::Done)),
+            Err(e) => assert!(format!("{e:#}").contains("send a notification"), "{e:#}"),
+        }
+        assert!(state_path(&state_root()).exists());
     }
 }
