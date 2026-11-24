@@ -55,3 +55,33 @@ describe("hardwareDetail", () => {
     ).toBeNull();
   });
 });
+
+describe("hardware labels for every accelerator", () => {
+  it("names a GPU apps reach through Vulkan instead of printing the raw kind", () => {
+    expect(hardwareLabel({ ...machine, accelerator: "vulkan" })).toBe(
+      "Vulkan GPU",
+    );
+  });
+
+  it("names AMD and Intel GPUs", () => {
+    expect(hardwareLabel({ ...machine, accelerator: "amd" })).toBe("AMD GPU");
+    expect(hardwareLabel({ ...machine, accelerator: "intel" })).toBe(
+      "Intel GPU",
+    );
+  });
+
+  it("says nothing about a machine that was never inspected", () => {
+    expect(hardwareDetail(undefined)).toBeNull();
+  });
+
+  it("shows a processor kind it has no name for as the kernel reports it", () => {
+    expect(
+      hardwareDetail({
+        ...machine,
+        arch: "riscv64",
+        vram_gib: null,
+        ram_gib: null,
+      }),
+    ).toBe("riscv64");
+  });
+});

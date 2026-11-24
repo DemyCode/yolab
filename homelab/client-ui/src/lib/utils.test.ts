@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { webHref } from "./utils";
+import { cn, webHref } from "./utils";
 
 describe("webHref", () => {
   it("keeps web addresses", () => {
@@ -29,5 +29,17 @@ describe("webHref", () => {
     expect(webHref(undefined)).toBeNull();
     expect(webHref("not a url")).toBeNull();
     expect(webHref("/relative/path")).toBeNull();
+  });
+});
+
+describe("cn", () => {
+  it("lets a later Tailwind class win over the one it conflicts with", () => {
+    expect(cn("px-2 text-sm", "px-4")).toBe("text-sm px-4");
+  });
+
+  it("drops classes whose condition is false", () => {
+    expect(cn("a", false && "b", null, undefined, { c: true, d: false })).toBe(
+      "a c",
+    );
   });
 });

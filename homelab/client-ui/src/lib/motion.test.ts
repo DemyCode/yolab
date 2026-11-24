@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { easeOut, mergeRows, rollFormat } from "./motion";
+import { afterEach, describe, expect, it } from "vitest";
+import { easeOut, mergeRows, prefersReducedMotion, rollFormat } from "./motion";
 
 const key = (s: string) => s;
 const rows = (keys: string[], leaving: string[] = []) =>
@@ -48,5 +48,42 @@ describe("rolling numbers", () => {
     expect(easeOut(0)).toBe(0);
     expect(easeOut(1)).toBe(1);
     expect(easeOut(2)).toBe(1);
+  });
+});
+
+describe("prefersReducedMotion", () => {
+  const setMatchMedia = (value: unknown) =>
+    Object.defineProperty(window, "matchMedia", {
+      value,
+      configurable: true,
+      writable: true,
+    });
+
+  afterEach(() => {
+    Reflect.deleteProperty(window, "matchMedia");
+  });
+
+  it("follows the browser's reduced-motion setting", () => {
+    for (const matches of [true, false]) {
+      setMatchMedia((media: string) => ({ matches, media }));
+      expect(prefersReducedMotion()).toBe(matches);
+    }
+  });
+
+  it("asks for the reduced-motion query, not some other one", () => {
+    const asked: string[] = [];
+    setMatchMedia((media: string) => {
+      asked.push(media);
+      return { matches: false, media };
+    });
+    prefersReducedMotion();
+    expect(asked).toEqual(["(prefers-reduced-motion: reduce)"]);
+  });
+
+  it("asks for reduced motion where the browser cannot say", () => {
+    setMatchMedia(() => {
+      throw new Error("matchMedia is not supported");
+    });
+    expect(prefersReducedMotion()).toBe(true);
   });
 });

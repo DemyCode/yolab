@@ -16,7 +16,7 @@
       ];
     };
     npmDepsFetcherVersion = 2;
-    npmDepsHash = "sha256-WJAZj9c+1g8tWCuU6N7X7raEMnd5ZotzUxNTSztBusI=";
+    npmDepsHash = "sha256-56Lvsmn0MPxPIGy3g/sVlAg+RGZmcbGPnHrprQxE+Yw=";
     npmFlags = ["--legacy-peer-deps"];
     dontNpmBuild = true;
     installPhase = ''

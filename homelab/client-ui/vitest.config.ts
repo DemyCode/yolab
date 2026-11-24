@@ -11,14 +11,14 @@ export default defineConfig({
     include: ["src/**/*.test.ts", "src/**/*.test.tsx"],
     restoreMocks: true,
     coverage: {
-      provider: "v8",
+      provider: "istanbul",
       include: ["src/**/*.{ts,tsx}"],
       exclude: [
         "src/**/*.test.{ts,tsx}",
         "src/**/*.d.ts",
         ...Object.keys(untested),
       ],
-      reporter: ["text", "html"],
+      reporter: [["text", { skipFull: true, maxCols: 300 }], "html"],
       thresholds: { 100: true },
     },
   },
