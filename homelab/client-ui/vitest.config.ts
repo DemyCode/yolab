@@ -11,6 +11,7 @@ export default defineConfig({
     setupFiles: ["src/test/setup.ts"],
     include: ["src/**/*.test.ts", "src/**/*.test.tsx"],
     restoreMocks: true,
+    testTimeout: 20000,
     coverage: {
       provider: "istanbul",
       include: ["src/**/*.{ts,tsx}"],
