@@ -9,6 +9,7 @@
     "src/k8s.rs" = "talks to the k3s API server; only a booted NixOS VM has one";
     "src/http.rs" = "the real outbound HTTP client; only a booted NixOS VM runs it";
     "src/runtime/watch.rs" = "holds open watches on the k3s API server; only a booted NixOS VM has one";
+    "src/tree_list/ffi.rs" = "dlopens libcephfs and reads the file tree through raw pointers; only a booted NixOS VM has a Ceph file system to answer it";
   };
   installer = {
     "src/main.rs" = "sets up the real terminal and runs the key loop; only a person at the installer drives it";
