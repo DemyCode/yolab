@@ -8,7 +8,7 @@ use crate::host::{CommandOutput, Host};
 const MANAGED_BY: (&str, &str) = ("app.kubernetes.io/managed-by", "yolab");
 
 #[derive(Clone)]
-pub(crate) struct Backend<H: Host = crate::host::RealHost> {
+pub(crate) struct Backend<H: Host = crate::host::MachineHost> {
     pub kube: Client,
     pub host: H,
 }

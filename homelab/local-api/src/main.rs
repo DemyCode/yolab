@@ -62,7 +62,7 @@ pub struct AppState {
     pub kube: k8s::Kube,
     pub http: http::Client,
     pub proxy_http: http::Client,
-    pub host: host::RealHost,
+    pub(crate) host: host::MachineHost,
 }
 
 impl AppState {

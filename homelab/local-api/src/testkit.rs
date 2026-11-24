@@ -48,6 +48,7 @@ pub(crate) struct TestApi {
     session: Option<String>,
     peer: &'static str,
     cluster_token: Option<String>,
+    pub host: crate::host::fake::FakeHost,
 }
 
 impl TestApi {
@@ -59,7 +60,15 @@ impl TestApi {
         Self::with_config_and_kube(&provisioned_config(), kube)
     }
 
+    pub fn with_kube_and_host(kube: kube::Client, host: crate::host::fake::FakeHost) -> Self {
+        Self::build(&provisioned_config(), kube, host)
+    }
+
     fn with_config_and_kube(body: &str, kube: kube::Client) -> Self {
+        Self::build(body, kube, crate::host::fake::FakeHost::new())
+    }
+
+    fn build(body: &str, kube: kube::Client, host: crate::host::fake::FakeHost) -> Self {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("config.toml");
         std::fs::write(&path, body).expect("write config");
@@ -72,12 +81,13 @@ impl TestApi {
                 kube: crate::k8s::Kube::with(kube),
                 http: crate::http::Client::new(),
                 proxy_http: crate::http::Client::new(),
-                host: Default::default(),
+                host: host.clone(),
             }),
             _dir: dir,
             session: None,
             peer: OFF_BOX,
             cluster_token: None,
+            host,
         }
     }
 

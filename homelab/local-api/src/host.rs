@@ -183,7 +183,13 @@ pub trait Host: Send + Sync + Clone {
 }
 
 #[derive(Clone, Default)]
+#[cfg_attr(test, allow(dead_code))]
 pub struct RealHost;
+
+#[cfg(not(test))]
+pub(crate) type MachineHost = RealHost;
+#[cfg(test)]
+pub(crate) type MachineHost = fake::FakeHost;
 
 #[allow(clippy::manual_async_fn)]
 impl Host for RealHost {

@@ -1,10 +1,10 @@
 use crate::backup::common::Backend;
-use crate::host::RealHost;
+use crate::host::MachineHost;
 use crate::k8s::Kube;
 
 #[derive(Clone)]
 pub struct Tools {
-    pub host: RealHost,
+    pub(crate) host: MachineHost,
     pub kube: Kube,
     pub http: crate::http::Client,
 }
@@ -12,7 +12,7 @@ pub struct Tools {
 impl Tools {
     pub fn real() -> Self {
         Tools {
-            host: RealHost,
+            host: Default::default(),
             kube: Kube::from_environment(),
             http: crate::http::client(),
         }
@@ -32,7 +32,7 @@ impl Tools {
     #[cfg(test)]
     pub fn unreachable() -> Self {
         Tools {
-            host: RealHost,
+            host: Default::default(),
             kube: Kube::with(crate::k8s::testing::unreachable()),
             http: crate::http::client(),
         }
@@ -54,7 +54,7 @@ mod tests {
             .mount(&server)
             .await;
         let tools = Tools {
-            host: RealHost,
+            host: Default::default(),
             kube: Kube::with(client),
             http: crate::http::client(),
         };
