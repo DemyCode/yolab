@@ -38,8 +38,6 @@ describe("cn", () => {
   });
 
   it("drops classes whose condition is false", () => {
-    expect(cn("a", false && "b", null, undefined, { c: true, d: false })).toBe(
-      "a c",
-    );
+    expect(cn("a", false, null, undefined, { c: true, d: false })).toBe("a c");
   });
 });
