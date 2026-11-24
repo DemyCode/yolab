@@ -303,4 +303,25 @@ mod tests {
         assert!(run(&host, "yolab-lan4", "").await.is_err());
         assert!(host.calls().is_empty());
     }
+
+    #[tokio::test]
+    async fn the_watch_refuses_to_start_without_both_set_names() {
+        let host = FakeHost::new();
+        assert!(run(&host, "", "lan6").await.is_err());
+        assert!(run(&host, "lan4", "").await.is_err());
+        assert!(host.calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_watch_stops_with_the_error_when_the_routing_table_is_unreadable() {
+        let host = FakeHost::new().fail(
+            "ip -j -4 route show table main",
+            "Cannot open netlink socket",
+        );
+        let err = run(&host, "lan4", "lan6").await.unwrap_err();
+        assert!(
+            format!("{err:#}").contains("read the routing table"),
+            "{err:#}"
+        );
+    }
 }

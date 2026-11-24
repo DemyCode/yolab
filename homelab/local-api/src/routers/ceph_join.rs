@@ -187,6 +187,40 @@ mod tests {
         }
 
         #[tokio::test]
+        async fn a_joining_machine_gets_the_bundle_over_http() {
+            let host = FakeHost::new()
+                .ok("ceph fsid", r#"{"fsid": "abc-123"}"#)
+                .ok("ceph mon dump", DUMP)
+                .ok("ceph auth get", KEY);
+            let api = crate::testkit::TestApi::with_kube_and_host(
+                crate::k8s::testing::unreachable(),
+                host,
+            )
+            .login()
+            .await;
+            let res = api.get("/api/cluster/ceph-join").await;
+            assert_eq!(res.json()["fsid"], "abc-123", "{}", res.body);
+            assert_eq!(res.json()["mon_addrs"], json!(["fd00::1"]));
+        }
+
+        #[tokio::test]
+        async fn a_machine_that_cannot_reach_ceph_says_so() {
+            let host = FakeHost::new().fail("ceph fsid", "timed out");
+            let err = bundle(&host).await.unwrap_err().to_string();
+            assert!(
+                err.contains("ceph is not reachable from this node"),
+                "{err}"
+            );
+            assert!(!host.ran("ceph mon dump"));
+        }
+
+        #[test]
+        fn two_mons_on_one_address_are_listed_once() {
+            let got = parse_mon_addrs(&dump_with(&["fd00:cafe::1", "fd00:cafe::1"]));
+            assert_eq!(got, vec!["fd00:cafe::1".to_string()]);
+        }
+
+        #[tokio::test]
         async fn a_cluster_without_mons_hands_over_nothing() {
             let host = FakeHost::new()
                 .ok("ceph fsid", r#"{"fsid": "abc-123"}"#)

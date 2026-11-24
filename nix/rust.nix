@@ -64,11 +64,17 @@
     coverage = craneLib.mkCargoDerivation (covArgs
       // {
         cargoArtifacts = craneLib.buildDepsOnly covArgs;
-        nativeBuildInputs = covArgs.nativeBuildInputs ++ [pkgs.cargo-llvm-cov];
+        nativeBuildInputs = covArgs.nativeBuildInputs ++ [pkgs.cargo-llvm-cov pkgs.jq];
         doInstallCargoArtifacts = false;
         buildPhaseCargoCommand = ''
           cargo llvm-cov --release --no-report
           cargo llvm-cov report --release --html --output-dir "$out" ${ignoreUntested}
+          cargo llvm-cov report --release --json --output-path regions.json ${ignoreUntested}
+          echo "Uncovered regions (line:column):"
+          jq -r '.data[0].files[]
+            | { f: .filename, r: [ .segments[] | select(.[2] == 0 and .[3] and .[4] and (.[5] | not)) | "\(.[0]):\(.[1])" ] }
+            | select(.r | length > 0)
+            | "\(.f): \(.r | join(" "))"' regions.json
           cargo llvm-cov report --release --summary-only --show-missing-lines ${ignoreUntested} \
             --fail-under-lines 100 --fail-under-functions 100 --fail-under-regions 100
         '';

@@ -5,10 +5,7 @@ use crate::host::Host;
 pub const IFACE: &str = "wg1";
 
 async fn wg<H: Host>(host: &H, args: &[&str]) -> Result<String> {
-    let out = host
-        .run_cmd("wg", args)
-        .await
-        .with_context(|| format!("run wg {}", args.join(" ")))?;
+    let out = host.run_cmd("wg", args).await?;
 
     if !out.success {
         bail!("wg {} failed: {}", args.join(" "), out.stderr.trim());
@@ -192,5 +189,81 @@ mod tests {
         let peers = parse_dump("iface\nK=\t(none)\t(none)\tfd00::1/128\t42\n");
         assert_eq!(peers[0].rx_bytes, 0);
         assert_eq!(peers[0].tx_bytes, 0);
+    }
+
+    mod against_the_interface {
+        use super::*;
+        use crate::host::fake::FakeHost;
+
+        #[tokio::test]
+        async fn the_interface_s_key_and_port_are_read_trimmed() {
+            let host = FakeHost::new()
+                .ok("wg show wg1 public-key", "PUBSELF=\n")
+                .ok("wg show wg1 listen-port", "51821\n")
+                .ok("wg show wg1 dump", DUMP);
+            assert_eq!(self_public_key(&host).await.unwrap(), "PUBSELF=");
+            assert_eq!(listen_port(&host).await.unwrap(), 51821);
+            assert_eq!(peers(&host).await.unwrap().len(), 2);
+        }
+
+        #[tokio::test]
+        async fn a_port_that_is_not_a_number_is_an_error() {
+            let host = FakeHost::new().ok("wg show wg1 listen-port", "off\n");
+            let err = listen_port(&host).await.unwrap_err();
+            assert!(
+                format!("{err:#}").contains("parse wg listen-port"),
+                "{err:#}"
+            );
+        }
+
+        #[tokio::test]
+        async fn a_refused_wg_command_carries_its_reason() {
+            let host = FakeHost::new().fail(
+                "wg show wg1 dump",
+                "Unable to access interface: No such device",
+            );
+            let err = peers(&host).await.unwrap_err().to_string();
+            assert!(err.contains("wg show wg1 dump failed"), "{err}");
+            assert!(err.contains("No such device"), "{err}");
+        }
+
+        #[tokio::test]
+        async fn a_peer_is_set_with_its_endpoint_only_when_one_is_known() {
+            let host = FakeHost::new().ok("wg set", "");
+            set_peer(
+                &host,
+                "PEER=",
+                Some("[fd00::9]:51821"),
+                "fd00:cafe::9/128",
+                25,
+            )
+            .await
+            .unwrap();
+            set_peer(&host, "QUIET=", None, "fd00:cafe::8/128", 0)
+                .await
+                .unwrap();
+            remove_peer(&host, "GONE=").await.unwrap();
+            assert!(host.ran(
+                "wg set wg1 peer PEER= endpoint [fd00::9]:51821 allowed-ips fd00:cafe::9/128 persistent-keepalive 25"
+            ));
+            assert!(host
+                .ran("wg set wg1 peer QUIET= allowed-ips fd00:cafe::8/128 persistent-keepalive 0"));
+            assert!(host.ran("wg set wg1 peer GONE= remove"));
+        }
+    }
+
+    #[test]
+    fn a_line_too_short_to_be_a_peer_is_skipped() {
+        let dump = "PRIV=\tPUB=\t51821\toff\nBROKEN=\t(none)\n";
+        assert!(parse_dump(dump).is_empty());
+    }
+
+    #[test]
+    fn a_peer_without_endpoint_or_routes_reads_as_none() {
+        let dump = "PRIV=\tPUB=\t51821\toff\nP=\t(none)\t(none)\t(none)\t0\n";
+        let peers = parse_dump(dump);
+        assert_eq!(peers[0].endpoint, None);
+        assert!(peers[0].allowed_ips.is_empty());
+        assert!(!peers[0].is_alive(100, 60));
     }
 }

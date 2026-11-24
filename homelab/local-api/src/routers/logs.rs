@@ -304,4 +304,35 @@ mod tests {
         assert!(res.entries.is_empty());
         assert!(!res.truncated);
     }
+
+    #[test]
+    fn an_entry_without_a_readable_time_or_text_keeps_its_place_with_blanks() {
+        let raw = r#"{"__REALTIME_TIMESTAMP":"soon","_SYSTEMD_UNIT":"k3s.service","MESSAGE":null}"#;
+        let (entries, _) = parse_journal(raw, None);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].timestamp, "");
+        assert_eq!(entries[0].message, "");
+        assert_eq!(rfc3339_from_realtime(&i64::MAX.to_string()), "");
+    }
+
+    #[tokio::test]
+    async fn the_logs_page_reads_this_machine_s_journal() {
+        let host = crate::host::fake::FakeHost::new().ok("journalctl", SAMPLE);
+        let api =
+            crate::testkit::TestApi::with_kube_and_host(crate::k8s::testing::unreachable(), host)
+                .login()
+                .await;
+        let res = api.get("/api/logs?unit=k3s&priority=3").await;
+        let body = res.json();
+        assert_eq!(
+            body["entries"].as_array().map(Vec::len),
+            Some(3),
+            "{}",
+            res.body
+        );
+        assert_eq!(body["truncated"], false);
+        assert!(api
+            .host
+            .ran("journalctl --no-pager -o json -r -n 300 -b -u k3s -p 3"));
+    }
 }

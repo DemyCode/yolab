@@ -230,4 +230,40 @@ mod tests {
             .to_string();
         assert!(e.contains("not a service"), "{e}");
     }
+
+    #[tokio::test]
+    async fn a_service_with_no_folders_of_its_own_copies_nothing() {
+        let (server, kube) = crate::k8s::testing::api_server().await;
+        crate::k8s::testing::serve(
+            &server,
+            "/api/v1/persistentvolumes",
+            200,
+            crate::k8s::testing::list("PersistentVolume", vec![]),
+        )
+        .await;
+        copy_live_folders(
+            &kube,
+            "yolab-notes",
+            &[planned("content-99999999", "notes-2")],
+        )
+        .await
+        .unwrap();
+        let asked: Vec<String> = server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .map(|r| r.method.to_string())
+            .collect();
+        assert_eq!(asked, ["GET"]);
+    }
+
+    #[tokio::test]
+    async fn an_unreadable_volume_list_fails_the_copy() {
+        assert!(
+            copy_live_folders(&crate::k8s::testing::unreachable(), "yolab-notes", &[])
+                .await
+                .is_err()
+        );
+    }
 }

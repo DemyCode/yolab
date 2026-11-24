@@ -195,6 +195,16 @@ mod tests {
     }
 
     #[test]
+    fn each_kind_of_unreadable_item_is_named_in_the_error() {
+        let why = |expr: &str| Cron::parse(expr).unwrap_err().0;
+        assert_eq!(why("1,,2 * * * *"), "minute: empty item in list");
+        assert_eq!(why("*/x * * * *"), "minute: 'x' is not a step");
+        assert_eq!(why("a-5 * * * *"), "minute: 'a' is not a number");
+        assert_eq!(why("1-b * * * *"), "minute: 'b' is not a number");
+        assert_eq!(why("noon * * * *"), "minute: 'noon' is not a number");
+    }
+
+    #[test]
     fn matches_a_daily_time() {
         let c = Cron::parse("0 3 * * *").unwrap();
         assert!(c.matches(&at(2026, 9, 17, 3, 0)));

@@ -120,4 +120,31 @@ mod tests {
     fn empty_input_is_not_an_error() {
         assert_eq!(parse_addrs("[]").unwrap(), Vec::<String>::new());
     }
+
+    #[test]
+    fn an_address_entry_without_an_address_or_seen_twice_is_listed_once_or_not_at_all() {
+        let raw = r#"[
+          {"ifname":"enp1s0","addr_info":[
+             {"scope":"global"},
+             {"local":"192.168.1.50","scope":"global"},
+             {"local":"192.168.1.50","scope":"global"}]},
+          {"addr_info":[{"local":"10.0.0.9","scope":"global"}]},
+          {"ifname":"enp2s0"}
+        ]"#;
+        assert_eq!(
+            parse_addrs(raw).unwrap(),
+            vec!["192.168.1.50".to_string(), "10.0.0.9".to_string()]
+        );
+        assert!(parse_addrs("{}").unwrap().is_empty());
+        assert!(parse_addrs("not json").is_err());
+    }
+
+    #[tokio::test]
+    async fn this_machine_s_addresses_come_from_ip_addr() {
+        let host = crate::host::fake::FakeHost::new().ok("ip -j addr show", IP_JSON);
+        assert_eq!(
+            local_addresses(&host).await.unwrap(),
+            vec!["192.168.1.50", "2a01:e0a:1::42"]
+        );
+    }
 }

@@ -290,7 +290,7 @@ mod tests {
             .iter()
             .find(|p| p["metadata"]["name"] == name)
             .cloned()
-            .unwrap_or_else(|| panic!("{name} was not published"))
+            .expect("every object the test names was published")
     }
 
     #[tokio::test]
@@ -380,6 +380,75 @@ mod tests {
         assert!(b.host.ran(
             "auth caps client.csi-cephfs-node mon allow r mgr allow rw osd allow rw tag cephfs *=* mds allow rws"
         ));
+    }
+
+    #[tokio::test]
+    async fn a_refused_caps_change_names_the_key_it_was_for() {
+        let (_server, kube) = cluster_up().await;
+        let host = keys_readable()
+            .ok(
+                "ceph auth get client.csi-cephfs-node",
+                &node_entity("allow rw"),
+            )
+            .fail(
+                "ceph auth caps client.csi-cephfs-node",
+                "Error EACCES: access denied",
+            );
+        let err = run(&Backend { kube, host }).await.unwrap_err();
+        assert!(
+            format!("{err:#}").contains("give client.csi-cephfs-node its caps"),
+            "{err:#}"
+        );
+    }
+
+    async fn refuse_patch_of(server: &wiremock::MockServer, at: &str) {
+        use wiremock::{matchers, Mock, ResponseTemplate};
+        Mock::given(matchers::method("PATCH"))
+            .and(matchers::path(at))
+            .respond_with(ResponseTemplate::new(500).set_body_json(status(500, "InternalError")))
+            .with_priority(1)
+            .mount(server)
+            .await;
+    }
+
+    #[tokio::test]
+    async fn a_secret_kubernetes_refuses_fails_the_run_and_is_named() {
+        let (server, kube) = cluster_up().await;
+        refuse_patch_of(
+            &server,
+            "/api/v1/namespaces/ceph-csi/secrets/csi-cephfs-node",
+        )
+        .await;
+        let err = run(&Backend {
+            kube,
+            host: ceph_ok(),
+        })
+        .await
+        .unwrap_err();
+        assert!(
+            format!("{err:#}").contains("apply the secret csi-cephfs-node"),
+            "{err:#}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_refused_csi_config_fails_the_run_and_is_named() {
+        let (server, kube) = cluster_up().await;
+        refuse_patch_of(
+            &server,
+            "/api/v1/namespaces/ceph-csi/configmaps/ceph-csi-config",
+        )
+        .await;
+        let err = run(&Backend {
+            kube,
+            host: ceph_ok(),
+        })
+        .await
+        .unwrap_err();
+        assert!(
+            format!("{err:#}").contains("apply the ceph-csi-config configmap"),
+            "{err:#}"
+        );
     }
 
     #[tokio::test]

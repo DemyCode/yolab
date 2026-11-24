@@ -174,4 +174,10 @@ mod tests {
         clock.observe(&at(1, 0, "node2"));
         assert!(clock.now() > ahead);
     }
+
+    #[test]
+    fn a_timestamp_prints_as_its_encoded_form() {
+        let value = at(1_758_800_000_000, 7, "n1");
+        assert_eq!(value.to_string(), value.encode());
+    }
 }
