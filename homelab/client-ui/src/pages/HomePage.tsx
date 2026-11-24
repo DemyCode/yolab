@@ -9,11 +9,7 @@ import { useApi } from "@/lib/useResource";
 import { HealBanner } from "@/components/ForceHeal";
 import { healBannerTone, oneBanner, useHealStatus } from "@/lib/heal";
 import { useNowSecs } from "@/lib/useNow";
-import {
-  movementCopy,
-  needsAttentionEverywhere,
-  useMovement,
-} from "@/lib/movement";
+import { needsAttentionEverywhere, useMovement } from "@/lib/movement";
 import { appDisplayName, catalogEntry, homeLayout } from "@/lib/apps";
 import type { AppInfo, CatalogApp } from "@/types/apps";
 import type { ClusterHealth } from "@/types/health";
@@ -24,7 +20,7 @@ interface Concern {
   tone: "info" | "warning" | "error";
   title: string;
   body: string;
-  more?: number;
+  more: number;
 }
 
 function topConcern(health: ClusterHealth | undefined): Concern | null {
@@ -36,6 +32,7 @@ function topConcern(health: ClusterHealth | undefined): Concern | null {
         tone: "info" as const,
         title: "Your storage is starting up",
         body: "This usually takes a minute after the machine boots. Services will come back on their own.",
+        more: 0,
       };
     }
     if (health.provisioning) {
@@ -43,6 +40,7 @@ function topConcern(health: ClusterHealth | undefined): Concern | null {
         tone: "info" as const,
         title: "Preparing a new disk",
         body: "You can keep using everything while this finishes.",
+        more: 0,
       };
     }
   }
@@ -73,12 +71,7 @@ export function HomePage() {
   const now = useNowSecs();
   const shown = oneBanner<"heal" | "movement" | "storage">([
     ["heal", healBannerTone(heal, now)],
-    [
-      "movement",
-      needsAttentionEverywhere(movement) && movement && movementCopy(movement)
-        ? "error"
-        : null,
-    ],
+    ["movement", needsAttentionEverywhere(movement) ? "error" : null],
     ["storage", concern?.tone ?? null],
   ]);
   const catalogApps = useMemo(() => catalog.data ?? [], [catalog.data]);
@@ -122,14 +115,14 @@ export function HomePage() {
             }
           >
             {concern.body}
-            {(concern.more ?? 0) > 0 && (
+            {concern.more > 0 && (
               <>
                 {" "}
                 <Link
                   to="/system/storage"
                   className="underline underline-offset-2"
                 >
-                  <RollingNumber value={concern.more ?? 0} /> other{" "}
+                  <RollingNumber value={concern.more} /> other{" "}
                   {concern.more === 1 ? "issue" : "issues"}
                 </Link>
               </>
