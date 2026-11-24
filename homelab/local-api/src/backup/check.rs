@@ -312,3 +312,254 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod against_restic {
+    use super::*;
+    use crate::host::fake::FakeHost;
+    use crate::k8s::testing::{api_server, secret_with, status};
+    use serde_json::json;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    const CLEAN: &str = r#"{"message_type":"summary","num_errors":0,"broken_packs":null,"suggest_repair_index":false}"#;
+    const DAMAGED_INDEX: &str = r#"{"message_type":"summary","num_errors":1,"broken_packs":[],"suggest_repair_index":true}"#;
+
+    fn cfg() -> BackupConfig {
+        BackupConfig {
+            access_key_id: "key".into(),
+            secret_access_key: "secret".into(),
+            bucket: "b".into(),
+            endpoint: "https://s3.example".into(),
+            restic_password: "pw".into(),
+        }
+    }
+
+    async fn checked(host: FakeHost) -> anyhow::Result<Option<Checked>> {
+        check_and_repair(&host, &cfg(), "cluster-backup").await
+    }
+
+    #[tokio::test]
+    async fn a_clean_store_is_recorded_healthy() {
+        let found = checked(FakeHost::new().ok("restic check", CLEAN))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(found.ok);
+        assert!(!found.repaired);
+        assert_eq!(found.problem, None);
+    }
+
+    #[tokio::test]
+    async fn a_damaged_index_is_repaired_then_checked_again() {
+        let host = FakeHost::new()
+            .ok("restic check", DAMAGED_INDEX)
+            .ok("restic check", CLEAN)
+            .ok("restic repair index", "");
+        let found = checked(host).await.unwrap().unwrap();
+        assert!(found.ok);
+        assert!(found.repaired);
+    }
+
+    #[tokio::test]
+    async fn an_index_still_damaged_after_a_repair_is_a_problem() {
+        let host = FakeHost::new()
+            .ok("restic check", DAMAGED_INDEX)
+            .ok("restic check", DAMAGED_INDEX)
+            .ok("restic repair index", "");
+        let found = checked(host).await.unwrap().unwrap();
+        assert!(!found.ok);
+        assert!(found.repaired);
+        assert_eq!(
+            found.problem.as_deref(),
+            Some("its index is still damaged after a repair")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_repair_that_fails_is_reported_with_restic_s_words() {
+        let host = FakeHost::new()
+            .ok("restic check", DAMAGED_INDEX)
+            .fail("restic repair index", "permission denied");
+        let found = checked(host).await.unwrap().unwrap();
+        assert!(!found.ok);
+        let why = found.problem.unwrap();
+        assert!(
+            why.starts_with("its index is damaged and could not be repaired: ")
+                && why.ends_with(": permission denied"),
+            "{why}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_locked_store_is_left_for_later_and_a_missing_restic_is_an_error() {
+        let busy = FakeHost::new().fail("restic check", "repository is already locked by PID 7");
+        assert_eq!(checked(busy).await.unwrap(), None);
+        assert!(checked(FakeHost::new().unstartable("restic check"))
+            .await
+            .is_err());
+        let repair_unstartable = FakeHost::new()
+            .ok("restic check", DAMAGED_INDEX)
+            .unstartable("restic repair");
+        assert!(checked(repair_unstartable).await.is_err());
+    }
+
+    async fn backups_enabled(server: &MockServer, on: bool) {
+        let response = if on {
+            ResponseTemplate::new(200).set_body_json(secret_with("restic_password", "pw"))
+        } else {
+            ResponseTemplate::new(404).set_body_json(status(404, "NotFound"))
+        };
+        Mock::given(method("GET"))
+            .and(path(
+                "/api/v1/namespaces/kube-system/secrets/yolab-backup-config",
+            ))
+            .respond_with(response)
+            .mount(server)
+            .await;
+    }
+
+    async fn record(server: &MockServer, name: &str, key: &str, value: Option<Value>) {
+        let response = match value {
+            Some(v) => ResponseTemplate::new(200).set_body_json(json!({
+                "apiVersion": "v1", "kind": "ConfigMap",
+                "metadata": { "name": name, "namespace": "kube-system", "resourceVersion": "1" },
+                "data": { key: v.to_string() }
+            })),
+            None => ResponseTemplate::new(404).set_body_json(status(404, "NotFound")),
+        };
+        Mock::given(method("GET"))
+            .and(path(format!(
+                "/api/v1/namespaces/kube-system/configmaps/{name}"
+            )))
+            .respond_with(response)
+            .mount(server)
+            .await;
+    }
+
+    async fn accept_writes(server: &MockServer) {
+        for (verb, code) in [("PUT", 200), ("POST", 201)] {
+            Mock::given(method(verb))
+                .respond_with(ResponseTemplate::new(code).set_body_json(json!({
+                    "apiVersion": "v1", "kind": "ConfigMap", "metadata": { "name": "yolab-backup-checks" }
+                })))
+                .mount(server)
+                .await;
+        }
+    }
+
+    async fn written(server: &MockServer) -> Vec<Value> {
+        server
+            .received_requests()
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|r| matches!(r.method.as_str(), "PUT" | "POST"))
+            .filter_map(|r| serde_json::from_slice::<Value>(&r.body).ok())
+            .filter_map(|v| {
+                v["data"]["stores"]
+                    .as_str()
+                    .and_then(|s| serde_json::from_str(s).ok())
+            })
+            .collect()
+    }
+
+    async fn tick(
+        server_setup: impl std::future::Future<Output = ()>,
+        server: &MockServer,
+        kube: kube::Client,
+        host: FakeHost,
+    ) -> Tick {
+        server_setup.await;
+        accept_writes(server).await;
+        check_due(&Backend { kube, host }).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn nothing_is_checked_while_backups_are_off() {
+        let (server, kube) = api_server().await;
+        let t = tick(
+            backups_enabled(&server, false),
+            &server,
+            kube,
+            FakeHost::new(),
+        )
+        .await;
+        assert!(matches!(t, Tick::Idle(why) if why == "backups are not enabled"));
+    }
+
+    #[tokio::test]
+    async fn the_first_store_due_is_checked_and_its_result_recorded() {
+        let (server, kube) = api_server().await;
+        backups_enabled(&server, true).await;
+        record(&server, "yolab-backup-sizes", "services", None).await;
+        record(&server, "yolab-backup-checks", "stores", None).await;
+        let t = tick(
+            async {},
+            &server,
+            kube,
+            FakeHost::new().ok("restic check", CLEAN),
+        )
+        .await;
+        assert!(matches!(t, Tick::Done));
+        assert_eq!(written(&server).await[0]["cluster-backup"]["ok"], true);
+    }
+
+    #[tokio::test]
+    async fn a_store_with_a_problem_is_recorded_with_it() {
+        let (server, kube) = api_server().await;
+        backups_enabled(&server, true).await;
+        record(&server, "yolab-backup-sizes", "services", None).await;
+        record(&server, "yolab-backup-checks", "stores", None).await;
+        let host = FakeHost::new().fail("restic check", "Fatal: wrong password");
+        let t = tick(async {}, &server, kube, host).await;
+        assert!(matches!(t, Tick::Done));
+        let recorded = written(&server).await;
+        let why = recorded[0]["cluster-backup"]["problem"].as_str().unwrap();
+        assert!(why.ends_with("Fatal: wrong password"), "{why}");
+    }
+
+    #[tokio::test]
+    async fn a_store_checked_this_week_or_in_use_waits() {
+        let now = Utc::now().to_rfc3339();
+        let (server, kube) = api_server().await;
+        backups_enabled(&server, true).await;
+        record(&server, "yolab-backup-sizes", "services", None).await;
+        record(
+            &server,
+            "yolab-backup-checks",
+            "stores",
+            Some(json!({ "cluster-backup": { "ok": true, "checked_at": now } })),
+        )
+        .await;
+        let t = tick(async {}, &server, kube, FakeHost::new()).await;
+        assert!(matches!(t, Tick::Idle(why) if why == "every backup store was checked this week"));
+
+        let (server, kube) = api_server().await;
+        backups_enabled(&server, true).await;
+        record(&server, "yolab-backup-sizes", "services", None).await;
+        record(&server, "yolab-backup-checks", "stores", None).await;
+        let busy = FakeHost::new().fail("restic check", "repository is already locked");
+        let t = tick(async {}, &server, kube, busy).await;
+        assert!(
+            matches!(t, Tick::Idle(why) if why == "cluster-backup is in use, it is checked later")
+        );
+        assert!(written(&server).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_check_controller_runs_weekly_checks_away_from_restores_and_boot() {
+        let c = BackupCheckController;
+        assert_eq!(c.name(), "backup-check");
+        assert_eq!(c.scope(), Scope::Cluster);
+        assert_eq!(c.interval(), Duration::from_secs(6 * 3600));
+        assert_eq!(c.depends_on(), &[crate::runtime::KUBE_API]);
+        assert_eq!(c.pauses_during(), &[Activity::Restore]);
+        assert_eq!(c.not_before_uptime(), Duration::from_secs(600));
+        let ctx = Ctx {
+            node: "node1".into(),
+            tools: crate::tools::Tools::unreachable(),
+        };
+        assert!(c.converge(&ctx).await.is_err());
+    }
+}

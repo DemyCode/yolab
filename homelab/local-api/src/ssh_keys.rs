@@ -59,8 +59,8 @@ impl ParsedKey {
 }
 
 fn embedded_type(blob: &[u8]) -> Option<&[u8]> {
-    let len = u32::from_be_bytes(blob.get(..4)?.try_into().ok()?) as usize;
-    blob.get(4..4usize.checked_add(len)?)
+    let (head, rest) = blob.split_first_chunk::<4>()?;
+    rest.get(..u32::from_be_bytes(*head) as usize)
 }
 
 pub fn parse_key(text: &str) -> Result<ParsedKey, String> {
@@ -161,10 +161,19 @@ pub fn views(keys: &[(String, ParsedKey, String)]) -> Vec<KeyView> {
         .collect()
 }
 
+#[cfg(not(test))]
 pub fn keys_file() -> PathBuf {
     std::env::var("YOLAB_SSH_KEYS_FILE")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from(format!("/var/lib/yolab-ssh/{LOGIN_USER}.keys")))
+}
+
+#[cfg(test)]
+pub fn keys_file() -> PathBuf {
+    std::env::temp_dir().join(format!(
+        "yolab-test-ssh-{}/{LOGIN_USER}.keys",
+        std::process::id()
+    ))
 }
 
 pub fn sync_file(path: &Path, wanted: &str) -> anyhow::Result<bool> {
@@ -178,7 +187,12 @@ pub fn sync_file(path: &Path, wanted: &str) -> anyhow::Result<bool> {
     }
     let dir = path.parent().context("a keys file without a directory")?;
     std::fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
-    let tmp = path.with_extension("tmp");
+    static WRITES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let tmp = path.with_extension(format!(
+        "tmp.{}.{}",
+        std::process::id(),
+        WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
     let mut file = std::fs::OpenOptions::new()
         .write(true)
         .create(true)
@@ -493,6 +507,146 @@ mod tests {
             format!("{}\n", ed25519())
         );
         assert_eq!(views(&active(&two.ssh_keys().unwrap()))[0].label, "laptop");
+    }
+
+    #[test]
+    fn tests_never_write_the_machine_s_own_keys_file() {
+        assert!(keys_file().starts_with(std::env::temp_dir()));
+    }
+
+    #[test]
+    fn a_stored_line_that_is_not_a_key_is_left_out_of_the_file() {
+        let mut store = Store::new("node1");
+        store
+            .set_ssh_key(
+                "bad",
+                &SshKey {
+                    line: "not a key".into(),
+                    label: String::new(),
+                    removed: false,
+                },
+            )
+            .unwrap();
+        assert!(active(&store.ssh_keys().unwrap()).is_empty());
+    }
+
+    #[test]
+    fn the_ssh_port_comes_from_the_machine_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("config.toml");
+        std::fs::write(&file, "[homelab]\nssh_port = 2222\n").unwrap();
+        assert_eq!(
+            ssh_port(&crate::config::Config::for_test(&file)),
+            Some(2222)
+        );
+        std::fs::write(&file, "[homelab]\n").unwrap();
+        assert_eq!(ssh_port(&crate::config::Config::for_test(&file)), None);
+    }
+
+    #[test]
+    fn a_keys_file_that_cannot_be_read_or_placed_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(sync_file(dir.path(), "a\n").is_err());
+        let blocker = dir.path().join("file");
+        std::fs::write(&blocker, "").unwrap();
+        assert!(sync_file(&blocker.join("keys"), "a\n").is_err());
+        assert!(sync_file(std::path::Path::new(""), "a\n").is_err());
+        assert!(sync_file(std::path::Path::new("/proc/yolab-nope/keys"), "a\n").is_err());
+        assert!(sync_file(std::path::Path::new("/proc/yolab-nope-keys"), "a\n").is_err());
+    }
+
+    fn filler(n: u8) -> (String, SshKey) {
+        let k = parse_key(&key_of("ssh-ed25519", &[n; 32])).unwrap();
+        (
+            k.id(),
+            SshKey {
+                line: k.line(),
+                label: String::new(),
+                removed: false,
+            },
+        )
+    }
+
+    #[tokio::test]
+    async fn keys_are_added_listed_and_removed_over_http_up_to_the_limit() {
+        use crate::runtime::Resource as _;
+        use serde_json::json;
+        let api = crate::testkit::TestApi::provisioned().login().await;
+        let ctx = crate::runtime::Ctx {
+            node: "node1".into(),
+            tools: crate::tools::Tools::unreachable(),
+        };
+        let c = SshKeysController;
+        assert_eq!(c.name(), "ssh-keys");
+        assert_eq!(c.scope(), Scope::Node);
+        assert_eq!(c.interval(), Duration::from_secs(30));
+
+        let mine = key_of("ssh-ed25519", &[21; 32]);
+        let id = parse_key(&mine).unwrap().id();
+        let post = |body: serde_json::Value| {
+            let api = &api;
+            async move { api.post("/api/ssh/keys", &body.to_string()).await }
+        };
+        assert_eq!(
+            post(json!({ "key": "nonsense" })).await.status,
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            post(json!({ "key": mine, "label": "a\nb" })).await.status,
+            StatusCode::BAD_REQUEST
+        );
+        let res = post(json!({ "key": mine, "label": "laptop" })).await;
+        assert!(res.status.is_success(), "{}", res.body);
+        assert_eq!(res.json()["user"], LOGIN_USER);
+        assert!(res.body.contains("laptop"));
+        assert!(std::fs::read_to_string(keys_file())
+            .unwrap()
+            .contains(&mine));
+        assert!(api.get("/api/ssh/keys").await.body.contains("laptop"));
+        assert!(c.converge(&ctx).await.is_ok());
+
+        let fillers: Vec<(String, SshKey)> = {
+            let mut store = crate::store::locked();
+            let held = active(&store.ssh_keys().unwrap()).len();
+            let fillers: Vec<_> = (0..MAX_KEYS - held)
+                .map(|i| filler(128 + i as u8))
+                .collect();
+            for (fid, key) in &fillers {
+                store.set_ssh_key(fid, key).unwrap();
+            }
+            fillers
+        };
+        assert!(matches!(c.converge(&ctx).await.unwrap(), Tick::Done));
+        assert!(matches!(c.converge(&ctx).await.unwrap(), Tick::Idle(_)));
+        let res = post(json!({ "key": key_of("ssh-ed25519", &[22; 32]) })).await;
+        assert_eq!(res.status, StatusCode::CONFLICT, "{}", res.body);
+        let res = post(json!({ "key": mine, "label": "renamed" })).await;
+        assert!(res.status.is_success(), "{}", res.body);
+        {
+            let mut store = crate::store::locked();
+            for (fid, key) in fillers {
+                store
+                    .set_ssh_key(
+                        &fid,
+                        &SshKey {
+                            removed: true,
+                            ..key
+                        },
+                    )
+                    .unwrap();
+            }
+        }
+
+        let remove = |which: &str| {
+            let api = &api;
+            let body = json!({ "id": which }).to_string();
+            async move { api.post("/api/ssh/keys/remove", &body).await }
+        };
+        let res = remove(&id).await;
+        assert!(res.status.is_success(), "{}", res.body);
+        assert!(!res.body.contains("renamed"));
+        assert_eq!(remove(&id).await.status, StatusCode::NOT_FOUND);
+        assert_eq!(remove("unknown").await.status, StatusCode::NOT_FOUND);
     }
 
     #[test]

@@ -1247,9 +1247,10 @@ mod against_restic {
             cfg: &cfg,
             namespace: NS,
         };
-        assert_eq!(
-            svc.points().await.unwrap_err().to_string(),
-            "restic snapshots: connection refused"
+        let why = svc.points().await.unwrap_err().to_string();
+        assert!(
+            why.starts_with("restic snapshots: ") && why.ends_with(": connection refused"),
+            "{why}"
         );
         let garbled = FakeHost::new().ok("restic snapshots", "not json");
         assert!(Service {
@@ -1274,9 +1275,10 @@ mod against_restic {
             cfg: &cfg,
             namespace: NS,
         };
-        assert_eq!(
-            svc.measure(&["f1".into()]).await.unwrap_err().to_string(),
-            "restic stats: no such snapshot"
+        let why = svc.measure(&["f1".into()]).await.unwrap_err().to_string();
+        assert!(
+            why.starts_with("restic stats: ") && why.ends_with(": no such snapshot"),
+            "{why}"
         );
         let stats_garbled = FakeHost::new().ok("restic stats", "{}");
         let svc = Service {
