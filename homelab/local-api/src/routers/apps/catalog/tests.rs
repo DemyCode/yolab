@@ -241,7 +241,11 @@ async fn the_domain_comes_from_the_tunnels_dns_address() {
         bare.get("/api/tunnel/domain").await.json(),
         json!({ "domain": "" })
     );
-    let none = TestApi::with_config("[homelab]\nhostname = \"yolab\"\n").with_peer_token();
+    let none = TestApi::with_config(&format!(
+        "[homelab]\nhostname = \"yolab\"\nhomelab_password_hash = \"{}\"\n[node.k3s]\ntoken = \"{}\"\n",
+        crate::testkit::PASSWORD_HASH,
+        crate::testkit::K3S_TOKEN
+    )).with_peer_token();
     assert!(none
         .get("/api/tunnel/domain")
         .await

@@ -251,9 +251,7 @@ pub fn spawn<R: Resource>(resource: R, leader: leader::Leadership, tools: crate:
     record_edges(name, resource.depends_on().to_vec());
     let notify = super::waker(name);
     super::registry().register(name, resource.scope(), resource.interval());
-    tokio::spawn(async move {
-        run(resource, notify, leader, tools).await;
-    });
+    tokio::spawn(run(resource, notify, leader, tools));
 }
 
 async fn run<R: Resource>(
@@ -293,10 +291,7 @@ async fn run<R: Resource>(
 
     loop {
         if let Some(t) = last_start {
-            let since = t.elapsed();
-            if since < super::MIN_GAP {
-                tokio::time::sleep(super::MIN_GAP - since).await;
-            }
+            tokio::time::sleep(super::MIN_GAP.saturating_sub(t.elapsed())).await;
         }
 
         let ctx = Ctx {
@@ -362,22 +357,21 @@ async fn run<R: Resource>(
         let outcome = tokio::spawn(async move { r.converge(&ctx).await }).await;
 
         let next = match outcome {
-            Ok(Ok(Tick::NotYet(why))) => {
-                set_state(name, State::NotYet(why.clone()));
-                was_settled = false;
-                reg.succeeded(name, Some(why));
-                interval
-            }
             Ok(Ok(tick)) => {
-                let (note, next) = match tick {
-                    Tick::Done => (None, interval),
-                    Tick::Idle(why) => (Some(why), interval),
-                    Tick::RequeueAfter(d) => (None, d.min(interval)),
-                    Tick::NotYet(_) => (None, interval),
+                let (note, next, ready) = match tick {
+                    Tick::NotYet(why) => {
+                        set_state(name, State::NotYet(why.clone()));
+                        (Some(why), interval, false)
+                    }
+                    Tick::Done => (None, interval, unchecked),
+                    Tick::Idle(why) => (Some(why), interval, unchecked),
+                    Tick::RequeueAfter(d) => (None, d.min(interval), unchecked),
                 };
                 reg.succeeded(name, note);
-                if unchecked {
+                if ready {
                     becomes_ready!();
+                } else {
+                    was_settled = false;
                 }
                 next
             }
@@ -563,21 +557,15 @@ mod tests {
             .get("test-edge-dependent")
             .expect("registered")
             .phase;
-        match phase {
-            Phase::Waiting(why) => assert!(
-                why.contains("test-edge-dependency"),
-                "the wait does not name the dependency: {why}"
-            ),
-            other => panic!("expected Waiting, got {other:?}"),
-        }
+        assert_eq!(
+            phase,
+            Phase::Waiting(
+                "waiting on test-edge-dependency (the probe has not been switched on)".into()
+            )
+        );
 
         up.store(true, Ordering::SeqCst);
-        for _ in 0..120 {
-            tokio::time::sleep(Duration::from_secs(1)).await;
-            if dep_converges.load(Ordering::SeqCst) > 0 {
-                break;
-            }
-        }
+        tokio::time::sleep(Duration::from_secs(120)).await;
         assert!(
             dep_converges.load(Ordering::SeqCst) > 0,
             "the dependency became ready and the dependent was never released"
@@ -627,12 +615,7 @@ mod tests {
             crate::tools::Tools::unreachable(),
         );
 
-        for _ in 0..60 {
-            tokio::time::sleep(Duration::from_secs(1)).await;
-            if state_of("test-unchecked-resource") == Some(State::Ready) {
-                break;
-            }
-        }
+        tokio::time::sleep(Duration::from_secs(60)).await;
         assert_eq!(
             state_of("test-unchecked-resource"),
             Some(State::Ready),
@@ -690,51 +673,217 @@ mod tests {
 
         tokio::time::sleep(Duration::from_secs(60)).await;
 
-        match state_of("test-chain-middle") {
-            Some(State::NotYet(why)) => assert!(why.contains("test-chain-root"), "{why}"),
-            other => panic!("expected NotYet naming its dependency, got {other:?}"),
-        }
+        assert_eq!(
+            state_of("test-chain-middle"),
+            Some(State::NotYet(
+                "waiting on test-chain-root (the probe has not been switched on)".into()
+            ))
+        );
 
         let leaf = super::super::registry()
             .get("test-chain-leaf")
             .expect("registered")
             .phase;
-        match leaf {
-            Phase::Waiting(why) => {
-                assert!(why.contains("test-chain-middle"), "{why}");
-                assert!(
-                    why.contains("test-chain-root"),
-                    "the leaf is told which name it waits on but not what is actually \
-                     wrong underneath it: {why}"
-                );
-            }
-            other => panic!("expected Waiting, got {other:?}"),
-        }
+        assert_eq!(
+            leaf,
+            Phase::Waiting(
+                "waiting on test-chain-middle (waiting on test-chain-root (the probe has not been switched on))"
+                    .into()
+            )
+        );
     }
 
-    struct NeedsCeph;
+    #[test]
+    fn only_a_resource_that_is_not_yet_or_failed_has_a_reason() {
+        assert_eq!(State::Ready.reason(), None);
+        assert_eq!(State::Unchecked.reason(), None);
+        assert_eq!(State::Standby.reason(), None);
+        assert_eq!(State::NotYet("a".into()).reason(), Some("a"));
+        assert_eq!(State::Failed("b".into()).reason(), Some("b"));
+    }
 
-    impl Resource for NeedsCeph {
+    #[tokio::test]
+    async fn a_resource_run_by_hand_waits_for_what_it_needs_and_what_it_pauses_for() {
+        let tools = crate::tools::Tools::unreachable();
+        assert_eq!(
+            preflight(&tools, "x", Scope::Node, &[crate::runtime::CEPH], &[])
+                .await
+                .unwrap_err()
+                .to_string(),
+            "not running x: waiting for the Ceph cluster"
+        );
+        assert_eq!(
+            preflight(
+                &tools,
+                "x",
+                Scope::Node,
+                &[],
+                &[activity::Activity::Restore]
+            )
+            .await
+            .unwrap_err()
+            .to_string(),
+            "not running x: cannot tell whether an app restore is running"
+        );
+        std::fs::create_dir_all(crate::storage::on_machine("/etc")).unwrap();
+        std::fs::write(crate::storage::on_machine("/etc/hostname"), "node1\n").unwrap();
+        assert_eq!(
+            preflight(&tools, "x", Scope::Node, &["not-a-requirement"], &[])
+                .await
+                .unwrap(),
+            "node1"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_observed_requirement_is_ready_while_it_answers_and_never_managed() {
+        let ceph_answers = crate::tools::Tools {
+            host: crate::host::fake::FakeHost::new()
+                .ok("ceph --connect-timeout 10 health", "HEALTH_OK"),
+            ..crate::tools::Tools::unreachable()
+        };
+        let ctx = Ctx {
+            node: "node1".into(),
+            tools: ceph_answers,
+        };
+        let ceph = Observed(Requirement::Ceph);
+        assert_eq!(ceph.interval(), Duration::from_secs(15));
+        assert_eq!(ceph.check(&ctx).await, State::Ready);
+        let silent = Ctx {
+            node: "node1".into(),
+            tools: crate::tools::Tools::unreachable(),
+        };
+        let api = Observed(Requirement::KubeApi);
+        assert_eq!(
+            api.check(&silent).await,
+            State::NotYet("the Kubernetes API is not answering".into())
+        );
+        assert_eq!(
+            api.converge(&silent).await.unwrap(),
+            Tick::Idle("the Kubernetes API is observed, not managed".into())
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_dependency_on_an_unregistered_resource_is_a_problem_of_the_running_graph() {
+        spawn(
+            Probe {
+                name: "test-orphan",
+                deps: &["test-nobody"],
+                ready: Arc::new(AtomicBool::new(false)),
+                converges: Arc::new(AtomicU32::new(0)),
+            },
+            leader::Leadership::fixed_for_tests(true),
+            crate::tools::Tools::unreachable(),
+        );
+        assert!(problems().contains(
+            &"test-orphan depends on 'test-nobody', which is not a registered resource".to_string()
+        ));
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        assert_eq!(
+            state_of("test-orphan"),
+            Some(State::NotYet(
+                "waiting on test-nobody (has not reported yet)".into()
+            ))
+        );
+    }
+
+    struct Late {
+        converges: Arc<AtomicU32>,
+    }
+
+    impl Resource for Late {
         fn name(&self) -> &'static str {
-            "test-needs-ceph"
-        }
-        fn scope(&self) -> Scope {
-            Scope::Node
+            "test-late"
         }
         fn interval(&self) -> Duration {
             Duration::from_secs(1)
         }
-        fn depends_on(&self) -> &'static [&'static str] {
-            &[crate::runtime::CEPH]
+        fn not_before_uptime(&self) -> Duration {
+            Duration::from_secs(60)
+        }
+        async fn converge(&self, _ctx: &Ctx) -> anyhow::Result<Tick> {
+            self.converges.fetch_add(1, Ordering::SeqCst);
+            Ok(Tick::Done)
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_resource_that_starts_late_waits_out_the_boot() {
+        let uptime = crate::storage::on_machine("/proc/uptime");
+        std::fs::create_dir_all(uptime.parent().unwrap()).unwrap();
+        std::fs::write(&uptime, "10.0 1.0\n").unwrap();
+        let converges = Arc::new(AtomicU32::new(0));
+        spawn(
+            Late {
+                converges: converges.clone(),
+            },
+            leader::Leadership::fixed_for_tests(true),
+            crate::tools::Tools::unreachable(),
+        );
+        tokio::time::sleep(Duration::from_secs(40)).await;
+        assert_eq!(converges.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            super::super::registry()
+                .get("test-late")
+                .expect("registered")
+                .phase,
+            Phase::Waiting("starts 60s after boot".into())
+        );
+        tokio::time::sleep(Duration::from_secs(20)).await;
+        assert_eq!(state_of("test-late"), Some(State::Ready));
+    }
+
+    struct WaitsForRestores;
+
+    impl Resource for WaitsForRestores {
+        fn name(&self) -> &'static str {
+            "test-waits-for-restores"
+        }
+        fn interval(&self) -> Duration {
+            Duration::from_secs(1)
+        }
+        fn pauses_during(&self) -> &'static [activity::Activity] {
+            &[activity::Activity::Restore]
+        }
+        async fn check(&self, _ctx: &Ctx) -> State {
+            State::Failed("not converged yet".into())
         }
         async fn converge(&self, _ctx: &Ctx) -> anyhow::Result<Tick> {
             Ok(Tick::Done)
         }
     }
 
-    #[test]
-    fn a_resources_requirements_become_edges_to_observed_resources() {
-        assert_eq!(NeedsCeph.depends_on(), &["ceph"]);
+    #[tokio::test(start_paused = true)]
+    async fn a_resource_pauses_while_it_cannot_tell_whether_a_restore_runs() {
+        spawn(
+            WaitsForRestores,
+            leader::Leadership::fixed_for_tests(true),
+            crate::tools::Tools::unreachable(),
+        );
+        tokio::time::sleep(Duration::from_secs(40)).await;
+        let why = "cannot tell whether an app restore is running";
+        assert_eq!(
+            state_of("test-waits-for-restores"),
+            Some(State::NotYet(why.into()))
+        );
+        assert_eq!(
+            super::super::registry()
+                .get("test-waits-for-restores")
+                .expect("registered")
+                .phase,
+            Phase::Paused(why.into())
+        );
+        assert_eq!(
+            WaitsForRestores
+                .converge(&Ctx {
+                    node: "node1".into(),
+                    tools: crate::tools::Tools::unreachable(),
+                })
+                .await
+                .unwrap(),
+            Tick::Done
+        );
     }
 
     #[test]
@@ -791,10 +940,10 @@ mod tests {
         );
         tokio::time::sleep(Duration::from_secs(30)).await;
         assert!(converges.load(Ordering::SeqCst) > 1, "it stopped retrying");
-        match state_of("test-never-done") {
-            Some(State::NotYet(why)) => assert_eq!(why, "no OSD is up yet"),
-            other => panic!("NotYet was mistaken for readiness: {other:?}"),
-        }
+        assert_eq!(
+            state_of("test-never-done"),
+            Some(State::NotYet("no OSD is up yet".into()))
+        );
     }
 
     struct ClusterProbe {
@@ -836,13 +985,12 @@ mod tests {
             crate::tools::Tools::unreachable(),
         );
         tokio::time::sleep(Duration::from_secs(5)).await;
-        match state_of("test-standby-truth") {
-            Some(State::NotYet(why)) => assert!(
-                why.contains("test-standby-dep"),
-                "before its dependency exists it should name the dependency: {why}"
-            ),
-            other => panic!("expected NotYet naming the dependency, got {other:?}"),
-        }
+        assert_eq!(
+            state_of("test-standby-truth"),
+            Some(State::NotYet(
+                "waiting on test-standby-dep (has not reported yet)".into()
+            ))
+        );
 
         spawn(
             Probe {
@@ -855,12 +1003,7 @@ mod tests {
             crate::tools::Tools::unreachable(),
         );
 
-        for _ in 0..120 {
-            tokio::time::sleep(Duration::from_secs(1)).await;
-            if state_of("test-standby-truth") == Some(State::Standby) {
-                break;
-            }
-        }
+        tokio::time::sleep(Duration::from_secs(120)).await;
         assert_eq!(
             state_of("test-standby-truth"),
             Some(State::Standby),
@@ -871,6 +1014,20 @@ mod tests {
         assert!(
             !converged.load(Ordering::SeqCst),
             "cluster-scoped work must not run on a standby machine"
+        );
+        let leader_ctx = Ctx {
+            node: "node1".into(),
+            tools: crate::tools::Tools::unreachable(),
+        };
+        ClusterProbe {
+            ready: converged.clone(),
+        }
+        .converge(&leader_ctx)
+        .await
+        .unwrap();
+        assert!(
+            converged.load(Ordering::SeqCst),
+            "only the leader converges it"
         );
     }
 }

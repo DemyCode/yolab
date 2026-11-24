@@ -123,7 +123,7 @@ pub fn registry() -> &'static Registry {
 }
 
 fn uptime() -> Option<Duration> {
-    let raw = std::fs::read_to_string("/proc/uptime").ok()?;
+    let raw = std::fs::read_to_string(crate::storage::on_machine("/proc/uptime")).ok()?;
     let secs: f64 = raw.split_whitespace().next()?.parse().ok()?;
     Some(Duration::from_secs_f64(secs))
 }
@@ -136,7 +136,13 @@ async fn wait_or_wake(notify: &Notify, d: Duration) {
 }
 
 pub async fn run_once<R: Resource>(resource: &R) -> anyhow::Result<Tick> {
-    let tools = crate::tools::Tools::real();
+    run_once_with(crate::tools::Tools::real(), resource).await
+}
+
+async fn run_once_with<R: Resource>(
+    tools: crate::tools::Tools,
+    resource: &R,
+) -> anyhow::Result<Tick> {
     let node = resource::preflight(
         &tools,
         resource.name(),
@@ -153,6 +159,103 @@ mod tests {
     use super::status::Phase;
     use super::*;
     use std::sync::atomic::{AtomicU32, Ordering};
+
+    fn on_machine(path: &str, body: &str) {
+        let p = crate::storage::on_machine(path);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, body).unwrap();
+    }
+
+    #[test]
+    fn the_uptime_is_read_from_the_kernel_and_unknown_when_unreadable() {
+        assert_eq!(uptime(), None);
+        on_machine("/proc/uptime", "");
+        assert_eq!(uptime(), None);
+        on_machine("/proc/uptime", "soon 1.0\n");
+        assert_eq!(uptime(), None);
+        on_machine("/proc/uptime", "12.5 3.0\n");
+        assert_eq!(uptime(), Some(Duration::from_millis(12_500)));
+    }
+
+    #[test]
+    fn a_requirement_is_found_by_its_resource_name_and_named_for_people() {
+        assert_eq!(
+            Requirement::from_resource_name(KUBE_API),
+            Some(Requirement::KubeApi)
+        );
+        assert_eq!(
+            Requirement::from_resource_name(CEPH),
+            Some(Requirement::Ceph)
+        );
+        assert_eq!(Requirement::from_resource_name("disks"), None);
+        assert_eq!(Requirement::KubeApi.to_string(), "the Kubernetes API");
+        assert_eq!(Requirement::Ceph.to_string(), "the Ceph cluster");
+    }
+
+    #[tokio::test]
+    async fn a_machine_controller_run_once_converges_at_once() {
+        let runs = Arc::new(AtomicU32::new(0));
+        let tick = run_once(&Woken { runs: runs.clone() }).await.unwrap();
+        assert_eq!(tick, Tick::Done);
+        assert_eq!(runs.load(Ordering::SeqCst), 1);
+    }
+
+    fn lease_held_by(holder: &str) -> serde_json::Value {
+        serde_json::json!({
+            "apiVersion": "coordination.k8s.io/v1",
+            "kind": "Lease",
+            "metadata": { "name": leader::LEASE_NAME, "namespace": leader::LEASE_NS },
+            "spec": {
+                "holderIdentity": holder,
+                "leaseDurationSeconds": 30,
+                "renewTime": chrono::Utc::now().to_rfc3339(),
+            },
+        })
+    }
+
+    async fn tools_with_lease(holder: &str) -> (wiremock::MockServer, crate::tools::Tools) {
+        let (server, kube) = crate::k8s::testing::api_server().await;
+        crate::k8s::testing::serve(
+            &server,
+            "/apis/coordination.k8s.io/v1/namespaces/kube-system/leases/yolab-leader",
+            200,
+            lease_held_by(holder),
+        )
+        .await;
+        let tools = crate::tools::Tools {
+            kube: crate::k8s::Kube::with(kube),
+            ..crate::tools::Tools::unreachable()
+        };
+        (server, tools)
+    }
+
+    #[tokio::test]
+    async fn a_cluster_controller_run_once_runs_only_on_the_leader() {
+        on_machine("/etc/hostname", "node1\n");
+        let runs = Arc::new(AtomicU32::new(0));
+        let (_server, tools) = tools_with_lease("node1").await;
+        let tick = run_once_with(tools, &Clustered { runs: runs.clone() })
+            .await
+            .unwrap();
+        assert_eq!(tick, Tick::Done);
+
+        let (_server, tools) = tools_with_lease("node2").await;
+        let err = run_once_with(tools, &Clustered { runs: runs.clone() })
+            .await
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            err,
+            "test-clustered is cluster-scoped and node1 does not hold the cluster lease — run it on the leader"
+        );
+        assert_eq!(runs.load(Ordering::SeqCst), 1);
+
+        assert!(
+            run_once_with(crate::tools::Tools::unreachable(), &Clustered { runs })
+                .await
+                .is_err()
+        );
+    }
 
     #[test]
     fn failure_backoff_grows_but_never_exceeds_the_interval() {

@@ -26,6 +26,7 @@ impl Activity {
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
 pub enum Gate {
     Clear,
     Paused(String),
@@ -45,9 +46,18 @@ type Answer = Option<bool>;
 struct Cache(Mutex<HashMap<Key, (Instant, Answer)>>);
 
 impl Cache {
+    #[cfg(not(test))]
     fn global() -> &'static Cache {
         static C: std::sync::OnceLock<Cache> = std::sync::OnceLock::new();
         C.get_or_init(Cache::default)
+    }
+
+    #[cfg(test)]
+    fn global() -> &'static Cache {
+        thread_local! {
+            static C: &'static Cache = Box::leak(Box::new(Cache::default()));
+        }
+        C.with(|c| *c)
     }
 
     async fn get_or_ask(&self, key: Key, ask: impl Future<Output = Answer>) -> Answer {
@@ -162,25 +172,63 @@ mod tests {
 
     #[test]
     fn not_knowing_whether_a_restore_runs_pauses_like_one_running() {
-        assert!(matches!(
-            decide(Activity::Restore, Some(false)),
-            Gate::Clear
-        ));
-        match decide(Activity::Restore, Some(true)) {
-            Gate::Paused(why) => assert!(why.contains("restore is running")),
-            Gate::Clear => panic!("a running restore must pause"),
-        }
-        match decide(Activity::Restore, None) {
-            Gate::Paused(why) => assert!(why.contains("cannot tell")),
-            Gate::Clear => panic!("an unknown restore state must pause"),
-        }
+        assert_eq!(decide(Activity::Restore, Some(false)), Gate::Clear);
+        assert_eq!(
+            decide(Activity::Restore, Some(true)),
+            Gate::Paused("an app restore is running".into())
+        );
+        assert_eq!(
+            decide(Activity::Restore, None),
+            Gate::Paused("cannot tell whether an app restore is running".into())
+        );
+    }
+
+    #[tokio::test]
+    async fn the_kubernetes_api_is_unmet_without_a_cluster_or_while_it_does_not_answer() {
+        let none = crate::tools::Tools::real();
+        assert_eq!(
+            ask_requirement(&none, Requirement::KubeApi).await,
+            Some(false)
+        );
+        let unreachable = crate::tools::Tools::unreachable();
+        assert_eq!(
+            ask_requirement(&unreachable, Requirement::KubeApi).await,
+            Some(false)
+        );
+    }
+
+    #[tokio::test]
+    async fn ceph_is_met_once_this_machine_reaches_it() {
+        let tools = crate::tools::Tools {
+            host: crate::host::fake::FakeHost::new()
+                .ok("ceph --connect-timeout 10 health", "HEALTH_OK"),
+            ..crate::tools::Tools::unreachable()
+        };
+        assert_eq!(ask_requirement(&tools, Requirement::Ceph).await, Some(true));
+        assert!(is_met(&tools, Requirement::Ceph).await);
+        assert_eq!(unmet(&tools, &[Requirement::Ceph]).await, None);
+    }
+
+    #[tokio::test]
+    async fn whether_a_restore_runs_is_unknown_without_a_cluster_to_ask() {
+        assert_eq!(
+            ask_activity(&crate::tools::Tools::real(), Activity::Restore).await,
+            None
+        );
+        let unreachable = crate::tools::Tools::unreachable();
+        assert_eq!(ask_activity(&unreachable, Activity::Restore).await, None);
+        assert_eq!(
+            gate(&unreachable, &[Activity::Restore]).await,
+            Gate::Paused("cannot tell whether an app restore is running".into())
+        );
+        assert!(!is_met(&unreachable, Requirement::KubeApi).await);
     }
 
     #[tokio::test]
     async fn nothing_declared_means_nothing_asked() {
         let tools = crate::tools::Tools::unreachable();
-        assert!(unmet(&tools, &[]).await.is_none());
-        assert!(matches!(gate(&tools, &[]).await, Gate::Clear));
+        assert_eq!(unmet(&tools, &[]).await, None);
+        assert_eq!(gate(&tools, &[]).await, Gate::Clear);
     }
 
     #[tokio::test]
