@@ -357,7 +357,7 @@ export function AppsPage() {
                 >
                   {g.label}
                   <ChipCount
-                    n={groupCounts.get(g.id) ?? 0}
+                    n={groupCounts.get(g.id)!}
                     active={activeGroup === g.id}
                   />
                 </Chip>
