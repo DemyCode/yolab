@@ -16,14 +16,21 @@ export function RecoveryKeyOverlay({
   const [acknowledged, setAcknowledged] = useState(false);
   const [copied, setCopied] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
 
   async function confirm() {
     if (mandatory && onAcknowledge) {
       setSaving(true);
+      setProblem(null);
       try {
         await onAcknowledge();
-      } catch {
+      } catch (e) {
         setSaving(false);
+        setProblem(
+          e instanceof Error
+            ? e.message
+            : "Saving that you have the key failed.",
+        );
         return;
       }
     }
@@ -35,8 +42,9 @@ export function RecoveryKeyOverlay({
       await navigator.clipboard.writeText(recoveryKey);
       setCopied(true);
       window.setTimeout(() => setCopied(false), 2000);
-      // eslint-disable-next-line no-empty
-    } catch {}
+    } catch {
+      setProblem("Could not copy it. Select the key and copy it yourself.");
+    }
   }
 
   return (
@@ -88,6 +96,12 @@ export function RecoveryKeyOverlay({
               I have saved this recovery key somewhere safe and durable.
             </span>
           </label>
+        )}
+
+        {problem && (
+          <p role="alert" className="text-xs text-danger">
+            {problem}
+          </p>
         )}
 
         <div className="flex justify-end">

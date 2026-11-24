@@ -285,6 +285,23 @@ describe("RecoveryKeyOverlay", () => {
       ).toBeNull(),
     );
     expect(onClose).not.toHaveBeenCalled();
+    expect(screen.getByRole("alert").textContent).toBe("down");
+  });
+
+  it("names a failed acknowledgement that was not an error", async () => {
+    render(
+      <RecoveryKeyOverlay
+        recoveryKey="K"
+        mandatory
+        onClose={() => {}}
+        onAcknowledge={() => Promise.reject("x")}
+      />,
+    );
+    fireEvent.click(screen.getByRole("checkbox"));
+    fireEvent.click(screen.getByRole("button", { name: /continue/ }));
+    expect((await screen.findByRole("alert")).textContent).toBe(
+      "Saving that you have the key failed.",
+    );
   });
 
   it("when optional it just closes, without a checkbox", () => {
@@ -333,7 +350,7 @@ describe("RecoveryKeyOverlay", () => {
     expect(container).toBeTruthy();
   });
 
-  it("a refused copy changes nothing", async () => {
+  it("a refused copy says to copy it by hand", async () => {
     clipboard(() => Promise.reject(new Error("denied")));
     render(
       <RecoveryKeyOverlay
@@ -348,6 +365,9 @@ describe("RecoveryKeyOverlay", () => {
     });
     expect(copy.querySelector("svg")!.getAttribute("class")).not.toContain(
       "text-success",
+    );
+    expect(screen.getByRole("alert").textContent).toBe(
+      "Could not copy it. Select the key and copy it yourself.",
     );
   });
 });

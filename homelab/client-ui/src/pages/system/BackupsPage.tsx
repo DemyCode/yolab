@@ -111,10 +111,12 @@ export function BackupsPage() {
         configured: boolean;
         recovery_key?: string;
       }>("/api/backups/recovery-key");
-      if (data.configured && data.recovery_key) {
-        setRecoveryKey(data.recovery_key);
-        setRecoveryMandatory(mandatory);
+      if (!data.recovery_key) {
+        setError("There is no recovery key on this server yet.");
+        return;
       }
+      setRecoveryKey(data.recovery_key);
+      setRecoveryMandatory(mandatory);
     } catch (e) {
       setError(
         e instanceof Error ? e.message : "The recovery key could not be read.",
