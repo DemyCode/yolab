@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { joinOrStart, startFresh } from "./inflight";
+import { forgetPending, joinOrStart, startFresh } from "./inflight";
 
 function deferred<T>() {
   let resolve!: (v: T) => void;
@@ -62,5 +62,19 @@ describe("in-flight requests", () => {
     joinOrStart("b", async () => ++calls);
     expect(calls).toBe(1);
     a.resolve(0);
+  });
+});
+
+describe("forgetPending", () => {
+  it("makes the next caller start afresh instead of joining", async () => {
+    let calls = 0;
+    const run = () => {
+      calls += 1;
+      return new Promise<number>(() => {});
+    };
+    void joinOrStart("forget-test", run);
+    forgetPending();
+    void joinOrStart("forget-test", run);
+    expect(calls).toBe(2);
   });
 });
