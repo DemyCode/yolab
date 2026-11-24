@@ -1847,4 +1847,371 @@ mod tests {
         .unwrap();
         assert_eq!(old.attempts, 0);
     }
+
+    mod end_to_end {
+        use super::*;
+        use crate::host::fake::FakeHost;
+        use crate::k8s::testing::{accept_patches, api_server, patched, secret_with, status};
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        struct World {
+            server: MockServer,
+            b: Backend<FakeHost>,
+            cfg: Config,
+            _cache: crate::charts::testing::CacheRoot,
+            _dir: tempfile::TempDir,
+        }
+
+        async fn world(host: FakeHost) -> World {
+            let cache = crate::charts::testing::cache_in_temp();
+            crate::charts::testing::chart(cache.dir.path(), "official", "notes", "1.2.3");
+            crate::charts::testing::chart(cache.dir.path(), "mine", "notes", "2.0.0");
+            let (server, kube) = api_server().await;
+            accept_patches(&server).await;
+            Mock::given(method("DELETE"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(status(200, "Success")))
+                .mount(&server)
+                .await;
+            Mock::given(method("GET"))
+                .respond_with(ResponseTemplate::new(404).set_body_json(status(404, "NotFound")))
+                .with_priority(u8::MAX)
+                .mount(&server)
+                .await;
+            let dir = tempfile::tempdir().unwrap();
+            let config = dir.path().join("config.toml");
+            std::fs::write(&config, crate::testkit::config_with_tunnel("")).unwrap();
+            World {
+                server,
+                b: Backend { kube, host },
+                cfg: Config::for_test(&config),
+                _cache: cache,
+                _dir: dir,
+            }
+        }
+
+        async fn serve(w: &World, at: &str, body: Value) {
+            Mock::given(method("GET"))
+                .and(path(at))
+                .respond_with(ResponseTemplate::new(200).set_body_json(body))
+                .mount(&w.server)
+                .await;
+        }
+
+        fn helm() -> FakeHost {
+            FakeHost::new()
+                .ok("helm template", "")
+                .ok(
+                    "helm upgrade --install",
+                    "Release \"notes\" has been upgraded.",
+                )
+                .fail("helm package", "no chart here")
+        }
+
+        fn logged() -> (Log, tokio::sync::mpsc::UnboundedReceiver<String>) {
+            let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+            (Log(tx), rx)
+        }
+
+        fn lines(rx: &mut tokio::sync::mpsc::UnboundedReceiver<String>) -> Vec<String> {
+            std::iter::from_fn(|| rx.try_recv().ok()).collect()
+        }
+
+        fn notes(chart: ChartPin, data: Option<DataOrigin>) -> InstallPlan {
+            InstallPlan {
+                app_id: "notes".into(),
+                instance_name: "notes".into(),
+                release: "notes".into(),
+                config: Map::new(),
+                backup: Default::default(),
+                data,
+                chart,
+            }
+        }
+
+        fn exact(repo: &str, version: &str) -> ChartPin {
+            ChartPin::Exact {
+                repo: repo.into(),
+                version: version.into(),
+            }
+        }
+
+        #[tokio::test]
+        async fn an_install_pinned_to_a_cached_version_runs_helm_and_saves_the_settings() {
+            let w = world(helm()).await;
+            let (log, mut rx) = logged();
+            execute(&w.b, &w.cfg, &notes(exact("official", "1.2.3"), None), &log)
+                .await
+                .unwrap();
+            assert!(w.b.host.ran("helm template notes"));
+            assert!(w
+                .b
+                .host
+                .ran("helm upgrade --install --dependency-update notes"));
+            let patched = patched(&w.server).await;
+            let ns = patched
+                .iter()
+                .find(|p| p["kind"] == "Namespace")
+                .expect("the namespace is applied");
+            assert_eq!(
+                ns["metadata"]["annotations"][crate::routers::apps::ANN_CHART_VERSION],
+                "1.2.3"
+            );
+            assert!(patched
+                .iter()
+                .any(|p| p["metadata"]["name"] == "yolab-config"));
+            assert!(install_failed_marks(&patched).is_empty());
+            let said = lines(&mut rx);
+            assert!(said.iter().any(|l| l == "Installing…"), "{said:?}");
+            assert!(
+                said.iter()
+                    .any(|l| l.starts_with("[WARN] could not keep a copy")),
+                "{said:?}"
+            );
+        }
+
+        async fn failed_install(host: FakeHost, plan: InstallPlan) -> String {
+            let w = world(host).await;
+            let (log, _rx) = logged();
+            let err = execute(&w.b, &w.cfg, &plan, &log).await.unwrap_err();
+            let marks = install_failed_marks(&patched(&w.server).await);
+            assert_eq!(marks.len(), 1, "{marks:?}");
+            format!("{err:#}")
+        }
+
+        #[tokio::test]
+        async fn a_failed_install_says_why_and_is_marked_failed() {
+            let pinned = || notes(exact("official", "1.2.3"), None);
+            let said = failed_install(
+                FakeHost::new()
+                    .ok("helm template", "")
+                    .fail("helm upgrade", "\nError: the chart is broken"),
+                pinned(),
+            )
+            .await;
+            assert_eq!(said, "notes could not be installed: the chart is broken");
+            let quiet = failed_install(
+                FakeHost::new()
+                    .ok("helm template", "")
+                    .fail("helm upgrade", "exit 1"),
+                pinned(),
+            )
+            .await;
+            assert_eq!(
+                quiet,
+                "notes could not be installed — the log above is helm's own"
+            );
+            let missing = failed_install(
+                FakeHost::new()
+                    .ok("helm template", "")
+                    .unstartable("helm upgrade"),
+                pinned(),
+            )
+            .await;
+            assert!(missing.starts_with("could not run helm:"), "{missing}");
+            let unrendered = failed_install(
+                FakeHost::new().fail("helm template", "parse error"),
+                pinned(),
+            )
+            .await;
+            assert!(
+                unrendered.starts_with("could not read which folders notes uses"),
+                "{unrendered}"
+            );
+            let gone = failed_install(helm(), notes(exact("gone", "1.0.0"), None)).await;
+            assert!(
+                gone.contains("which is no longer a chart repository here"),
+                "{gone}"
+            );
+            let no_backups = failed_install(
+                helm(),
+                notes(
+                    exact("official", "1.2.3"),
+                    Some(DataOrigin::Backup {
+                        namespace: "yolab-old".into(),
+                        snapshot_id: "abc123".into(),
+                        choices: Default::default(),
+                    }),
+                ),
+            )
+            .await;
+            assert_eq!(no_backups, "backup not configured");
+        }
+
+        #[tokio::test]
+        async fn a_copy_with_its_data_copies_the_living_services_folders_first() {
+            let w = world(helm()).await;
+            serve(
+                &w,
+                "/api/v1/persistentvolumes",
+                crate::k8s::testing::list("PersistentVolume", vec![]),
+            )
+            .await;
+            let (log, mut rx) = logged();
+            let plan = notes(
+                exact("official", "1.2.3"),
+                Some(DataOrigin::Live {
+                    namespace: "yolab-old".into(),
+                }),
+            );
+            execute(&w.b, &w.cfg, &plan, &log).await.unwrap();
+            assert!(lines(&mut rx)
+                .iter()
+                .any(|l| l == "Copying this service's files…"));
+        }
+
+        fn upgrade_of(chart_repo: Option<&str>, keep_version: bool) -> UpgradePlan {
+            UpgradePlan {
+                app_id: "notes".into(),
+                instance_name: "notes".into(),
+                release: "notes".into(),
+                config: Map::new(),
+                chart_repo: chart_repo.map(str::to_string),
+                backup: Default::default(),
+                keep_version,
+            }
+        }
+
+        #[tokio::test]
+        async fn an_update_takes_the_newest_chart_its_repository_holds_even_offline() {
+            let w = world(helm()).await;
+            serve(
+                &w,
+                "/api/v1/namespaces/kube-system/configmaps/yolab-chart-repos",
+                json!({
+                    "apiVersion": "v1", "kind": "ConfigMap",
+                    "metadata": { "name": "yolab-chart-repos", "namespace": "kube-system" },
+                    "data": { "mine": format!("{}/catalog.yaml", w.server.uri()) }
+                }),
+            )
+            .await;
+            let (log, mut rx) = logged();
+            upgrade(&w.b, &w.cfg, &upgrade_of(Some("mine"), false), &log)
+                .await
+                .unwrap();
+            let said = lines(&mut rx);
+            assert!(
+                said.iter()
+                    .any(|l| l.starts_with("Could not fetch the newest version")),
+                "{said:?}"
+            );
+            assert!(said.iter().any(|l| l == "Now on version 2.0.0"), "{said:?}");
+            let patched = patched(&w.server).await;
+            assert!(patched.iter().any(|p| p["metadata"]["annotations"]
+                .get("yolab.io/install-failed")
+                .is_some_and(Value::is_null)));
+        }
+
+        #[tokio::test]
+        async fn an_update_that_keeps_its_version_reinstalls_the_one_it_runs() {
+            let w = world(helm()).await;
+            let mut running = definition("notes");
+            running.chart_version = "1.2.3".into();
+            serve(
+                &w,
+                "/api/v1/namespaces/yolab-notes/secrets/yolab-config",
+                secret_with(
+                    crate::routers::apps::DEFINITION_SECRET_KEY,
+                    &serde_json::to_string(&running).unwrap(),
+                ),
+            )
+            .await;
+            let (log, mut rx) = logged();
+            upgrade(&w.b, &w.cfg, &upgrade_of(None, true), &log)
+                .await
+                .unwrap();
+            let said = lines(&mut rx);
+            assert!(
+                said.iter().any(|l| l == "Keeping the version it runs now…"),
+                "{said:?}"
+            );
+            assert!(said.iter().any(|l| l == "Now on version 1.2.3"), "{said:?}");
+        }
+
+        #[tokio::test]
+        async fn an_update_that_keeps_a_version_it_never_recorded_is_refused() {
+            let w = world(helm()).await;
+            let mut running = definition("notes");
+            running.chart_version = String::new();
+            serve(
+                &w,
+                "/api/v1/namespaces/yolab-notes/secrets/yolab-config",
+                secret_with(
+                    crate::routers::apps::DEFINITION_SECRET_KEY,
+                    &serde_json::to_string(&running).unwrap(),
+                ),
+            )
+            .await;
+            let (log, _rx) = logged();
+            let err = upgrade(&w.b, &w.cfg, &upgrade_of(None, true), &log)
+                .await
+                .unwrap_err();
+            assert!(
+                err.to_string().contains("never recorded which version"),
+                "{err}"
+            );
+            assert!(!w.b.host.ran("helm upgrade"));
+        }
+
+        #[tokio::test]
+        async fn a_queued_install_runs_once_and_forgets_its_plan() {
+            let w = world(helm()).await;
+            let kept = crate::records::testing::kept(&w.server, "yolab-installs").await;
+            let plan = notes(exact("official", "1.2.3"), None);
+            queue(&w.b.kube, &plan).await.unwrap();
+            serve(
+                &w,
+                "/api/v1/namespaces/yolab-notes/secrets/yolab-install-plan",
+                as_the_api_returns(&plan_secret("yolab-notes", &plan).unwrap()),
+            )
+            .await;
+            let http = crate::http::Client::new();
+            let tick = drive_installs(&w.b, &w.cfg, &http).await.unwrap();
+            assert!(matches!(tick, crate::runtime::Tick::Done), "{tick:?}");
+            let runs = kept.data("sets");
+            assert_eq!(runs[0]["state"], ops::SUCCEEDED, "{runs}");
+            assert!(w.b.host.ran("helm upgrade --install"));
+            assert!(crate::k8s::testing::asked(&w.server, "yolab-install-plan").await);
+            let tick = drive_installs(&w.b, &w.cfg, &http).await.unwrap();
+            assert!(matches!(tick, crate::runtime::Tick::Idle(_)), "{tick:?}");
+        }
+
+        #[tokio::test]
+        async fn a_queued_install_whose_plan_is_unreadable_fails_and_is_recorded() {
+            let w = world(helm()).await;
+            let kept = crate::records::testing::kept(&w.server, "yolab-installs").await;
+            queue(&w.b.kube, &notes(exact("official", "1.2.3"), None))
+                .await
+                .unwrap();
+            serve(
+                &w,
+                "/api/v1/namespaces/yolab-notes/secrets/yolab-install-plan",
+                json!({ "metadata": { "name": "yolab-install-plan" }, "data": { "plan": "bm90IGpzb24=" } }),
+            )
+            .await;
+            let http = crate::http::Client::new();
+            drive_installs(&w.b, &w.cfg, &http).await.unwrap();
+            let runs = kept.data("sets");
+            assert_eq!(runs[0]["state"], ops::FAILED, "{runs}");
+            assert!(!w.b.host.ran("helm upgrade"));
+        }
+
+        #[tokio::test]
+        async fn the_installs_controller_runs_for_the_cluster_once_its_api_answers() {
+            use crate::runtime::Resource as _;
+            let c = InstallsController;
+            assert_eq!(c.name(), "installs");
+            assert_eq!(c.scope(), crate::runtime::Scope::Cluster);
+            assert_eq!(c.interval(), Duration::from_secs(30));
+            assert_eq!(c.depends_on(), &[crate::runtime::KUBE_API]);
+            let ctx = crate::runtime::Ctx {
+                node: "node1".into(),
+                tools: crate::tools::Tools::unreachable(),
+            };
+            assert!(c.converge(&ctx).await.is_err());
+            let (_server, kube) = api_server().await;
+            let err = queue(&kube, &notes(ChartPin::Newest, None)).await;
+            assert!(err.is_err());
+        }
+    }
 }

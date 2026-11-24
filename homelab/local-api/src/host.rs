@@ -580,7 +580,9 @@ pub(crate) mod fake {
         ) -> impl Future<Output = HostResult<bool>> + Send + 'a {
             let me = self.clone();
             async move {
-                let (ok, text) = match me.answer(&format!("{bin} {}", args.join(" "))) {
+                let cmd = format!("{bin} {}", args.join(" "));
+                me.refuse_to_start(&cmd)?;
+                let (ok, text) = match me.answer(&cmd) {
                     Ok(out) => (true, out),
                     Err(e) => (false, e.to_string()),
                 };
