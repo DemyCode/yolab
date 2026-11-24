@@ -1,73 +1,58 @@
-use std::net::TcpStream;
+use std::net::{SocketAddr, TcpStream};
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
+mod app;
 
-const STORE_FILE: &str = "server.txt";
-const SUPERSEDED: &str = "superseded";
+pub use app::run;
 
-const SHELL_FLAG_SCRIPT: &str = "window.__YOLAB_SHELL__ = true;";
+pub(crate) const STORE_FILE: &str = "server.txt";
+pub(crate) const SUPERSEDED: &str = "superseded";
+
+pub(crate) const SHELL_FLAG_SCRIPT: &str = "window.__YOLAB_SHELL__ = true;";
 const CHANGE_ADDRESS_URL: &str = "yolab-shell://change-address";
 
-struct LaunchOnce(AtomicBool);
+pub(crate) struct LaunchOnce(AtomicBool);
 
 impl LaunchOnce {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self(AtomicBool::new(true))
     }
 
-    fn take(&self) -> bool {
+    pub(crate) fn take(&self) -> bool {
         self.0.swap(false, Ordering::SeqCst)
     }
 }
 
-struct Attempts(AtomicU64);
+pub(crate) struct Attempts(AtomicU64);
 
 impl Attempts {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self(AtomicU64::new(0))
     }
 
-    fn begin(&self) -> u64 {
+    pub(crate) fn begin(&self) -> u64 {
         self.0.fetch_add(1, Ordering::SeqCst) + 1
     }
 
-    fn is_latest(&self, attempt: u64) -> bool {
+    pub(crate) fn is_latest(&self, attempt: u64) -> bool {
         self.0.load(Ordering::SeqCst) == attempt
     }
 }
 
-fn store_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
-    let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
-    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    Ok(dir.join(STORE_FILE))
-}
-
-fn read_stored(app: &tauri::AppHandle) -> Option<String> {
-    let path = match store_path(app) {
-        Ok(path) => path,
-        Err(e) => {
-            eprintln!("could not find where the address is remembered: {e}");
-            return None;
-        }
-    };
-    let text = match std::fs::read_to_string(&path) {
+pub(crate) fn read_remembered(path: &Path) -> Result<Option<String>, String> {
+    let text = match std::fs::read_to_string(path) {
         Ok(text) => text,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
-        Err(e) => {
-            eprintln!(
-                "could not read the remembered address from {}: {e}",
-                path.display()
-            );
-            return None;
-        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("{}: {e}", path.display())),
     };
     let trimmed = text.trim();
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed.to_string())
-    }
+    Ok((!trimmed.is_empty()).then(|| trimmed.to_string()))
+}
+
+pub(crate) fn remember(path: &Path, url: &str) -> Result<(), String> {
+    std::fs::write(path, url)
+        .map_err(|e| format!("could not remember the address in {}: {e}", path.display()))
 }
 
 pub(crate) fn normalise_url(input: &str) -> Result<String, String> {
@@ -88,7 +73,7 @@ pub(crate) fn normalise_url(input: &str) -> Result<String, String> {
     if host.is_empty() {
         return Err("That address has no host name.".into());
     }
-    let is_local = host == "localhost" || host == "127.0.0.1" || host == "[::1]" || host == "::1";
+    let is_local = host == "localhost" || host == "127.0.0.1" || host == "[::1]";
 
     match parsed.scheme() {
         "https" => {}
@@ -112,8 +97,12 @@ pub(crate) fn reach(url: &str) -> Result<(), String> {
     let addrs = parsed
         .socket_addrs(|| None)
         .map_err(|e| format!("{shown} can't be found ({e}). Check the address."))?;
+    connect_any(&addrs, &shown)
+}
+
+fn connect_any(addrs: &[SocketAddr], shown: &str) -> Result<(), String> {
     let mut last = None;
-    for addr in &addrs {
+    for addr in addrs {
         match TcpStream::connect(addr) {
             Ok(_) => return Ok(()),
             Err(e) => last = Some(e),
@@ -123,54 +112,6 @@ pub(crate) fn reach(url: &str) -> Result<(), String> {
         None => Err(format!("{shown} can't be found. Check the address.")),
         Some(e) => Err(format!("Nothing answers at {shown} ({e}). Is your box on?")),
     }
-}
-
-#[tauri::command]
-fn stored_url(app: tauri::AppHandle) -> Option<String> {
-    read_stored(&app)
-}
-
-#[tauri::command]
-fn launch_url(app: tauri::AppHandle) -> Option<String> {
-    if app.state::<LaunchOnce>().take() {
-        read_stored(&app)
-    } else {
-        None
-    }
-}
-
-#[tauri::command]
-async fn connect(app: tauri::AppHandle, url: String) -> Result<(), String> {
-    let normalised = normalise_url(&url)?;
-    let attempt = app.state::<Attempts>().begin();
-
-    let target = normalised.clone();
-    tauri::async_runtime::spawn_blocking(move || reach(&target))
-        .await
-        .map_err(|e| e.to_string())??;
-
-    if !app.state::<Attempts>().is_latest(attempt) {
-        return Err(SUPERSEDED.into());
-    }
-
-    let path = store_path(&app)?;
-    std::fs::write(&path, &normalised)
-        .map_err(|e| format!("could not remember the address in {}: {e}", path.display()))?;
-
-    open_box_window(&app, &normalised)
-}
-
-fn open_setup_window(app: &tauri::AppHandle) -> Result<(), String> {
-    if let Some(setup) = app.get_webview_window("setup") {
-        return setup.set_focus().map_err(|e| e.to_string());
-    }
-    WebviewWindowBuilder::new(app, "setup", WebviewUrl::App("index.html".into()))
-        .title("YoLab")
-        .inner_size(520.0, 420.0)
-        .resizable(false)
-        .build()
-        .map_err(|e| e.to_string())?;
-    Ok(())
 }
 
 pub(crate) fn is_change_address(url: &url::Url) -> bool {
@@ -184,106 +125,63 @@ pub(crate) enum Route {
     SystemBrowser,
 }
 
+pub(crate) fn opens_outside(target: &url::Url) -> bool {
+    matches!(target.scheme(), "http" | "https" | "mailto" | "tel")
+}
+
 pub(crate) fn route(box_url: &url::Url, target: &url::Url) -> Route {
     if is_change_address(target) {
         return Route::ChangeAddress;
     }
-    match target.scheme() {
-        "http" | "https" if target.origin() == box_url.origin() => Route::Load,
-        "http" | "https" | "mailto" | "tel" => Route::SystemBrowser,
-        _ => Route::Load,
+    let same_box =
+        matches!(target.scheme(), "http" | "https") && target.origin() == box_url.origin();
+    if same_box {
+        Route::Load
+    } else if opens_outside(target) {
+        Route::SystemBrowser
+    } else {
+        Route::Load
     }
-}
-
-fn open_in_system_browser(app: &tauri::AppHandle, target: &url::Url) {
-    use tauri_plugin_opener::OpenerExt;
-    if let Err(e) = app.opener().open_url(target.as_str(), None::<&str>) {
-        eprintln!("could not open {target} in the system browser: {e}");
-    }
-}
-
-fn go_back_to_address_screen(app: &tauri::AppHandle) {
-    let handle = app.clone();
-    let queued = app.run_on_main_thread(move || {
-        if let Err(e) = change_address(&handle) {
-            eprintln!("could not go back to the address screen: {e}");
-        }
-    });
-    if let Err(e) = queued {
-        eprintln!("could not go back to the address screen: {e}");
-    }
-}
-
-fn change_address(app: &tauri::AppHandle) -> Result<(), String> {
-    open_setup_window(app)?;
-    if let Some(w) = app.get_webview_window("main") {
-        w.destroy().map_err(|e| e.to_string())?;
-    }
-    Ok(())
-}
-
-fn open_box_window(app: &tauri::AppHandle, url: &str) -> Result<(), String> {
-    let box_url = url::Url::parse(url).map_err(|e| e.to_string())?;
-    let builder = WebviewWindowBuilder::new(app, "main", WebviewUrl::External(box_url.clone()))
-        .title("YoLab")
-        .inner_size(1100.0, 780.0)
-        .min_inner_size(420.0, 480.0)
-        .initialization_script(SHELL_FLAG_SCRIPT);
-
-    let handle = app.clone();
-    let builder = builder.on_navigation(move |target| match route(&box_url, target) {
-        Route::Load => true,
-        Route::ChangeAddress => {
-            go_back_to_address_screen(&handle);
-            false
-        }
-        Route::SystemBrowser => {
-            open_in_system_browser(&handle, target);
-            false
-        }
-    });
-
-    #[cfg(desktop)]
-    let builder = {
-        let handle = app.clone();
-        builder.on_new_window(move |target, _features| {
-            if matches!(target.scheme(), "http" | "https" | "mailto" | "tel") {
-                open_in_system_browser(&handle, &target);
-            }
-            tauri::webview::NewWindowResponse::Deny
-        })
-    };
-
-    builder.build().map_err(|e| e.to_string())?;
-
-    if let Some(setup) = app.get_webview_window("setup") {
-        setup.destroy().map_err(|e| e.to_string())?;
-    }
-    Ok(())
 }
 
 #[cfg(target_os = "linux")]
 mod desktop_entry {
+    use std::ffi::OsString;
     use std::path::{Path, PathBuf};
 
     pub const APP_ID: &str = "ovh.demycode.yolab";
     const ICON: &[u8] = include_bytes!("../icons/icon.png");
 
-    pub fn data_home() -> Option<PathBuf> {
-        match std::env::var_os("XDG_DATA_HOME") {
+    pub fn data_home(xdg: Option<OsString>, home: Option<OsString>) -> Option<PathBuf> {
+        match xdg {
             Some(dir) if !dir.is_empty() => Some(PathBuf::from(dir)),
-            _ => std::env::var_os("HOME").map(|home| Path::new(&home).join(".local/share")),
+            _ => home.map(|home| Path::new(&home).join(".local/share")),
         }
     }
 
-    pub fn icon_path(data_home: &Path) -> PathBuf {
-        data_home.join("icons").join(format!("{APP_ID}.png"))
+    fn icon_dir(data_home: &Path) -> PathBuf {
+        data_home.join("icons")
     }
 
+    fn icon_name() -> String {
+        format!("{APP_ID}.png")
+    }
+
+    fn entry_dir(data_home: &Path) -> PathBuf {
+        data_home.join("applications")
+    }
+
+    fn entry_name() -> String {
+        format!("{APP_ID}.desktop")
+    }
+
+    pub fn icon_path(data_home: &Path) -> PathBuf {
+        icon_dir(data_home).join(icon_name())
+    }
+
+    #[cfg(test)]
     pub fn entry_path(data_home: &Path) -> PathBuf {
-        data_home
-            .join("applications")
-            .join(format!("{APP_ID}.desktop"))
+        entry_dir(data_home).join(entry_name())
     }
 
     pub fn entry(exe: &Path, icon: &Path) -> String {
@@ -294,76 +192,45 @@ mod desktop_entry {
         )
     }
 
-    fn write_if_changed(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-        match std::fs::read(path) {
+    fn write_if_changed(dir: &Path, name: &str, bytes: &[u8]) -> std::io::Result<()> {
+        let path = dir.join(name);
+        match std::fs::read(&path) {
             Ok(existing) if existing == bytes => return Ok(()),
             Ok(_) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => return Err(e),
         }
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)?;
-        }
+        std::fs::create_dir_all(dir)?;
         std::fs::write(path, bytes)
     }
 
     pub fn install(data_home: &Path, exe: &Path) -> std::io::Result<()> {
-        let icon = icon_path(data_home);
-        write_if_changed(&icon, ICON)?;
-        write_if_changed(&entry_path(data_home), entry(exe, &icon).as_bytes())
+        write_if_changed(&icon_dir(data_home), &icon_name(), ICON)?;
+        let entry = entry(exe, &icon_path(data_home));
+        write_if_changed(&entry_dir(data_home), &entry_name(), entry.as_bytes())
     }
-
-    pub fn install_for_this_user() {
-        let Some(home) = data_home() else {
-            eprintln!("no XDG_DATA_HOME or HOME: the window keeps the generic icon");
-            return;
-        };
-        let exe = match std::env::current_exe() {
-            Ok(exe) => exe,
-            Err(e) => {
-                eprintln!(
-                    "could not find this program's path, the window keeps the generic icon: {e}"
-                );
-                return;
-            }
-        };
-        if let Err(e) = install(&home, &exe) {
-            eprintln!(
-                "could not install the YoLab icon under {}, the window keeps the generic icon: {e}",
-                home.display()
-            );
-        }
-    }
-}
-
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
-pub fn run() {
-    #[cfg(target_os = "linux")]
-    desktop_entry::install_for_this_user();
-
-    let builder = tauri::Builder::default()
-        .manage(LaunchOnce::new())
-        .plugin(
-            tauri_plugin_opener::Builder::new()
-                .open_js_links_on_click(false)
-                .build(),
-        )
-        .manage(Attempts::new())
-        .invoke_handler(tauri::generate_handler![stored_url, launch_url, connect]);
-
-    builder
-        .setup(|app| {
-            open_setup_window(app.handle())?;
-            Ok(())
-        })
-        .run(tauri::generate_context!())
-        .expect("error while running YoLab");
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{is_change_address, normalise_url, reach, route, Attempts, LaunchOnce, Route};
+    use super::{
+        connect_any, is_change_address, normalise_url, opens_outside, reach, read_remembered,
+        remember, route, Attempts, LaunchOnce, Route,
+    };
     use std::net::TcpListener;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    fn scratch(name: &str) -> PathBuf {
+        static NEXT: AtomicU32 = AtomicU32::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "yolab-desktop-test-{name}-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::SeqCst)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
 
     #[test]
     fn a_bare_host_gets_https() {
@@ -390,16 +257,36 @@ mod tests {
 
     #[test]
     fn http_is_allowed_on_loopback_for_development() {
-        for local in ["http://localhost:3001", "http://127.0.0.1:3001"] {
+        for local in [
+            "http://localhost:3001",
+            "http://127.0.0.1:3001",
+            "http://[::1]:3001",
+        ] {
             assert!(normalise_url(local).is_ok(), "{local}");
         }
     }
 
     #[test]
     fn nonsense_is_rejected_rather_than_guessed_at() {
-        for bad in ["", "   ", "file:///etc/passwd", "javascript:alert(1)"] {
-            assert!(normalise_url(bad).is_err(), "{bad:?} must not be opened");
+        assert_eq!(
+            normalise_url("   ").unwrap_err(),
+            "Enter the address of your box."
+        );
+        assert_eq!(
+            normalise_url("https://exa mple").unwrap_err(),
+            "That is not a valid address."
+        );
+        for no_host in ["file:///etc/passwd", "javascript:alert(1)"] {
+            assert_eq!(
+                normalise_url(no_host).unwrap_err(),
+                "That address has no host name.",
+                "{no_host}"
+            );
         }
+        assert_eq!(
+            normalise_url("ftp://box.example").unwrap_err(),
+            "ftp:// is not an address this can open."
+        );
     }
 
     #[test]
@@ -407,6 +294,19 @@ mod tests {
         let err = reach("https://cluster.6.yolab.invalid").unwrap_err();
         assert!(err.contains("cluster.6.yolab.invalid"), "{err}");
         assert!(err.contains("can't be found"), "{err}");
+    }
+
+    #[test]
+    fn something_that_is_not_an_address_is_not_tried() {
+        assert!(reach("not an address").is_err());
+    }
+
+    #[test]
+    fn a_name_with_no_addresses_is_reported_as_not_found() {
+        assert_eq!(
+            connect_any(&[], "box.example").unwrap_err(),
+            "box.example can't be found. Check the address."
+        );
     }
 
     #[test]
@@ -425,6 +325,31 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         reach(&format!("http://127.0.0.1:{port}")).unwrap();
+    }
+
+    #[test]
+    fn the_remembered_address_is_read_back_trimmed_and_nothing_counts_as_none() {
+        let dir = scratch("remembered");
+        let file = dir.join("server.txt");
+        assert_eq!(read_remembered(&file).unwrap(), None);
+        remember(&file, "  https://box.example\n").unwrap();
+        assert_eq!(
+            read_remembered(&file).unwrap().as_deref(),
+            Some("https://box.example")
+        );
+        remember(&file, " \n").unwrap();
+        assert_eq!(read_remembered(&file).unwrap(), None);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_remembered_address_that_cannot_be_read_or_written_says_where() {
+        let dir = scratch("unreadable");
+        let err = read_remembered(&dir).unwrap_err();
+        assert!(err.contains(&dir.display().to_string()), "{err}");
+        let err = remember(&dir, "https://box.example").unwrap_err();
+        assert!(err.contains("could not remember the address in"), "{err}");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
@@ -456,6 +381,7 @@ mod tests {
             "http://cluster.1.yolab.io/",
             "https://cluster.1.yolab.io:8443/",
             "mailto:someone@example.com",
+            "tel:+3212345678",
         ] {
             assert_eq!(routed(other), Route::SystemBrowser, "{other}");
         }
@@ -478,8 +404,19 @@ mod tests {
     }
 
     #[test]
+    fn a_new_window_opens_outside_only_for_web_mail_and_phone_links() {
+        let outside = |u: &str| opens_outside(&url::Url::parse(u).unwrap());
+        assert!(outside("https://github.com"));
+        assert!(outside("http://example.com"));
+        assert!(outside("mailto:a@b.c"));
+        assert!(outside("tel:123"));
+        assert!(!outside("about:blank"));
+        assert!(!outside("file:///etc/passwd"));
+    }
+
+    #[test]
     fn the_opener_plugin_injects_no_click_script_that_the_remote_box_page_cannot_use() {
-        let source = include_str!("lib.rs");
+        let source = include_str!("app.rs");
         assert!(source.contains(".open_js_links_on_click(false)"));
         assert!(!source.contains(concat!("tauri_plugin_opener::", "init()")));
     }
@@ -502,19 +439,10 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     mod linux_icon {
-        use super::super::desktop_entry::{entry_path, icon_path, install, APP_ID};
-        use std::path::Path;
-
-        fn scratch(name: &str) -> std::path::PathBuf {
-            let dir = std::env::temp_dir()
-                .join(format!("yolab-desktop-test-{name}-{}", std::process::id()));
-            match std::fs::remove_dir_all(&dir) {
-                Ok(()) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => panic!("{}: {e}", dir.display()),
-            }
-            dir
-        }
+        use super::super::desktop_entry::{data_home, entry_path, icon_path, install, APP_ID};
+        use super::scratch;
+        use std::ffi::OsString;
+        use std::path::{Path, PathBuf};
 
         #[test]
         fn the_wayland_app_id_matches_the_desktop_file_the_compositor_looks_up() {
@@ -523,6 +451,21 @@ mod tests {
             assert_eq!(conf["identifier"], APP_ID);
             assert_eq!(conf["app"]["enableGTKAppId"], true);
             assert!(entry_path(Path::new("/d")).ends_with(format!("applications/{APP_ID}.desktop")));
+        }
+
+        #[test]
+        fn the_icon_goes_under_xdg_data_home_else_under_home() {
+            let os = |s: &str| Some(OsString::from(s));
+            assert_eq!(data_home(os("/x"), os("/h")), Some(PathBuf::from("/x")));
+            assert_eq!(
+                data_home(os(""), os("/h")),
+                Some(PathBuf::from("/h/.local/share"))
+            );
+            assert_eq!(
+                data_home(None, os("/h")),
+                Some(PathBuf::from("/h/.local/share"))
+            );
+            assert_eq!(data_home(None, None), None);
         }
 
         #[test]
@@ -555,6 +498,15 @@ mod tests {
             let entry = std::fs::read_to_string(entry_path(&home)).unwrap();
             assert!(entry.contains("/new/yolab-desktop"), "{entry}");
             assert!(!entry.contains("/old/yolab-desktop"), "{entry}");
+            std::fs::remove_dir_all(&home).unwrap();
+        }
+
+        #[test]
+        fn an_icon_that_cannot_be_read_is_reported_instead_of_overwritten() {
+            let home = scratch("blocked");
+            std::fs::create_dir_all(icon_path(&home)).unwrap();
+            assert!(install(&home, Path::new("/bin/yolab-desktop")).is_err());
+            assert!(!entry_path(&home).exists());
             std::fs::remove_dir_all(&home).unwrap();
         }
     }

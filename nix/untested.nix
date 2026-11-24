@@ -14,5 +14,8 @@
     "src/machine.rs" = "RealMachine reaches the network, processes and files; FakeMachine stands in for it in every test";
     "src/fake.rs" = "the test double itself; it answers only what the tests ask of it";
   };
-  desktop-client = {};
+  desktop-client = {
+    "src/main.rs" = "only calls run; starting the app needs a display and a webview";
+    "src/app.rs" = "opens the windows and wires them to the Tauri app; only a person at a desktop with a webview drives it";
+  };
 }
