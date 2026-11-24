@@ -245,6 +245,63 @@ pub(crate) mod testing {
             .collect()
     }
 
+    #[derive(Clone)]
+    pub struct Kept {
+        object: std::sync::Arc<std::sync::Mutex<Option<Value>>>,
+    }
+
+    impl Kept {
+        pub fn data(&self, key: &str) -> Value {
+            let held = self.object.lock().unwrap();
+            held.as_ref()
+                .and_then(|o| o["data"][key].as_str())
+                .map(|raw| serde_json::from_str(raw).unwrap())
+                .unwrap_or(Value::Null)
+        }
+    }
+
+    impl wiremock::Respond for Kept {
+        fn respond(&self, request: &wiremock::Request) -> ResponseTemplate {
+            let mut held = self.object.lock().unwrap();
+            if request.method.as_str() == "GET" {
+                return match held.as_ref() {
+                    Some(o) => ResponseTemplate::new(200).set_body_json(o),
+                    None => ResponseTemplate::new(404)
+                        .set_body_json(crate::k8s::testing::status(404, "NotFound")),
+                };
+            }
+            let mut written: Value =
+                serde_json::from_slice(&request.body).expect("a ConfigMap was written");
+            let version = held
+                .as_ref()
+                .and_then(|o| o["metadata"]["resourceVersion"].as_str())
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(0);
+            written["metadata"]["resourceVersion"] = Value::String((version + 1).to_string());
+            *held = Some(written.clone());
+            ResponseTemplate::new(200).set_body_json(written)
+        }
+    }
+
+    pub async fn kept(server: &MockServer, name: &str) -> Kept {
+        let kept = Kept {
+            object: Default::default(),
+        };
+        Mock::given(path(path_of(name)))
+            .respond_with(kept.clone())
+            .mount(server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/namespaces/kube-system/configmaps"))
+            .and(wiremock::matchers::body_partial_json(
+                json!({ "metadata": { "name": name } }),
+            ))
+            .respond_with(kept.clone())
+            .mount(server)
+            .await;
+        kept
+    }
+
     pub async fn accept_writes(server: &MockServer) {
         Mock::given(wiremock::matchers::method("PUT"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({

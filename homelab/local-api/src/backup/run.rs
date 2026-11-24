@@ -549,7 +549,15 @@ fn catalog_pvc(
     }
 }
 
-pub(crate) const STAGING_ROOT: &str = "/var/lib/yolab/backup-staging";
+#[cfg(not(test))]
+fn staging_root() -> String {
+    "/var/lib/yolab/backup-staging".into()
+}
+
+#[cfg(test)]
+fn staging_root() -> String {
+    crate::testkit::thread_dir("backup-staging")
+}
 
 pub(crate) fn staging_dir(root: &str, run_id: &str) -> String {
     format!("{root}/{run_id}")
@@ -564,7 +572,8 @@ pub(crate) fn stale_staging_dirs(present: &[String], keep: &[String]) -> Vec<Str
 }
 
 async fn sweep_staging(keep: &[String]) {
-    let Ok(mut entries) = tokio::fs::read_dir(STAGING_ROOT).await else {
+    let root = staging_root();
+    let Ok(mut entries) = tokio::fs::read_dir(&root).await else {
         return;
     };
     let mut present = Vec::new();
@@ -574,7 +583,7 @@ async fn sweep_staging(keep: &[String]) {
         }
     }
     for name in stale_staging_dirs(&present, keep) {
-        tokio::fs::remove_dir_all(staging_dir(STAGING_ROOT, &name))
+        tokio::fs::remove_dir_all(staging_dir(&root, &name))
             .await
             .debug_on_err(format!(
                 "backup: clear the leftover staging directory {name}"
@@ -589,7 +598,7 @@ async fn snapshot_cluster<H: Host>(
     target: &BackupTarget,
     run_id: &str,
 ) -> anyhow::Result<(String, Vec<ServiceSummary>)> {
-    let tmp_dir = staging_dir(STAGING_ROOT, run_id);
+    let tmp_dir = staging_dir(&staging_root(), run_id);
 
     tokio::fs::remove_dir_all(&tmp_dir)
         .await
@@ -672,7 +681,15 @@ async fn export_cluster_scoped(client: &Client, tmp_dir: &str) -> anyhow::Result
     Ok(())
 }
 
-const ETCD_SNAPSHOT_DIR: &str = "/var/lib/rancher/k3s/server/db/snapshots";
+#[cfg(not(test))]
+fn etcd_snapshot_dir() -> String {
+    "/var/lib/rancher/k3s/server/db/snapshots".into()
+}
+
+#[cfg(test)]
+fn etcd_snapshot_dir() -> String {
+    crate::testkit::thread_dir("etcd-snapshots")
+}
 
 async fn save_etcd_snapshot<H: Host>(b: &Backend<H>, tmp_dir: &str, snap_name: &str) {
     let saved = b
@@ -693,7 +710,7 @@ async fn save_etcd_snapshot<H: Host>(b: &Backend<H>, tmp_dir: &str, snap_name: &
             return;
         }
     }
-    let Ok(entries) = std::fs::read_dir(ETCD_SNAPSHOT_DIR) else {
+    let Ok(entries) = std::fs::read_dir(etcd_snapshot_dir()) else {
         return;
     };
     for entry in entries.flatten() {
@@ -1021,8 +1038,18 @@ fn collect_images(workloads: &[Value]) -> Vec<String> {
     images
 }
 
+#[cfg(not(test))]
+fn built_hash_file() -> String {
+    "/var/lib/yolab/built-hash".into()
+}
+
+#[cfg(test)]
+fn built_hash_file() -> String {
+    format!("{}/built-hash", crate::testkit::thread_dir("built"))
+}
+
 fn built_hash() -> Option<String> {
-    std::fs::read_to_string("/var/lib/yolab/built-hash")
+    std::fs::read_to_string(built_hash_file())
         .ok()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
@@ -1576,8 +1603,8 @@ mod tests {
             "/var/lib/yolab/backup-staging/bk-1"
         );
         assert_ne!(
-            staging_dir(STAGING_ROOT, "bk-1"),
-            staging_dir(STAGING_ROOT, "bk-2"),
+            staging_dir(&staging_root(), "bk-1"),
+            staging_dir(&staging_root(), "bk-2"),
             "two runs must never share a staging directory"
         );
     }
@@ -1810,6 +1837,406 @@ mod tests {
             assert!(b.host.ran("k3s etcd-snapshot save --name=yolab-bk-1"));
             assert!(server.received_requests().await.unwrap().is_empty());
             assert!(!dir.path().join("etcd.db").exists());
+        }
+
+        fn cfg() -> BackupConfig {
+            BackupConfig {
+                access_key_id: "AKID".into(),
+                secret_access_key: "SECRET".into(),
+                bucket: "bucket-1".into(),
+                endpoint: "https://s3.example".into(),
+                restic_password: "pw".into(),
+            }
+        }
+
+        async fn serve(server: &MockServer, p: &str, body: Value) {
+            Mock::given(method("GET"))
+                .and(path(p))
+                .respond_with(ResponseTemplate::new(200).set_body_json(body))
+                .mount(server)
+                .await;
+        }
+
+        async fn a_service(
+            pvcs: Vec<Value>,
+        ) -> (MockServer, Client, crate::records::testing::Kept) {
+            let (server, kube) = api_server().await;
+            config(&server, 200, enabled()).await;
+            let kept = crate::records::testing::kept(&server, "yolab-backups").await;
+            serve(
+                &server,
+                "/api/v1/namespaces",
+                list(
+                    "Namespace",
+                    vec![json!({ "metadata": { "name": "yolab-notes" } })],
+                ),
+            )
+            .await;
+            serve(
+                &server,
+                "/api/v1/namespaces/yolab-notes",
+                json!({
+                    "apiVersion": "v1", "kind": "Namespace",
+                    "metadata": {
+                        "name": "yolab-notes",
+                        "annotations": {
+                            ANN_APP_ID: "notes",
+                            ANN_CHART_REPO: "https://charts.example",
+                            ANN_CHART_VERSION: "1.2.3"
+                        }
+                    }
+                }),
+            )
+            .await;
+            serve(
+                &server,
+                "/api/v1/persistentvolumes",
+                list("PersistentVolume", vec![]),
+            )
+            .await;
+            serve(
+                &server,
+                "/api/v1/persistentvolumeclaims",
+                list("PersistentVolumeClaim", pvcs),
+            )
+            .await;
+            serve(
+                &server,
+                "/apis/apps/v1/namespaces/yolab-notes/deployments",
+                list(
+                    "Deployment",
+                    vec![json!({
+                        "metadata": { "name": "notes", "namespace": "yolab-notes" },
+                        "spec": { "template": { "spec": {
+                            "initContainers": [{ "name": "init", "image": "busybox:1" }],
+                            "containers": [
+                                { "name": "app", "image": "notes:2" },
+                                { "name": "side", "image": "busybox:1" }
+                            ]
+                        } } }
+                    })],
+                ),
+            )
+            .await;
+            for (p, kind) in [
+                (
+                    "/apis/apps/v1/namespaces/yolab-notes/daemonsets",
+                    "DaemonSet",
+                ),
+                ("/api/v1/namespaces/yolab-notes/services", "Service"),
+                ("/api/v1/namespaces/yolab-notes/secrets", "Secret"),
+                ("/api/v1/namespaces/yolab-notes/configmaps", "ConfigMap"),
+            ] {
+                serve(&server, p, list(kind, vec![])).await;
+            }
+            serve(
+                &server,
+                "/api/v1/nodes",
+                list(
+                    "Node",
+                    vec![json!({
+                        "metadata": { "name": "node1" },
+                        "status": { "allocatable": { "cpu": "4", "memory": "8Gi" } }
+                    })],
+                ),
+            )
+            .await;
+            (server, kube, kept)
+        }
+
+        fn restic_but(changed: &[(&str, Result<&str, &str>)]) -> FakeHost {
+            let defaults = [
+                ("restic unlock", ""),
+                ("restic snapshots --no-lock", "[]"),
+                (
+                    "restic snapshots --no-lock --json --tag",
+                    r#"[{"id":"older","time":"2026-11-23T00:00:00Z"},{"id":"newest","time":"2026-11-24T00:00:00Z"}]"#,
+                ),
+                ("restic backup", ""),
+                ("restic forget", ""),
+                ("k3s etcd-snapshot save", ""),
+            ];
+            let mut host = FakeHost::new();
+            for (prefix, answer) in changed {
+                host = match answer {
+                    Ok(out) => host.ok(prefix, out),
+                    Err(err) => host.fail(prefix, err),
+                };
+            }
+            for (prefix, out) in defaults {
+                if !changed.iter().any(|(c, _)| *c == prefix) {
+                    host = host.ok(prefix, out);
+                }
+            }
+            host
+        }
+
+        fn restic() -> FakeHost {
+            restic_but(&[])
+        }
+
+        fn only_set(kept: &crate::records::testing::Kept) -> Value {
+            let sets = kept.data("sets");
+            assert_eq!(sets.as_array().map(Vec::len), Some(1), "{sets}");
+            sets[0].clone()
+        }
+
+        #[tokio::test]
+        async fn the_scheduler_backs_up_the_whole_cluster_every_night() {
+            let (server, kube, kept) = a_service(vec![]).await;
+            let b = Backend {
+                kube: kube.clone(),
+                host: restic(),
+            };
+            assert!(matches!(schedule(&b).await.unwrap(), Tick::Done));
+            let set = only_set(&kept);
+            assert_eq!(set["namespace"], "");
+            assert_eq!(set["triggered_by"], "schedule-dr");
+            assert_eq!(set["state"], SUCCEEDED, "{set}");
+            assert_eq!(set["snapshot_id"], "newest");
+            assert_eq!(set["services"][0]["instance_name"], "notes");
+            assert!(b.host.ran("k3s etcd-snapshot save --name=yolab-cluster-"));
+            assert!(b.host.ran("restic backup"));
+            assert!(b.host.ran("restic forget --tag scope:cluster"));
+            assert!(crate::k8s::testing::asked(&server, "/api/v1/nodes").await);
+
+            let shown = list_sets(&kube).await;
+            assert_eq!(shown[0]["state"], "succeeded");
+            assert!(app_backup_status(&kube).await.is_empty());
+
+            assert!(matches!(schedule(&b).await.unwrap(), Tick::Idle(_)));
+        }
+
+        async fn list_sets(kube: &Client) -> Vec<Value> {
+            crate::backup::run::list(kube).await.unwrap()
+        }
+
+        #[tokio::test]
+        async fn a_service_backup_records_its_snapshot_and_shows_as_done() {
+            let (_server, kube, kept) = a_service(vec![]).await;
+            let b = Backend {
+                kube: kube.clone(),
+                host: restic(),
+            };
+            let id = start_app(&b, "yolab-notes", MANUAL_TRIGGER).await.unwrap();
+            assert!(drive_next(&b, &cfg()).await.unwrap());
+            let set = only_set(&kept);
+            assert_eq!(set["id"], id.as_str());
+            assert_eq!(set["state"], SUCCEEDED, "{set}");
+            assert_eq!(set["snapshot_id"], "newest");
+            assert!(!b.host.ran("k3s etcd-snapshot"));
+            assert!(!b.host.ran("restic forget --tag scope:cluster"));
+            let status = app_backup_status(&kube).await;
+            assert!(status["yolab-notes"].0.is_some());
+            assert!(!status["yolab-notes"].1);
+            assert!(!drive_next(&b, &cfg()).await.unwrap());
+        }
+
+        #[tokio::test]
+        async fn a_volume_outside_the_tree_fails_the_run_after_the_settings_are_saved() {
+            let pvc = json!({
+                "metadata": { "name": "data", "namespace": "yolab-notes" },
+                "spec": { "resources": { "requests": { "storage": "1Gi" } } }
+            });
+            let (_server, kube, kept) = a_service(vec![pvc]).await;
+            let b = Backend {
+                kube,
+                host: restic(),
+            };
+            start_app(&b, "yolab-notes", MANUAL_TRIGGER).await.unwrap();
+            assert!(drive_next(&b, &cfg()).await.unwrap());
+            let set = only_set(&kept);
+            assert_eq!(set["state"], FAILED);
+            let error = set["error"].as_str().unwrap();
+            assert!(error.contains("data keeps its data the old way"), "{error}");
+            assert!(b.host.ran("restic backup"));
+        }
+
+        #[tokio::test]
+        async fn a_store_restic_cannot_open_is_created_before_the_first_backup() {
+            let (_server, kube, kept) = a_service(vec![]).await;
+            let host = restic_but(&[(
+                "restic snapshots --no-lock",
+                Err("Is there a repository at the following location?"),
+            )])
+            .ok("restic init", "created restic repository");
+            let b = Backend { kube, host };
+            start_app(&b, "yolab-notes", MANUAL_TRIGGER).await.unwrap();
+            assert!(drive_next(&b, &cfg()).await.unwrap());
+            assert!(b.host.ran("restic init"));
+            assert_eq!(only_set(&kept)["state"], SUCCEEDED);
+        }
+
+        async fn failed_with(host: FakeHost) -> String {
+            let (_server, kube, kept) = a_service(vec![]).await;
+            let b = Backend { kube, host };
+            start_app(&b, "yolab-notes", MANUAL_TRIGGER).await.unwrap();
+            assert!(drive_next(&b, &cfg()).await.unwrap());
+            let set = only_set(&kept);
+            assert_eq!(set["state"], FAILED, "{set}");
+            set["error"].as_str().unwrap().to_string()
+        }
+
+        #[tokio::test]
+        async fn every_restic_failure_fails_the_run_with_restics_reason() {
+            let init = failed_with(
+                restic_but(&[("restic snapshots --no-lock", Err("no repository"))])
+                    .fail("restic init", "permission denied"),
+            )
+            .await;
+            assert!(init.starts_with("restic init failed:"), "{init}");
+            assert!(init.ends_with("permission denied"), "{init}");
+            let backup = failed_with(restic_but(&[("restic backup", Err("bucket is full"))])).await;
+            assert!(backup.starts_with("restic backup failed:"), "{backup}");
+            let unread = failed_with(restic_but(&[(
+                "restic snapshots --no-lock --json --tag",
+                Err("timed out"),
+            )]))
+            .await;
+            assert_eq!(unread, "backup completed but no snapshot id could be read");
+            let empty = failed_with(restic_but(&[(
+                "restic snapshots --no-lock --json --tag",
+                Ok("[]"),
+            )]))
+            .await;
+            assert_eq!(empty, "backup completed but no snapshot id could be read");
+            let garbled = failed_with(restic_but(&[(
+                "restic snapshots --no-lock --json --tag",
+                Ok("{"),
+            )]))
+            .await;
+            assert_eq!(garbled, "backup completed but no snapshot id could be read");
+        }
+
+        #[tokio::test]
+        async fn thinning_the_nightly_snapshots_failing_never_fails_the_backup() {
+            for host in [
+                restic_but(&[("restic forget", Err("repository is locked"))]),
+                restic().unstartable("restic forget"),
+            ] {
+                let (_server, kube, kept) = a_service(vec![]).await;
+                let b = Backend { kube, host };
+                start(&b, "schedule-dr").await.unwrap();
+                assert!(drive_next(&b, &cfg()).await.unwrap());
+                assert_eq!(only_set(&kept)["state"], SUCCEEDED);
+            }
+        }
+
+        #[tokio::test]
+        async fn a_service_the_scheduler_cannot_read_or_that_is_not_due_is_skipped() {
+            let (server, kube, kept) = a_service(vec![]).await;
+            Mock::given(method("GET"))
+                .and(path("/api/v1/namespaces/yolab-notes/secrets/yolab-config"))
+                .respond_with(
+                    ResponseTemplate::new(503).set_body_json(status(503, "ServiceUnavailable")),
+                )
+                .mount(&server)
+                .await;
+            let b = Backend {
+                kube,
+                host: restic(),
+            };
+            schedule(&b).await.unwrap();
+            let set = only_set(&kept);
+            assert_eq!(
+                set["namespace"], "",
+                "only the nightly snapshot was queued: {set}"
+            );
+        }
+
+        #[tokio::test]
+        async fn the_scheduler_is_idle_while_backups_are_off_and_fails_without_a_cluster() {
+            let (server, kube) = api_server().await;
+            config(&server, 404, status(404, "NotFound")).await;
+            let b = Backend {
+                kube,
+                host: FakeHost::new(),
+            };
+            assert!(matches!(schedule(&b).await.unwrap(), Tick::Idle(_)));
+            let b = Backend {
+                kube: crate::k8s::testing::unreachable(),
+                host: FakeHost::new(),
+            };
+            assert!(schedule(&b).await.is_err());
+            assert!(app_backup_status(&b.kube).await.is_empty());
+
+            let c = BackupSchedulerController;
+            assert_eq!(c.name(), "backup-scheduler");
+            assert_eq!(c.scope(), Scope::Cluster);
+            assert_eq!(c.interval(), Duration::from_secs(SCHEDULE_TICK_SECS));
+            assert_eq!(c.depends_on(), &[crate::runtime::KUBE_API]);
+            assert_eq!(c.pauses_during(), &[Activity::Restore]);
+            assert_eq!(c.not_before_uptime(), Duration::from_secs(60));
+            let ctx = Ctx {
+                node: "node1".into(),
+                tools: crate::tools::Tools::unreachable(),
+            };
+            assert!(c.converge(&ctx).await.is_err());
+        }
+
+        #[tokio::test]
+        async fn leftover_staging_folders_of_dead_runs_are_cleared_before_a_run() {
+            let root = staging_root();
+            std::fs::create_dir_all(format!("{root}/bk-dead")).unwrap();
+            std::fs::write(format!("{root}/stray-file"), "x").unwrap();
+            let (_server, kube, _kept) = a_service(vec![]).await;
+            let b = Backend {
+                kube,
+                host: restic(),
+            };
+            start_app(&b, "yolab-notes", MANUAL_TRIGGER).await.unwrap();
+            assert!(drive_next(&b, &cfg()).await.unwrap());
+            assert!(!std::path::Path::new(&format!("{root}/bk-dead")).exists());
+            assert!(std::path::Path::new(&format!("{root}/stray-file")).exists());
+        }
+
+        #[tokio::test]
+        async fn a_saved_etcd_snapshot_is_copied_into_the_backup_and_its_record_deleted() {
+            let (server, kube) = api_server().await;
+            Mock::given(method("DELETE"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+                .mount(&server)
+                .await;
+            let dir = etcd_snapshot_dir();
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(format!("{dir}/other-1"), "x").unwrap();
+            std::fs::write(format!("{dir}/yolab-bk-2-node1-123"), "etcd").unwrap();
+            let staging = tempfile::tempdir().unwrap();
+            let b = Backend {
+                kube,
+                host: FakeHost::new().ok("k3s etcd-snapshot save", ""),
+            };
+            save_etcd_snapshot(&b, &staging.path().to_string_lossy(), "yolab-bk-2").await;
+            assert_eq!(
+                std::fs::read_to_string(staging.path().join("etcd.db")).unwrap(),
+                "etcd"
+            );
+            assert!(!std::path::Path::new(&format!("{dir}/yolab-bk-2-node1-123")).exists());
+            assert!(std::path::Path::new(&format!("{dir}/other-1")).exists());
+            assert!(crate::k8s::testing::asked(&server, "yolab-bk-2-node1-123").await);
+
+            let b = Backend {
+                kube: crate::k8s::testing::unreachable(),
+                host: FakeHost::new()
+                    .ok("k3s etcd-snapshot save", "")
+                    .fail("k3s etcd-snapshot save", "x"),
+            };
+            std::fs::write(format!("{dir}/yolab-bk-3-node1"), "etcd").unwrap();
+            save_etcd_snapshot(&b, "/proc/no-such-dir", "yolab-bk-3").await;
+            assert!(std::path::Path::new(&format!("{dir}/yolab-bk-3-node1")).exists());
+            save_etcd_snapshot(&b, "/proc/no-such-dir", "yolab-bk-3").await;
+        }
+
+        #[test]
+        fn the_build_a_backup_was_made_by_is_recorded_when_known() {
+            let file = built_hash_file();
+            std::fs::create_dir_all(std::path::Path::new(&file).parent().unwrap()).unwrap();
+            std::fs::write(&file, "  \n").unwrap();
+            assert_eq!(built_hash(), None);
+            std::fs::write(&file, "abc123\n").unwrap();
+            assert_eq!(built_hash().as_deref(), Some("abc123"));
+            std::fs::remove_file(&file).unwrap();
+            assert_eq!(built_hash(), None);
         }
     }
 }

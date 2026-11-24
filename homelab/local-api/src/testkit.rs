@@ -269,6 +269,26 @@ pub(crate) fn closed_port() -> u16 {
         .port()
 }
 
+pub(crate) fn thread_dir(what: &str) -> String {
+    let thread = format!("{:?}", std::thread::current().id())
+        .chars()
+        .filter(char::is_ascii_digit)
+        .collect::<String>();
+    std::env::temp_dir()
+        .join(format!("yolab-test-{}-{thread}", std::process::id()))
+        .join(what)
+        .to_string_lossy()
+        .into_owned()
+}
+
+#[test]
+fn each_test_thread_writes_under_its_own_folder() {
+    let here = thread_dir("x");
+    let there = std::thread::spawn(|| thread_dir("x")).join().unwrap();
+    assert_ne!(here, there);
+    assert!(here.starts_with(&*std::env::temp_dir().to_string_lossy()));
+}
+
 pub(crate) async fn peer() -> (wiremock::MockServer, u16) {
     let listener = std::net::TcpListener::bind("[::1]:0").expect("bind a peer on [::1]");
     let port = listener.local_addr().expect("the peer's address").port();
