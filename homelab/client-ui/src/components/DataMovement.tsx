@@ -174,7 +174,7 @@ export function MovementBanner({ className }: { className?: string }) {
 
 export function MovementSummary() {
   const { data } = useMovement();
-  if (!isVisible(data)) return null;
+  if (!data) return null;
   const copy = movementCopy(data);
   if (!copy) return null;
   const progress = overallProgress(data);

@@ -56,3 +56,10 @@ export function fakeServer(routes: Record<string, Reply> = {}) {
       calls.filter((c) => c.method === method && c.url === url),
   };
 }
+
+export async function settle() {
+  const { act } = await import("@testing-library/react");
+  for (let i = 0; i < 5; i++) {
+    await act(() => new Promise((r) => setTimeout(r, 0)));
+  }
+}
