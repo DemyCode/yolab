@@ -328,6 +328,16 @@ pub(crate) mod fake {
             }
         }
 
+        pub fn now_answers(&self, prefix: &str, out: &str) {
+            let mut script = self.script.lock().unwrap();
+            let mut q = VecDeque::new();
+            q.push_back(Ok(out.to_string()));
+            match script.iter_mut().find(|(p, _)| p == prefix) {
+                Some((_, answers)) => *answers = q,
+                None => script.push((prefix.to_string(), q)),
+            }
+        }
+
         pub fn ok(self, prefix: &str, out: &str) -> Self {
             self.push(prefix, Ok(out.to_string()));
             self
@@ -449,7 +459,9 @@ pub(crate) mod fake {
                 self.calls.lock().unwrap().push(format!("REFUSED {cmd}"));
                 return Err(CmdError::Forbidden { cmd });
             }
-            self.answer(&cmd)
+            let out = self.answer(&cmd)?;
+            self.apply_effects(bin, args);
+            Ok(out)
         }
 
         pub fn calls(&self) -> Vec<String> {
