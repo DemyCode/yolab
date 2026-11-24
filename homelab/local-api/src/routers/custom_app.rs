@@ -12,7 +12,7 @@ use crate::AppState;
 pub const CUSTOM_REPO: &str = "custom";
 
 fn custom_dir() -> PathBuf {
-    PathBuf::from(crate::charts::CACHE_DIR).join(CUSTOM_REPO)
+    crate::charts::cache_root().join(CUSTOM_REPO)
 }
 
 const CLUSTER_SCOPED: &[&str] = &[

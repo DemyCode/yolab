@@ -232,7 +232,7 @@ pub async fn refresh_catalog_app(
     let b = state.backend().await?;
     let (refreshed, note) = match crate::charts::fetch_newest(
         &b.host,
-        std::path::Path::new(crate::charts::CACHE_DIR),
+        &crate::charts::cache_root(),
         &crate::charts::list_repos(&b.kube).await,
         &id,
         None,
@@ -264,12 +264,7 @@ pub async fn catalog(State(state): State<AppState>) -> Result<Json<Vec<CatalogAp
     let b = state.backend().await?;
     let client = b.kube;
     for repo in crate::charts::list_repos(&client).await {
-        if let Err(e) = crate::charts::sync_repo(
-            &b.host,
-            std::path::Path::new(crate::charts::CACHE_DIR),
-            &repo,
-        )
-        .await
+        if let Err(e) = crate::charts::sync_repo(&b.host, &crate::charts::cache_root(), &repo).await
         {
             tracing::warn!("catalog: {} not refreshed: {e:#}", repo.name);
         }
@@ -321,10 +316,7 @@ pub async fn add_repo(
     }
     let repos = crate::charts::list_repos(&b.kube).await;
     if let Some(r) = repos.iter().find(|r| r.name == body.name) {
-        if let Err(e) =
-            crate::charts::sync_repo(&b.host, std::path::Path::new(crate::charts::CACHE_DIR), r)
-                .await
-        {
+        if let Err(e) = crate::charts::sync_repo(&b.host, &crate::charts::cache_root(), r).await {
             return (
                 StatusCode::BAD_GATEWAY,
                 format!("added, but sync failed: {e}"),
@@ -353,16 +345,11 @@ pub async fn sync_repos(State(state): State<AppState>) -> Result<Json<serde_json
     let b = state.backend().await?;
     let mut results = serde_json::Map::new();
     for repo in crate::charts::list_repos(&b.kube).await {
-        let entry = match crate::charts::sync_repo(
-            &b.host,
-            std::path::Path::new(crate::charts::CACHE_DIR),
-            &repo,
-        )
-        .await
-        {
-            Ok(n) => serde_json::json!({ "ok": true, "charts": n }),
-            Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }),
-        };
+        let entry =
+            match crate::charts::sync_repo(&b.host, &crate::charts::cache_root(), &repo).await {
+                Ok(n) => serde_json::json!({ "ok": true, "charts": n }),
+                Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }),
+            };
         results.insert(repo.name.clone(), entry);
     }
     Ok(Json(Value::Object(results)))

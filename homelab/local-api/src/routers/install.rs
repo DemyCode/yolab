@@ -387,8 +387,8 @@ async fn pinned_chart<H: Host>(
             }))
         }
         ChartPin::Exact { repo, version } => {
-            let cache = std::path::Path::new(crate::charts::CACHE_DIR);
-            if let Some(dir) = crate::charts::cached_at_version(cache, repo, app_id, version) {
+            let cache = crate::charts::cache_root();
+            if let Some(dir) = crate::charts::cached_at_version(&cache, repo, app_id, version) {
                 return Ok(Some(PinnedChart {
                     repo: repo.clone(),
                     dir,
@@ -654,7 +654,7 @@ async fn upgrade_one<H: Host + 'static>(
         let repos = crate::charts::list_repos(&b.kube).await;
         if let Err(e) = crate::charts::fetch_newest(
             &b.host,
-            std::path::Path::new(crate::charts::CACHE_DIR),
+            &crate::charts::cache_root(),
             &repos,
             &plan.app_id,
             from,

@@ -570,6 +570,113 @@ mod tests {
             assert_eq!(patches[0]["data"]["share_installs"], "false");
         }
 
+        fn platform_config(dir: &std::path::Path, platform_url: &str) -> Config {
+            let file = dir.join("config.toml");
+            std::fs::write(
+                &file,
+                format!(
+                    "[tunnel]\naccount_token = \"acct\"\nplatform_api_url = \"{platform_url}\"\n"
+                ),
+            )
+            .unwrap();
+            Config::for_test(&file)
+        }
+
+        async fn cluster(share: Option<&str>) -> (MockServer, kube::Client) {
+            let (server, kube) = crate::k8s::testing::api_server().await;
+            let settings = match share {
+                Some(v) => ResponseTemplate::new(200).set_body_json(json!({
+                    "apiVersion": "v1", "kind": "ConfigMap",
+                    "metadata": { "name": "yolab-store-settings", "namespace": "kube-system" },
+                    "data": { "share_installs": v }
+                })),
+                None => ResponseTemplate::new(404)
+                    .set_body_json(crate::k8s::testing::status(404, "NotFound")),
+            };
+            Mock::given(method("GET"))
+                .and(path(SETTINGS_PATH))
+                .respond_with(settings)
+                .mount(&server)
+                .await;
+            Mock::given(method("GET"))
+                .and(path(
+                    "/api/v1/namespaces/kube-system/configmaps/yolab-chart-repos",
+                ))
+                .respond_with(
+                    ResponseTemplate::new(404)
+                        .set_body_json(crate::k8s::testing::status(404, "NotFound")),
+                )
+                .mount(&server)
+                .await;
+            (server, kube)
+        }
+
+        async fn installs_counted(platform: &MockServer) -> Vec<String> {
+            platform
+                .received_requests()
+                .await
+                .unwrap()
+                .iter()
+                .map(|r| r.url.path().to_string())
+                .collect()
+        }
+
+        #[tokio::test]
+        async fn an_install_of_an_official_chart_is_counted_unless_sharing_is_off() {
+            let cache = crate::charts::testing::cache_in_temp();
+            crate::charts::testing::chart(cache.dir.path(), "official", "gitea", "1.0.0");
+            crate::charts::testing::chart(cache.dir.path(), "official", "immich", "1.0.0");
+            let platform = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/catalog/apps/gitea/installs"))
+                .and(header("authorization", "Bearer acct"))
+                .respond_with(ResponseTemplate::new(200))
+                .mount(&platform)
+                .await;
+            Mock::given(method("POST"))
+                .and(path("/catalog/apps/immich/installs"))
+                .respond_with(ResponseTemplate::new(500).set_body_string("down"))
+                .mount(&platform)
+                .await;
+            let dir = tempfile::tempdir().unwrap();
+            let cfg = platform_config(dir.path(), &platform.uri());
+            let http = crate::testkit::http();
+
+            let (_on, kube) = cluster(None).await;
+            report_install(&kube, &http, &cfg, "gitea").await;
+            report_install(&kube, &http, &cfg, "immich").await;
+            report_install(&kube, &http, &cfg, "not-in-any-catalog").await;
+            report_install(&kube, &http, &cfg, "Bad/Id").await;
+            let (_off, kube_off) = cluster(Some("false")).await;
+            report_install(&kube_off, &http, &cfg, "gitea").await;
+
+            assert_eq!(
+                installs_counted(&platform).await,
+                vec![
+                    "/catalog/apps/gitea/installs".to_string(),
+                    "/catalog/apps/immich/installs".to_string(),
+                ]
+            );
+        }
+
+        #[tokio::test]
+        async fn an_install_is_not_counted_without_a_platform_or_when_it_does_not_answer() {
+            let cache = crate::charts::testing::cache_in_temp();
+            crate::charts::testing::chart(cache.dir.path(), "official", "gitea", "1.0.0");
+            let (_server, kube) = cluster(Some("true")).await;
+            let http = crate::testkit::http();
+            let dir = tempfile::tempdir().unwrap();
+
+            let down = platform_config(
+                dir.path(),
+                &format!("http://[::1]:{}", crate::testkit::closed_port()),
+            );
+            report_install(&kube, &http, &down, "gitea").await;
+            let none = platform_config(dir.path(), "");
+            report_install(&kube, &http, &none, "gitea").await;
+            assert!(platform(&none).is_none());
+        }
+
         #[tokio::test]
         async fn the_setting_cannot_be_read_while_the_cluster_is_down() {
             let api = TestApi::provisioned().login().await;

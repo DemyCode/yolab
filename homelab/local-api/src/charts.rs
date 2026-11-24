@@ -9,6 +9,54 @@ const REPO_NS: &str = "kube-system";
 
 pub const CACHE_DIR: &str = "/var/lib/yolab/charts";
 
+#[cfg(not(test))]
+pub fn cache_root() -> PathBuf {
+    PathBuf::from(CACHE_DIR)
+}
+
+#[cfg(test)]
+pub fn cache_root() -> PathBuf {
+    testing::CACHE_ROOT
+        .with(|root| root.borrow().clone())
+        .unwrap_or_else(|| PathBuf::from(CACHE_DIR))
+}
+
+#[cfg(test)]
+pub(crate) mod testing {
+    use std::cell::RefCell;
+    use std::path::PathBuf;
+
+    thread_local! {
+        pub(super) static CACHE_ROOT: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
+    }
+
+    pub(crate) struct CacheRoot {
+        pub dir: tempfile::TempDir,
+    }
+
+    impl Drop for CacheRoot {
+        fn drop(&mut self) {
+            CACHE_ROOT.with(|root| *root.borrow_mut() = None);
+        }
+    }
+
+    pub(crate) fn cache_in_temp() -> CacheRoot {
+        let dir = tempfile::tempdir().expect("a temporary chart cache");
+        CACHE_ROOT.with(|root| *root.borrow_mut() = Some(dir.path().to_path_buf()));
+        CacheRoot { dir }
+    }
+
+    pub(crate) fn chart(root: &std::path::Path, repo: &str, name: &str, version: &str) {
+        let dir = root.join(repo).join(name);
+        std::fs::create_dir_all(&dir).expect("a chart folder");
+        std::fs::write(
+            dir.join("Chart.yaml"),
+            format!("apiVersion: v2\nname: {name}\nversion: {version}\n"),
+        )
+        .expect("a Chart.yaml");
+    }
+}
+
 pub const OFFICIAL: &str = "official";
 
 pub const CUSTOM: &str = "custom";
@@ -116,7 +164,7 @@ pub async fn remove_repo(client: &Client, name: &str) -> anyhow::Result<()> {
 }
 
 fn cache_dir_for(repo: &str) -> PathBuf {
-    PathBuf::from(CACHE_DIR).join(repo)
+    cache_root().join(repo)
 }
 
 pub fn official_dir() -> PathBuf {
@@ -522,7 +570,7 @@ async fn refresh_github_stars(client: &Client) {
 async fn sync_all<H: Host>(client: &Client, host: &H) -> anyhow::Result<crate::runtime::Tick> {
     let mut failed = Vec::new();
     for repo in list_repos(client).await {
-        match sync_repo(host, Path::new(CACHE_DIR), &repo).await {
+        match sync_repo(host, &cache_root(), &repo).await {
             Ok(n) if n > 0 => tracing::info!("chart sync: {} — {n} chart(s)", repo.name),
             Ok(_) => {}
             Err(e) => failed.push(format!("{}: {e}", repo.name)),
