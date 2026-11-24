@@ -450,4 +450,6 @@ mod tests {
         assert_eq!(run_of(&tags), Some("bk-9"));
         assert_eq!(run_of(&["cluster-backup".to_string()]), None);
     }
+
+    mod jobs;
 }

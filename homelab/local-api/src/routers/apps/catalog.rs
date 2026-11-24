@@ -354,3 +354,6 @@ pub async fn sync_repos(State(state): State<AppState>) -> Result<Json<serde_json
     }
     Ok(Json(Value::Object(results)))
 }
+
+#[cfg(test)]
+mod tests;

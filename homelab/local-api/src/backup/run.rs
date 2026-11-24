@@ -1868,6 +1868,15 @@ mod tests {
             code: u16,
             settings: Value,
         ) -> (MockServer, Client, crate::records::testing::Kept) {
+            a_service_with(pvcs, vec![], code, settings).await
+        }
+
+        async fn a_service_with(
+            pvcs: Vec<Value>,
+            volumes: Vec<Value>,
+            code: u16,
+            settings: Value,
+        ) -> (MockServer, Client, crate::records::testing::Kept) {
             let (server, kube) = api_server().await;
             Mock::given(method("GET"))
                 .and(path("/api/v1/namespaces/yolab-notes/secrets/yolab-config"))
@@ -1904,7 +1913,7 @@ mod tests {
             serve(
                 &server,
                 "/api/v1/persistentvolumes",
-                list("PersistentVolume", vec![]),
+                list("PersistentVolume", volumes),
             )
             .await;
             serve(
@@ -2233,6 +2242,107 @@ mod tests {
             save_etcd_snapshot(&b, "/proc/no-such-dir", "yolab-bk-3").await;
             assert!(std::path::Path::new(&format!("{dir}/yolab-bk-3-node1")).exists());
             save_etcd_snapshot(&b, "/proc/no-such-dir", "yolab-bk-3").await;
+        }
+
+        fn data_claim() -> Value {
+            json!({
+                "metadata": { "name": "data", "namespace": "yolab-notes" },
+                "spec": { "resources": { "requests": { "storage": "1Gi" } } }
+            })
+        }
+
+        async fn a_service_in_the_tree() -> (MockServer, Client, crate::records::testing::Kept) {
+            a_service_with(
+                vec![data_claim()],
+                vec![crate::tree::testing::volume("yolab-notes", "data", "notes")],
+                404,
+                status(404, "NotFound"),
+            )
+            .await
+        }
+
+        async fn backed_up(host: FakeHost, last_words: &str) -> Value {
+            let (server, kube, kept) = a_service_in_the_tree().await;
+            crate::tree::testing::jobs_finish_saying(&server, last_words).await;
+            let b = Backend { kube, host };
+            start_app(&b, "yolab-notes", MANUAL_TRIGGER).await.unwrap();
+            assert!(drive_next(&b, &cfg()).await.unwrap());
+            only_set(&kept)
+        }
+
+        #[tokio::test]
+        async fn a_service_in_the_tree_has_its_folders_saved_and_their_snapshot_pinned() {
+            let host = restic().ok(
+                "restic snapshots --no-lock --json abc123",
+                r#"[{"id":"abc123full","time":"2026-11-24T01:00:00Z"}]"#,
+            );
+            let set = backed_up(host, "YOLAB_SNAPSHOT abc123\n").await;
+            assert_eq!(set["state"], SUCCEEDED, "{set}");
+        }
+
+        #[tokio::test]
+        async fn folders_saved_as_a_snapshot_that_cannot_be_read_back_fail_the_run() {
+            for answer in [Ok("[]"), Ok("{"), Err("timed out")] {
+                let host = match answer {
+                    Ok(out) => restic().ok("restic snapshots --no-lock --json abc123", out),
+                    Err(e) => restic().fail("restic snapshots --no-lock --json abc123", e),
+                };
+                let set = backed_up(host, "YOLAB_SNAPSHOT abc123\n").await;
+                assert_eq!(set["state"], FAILED, "{set}");
+                assert!(set["error"].as_str().unwrap().contains(
+                    "its folders were saved as abc123, but that snapshot could not be read back"
+                ));
+            }
+            let unstartable = restic().unstartable("restic snapshots --no-lock --json abc123");
+            let set = backed_up(unstartable, "YOLAB_SNAPSHOT abc123\n").await;
+            assert_eq!(set["state"], FAILED, "{set}");
+        }
+
+        #[tokio::test]
+        async fn folders_that_could_not_be_saved_fail_the_run_with_the_reason() {
+            let (_server, kube, kept) = a_service_in_the_tree().await;
+            let b = Backend {
+                kube,
+                host: restic(),
+            };
+            start_app(&b, "yolab-notes", MANUAL_TRIGGER).await.unwrap();
+            assert!(drive_next(&b, &cfg()).await.unwrap());
+            let set = only_set(&kept);
+            assert_eq!(set["state"], FAILED, "{set}");
+            assert!(
+                set["error"].as_str().unwrap().contains("its folders: "),
+                "{set}"
+            );
+        }
+
+        #[test]
+        fn a_restic_answer_without_a_snapshot_pins_nothing() {
+            assert_eq!(parse_pinned(&json!({})), None);
+            assert_eq!(parse_pinned(&json!([])), None);
+            assert_eq!(parse_pinned(&json!([{"time": "t"}])), None);
+            assert_eq!(parse_pinned(&json!([{"id": "a"}])), None);
+        }
+
+        #[test]
+        fn a_service_over_its_budget_is_told_to_raise_it() {
+            let over = crate::backup::points::ServiceSize {
+                size_bytes: 2_000_000_000,
+                budget_bytes: 1_000_000_000,
+                over_budget: true,
+                ..Default::default()
+            };
+            let why = budget_warning("notes", &over).unwrap();
+            assert!(why.starts_with("notes's backups take "), "{why}");
+            assert_eq!(
+                budget_warning(
+                    "notes",
+                    &crate::backup::points::ServiceSize {
+                        over_budget: false,
+                        ..over
+                    }
+                ),
+                None
+            );
         }
 
         #[test]

@@ -651,6 +651,93 @@ pub(crate) fn data_verdict(folders: &[String], volumes: &[Value], namespace: &st
 }
 
 #[cfg(test)]
+pub(crate) mod testing {
+    use serde_json::json;
+    use wiremock::matchers::{method, path, path_regex};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    const POD: &str = "yolab-job-pod";
+
+    fn object(kind: &str) -> serde_json::Value {
+        json!({ "apiVersion": "v1", "kind": kind, "metadata": { "name": "x" } })
+    }
+
+    pub(crate) async fn jobs_finish_saying(server: &MockServer, last_words: &str) {
+        Mock::given(method("PATCH"))
+            .and(path_regex("^/api/v1/persistentvolumes/[^/]+$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(object("PersistentVolume")))
+            .mount(server)
+            .await;
+        Mock::given(method("PATCH"))
+            .and(path_regex(
+                "^/api/v1/namespaces/ceph-csi/(persistentvolumeclaims|secrets)/[^/]+$",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(object("Secret")))
+            .mount(server)
+            .await;
+        Mock::given(method("DELETE"))
+            .and(path_regex("^/api/v1/namespaces/ceph-csi/secrets/[^/]+$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(object("Secret")))
+            .mount(server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/apis/batch/v1/namespaces/ceph-csi/jobs"))
+            .respond_with(ResponseTemplate::new(201).set_body_json(json!({
+                "apiVersion": "batch/v1", "kind": "Job", "metadata": { "name": "x" }
+            })))
+            .mount(server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path_regex(
+                "^/apis/batch/v1/namespaces/ceph-csi/jobs/[^/]+$",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "apiVersion": "batch/v1", "kind": "Job", "metadata": { "name": "x" },
+                "status": { "succeeded": 1 }
+            })))
+            .mount(server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/namespaces/ceph-csi/pods"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(crate::k8s::testing::list(
+                    "Pod",
+                    vec![json!({ "metadata": { "name": POD } })],
+                )),
+            )
+            .mount(server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(format!("/api/v1/namespaces/ceph-csi/pods/{POD}/log")))
+            .respond_with(ResponseTemplate::new(200).set_body_string(last_words))
+            .mount(server)
+            .await;
+    }
+
+    pub(crate) fn volume(namespace: &str, claim: &str, folder: &str) -> serde_json::Value {
+        json!({
+            "apiVersion": "v1",
+            "kind": "PersistentVolume",
+            "metadata": { "name": format!("{namespace}-{claim}") },
+            "spec": {
+                "claimRef": { "namespace": namespace, "name": claim },
+                "csi": {
+                    "driver": crate::csi::DRIVER,
+                    "nodeStageSecretRef": {
+                        "name": crate::csi::STATIC_SECRET,
+                        "namespace": crate::csi::NS,
+                    },
+                    "volumeAttributes": {
+                        "staticVolume": "true",
+                        "rootPath": format!("{}/{folder}", super::ROOT),
+                    },
+                },
+            },
+        })
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::k8s::testing::{api_server, list, serve, serve_logs};
