@@ -43,6 +43,12 @@ impl Tools {
 mod tests {
     use super::*;
 
+    #[test]
+    fn the_real_host_holds_nothing_so_every_handler_can_carry_a_copy() {
+        let real = crate::host::RealHost;
+        assert_eq!(std::mem::size_of_val(&real), 0);
+    }
+
     #[tokio::test]
     async fn a_backend_is_built_from_the_kube_client_the_tools_carry() {
         use wiremock::matchers::{method, path};

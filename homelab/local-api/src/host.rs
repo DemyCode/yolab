@@ -183,7 +183,6 @@ pub trait Host: Send + Sync + Clone {
 }
 
 #[derive(Clone, Default)]
-#[cfg_attr(test, allow(dead_code))]
 pub struct RealHost;
 
 #[cfg(not(test))]

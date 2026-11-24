@@ -802,5 +802,133 @@ mod tests {
                 .await
                 .is_err());
         }
+
+        const ACK_PATH: &str = "/api/v1/namespaces/kube-system/secrets/yolab-backup-key-ack";
+
+        async fn signed_in(kube: kube::Client, host: FakeHost) -> crate::testkit::TestApi {
+            crate::testkit::TestApi::with_kube_and_host(kube, host)
+                .login()
+                .await
+        }
+
+        #[tokio::test]
+        async fn the_backups_page_says_off_and_runs_nothing_while_backups_were_never_turned_on() {
+            let (server, kube) = api_server().await;
+            config(&server, 404, status(404, "NotFound")).await;
+            let api = signed_in(kube, FakeHost::new()).await;
+
+            let res = api.get("/api/backups/protected").await;
+            assert_eq!(res.status, axum::http::StatusCode::OK, "{}", res.body);
+            assert_eq!(res.json(), json!({ "configured": false, "apps": [] }));
+            let res = api.get("/api/backups/apps/yolab-notes/points").await;
+            assert_eq!(res.json(), json!({ "configured": false, "points": [] }));
+            let res = api.get("/api/backups/recovery-key").await;
+            assert_eq!(res.json(), json!({ "configured": false }));
+            assert!(api.host.calls().is_empty(), "{:?}", api.host.calls());
+        }
+
+        #[tokio::test]
+        async fn the_recovery_key_is_shown_in_groups_and_says_whether_it_was_saved() {
+            let (server, kube) = api_server().await;
+            config(&server, 200, enabled()).await;
+            Mock::given(method("GET"))
+                .and(path(ACK_PATH))
+                .respond_with(ResponseTemplate::new(404).set_body_json(status(404, "NotFound")))
+                .mount(&server)
+                .await;
+            let api = signed_in(kube, FakeHost::new()).await;
+
+            let res = api.get("/api/backups/recovery-key").await;
+            assert_eq!(
+                res.json(),
+                json!({ "configured": true, "recovery_key": "PW", "acknowledged": false })
+            );
+        }
+
+        #[tokio::test]
+        async fn saying_the_key_was_saved_records_it_in_the_cluster() {
+            let (server, kube) = api_server().await;
+            crate::k8s::testing::accept_patches(&server).await;
+            let api = signed_in(kube, FakeHost::new()).await;
+
+            let res = api.post("/api/backups/recovery-key/ack", "").await;
+            assert_eq!(res.json(), json!({ "acknowledged": true }), "{}", res.body);
+            assert!(crate::k8s::testing::asked(&server, "yolab-backup-key-ack").await);
+        }
+
+        #[tokio::test]
+        async fn storage_is_not_offered_without_a_platform_to_ask() {
+            let (_server, kube) = api_server().await;
+            let api = signed_in(kube, FakeHost::new()).await;
+
+            let res = api.get("/api/backups/s3").await;
+            assert_eq!(res.json()["provisioned"], false);
+        }
+
+        #[tokio::test]
+        async fn requests_about_something_that_is_not_a_service_are_refused_before_any_work() {
+            let (_server, kube) = api_server().await;
+            let api = signed_in(kube, FakeHost::new()).await;
+
+            for (method_name, uri, body) in [
+                ("POST", "/api/backups/apps/kube-system/run-now", None),
+                ("GET", "/api/backups/apps/kube-system/points", None),
+                ("DELETE", "/api/backups/apps/kube-system", None),
+                (
+                    "GET",
+                    "/api/backups/apps/kube-system/points/abc/frees",
+                    None,
+                ),
+                (
+                    "DELETE",
+                    "/api/backups/apps/yolab-notes/points/not-hex",
+                    None,
+                ),
+                (
+                    "PUT",
+                    "/api/backups/apps/kube-system/budget",
+                    Some(r#"{"budget_bytes":5}"#),
+                ),
+                (
+                    "PUT",
+                    "/api/backups/apps/yolab-notes/budget",
+                    Some(r#"{"budget_bytes":0}"#),
+                ),
+            ] {
+                let res = api.send(method_name, uri, body).await;
+                assert!(
+                    !res.status.is_success(),
+                    "{method_name} {uri}: {}",
+                    res.body
+                );
+                assert!(
+                    res.json()["error"].is_string(),
+                    "{method_name} {uri}: {}",
+                    res.body
+                );
+            }
+            assert!(api.host.calls().is_empty(), "{:?}", api.host.calls());
+        }
+
+        #[tokio::test]
+        async fn work_that_needs_backups_on_says_they_are_off() {
+            let (server, kube) = api_server().await;
+            config(&server, 404, status(404, "NotFound")).await;
+            let api = signed_in(kube, FakeHost::new()).await;
+
+            for (method_name, uri) in [
+                ("DELETE", "/api/backups/apps/yolab-notes"),
+                ("GET", "/api/backups/apps/yolab-notes/points/abc123/frees"),
+                ("DELETE", "/api/backups/apps/yolab-notes/points/abc123"),
+            ] {
+                let res = api.send(method_name, uri, None).await;
+                assert_eq!(
+                    res.json()["error"],
+                    "backups are not turned on",
+                    "{method_name} {uri}: {}",
+                    res.body
+                );
+            }
+        }
     }
 }
