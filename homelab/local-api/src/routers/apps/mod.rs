@@ -3263,7 +3263,7 @@ mod tests {
                 .await;
         }
 
-        async fn api(c: &Cluster, host: FakeHost) -> TestApi {
+        async fn signed_in(c: &Cluster, host: FakeHost) -> TestApi {
             TestApi::with_kube_and_host(c.kube.clone(), host)
                 .login()
                 .await
@@ -3367,7 +3367,7 @@ mod tests {
             )
             .await;
             serve(&c.server, "/api/v1/events", 200, list("Event", vec![])).await;
-            let res = api(&c, FakeHost::new()).await.get("/api/apps").await;
+            let res = signed_in(&c, FakeHost::new()).await.get("/api/apps").await;
             assert!(res.status.is_success(), "{}", res.body);
             let apps = res.json();
             let of = |name: &str| {
@@ -3405,7 +3405,7 @@ mod tests {
                 status(503, "ServiceUnavailable"),
             )
             .await;
-            let res = api(&c, FakeHost::new()).await.get("/api/apps").await;
+            let res = signed_in(&c, FakeHost::new()).await.get("/api/apps").await;
             assert!(!res.status.is_success());
             assert!(installed_apps(&c.kube).await.is_err());
         }
@@ -3452,7 +3452,7 @@ mod tests {
         async fn an_install_is_queued_under_a_fresh_unique_name() {
             let c = cluster().await;
             let kept = crate::records::testing::kept(&c.server, "yolab-installs").await;
-            let api = api(&c, FakeHost::new()).await;
+            let api = signed_in(&c, FakeHost::new()).await;
             let res = install(
                 &api,
                 "notes",
@@ -3475,7 +3475,7 @@ mod tests {
         #[tokio::test]
         async fn an_install_the_form_got_wrong_is_refused_before_anything_is_made() {
             let c = cluster().await;
-            let api = api(&c, FakeHost::new()).await;
+            let api = signed_in(&c, FakeHost::new()).await;
             for (app, body, code) in [
                 (
                     "notes",
@@ -3521,7 +3521,7 @@ mod tests {
                 )
                 .mount(&c.server)
                 .await;
-            let api = api(&c, FakeHost::new()).await;
+            let api = signed_in(&c, FakeHost::new()).await;
             let res = install(&api, "notes", json!({ "instance_name": "notes" })).await;
             assert_eq!(res.status, StatusCode::BAD_REQUEST, "{}", res.body);
             assert!(res.body.contains("unique name"));
@@ -3533,7 +3533,7 @@ mod tests {
                 )
                 .mount(&c.server)
                 .await;
-            let api = api(&c, FakeHost::new()).await;
+            let api = signed_in(&c, FakeHost::new()).await;
             let res = install(&api, "notes", json!({ "instance_name": "notes" })).await;
             assert_eq!(
                 res.status,
@@ -3612,7 +3612,7 @@ mod tests {
                 .ok("helm template", "")
                 .ok("helm upgrade --install", "upgraded")
                 .fail("helm package", "no");
-            let api = api(&c, host).await;
+            let api = signed_in(&c, host).await;
             let res = api
                 .post(
                     "/api/apps/notes/update",
@@ -3651,7 +3651,7 @@ mod tests {
         #[tokio::test]
         async fn an_update_of_something_that_cannot_be_found_or_read_is_refused() {
             let c = cluster().await;
-            let api = api(&c, FakeHost::new()).await;
+            let api = signed_in(&c, FakeHost::new()).await;
             let res = api.post("/api/apps/notes/update", "{}").await;
             assert_eq!(res.status, StatusCode::NOT_FOUND, "{}", res.body);
 

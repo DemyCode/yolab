@@ -16,6 +16,8 @@
     nativeBuildInputs ? [],
     buildInputs ? [],
     extraArgs ? {},
+    testInputs ? [],
+    testEnv ? {},
     untested ? {},
   }: let
     inherit (pkgs) lib;
@@ -42,7 +44,8 @@
 
     cargoArtifacts = craneLib.buildDepsOnly args;
 
-    covArgs = args // {pname = "${pname}-coverage";};
+    withTestTools = a: a // testEnv // {nativeBuildInputs = a.nativeBuildInputs ++ testInputs;};
+    covArgs = withTestTools (args // {pname = "${pname}-coverage";});
     strict = args // {CARGO_BUILD_WARNINGS = "deny";};
   in {
     inherit args cargoArtifacts untested;
@@ -52,7 +55,7 @@
         inherit cargoArtifacts;
         doCheck = false;
       });
-    tests = craneLib.cargoTest (strict // {inherit cargoArtifacts;});
+    tests = craneLib.cargoTest (withTestTools strict // {inherit cargoArtifacts;});
 
     clippy = craneLib.cargoClippy (strict
       // {
@@ -82,11 +85,11 @@
         installPhaseCommand = "";
       });
 
-    mutants = craneLib.mkCargoDerivation (args
+    mutants = craneLib.mkCargoDerivation (withTestTools args
       // {
         pname = "${pname}-mutants";
         inherit cargoArtifacts;
-        nativeBuildInputs = args.nativeBuildInputs ++ [pkgs.cargo-mutants];
+        nativeBuildInputs = args.nativeBuildInputs ++ testInputs ++ [pkgs.cargo-mutants];
         doInstallCargoArtifacts = false;
         buildPhaseCargoCommand = ''
           mkdir -p "$out"
@@ -111,6 +114,20 @@ in {
       };
       nativeBuildInputs = [pkgs.pkg-config pkgs.llvmPackages.bintools pkgs.gitMinimal];
       buildInputs = [pkgs.openssl];
+      testInputs = [pkgs.kubernetes-helm];
+      testEnv.HELM_CACHE_HOME = "/build/.helm/cache";
+      testEnv.HELM_CONFIG_HOME = "/build/.helm/config";
+      testEnv.HELM_DATA_HOME = "/build/.helm/data";
+      testEnv.YOLAB_TEST_CATALOG = pkgs.linkFarm "yolab-test-catalog" [
+        {
+          name = "yolab-common";
+          path = ../apps/catalog/yolab-common;
+        }
+        {
+          name = "pairdrop";
+          path = ../apps/catalog/pairdrop;
+        }
+      ];
       untested = untested.local-api;
     };
 

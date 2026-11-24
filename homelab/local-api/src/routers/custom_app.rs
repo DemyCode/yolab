@@ -957,12 +957,9 @@ spec:
 
     #[tokio::test]
     async fn the_generated_chart_renders_and_ships_the_manifest_untouched() {
-        let Ok(helm) = which("helm") else { return };
-        let lib = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../apps/catalog/yolab-common");
-        if !lib.exists() {
-            return;
-        }
+        let helm = which("helm").expect("helm is on PATH wherever the tests run");
+        let catalog = test_catalog();
+        let lib = catalog.path().join("yolab-common");
 
         let manifest = "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: rules\ndata:\n  alert.yaml: |\n    expr: up == 0\n    annotations:\n      summary: \"{{ $labels.instance }} is down\"\n";
         let app = CustomApp {
@@ -974,8 +971,8 @@ spec:
             service: String::new(),
         };
 
-        let tmp = std::env::temp_dir().join(format!("yolab-custom-test-{}", std::process::id()));
-        let _ = tokio::fs::remove_dir_all(&tmp).await;
+        let scratch = tempfile::tempdir().unwrap();
+        let tmp = scratch.path().to_path_buf();
         write_chart_at(&tmp, &app, manifest)
             .await
             .expect("chart should be written");
@@ -1027,14 +1024,12 @@ spec:
             rendered.contains("rootPath: \"/tree/my-thing\""),
             "its data is not its folder of the tree in:\n{rendered}"
         );
-
-        let _ = tokio::fs::remove_dir_all(&tmp).await;
     }
 
     #[tokio::test]
     async fn an_app_with_no_port_gets_no_gateway() {
-        let tmp = std::env::temp_dir().join(format!("yolab-custom-noport-{}", std::process::id()));
-        let _ = tokio::fs::remove_dir_all(&tmp).await;
+        let scratch = tempfile::tempdir().unwrap();
+        let tmp = scratch.path().to_path_buf();
         let app = CustomApp {
             id: "worker".into(),
             display_name: "Worker".into(),
@@ -1046,7 +1041,6 @@ spec:
         write_chart_at(&tmp, &app, POD).await.unwrap();
         assert!(!tmp.join("worker/templates/gateway.yaml").exists());
         assert!(tmp.join("worker/templates/user.yaml").exists());
-        let _ = tokio::fs::remove_dir_all(&tmp).await;
     }
 
     #[test]
@@ -1061,8 +1055,8 @@ spec:
 
     #[test]
     fn the_chart_root_is_found_however_it_is_nested() {
-        let base = std::env::temp_dir().join(format!("yolab-root-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
+        let scratch = tempfile::tempdir().unwrap();
+        let base = scratch.path().to_path_buf();
 
         let flat = base.join("flat");
         std::fs::create_dir_all(&flat).unwrap();
@@ -1087,8 +1081,6 @@ spec:
         std::fs::write(two.join("a/Chart.yaml"), "name: a").unwrap();
         std::fs::write(two.join("b/Chart.yaml"), "name: b").unwrap();
         assert_eq!(find_chart_root(&two, 3), None);
-
-        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
@@ -1151,13 +1143,11 @@ spec:
 
     #[tokio::test]
     async fn a_real_packaged_chart_survives_the_whole_pipeline() {
-        let Ok(helm) = which("helm") else { return };
-        let catalog = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/catalog");
-        if !catalog.join("pairdrop/Chart.yaml").exists() {
-            return;
-        }
-        let tmp = std::env::temp_dir().join(format!("yolab-pkg-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&tmp);
+        let helm = which("helm").expect("helm is on PATH wherever the tests run");
+        let charts = test_catalog();
+        let catalog = charts.path();
+        let scratch = tempfile::tempdir().unwrap();
+        let tmp = scratch.path().to_path_buf();
         std::fs::create_dir_all(&tmp).unwrap();
 
         let src = tmp.join("pairdrop");
@@ -1252,8 +1242,6 @@ spec:
         validate_rendered(&text, &ns).expect("a catalog chart must satisfy the upload rules");
 
         assert!(root.join("values.schema.json").is_file());
-
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     fn pod_with(containers: &str) -> String {
@@ -1295,6 +1283,29 @@ spec:
             validate_manifest(&doc).is_err(),
             "a pasted manifest has no gateway of its own and needs no privileged container"
         );
+    }
+
+    fn test_catalog() -> tempfile::TempDir {
+        let from = std::env::var("YOLAB_TEST_CATALOG")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| {
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/catalog")
+            });
+        let dir = tempfile::tempdir().unwrap();
+        for chart in ["yolab-common", "pairdrop"] {
+            let copied = std::process::Command::new("cp")
+                .args(["-rL", "--no-preserve=mode"])
+                .arg(from.join(chart))
+                .arg(dir.path().join(chart))
+                .status()
+                .unwrap();
+            assert!(
+                copied.success(),
+                "{chart} could not be copied from {}",
+                from.display()
+            );
+        }
+        dir
     }
 
     fn which(bin: &str) -> Result<String, ()> {
