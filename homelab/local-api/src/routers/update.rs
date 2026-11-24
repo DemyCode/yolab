@@ -559,4 +559,6 @@ mod tests {
         let port = crate::testkit::closed_port();
         assert!(!fleet(port).settled(PEER).await);
     }
+
+    mod handlers;
 }

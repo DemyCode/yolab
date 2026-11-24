@@ -275,10 +275,10 @@ impl Config {
             config_path: config_path.to_string_lossy().into_owned(),
             node_ipv6: "::1".into(),
             port: 3001,
-            rebuild_log: PathBuf::from("/nonexistent/rebuild.log"),
-            rebuild_pid: PathBuf::from("/nonexistent/rebuild.pid"),
-            built_dir: PathBuf::from("/nonexistent/built"),
-            channel_file: PathBuf::from("/nonexistent/channel.json"),
+            rebuild_log: crate::storage::on_machine("/var/log/yolab/rebuild.log"),
+            rebuild_pid: crate::storage::on_machine("/run/yolab/rebuild.pid"),
+            built_dir: crate::storage::on_machine("/var/lib/yolab/built"),
+            channel_file: crate::storage::on_machine("/var/lib/yolab/built/channel.json"),
         }
     }
 }

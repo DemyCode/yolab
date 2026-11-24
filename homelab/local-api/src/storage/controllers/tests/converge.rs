@@ -123,10 +123,12 @@ async fn csi_secrets_are_a_cluster_job_that_needs_kubernetes() {
         &[crate::runtime::CEPH, crate::runtime::KUBE_API]
     );
     assert!(c.converge(&ctx(FakeHost::new())).await.is_err());
-    assert!(c
-        .converge(&ctx_with(FakeHost::new(), reaching()))
-        .await
-        .is_err());
+    assert_eq!(
+        c.converge(&ctx_with(FakeHost::new(), reaching()))
+            .await
+            .unwrap(),
+        Tick::Done
+    );
 }
 
 #[tokio::test]

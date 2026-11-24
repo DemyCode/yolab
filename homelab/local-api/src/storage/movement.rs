@@ -198,6 +198,10 @@ fn clone_event(e: &Value) -> bool {
                 .is_some_and(|m| m.contains("ongoing clones"))
 }
 
+static AVERAGE_PROGRESS: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(r"average progress is ([0-9.]+)%").expect("a valid pattern")
+});
+
 pub fn clones(progress: &Value) -> Option<Clones> {
     let event = progress["events"]
         .as_array()?
@@ -210,13 +214,7 @@ pub fn clones(progress: &Value) -> Option<Clones> {
         .and_then(|n| n.parse().ok())
         .unwrap_or(1);
     let fraction = event["progress"].as_f64().or_else(|| {
-        let pct = regex::Regex::new(r"average progress is ([0-9.]+)%")
-            .ok()?
-            .captures(message)?
-            .get(1)?
-            .as_str()
-            .parse::<f64>()
-            .ok()?;
+        let pct = AVERAGE_PROGRESS.captures(message)?[1].parse::<f64>().ok()?;
         Some(pct / 100.0)
     })?;
     Some(Clones {
@@ -567,13 +565,9 @@ pub async fn sample<H: Host>(host: &H) {
         return;
     }
     record.advance(now_ms(), &remaining, inactive);
-    match serde_json::to_string(&record) {
-        Ok(raw) => {
-            if let Err(e) = settings::set(host, RECORD_KEY, &raw).await {
-                tracing::debug!("movement: could not save the progress record ({e})");
-            }
-        }
-        Err(e) => tracing::warn!("movement: could not encode the progress record ({e})"),
+    let raw = serde_json::to_string(&record).expect("a progress record is plain data");
+    if let Err(e) = settings::set(host, RECORD_KEY, &raw).await {
+        tracing::debug!("movement: could not save the progress record ({e})");
     }
 }
 
@@ -647,6 +641,9 @@ pub async fn assess_via<H: Host>(host: &H) -> Movement {
         total_pgs: snap.total_pgs,
     }
 }
+
+#[cfg(test)]
+mod machine_tests;
 
 #[cfg(test)]
 mod tests {
