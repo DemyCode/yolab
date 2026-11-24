@@ -23,7 +23,7 @@ import {
   Section,
   ValueRow,
 } from "@/components/ui/list";
-import { api, streamEvents } from "@/lib/api";
+import { api, ApiError, streamEvents } from "@/lib/api";
 import { backupPagePath, scheduleLabel } from "@/lib/backups";
 import { formatDateTime, relativeTime } from "@/lib/format";
 import { useApi } from "@/lib/useResource";
@@ -49,6 +49,10 @@ import {
 import { taglineFor } from "@/catalog/meta";
 import { cn } from "@/lib/utils";
 import type { AppInfo, CatalogApp, PodInfo } from "@/types/apps";
+
+function reasonOf(e: unknown, fallback: string): string {
+  return e instanceof ApiError ? e.message : fallback;
+}
 
 const DOT: Record<StatusTone, string> = {
   live: "bg-success",
@@ -120,6 +124,7 @@ const MAX_LOG_LINES = 1000;
 
 function TechnicalDetails({ app }: { app: AppInfo }) {
   const [pods, setPods] = useState<PodInfo[] | null>(null);
+  const [podsError, setPodsError] = useState<string | null>(null);
   const [logs, setLogs] = useState<{
     pod: string;
     lines: string[];
@@ -154,9 +159,7 @@ function TechnicalDetails({ app }: { app: AppInfo }) {
             : prev,
         );
       },
-    )
-      .then(settle)
-      .catch(settle);
+    ).then(settle);
   }
 
   useEffect(() => () => logStream.current?.abort(), []);
@@ -169,14 +172,17 @@ function TechnicalDetails({ app }: { app: AppInfo }) {
   useEffect(() => {
     let cancelled = false;
     const load = () =>
-      void api
-        .get<PodInfo[]>(`/api/apps/${app.instance_name}/pods`)
-        .then((p) => {
-          if (!cancelled) setPods(p);
-        })
-        .catch(() => {
-          if (!cancelled) setPods((prev) => prev ?? []);
-        });
+      api.get<PodInfo[]>(`/api/apps/${app.instance_name}/pods`).then(
+        (p) => {
+          if (cancelled) return;
+          setPods(p);
+          setPodsError(null);
+        },
+        (e: unknown) => {
+          if (!cancelled)
+            setPodsError(reasonOf(e, "The server did not answer."));
+        },
+      );
     load();
     const timer = setInterval(load, POD_REFRESH_MS);
     return () => {
@@ -185,7 +191,7 @@ function TechnicalDetails({ app }: { app: AppInfo }) {
     };
   }, [app.instance_name]);
 
-  const settings = Object.entries(app.config ?? {});
+  const settings = Object.entries(app.config);
 
   return (
     <>
@@ -193,8 +199,15 @@ function TechnicalDetails({ app }: { app: AppInfo }) {
         <h3 className="mb-1.5 text-xs font-medium text-fg-muted">
           Running parts
         </h3>
+        {podsError && (
+          <p className="mb-1.5 text-sm text-danger" role="alert">
+            The running parts could not be read: {podsError}
+          </p>
+        )}
         {!pods ? (
-          <Spinner className="h-4 w-4" />
+          podsError ? null : (
+            <Spinner className="h-4 w-4" />
+          )
         ) : pods.length === 0 ? (
           <p className="text-sm text-fg-muted">Nothing running right now.</p>
         ) : (
@@ -214,6 +227,8 @@ function TechnicalDetails({ app }: { app: AppInfo }) {
                 >
                   {(pod) => {
                     const status = podProblem(pod) ?? podStatus(pod);
+                    const containers = pod.containers ?? [];
+                    const events = pod.events ?? [];
                     return (
                       <>
                         <div className="flex items-center gap-2">
@@ -251,9 +266,9 @@ function TechnicalDetails({ app }: { app: AppInfo }) {
                             : "Not placed on a machine yet"}
                           {pod.restarts ? ` · restarted ${pod.restarts}×` : ""}
                         </p>
-                        {(pod.containers ?? []).length > 0 && (
+                        {containers.length > 0 && (
                           <ul className="mt-1 space-y-0.5 pl-4">
-                            {(pod.containers ?? []).map((c) => (
+                            {containers.map((c) => (
                               <li
                                 key={`${c.init ? "init-" : ""}${c.name}`}
                                 className="flex items-center gap-2 text-xs"
@@ -287,9 +302,9 @@ function TechnicalDetails({ app }: { app: AppInfo }) {
                             ))}
                           </ul>
                         )}
-                        {(pod.events ?? []).length > 0 && (
+                        {events.length > 0 && (
                           <ul className="mt-1.5 space-y-0.5 border-l border-border pl-3 ml-4">
-                            {(pod.events ?? []).map((e, i) => (
+                            {events.map((e, i) => (
                               <li
                                 key={`${e.at}-${e.reason}-${i}`}
                                 className={cn(
@@ -407,7 +422,7 @@ type Notice =
   | { tone: "error"; title: string; body: string };
 
 export function AppDetailPage() {
-  const { instanceName } = useParams<{ instanceName: string }>();
+  const instanceName = useParams<"instanceName">().instanceName!;
   const navigate = useNavigate();
 
   const apps = useApi<AppInfo[]>("apps", "/api/apps", { pollMs: 10_000 });
@@ -420,24 +435,30 @@ export function AppDetailPage() {
   const [notice, setNotice] = useState<Notice | null>(null);
   const [restore, setRestore] = useState<RestoreRecord | null>(null);
   const [restoreSeen, setRestoreSeen] = useState<string | null>(null);
+  const [restoreError, setRestoreError] = useState<string | null>(null);
 
-  const app = apps.data?.find((a) => a.instance_name === instanceName);
+  const installed = apps.data ?? [];
+  const catalogApps = catalog.data ?? [];
+  const app = installed.find((a) => a.instance_name === instanceName);
   const state = app ? appState(app) : "starting";
   const now = useNow(5_000);
 
   useEffect(() => {
-    if (!instanceName) return;
     let cancelled = false;
-    async function poll() {
-      try {
-        const list = await api.get<RestoreRecord[]>("/api/backups/restores");
-        if (!cancelled) {
+    function poll() {
+      api.get<RestoreRecord[]>("/api/backups/restores").then(
+        (list) => {
+          if (cancelled) return;
           setRestore(latestRestore(list, `yolab-${instanceName}`, Date.now()));
-        }
-        // eslint-disable-next-line no-empty
-      } catch {}
+          setRestoreError(null);
+        },
+        (e: unknown) => {
+          if (!cancelled)
+            setRestoreError(reasonOf(e, "The server did not answer."));
+        },
+      );
     }
-    void poll();
+    poll();
     const id = window.setInterval(poll, 5000);
     return () => {
       cancelled = true;
@@ -479,42 +500,42 @@ export function AppDetailPage() {
     );
   }
 
-  const entry = catalogEntry(app, catalog.data ?? []);
-  const name = appDisplayName(app, catalog.data ?? [], apps.data ?? []);
-  const members = packMembers(app, catalog.data ?? []);
+  const entry = catalogEntry(app, catalogApps);
+  const name = appDisplayName(app, catalogApps, installed);
+  const members = packMembers(app, catalogApps);
   const links = appLinks(app);
   const restoring = restore?.state === "running";
   const actions = availableActions(state, restoring);
   const newer = newerVersion(app, entry);
+  const offeredUpdate = newer && actions.has("update") ? newer : null;
   const version = app.chart_version || entry?.chart_version || "";
   const stem = instanceStem(app);
   const current = app;
 
   async function remove() {
-    if (!app) return;
     setWorking("remove");
     setNotice(null);
     try {
-      await api.del(removePath(app.instance_name, deleteShared, deleteBackups));
+      await api.del(
+        removePath(current.instance_name, deleteShared, deleteBackups),
+      );
       navigate("/");
     } catch (e) {
       setNotice({
         tone: "error",
         title: "It could not be removed",
-        body:
-          e instanceof Error ? e.message : "The server did not accept that.",
+        body: reasonOf(e, "The server did not accept that."),
       });
       setWorking(null);
     }
   }
 
   async function update() {
-    if (!app) return;
     setWorking("update");
     setNotice(null);
     let reached = "";
     const result = await streamEvents(
-      `/api/apps/${app.instance_name}/update`,
+      `/api/apps/${current.instance_name}/update`,
       { method: "POST" },
       (line) => {
         const found = /^Now on version (.+)$/.exec(line);
@@ -532,7 +553,7 @@ export function AppDetailPage() {
       setNotice({
         tone: "error",
         title: "The update did not finish",
-        body: result.error ?? "Your service was left as it was.",
+        body: result.error,
       });
     }
     await Promise.all([apps.refresh(), catalog.refresh()]);
@@ -608,6 +629,11 @@ export function AppDetailPage() {
         <Banner tone="info" title={`Restoring ${name}`}>
           It is offline while its files and settings are brought back, and comes
           back on its own when that finishes.
+          {restoreError && (
+            <p className="mt-1">
+              Its progress could not be read just now: {restoreError}
+            </p>
+          )}
         </Banner>
       );
     }
@@ -674,10 +700,7 @@ export function AppDetailPage() {
           }
         >
           Its files and settings are back from the backup
-          {restoreDone.finished_at
-            ? `, finished ${relativeTime(restoreDone.finished_at)}`
-            : ""}
-          .
+          {`, finished ${relativeTime(restoreDone.finished_at!)}`}.
         </Banner>
       );
     }
@@ -769,22 +792,22 @@ export function AppDetailPage() {
           detail={
             <span className="font-mono tabular-nums">
               {version || "unknown"}
-              {newer && actions.has("update") && (
+              {offeredUpdate && (
                 <span className="font-sans text-fg-subtle">
                   {" "}
-                  · {newer} available
+                  · {offeredUpdate} available
                 </span>
               )}
             </span>
           }
           trailing={
-            newer && actions.has("update") ? (
+            offeredUpdate ? (
               <RowAction
                 onClick={() =>
                   navigate(`/add/${app.app_id}?update=${app.instance_name}`)
                 }
               >
-                {`Update to ${newer}`}
+                {`Update to ${offeredUpdate}`}
               </RowAction>
             ) : null
           }

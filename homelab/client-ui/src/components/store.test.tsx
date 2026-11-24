@@ -247,8 +247,12 @@ describe("HeartButton refusal when giving", () => {
       "PUT /api/store/apps/gitea/heart": reply(503, '{"error":"busy"}'),
     });
     render(<HeartButton app={official} count={4} />);
-    fireEvent.click(await screen.findByRole("button", { name: "Give Gitea a heart" }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Give Gitea a heart" }),
+    );
     expect(await screen.findByText("busy")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Give Gitea a heart" }).textContent).toBe("4");
+    expect(
+      screen.getByRole("button", { name: "Give Gitea a heart" }).textContent,
+    ).toBe("4");
   });
 });
