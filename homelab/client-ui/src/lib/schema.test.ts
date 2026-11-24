@@ -399,3 +399,66 @@ describe("a setting made of settings", () => {
     ]);
   });
 });
+
+describe("sparse schemas", () => {
+  const sparse: ConfigSchema = {
+    dependencies: {
+      empty: {},
+      bare: { oneOf: [{}] },
+      yolab_enabled: { oneOf: [{}] },
+    },
+  };
+
+  it("a schema without fields is empty", () => {
+    expect(configSchemaOf({ title: "x" })).toEqual({});
+    expect(revealedBy(sparse).size).toBe(0);
+    expect(uiSchemaFor(sparse, "d")).toEqual({ "ui:order": ["*"] });
+    expect(generatedFields(sparse)).toEqual([]);
+    expect(addressField(sparse)).toBeUndefined();
+    expect(chosenBranchDefaults(sparse, {})).toEqual({});
+  });
+
+  it("a generated field without a title is listed by its name", () => {
+    expect(
+      generatedFields({
+        properties: {
+          key: { type: "string", writeOnly: true, generate: true },
+        },
+      }),
+    ).toEqual([["key", "key"]]);
+  });
+
+  it("a field revealed by two switches is placed once, after the first", () => {
+    const branches = (toggle: string) => ({
+      oneOf: [
+        { properties: { [toggle]: { const: false } } },
+        {
+          properties: { [toggle]: { const: true }, shared: { type: "string" } },
+        },
+      ],
+    });
+    const ui = uiSchemaFor(
+      {
+        properties: {
+          a: { type: "boolean" },
+          b: { type: "boolean" },
+        },
+        dependencies: { a: branches("a"), b: branches("b") },
+      } as ConfigSchema,
+      "d",
+    );
+    expect(ui["ui:order"]).toEqual(["a", "shared", "b", "*"]);
+  });
+});
+
+describe("a switch with no fields of its own", () => {
+  it("still reveals what its branches add", () => {
+    expect(
+      revealedBy({
+        dependencies: {
+          t: { oneOf: [{ properties: { x: { type: "string" } } }] },
+        },
+      }),
+    ).toEqual(new Map([["t", ["x"]]]));
+  });
+});

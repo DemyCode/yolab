@@ -269,9 +269,11 @@ export function byStorage(services: BackupService[]): BackupService[] {
 }
 
 export function storageTotal(services: BackupService[]): number | null {
-  const known = services.filter((s) => s.sizeBytes != null);
-  if (known.length === 0) return null;
-  return known.reduce((sum, s) => sum + (s.sizeBytes ?? 0), 0);
+  const sizes = services.flatMap((s) =>
+    s.sizeBytes == null ? [] : [s.sizeBytes],
+  );
+  if (sizes.length === 0) return null;
+  return sizes.reduce((sum, size) => sum + size, 0);
 }
 
 export function spaceToFit(sizeBytes: number): number {

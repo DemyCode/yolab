@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "./api";
 import { uiSchemaFor, type ConfigSchema } from "./schema";
 import {
@@ -10,6 +10,7 @@ import {
   folderTrail,
   isRootFolder,
   joinFolder,
+  listFolders,
   ROOT_FOLDER,
   shownFolder,
   rankFolders,
@@ -237,5 +238,102 @@ describe("what the chart accepts", () => {
 
   it("offers any folder when the chart sets no pattern", () => {
     expect(folderAllowed(undefined, ROOT_FOLDER)).toBe(true);
+  });
+});
+
+describe("tree folder edge cases", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it("a missing value is no folder at all", () => {
+    expect(cleanFolder(undefined)).toBe("");
+    expect(splitFolder(null)).toEqual({ parent: "", name: "" });
+    expect(isRootFolder(undefined)).toBe(false);
+  });
+
+  it("an exact match ranks before one that only starts the same", () => {
+    expect(rankFolders(["photos-old", "photos"], "photos")).toEqual([
+      "photos",
+      "photos-old",
+    ]);
+  });
+
+  it("lists a folder once for a while, and asks again after a failure", async () => {
+    let now = 1_000_000;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({ path: "a", folders: ["b"], truncated: false }),
+          { status: 200 },
+        ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const first = await listFolders("/cache-test/");
+    expect(first.folders).toEqual(["b"]);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/tree/folders?path=cache-test",
+      expect.anything(),
+    );
+    await listFolders("cache-test");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    now += 15_000;
+    await listFolders("cache-test");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response("down", { status: 500 })),
+    );
+    await expect(listFolders("cache-fail")).rejects.toThrow("down");
+    vi.stubGlobal("fetch", fetchMock);
+    await listFolders("cache-fail");
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("a folder field without a title is named after its key", () => {
+    expect(
+      activeTreeFolders(
+        { properties: { media: { type: "string", format: "tree-folder" } } },
+        { media: "/films/" },
+      ),
+    ).toEqual([{ name: "media", title: "media", value: "films" }]);
+    expect(activeTreeFolders({}, {})).toEqual([]);
+  });
+
+  it("checks folders against the real tree by default", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              path: "",
+              folders: ["default-check"],
+              truncated: false,
+            }),
+            { status: 200 },
+          ),
+      ),
+    );
+    await expect(
+      folderProblem([{ title: "Media", value: "default-check" }]),
+    ).resolves.toBeNull();
+  });
+
+  it("a listing that fails with something other than an error still explains", async () => {
+    await expect(
+      folderProblem([{ title: "Media", value: "a/b" }], () =>
+        Promise.reject("offline"),
+      ),
+    ).resolves.toBe("The file tree could not be read: offline");
+  });
+
+  it("a pattern the browser cannot read allows any folder and says so", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    expect(folderAllowed("(", "x")).toBe(true);
+    expect(warn).toHaveBeenCalledOnce();
   });
 });

@@ -122,7 +122,7 @@ export async function streamEvents(
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
     const frames = buffer.split("\n\n");
-    buffer = frames.pop() ?? "";
+    buffer = frames.splice(-1)[0];
     for (const frame of frames) {
       const line = frame.startsWith("data: ") ? frame.slice(6) : frame;
       if (!line.trim()) continue;

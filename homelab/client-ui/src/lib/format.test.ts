@@ -148,3 +148,9 @@ describe("formatEuros", () => {
     expect(formatEuros(1200)).toBe("€12.00");
   });
 });
+
+describe("relativeTime against the clock", () => {
+  it("measures from now when no time is given", () => {
+    expect(relativeTime(new Date())).toBe("just now");
+  });
+});

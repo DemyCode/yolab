@@ -125,7 +125,7 @@ export function isVisible(m: Movement | undefined): m is Movement {
 }
 
 export function movementCopy(m: Movement): MovementCopy | null {
-  const jobs = (m.jobs ?? []).map((j) => jobCopy(j, m));
+  const jobs = m.jobs.map((j) => jobCopy(j, m));
   const has = (kind: MovementJob["kind"]) =>
     jobs.some((j) => j.job.kind === kind);
   switch (m.state) {
@@ -182,7 +182,7 @@ export function movementCopy(m: Movement): MovementCopy | null {
     case "restarting":
       return {
         headline: m.waiting_for.length
-          ? `${list(m.waiting_for)} is restarting`
+          ? `${list(m.waiting_for)} ${m.waiting_for.length > 1 ? "are" : "is"} restarting`
           : "A machine is restarting",
         safety:
           "Nothing is being moved. Its files are available again as soon as it's back.",
@@ -195,19 +195,21 @@ export function movementCopy(m: Movement): MovementCopy | null {
 }
 
 export function overallProgress(m: Movement): number | null {
-  const jobs = m.jobs ?? [];
+  const jobs = m.jobs;
   if (jobs.length === 0 || jobs.every((j) => j.progress === null)) return null;
   const total = jobs.reduce((s, j) => s + j.to_move_bytes, 0);
   if (total > 0) return jobs.reduce((s, j) => s + j.moved_bytes, 0) / total;
-  const measured = jobs.filter((j) => j.progress !== null);
-  return measured.reduce((s, j) => s + (j.progress ?? 0), 0) / measured.length;
+  const measured = jobs.flatMap((j) =>
+    j.progress === null ? [] : [j.progress],
+  );
+  return measured.reduce((s, p) => s + p, 0) / measured.length;
 }
 
 export function jobOf(
   m: Movement | undefined,
   kind: MovementJob["kind"],
 ): MovementJob | undefined {
-  return m?.jobs?.find((j) => j.kind === kind);
+  return m?.jobs.find((j) => j.kind === kind);
 }
 
 export function timeLeft(secs: number | null): string {

@@ -243,3 +243,50 @@ describe("searching the catalog", () => {
     expect(matchesSearch("anything", "   ")).toBe(true);
   });
 });
+
+describe("store edge cases", () => {
+  const names = (apps: CatalogApp[]) => apps.map((a) => a.id);
+
+  it("no stats means no counts", () => {
+    expect(statsById(undefined).size).toBe(0);
+  });
+
+  it("apps never pushed, or with a broken date, sort last and then by name", () => {
+    const apps = [
+      app("b", { pushed_at: undefined }),
+      app("a", { pushed_at: "not a date" }),
+      app("c", { pushed_at: "2026-01-01T00:00:00Z" }),
+    ];
+    expect(names(sortApps(apps, "updated", new Map()))).toEqual([
+      "c",
+      "a",
+      "b",
+    ]);
+  });
+
+  it("equally popular apps sort by name", () => {
+    expect(names(sortApps([app("b"), app("a")], "popular", new Map()))).toEqual(
+      ["a", "b"],
+    );
+  });
+
+  it("an app in no collection is in none of them", () => {
+    expect(
+      inCollection([app("a", { collections: undefined })], "media", new Map()),
+    ).toEqual([]);
+  });
+
+  it("a date in the future is not shown as an age", () => {
+    expect(updatedAgo("2999-01-01T00:00:00Z")).toBeNull();
+  });
+
+  it("apps in no collection can still be similar through their group", () => {
+    const lone = app("x", { collections: undefined });
+    const similar = similarApps(
+      lone,
+      [lone, app("y", { collections: undefined })],
+      new Map(),
+    );
+    expect(names(similar)).toEqual(["y"]);
+  });
+});

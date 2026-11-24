@@ -49,23 +49,35 @@ function switches(
   ]);
 }
 
-export function revealedBy(schema: ConfigSchema): Map<string, string[]> {
-  const revealed = new Map<string, string[]>();
+function revealedProps(
+  schema: ConfigSchema,
+): Map<string, Map<string, SchemaProp>> {
+  const revealed = new Map<string, Map<string, SchemaProp>>();
   for (const [toggle, dep] of switches(schema.dependencies)) {
-    const fields = new Set<string>();
+    const fields = revealed.get(toggle) ?? new Map<string, SchemaProp>();
     for (const branch of dep.oneOf ?? []) {
-      for (const name of Object.keys(branch.properties ?? {})) {
-        if (name !== toggle && !(name in (schema.properties ?? {}))) {
-          fields.add(name);
+      for (const [name, prop] of Object.entries(branch.properties ?? {})) {
+        if (
+          name !== toggle &&
+          !(name in (schema.properties ?? {})) &&
+          !fields.has(name)
+        ) {
+          fields.set(name, prop);
         }
       }
     }
-    if (fields.size > 0) {
-      const before = revealed.get(toggle) ?? [];
-      revealed.set(toggle, [...new Set([...before, ...fields])]);
-    }
+    if (fields.size > 0) revealed.set(toggle, fields);
   }
   return revealed;
+}
+
+export function revealedBy(schema: ConfigSchema): Map<string, string[]> {
+  return new Map(
+    [...revealedProps(schema)].map(([toggle, fields]) => [
+      toggle,
+      [...fields.keys()],
+    ]),
+  );
 }
 
 function fieldUi(prop: SchemaProp, domain: string): UiSchema | undefined {
@@ -103,7 +115,7 @@ function nestedUi(prop: SchemaProp, domain: string): UiSchema {
 export function uiSchemaFor(schema: ConfigSchema, domain: string): UiSchema {
   const ui: UiSchema = {};
   const order: string[] = [];
-  const revealed = revealedBy(schema);
+  const revealed = revealedProps(schema);
 
   const describe = (name: string, prop: SchemaProp, attached: boolean) => {
     const entry: UiSchema = {
@@ -120,11 +132,10 @@ export function uiSchemaFor(schema: ConfigSchema, domain: string): UiSchema {
   };
 
   const reveal = (toggle: string) => {
-    for (const dependent of revealed.get(toggle) ?? []) {
+    for (const [dependent, prop] of revealed.get(toggle) ?? []) {
       if (order.includes(dependent)) continue;
       order.push(dependent);
-      const prop = branchProp(schema, toggle, dependent);
-      if (prop) describe(dependent, prop, true);
+      describe(dependent, prop, true);
       reveal(dependent);
     }
   };
@@ -138,28 +149,8 @@ export function uiSchemaFor(schema: ConfigSchema, domain: string): UiSchema {
   return ui;
 }
 
-function branchProp(
-  schema: ConfigSchema,
-  toggle: string,
-  name: string,
-): SchemaProp | undefined {
-  for (const [switched, dep] of switches(schema.dependencies)) {
-    if (switched !== toggle) continue;
-    for (const branch of dep.oneOf ?? []) {
-      const prop = branch.properties?.[name];
-      if (prop) return prop;
-    }
-  }
-  return undefined;
-}
-
 export function revealedFields(schema: ConfigSchema): [string, SchemaProp][] {
-  return [...revealedBy(schema)].flatMap(([toggle, names]) =>
-    names.flatMap((name): [string, SchemaProp][] => {
-      const prop = branchProp(schema, toggle, name);
-      return prop ? [[name, prop]] : [];
-    }),
-  );
+  return [...revealedProps(schema).values()].flatMap((fields) => [...fields]);
 }
 
 export function generatedFields(schema: ConfigSchema): [string, string][] {

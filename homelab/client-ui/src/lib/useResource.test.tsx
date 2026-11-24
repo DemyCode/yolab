@@ -5,6 +5,7 @@ import { ApiError } from "./api";
 import { forget, recall, remember } from "./localCache";
 import { useApi, useResource } from "./useResource";
 import { useHealStatus } from "./heal";
+import { useMovement } from "./movement";
 
 let n = 0;
 const freshKey = () => `use-resource-test-${++n}`;
@@ -336,5 +337,25 @@ describe("useHealStatus", () => {
     expect(fetchMock).toHaveBeenCalledWith("/api/heal", expect.anything());
     expect(recall("heal")?.data).toEqual({ survey: 1 });
     forget("heal");
+  });
+});
+
+describe("useMovement", () => {
+  it("reads /api/storage/movement under its own key", async () => {
+    forget("storage-movement-v3");
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ state: "settled" }), { status: 200 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const { result } = renderHook(() => useMovement());
+    await waitFor(() =>
+      expect(result.current.data).toEqual({ state: "settled" }),
+    );
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/storage/movement",
+      expect.anything(),
+    );
+    forget("storage-movement-v3");
   });
 });

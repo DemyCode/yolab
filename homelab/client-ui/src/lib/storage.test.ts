@@ -527,3 +527,121 @@ describe("switchNeedsConfirm", () => {
     expect(switchNeedsConfirm("ON", disk(), "foreign", false)).toBe(true);
   });
 });
+
+describe("diskState for every phase", () => {
+  it("names what each part of the disk's life looks like", () => {
+    const cases: [Partial<DiskInfo>, string][] = [
+      [{ foreign_ceph: true }, "foreign"],
+      [{ connected: false }, "historical"],
+      [{ phase: "creating" }, "pending"],
+      [{ phase: "retrying" }, "failing"],
+      [{ phase: "blocked" }, "blocked"],
+      [{ phase: "draining" }, "draining"],
+      [{ phase: "removing" }, "removing"],
+      [{ phase: "removable" }, "removable"],
+      [{ phase: "unknown" }, "stale"],
+      [{ desired: "ON", is_our_osd: true }, "active"],
+      [{ desired: "ON" }, "pending"],
+      [{ is_our_osd: true }, "draining"],
+      [{}, "excluded"],
+    ];
+    for (const [over, state] of cases) {
+      expect(diskState(disk(over)), JSON.stringify(over)).toBe(state);
+    }
+  });
+});
+
+describe("virtualDiskState for every box state", () => {
+  const off = disk({ id: "vdisk-4", connected: false });
+
+  it("a box being removed shows the disk's own progress until it is gone", () => {
+    const removing = vdisk({ state: "removing" });
+    expect(virtualDiskState(undefined, removing)).toBe("removing");
+    expect(virtualDiskState(off, removing)).toBe("removing");
+    expect(virtualDiskState(disk(), removing)).toBe("removing");
+    expect(virtualDiskState(disk({ phase: "removable" }), removing)).toBe(
+      "removing",
+    );
+    expect(
+      virtualDiskState(disk({ desired: "ON", phase: "active" }), removing),
+    ).toBe("draining");
+    expect(virtualDiskState(disk({ phase: "blocked" }), removing)).toBe(
+      "blocked",
+    );
+  });
+
+  it("a box in error reads as its disk, or as failing without one", () => {
+    const error = vdisk({ state: "error" });
+    expect(virtualDiskState(off, error)).toBe("failing");
+    expect(virtualDiskState(disk({ phase: "blocked" }), error)).toBe("blocked");
+  });
+
+  it("a connected box without a disk yet is pending", () => {
+    expect(virtualDiskState(undefined, vdisk())).toBe("pending");
+  });
+});
+
+describe("storage wording edge cases", () => {
+  it("counts one copy, or leaves copies out when nothing says how many", () => {
+    expect(
+      statusLine(overview({ space: undefined }), target({ size: 1 }))?.text,
+    ).toBe("Healthy · 1 copy of everything · 2 disks · 2 machines");
+    expect(statusLine(overview({ space: undefined }), null)?.text).toBe(
+      "Healthy · 2 disks · 2 machines",
+    );
+  });
+
+  it("shows no banner before the overview arrives", () => {
+    expect(
+      pickBanner({
+        error: null,
+        movementBlocked: false,
+        overview: undefined,
+        copies: 2,
+      }),
+    ).toBeNull();
+  });
+
+  it("talks about several offline or unfinished disks in the plural", () => {
+    const down = pickBanner({
+      error: null,
+      movementBlocked: false,
+      overview: overview({
+        osds: [osd({ id: 0, up: false }), osd({ id: 1, up: false })],
+      }),
+      copies: 1,
+    });
+    expect(down).toMatchObject({
+      body: expect.stringContaining("Whatever was on those disks"),
+    });
+    const phantom = pickBanner({
+      error: null,
+      movementBlocked: false,
+      overview: overview({
+        osds: [
+          osd({ id: 0 }),
+          osd({ id: 1, up: false, host: "" }),
+          osd({ id: 2, up: false, host: "" }),
+        ],
+      }),
+      copies: 2,
+    });
+    expect(phantom).toMatchObject({
+      body: "2 disks started being added and never finished, so nothing is stored on them yet. Switch them off and on again to retry. Nothing is at risk.",
+    });
+  });
+
+  it("a single copy spread per disk warns about a disk failing", () => {
+    expect(
+      protectionLine(target({ size: 1, failure_domain: "osd" }))?.text,
+    ).toBe(
+      "Everything is stored once. If a disk fails, what was on it is gone — backups are your only copy.",
+    );
+  });
+
+  it("without usage numbers only the images are listed", () => {
+    expect(usageRows(undefined, [], [], 9).map((r) => r.key)).toEqual([
+      "images",
+    ]);
+  });
+});

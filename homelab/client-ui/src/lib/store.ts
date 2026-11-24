@@ -115,7 +115,7 @@ export function inCollection(
 }
 
 export function githubUrl(app: Pick<CatalogApp, "github">): string | null {
-  return /^[\w.-]+\/[\w.-]+$/.test(app.github ?? "")
+  return /^[\w.-]+\/[\w.-]+$/.test(app.github)
     ? `https://github.com/${app.github}`
     : null;
 }

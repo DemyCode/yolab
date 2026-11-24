@@ -438,3 +438,41 @@ describe("spaceToFit", () => {
     expect(spaceToFit(10)).toBe(1_000_000_000);
   });
 });
+
+describe("backups edge cases", () => {
+  it("a stored service without a name is named after its namespace", () => {
+    const [got] = backupServices(
+      [],
+      [
+        {
+          namespace: "yolab-gone",
+          instance_name: "",
+          installed: true,
+          versions: [],
+        },
+      ],
+    );
+    expect(got.name).toBe(serviceName("yolab-gone"));
+  });
+
+  it("a service never saved says only that it is saved", () => {
+    const service: BackupService = {
+      namespace: "ns",
+      name: "n",
+      appId: "gitea",
+      installed: true,
+      protection: app({ last_ok_at: null }),
+      copies: 1,
+      sizeBytes: null,
+    };
+    expect(serviceDetail(service, NOW)).toBe(
+      `Saved · ${scheduleLabel("0 3 * * *")}`,
+    );
+  });
+
+  it("a failed backup without a reason still says it failed", () => {
+    expect(
+      serviceBanner(app({ state: "failed", error: null }), null, NOW),
+    ).toEqual({ kind: "failed", error: "The last backup failed." });
+  });
+});

@@ -7,6 +7,7 @@ import {
   oneBanner,
   recentlyFinished,
   type Heal,
+  type HealProblem,
   type HealStatus,
   type MachineReset,
 } from "./heal";
@@ -157,5 +158,25 @@ describe("the heal banner", () => {
       ),
     ).toBe("warning");
     expect(recentlyFinished(finishedHeal(1000), 1000 + 25 * 3600)).toBe(false);
+  });
+});
+
+describe("the heal banner while healing", () => {
+  it("is informational while a heal runs, even with problems", () => {
+    const running = {
+      ...status([]),
+      problems: ["machines_gone"] as HealProblem[],
+      heal: { ...finishedHeal(1000), running: true, finished_at: null },
+    };
+    expect(healBannerTone(running, 0)).toBe("info");
+  });
+
+  it("is informational while this machine is being reset", () => {
+    expect(
+      healBannerTone(
+        status([machine({ this_machine: true, reset: reset("armed") })]),
+        0,
+      ),
+    ).toBe("info");
   });
 });

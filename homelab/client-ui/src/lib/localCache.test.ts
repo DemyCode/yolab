@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MAX_AGE_MS, forgetAll, recall, remember } from "./localCache";
 
 describe("localCache", () => {
@@ -45,5 +45,92 @@ describe("localCache", () => {
   it("treats a corrupt entry as nothing remembered", () => {
     localStorage.setItem("yolab:cache:v1:apps", "{not json");
     expect(recall("apps")).toBeNull();
+  });
+});
+
+describe("localCache without working storage", () => {
+  beforeEach(() => {
+    forgetAll();
+    localStorage.clear();
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it("knows nothing about a key it was never told", () => {
+    expect(recall("never-told")).toBeNull();
+  });
+
+  it("ignores a stored entry that is not a remembered value", () => {
+    for (const raw of [
+      "null",
+      '{"data":1}',
+      '{"savedAt":"x","data":1}',
+      '{"savedAt":1}',
+    ]) {
+      localStorage.setItem("yolab:cache:v1:odd", raw);
+      expect(recall("odd", 1), raw).toBeNull();
+    }
+  });
+
+  it("still remembers in memory when there is no localStorage", () => {
+    vi.stubGlobal("localStorage", undefined);
+    remember("k", 1, 10);
+    expect(recall("k", 10)).toEqual({ data: 1, savedAt: 10 });
+    forgetAll();
+    expect(recall("k", 10)).toBeNull();
+  });
+
+  it("still remembers in memory when localStorage refuses to be opened", () => {
+    const real = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+    Object.defineProperty(globalThis, "localStorage", {
+      configurable: true,
+      get() {
+        throw new Error("blocked");
+      },
+    });
+    try {
+      remember("k", 2, 10);
+      expect(recall("k", 10)).toEqual({ data: 2, savedAt: 10 });
+    } finally {
+      Object.defineProperty(globalThis, "localStorage", real!);
+    }
+  });
+
+  it("keeps the value in memory when localStorage is full", () => {
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("quota");
+    });
+    remember("k", 3, 10);
+    expect(recall("k", 10)).toEqual({ data: 3, savedAt: 10 });
+  });
+
+  it("forgets from memory even when localStorage cannot be listed", () => {
+    localStorage.setItem("unrelated", "x");
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("quota");
+    });
+    remember("k", 4, 10);
+    vi.spyOn(Storage.prototype, "key").mockImplementation(() => {
+      throw new Error("blocked");
+    });
+    forgetAll();
+    expect(recall("k", 10)).toBeNull();
+  });
+
+  it("an old value is dropped even when localStorage cannot remove it", () => {
+    remember("k", 5, 0);
+    vi.spyOn(Storage.prototype, "removeItem").mockImplementation(() => {
+      throw new Error("blocked");
+    });
+    expect(recall("k", MAX_AGE_MS + 1)).toBeNull();
+  });
+
+  it("a stored entry that cannot be read is nothing remembered", () => {
+    vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+      throw new Error("blocked");
+    });
+    expect(recall("k")).toBeNull();
   });
 });

@@ -4,6 +4,7 @@ import {
   appLinks,
   appState,
   appLabel,
+  appStateLabel,
   appDisplayName,
   installedByChart,
   newerVersion,
@@ -604,5 +605,83 @@ describe("the home screen", () => {
   it("an app whose chart left the catalog is shown on its own", () => {
     const gone = app({ app_id: "gone", instance_name: "gone" });
     expect(homeLayout([gone], catalog)).toEqual({ apps: [gone], packs: [] });
+  });
+});
+
+describe("apps edge cases", () => {
+  const now = Date.parse("2026-10-01T10:00:00Z");
+
+  it("an app with no outputs has no links", () => {
+    expect(appLinks(app({ outputs: undefined }))).toEqual([]);
+  });
+
+  it("a running app without detail shows no extra label", () => {
+    expect(appLabel(app({ detail: " " }), "ready")).toBe("");
+  });
+
+  it("names every busy state", () => {
+    expect(appStateLabel("copying")).toBe("Copying files…");
+    expect(appStateLabel("starting")).toBe("Starting up…");
+    expect(appStateLabel("removing")).toBe("Removing…");
+    expect(appStateLabel("ready")).toBe("");
+    expect(appStatus("removing")).toEqual({
+      tone: "busy",
+      label: "Being removed",
+    });
+    expect(appStatus("copying")).toEqual({
+      tone: "busy",
+      label: "Copying its files",
+    });
+  });
+
+  it("a lone app is named after its catalog entry without a list of installs", () => {
+    const catalog = [{ id: "gitea", name: "Gitea" }] as CatalogApp[];
+    expect(appDisplayName(app(), catalog)).toBe("Gitea");
+  });
+
+  it("a copy without an address or instance id still gets a suffix", () => {
+    const a = app({ config: {}, instance_id: undefined });
+    expect(appDisplayName(a, [], [a, app()])).toBe("gitea ()");
+  });
+
+  it("a finished restore without an end time is not shown", () => {
+    const r: RestoreRecord = {
+      id: "r",
+      namespace: "ns",
+      started_at: "2026-10-01T09:00:00Z",
+      finished_at: null,
+      state: "succeeded",
+    };
+    expect(latestRestore([r], "ns", now)).toBeNull();
+  });
+
+  it("an unreadable retry time gives no note", () => {
+    expect(waitNote(app({ retry_at: "soon" }), "failed", now)).toBeNull();
+  });
+
+  it("an app that just started says so", () => {
+    const since = new Date(now - 10_000).toISOString();
+    expect(waitNote(app({ since }), "copying", now)).toBe(
+      "Started a few seconds ago.",
+    );
+  });
+
+  it("a pod without containers has no stuck part", () => {
+    expect(
+      podProblem({ name: "p", phase: "Pending", ready: false }),
+    ).toBeNull();
+  });
+
+  it("ungrouped pods come first whichever order they arrive in", () => {
+    const p = (name: string, member: string | null) => ({
+      name,
+      member,
+      phase: "Running",
+      ready: true,
+    });
+    const members = (pods: ReturnType<typeof p>[]) =>
+      podsByMember(pods).map((g) => g.member);
+    expect(members([p("a", "x"), p("b", null)])).toEqual([null, "x"]);
+    expect(members([p("b", null), p("a", "x")])).toEqual([null, "x"]);
   });
 });

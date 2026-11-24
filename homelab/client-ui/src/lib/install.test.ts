@@ -16,6 +16,7 @@ import {
   runningFromBackup,
 } from "./install";
 import type { AppDefinition } from "@/types/apps";
+import type { InstallOrigin } from "./install";
 import type { ConfigSchema } from "./schema";
 
 function definition(over: Partial<AppDefinition> = {}): AppDefinition {
@@ -642,5 +643,75 @@ describe("where a restored backup goes", () => {
 
   it("can only bring a removed service back as a new one", () => {
     expect(restoreTargets(null)).toEqual(["new"]);
+  });
+});
+
+describe("install edge cases", () => {
+  const origin = (over: Partial<InstallOrigin>): InstallOrigin => ({
+    mode: "fresh",
+    fromInstance: null,
+    namespace: null,
+    snapshot: null,
+    ...over,
+  });
+
+  it("sends empty names when the origin lost them", () => {
+    expect(installSource(origin({ mode: "duplicate" }), true, "")).toEqual({
+      kind: "duplicate",
+      from_instance: "",
+      with_data: true,
+    });
+    expect(installSource(origin({ mode: "restore" }), false, "")).toEqual({
+      kind: "backup",
+      namespace: "",
+      snapshot_id: "",
+      with_data: false,
+    });
+  });
+
+  it("a folder switch on without a folder chosen copies into a new folder", () => {
+    expect(filesFolderCopy({ files_folder_existing: true }, {})).toEqual({
+      kind: "new",
+      from: "",
+      to: "",
+    });
+  });
+
+  it("editing an app that is not loaded yet has no name", () => {
+    expect(instanceNameFor("edit", "gitea", null)).toBe("");
+  });
+
+  it("a schema without fields seeds nothing", () => {
+    expect(seedForm({}, null, "fresh", () => "x")).toEqual({});
+  });
+
+  it("a revealed credential without a minimum length gets 24 characters", () => {
+    const lengths: number[] = [];
+    const seed = seedForm(
+      {
+        properties: { on: { type: "boolean", default: true } },
+        dependencies: {
+          on: {
+            oneOf: [
+              { properties: { on: { const: false } } },
+              {
+                properties: {
+                  on: { const: true },
+                  secret: { type: "string", writeOnly: true, generate: true },
+                },
+              },
+            ],
+          },
+        },
+      },
+      null,
+      "fresh",
+      (n) => {
+        lengths.push(n);
+        return "y".repeat(n);
+      },
+    );
+    expect(seed.secret).toBe("y".repeat(24));
+    expect(lengths).toEqual([24]);
   });
 });

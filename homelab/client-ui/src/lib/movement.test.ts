@@ -269,3 +269,76 @@ describe("percent and reach", () => {
     expect(needsAttentionEverywhere(movement({ state: "no_room" }))).toBe(true);
   });
 });
+
+describe("movement edge cases", () => {
+  it("a move off no named disk names nothing", () => {
+    const copy = movementCopy(movement({ move_reason: "draining" }));
+    expect(copy?.headline).toBe("Moving your files off ");
+  });
+
+  it("says another copy when the count is not two or three", () => {
+    for (const copies of [null, 4]) {
+      const copy = movementCopy(
+        movement({ copies, jobs: [job({ kind: "add_copies" })] }),
+      );
+      expect(copy?.headline).toBe("Adding another copy of every file");
+    }
+  });
+
+  it("adding copies without a chosen count says only that old copies stay", () => {
+    const copy = movementCopy(
+      movement({ copies: null, jobs: [job({ kind: "add_copies" })] }),
+    );
+    expect(copy?.jobs[0].note).toBe(
+      "Until this finishes, each file still has the copies it had before.",
+    );
+  });
+
+  it("rebuilding without a known missing machine says only that it rebuilds", () => {
+    const copy = movementCopy(movement({ jobs: [job({ kind: "rebuild" })] }));
+    expect(copy?.headline).toBe("Rebuilding missing copies");
+  });
+
+  it("work with no jobs listed is called rearranging", () => {
+    expect(movementCopy(movement({ jobs: [] }))?.headline).toBe(
+      "Rearranging your files across your disks",
+    );
+  });
+
+  it("running out of room is an error everywhere", () => {
+    const m = movement({ state: "no_room" });
+    expect(movementCopy(m)).toEqual({
+      headline: "Not enough room to finish reorganising your files",
+      safety: "Add a disk, or free some space, and it carries on by itself.",
+      tone: "error",
+      jobs: movementCopy(m)?.jobs,
+    });
+    expect(movementCopy(m)?.jobs).toHaveLength(1);
+  });
+
+  it("a restart names the machine when it is known, and lists no jobs", () => {
+    const named = movementCopy(
+      movement({ state: "restarting", waiting_for: ["node1", "node2"] }),
+    );
+    expect(named?.headline).toBe("node1 and node2 are restarting");
+    expect(
+      movementCopy(movement({ state: "restarting", waiting_for: ["node1"] }))
+        ?.headline,
+    ).toBe("node1 is restarting");
+    expect(named?.jobs).toEqual([]);
+    expect(named?.tone).toBe("calm");
+    expect(movementCopy(movement({ state: "restarting" }))?.headline).toBe(
+      "A machine is restarting",
+    );
+  });
+});
+
+describe("overallProgress without byte counts", () => {
+  it("averages only the jobs that report progress", () => {
+    expect(
+      overallProgress(
+        movement({ jobs: [job({ progress: 0.5 }), job({ progress: null })] }),
+      ),
+    ).toBe(0.5);
+  });
+});
