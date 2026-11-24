@@ -272,17 +272,17 @@ mod tests {
             normalise_url("   ").unwrap_err(),
             "Enter the address of your box."
         );
-        assert_eq!(
-            normalise_url("https://exa mple").unwrap_err(),
-            "That is not a valid address."
-        );
-        for no_host in ["file:///etc/passwd", "javascript:alert(1)"] {
+        for invalid in ["https://exa mple", "javascript:alert(1)"] {
             assert_eq!(
-                normalise_url(no_host).unwrap_err(),
-                "That address has no host name.",
-                "{no_host}"
+                normalise_url(invalid).unwrap_err(),
+                "That is not a valid address.",
+                "{invalid}"
             );
         }
+        assert_eq!(
+            normalise_url("file:///etc/passwd").unwrap_err(),
+            "That address has no host name."
+        );
         assert_eq!(
             normalise_url("ftp://box.example").unwrap_err(),
             "ftp:// is not an address this can open."
