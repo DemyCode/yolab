@@ -129,8 +129,6 @@ export function AppAccess({
     }
   }, [instanceName]);
 
-  // Load now and every POLL_MS; state is only set from the request's
-  // callbacks, and a response for an app we left is dropped.
   useEffect(() => {
     let live = true;
     const load = () =>
