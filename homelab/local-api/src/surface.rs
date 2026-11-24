@@ -131,6 +131,12 @@ mod tests {
     }
 
     #[test]
+    #[should_panic(expected = "unknown method in ROUTE_TABLE: PATCH")]
+    fn a_method_the_auth_checks_cannot_send_fails_the_route_table_check() {
+        verbs(&["PATCH"]);
+    }
+
+    #[test]
     fn no_route_runs_a_command_the_caller_typed() {
         for (path, _) in ROUTE_TABLE {
             assert!(

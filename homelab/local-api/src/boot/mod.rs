@@ -36,3 +36,14 @@ pub async fn run(args: &[String]) -> i32 {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_missing_or_unknown_subcommand_is_a_usage_error() {
+        assert_eq!(run(&[]).await, 2);
+        assert_eq!(run(&["reboot-everything".to_string()]).await, 2);
+    }
+}

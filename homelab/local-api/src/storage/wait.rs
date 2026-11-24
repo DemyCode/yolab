@@ -11,3 +11,14 @@ pub fn not_yet(a: Attempt<()>) -> String {
         Attempt::Ready(()) => panic!("expected NotYet"),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[should_panic(expected = "expected NotYet")]
+    fn a_test_that_expects_waiting_fails_loudly_when_the_step_was_ready() {
+        not_yet(Attempt::Ready(()));
+    }
+}

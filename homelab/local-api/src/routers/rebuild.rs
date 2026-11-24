@@ -119,4 +119,16 @@ mod tests {
         std::fs::write(&m.cfg.rebuild_log, "building\nactivating\n").unwrap();
         assert_eq!(m.read().log, ["building", "activating"]);
     }
+
+    #[tokio::test]
+    async fn the_page_reads_no_rebuild_on_a_machine_that_never_ran_one() {
+        let api = crate::testkit::TestApi::provisioned().login().await;
+        let res = api.get("/api/rebuild-log").await;
+        assert_eq!(
+            res.json(),
+            serde_json::json!({ "running": false, "log": [] }),
+            "{}",
+            res.body
+        );
+    }
 }

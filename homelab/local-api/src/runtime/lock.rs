@@ -29,16 +29,20 @@ fn open(dir: &Path, name: &str) -> std::io::Result<File> {
         .open(path_in(dir, name))
 }
 
-pub fn try_acquire_in(dir: &Path, name: &str) -> std::io::Result<Option<LockGuard>> {
-    let file = open(dir, name)?;
-    match file.try_lock() {
-        Ok(()) => Ok(Some(LockGuard {
-            _file: file,
-            name: name.to_string(),
-        })),
-        Err(TryLockError::WouldBlock) => Ok(None),
+fn taken(attempt: Result<(), TryLockError>) -> std::io::Result<bool> {
+    match attempt {
+        Ok(()) => Ok(true),
+        Err(TryLockError::WouldBlock) => Ok(false),
         Err(TryLockError::Error(e)) => Err(e),
     }
+}
+
+pub fn try_acquire_in(dir: &Path, name: &str) -> std::io::Result<Option<LockGuard>> {
+    let file = open(dir, name)?;
+    Ok(taken(file.try_lock())?.then(|| LockGuard {
+        _file: file,
+        name: name.to_string(),
+    }))
 }
 
 pub async fn acquire(name: &str, timeout: Duration) -> std::io::Result<Option<LockGuard>> {
@@ -74,6 +78,25 @@ mod tests {
         assert!(try_acquire_in(dir.path(), "store").unwrap().is_none());
         drop(first);
         assert!(try_acquire_in(dir.path(), "store").unwrap().is_some());
+    }
+
+    #[test]
+    fn a_lock_the_kernel_refuses_is_an_error_not_a_lock_someone_else_holds() {
+        let refused = TryLockError::Error(std::io::Error::from(std::io::ErrorKind::Unsupported));
+        assert_eq!(
+            taken(Err(refused)).unwrap_err().kind(),
+            std::io::ErrorKind::Unsupported
+        );
+        assert!(!taken(Err(TryLockError::WouldBlock)).unwrap());
+        assert!(taken(Ok(())).unwrap());
+    }
+
+    #[test]
+    fn a_lock_folder_that_cannot_be_made_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("not-a-folder");
+        std::fs::write(&file, "").unwrap();
+        assert!(try_acquire_in(&file, "store").is_err());
     }
 
     #[test]

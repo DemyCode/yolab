@@ -98,6 +98,27 @@ mod tests {
         async fn pause(&self, _d: Duration) {}
     }
 
+    struct RealPause;
+
+    impl Fleet for RealPause {
+        async fn act(&self, _node: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+        async fn settled(&self, _node: &str) -> bool {
+            true
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_fleet_s_own_pause_waits_the_whole_poll_on_the_clock() {
+        let fleet = RealPause;
+        fleet.act("n1").await.unwrap();
+        assert!(fleet.settled("n1").await);
+        let before = tokio::time::Instant::now();
+        fleet.pause(Duration::from_secs(7)).await;
+        assert_eq!(before.elapsed(), Duration::from_secs(7));
+    }
+
     fn nodes(v: &[&str]) -> Vec<String> {
         v.iter().map(|s| s.to_string()).collect()
     }

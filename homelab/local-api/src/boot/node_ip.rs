@@ -8,19 +8,27 @@ use crate::host::Host;
 const DEFAULT_MAX_ATTEMPTS: u32 = 30;
 const DEFAULT_RETRY_DELAY: Duration = Duration::from_secs(10);
 
-fn max_attempts() -> u32 {
-    std::env::var("YOLAB_NODE_IP_MAX_ATTEMPTS")
-        .ok()
-        .and_then(|v| v.parse().ok())
+fn max_attempts_from(raw: Option<&str>) -> u32 {
+    raw.and_then(|v| v.parse().ok())
         .unwrap_or(DEFAULT_MAX_ATTEMPTS)
 }
 
-fn retry_delay() -> Duration {
-    std::env::var("YOLAB_NODE_IP_RETRY_DELAY_SECS")
-        .ok()
-        .and_then(|v| v.parse().ok())
+fn retry_delay_from(raw: Option<&str>) -> Duration {
+    raw.and_then(|v| v.parse().ok())
         .map(Duration::from_secs)
         .unwrap_or(DEFAULT_RETRY_DELAY)
+}
+
+fn max_attempts() -> u32 {
+    max_attempts_from(std::env::var("YOLAB_NODE_IP_MAX_ATTEMPTS").ok().as_deref())
+}
+
+fn retry_delay() -> Duration {
+    retry_delay_from(
+        std::env::var("YOLAB_NODE_IP_RETRY_DELAY_SECS")
+            .ok()
+            .as_deref(),
+    )
 }
 
 fn parse_src_ip(route_get_output: &str) -> Option<String> {
@@ -100,6 +108,16 @@ mod tests {
             node_ip_line("fd00:cafe::1", "10.0.0.42"),
             "node-ip: fd00:cafe::1,10.0.0.42\n"
         );
+    }
+
+    #[test]
+    fn the_retry_settings_can_be_overridden_and_fall_back_when_unreadable() {
+        assert_eq!(max_attempts_from(Some("3")), 3);
+        assert_eq!(max_attempts_from(Some("many")), DEFAULT_MAX_ATTEMPTS);
+        assert_eq!(max_attempts_from(None), DEFAULT_MAX_ATTEMPTS);
+        assert_eq!(retry_delay_from(Some("2")), Duration::from_secs(2));
+        assert_eq!(retry_delay_from(Some("-1")), DEFAULT_RETRY_DELAY);
+        assert_eq!(retry_delay_from(None), DEFAULT_RETRY_DELAY);
     }
 
     #[tokio::test]

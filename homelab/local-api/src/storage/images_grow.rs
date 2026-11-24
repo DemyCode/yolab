@@ -149,6 +149,56 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_ext4_store_is_grown_through_its_device() {
+        let host = FakeHost::new()
+            .ok("ceph -s", "")
+            .ok("findmnt -rno SOURCE --mountpoint", "/dev/rbd0\n")
+            .ok("rbd info images/yolab-n1", r#"{"size":41943040000}"#)
+            .ok(
+                "ceph osd tree",
+                r#"{"nodes":[{"type":"host","children":[1]}]}"#,
+            )
+            .ok("ceph df", r#"{"stats":{"total_bytes":419430400000}}"#)
+            .ok("ceph osd pool get images size", r#"{"size":1}"#)
+            .ok("rbd resize", "")
+            .ok("resize2fs", "");
+        let ext4 = GrowPolicy {
+            filesystem: Filesystem::Ext4,
+            ..policy()
+        };
+        let dir = tempfile::tempdir().unwrap();
+        run(&host, dir.path(), "yolab-n1", &ext4).await.unwrap();
+        assert!(host.ran("resize2fs /dev/rbd0"));
+        assert!(!host.ran("xfs_growfs"));
+    }
+
+    #[tokio::test]
+    async fn an_image_whose_size_is_unreadable_is_an_error_not_a_resize() {
+        let host = FakeHost::new()
+            .ok("ceph -s", "")
+            .ok("findmnt -rno SOURCE --mountpoint", "/dev/rbd0\n")
+            .ok("rbd info images/yolab-n1", r#"{"name":"yolab-n1"}"#);
+        let dir = tempfile::tempdir().unwrap();
+        let err = run(&host, dir.path(), "yolab-n1", &policy())
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("has no size"), "{err}");
+        assert!(!host.ran("rbd resize"));
+    }
+
+    #[tokio::test]
+    async fn an_unreadable_pool_capacity_grows_nothing() {
+        let host = FakeHost::new()
+            .ok("ceph -s", "")
+            .ok("findmnt -rno SOURCE --mountpoint", "/dev/rbd0\n")
+            .ok("rbd info images/yolab-n1", r#"{"size":41943040000}"#)
+            .fail("ceph osd tree", "timed out");
+        let dir = tempfile::tempdir().unwrap();
+        run(&host, dir.path(), "yolab-n1", &policy()).await.unwrap();
+        assert!(!host.ran("rbd resize"));
+    }
+
+    #[tokio::test]
     async fn a_failed_resize_never_grows_the_filesystem() {
         let host = FakeHost::new()
             .ok("ceph -s", "")

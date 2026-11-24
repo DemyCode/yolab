@@ -428,6 +428,19 @@ mod tests {
         assert!(host.ran("ceph-volume lvm zap --destroy /dev/sdb"));
     }
 
+    #[tokio::test]
+    async fn a_stale_signature_is_wiped_without_touching_the_disk_s_volume_group() {
+        let refusal = CmdError::failed(
+            "ceph-volume lvm create",
+            "RuntimeError: device /dev/sdb has a filesystem signature",
+        );
+        let warrant = ZapWarrant::stale_signature(&refusal).unwrap();
+        let host = FakeHost::new().ok("ceph-volume lvm zap", "");
+        zap(&host, "/dev/sdb", warrant).await.unwrap();
+        assert!(host.ran("ceph-volume lvm zap /dev/sdb"));
+        assert!(!host.ran("--destroy"));
+    }
+
     #[test]
     fn a_stale_signature_warrant_needs_the_real_refusal() {
         let refusal = CmdError::failed(

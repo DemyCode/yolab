@@ -130,6 +130,18 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_marker_that_cannot_be_removed_fails_the_clear_and_names_it() {
+        let host = FakeHost::new()
+            .ok("ceph -s", "")
+            .ok("ceph osd unset noout", "");
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(marker_path(dir.path())).unwrap();
+
+        let err = clear(&host, dir.path()).await.unwrap_err();
+        assert!(format!("{err:#}").contains(".yolab-set-noout"), "{err:#}");
+    }
+
+    #[tokio::test]
     async fn set_leaves_an_operators_own_noout_alone() {
         let host = FakeHost::new()
             .ok("ceph -s", "")

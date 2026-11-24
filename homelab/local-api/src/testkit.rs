@@ -194,6 +194,25 @@ impl TestApi {
     }
 }
 
+#[used]
+#[link_section = ".init_array"]
+static FORMAT_EVERY_LOG_LINE: extern "C" fn() = format_every_log_line;
+
+extern "C" fn format_every_log_line() {
+    let subscriber = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::TRACE)
+        .with_writer(std::io::sink)
+        .finish();
+    tracing::subscriber::set_global_default(subscriber)
+        .expect("nothing else sets the log subscriber before the tests start");
+}
+
+#[test]
+fn every_log_line_is_formatted_in_tests_so_a_broken_message_fails_them() {
+    assert!(tracing::enabled!(tracing::Level::TRACE));
+    tracing::trace!("formatted {}", 1);
+}
+
 pub(crate) const PEER: &str = "::1";
 
 pub(crate) fn http() -> crate::http::Client {

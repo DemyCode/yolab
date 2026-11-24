@@ -106,6 +106,16 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_machine_with_no_prepared_osds_asks_the_cluster_nothing() {
+        let host = FakeHost::new()
+            .ok("ceph-volume lvm list", "{}")
+            .ok("ceph fsid", OURS);
+        run(&host).await.unwrap();
+        assert!(!host.ran("ceph osd ls"));
+        assert!(!host.ran("systemctl"));
+    }
+
+    #[tokio::test]
     async fn a_running_osd_is_left_alone() {
         let host = FakeHost::new()
             .ok("ceph-volume lvm list", &listing())

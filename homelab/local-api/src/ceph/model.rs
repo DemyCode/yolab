@@ -264,7 +264,8 @@ mod tests {
               {"pgid":"3.0","state":"down","up":[1],"acting":[1]},
               {"pgid":"3.1","state":"active+degraded","up":[0,1],"acting":[0,1]},
               {"pgid":"1.0","state":"unknown","up":[0],"acting":[0]},
-              {"pgid":"3.2","state":"unknown","up":[],"acting":[]}
+              {"pgid":"3.2","state":"unknown","up":[],"acting":[]},
+              {"pgid":"9.0","state":"down","up":[1],"acting":[1]}
             ]"#,
         )
         .unwrap();

@@ -120,6 +120,57 @@ mod tests {
     }
 
     #[test]
+    fn each_kind_of_command_failure_answers_with_its_own_status() {
+        let status = |e: CmdError| status_for(&anyhow::Error::new(e));
+        assert_eq!(
+            status(CmdError::Spawn {
+                cmd: "ceph -s".into(),
+                source: std::io::Error::from(std::io::ErrorKind::NotFound),
+            }),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        assert_eq!(
+            status(CmdError::Busy {
+                cmd: "ceph -s".into()
+            }),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        assert_eq!(
+            status(CmdError::Forbidden {
+                cmd: "ceph osd purge".into()
+            }),
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            status(CmdError::Failed {
+                cmd: "ceph osd create".into(),
+                kind: Failure::AlreadyExists,
+                stderr: String::new(),
+            }),
+            StatusCode::CONFLICT
+        );
+        assert_eq!(
+            status(CmdError::Failed {
+                cmd: "ceph osd pool set".into(),
+                kind: Failure::Other,
+                stderr: String::new(),
+            }),
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
+        assert_eq!(
+            status(CmdError::Parse {
+                cmd: "ceph -s".into(),
+                detail: "not json".into(),
+            }),
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
+        assert_eq!(
+            status_for(&anyhow::anyhow!("plain")),
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
+    }
+
+    #[test]
     fn best_effort_results_keep_the_value_and_drop_only_the_error() {
         let ok: std::result::Result<u8, String> = Ok(7);
         let err: std::result::Result<u8, String> = Err("boom".into());

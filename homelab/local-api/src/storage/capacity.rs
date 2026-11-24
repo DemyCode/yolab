@@ -123,17 +123,13 @@ pub(crate) fn free_for_new_data(osds: &[Osd], copies: u32, spread: Spread) -> u6
         return 0;
     }
     let weights: Vec<f64> = domains.iter().map(|d| d.weight).collect();
-    let free = domains
+    domains
         .iter()
         .zip(shares(&weights, copies))
         .filter(|(_, share)| *share > 0.0)
         .map(|(d, share)| d.room / share)
-        .fold(f64::INFINITY, f64::min);
-    if free.is_finite() {
-        free.floor() as u64
-    } else {
-        0
-    }
+        .reduce(f64::min)
+        .map_or(0, |free| free.floor() as u64)
 }
 
 #[cfg(test)]

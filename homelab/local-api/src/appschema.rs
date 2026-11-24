@@ -280,6 +280,20 @@ mod tests {
     }
 
     #[test]
+    fn every_format_the_page_knows_is_read_from_the_chart() {
+        assert_eq!(Format::parse(Some("uri")), Format::Uri);
+        assert_eq!(Format::parse(Some("secret")), Format::Secret);
+        assert_eq!(Format::parse(Some("multiline")), Format::Multiline);
+        assert_eq!(Format::parse(Some("text")), Format::Text);
+    }
+
+    #[test]
+    fn the_form_is_the_chart_s_own_config_section() {
+        let app = explorer_app();
+        assert_eq!(app.config()["properties"]["password"]["writeOnly"], true);
+    }
+
+    #[test]
     fn a_chart_with_no_schema_has_an_empty_form_and_no_outputs() {
         let app = AppSchema::new(Value::Null);
         assert_eq!(app.config()["type"], json!("object"));
