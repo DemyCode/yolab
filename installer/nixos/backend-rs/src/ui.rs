@@ -427,7 +427,7 @@ fn render_account_join(f: &mut Frame, area: Rect, app: &mut App) {
         false,
         app.join_field == 0,
     );
-    app.click_areas.push((url_rect, ClickTarget::CfgField(10)));
+    app.click_areas.push((url_rect, ClickTarget::JoinField(0)));
 
     let pass_rect = rows[4];
     render_input(
@@ -438,7 +438,7 @@ fn render_account_join(f: &mut Frame, area: Rect, app: &mut App) {
         true,
         app.join_field == 1,
     );
-    app.click_areas.push((pass_rect, ClickTarget::CfgField(11)));
+    app.click_areas.push((pass_rect, ClickTarget::JoinField(1)));
 
     render_button(
         f,
@@ -866,5 +866,547 @@ fn centered_rect(width_pct: u16, height_pct: u16, area: Rect) -> Rect {
         y: area.y + (area.height - h) / 2,
         width: w,
         height: h,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::{backend::TestBackend, buffer::Buffer, Terminal};
+
+    const W: u16 = 120;
+    const H: u16 = 50;
+
+    fn ready(step: Step) -> App {
+        let mut app = App::new("uefi");
+        app.loading = false;
+        app.network_ready = true;
+        app.mode = Some(ClusterMode::New);
+        app.step = step;
+        app
+    }
+
+    fn draw_sized(app: &mut App, w: u16, h: u16) -> Buffer {
+        let mut t = Terminal::new(TestBackend::new(w, h)).unwrap();
+        app.click_areas.clear();
+        t.draw(|f| render(f, app)).unwrap();
+        t.backend().buffer().clone()
+    }
+
+    fn draw(app: &mut App) -> Buffer {
+        draw_sized(app, W, H)
+    }
+
+    fn row(buf: &Buffer, y: u16) -> String {
+        (0..buf.area.width)
+            .map(|x| buf.cell((x, y)).unwrap().symbol().to_string())
+            .collect()
+    }
+
+    fn find(buf: &Buffer, text: &str) -> Option<(u16, u16)> {
+        (0..buf.area.height).find_map(|y| {
+            let r = row(buf, y);
+            r.find(text).map(|i| (r[..i].chars().count() as u16, y))
+        })
+    }
+
+    fn at(buf: &Buffer, text: &str) -> (u16, u16) {
+        find(buf, text).expect("the text is on screen")
+    }
+
+    fn fg(buf: &Buffer, text: &str) -> Color {
+        buf.cell(at(buf, text)).unwrap().fg
+    }
+
+    fn bg(buf: &Buffer, text: &str) -> Color {
+        buf.cell(at(buf, text)).unwrap().bg
+    }
+
+    fn shows(buf: &Buffer, text: &str) -> bool {
+        find(buf, text).is_some()
+    }
+
+    fn target_at(app: &App, (x, y): (u16, u16)) -> Option<ClickTarget> {
+        app.click_areas
+            .iter()
+            .find(|(r, _)| r.contains(ratatui::layout::Position { x, y }))
+            .map(|(_, t)| t.clone())
+    }
+
+    #[test]
+    fn the_header_counts_steps_and_names_the_boot_mode() {
+        let mut app = ready(Step::Disk);
+        let buf = draw(&mut app);
+        assert!(shows(&buf, "Step 3 / 5"));
+        assert_eq!(fg(&buf, "UEFI"), GREEN);
+
+        let mut app = ready(Step::Install);
+        app.boot_mode = "bios".into();
+        let buf = draw(&mut app);
+        assert!(shows(&buf, "Step 5 / 5"));
+        assert_eq!(fg(&buf, "BIOS"), Color::Rgb(251, 191, 36));
+        assert!(!shows(&buf, "UEFI"));
+    }
+
+    #[test]
+    fn the_header_rule_fills_the_width_left_over_by_the_title() {
+        let mut app = ready(Step::Mode);
+        let buf = draw(&mut app);
+        assert_eq!(row(&buf, 0).matches('─').count(), (W - 38) as usize);
+        assert_eq!(fg(&buf, "Yo"), WHITE);
+        assert_eq!(fg(&buf, "Lab"), PURPLE);
+    }
+
+    #[test]
+    fn the_footer_lists_the_keys_each_step_takes() {
+        let cases = [
+            (Step::Mode, "↑↓ / Click  Select"),
+            (Step::Disk, "↑↓ / Click  Select"),
+            (Step::Account, "Tab  Switch field"),
+            (Step::Configure, "Tab  Next field"),
+            (Step::Install, "r  Reboot     p  Power off"),
+        ];
+        for (step, hint) in cases {
+            let mut app = ready(step.clone());
+            let buf = draw(&mut app);
+            let (_, y) = at(&buf, hint);
+            assert!(y >= H - 3, "{step:?}: footer hint drawn at row {y}");
+            assert_eq!(fg(&buf, hint), MUTED);
+        }
+    }
+
+    #[test]
+    fn the_sidebar_ticks_finished_steps_and_marks_the_current_one() {
+        let mut app = ready(Step::Disk);
+        let buf = draw(&mut app);
+        assert!(shows(&buf, "✓  Mode"));
+        assert!(shows(&buf, "✓  Account"));
+        assert!(shows(&buf, "▶  Disk"));
+        assert!(shows(&buf, "○  Configure"));
+        assert!(shows(&buf, "○  Install"));
+        assert_eq!(fg(&buf, "Mode"), GREEN);
+        assert_eq!(fg(&buf, "✓  Mode"), GREEN);
+        assert_eq!(fg(&buf, "Disk"), WHITE);
+        assert_eq!(fg(&buf, "▶  Disk"), PURPLE);
+        assert_eq!(fg(&buf, "Configure"), MUTED);
+        assert_eq!(fg(&buf, "○  Install"), MUTED);
+        let (x, _) = at(&buf, "Configure");
+        assert!(x < 22);
+    }
+
+    #[test]
+    fn the_sidebar_says_connect_when_joining() {
+        let mut app = ready(Step::Mode);
+        app.mode = Some(ClusterMode::Join);
+        let buf = draw(&mut app);
+        assert!(shows(&buf, "Connect"));
+        assert!(!shows(&buf, "Account"));
+    }
+
+    #[test]
+    fn while_loading_only_the_wait_message_shows() {
+        let mut app = App::new("uefi");
+        let buf = draw(&mut app);
+        assert!(shows(&buf, "Please wait"));
+        assert!(shows(&buf, "⋯  Waiting for network…"));
+        assert!(!shows(&buf, "Choose your setup"));
+        assert!(app.click_areas.is_empty());
+        let (x, y) = at(&buf, "Please wait");
+        assert!(
+            x > 22 + 10 && y > 3 + 10,
+            "the wait box sits in the middle: {x},{y}"
+        );
+    }
+
+    #[test]
+    fn the_wait_box_is_centred_in_the_content_area() {
+        let area = Rect {
+            x: 20,
+            y: 10,
+            width: 100,
+            height: 50,
+        };
+        assert_eq!(
+            centered_rect(60, 20, area),
+            Rect {
+                x: 40,
+                y: 30,
+                width: 60,
+                height: 10
+            }
+        );
+    }
+
+    #[test]
+    fn padding_shrinks_from_both_sides() {
+        let area = Rect {
+            x: 5,
+            y: 2,
+            width: 20,
+            height: 10,
+        };
+        assert_eq!(
+            padded(area, 3, 1),
+            Rect {
+                x: 8,
+                y: 3,
+                width: 14,
+                height: 8
+            }
+        );
+        assert_eq!(
+            padded(
+                Rect {
+                    x: 0,
+                    y: 0,
+                    width: 2,
+                    height: 1
+                },
+                3,
+                1
+            )
+            .width,
+            0
+        );
+    }
+
+    #[test]
+    fn the_mode_screen_offers_both_setups_and_each_is_clickable() {
+        let mut app = ready(Step::Mode);
+        app.mode_cursor = 1;
+        let buf = draw(&mut app);
+        assert!(shows(&buf, "Choose your setup"));
+        assert!(shows(&buf, "   New cluster"));
+        assert!(shows(&buf, "▶  Join existing cluster"));
+        assert_eq!(fg(&buf, "Join existing cluster"), WHITE);
+        assert_eq!(bg(&buf, "Join existing cluster"), SURFACE);
+        assert_eq!(bg(&buf, "New cluster"), Color::Reset);
+        assert_eq!(
+            target_at(&app, at(&buf, "New cluster")),
+            Some(ClickTarget::ModeOption(0))
+        );
+        assert_eq!(
+            target_at(&app, at(&buf, "Join existing")),
+            Some(ClickTarget::ModeOption(1))
+        );
+        assert!(app.click_areas.iter().all(|(r, _)| r.x >= 22));
+    }
+
+    #[test]
+    fn the_mode_screen_shows_an_error() {
+        let mut app = ready(Step::Mode);
+        app.error = Some("Network not ready".into());
+        let buf = draw(&mut app);
+        assert_eq!(fg(&buf, "⚠  Network not ready"), RED);
+    }
+
+    #[test]
+    fn creating_an_account_asks_only_for_an_optional_referral_code() {
+        let mut app = ready(Step::Account);
+        app.acct_referral = "AB3".into();
+        let buf = draw(&mut app);
+        assert!(shows(&buf, "YoLab account"));
+        assert!(shows(&buf, "Referral code (optional)"));
+        assert!(shows(&buf, " AB3▌"));
+        assert!(shows(&buf, "No email needed."));
+        assert_eq!(fg(&buf, "Create new account"), PURPLE);
+        assert_eq!(fg(&buf, "I have an account"), MUTED);
+        assert_eq!(
+            target_at(&app, at(&buf, "Create account →")),
+            Some(ClickTarget::Btn(BtnId::CreateAcct))
+        );
+        assert_eq!(
+            target_at(&app, at(&buf, "Create new account")),
+            Some(ClickTarget::AcctMethod(0))
+        );
+        assert_eq!(
+            target_at(&app, at(&buf, "I have an account")),
+            Some(ClickTarget::AcctMethod(1))
+        );
+        assert!(!shows(&buf, "Verify token"));
+    }
+
+    #[test]
+    fn an_existing_account_is_verified_by_its_token() {
+        let mut app = ready(Step::Account);
+        app.acct_cursor = 1;
+        app.acct_input = "tok-1".into();
+        let buf = draw(&mut app);
+        assert!(shows(&buf, " Token "));
+        assert!(shows(&buf, " tok-1▌"));
+        assert_eq!(fg(&buf, "I have an account"), PURPLE);
+        assert_eq!(
+            target_at(&app, at(&buf, "Verify token →")),
+            Some(ClickTarget::Btn(BtnId::VerifyToken))
+        );
+        assert!(!shows(&buf, "Referral code"));
+    }
+
+    #[test]
+    fn a_connected_account_offers_to_continue() {
+        let mut app = ready(Step::Account);
+        app.account_token = Some("tok".into());
+        app.error = Some("stale".into());
+        let buf = draw(&mut app);
+        assert_eq!(fg(&buf, "✓ Account connected"), GREEN);
+        assert_eq!(
+            target_at(&app, at(&buf, "Continue →")),
+            Some(ClickTarget::Btn(BtnId::Continue))
+        );
+        assert!(!shows(&buf, "Create account →"));
+        assert!(shows(&buf, "⚠  stale"));
+    }
+
+    #[test]
+    fn a_new_token_is_shown_shortened_with_a_warning_to_save_it() {
+        let mut app = ready(Step::Account);
+        let long = "t".repeat(29) + "XYZ";
+        app.account_token = Some(long.clone());
+        app.created_token = Some(long);
+        let buf = draw(&mut app);
+        assert!(shows(&buf, &format!("{}X…", "t".repeat(29))));
+        assert!(!shows(&buf, "XY"));
+        assert_eq!(fg(&buf, "(save this!)"), RED);
+        assert_eq!(fg(&buf, "tttt"), PURPLE);
+
+        let mut app = ready(Step::Account);
+        app.account_token = Some("short-token".into());
+        app.created_token = Some("short-token".into());
+        let buf = draw(&mut app);
+        assert!(shows(&buf, "Token: short-token…"));
+        let continues = app
+            .click_areas
+            .iter()
+            .filter(|(_, t)| *t == ClickTarget::Btn(BtnId::Continue))
+            .count();
+        assert_eq!(continues, 2);
+    }
+
+    #[test]
+    fn the_account_screen_is_empty_before_a_mode_is_chosen() {
+        let mut app = ready(Step::Account);
+        app.mode = None;
+        let buf = draw(&mut app);
+        assert!(!shows(&buf, "YoLab account"));
+        assert!(!shows(&buf, "Connect to existing node"));
+    }
+
+    #[test]
+    fn joining_asks_for_the_node_url_and_a_hidden_password() {
+        let mut app = ready(Step::Account);
+        app.mode = Some(ClusterMode::Join);
+        app.join_url = "https://box.example".into();
+        app.join_pass = "abc".into();
+        let buf = draw(&mut app);
+        assert!(shows(&buf, "Connect to existing node"));
+        assert!(shows(&buf, " https://box.example▌"));
+        assert!(shows(&buf, " •••"));
+        assert!(!shows(&buf, "abc"));
+        assert!(!shows(&buf, "•••▌"));
+        assert_eq!(
+            target_at(&app, at(&buf, "https://box.example")),
+            Some(ClickTarget::JoinField(0))
+        );
+        assert_eq!(
+            target_at(&app, at(&buf, "•••")),
+            Some(ClickTarget::JoinField(1))
+        );
+        assert_eq!(
+            target_at(&app, at(&buf, "Connect →")),
+            Some(ClickTarget::Btn(BtnId::Connect))
+        );
+
+        app.join_field = 1;
+        app.error = Some("authentication failed".into());
+        let buf = draw(&mut app);
+        assert!(shows(&buf, " •••▌"));
+        assert!(!shows(&buf, "example▌"));
+        assert!(shows(&buf, "⚠  authentication failed"));
+    }
+
+    fn disk(name: &str, recommended: bool, is_usb: bool, mounted: bool) -> DiskInfo {
+        DiskInfo {
+            name: name.into(),
+            size: "500 GB".into(),
+            tran: if is_usb { "usb".into() } else { "nvme".into() },
+            is_usb,
+            mounted,
+            recommended,
+        }
+    }
+
+    #[test]
+    fn with_no_disks_the_disk_screen_says_so() {
+        let mut app = ready(Step::Disk);
+        let buf = draw(&mut app);
+        assert!(shows(&buf, "No disks detected."));
+        assert!(!shows(&buf, "Select installation disk"));
+    }
+
+    #[test]
+    fn each_disk_shows_its_size_and_what_makes_it_a_good_or_bad_choice() {
+        let mut app = ready(Step::Disk);
+        app.disks = vec![
+            disk("/dev/nvme0n1", true, false, false),
+            disk("/dev/sdb", false, true, true),
+        ];
+        app.error = Some("That disk is in use".into());
+        let buf = draw(&mut app);
+        assert_eq!(
+            fg(&buf, "⚠  The selected disk will be completely erased."),
+            RED
+        );
+        assert!(shows(&buf, "▶ /dev/nvme0n1   500 GB  nvme   ★ Recommended"));
+        assert!(shows(&buf, "  /dev/sdb   500 GB  usb   USB   in use"));
+        assert_eq!(fg(&buf, "★ Recommended"), GREEN);
+        assert_eq!(fg(&buf, "USB"), Color::Rgb(129, 140, 248));
+        assert_eq!(fg(&buf, "in use"), RED);
+        assert_eq!(bg(&buf, "/dev/nvme0n1"), SURFACE);
+        assert_eq!(bg(&buf, "/dev/sdb"), Color::Reset);
+        assert_eq!(
+            target_at(&app, at(&buf, "/dev/sdb")),
+            Some(ClickTarget::DiskOption(1))
+        );
+        assert!(shows(&buf, "⚠  That disk is in use"));
+    }
+
+    #[test]
+    fn disks_that_do_not_fit_above_the_error_line_are_left_out() {
+        let mut app = ready(Step::Disk);
+        app.disks = (0..5)
+            .map(|i| disk(&format!("/dev/sd{i}"), false, false, false))
+            .collect();
+        let buf = draw_sized(&mut app, W, 30);
+        assert!(shows(&buf, "/dev/sd2"));
+        assert!(!shows(&buf, "/dev/sd3"));
+        assert_eq!(app.click_areas.len(), 3);
+        let (_, y0) = at(&buf, "/dev/sd0");
+        let (_, y1) = at(&buf, "/dev/sd1");
+        assert_eq!(y1 - y0, 4);
+    }
+
+    #[test]
+    fn the_configure_screen_hides_passwords_and_marks_the_focused_field() {
+        let mut app = ready(Step::Configure);
+        app.timezone = "Europe/Paris".into();
+        app.password = "Secret12".into();
+        app.password2 = "Secret1".into();
+        app.cfg_field = 2;
+        let buf = draw(&mut app);
+        assert!(shows(&buf, "System configuration"));
+        assert!(shows(&buf, " Europe/Paris "));
+        assert!(!shows(&buf, "Europe/Paris▌"));
+        assert!(shows(&buf, " ••••••••"));
+        assert!(shows(&buf, " •••••••▌"));
+        assert!(!shows(&buf, "Secret"));
+        assert_eq!(fg(&buf, "Confirm password"), PURPLE);
+        assert_eq!(fg(&buf, "Timezone"), MUTED);
+        for (label, id) in [
+            ("Timezone", 0),
+            ("Password", 1),
+            ("Confirm password", 2),
+            ("SSH public key", 3),
+        ] {
+            assert_eq!(
+                target_at(&app, at(&buf, label)),
+                Some(ClickTarget::CfgField(id)),
+                "{label}"
+            );
+        }
+        assert_eq!(
+            target_at(&app, at(&buf, "Generate SSH key")),
+            Some(ClickTarget::Btn(BtnId::GenSshKey))
+        );
+        assert!(!shows(&buf, "Private key"));
+    }
+
+    #[test]
+    fn a_generated_private_key_is_shown_once_shortened() {
+        let mut app = ready(Step::Configure);
+        app.gen_privkey = Some("k".repeat(49) + "LMN");
+        app.error = Some("Passwords do not match.".into());
+        let buf = draw(&mut app);
+        assert_eq!(fg(&buf, "Private key (save it!):"), RED);
+        assert!(shows(&buf, &format!("{}L…", "k".repeat(49))));
+        assert!(!shows(&buf, "LM"));
+        assert!(shows(&buf, "⚠  Passwords do not match."));
+
+        app.gen_privkey = Some("short".into());
+        let buf = draw(&mut app);
+        assert!(shows(&buf, "(save it!): short"));
+        assert!(!shows(&buf, "short…"));
+    }
+
+    #[test]
+    fn the_install_log_colours_errors_and_successes_and_keeps_the_latest_lines() {
+        let mut app = ready(Step::Install);
+        app.log_lines = (0..30).map(|i| format!("line {i:02}")).collect();
+        app.log_lines.push("ERROR: disko failed".into());
+        app.log_lines.push("✓ Disk partitioned".into());
+        app.log_lines.push("install complete".into());
+        let buf = draw_sized(&mut app, W, 30);
+        assert!(shows(&buf, "Installing YoLab…"));
+        assert!(shows(&buf, "Progress"));
+        assert_eq!(fg(&buf, "ERROR: disko failed"), RED);
+        assert_eq!(fg(&buf, "✓ Disk partitioned"), GREEN);
+        assert_eq!(fg(&buf, "install complete"), GREEN);
+        assert_eq!(fg(&buf, "line 29"), MUTED);
+        assert!(!shows(&buf, "line 00"));
+        let visible = (0..30)
+            .filter(|i| shows(&buf, &format!("line {i:02}")))
+            .count();
+        assert_eq!(visible, 14);
+    }
+
+    #[test]
+    fn a_finished_install_shows_the_url_and_the_power_buttons() {
+        let mut app = ready(Step::Install);
+        app.install_done = true;
+        app.mgmt_url = Some("https://node1.alice.yolab.io".into());
+        let buf = draw(&mut app);
+        assert_eq!(fg(&buf, "✓  Installation complete!"), GREEN);
+        assert_eq!(fg(&buf, "https://node1.alice.yolab.io"), PURPLE);
+        assert!(shows(&buf, "1.  Remove the installation USB drive"));
+        assert_eq!(
+            target_at(&app, at(&buf, "r  Reboot ")),
+            Some(ClickTarget::Btn(BtnId::Reboot))
+        );
+        assert_eq!(
+            target_at(&app, at(&buf, "p  Power off")),
+            Some(ClickTarget::Btn(BtnId::Poweroff))
+        );
+        assert_eq!(bg(&buf, "r  Reboot "), PURPLE);
+        assert_eq!(fg(&buf, "r  Reboot "), Color::Black);
+        assert_eq!(fg(&buf, "p  Power off"), MUTED);
+        assert_eq!(bg(&buf, "p  Power off"), Color::Reset);
+
+        app.mgmt_url = None;
+        let buf = draw(&mut app);
+        assert!(!shows(&buf, "Management URL"));
+    }
+
+    #[test]
+    fn a_failed_install_shows_why() {
+        let mut app = ready(Step::Install);
+        app.install_failed = true;
+        app.error = Some("disko failed".into());
+        let buf = draw(&mut app);
+        assert_eq!(fg(&buf, "✗  Installation failed"), RED);
+        assert!(shows(&buf, "disko failed"));
+        assert!(!shows(&buf, "Progress"));
+
+        app.error = None;
+        let buf = draw(&mut app);
+        assert!(shows(&buf, "Unknown error"));
+    }
+
+    #[test]
+    fn a_focused_input_has_a_purple_border_and_a_cursor() {
+        let mut app = ready(Step::Configure);
+        let buf = draw(&mut app);
+        let (x, y) = at(&buf, " Timezone ");
+        assert_eq!(buf.cell((x - 1, y)).unwrap().fg, PURPLE);
+        let (x, y) = at(&buf, " Password ");
+        assert_eq!(buf.cell((x - 1, y)).unwrap().fg, BORDER);
     }
 }

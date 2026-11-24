@@ -9,6 +9,10 @@
     "src/http.rs" = "the real outbound HTTP client; only a booted NixOS VM runs it";
     "src/runtime/watch.rs" = "holds open watches on the k3s API server; only a booted NixOS VM has one";
   };
-  installer = {};
+  installer = {
+    "src/main.rs" = "sets up the real terminal and runs the key loop; only a person at the installer drives it";
+    "src/machine.rs" = "RealMachine reaches the network, processes and files; FakeMachine stands in for it in every test";
+    "src/fake.rs" = "the test double itself; it answers only what the tests ask of it";
+  };
   desktop-client = {};
 }

@@ -1,12 +1,8 @@
-use crossterm::event::{
-    Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
-};
-use ratatui::{backend::CrosstermBackend, layout::Position, Terminal};
-use std::io;
-use tokio::sync::mpsc;
-use tokio_stream::StreamExt;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use ratatui::layout::Position;
 
-use crate::{install, wireguard::PLATFORM_API};
+use crate::effects::Effect;
+use crate::install::InstallParams;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Step {
@@ -35,6 +31,7 @@ pub enum ClusterMode {
     Join,
 }
 
+#[derive(Debug, Clone, PartialEq)]
 pub struct DiskInfo {
     pub name: String,
     pub size: String,
@@ -44,6 +41,7 @@ pub struct DiskInfo {
     pub recommended: bool,
 }
 
+#[derive(Debug, PartialEq)]
 pub enum AppEvent {
     NetworkReady,
     AccountCreated(String),
@@ -65,26 +63,36 @@ pub enum AppEvent {
     Failed(String),
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ClickTarget {
     ModeOption(usize),
     AcctMethod(u8),
+    JoinField(u8),
     DiskOption(usize),
     CfgField(u8),
     Btn(BtnId),
 }
 
-#[derive(Clone, PartialEq)]
-#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum BtnId {
     Continue,
-    Back,
     CreateAcct,
     VerifyToken,
     Connect,
     GenSshKey,
     Reboot,
     Poweroff,
+}
+
+pub const REFERRAL_CODE_MAX: usize = 32;
+const CONFIG_FIELDS: u8 = 4;
+
+pub fn boot_mode(has_efi: bool) -> &'static str {
+    if has_efi {
+        "uefi"
+    } else {
+        "bios"
+    }
 }
 
 pub struct App {
@@ -129,25 +137,11 @@ pub struct App {
     pub loading_msg: String,
     pub click_areas: Vec<(ratatui::layout::Rect, ClickTarget)>,
 
-    pub tx: mpsc::UnboundedSender<AppEvent>,
-    pub rx: mpsc::UnboundedReceiver<AppEvent>,
+    pub effects: Vec<Effect>,
 }
 
 impl App {
-    pub fn new() -> Self {
-        let (tx, rx) = mpsc::unbounded_channel();
-        {
-            let tx2 = tx.clone();
-            tokio::spawn(async move {
-                loop {
-                    if tokio::net::lookup_host("api.yolab.io:443").await.is_ok() {
-                        let _ = tx2.send(AppEvent::NetworkReady);
-                        return;
-                    }
-                    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-                }
-            });
-        }
+    pub fn new(boot_mode: &str) -> Self {
         Self {
             step: Step::Mode,
             mode: None,
@@ -176,50 +170,16 @@ impl App {
             install_failed: false,
             mgmt_url: None,
             network_ready: false,
-            boot_mode: if std::path::Path::new("/sys/firmware/efi/efivars").exists() {
-                "uefi".into()
-            } else {
-                "bios".into()
-            },
+            boot_mode: boot_mode.to_string(),
             error: None,
             loading: true,
             loading_msg: "Waiting for network…".into(),
             click_areas: vec![],
-            tx,
-            rx,
+            effects: vec![],
         }
     }
 
-    pub async fn run(
-        &mut self,
-        terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-    ) -> anyhow::Result<()> {
-        use crossterm::event::EventStream;
-        let mut events = EventStream::new();
-
-        loop {
-            self.click_areas.clear();
-            terminal.draw(|f| crate::ui::render(f, self))?;
-
-            tokio::select! {
-                maybe = events.next() => {
-                    let Some(event) = maybe else { break };
-                    let event = event?;
-                    match event {
-                        Event::Key(k) => {
-                            if self.handle_key(k).await { return Ok(()); }
-                        }
-                        Event::Mouse(m) => self.handle_mouse(m).await,
-                        _ => {}
-                    }
-                }
-                Some(ev) = self.rx.recv() => self.handle_app_event(ev),
-            }
-        }
-        Ok(())
-    }
-
-    async fn handle_key(&mut self, key: KeyEvent) -> bool {
+    pub fn handle_key(&mut self, key: KeyEvent) -> bool {
         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
             return true;
         }
@@ -229,11 +189,11 @@ impl App {
 
         self.error = None;
 
-        match &self.step.clone() {
-            Step::Mode => self.key_mode(key).await,
-            Step::Account => self.key_account(key).await,
-            Step::Disk => self.key_disk(key).await,
-            Step::Configure => self.key_configure(key).await,
+        match self.step {
+            Step::Mode => self.key_mode(key),
+            Step::Account => self.key_account(key),
+            Step::Disk => self.key_disk(key),
+            Step::Configure => self.key_configure(key),
             Step::Install => self.key_install(key),
         }
         false
@@ -241,187 +201,120 @@ impl App {
 
     fn key_install(&mut self, key: KeyEvent) {
         match key.code {
-            KeyCode::Char('r') if self.install_done => self.do_reboot(),
-            KeyCode::Char('p') if self.install_done => self.do_poweroff(),
+            KeyCode::Char('r') if self.install_done => self.power("reboot"),
+            KeyCode::Char('p') if self.install_done => self.power("poweroff"),
             _ => {}
         }
     }
 
-    async fn key_mode(&mut self, key: KeyEvent) {
+    fn key_mode(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Up | KeyCode::Char('k') => {
                 self.mode_cursor = self.mode_cursor.saturating_sub(1)
             }
-            KeyCode::Down | KeyCode::Char('j') => {
-                if self.mode_cursor < 1 {
-                    self.mode_cursor += 1;
-                }
-            }
-            KeyCode::Enter => self.confirm_mode().await,
+            KeyCode::Down | KeyCode::Char('j') => self.mode_cursor = 1,
+            KeyCode::Enter => self.confirm_mode(),
             _ => {}
         }
     }
 
-    async fn key_account(&mut self, key: KeyEvent) {
+    fn key_account(&mut self, key: KeyEvent) {
         match self.mode {
-            Some(ClusterMode::New) => self.key_account_new(key).await,
-            Some(ClusterMode::Join) => self.key_account_join(key).await,
+            Some(ClusterMode::New) => self.key_account_new(key),
+            Some(ClusterMode::Join) => self.key_account_join(key),
             None => {}
         }
     }
 
-    async fn key_account_new(&mut self, key: KeyEvent) {
+    fn key_account_new(&mut self, key: KeyEvent) {
         match key.code {
-            KeyCode::Esc => {
-                self.step = Step::Mode;
-            }
-            KeyCode::Tab | KeyCode::BackTab => {
-                self.acct_cursor = if self.acct_cursor == 0 { 1 } else { 0 };
-                self.error = None;
-            }
-            KeyCode::Enter => {
-                if self.account_token.is_some() {
-                    self.goto_disk();
-                } else if self.acct_cursor == 0 {
-                    self.create_account();
-                } else {
-                    self.verify_token().await;
-                }
-            }
-            KeyCode::Char(c) if self.acct_cursor == 1 && self.account_token.is_none() => {
-                self.acct_input.push(c);
-            }
-            KeyCode::Backspace if self.acct_cursor == 1 => {
-                self.acct_input.pop();
-            }
-            KeyCode::Char(c) if self.acct_cursor == 0 && self.account_token.is_none() => {
-                if self.acct_referral.chars().count() < REFERRAL_CODE_MAX {
+            KeyCode::Esc => self.step = Step::Mode,
+            KeyCode::Tab | KeyCode::BackTab => self.acct_cursor = 1 - self.acct_cursor,
+            KeyCode::Enter => self.submit_account(),
+            KeyCode::Char(c) if self.account_token.is_none() => {
+                if self.acct_cursor == 1 {
+                    self.acct_input.push(c);
+                } else if self.acct_referral.chars().count() < REFERRAL_CODE_MAX {
                     self.acct_referral.push(c);
                 }
             }
-            KeyCode::Backspace if self.acct_cursor == 0 => {
-                self.acct_referral.pop();
-            }
-            _ => {}
-        }
-    }
-
-    async fn key_account_join(&mut self, key: KeyEvent) {
-        match key.code {
-            KeyCode::Esc => {
-                self.step = Step::Mode;
-            }
-            KeyCode::Tab => {
-                self.join_field = if self.join_field == 0 { 1 } else { 0 };
-            }
-            KeyCode::BackTab => {
-                self.join_field = if self.join_field == 0 { 1 } else { 0 };
-            }
-            KeyCode::Enter => self.fetch_join_info().await,
-            KeyCode::Char(c) => {
-                if self.join_field == 0 {
-                    self.join_url.push(c);
-                } else {
-                    self.join_pass.push(c);
-                }
-            }
             KeyCode::Backspace => {
-                if self.join_field == 0 {
-                    self.join_url.pop();
+                if self.acct_cursor == 1 {
+                    self.acct_input.pop();
                 } else {
-                    self.join_pass.pop();
+                    self.acct_referral.pop();
                 }
             }
             _ => {}
         }
     }
 
-    async fn key_disk(&mut self, key: KeyEvent) {
+    fn key_account_join(&mut self, key: KeyEvent) {
         match key.code {
-            KeyCode::Esc => {
-                self.step = Step::Account;
+            KeyCode::Esc => self.step = Step::Mode,
+            KeyCode::Tab | KeyCode::BackTab => self.join_field = 1 - self.join_field,
+            KeyCode::Enter => self.fetch_join_info(),
+            KeyCode::Char(c) => self.join_input().push(c),
+            KeyCode::Backspace => {
+                self.join_input().pop();
             }
+            _ => {}
+        }
+    }
+
+    fn join_input(&mut self) -> &mut String {
+        if self.join_field == 0 {
+            &mut self.join_url
+        } else {
+            &mut self.join_pass
+        }
+    }
+
+    fn key_disk(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc => self.step = Step::Account,
             KeyCode::Up | KeyCode::Char('k') => {
-                self.disk_cursor = self.disk_cursor.saturating_sub(1);
+                self.disk_cursor = self.disk_cursor.saturating_sub(1)
             }
             KeyCode::Down | KeyCode::Char('j') => {
-                if !self.disks.is_empty() && self.disk_cursor < self.disks.len() - 1 {
+                if self.disk_cursor + 1 < self.disks.len() {
                     self.disk_cursor += 1;
                 }
             }
-            KeyCode::Enter => {
-                let disk = self.disks.get(self.disk_cursor);
-                if let Some(d) = disk {
-                    if d.mounted {
-                        self.error = Some("That disk is in use — choose another.".into());
-                    } else {
-                        self.step = Step::Configure;
-                    }
-                }
-            }
+            KeyCode::Enter => self.confirm_disk(),
             _ => {}
         }
     }
 
-    async fn key_configure(&mut self, key: KeyEvent) {
-        const FIELDS: u8 = 4;
+    fn key_configure(&mut self, key: KeyEvent) {
         match key.code {
-            KeyCode::Esc => {
-                self.step = Step::Disk;
-            }
-            KeyCode::Tab => {
-                self.cfg_field = (self.cfg_field + 1) % FIELDS;
-            }
+            KeyCode::Esc => self.step = Step::Disk,
+            KeyCode::Tab => self.cfg_field = (self.cfg_field + 1) % CONFIG_FIELDS,
             KeyCode::BackTab => {
-                self.cfg_field = if self.cfg_field == 0 {
-                    FIELDS - 1
-                } else {
-                    self.cfg_field - 1
-                };
+                self.cfg_field = (self.cfg_field + CONFIG_FIELDS - 1) % CONFIG_FIELDS
             }
-            KeyCode::Char(c) => self.cfg_push(c),
-            KeyCode::Backspace => self.cfg_pop(),
-            KeyCode::Enter => self.confirm_configure().await,
+            KeyCode::Char(c) => self.cfg_input().push(c),
+            KeyCode::Backspace => {
+                self.cfg_input().pop();
+            }
+            KeyCode::Enter => self.confirm_configure(),
             _ => {}
         }
     }
 
-    fn cfg_push(&mut self, c: char) {
+    fn cfg_input(&mut self) -> &mut String {
         match self.cfg_field {
-            0 => self.timezone.push(c),
-            1 => self.password.push(c),
-            2 => self.password2.push(c),
-            3 => self.ssh_pub.push(c),
-            _ => {}
+            0 => &mut self.timezone,
+            1 => &mut self.password,
+            2 => &mut self.password2,
+            _ => &mut self.ssh_pub,
         }
     }
 
-    fn cfg_pop(&mut self) {
-        match self.cfg_field {
-            0 => {
-                self.timezone.pop();
-            }
-            1 => {
-                self.password.pop();
-            }
-            2 => {
-                self.password2.pop();
-            }
-            3 => {
-                self.ssh_pub.pop();
-            }
-            _ => {}
-        }
-    }
-
-    async fn handle_mouse(&mut self, m: MouseEvent) {
-        if self.loading {
+    pub fn handle_mouse(&mut self, m: MouseEvent) {
+        if self.loading || m.kind != MouseEventKind::Down(MouseButton::Left) {
             return;
         }
-        if m.kind != MouseEventKind::Down(MouseButton::Left) {
-            return;
-        }
-
         let pos = Position {
             x: m.column,
             y: m.row,
@@ -431,94 +324,47 @@ impl App {
             .iter()
             .find(|(rect, _)| rect.contains(pos))
             .map(|(_, t)| t.clone());
-
         if let Some(target) = target {
             self.error = None;
-            self.handle_click(target).await;
+            self.handle_click(target);
         }
     }
 
-    async fn handle_click(&mut self, target: ClickTarget) {
+    fn handle_click(&mut self, target: ClickTarget) {
         match target {
             ClickTarget::ModeOption(n) => {
                 self.mode_cursor = n;
-                self.confirm_mode().await;
+                self.confirm_mode();
             }
-            ClickTarget::AcctMethod(n) => {
-                self.acct_cursor = n;
-            }
-            ClickTarget::DiskOption(n) => {
-                self.disk_cursor = n;
-            }
-            ClickTarget::CfgField(n) => {
-                self.cfg_field = n;
-            }
-            ClickTarget::Btn(id) => self.handle_btn(id).await,
+            ClickTarget::AcctMethod(n) => self.acct_cursor = n,
+            ClickTarget::JoinField(n) => self.join_field = n,
+            ClickTarget::DiskOption(n) => self.disk_cursor = n,
+            ClickTarget::CfgField(n) => self.cfg_field = n,
+            ClickTarget::Btn(id) => self.handle_btn(id),
         }
     }
 
-    async fn handle_btn(&mut self, id: BtnId) {
+    fn handle_btn(&mut self, id: BtnId) {
         match id {
-            BtnId::Continue => match &self.step.clone() {
-                Step::Mode => self.confirm_mode().await,
-                Step::Account if self.account_token.is_some() => self.goto_disk(),
-                Step::Account => {
-                    if self.mode == Some(ClusterMode::New) {
-                        if self.acct_cursor == 0 {
-                            self.create_account();
-                        } else {
-                            self.verify_token().await;
-                        }
-                    } else {
-                        self.fetch_join_info().await;
-                    }
-                }
-                Step::Disk => {
-                    if let Some(d) = self.disks.get(self.disk_cursor) {
-                        if d.mounted {
-                            self.error = Some("Disk is in use.".into());
-                        } else {
-                            self.step = Step::Configure;
-                        }
-                    }
-                }
-                Step::Configure => self.confirm_configure().await,
-                Step::Install => {}
-            },
-            BtnId::Back => match &self.step.clone() {
-                Step::Account => {
-                    self.step = Step::Mode;
-                }
-                Step::Disk => {
-                    self.step = Step::Account;
-                }
-                Step::Configure => {
-                    self.step = Step::Disk;
-                }
-                _ => {}
+            BtnId::Continue => match self.step {
+                Step::Account => self.submit_account(),
+                Step::Disk => self.confirm_disk(),
+                Step::Configure => self.confirm_configure(),
+                Step::Mode | Step::Install => {}
             },
             BtnId::CreateAcct => self.create_account(),
-            BtnId::VerifyToken => self.verify_token().await,
-            BtnId::Connect => self.fetch_join_info().await,
-            BtnId::GenSshKey => self.gen_ssh_key(),
-            BtnId::Reboot => self.do_reboot(),
-            BtnId::Poweroff => self.do_poweroff(),
+            BtnId::VerifyToken => self.verify_token(),
+            BtnId::Connect => self.fetch_join_info(),
+            BtnId::GenSshKey => self.start(Effect::GenSshKey, "Generating SSH key…"),
+            BtnId::Reboot => self.power("reboot"),
+            BtnId::Poweroff => self.power("poweroff"),
         }
     }
 
-    fn handle_app_event(&mut self, ev: AppEvent) {
+    pub fn handle_app_event(&mut self, ev: AppEvent) {
+        self.loading = false;
         match ev {
-            AppEvent::NetworkReady => {
-                self.network_ready = true;
-                self.loading = false;
-                return;
-            }
-            _ => {
-                self.loading = false;
-            }
-        }
-        match ev {
-            AppEvent::NetworkReady => unreachable!(),
+            AppEvent::NetworkReady => self.network_ready = true,
             AppEvent::AccountCreated(token) => {
                 self.created_token = Some(token.clone());
                 self.account_token = Some(token);
@@ -527,9 +373,8 @@ impl App {
                 self.account_token = Some(self.acct_input.trim().to_string());
             }
             AppEvent::DisksLoaded(disks) => {
-                let rec = disks.iter().position(|d| d.recommended).unwrap_or(0);
+                self.disk_cursor = disks.iter().position(|d| d.recommended).unwrap_or(0);
                 self.disks = disks;
-                self.disk_cursor = rec;
             }
             AppEvent::JoinConnected {
                 server_addr,
@@ -552,23 +397,25 @@ impl App {
                 self.gen_privkey = Some(private_key);
                 self.ssh_pub = public_key;
             }
-            AppEvent::Log(line) => {
-                self.log_lines.push(line);
-            }
+            AppEvent::Log(line) => self.log_lines.push(line),
             AppEvent::InstallComplete { url } => {
                 self.install_done = true;
                 self.mgmt_url = Some(url);
             }
             AppEvent::Failed(msg) => {
-                if self.step == Step::Install {
-                    self.install_failed = true;
-                }
+                self.install_failed = self.step == Step::Install;
                 self.error = Some(msg);
             }
         }
     }
 
-    async fn confirm_mode(&mut self) {
+    fn start(&mut self, effect: Effect, msg: &str) {
+        self.loading = true;
+        self.loading_msg = msg.to_string();
+        self.effects.push(effect);
+    }
+
+    fn confirm_mode(&mut self) {
         if !self.network_ready {
             self.error = Some("Network not ready — waiting for DNS…".into());
             return;
@@ -581,147 +428,78 @@ impl App {
         self.step = Step::Account;
     }
 
-    fn create_account(&mut self) {
-        self.loading = true;
-        self.loading_msg = "Creating account…".into();
-        let tx = self.tx.clone();
-        let referral = self.acct_referral.clone();
-        tokio::spawn(async move {
-            match do_create_account(&referral).await {
-                Ok(token) => {
-                    let _ = tx.send(AppEvent::AccountCreated(token));
-                }
-                Err(e) => {
-                    let _ = tx.send(AppEvent::Failed(e.to_string()));
-                }
-            }
-        });
+    fn submit_account(&mut self) {
+        if self.account_token.is_some() {
+            self.goto_disk();
+        } else if self.mode == Some(ClusterMode::Join) {
+            self.fetch_join_info();
+        } else if self.acct_cursor == 0 {
+            self.create_account();
+        } else {
+            self.verify_token();
+        }
     }
 
-    async fn verify_token(&mut self) {
+    fn create_account(&mut self) {
+        let referral = self.acct_referral.clone();
+        self.start(Effect::CreateAccount { referral }, "Creating account…");
+    }
+
+    fn verify_token(&mut self) {
         let token = self.acct_input.trim().to_string();
         if token.is_empty() {
             self.error = Some("Please paste your account token.".into());
             return;
         }
-        self.loading = true;
-        self.loading_msg = "Verifying token…".into();
-        let tx = self.tx.clone();
-        tokio::spawn(async move {
-            match do_verify_token(&token).await {
-                Ok(()) => {
-                    let _ = tx.send(AppEvent::AccountVerified);
-                }
-                Err(e) => {
-                    let _ = tx.send(AppEvent::Failed(e.to_string()));
-                }
-            }
-        });
+        self.start(Effect::VerifyToken { token }, "Verifying token…");
     }
 
-    async fn fetch_join_info(&mut self) {
+    fn fetch_join_info(&mut self) {
         let url = self.join_url.trim().to_string();
-        let pass = self.join_pass.clone();
         if url.is_empty() {
             self.error = Some("Node URL is required.".into());
             return;
         }
-        self.loading = true;
-        self.loading_msg = "Connecting to existing node…".into();
-        let tx = self.tx.clone();
-        tokio::spawn(async move {
-            match do_fetch_join_info(&url, &pass).await {
-                Ok((server_addr, k3s_token, account_token, ceph_fsid)) => {
-                    if let Some(t) = account_token {
-                        let _ = tx.send(AppEvent::AccountCreated(t));
-                    }
-                    let _ = tx.send(AppEvent::JoinConnected {
-                        server_addr,
-                        k3s_token,
-                        ceph_fsid,
-                    });
-                }
-                Err(e) => {
-                    let _ = tx.send(AppEvent::Failed(e.to_string()));
-                }
-            }
-        });
+        let password = self.join_pass.clone();
+        self.start(
+            Effect::FetchJoinInfo { url, password },
+            "Connecting to existing node…",
+        );
     }
 
     fn goto_disk(&mut self) {
         self.step = Step::Disk;
         if self.disks.is_empty() {
-            self.loading = true;
-            self.loading_msg = "Detecting disks…".into();
-            let tx = self.tx.clone();
-            tokio::spawn(async move {
-                match detect_disks().await {
-                    Ok(disks) => {
-                        let _ = tx.send(AppEvent::DisksLoaded(disks));
-                    }
-                    Err(e) => {
-                        let _ = tx.send(AppEvent::Failed(e.to_string()));
-                    }
-                }
-            });
+            self.start(Effect::DetectDisks, "Detecting disks…");
         }
     }
 
-    fn gen_ssh_key(&mut self) {
-        self.loading = true;
-        self.loading_msg = "Generating SSH key…".into();
-        let tx = self.tx.clone();
-        tokio::spawn(async move {
-            match do_gen_ssh_key().await {
-                Ok((priv_key, pub_key)) => {
-                    let _ = tx.send(AppEvent::SshKeyGenerated {
-                        private_key: priv_key,
-                        public_key: pub_key,
-                    });
-                }
-                Err(e) => {
-                    let _ = tx.send(AppEvent::Failed(e.to_string()));
-                }
+    fn confirm_disk(&mut self) {
+        if let Some(d) = self.disks.get(self.disk_cursor) {
+            if d.mounted {
+                self.error = Some("That disk is in use — choose another.".into());
+            } else {
+                self.step = Step::Configure;
             }
-        });
+        }
     }
 
-    async fn confirm_configure(&mut self) {
-        if self.password.len() < 8 {
-            self.error = Some("Password must be at least 8 characters.".into());
-            return;
+    fn confirm_configure(&mut self) {
+        match password_problem(&self.password, &self.password2) {
+            Some(problem) => self.error = Some(problem.into()),
+            None => self.start_install(),
         }
-        if !self.password.chars().any(|c| c.is_uppercase()) {
-            self.error = Some("Password must contain at least one uppercase letter.".into());
-            return;
-        }
-        if !self.password.chars().any(|c| c.is_lowercase()) {
-            self.error = Some("Password must contain at least one lowercase letter.".into());
-            return;
-        }
-        if !self.password.chars().any(|c| c.is_ascii_digit()) {
-            self.error = Some("Password must contain at least one number.".into());
-            return;
-        }
-        if self.password != self.password2 {
-            self.error = Some("Passwords do not match.".into());
-            return;
-        }
-        self.start_install();
     }
 
     fn start_install(&mut self) {
         self.step = Step::Install;
         self.log_lines.clear();
-
-        let disk = self
-            .disks
-            .get(self.disk_cursor)
-            .map(|d| d.name.clone())
-            .unwrap_or_default();
-
-        let params = install::InstallParams {
-            disk,
+        let params = InstallParams {
+            disk: self
+                .disks
+                .get(self.disk_cursor)
+                .map(|d| d.name.clone())
+                .unwrap_or_default(),
             timezone: self.timezone.trim().to_string(),
             password: self.password.clone(),
             root_ssh_key: self.ssh_pub.trim().to_string(),
@@ -731,240 +509,104 @@ impl App {
             ceph_fsid: self.join_ceph_fsid.clone(),
             boot_mode: self.boot_mode.clone(),
         };
-
-        let tx = self.tx.clone();
-        tokio::spawn(install::run_install(params, tx));
+        self.effects.push(Effect::Install(params));
     }
 
-    fn do_reboot(&self) {
-        self.run_power("reboot");
-    }
-
-    fn do_poweroff(&self) {
-        self.run_power("poweroff");
-    }
-
-    fn run_power(&self, action: &str) {
-        if let Err(e) = std::process::Command::new("systemctl").arg(action).spawn() {
-            let _ = self
-                .tx
-                .send(AppEvent::Failed(format!("could not {action}: {e}")));
-        }
+    fn power(&mut self, action: &'static str) {
+        self.effects.push(Effect::Power(action));
     }
 }
 
-const REFERRAL_CODE_MAX: usize = 32;
-
-async fn do_create_account(referral: &str) -> anyhow::Result<String> {
-    let resp = reqwest::Client::new()
-        .post(format!("{PLATFORM_API}/users"))
-        .json(&create_account_body(referral))
-        .send()
-        .await?;
-    let ok = resp.status().is_success();
-    let body: serde_json::Value = resp.json().await.unwrap_or(serde_json::Value::Null);
-    account_token_from(ok, &body)
-}
-
-fn create_account_body(referral: &str) -> serde_json::Value {
-    let code = referral.trim();
-    if code.is_empty() {
-        serde_json::json!({})
+fn password_problem(password: &str, confirm: &str) -> Option<&'static str> {
+    if password.chars().count() < 8 {
+        Some("Password must be at least 8 characters.")
+    } else if !password.chars().any(char::is_uppercase) {
+        Some("Password must contain at least one uppercase letter.")
+    } else if !password.chars().any(char::is_lowercase) {
+        Some("Password must contain at least one lowercase letter.")
+    } else if !password.chars().any(|c| c.is_ascii_digit()) {
+        Some("Password must contain at least one number.")
+    } else if password != confirm {
+        Some("Passwords do not match.")
     } else {
-        serde_json::json!({ "referral_code": code })
+        None
     }
-}
-
-fn account_token_from(ok: bool, body: &serde_json::Value) -> anyhow::Result<String> {
-    if !ok {
-        anyhow::bail!(
-            "{}",
-            body["detail"]
-                .as_str()
-                .unwrap_or("The account could not be created")
-        );
-    }
-    body["account_token"]
-        .as_str()
-        .map(|s| s.to_string())
-        .ok_or_else(|| anyhow::anyhow!("missing account_token in response"))
-}
-
-async fn do_verify_token(token: &str) -> anyhow::Result<()> {
-    let resp = reqwest::Client::new()
-        .get(format!("{PLATFORM_API}/tunnels"))
-        .bearer_auth(token)
-        .send()
-        .await?;
-    anyhow::ensure!(resp.status().is_success(), "invalid account token");
-    Ok(())
-}
-
-async fn do_fetch_join_info(
-    url: &str,
-    password: &str,
-) -> anyhow::Result<(String, String, Option<String>, String)> {
-    let client = reqwest::Client::new();
-    let url = url.trim_end_matches('/');
-
-    let login = client
-        .post(format!("{url}/api/login"))
-        .json(&serde_json::json!({ "password": password }))
-        .send()
-        .await?;
-    anyhow::ensure!(login.status().is_success(), "authentication failed");
-
-    let cookie = login
-        .headers()
-        .get(reqwest::header::SET_COOKIE)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.split(';').next())
-        .ok_or_else(|| anyhow::anyhow!("no session cookie"))?
-        .to_string();
-
-    let info = client
-        .get(format!("{url}/api/cluster/join-info"))
-        .header("Cookie", cookie)
-        .send()
-        .await?
-        .json::<serde_json::Value>()
-        .await?;
-
-    parse_join_response(&info)
-}
-
-fn parse_join_response(
-    info: &serde_json::Value,
-) -> anyhow::Result<(String, String, Option<String>, String)> {
-    if let Some(e) = info.get("error").and_then(|v| v.as_str()) {
-        anyhow::bail!("the existing node could not describe its cluster: {e}");
-    }
-
-    let field = |k: &str| -> anyhow::Result<String> {
-        info.get(k)
-            .and_then(|v| v.as_str())
-            .filter(|s| !s.is_empty())
-            .map(str::to_string)
-            .ok_or_else(|| anyhow::anyhow!("the existing node sent no {k}"))
-    };
-
-    let server_addr = field("server_addr")?;
-    let k3s_token = field("k3s_token")?;
-    let account_token = info["account_token"].as_str().map(|s| s.to_string());
-    let ceph_fsid = field("ceph_fsid").map_err(|_| {
-        anyhow::anyhow!(
-            "the existing node reported no Ceph cluster id — update it first, \
-             then run this installer again"
-        )
-    })?;
-
-    Ok((server_addr, k3s_token, account_token, ceph_fsid))
-}
-
-async fn detect_disks() -> anyhow::Result<Vec<DiskInfo>> {
-    let out = tokio::process::Command::new("lsblk")
-        .args(["-J", "-b", "-o", "NAME,SIZE,TRAN,TYPE,MOUNTPOINT"])
-        .output()
-        .await?;
-    let data: serde_json::Value = serde_json::from_slice(&out.stdout)?;
-    Ok(disks_from_lsblk(&data))
-}
-
-fn disks_from_lsblk(data: &serde_json::Value) -> Vec<DiskInfo> {
-    let empty = vec![];
-    let devices = data["blockdevices"].as_array().unwrap_or(&empty);
-
-    let mut disks: Vec<DiskInfo> = devices
-        .iter()
-        .filter(|d| d["type"].as_str() == Some("disk"))
-        .filter_map(|d| {
-            let raw = d["name"].as_str()?;
-            let name = format!("/dev/{raw}");
-            let bytes = d["size"].as_u64().unwrap_or(0);
-            let size = fmt_bytes(bytes);
-            let tran = d["tran"].as_str().unwrap_or("").to_string();
-            let is_usb = tran == "usb";
-            let mounted = disk_has_mount(d);
-            Some(DiskInfo {
-                name,
-                size,
-                tran,
-                is_usb,
-                mounted,
-                recommended: false,
-            })
-        })
-        .collect();
-
-    let rec = disks
-        .iter()
-        .enumerate()
-        .filter(|(_, d)| !d.is_usb && !d.mounted)
-        .max_by_key(|(_, d)| parse_gb(&d.size))
-        .map(|(i, _)| i);
-    if let Some(i) = rec {
-        disks[i].recommended = true;
-    }
-
-    disks
-}
-
-fn disk_has_mount(d: &serde_json::Value) -> bool {
-    if d["mountpoint"].as_str().is_some_and(|s| !s.is_empty()) {
-        return true;
-    }
-    d["children"]
-        .as_array()
-        .is_some_and(|ch| ch.iter().any(disk_has_mount))
-}
-
-fn fmt_bytes(b: u64) -> String {
-    const GB: u64 = 1_000_000_000;
-    const TB: u64 = 1_000 * GB;
-    if b >= TB {
-        format!("{:.1} TB", b as f64 / TB as f64)
-    } else {
-        format!("{:.0} GB", b as f64 / GB as f64)
-    }
-}
-
-fn parse_gb(s: &str) -> u64 {
-    let n: f64 = s
-        .split_whitespace()
-        .next()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(0.0);
-    if s.contains("TB") {
-        (n * 1000.0) as u64
-    } else {
-        n as u64
-    }
-}
-
-async fn do_gen_ssh_key() -> anyhow::Result<(String, String)> {
-    let tmp = tempfile::tempdir()?;
-    let path = tmp.path().join("installer_key");
-    let path_str = path
-        .to_str()
-        .ok_or_else(|| anyhow::anyhow!("temp path is not valid UTF-8: {}", path.display()))?;
-
-    tokio::process::Command::new("ssh-keygen")
-        .args(["-t", "ed25519", "-f", path_str, "-N", "", "-q"])
-        .output()
-        .await?;
-
-    let private_key = tokio::fs::read_to_string(path_str).await?;
-    let public_key = tokio::fs::read_to_string(format!("{path_str}.pub")).await?;
-    Ok((
-        private_key.trim().to_string(),
-        public_key.trim().to_string(),
-    ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
+    use ratatui::layout::Rect;
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::from(code)
+    }
+
+    fn ready() -> App {
+        let mut app = App::new("uefi");
+        app.loading = false;
+        app.network_ready = true;
+        app
+    }
+
+    fn press(app: &mut App, codes: &[KeyCode]) {
+        for c in codes {
+            assert!(!app.handle_key(key(*c)));
+        }
+    }
+
+    fn typed(app: &mut App, text: &str) {
+        for c in text.chars() {
+            app.handle_key(key(KeyCode::Char(c)));
+        }
+    }
+
+    fn at_account(mode: ClusterMode) -> App {
+        let mut app = ready();
+        app.mode = Some(mode);
+        app.step = Step::Account;
+        app
+    }
+
+    fn disk(name: &str, mounted: bool, recommended: bool) -> DiskInfo {
+        DiskInfo {
+            name: name.into(),
+            size: "500 GB".into(),
+            tran: "nvme".into(),
+            is_usb: false,
+            mounted,
+            recommended,
+        }
+    }
+
+    fn at_disk(disks: Vec<DiskInfo>) -> App {
+        let mut app = ready();
+        app.step = Step::Disk;
+        app.disks = disks;
+        app
+    }
+
+    fn click(app: &mut App, target: ClickTarget) {
+        app.click_areas = vec![(
+            Rect {
+                x: 10,
+                y: 10,
+                width: 5,
+                height: 2,
+            },
+            target,
+        )];
+        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 11, 11));
+    }
+
+    fn mouse(kind: MouseEventKind, column: u16, row: u16) -> MouseEvent {
+        MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        }
+    }
 
     #[test]
     fn step_indices_are_sequential_and_unique() {
@@ -980,323 +622,724 @@ mod tests {
     }
 
     #[test]
-    fn sizes_are_formatted_in_the_units_printed_on_the_box() {
-        assert_eq!(fmt_bytes(500_000_000_000), "500 GB");
-        assert_eq!(fmt_bytes(256_000_000_000), "256 GB");
-        assert_eq!(fmt_bytes(1_000_000_000_000), "1.0 TB");
-        assert_eq!(fmt_bytes(2_000_000_000_000), "2.0 TB");
+    fn the_boot_mode_follows_the_firmware() {
+        assert_eq!(boot_mode(true), "uefi");
+        assert_eq!(boot_mode(false), "bios");
     }
 
     #[test]
-    fn terabyte_sizes_keep_one_decimal() {
-        assert_eq!(fmt_bytes(1_500_000_000_000), "1.5 TB");
+    fn the_installer_starts_waiting_for_the_network() {
+        let app = App::new("bios");
+        assert_eq!(app.step, Step::Mode);
+        assert!(app.loading);
+        assert_eq!(app.loading_msg, "Waiting for network…");
+        assert_eq!(app.boot_mode, "bios");
+        assert_eq!(app.timezone, "UTC");
+        assert!(app.effects.is_empty());
     }
 
     #[test]
-    fn small_and_zero_sizes_do_not_panic() {
-        assert_eq!(fmt_bytes(0), "0 GB");
-        assert_eq!(fmt_bytes(1), "0 GB");
+    fn ctrl_c_quits_even_while_loading() {
+        let mut app = App::new("uefi");
+        assert!(app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)));
+        assert!(!App::new("uefi").handle_key(key(KeyCode::Char('c'))));
     }
 
     #[test]
-    fn parse_gb_round_trips_what_fmt_bytes_produces() {
-        assert_eq!(parse_gb(&fmt_bytes(500_000_000_000)), 500);
-        assert_eq!(parse_gb(&fmt_bytes(2_000_000_000_000)), 2000);
-        assert_eq!(parse_gb(&fmt_bytes(1_500_000_000_000)), 1500);
+    fn keys_do_nothing_while_loading() {
+        let mut app = App::new("uefi");
+        app.error = Some("kept".into());
+        press(&mut app, &[KeyCode::Down, KeyCode::Enter]);
+        assert_eq!(app.mode_cursor, 0);
+        assert_eq!(app.error.as_deref(), Some("kept"));
     }
 
     #[test]
-    fn parse_gb_orders_terabyte_disks_above_gigabyte_disks() {
-        assert!(parse_gb("1.0 TB") > parse_gb("999 GB"));
+    fn any_key_clears_the_previous_error() {
+        let mut app = ready();
+        app.error = Some("old".into());
+        press(&mut app, &[KeyCode::Left]);
+        assert_eq!(app.error, None);
     }
 
     #[test]
-    fn parse_gb_reads_unparseable_sizes_as_zero() {
-        assert_eq!(parse_gb(""), 0);
-        assert_eq!(parse_gb("unknown"), 0);
-        assert_eq!(parse_gb("GB"), 0);
+    fn the_mode_cursor_moves_between_the_two_setups() {
+        let mut app = ready();
+        press(&mut app, &[KeyCode::Down]);
+        assert_eq!(app.mode_cursor, 1);
+        press(&mut app, &[KeyCode::Char('j')]);
+        assert_eq!(app.mode_cursor, 1);
+        press(&mut app, &[KeyCode::Up]);
+        assert_eq!(app.mode_cursor, 0);
+        press(&mut app, &[KeyCode::Char('k')]);
+        assert_eq!(app.mode_cursor, 0);
     }
 
     #[test]
-    fn a_disk_mounted_at_its_top_level_counts_as_mounted() {
-        assert!(disk_has_mount(&json!({"mountpoint": "/"})));
-    }
-
-    #[test]
-    fn a_disk_is_mounted_when_any_partition_below_it_is() {
-        let disk = json!({
-            "name": "sda", "mountpoint": null,
-            "children": [
-                {"name": "sda1", "mountpoint": null},
-                {"name": "sda2", "mountpoint": "/iso"},
-            ],
-        });
-        assert!(disk_has_mount(&disk));
-    }
-
-    #[test]
-    fn nesting_deeper_than_one_level_is_still_detected() {
-        let disk = json!({
-            "children": [{"children": [{"mountpoint": "/nix/store"}]}],
-        });
-        assert!(disk_has_mount(&disk));
-    }
-
-    #[test]
-    fn an_unmounted_disk_is_not_reported_as_mounted() {
-        assert!(!disk_has_mount(&json!({"mountpoint": null})));
-        assert!(!disk_has_mount(&json!({"mountpoint": ""})));
-        assert!(!disk_has_mount(&json!({})));
-        assert!(!disk_has_mount(&json!({
-            "children": [{"mountpoint": null}, {"mountpoint": ""}]
-        })));
-    }
-
-    fn lsblk(devices: serde_json::Value) -> serde_json::Value {
-        json!({"blockdevices": devices})
-    }
-
-    fn disk(name: &str, size: u64, tran: &str, mountpoint: Option<&str>) -> serde_json::Value {
-        json!({
-            "name": name, "size": size, "tran": tran, "type": "disk",
-            "mountpoint": mountpoint,
-        })
-    }
-
-    #[test]
-    fn disks_are_listed_with_full_device_paths() {
-        let disks = disks_from_lsblk(&lsblk(json!([disk(
-            "nvme0n1",
-            512_000_000_000,
-            "nvme",
-            None
-        )])));
-        assert_eq!(disks.len(), 1);
-        assert_eq!(disks[0].name, "/dev/nvme0n1");
-        assert_eq!(disks[0].size, "512 GB");
-        assert_eq!(disks[0].tran, "nvme");
-    }
-
-    #[test]
-    fn partitions_and_loop_devices_are_not_offered_as_install_targets() {
-        let data = lsblk(json!([
-            disk("sda", 500_000_000_000, "sata", None),
-            {"name": "sda1", "size": 1_000_000, "type": "part"},
-            {"name": "loop0", "size": 1_000_000, "type": "loop"},
-            {"name": "sr0", "size": 1_000_000, "type": "rom"},
-        ]));
-        let disks = disks_from_lsblk(&data);
-        assert_eq!(disks.len(), 1);
-        assert_eq!(disks[0].name, "/dev/sda");
-    }
-
-    #[test]
-    fn the_largest_internal_disk_is_recommended() {
-        let data = lsblk(json!([
-            disk("sda", 250_000_000_000, "sata", None),
-            disk("nvme0n1", 1_000_000_000_000, "nvme", None),
-            disk("sdb", 500_000_000_000, "sata", None),
-        ]));
-        let disks = disks_from_lsblk(&data);
-        let rec: Vec<&str> = disks
-            .iter()
-            .filter(|d| d.recommended)
-            .map(|d| d.name.as_str())
-            .collect();
-        assert_eq!(rec, vec!["/dev/nvme0n1"]);
-    }
-
-    #[test]
-    fn the_usb_stick_is_never_recommended_even_when_it_is_the_largest() {
-        let data = lsblk(json!([
-            disk("sdb", 2_000_000_000_000, "usb", None),
-            disk("sda", 250_000_000_000, "sata", None),
-        ]));
-        let disks = disks_from_lsblk(&data);
-        let rec: Vec<&str> = disks
-            .iter()
-            .filter(|d| d.recommended)
-            .map(|d| d.name.as_str())
-            .collect();
-        assert_eq!(rec, vec!["/dev/sda"]);
-        assert_eq!(disks.len(), 2);
-        assert!(disks.iter().any(|d| d.name == "/dev/sdb" && d.is_usb));
-    }
-
-    #[test]
-    fn a_mounted_disk_is_never_recommended() {
-        let data = lsblk(json!([
-            json!({
-                "name": "sdb", "size": 2_000_000_000_000u64, "tran": "sata", "type": "disk",
-                "children": [{"name": "sdb1", "mountpoint": "/iso"}],
-            }),
-            disk("sda", 250_000_000_000, "sata", None),
-        ]));
-        let disks = disks_from_lsblk(&data);
-        let rec: Vec<&str> = disks
-            .iter()
-            .filter(|d| d.recommended)
-            .map(|d| d.name.as_str())
-            .collect();
-        assert_eq!(rec, vec!["/dev/sda"]);
-    }
-
-    #[test]
-    fn nothing_is_recommended_when_every_disk_is_usb_or_mounted() {
-        let data = lsblk(json!([
-            disk("sdb", 2_000_000_000_000, "usb", None),
-            disk("sdc", 1_000_000_000_000, "usb", Some("/iso")),
-        ]));
-        let disks = disks_from_lsblk(&data);
-        assert_eq!(disks.len(), 2);
-        assert!(!disks.iter().any(|d| d.recommended));
-    }
-
-    #[test]
-    fn exactly_one_disk_is_ever_recommended() {
-        let data = lsblk(json!([
-            disk("sda", 500_000_000_000, "sata", None),
-            disk("sdb", 500_000_000_000, "sata", None),
-            disk("sdc", 500_000_000_000, "sata", None),
-        ]));
-        let disks = disks_from_lsblk(&data);
-        assert_eq!(disks.iter().filter(|d| d.recommended).count(), 1);
-    }
-
-    #[test]
-    fn a_machine_with_no_disks_yields_an_empty_list() {
-        assert!(disks_from_lsblk(&lsblk(json!([]))).is_empty());
-        assert!(disks_from_lsblk(&json!({})).is_empty());
-        assert!(disks_from_lsblk(&json!({"blockdevices": "unexpected"})).is_empty());
-    }
-
-    #[test]
-    fn a_disk_with_no_name_is_skipped_rather_than_listed_as_dev() {
-        let data = lsblk(json!([
-            {"size": 500_000_000_000u64, "type": "disk"},
-            disk("sda", 250_000_000_000, "sata", None),
-        ]));
-        let disks = disks_from_lsblk(&data);
-        assert_eq!(disks.len(), 1);
-        assert_eq!(disks[0].name, "/dev/sda");
-    }
-
-    #[test]
-    fn a_disk_with_no_reported_size_still_appears() {
-        let data = lsblk(json!([{"name": "vda", "type": "disk"}]));
-        let disks = disks_from_lsblk(&data);
-        assert_eq!(disks.len(), 1);
-        assert_eq!(disks[0].size, "0 GB");
-        assert_eq!(disks[0].tran, "");
-    }
-
-    fn join_reply() -> serde_json::Value {
-        serde_json::json!({
-            "server_addr": "https://[fd00:cafe::1]:6443",
-            "k3s_token": "K10abc::server:secret",
-            "account_token": "tok-1",
-            "ceph_fsid": "11111111-2222-4333-8444-555555555555",
-        })
-    }
-
-    #[test]
-    fn a_complete_reply_parses() {
-        let (addr, tok, acct, fsid) = super::parse_join_response(&join_reply()).unwrap();
-        assert_eq!(addr, "https://[fd00:cafe::1]:6443");
-        assert_eq!(tok, "K10abc::server:secret");
-        assert_eq!(acct.as_deref(), Some("tok-1"));
-        assert_eq!(fsid, "11111111-2222-4333-8444-555555555555");
-    }
-
-    #[test]
-    fn an_error_body_is_a_failure_not_a_connection() {
-        let v = serde_json::json!({"error": "missing node.k3s.token"});
-        let e = super::parse_join_response(&v).unwrap_err().to_string();
-        assert!(e.contains("missing node.k3s.token"), "{e}");
-    }
-
-    #[test]
-    fn an_empty_server_address_is_refused_rather_than_meaning_first_node() {
-        let mut v = join_reply();
-        v["server_addr"] = serde_json::json!("");
-        assert!(super::parse_join_response(&v).is_err());
-        v["server_addr"] = serde_json::Value::Null;
-        assert!(super::parse_join_response(&v).is_err());
-    }
-
-    #[test]
-    fn a_missing_k3s_token_is_refused() {
-        let mut v = join_reply();
-        v.as_object_mut().unwrap().remove("k3s_token");
-        assert!(super::parse_join_response(&v).is_err());
-    }
-
-    #[test]
-    fn an_empty_ceph_fsid_is_refused_and_says_what_to_do() {
-        let mut v = join_reply();
-        v["ceph_fsid"] = serde_json::json!("");
-        let e = super::parse_join_response(&v).unwrap_err().to_string();
-        assert!(e.contains("update it first"), "{e}");
-    }
-
-    #[test]
-    fn an_absent_ceph_fsid_is_refused_too() {
-        let mut v = join_reply();
-        v.as_object_mut().unwrap().remove("ceph_fsid");
-        assert!(super::parse_join_response(&v).is_err());
-    }
-
-    #[test]
-    fn an_absent_account_token_is_allowed() {
-        let mut v = join_reply();
-        v.as_object_mut().unwrap().remove("account_token");
-        assert_eq!(super::parse_join_response(&v).unwrap().2, None);
-    }
-
-    #[test]
-    fn without_a_referral_code_the_account_request_body_is_empty() {
-        assert_eq!(create_account_body(""), serde_json::json!({}));
-        assert_eq!(create_account_body("   "), serde_json::json!({}));
-    }
-
-    #[test]
-    fn a_typed_referral_code_is_sent_trimmed() {
+    fn a_setup_cannot_be_chosen_before_the_network_is_up() {
+        let mut app = ready();
+        app.network_ready = false;
+        press(&mut app, &[KeyCode::Enter]);
+        assert_eq!(app.step, Step::Mode);
         assert_eq!(
-            create_account_body("  AB3K9XYZ "),
-            serde_json::json!({ "referral_code": "AB3K9XYZ" })
+            app.error.as_deref(),
+            Some("Network not ready — waiting for DNS…")
         );
     }
 
     #[test]
-    fn a_refused_referral_code_shows_the_platforms_reason() {
-        let body = serde_json::json!({ "detail": "This referral code does not exist" });
-        let err = account_token_from(false, &body).unwrap_err();
-        assert_eq!(err.to_string(), "This referral code does not exist");
+    fn choosing_a_setup_moves_to_the_account_step() {
+        let mut app = ready();
+        press(&mut app, &[KeyCode::Enter]);
+        assert_eq!(
+            (app.step.clone(), app.mode.clone()),
+            (Step::Account, Some(ClusterMode::New))
+        );
+
+        let mut app = ready();
+        press(&mut app, &[KeyCode::Down, KeyCode::Enter]);
+        assert_eq!(app.mode, Some(ClusterMode::Join));
     }
 
     #[test]
-    fn a_failure_without_a_reason_still_says_what_failed() {
-        let err = account_token_from(false, &serde_json::Value::Null).unwrap_err();
-        assert_eq!(err.to_string(), "The account could not be created");
-    }
-
-    #[test]
-    fn a_created_account_yields_its_token() {
-        let body = serde_json::json!({ "account_token": "tok-1" });
-        assert_eq!(account_token_from(true, &body).unwrap(), "tok-1");
-    }
-
-    #[tokio::test]
-    async fn typing_on_the_create_tab_fills_the_referral_code_not_the_token() {
-        let mut app = App::new();
-        app.mode = Some(ClusterMode::New);
-        app.acct_cursor = 0;
-        for c in "ab3k".chars() {
-            app.key_account_new(KeyEvent::from(KeyCode::Char(c))).await;
-        }
-        app.key_account_new(KeyEvent::from(KeyCode::Backspace))
-            .await;
+    fn typing_on_the_create_tab_fills_the_referral_code_not_the_token() {
+        let mut app = at_account(ClusterMode::New);
+        typed(&mut app, "ab3k");
+        press(&mut app, &[KeyCode::Backspace]);
         assert_eq!(app.acct_referral, "ab3");
         assert!(app.acct_input.is_empty());
+    }
+
+    #[test]
+    fn a_referral_code_stops_at_its_maximum_length() {
+        let mut app = at_account(ClusterMode::New);
+        typed(&mut app, &"é".repeat(REFERRAL_CODE_MAX + 5));
+        assert_eq!(app.acct_referral.chars().count(), REFERRAL_CODE_MAX);
+    }
+
+    #[test]
+    fn tab_switches_between_creating_and_pasting_a_token() {
+        let mut app = at_account(ClusterMode::New);
+        press(&mut app, &[KeyCode::Tab]);
+        assert_eq!(app.acct_cursor, 1);
+        typed(&mut app, "tok9");
+        press(&mut app, &[KeyCode::Backspace]);
+        assert_eq!(app.acct_input, "tok");
+        assert!(app.acct_referral.is_empty());
+        press(&mut app, &[KeyCode::BackTab]);
+        assert_eq!(app.acct_cursor, 0);
+    }
+
+    #[test]
+    fn nothing_can_be_typed_once_an_account_is_connected() {
+        let mut app = at_account(ClusterMode::New);
+        app.account_token = Some("t".into());
+        typed(&mut app, "x");
+        press(&mut app, &[KeyCode::Tab]);
+        typed(&mut app, "y");
+        assert!(app.acct_referral.is_empty() && app.acct_input.is_empty());
+    }
+
+    #[test]
+    fn enter_on_the_create_tab_creates_an_account() {
+        let mut app = at_account(ClusterMode::New);
+        typed(&mut app, "AB3");
+        press(&mut app, &[KeyCode::Enter]);
+        assert_eq!(
+            app.effects,
+            vec![Effect::CreateAccount {
+                referral: "AB3".into()
+            }]
+        );
+        assert!(app.loading);
+        assert_eq!(app.loading_msg, "Creating account…");
+    }
+
+    #[test]
+    fn a_pasted_token_is_verified_trimmed() {
+        let mut app = at_account(ClusterMode::New);
+        app.acct_cursor = 1;
+        typed(&mut app, "  tok  ");
+        press(&mut app, &[KeyCode::Enter]);
+        assert_eq!(
+            app.effects,
+            vec![Effect::VerifyToken {
+                token: "tok".into()
+            }]
+        );
+        assert_eq!(app.loading_msg, "Verifying token…");
+    }
+
+    #[test]
+    fn an_empty_token_is_refused_without_asking_the_platform() {
+        let mut app = at_account(ClusterMode::New);
+        app.acct_cursor = 1;
+        typed(&mut app, "   ");
+        press(&mut app, &[KeyCode::Enter]);
+        assert!(app.effects.is_empty());
+        assert!(!app.loading);
+        assert_eq!(
+            app.error.as_deref(),
+            Some("Please paste your account token.")
+        );
+    }
+
+    #[test]
+    fn a_connected_account_continues_to_the_disks() {
+        let mut app = at_account(ClusterMode::New);
+        app.account_token = Some("t".into());
+        press(&mut app, &[KeyCode::Enter]);
+        assert_eq!(app.step, Step::Disk);
+        assert_eq!(app.effects, vec![Effect::DetectDisks]);
+        assert_eq!(app.loading_msg, "Detecting disks…");
+    }
+
+    #[test]
+    fn disks_already_found_are_not_detected_again() {
+        let mut app = at_account(ClusterMode::New);
+        app.account_token = Some("t".into());
+        app.disks = vec![disk("/dev/sda", false, true)];
+        press(&mut app, &[KeyCode::Enter]);
+        assert_eq!(app.step, Step::Disk);
+        assert!(app.effects.is_empty());
+        assert!(!app.loading);
+    }
+
+    #[test]
+    fn escape_goes_back_one_step() {
+        let mut app = at_account(ClusterMode::New);
+        press(&mut app, &[KeyCode::Esc]);
+        assert_eq!(app.step, Step::Mode);
+
+        let mut app = at_account(ClusterMode::Join);
+        press(&mut app, &[KeyCode::Esc]);
+        assert_eq!(app.step, Step::Mode);
+
+        let mut app = at_disk(vec![]);
+        press(&mut app, &[KeyCode::Esc]);
+        assert_eq!(app.step, Step::Account);
+
+        let mut app = ready();
+        app.step = Step::Configure;
+        press(&mut app, &[KeyCode::Esc]);
+        assert_eq!(app.step, Step::Disk);
+    }
+
+    #[test]
+    fn without_a_mode_the_account_step_ignores_keys() {
+        let mut app = ready();
+        app.step = Step::Account;
+        typed(&mut app, "abc");
+        press(&mut app, &[KeyCode::Enter, KeyCode::Esc]);
+        assert_eq!(app.step, Step::Account);
+        assert!(app.effects.is_empty());
+    }
+
+    #[test]
+    fn unused_keys_on_the_create_tab_change_nothing() {
+        let mut app = at_account(ClusterMode::New);
+        press(&mut app, &[KeyCode::Left, KeyCode::F(1)]);
+        assert_eq!(app.step, Step::Account);
+        assert!(app.effects.is_empty());
+    }
+
+    #[test]
+    fn joining_takes_a_url_and_a_password_in_turn() {
+        let mut app = at_account(ClusterMode::Join);
+        typed(&mut app, "https://n1x");
+        press(&mut app, &[KeyCode::Backspace, KeyCode::Tab]);
+        typed(&mut app, "pw1");
+        press(&mut app, &[KeyCode::Backspace]);
+        assert_eq!(
+            (app.join_url.as_str(), app.join_pass.as_str()),
+            ("https://n1", "pw")
+        );
+        press(&mut app, &[KeyCode::BackTab]);
+        assert_eq!(app.join_field, 0);
+        press(&mut app, &[KeyCode::Left]);
+        assert_eq!(app.join_url, "https://n1");
+    }
+
+    #[test]
+    fn joining_needs_a_url() {
+        let mut app = at_account(ClusterMode::Join);
+        app.join_field = 1;
+        typed(&mut app, "pw");
+        press(&mut app, &[KeyCode::Enter]);
+        assert!(app.effects.is_empty());
+        assert_eq!(app.error.as_deref(), Some("Node URL is required."));
+    }
+
+    #[test]
+    fn joining_connects_with_the_trimmed_url_and_the_password_as_typed() {
+        let mut app = at_account(ClusterMode::Join);
+        app.join_url = " https://n1 ".into();
+        app.join_pass = " pw ".into();
+        press(&mut app, &[KeyCode::Enter]);
+        assert_eq!(
+            app.effects,
+            vec![Effect::FetchJoinInfo {
+                url: "https://n1".into(),
+                password: " pw ".into()
+            }]
+        );
+        assert_eq!(app.loading_msg, "Connecting to existing node…");
+    }
+
+    #[test]
+    fn the_disk_cursor_stays_on_the_list() {
+        let mut app = at_disk(vec![
+            disk("/dev/a", false, false),
+            disk("/dev/b", false, false),
+        ]);
+        press(
+            &mut app,
+            &[KeyCode::Down, KeyCode::Char('j'), KeyCode::Down],
+        );
+        assert_eq!(app.disk_cursor, 1);
+        press(&mut app, &[KeyCode::Up, KeyCode::Char('k'), KeyCode::Up]);
+        assert_eq!(app.disk_cursor, 0);
+
+        let mut app = at_disk(vec![]);
+        press(&mut app, &[KeyCode::Down, KeyCode::Enter]);
+        assert_eq!((app.disk_cursor, app.step.clone()), (0, Step::Disk));
+    }
+
+    #[test]
+    fn a_disk_in_use_cannot_be_chosen() {
+        let mut app = at_disk(vec![disk("/dev/a", true, false)]);
+        press(&mut app, &[KeyCode::Enter]);
+        assert_eq!(app.step, Step::Disk);
+        assert_eq!(
+            app.error.as_deref(),
+            Some("That disk is in use — choose another.")
+        );
+    }
+
+    #[test]
+    fn a_free_disk_moves_on_to_configuration() {
+        let mut app = at_disk(vec![disk("/dev/a", false, false)]);
+        press(&mut app, &[KeyCode::Left, KeyCode::Enter]);
+        assert_eq!(app.step, Step::Configure);
+    }
+
+    fn at_configure() -> App {
+        let mut app = at_disk(vec![
+            disk("/dev/a", false, false),
+            disk("/dev/b", false, true),
+        ]);
+        app.disk_cursor = 1;
+        app.step = Step::Configure;
+        app.timezone.clear();
+        app
+    }
+
+    #[test]
+    fn tab_cycles_through_the_four_fields_both_ways() {
+        let mut app = at_configure();
+        let mut seen = vec![];
+        for _ in 0..5 {
+            seen.push(app.cfg_field);
+            press(&mut app, &[KeyCode::Tab]);
+        }
+        assert_eq!(seen, vec![0, 1, 2, 3, 0]);
+        press(&mut app, &[KeyCode::BackTab]);
+        assert_eq!(app.cfg_field, 0);
+        press(&mut app, &[KeyCode::BackTab]);
+        assert_eq!(app.cfg_field, 3);
+        press(&mut app, &[KeyCode::BackTab]);
+        assert_eq!(app.cfg_field, 2);
+    }
+
+    #[test]
+    fn each_field_takes_its_own_typing() {
+        let mut app = at_configure();
+        for (field, text) in [
+            "Europe/Parisx",
+            "Passw0rdx",
+            "Passw0rdx",
+            " ssh-ed25519 Kx ",
+        ]
+        .iter()
+        .enumerate()
+        {
+            app.cfg_field = field as u8;
+            typed(&mut app, text);
+            press(&mut app, &[KeyCode::Backspace]);
+        }
+        press(&mut app, &[KeyCode::F(2)]);
+        assert_eq!(
+            [
+                app.timezone.as_str(),
+                app.password.as_str(),
+                app.password2.as_str(),
+                app.ssh_pub.as_str()
+            ],
+            ["Europe/Paris", "Passw0rd", "Passw0rd", " ssh-ed25519 Kx"]
+        );
+    }
+
+    #[test]
+    fn a_weak_or_mismatched_password_names_the_problem() {
+        let cases = [
+            ("Ab1", "Ab1", "Password must be at least 8 characters."),
+            (
+                "abcdefg1",
+                "abcdefg1",
+                "Password must contain at least one uppercase letter.",
+            ),
+            (
+                "ABCDEFG1",
+                "ABCDEFG1",
+                "Password must contain at least one lowercase letter.",
+            ),
+            (
+                "Abcdefgh",
+                "Abcdefgh",
+                "Password must contain at least one number.",
+            ),
+            ("Abcdefg1", "Abcdefg2", "Passwords do not match."),
+        ];
+        for (password, confirm, problem) in cases {
+            assert_eq!(
+                password_problem(password, confirm),
+                Some(problem),
+                "{password}"
+            );
+        }
+        assert_eq!(password_problem("Abcdefg1", "Abcdefg1"), None);
+        assert_eq!(
+            password_problem("Abcdéf1", "Abcdéf1"),
+            Some("Password must be at least 8 characters.")
+        );
+    }
+
+    #[test]
+    fn a_rejected_password_does_not_start_the_install() {
+        let mut app = at_configure();
+        app.password = "short".into();
+        press(&mut app, &[KeyCode::Enter]);
+        assert_eq!(app.step, Step::Configure);
+        assert_eq!(
+            app.error.as_deref(),
+            Some("Password must be at least 8 characters.")
+        );
+        assert!(app.effects.is_empty());
+    }
+
+    #[test]
+    fn a_good_password_starts_the_install_with_everything_chosen() {
+        let mut app = at_configure();
+        app.timezone = " Europe/Paris ".into();
+        app.password = "Passw0rd".into();
+        app.password2 = "Passw0rd".into();
+        app.ssh_pub = " ssh-ed25519 K ".into();
+        app.account_token = Some("tok".into());
+        app.join_server_addr = Some("https://[fd00::1]:6443".into());
+        app.join_k3s_token = Some("K10".into());
+        app.join_ceph_fsid = Some("fsid".into());
+        app.log_lines = vec!["old".into()];
+        press(&mut app, &[KeyCode::Enter]);
+        assert_eq!(app.step, Step::Install);
+        assert!(app.log_lines.is_empty());
+        assert_eq!(
+            app.effects,
+            vec![Effect::Install(InstallParams {
+                disk: "/dev/b".into(),
+                timezone: "Europe/Paris".into(),
+                password: "Passw0rd".into(),
+                root_ssh_key: "ssh-ed25519 K".into(),
+                account_token: "tok".into(),
+                server_addr: Some("https://[fd00::1]:6443".into()),
+                k3s_token: Some("K10".into()),
+                ceph_fsid: Some("fsid".into()),
+                boot_mode: "uefi".into(),
+            })]
+        );
+    }
+
+    #[test]
+    fn an_install_without_a_disk_or_account_still_carries_empty_fields() {
+        let mut app = at_configure();
+        app.disks.clear();
+        app.password = "Passw0rd".into();
+        app.password2 = "Passw0rd".into();
+        press(&mut app, &[KeyCode::Enter]);
+        assert_eq!(
+            app.effects,
+            vec![Effect::Install(InstallParams {
+                disk: String::new(),
+                timezone: String::new(),
+                password: "Passw0rd".into(),
+                root_ssh_key: String::new(),
+                account_token: String::new(),
+                server_addr: None,
+                k3s_token: None,
+                ceph_fsid: None,
+                boot_mode: "uefi".into(),
+            })]
+        );
+    }
+
+    #[test]
+    fn reboot_and_power_off_wait_for_the_install_to_finish() {
+        let mut app = ready();
+        app.step = Step::Install;
+        typed(&mut app, "rpx");
+        assert!(app.effects.is_empty());
+        app.install_done = true;
+        typed(&mut app, "xrp");
+        assert_eq!(
+            app.effects,
+            vec![Effect::Power("reboot"), Effect::Power("poweroff")]
+        );
+    }
+
+    #[test]
+    fn clicks_are_ignored_while_loading_and_for_anything_but_a_left_press() {
+        let mut app = ready();
+        app.click_areas = vec![(
+            Rect {
+                x: 0,
+                y: 0,
+                width: 5,
+                height: 5,
+            },
+            ClickTarget::ModeOption(1),
+        )];
+        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Right), 1, 1));
+        app.handle_mouse(mouse(MouseEventKind::Up(MouseButton::Left), 1, 1));
+        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 9, 9));
+        assert_eq!(app.step, Step::Mode);
+        app.loading = true;
+        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 1, 1));
+        assert_eq!(app.step, Step::Mode);
+        app.loading = false;
+        app.error = Some("old".into());
+        app.handle_mouse(mouse(MouseEventKind::Down(MouseButton::Left), 1, 1));
+        assert_eq!(app.mode, Some(ClusterMode::Join));
+        assert_eq!(app.error, None);
+    }
+
+    #[test]
+    fn clicking_a_field_or_option_selects_it() {
+        let mut app = ready();
+        click(&mut app, ClickTarget::AcctMethod(1));
+        click(&mut app, ClickTarget::JoinField(1));
+        click(&mut app, ClickTarget::DiskOption(2));
+        click(&mut app, ClickTarget::CfgField(3));
+        assert_eq!(
+            (
+                app.acct_cursor,
+                app.join_field,
+                app.disk_cursor,
+                app.cfg_field
+            ),
+            (1, 1, 2, 3)
+        );
+    }
+
+    #[test]
+    fn continue_does_what_enter_does_on_each_step() {
+        let mut app = at_account(ClusterMode::New);
+        click(&mut app, ClickTarget::Btn(BtnId::Continue));
+        assert_eq!(
+            app.effects,
+            vec![Effect::CreateAccount {
+                referral: String::new()
+            }]
+        );
+
+        let mut app = at_account(ClusterMode::New);
+        app.acct_cursor = 1;
+        app.acct_input = "t".into();
+        click(&mut app, ClickTarget::Btn(BtnId::Continue));
+        assert_eq!(app.effects, vec![Effect::VerifyToken { token: "t".into() }]);
+
+        let mut app = at_account(ClusterMode::Join);
+        app.join_url = "u".into();
+        click(&mut app, ClickTarget::Btn(BtnId::Continue));
+        assert_eq!(
+            app.effects,
+            vec![Effect::FetchJoinInfo {
+                url: "u".into(),
+                password: String::new()
+            }]
+        );
+
+        let mut app = at_account(ClusterMode::Join);
+        app.account_token = Some("t".into());
+        click(&mut app, ClickTarget::Btn(BtnId::Continue));
+        assert_eq!(app.step, Step::Disk);
+
+        let mut app = at_disk(vec![disk("/dev/a", false, false)]);
+        click(&mut app, ClickTarget::Btn(BtnId::Continue));
+        assert_eq!(app.step, Step::Configure);
+
+        let mut app = at_configure();
+        click(&mut app, ClickTarget::Btn(BtnId::Continue));
+        assert_eq!(
+            app.error.as_deref(),
+            Some("Password must be at least 8 characters.")
+        );
+
+        for step in [Step::Mode, Step::Install] {
+            let mut app = ready();
+            app.step = step.clone();
+            click(&mut app, ClickTarget::Btn(BtnId::Continue));
+            assert_eq!(app.step, step);
+            assert!(app.effects.is_empty());
+        }
+    }
+
+    #[test]
+    fn each_button_starts_its_own_action() {
+        let cases = [
+            (
+                BtnId::CreateAcct,
+                Effect::CreateAccount {
+                    referral: "r".into(),
+                },
+            ),
+            (
+                BtnId::VerifyToken,
+                Effect::VerifyToken { token: "t".into() },
+            ),
+            (
+                BtnId::Connect,
+                Effect::FetchJoinInfo {
+                    url: "u".into(),
+                    password: "p".into(),
+                },
+            ),
+            (BtnId::GenSshKey, Effect::GenSshKey),
+            (BtnId::Reboot, Effect::Power("reboot")),
+            (BtnId::Poweroff, Effect::Power("poweroff")),
+        ];
+        for (btn, effect) in cases {
+            let mut app = ready();
+            app.acct_referral = "r".into();
+            app.acct_input = "t".into();
+            app.join_url = "u".into();
+            app.join_pass = "p".into();
+            click(&mut app, ClickTarget::Btn(btn.clone()));
+            assert_eq!(app.effects, vec![effect], "{btn:?}");
+        }
+        let mut app = ready();
+        click(&mut app, ClickTarget::Btn(BtnId::GenSshKey));
+        assert_eq!(app.loading_msg, "Generating SSH key…");
+    }
+
+    #[test]
+    fn every_answer_ends_the_wait() {
+        let mut app = App::new("uefi");
+        app.handle_app_event(AppEvent::NetworkReady);
+        assert!(app.network_ready && !app.loading);
+
+        let mut app = App::new("uefi");
+        app.handle_app_event(AppEvent::Log("x".into()));
+        assert!(!app.loading);
+        assert_eq!(app.log_lines, vec!["x"]);
+    }
+
+    #[test]
+    fn a_created_account_is_both_shown_and_used() {
+        let mut app = ready();
+        app.handle_app_event(AppEvent::AccountCreated("tok".into()));
+        assert_eq!(app.created_token.as_deref(), Some("tok"));
+        assert_eq!(app.account_token.as_deref(), Some("tok"));
+    }
+
+    #[test]
+    fn a_verified_token_is_used_trimmed_but_not_shown_as_new() {
+        let mut app = ready();
+        app.acct_input = " tok ".into();
+        app.handle_app_event(AppEvent::AccountVerified);
+        assert_eq!(app.account_token.as_deref(), Some("tok"));
+        assert_eq!(app.created_token, None);
+    }
+
+    #[test]
+    fn loaded_disks_start_on_the_recommended_one() {
+        let mut app = ready();
+        app.handle_app_event(AppEvent::DisksLoaded(vec![
+            disk("/dev/a", false, false),
+            disk("/dev/b", false, true),
+        ]));
+        assert_eq!(app.disk_cursor, 1);
+        assert_eq!(app.disks.len(), 2);
+
+        app.disk_cursor = 5;
+        app.handle_app_event(AppEvent::DisksLoaded(vec![disk("/dev/a", false, false)]));
+        assert_eq!(app.disk_cursor, 0);
+    }
+
+    fn joined() -> AppEvent {
+        AppEvent::JoinConnected {
+            server_addr: "s".into(),
+            k3s_token: "k".into(),
+            ceph_fsid: "f".into(),
+        }
+    }
+
+    #[test]
+    fn a_joined_cluster_reuses_its_password_and_moves_to_the_disks() {
+        let mut app = at_account(ClusterMode::Join);
+        app.join_pass = "Clust3rPw".into();
+        app.handle_app_event(joined());
+        assert_eq!(app.join_server_addr.as_deref(), Some("s"));
+        assert_eq!(app.join_k3s_token.as_deref(), Some("k"));
+        assert_eq!(app.join_ceph_fsid.as_deref(), Some("f"));
+        assert_eq!(
+            (app.password.as_str(), app.password2.as_str()),
+            ("Clust3rPw", "Clust3rPw")
+        );
+        assert_eq!(app.step, Step::Disk);
+        assert_eq!(app.effects, vec![Effect::DetectDisks]);
+    }
+
+    #[test]
+    fn a_password_already_typed_is_kept_when_joining() {
+        let mut app = at_account(ClusterMode::Join);
+        app.join_pass = "Clust3rPw".into();
+        app.password = "Mine1234".into();
+        app.handle_app_event(joined());
+        assert_eq!(
+            (app.password.as_str(), app.password2.as_str()),
+            ("Mine1234", "")
+        );
+    }
+
+    #[test]
+    fn a_generated_key_fills_the_public_key_field() {
+        let mut app = ready();
+        app.handle_app_event(AppEvent::SshKeyGenerated {
+            private_key: "PRIV".into(),
+            public_key: "PUB".into(),
+        });
+        assert_eq!(app.gen_privkey.as_deref(), Some("PRIV"));
+        assert_eq!(app.ssh_pub, "PUB");
+    }
+
+    #[test]
+    fn a_finished_install_records_where_to_manage_it() {
+        let mut app = ready();
+        app.handle_app_event(AppEvent::InstallComplete {
+            url: "https://n".into(),
+        });
+        assert!(app.install_done);
+        assert_eq!(app.mgmt_url.as_deref(), Some("https://n"));
+    }
+
+    #[test]
+    fn a_failure_only_fails_the_install_during_the_install() {
+        let mut app = ready();
+        app.handle_app_event(AppEvent::Failed("nope".into()));
+        assert!(!app.install_failed);
+        assert_eq!(app.error.as_deref(), Some("nope"));
+
+        app.step = Step::Install;
+        app.handle_app_event(AppEvent::Failed("disko".into()));
+        assert!(app.install_failed);
     }
 }

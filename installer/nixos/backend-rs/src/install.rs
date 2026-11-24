@@ -1,12 +1,8 @@
-use std::path::Path;
-use std::process::Stdio;
-
 use anyhow::Context;
 use serde::Serialize;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
-use tokio::sync::mpsc;
 
 use crate::app::AppEvent;
+use crate::seam::{Events, Machine};
 
 const GIT_REMOTE: &str = "https://github.com/DemyCode/yolab.git";
 const CODE_DIR: &str = "/tmp/yolab-install";
@@ -24,6 +20,7 @@ fn machine_files(report_written: bool) -> Vec<&'static str> {
     files
 }
 
+#[derive(Debug, Clone, PartialEq)]
 pub struct InstallParams {
     pub disk: String,
     pub timezone: String,
@@ -188,115 +185,41 @@ fn render_config_toml(
     tunnel: &crate::wireguard::TunnelResult,
     service_name: &str,
     password_hash: &str,
-) -> anyhow::Result<String> {
-    Ok(toml::to_string(&build_config(
-        req,
-        tunnel,
-        service_name,
-        password_hash,
-    ))?)
+) -> String {
+    toml::to_string(&build_config(req, tunnel, service_name, password_hash))
+        .expect("the config structs encode as TOML")
 }
 
-async fn hash_password(password: &str) -> anyhow::Result<String> {
-    let mut child = tokio::process::Command::new("openssl")
-        .args(["passwd", "-6", "-stdin"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .context("openssl passwd")?;
-
-    if let Some(mut stdin) = child.stdin.take() {
-        use tokio::io::AsyncWriteExt;
-        stdin.write_all(password.as_bytes()).await?;
-    }
-
-    let out = child.wait_with_output().await?;
-    anyhow::ensure!(out.status.success(), "openssl passwd failed");
+async fn hash_password<M: Machine>(m: &M, password: &str) -> anyhow::Result<String> {
+    let out = m
+        .run("openssl", &["passwd", "-6", "-stdin"], Some(password))
+        .await?;
+    anyhow::ensure!(out.success, "openssl passwd failed");
     Ok(String::from_utf8(out.stdout)?.trim().to_string())
 }
 
-async fn stream_command(
+fn announce(program: &str, args: &[&str], tx: &Events) {
+    let _ = tx.send(AppEvent::Log(format!("$ {program} {}", args.join(" "))));
+}
+
+async fn stream_command<M: Machine>(
+    m: &M,
     program: &str,
     args: &[&str],
-    tx: &mpsc::UnboundedSender<AppEvent>,
+    tx: &Events,
 ) -> anyhow::Result<()> {
-    let _ = tx.send(AppEvent::Log(format!("$ {program} {}", args.join(" "))));
-
-    let mut child = tokio::process::Command::new(program)
-        .args(args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .with_context(|| format!("spawn {program}"))?;
-
-    let stdout = child.stdout.take().unwrap();
-    let stderr = child.stderr.take().unwrap();
-    let tx1 = tx.clone();
-    let tx2 = tx.clone();
-
-    let t1 = tokio::spawn(async move {
-        forward_lines(BufReader::new(stdout).lines(), &tx1).await;
-    });
-    let t2 = tokio::spawn(async move {
-        forward_lines(BufReader::new(stderr).lines(), &tx2).await;
-    });
-
-    let (out, err) = tokio::join!(t1, t2);
-    out.context("read the command's output")?;
-    err.context("read the command's errors")?;
-    let status = child.wait().await?;
-    anyhow::ensure!(status.success(), "{program} failed with {status}");
-    Ok(())
+    announce(program, args, tx);
+    m.stream(program, args, tx).await
 }
 
-async fn forward_lines<R: tokio::io::AsyncBufRead + Unpin>(
-    mut lines: tokio::io::Lines<R>,
-    tx: &mpsc::UnboundedSender<AppEvent>,
-) {
-    loop {
-        match lines.next_line().await {
-            Ok(Some(line)) => {
-                let _ = tx.send(AppEvent::Log(line));
-            }
-            Ok(None) => return,
-            Err(e) => {
-                let _ = tx.send(AppEvent::Log(format!("(could not read more output: {e})")));
-                return;
-            }
-        }
-    }
-}
-
-async fn capture_command(
+async fn capture_command<M: Machine>(
+    m: &M,
     program: &str,
     args: &[&str],
-    tx: &mpsc::UnboundedSender<AppEvent>,
+    tx: &Events,
 ) -> anyhow::Result<Vec<u8>> {
-    let _ = tx.send(AppEvent::Log(format!("$ {program} {}", args.join(" "))));
-
-    let mut child = tokio::process::Command::new(program)
-        .args(args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .with_context(|| format!("spawn {program}"))?;
-
-    let mut stdout_handle = child.stdout.take().unwrap();
-    let stderr = child.stderr.take().unwrap();
-    let tx2 = tx.clone();
-
-    let t_stderr = tokio::spawn(async move {
-        forward_lines(BufReader::new(stderr).lines(), &tx2).await;
-    });
-
-    let mut stdout_bytes = Vec::new();
-    stdout_handle.read_to_end(&mut stdout_bytes).await?;
-    t_stderr.await.context("read the command's errors")?;
-
-    let status = child.wait().await?;
-    anyhow::ensure!(status.success(), "{program} failed with {status}");
-    Ok(stdout_bytes)
+    announce(program, args, tx);
+    m.capture(program, args, tx).await
 }
 
 fn disko_args(flake_ref: &str) -> [&str; 5] {
@@ -309,158 +232,162 @@ fn disko_args(flake_ref: &str) -> [&str; 5] {
     ]
 }
 
-pub async fn run_install(req: InstallParams, tx: mpsc::UnboundedSender<AppEvent>) {
-    match do_install(&req, &tx).await {
-        Ok(url) => {
-            let _ = tx.send(AppEvent::InstallComplete { url });
-        }
+pub async fn run_install<M: Machine>(m: &M, req: InstallParams, tx: &Events) {
+    let event = match do_install(m, &req, tx).await {
+        Ok(url) => AppEvent::InstallComplete { url },
         Err(e) => {
             let _ = tx.send(AppEvent::Log(format!("ERROR: {e:#}")));
-            let _ = tx.send(AppEvent::Failed(format!("{e:#}")));
+            AppEvent::Failed(format!("{e:#}"))
         }
-    }
+    };
+    let _ = tx.send(event);
 }
 
-async fn do_install(
-    req: &InstallParams,
-    tx: &mpsc::UnboundedSender<AppEvent>,
-) -> anyhow::Result<String> {
-    macro_rules! log {
-        ($($arg:tt)*) => { let _ = tx.send(AppEvent::Log(format!($($arg)*))); };
-    }
+fn log(tx: &Events, line: impl Into<String>) {
+    let _ = tx.send(AppEvent::Log(line.into()));
+}
 
-    log!("Registering WireGuard tunnel…");
-    let service_name = crate::wireguard::next_node_name(&req.account_token)
+async fn do_install<M: Machine>(m: &M, req: &InstallParams, tx: &Events) -> anyhow::Result<String> {
+    log(tx, "Registering WireGuard tunnel…");
+    let service_name = crate::wireguard::next_node_name(m, &req.account_token)
         .await
         .context("next_node_name")?;
-    log!("This machine will be: {service_name}");
+    log(tx, format!("This machine will be: {service_name}"));
 
-    let tunnel = crate::wireguard::register_and_bring_up_tunnel(&req.account_token, &service_name)
-        .await
-        .context("register tunnel")?;
-    log!("✓ Tunnel up — {}", tunnel.dns_url);
+    let tunnel =
+        crate::wireguard::register_and_bring_up_tunnel(m, &req.account_token, &service_name)
+            .await
+            .context("register tunnel")?;
+    log(tx, format!("✓ Tunnel up — {}", tunnel.dns_url));
 
-    if let Err(e) = partition_and_install(req, tx, &service_name, &tunnel).await {
-        log!("Install failed — deregistering the tunnel and node peer so the name and DNS record aren't stranded…");
-        crate::wireguard::deregister(&req.account_token, &tunnel, tx).await;
+    if let Err(e) = partition_and_install(m, req, tx, &service_name, &tunnel).await {
+        log(tx, "Install failed — deregistering the tunnel and node peer so the name and DNS record aren't stranded…");
+        crate::wireguard::deregister(m, &req.account_token, &tunnel, tx).await;
         return Err(e);
     }
 
-    log!("Copying this machine's configuration to the installed system…");
-    install_machine_files(tx).await?;
-    log!("✓ Complete — remove the USB and reboot");
+    log(
+        tx,
+        "Copying this machine's configuration to the installed system…",
+    );
+    install_machine_files(m, tx).await?;
+    log(tx, "✓ Complete — remove the USB and reboot");
 
     Ok(tunnel.dns_url)
 }
 
-async fn install_machine_files(tx: &mpsc::UnboundedSender<AppEvent>) -> anyhow::Result<()> {
+async fn install_machine_files<M: Machine>(m: &M, tx: &Events) -> anyhow::Result<()> {
     let target = format!("/mnt{MACHINE_DIR}");
-    stream_command("install", &["-d", "-m", "0700", &target], tx).await?;
-    let report_written =
-        tokio::fs::try_exists(format!("{CODE_DIR}/{CLONE_MACHINE_DIR}/{HARDWARE_REPORT}"))
-            .await
-            .unwrap_or(false);
+    stream_command(m, "install", &["-d", "-m", "0700", &target], tx).await?;
+    let report_written = m
+        .exists(&format!("{CODE_DIR}/{CLONE_MACHINE_DIR}/{HARDWARE_REPORT}"))
+        .await;
     for file in machine_files(report_written) {
         let from = format!("{CODE_DIR}/{CLONE_MACHINE_DIR}/{file}");
         let to = format!("{target}/{file}");
-        stream_command("install", &["-m", "0600", &from, &to], tx).await?;
-        tokio::fs::remove_file(&from)
+        stream_command(m, "install", &["-m", "0600", &from, &to], tx).await?;
+        m.remove_file(&from)
             .await
             .with_context(|| format!("remove {from} from the install clone"))?;
     }
     Ok(())
 }
 
-async fn partition_and_install(
+async fn partition_and_install<M: Machine>(
+    m: &M,
     req: &InstallParams,
-    tx: &mpsc::UnboundedSender<AppEvent>,
+    tx: &Events,
     service_name: &str,
     tunnel: &crate::wireguard::TunnelResult,
 ) -> anyhow::Result<()> {
-    macro_rules! log {
-        ($($arg:tt)*) => { let _ = tx.send(AppEvent::Log(format!($($arg)*))); };
-    }
-
-    log!("Hashing password…");
-    let password_hash = hash_password(&req.password)
+    log(tx, "Hashing password…");
+    let password_hash = hash_password(m, &req.password)
         .await
         .context("hash_password")?;
 
-    if Path::new(CODE_DIR).exists() {
-        tokio::fs::remove_dir_all(CODE_DIR).await?;
+    if m.exists(CODE_DIR).await {
+        m.remove_dir_all(CODE_DIR).await?;
     }
-    log!("Cloning repository…");
-    stream_command("git", &["clone", GIT_REMOTE, CODE_DIR], tx).await?;
-    log!("✓ Repository cloned");
+    log(tx, "Cloning repository…");
+    stream_command(m, "git", &["clone", GIT_REMOTE, CODE_DIR], tx).await?;
+    log(tx, "✓ Repository cloned");
 
-    log!("Writing config.toml…");
+    log(tx, "Writing config.toml…");
     let machine_dir = format!("{CODE_DIR}/{CLONE_MACHINE_DIR}");
-    tokio::fs::create_dir_all(&machine_dir).await?;
+    m.create_dir_all(&machine_dir).await?;
+    let toml_str = render_config_toml(req, tunnel, service_name, &password_hash);
+    m.write_file(
+        &format!("{machine_dir}/config.toml"),
+        toml_str.as_bytes(),
+        None,
+    )
+    .await?;
+    log(tx, "✓ Config written");
 
-    let toml_str = render_config_toml(req, tunnel, service_name, &password_hash)
-        .context("serialize config")?;
-    tokio::fs::write(format!("{machine_dir}/config.toml"), toml_str).await?;
-    log!("✓ Config written");
-
-    log!("Generating hardware configuration…");
+    log(tx, "Generating hardware configuration…");
     let hw_nix = capture_command(
+        m,
         "nixos-generate-config",
         &["--no-filesystems", "--show-hardware-config"],
         tx,
     )
     .await
     .context("nixos-generate-config")?;
-    tokio::fs::write(format!("{machine_dir}/hardware-configuration.nix"), hw_nix).await?;
-    log!("✓ Hardware config generated");
+    m.write_file(
+        &format!("{machine_dir}/hardware-configuration.nix"),
+        &hw_nix,
+        None,
+    )
+    .await?;
+    log(tx, "✓ Hardware config generated");
 
-    log!("Recording this machine's hardware…");
+    log(tx, "Recording this machine's hardware…");
     let report = format!("{machine_dir}/{HARDWARE_REPORT}");
-    match stream_command("nixos-facter", &["-o", &report], tx).await {
-        Ok(()) => {
-            log!("✓ Hardware recorded");
-        }
+    match stream_command(m, "nixos-facter", &["-o", &report], tx).await {
+        Ok(()) => log(tx, "✓ Hardware recorded"),
         Err(e) => {
-            match tokio::fs::remove_file(&report).await {
-                Err(rm) if rm.kind() != std::io::ErrorKind::NotFound => {
-                    log!("Could not remove the partial hardware report {report}: {rm}");
+            if let Err(rm) = m.remove_file(&report).await {
+                if rm.kind() != std::io::ErrorKind::NotFound {
+                    log(
+                        tx,
+                        format!("Could not remove the partial hardware report {report}: {rm}"),
+                    );
                 }
-                _ => {}
             }
-            log!("Could not record the hardware ({e:#}); graphics cards stay unused until the machine records it itself");
+            log(tx, format!("Could not record the hardware ({e:#}); graphics cards stay unused until the machine records it itself"));
         }
     }
 
     let flake_ref = format!("path:{CODE_DIR}#yolab");
 
-    log!("Partitioning {} with disko…", req.disk);
-    stream_command("disko", &disko_args(&flake_ref), tx).await?;
-    log!("✓ Disk partitioned and mounted");
+    log(tx, format!("Partitioning {} with disko…", req.disk));
+    stream_command(m, "disko", &disko_args(&flake_ref), tx).await?;
+    log(tx, "✓ Disk partitioned and mounted");
 
-    log!("Installing NixOS — this takes several minutes…");
-    stream_command(
-        "nixos-install",
-        &[
-            "--flake",
-            &flake_ref,
-            "--no-root-password",
-            "--log-format",
-            "raw",
-            "-v",
-        ],
-        tx,
-    )
-    .await?;
-    log!("✓ NixOS installed");
+    log(tx, "Installing NixOS — this takes several minutes…");
+    stream_command(m, "nixos-install", &nixos_install_args(&flake_ref), tx).await?;
+    log(tx, "✓ NixOS installed");
 
     Ok(())
 }
 
+fn nixos_install_args(flake_ref: &str) -> [&str; 6] {
+    [
+        "--flake",
+        flake_ref,
+        "--no-root-password",
+        "--log-format",
+        "raw",
+        "-v",
+    ]
+}
+
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::wireguard::TunnelResult;
 
-    fn tunnel() -> TunnelResult {
+    pub(crate) fn tunnel() -> TunnelResult {
         TunnelResult {
             enabled: true,
             platform_api_url: "https://api.yolab.io".into(),
@@ -482,7 +409,7 @@ mod tests {
         }
     }
 
-    fn params() -> InstallParams {
+    pub(crate) fn params() -> InstallParams {
         InstallParams {
             disk: "/dev/nvme0n1".into(),
             timezone: "Europe/Paris".into(),
@@ -497,7 +424,7 @@ mod tests {
     }
 
     fn rendered(req: &InstallParams) -> toml::Table {
-        let text = render_config_toml(req, &tunnel(), "node1", "$6$salt$hash").unwrap();
+        let text = render_config_toml(req, &tunnel(), "node1", "$6$salt$hash");
         toml::from_str(&text).expect("installer must emit parseable TOML")
     }
 
@@ -620,7 +547,7 @@ mod tests {
 
     #[test]
     fn only_the_password_hash_is_written_never_the_password() {
-        let text = render_config_toml(&params(), &tunnel(), "node1", "$6$salt$hash").unwrap();
+        let text = render_config_toml(&params(), &tunnel(), "node1", "$6$salt$hash");
         assert!(text.contains("$6$salt$hash"));
         assert!(
             !text.contains("secret"),
@@ -749,6 +676,353 @@ mod tests {
         assert_eq!(
             cfg["homelab"]["timezone"].as_str(),
             Some("America/Argentina/Buenos_Aires")
+        );
+    }
+
+    use crate::fake::{events, logs, FakeMachine};
+    use crate::seam::{Method, Output};
+    use tokio::sync::mpsc;
+
+    const API: &str = "https://api.yolab.io";
+    const CLONE: &str = "/tmp/yolab-install/homelab/machine";
+
+    pub(crate) fn tunnel_for(fqdn: &str, account_token: &str) -> TunnelResult {
+        TunnelResult {
+            dns_url: format!("https://{fqdn}"),
+            account_token: account_token.into(),
+            ..tunnel()
+        }
+    }
+
+    fn ready() -> FakeMachine {
+        let m = FakeMachine::default();
+        m.reply(
+            Method::Get,
+            &format!("{API}/tunnels"),
+            200,
+            r#"[{"dns_records":[{"name":"node2"}]}]"#,
+        );
+        crate::wireguard::tests::script_tunnel(&m);
+        m.output("openssl", true, "$6$salt$hash\n");
+        m.capture_bytes("nixos-generate-config", Ok(b"{ hardware }"));
+        m.reply(Method::Delete, &format!("{API}/nodes/7"), 204, "");
+        m.reply(Method::Delete, &format!("{API}/tunnels/42"), 204, "");
+        m
+    }
+
+    async fn install(m: &FakeMachine) -> Vec<AppEvent> {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        run_install(m, params(), &tx).await;
+        events(&mut rx)
+    }
+
+    fn deregistered(m: &FakeMachine) -> bool {
+        m.calls().iter().any(|c| c.starts_with("http Delete"))
+    }
+
+    fn failure(evs: &[AppEvent]) -> String {
+        let msgs: Vec<String> = evs
+            .iter()
+            .filter_map(|e| match e {
+                AppEvent::Failed(msg) => Some(msg.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(msgs.len(), 1, "{evs:?}");
+        assert_eq!(evs.last(), Some(&AppEvent::Failed(msgs[0].clone())));
+        msgs[0].clone()
+    }
+
+    #[tokio::test]
+    async fn a_full_install_ends_with_the_machines_public_url() {
+        let m = ready();
+        let evs = install(&m).await;
+        assert_eq!(
+            evs.last(),
+            Some(&AppEvent::InstallComplete {
+                url: "https://node3.alice.yolab.io".into()
+            })
+        );
+        assert!(!deregistered(&m));
+
+        let steps: Vec<String> = m
+            .calls()
+            .into_iter()
+            .filter(|c| {
+                c.starts_with("stream") || c.starts_with("capture") || c.starts_with("run openssl")
+            })
+            .collect();
+        assert_eq!(
+            steps,
+            vec![
+                "run openssl passwd -6 -stdin".to_string(),
+                format!("stream git clone {GIT_REMOTE} {CODE_DIR}"),
+                "capture nixos-generate-config --no-filesystems --show-hardware-config".into(),
+                format!("stream nixos-facter -o {CLONE}/facter.json"),
+                format!("stream disko {}", disko_args("path:/tmp/yolab-install#yolab").join(" ")),
+                "stream nixos-install --flake path:/tmp/yolab-install#yolab --no-root-password --log-format raw -v".into(),
+                "stream install -d -m 0700 /mnt/var/lib/yolab/machine".into(),
+                format!("stream install -m 0600 {CLONE}/config.toml /mnt/var/lib/yolab/machine/config.toml"),
+                format!("stream install -m 0600 {CLONE}/hardware-configuration.nix /mnt/var/lib/yolab/machine/hardware-configuration.nix"),
+            ]
+        );
+        assert_eq!(
+            m.state().stdin,
+            vec![
+                ("wg".into(), "tunnel-priv\n".into()),
+                ("wg".into(), "node-priv\n".into()),
+                ("openssl".into(), "secret".into())
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn the_config_names_the_machine_and_holds_only_the_password_hash() {
+        let m = ready();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        partition_and_install(&m, &params(), &tx, "node3", &tunnel())
+            .await
+            .unwrap();
+        let cfg: toml::Table =
+            toml::from_str(&m.contents(&format!("{CLONE}/config.toml")).unwrap()).unwrap();
+        assert_eq!(cfg["homelab"]["hostname"].as_str(), Some("node3"));
+        assert_eq!(
+            cfg["homelab"]["homelab_password_hash"].as_str(),
+            Some("$6$salt$hash")
+        );
+        assert_eq!(
+            m.contents(&format!("{CLONE}/hardware-configuration.nix"))
+                .as_deref(),
+            Some("{ hardware }")
+        );
+    }
+
+    #[tokio::test]
+    async fn every_command_is_shown_in_the_log_before_it_runs() {
+        let m = ready();
+        let lines = logs(&install(&m).await);
+        let clone = lines
+            .iter()
+            .position(|l| *l == format!("$ git clone {GIT_REMOTE} {CODE_DIR}"))
+            .unwrap();
+        let cloned = lines
+            .iter()
+            .position(|l| l == "✓ Repository cloned")
+            .unwrap();
+        assert!(clone < cloned);
+        assert!(lines.contains(
+            &"$ nixos-generate-config --no-filesystems --show-hardware-config".to_string()
+        ));
+        assert!(lines.contains(&"This machine will be: node3".to_string()));
+        assert!(lines.contains(&"✓ Tunnel up — https://node3.alice.yolab.io".to_string()));
+        assert_eq!(
+            lines.last().unwrap(),
+            "✓ Complete — remove the USB and reboot"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_output_of_a_command_reaches_the_log() {
+        let m = ready();
+        m.stream_lines("nixos-install", Ok(&["building…", "done"]));
+        let lines = logs(&install(&m).await);
+        assert!(lines.windows(2).any(|w| w == ["building…", "done"]));
+    }
+
+    #[tokio::test]
+    async fn a_left_over_clone_is_removed_before_cloning_again() {
+        let m = ready();
+        m.state().dirs.insert(CODE_DIR.into());
+        install(&m).await;
+        let calls = m.calls();
+        let rm = calls
+            .iter()
+            .position(|c| *c == format!("rmdir {CODE_DIR}"))
+            .unwrap();
+        let clone = calls
+            .iter()
+            .position(|c| c.starts_with("stream git clone"))
+            .unwrap();
+        assert!(rm < clone);
+    }
+
+    #[tokio::test]
+    async fn a_recorded_hardware_report_ships_with_the_machine() {
+        let m = ready();
+        m.file(&format!("{CLONE}/facter.json"), "{}");
+        install(&m).await;
+        assert!(m.calls().contains(&format!(
+            "stream install -m 0600 {CLONE}/facter.json /mnt/var/lib/yolab/machine/facter.json"
+        )));
+        assert!(m.contents(&format!("{CLONE}/facter.json")).is_none());
+        assert!(m.contents(&format!("{CLONE}/config.toml")).is_none());
+    }
+
+    #[tokio::test]
+    async fn a_failed_hardware_report_is_removed_and_the_install_carries_on() {
+        let m = ready();
+        m.file(&format!("{CLONE}/facter.json"), "{ partial");
+        m.stream_lines("nixos-facter", Err("facter crashed"));
+        let evs = install(&m).await;
+        assert!(matches!(evs.last(), Some(AppEvent::InstallComplete { .. })));
+        assert!(m.contents(&format!("{CLONE}/facter.json")).is_none());
+        let lines = logs(&evs);
+        assert!(lines.contains(&"Could not record the hardware (facter crashed); graphics cards stay unused until the machine records it itself".to_string()));
+        assert!(!lines.iter().any(|l| l.starts_with("Could not remove")));
+        assert!(!lines.contains(&"✓ Hardware recorded".to_string()));
+    }
+
+    #[tokio::test]
+    async fn a_failed_report_that_never_got_written_needs_no_cleanup() {
+        let m = ready();
+        m.stream_lines("nixos-facter", Err("facter crashed"));
+        let lines = logs(&install(&m).await);
+        assert!(!lines.iter().any(|l| l.starts_with("Could not remove")));
+    }
+
+    #[tokio::test]
+    async fn a_partial_report_that_cannot_be_removed_is_logged() {
+        let m = ready();
+        m.stream_lines("nixos-facter", Err("facter crashed"));
+        m.state().remove_errors.insert(
+            format!("{CLONE}/facter.json"),
+            std::io::ErrorKind::PermissionDenied,
+        );
+        let lines = logs(&install(&m).await);
+        assert!(lines.contains(&format!(
+            "Could not remove the partial hardware report {CLONE}/facter.json: cannot remove {CLONE}/facter.json"
+        )));
+    }
+
+    #[tokio::test]
+    async fn no_name_means_no_tunnel_and_nothing_to_clean_up() {
+        let m = FakeMachine::default();
+        m.reply(Method::Get, &format!("{API}/tunnels"), 500, "");
+        let evs = install(&m).await;
+        assert_eq!(
+            failure(&evs),
+            "next_node_name: GET /tunnels returned HTTP 500: "
+        );
+        assert!(!m.ran("wg"));
+        assert_eq!(
+            logs(&evs).last().unwrap(),
+            "ERROR: next_node_name: GET /tunnels returned HTTP 500: "
+        );
+    }
+
+    #[tokio::test]
+    async fn a_tunnel_that_could_not_be_registered_has_nothing_to_clean_up() {
+        let m = FakeMachine::default();
+        m.reply(Method::Get, &format!("{API}/tunnels"), 200, "[]");
+        m.output("wg", false, "");
+        let evs = install(&m).await;
+        assert_eq!(failure(&evs), "register tunnel: wg genkey failed");
+        assert!(!deregistered(&m));
+    }
+
+    #[tokio::test]
+    async fn any_failure_after_the_tunnel_is_up_deregisters_it() {
+        type Break = fn(&FakeMachine);
+        let cases: [(&str, Break); 11] = [
+            ("hash_password: no openssl", |m| {
+                m.state()
+                    .outputs
+                    .insert("openssl".into(), [Err("no openssl".into())].into());
+            }),
+            ("hash_password: openssl passwd failed", |m| {
+                m.state().outputs.insert(
+                    "openssl".into(),
+                    [Ok(Output {
+                        success: false,
+                        stdout: vec![],
+                        stderr: String::new(),
+                    })]
+                    .into(),
+                );
+            }),
+            (
+                "hash_password: invalid utf-8 sequence of 1 bytes from index 0",
+                |m| {
+                    m.state().outputs.insert(
+                        "openssl".into(),
+                        [Ok(Output {
+                            success: true,
+                            stdout: vec![0xff],
+                            stderr: String::new(),
+                        })]
+                        .into(),
+                    );
+                },
+            ),
+            ("/tmp/yolab-install is broken", |m| {
+                m.state().dirs.insert(CODE_DIR.into());
+                m.state().broken_paths.insert(CODE_DIR.into());
+            }),
+            ("git clone failed", |m| {
+                m.stream_lines("git", Err("git clone failed"));
+            }),
+            ("/tmp/yolab-install/homelab/machine is broken", |m| {
+                m.state().broken_paths.insert(CLONE.into());
+            }),
+            (
+                "/tmp/yolab-install/homelab/machine/config.toml is broken",
+                |m| {
+                    m.state()
+                        .broken_paths
+                        .insert(format!("{CLONE}/config.toml"));
+                },
+            ),
+            ("nixos-generate-config: no hardware", |m| {
+                m.state().captures.insert(
+                    "nixos-generate-config".into(),
+                    [Err("no hardware".into())].into(),
+                );
+            }),
+            (
+                "/tmp/yolab-install/homelab/machine/hardware-configuration.nix is broken",
+                |m| {
+                    m.state()
+                        .broken_paths
+                        .insert(format!("{CLONE}/hardware-configuration.nix"));
+                },
+            ),
+            ("disko failed", |m| {
+                m.stream_lines("disko", Err("disko failed"));
+            }),
+            ("nixos-install failed", |m| {
+                m.stream_lines("nixos-install", Err("nixos-install failed"));
+            }),
+        ];
+        for (expected, break_it) in cases {
+            let m = ready();
+            break_it(&m);
+            let evs = install(&m).await;
+            assert_eq!(failure(&evs), expected);
+            assert!(deregistered(&m), "{expected}");
+            assert!(logs(&evs).contains(&"Install failed — deregistering the tunnel and node peer so the name and DNS record aren't stranded…".to_string()));
+        }
+    }
+
+    #[tokio::test]
+    async fn a_failure_copying_the_config_keeps_the_installed_tunnel() {
+        let m = ready();
+        m.stream_lines("install", Err("no /mnt"));
+        assert_eq!(failure(&install(&m).await), "no /mnt");
+        assert!(!deregistered(&m));
+
+        let m = ready();
+        m.stream_lines("install", Ok(&[]))
+            .stream_lines("install", Err("disk full"));
+        assert_eq!(failure(&install(&m).await), "disk full");
+
+        let m = ready();
+        m.state().remove_errors.insert(
+            format!("{CLONE}/config.toml"),
+            std::io::ErrorKind::PermissionDenied,
+        );
+        assert_eq!(
+            failure(&install(&m).await),
+            format!("remove {CLONE}/config.toml from the install clone: cannot remove {CLONE}/config.toml")
         );
     }
 }
