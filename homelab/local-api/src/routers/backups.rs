@@ -946,6 +946,233 @@ mod tests {
             assert!(api.host.calls().is_empty(), "{:?}", api.host.calls());
         }
 
+        fn backed_up() -> FakeHost {
+            use crate::backup::points::namespace_tag;
+            use crate::routers::folder_backup::FOLDERS_TAG;
+            let tag = namespace_tag("yolab-notes");
+            let catalog = json!({
+                "services": [{ "namespace": "yolab-notes", "app_id": "notes", "pvcs": [] }]
+            })
+            .to_string();
+            FakeHost::new()
+                .restic_restores(vec![("catalog.json", catalog)])
+                .ok(
+                    &format!("restic snapshots --no-lock --json --tag {tag}"),
+                    &json!([
+                        { "id": "aa2", "time": "2026-11-20T03:00:00Z", "tags": [tag, "run:r2"] },
+                        { "id": "aa1", "time": "2026-11-10T03:00:00Z", "tags": [tag, "run:r1"] }
+                    ])
+                    .to_string(),
+                )
+                .ok(
+                    &format!("restic snapshots --no-lock --json --tag {FOLDERS_TAG}"),
+                    &json!([
+                        { "id": "f2", "tags": [FOLDERS_TAG, "run:r2"] },
+                        { "id": "f1", "tags": [FOLDERS_TAG, "run:r1"] }
+                    ])
+                    .to_string(),
+                )
+                .ok(
+                    "restic snapshots --no-lock --json --tag cluster-backup",
+                    r#"[{"id":"abc123","time":"2026-11-20T03:00:00Z","tags":["cluster-backup"]}]"#,
+                )
+                .ok(
+                    "restic snapshots --no-lock abc123 --json",
+                    r#"[{"id":"abc123","time":"2026-11-20T03:00:00Z"}]"#,
+                )
+                .ok(
+                    "restic find",
+                    r#"[{"snapshot":"abc123","matches":[{"path":"/s/yolab-notes.yaml"}]}]"#,
+                )
+                .ok("restic stats", r#"{"total_size": 100}"#)
+                .ok("restic forget", "")
+                .ok("restic unlock", "")
+                .ok("restic prune", "")
+        }
+
+        #[tokio::test]
+        async fn with_backups_on_every_page_shows_what_restic_and_the_records_hold() {
+            let (server, kube) = api_server().await;
+            config(&server, 200, enabled()).await;
+            apps(&server).await;
+            crate::records::testing::records(
+                &server,
+                "yolab-backups",
+                json!([
+                    {
+                        "id": "bk-2", "namespace": "yolab-notes", "started_at": "t",
+                        "state": "succeeded", "finished_at": "2026-11-20T03:10:00Z",
+                        "warning": "over its budget", "owner": "", "heartbeat": ""
+                    },
+                    {
+                        "id": "bk-1", "namespace": "yolab-notes", "started_at": "t",
+                        "state": "failed", "error": "boom", "owner": "", "heartbeat": ""
+                    }
+                ]),
+            )
+            .await;
+            let def = json!({
+                "schema": crate::routers::apps::DEFINITION_SCHEMA, "app_id": "notes",
+                "chart_repo": "official", "chart_version": "1.2.3",
+                "instance_name": "notes", "release": "notes", "config": {},
+                "backup": { "enabled": true, "schedule": "0 3 * * *", "budget_bytes": 1000 }
+            });
+            Mock::given(method("GET"))
+                .and(path("/api/v1/namespaces/yolab-notes/secrets/yolab-config"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(
+                    crate::k8s::testing::secret_with(
+                        crate::routers::apps::DEFINITION_SECRET_KEY,
+                        &def.to_string(),
+                    ),
+                ))
+                .mount(&server)
+                .await;
+            Mock::given(method("GET"))
+                .and(path("/apis/apps/v1/namespaces/yolab-notes/deployments"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(list("Deployment", vec![])))
+                .mount(&server)
+                .await;
+            Mock::given(method("GET"))
+                .respond_with(ResponseTemplate::new(404).set_body_json(status(404, "NotFound")))
+                .with_priority(u8::MAX)
+                .mount(&server)
+                .await;
+            crate::k8s::testing::accept_patches(&server).await;
+            crate::records::testing::accept_writes(&server).await;
+            let api = signed_in(kube, backed_up()).await;
+
+            let res = api.get("/api/backups/protected").await;
+            assert!(res.status.is_success(), "{}", res.body);
+            let notes = &res.json()["apps"][0];
+            assert_eq!(notes["state"], "ok", "{notes}");
+            assert_eq!(notes["warning"], "over its budget");
+            assert_eq!(notes["enabled"], true);
+            assert_eq!(notes["budget_set"], true);
+
+            let res = api.get("/api/backups/apps/yolab-notes/points").await;
+            assert!(res.status.is_success(), "{}", res.body);
+            assert_eq!(res.json()["points"][0]["snapshot_id"], "aa2");
+            assert_eq!(res.json()["points"][0]["newest"], true);
+            assert_eq!(res.json()["budget_set"], true);
+
+            let res = api.get("/api/backups/apps").await;
+            assert!(res.status.is_success(), "{}", res.body);
+            assert_eq!(res.json()["apps"][0]["namespace"], "yolab-notes");
+            assert_eq!(res.json()["apps"][0]["installed"], true);
+
+            let res = api.get("/api/backups/restores").await;
+            assert!(res.status.is_success(), "{}", res.body);
+
+            let res = api
+                .get("/api/backups/apps/yolab-notes/definition?snapshot_id=abc123")
+                .await;
+            assert!(res.status.is_success(), "{}", res.body);
+            assert_eq!(res.json()["app_id"], "notes");
+            let res = api
+                .get("/api/backups/apps/yolab-notes/plan?snapshot_id=abc123")
+                .await;
+            assert!(res.status.is_success(), "{}", res.body);
+
+            let res = api.post("/api/backups/apps/yolab-notes/run-now", "").await;
+            assert!(res.status.is_success(), "{}", res.body);
+            assert_eq!(res.json()["started"], true);
+
+            let res = api
+                .post(
+                    "/api/backups/restore",
+                    r#"{"namespace":"yolab-notes","snapshot_id":"abc123"}"#,
+                )
+                .await;
+            assert!(res.status.is_success(), "{}", res.body);
+
+            let res = api
+                .send(
+                    "PUT",
+                    "/api/backups/apps/yolab-notes/budget",
+                    Some(r#"{"budget_bytes":5000}"#),
+                )
+                .await;
+            assert!(res.status.is_success(), "{}", res.body);
+            assert_eq!(res.json()["budget_bytes"], 5000);
+
+            let res = api
+                .get("/api/backups/apps/yolab-notes/points/aa1/frees")
+                .await;
+            assert!(res.status.is_success(), "{}", res.body);
+            let res = api
+                .send("DELETE", "/api/backups/apps/yolab-notes/points/aa1", None)
+                .await;
+            assert!(res.status.is_success(), "{}", res.body);
+            let res = api
+                .send("DELETE", "/api/backups/apps/yolab-notes", None)
+                .await;
+            assert!(res.status.is_success(), "{}", res.body);
+        }
+
+        #[tokio::test]
+        async fn the_backup_controllers_say_what_they_wait_for() {
+            use crate::runtime::Resource as _;
+            let ctx = crate::runtime::Ctx {
+                node: "node1".into(),
+                tools: crate::tools::Tools::unreachable(),
+            };
+            let sweeper = LockSweeperController;
+            assert_eq!(sweeper.name(), "backup-lock-sweeper");
+            assert_eq!(sweeper.scope(), crate::runtime::Scope::Cluster);
+            assert_eq!(sweeper.interval(), std::time::Duration::from_secs(1800));
+            assert_eq!(sweeper.depends_on(), &[crate::runtime::KUBE_API]);
+            assert_eq!(
+                sweeper.not_before_uptime(),
+                std::time::Duration::from_secs(300)
+            );
+            assert!(sweeper.converge(&ctx).await.is_err());
+
+            let dir = tempfile::tempdir().unwrap();
+            let file = dir.path().join("config.toml");
+            std::fs::write(&file, crate::testkit::config_with_tunnel("")).unwrap();
+            let key = BackupKeyController {
+                config: Config::for_test(&file),
+            };
+            assert_eq!(key.name(), "backup-key");
+            assert_eq!(key.scope(), crate::runtime::Scope::Cluster);
+            assert_eq!(key.interval(), std::time::Duration::from_secs(300));
+            assert_eq!(key.depends_on(), &[crate::runtime::KUBE_API]);
+            assert!(matches!(
+                key.converge(&ctx).await.unwrap(),
+                crate::runtime::Tick::Idle(_)
+            ));
+            let key = BackupKeyController {
+                config: Config::for_test(&{
+                    let with = dir.path().join("with.toml");
+                    std::fs::write(
+                        &with,
+                        crate::testkit::config_with_tunnel(
+                            "platform_api_url = \"http://127.0.0.1:9\"\n",
+                        ),
+                    )
+                    .unwrap();
+                    with
+                }),
+            };
+            assert!(key.converge(&ctx).await.is_err());
+            assert!(matches!(
+                key_refresh_tick(KeyRefresh::NotEnabled),
+                crate::runtime::Tick::Idle(_)
+            ));
+            assert!(matches!(
+                key_refresh_tick(KeyRefresh::Current),
+                crate::runtime::Tick::Idle(_)
+            ));
+            assert!(matches!(
+                key_refresh_tick(KeyRefresh::Replaced),
+                crate::runtime::Tick::Done
+            ));
+            assert!(matches!(
+                key_refresh_tick(KeyRefresh::OtherBucket),
+                crate::runtime::Tick::Idle(_)
+            ));
+        }
+
         #[tokio::test]
         async fn work_that_needs_backups_on_says_they_are_off() {
             let (server, kube) = api_server().await;

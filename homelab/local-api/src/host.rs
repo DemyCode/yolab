@@ -372,6 +372,28 @@ pub(crate) mod fake {
             self
         }
 
+        pub fn restic_restores(self, files: Vec<(&'static str, String)>) -> Self {
+            self.ok("restic restore", "")
+                .effect("restic restore", move |_: &str, args: &[&str]| {
+                    let after = |flag: &str| {
+                        args.iter()
+                            .position(|a| *a == flag)
+                            .and_then(|i| args.get(i + 1))
+                            .map(|v| v.to_string())
+                    };
+                    let (Some(target), Some(include)) = (after("--target"), after("--include"))
+                    else {
+                        return;
+                    };
+                    let name = include.trim_start_matches("**/");
+                    if let Some((_, body)) = files.iter().find(|(f, _)| *f == name) {
+                        let dir = format!("{target}/var/lib/yolab/backup-staging/bk-1");
+                        std::fs::create_dir_all(&dir).unwrap();
+                        std::fs::write(format!("{dir}/{name}"), body).unwrap();
+                    }
+                })
+        }
+
         fn apply_effects(&self, bin: &str, args: &[&str]) {
             let cmd = format!("{bin} {}", args.join(" "));
             let effects = self.effects.lock().unwrap().clone();

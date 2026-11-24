@@ -2051,30 +2051,10 @@ mod tests {
             .to_string()
         }
 
-        fn saving(files: Vec<(&'static str, String)>) -> impl Fn(&str, &[&str]) + Send + Sync {
-            move |_: &str, args: &[&str]| {
-                let after = |flag: &str| {
-                    args.iter()
-                        .position(|a| *a == flag)
-                        .map(|i| args[i + 1].to_string())
-                };
-                let (Some(target), Some(include)) = (after("--target"), after("--include")) else {
-                    return;
-                };
-                let name = include.trim_start_matches("**/");
-                if let Some((_, body)) = files.iter().find(|(f, _)| *f == name) {
-                    let dir = format!("{target}/var/lib/yolab/backup-staging/bk-1");
-                    std::fs::create_dir_all(&dir).unwrap();
-                    std::fs::write(format!("{dir}/{name}"), body).unwrap();
-                }
-            }
-        }
-
         fn restic_holding(files: Vec<(&'static str, String)>) -> FakeHost {
             FakeHost::new()
                 .ok("restic unlock", "")
-                .ok("restic restore", "")
-                .effect("restic restore", saving(files))
+                .restic_restores(files)
                 .ok(
                     "restic snapshots --no-lock abc123 --json",
                     r#"[{"id":"abc123","time":"2026-11-20T00:00:00Z"}]"#,
