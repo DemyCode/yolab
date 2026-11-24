@@ -3222,4 +3222,486 @@ mod tests {
         assert_eq!(typed["metadata"]["name"], "yolab-tunnel-credentials");
         assert_eq!(typed["stringData"]["account-token"], "tok-typed");
     }
+
+    mod over_http {
+        use super::*;
+        use crate::host::fake::FakeHost;
+        use crate::k8s::testing::{accept_patches, api_server, list, patched, secret_with, status};
+        use crate::testkit::TestApi;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        struct Cluster {
+            server: MockServer,
+            kube: Client,
+            _cache: crate::charts::testing::CacheRoot,
+        }
+
+        async fn cluster() -> Cluster {
+            let cache = crate::charts::testing::cache_in_temp();
+            crate::charts::testing::chart(cache.dir.path(), "official", "notes", "1.2.3");
+            crate::charts::testing::chart(cache.dir.path(), "mine", "notes", "2.0.0");
+            let (server, kube) = api_server().await;
+            accept_patches(&server).await;
+            Mock::given(method("GET"))
+                .respond_with(ResponseTemplate::new(404).set_body_json(status(404, "NotFound")))
+                .with_priority(u8::MAX)
+                .mount(&server)
+                .await;
+            Cluster {
+                server,
+                kube,
+                _cache: cache,
+            }
+        }
+
+        async fn serve(server: &MockServer, at: &str, code: u16, body: Value) {
+            Mock::given(method("GET"))
+                .and(path(at))
+                .respond_with(ResponseTemplate::new(code).set_body_json(body))
+                .mount(server)
+                .await;
+        }
+
+        async fn api(c: &Cluster, host: FakeHost) -> TestApi {
+            TestApi::with_kube_and_host(c.kube.clone(), host)
+                .login()
+                .await
+        }
+
+        fn namespace(name: &str, annotations: Value, extra: Value) -> Value {
+            let mut ns = json!({
+                "apiVersion": "v1", "kind": "Namespace",
+                "metadata": {
+                    "name": name, "annotations": annotations,
+                    "creationTimestamp": "2026-11-24T10:00:00Z"
+                },
+                "status": { "phase": "Active" }
+            });
+            for (k, v) in extra.as_object().unwrap() {
+                ns[k] = v.clone();
+            }
+            ns
+        }
+
+        fn pod(ns: &str, status: Value) -> Value {
+            json!({ "metadata": { "name": format!("{ns}-pod"), "namespace": ns }, "status": status })
+        }
+
+        fn crash(key: &str) -> Value {
+            json!({ "phase": "Running", key: [{
+                "name": "app",
+                "state": { "waiting": { "reason": "CrashLoopBackOff" } },
+                "lastState": { "terminated": { "exitCode": 1, "reason": "Error", "message": "bad config" } }
+            }] })
+        }
+
+        #[tokio::test]
+        async fn every_service_is_listed_with_what_it_is_doing() {
+            let c = cluster().await;
+            serve(
+                &c.server,
+                "/api/v1/namespaces",
+                200,
+                list(
+                    "Namespace",
+                    vec![
+                        namespace(
+                            "yolab-going",
+                            json!({}),
+                            json!({ "status": { "phase": "Terminating" } }),
+                        ),
+                        namespace(
+                            "yolab-broken",
+                            json!({ ANN_INSTALL_FAILED: "Error: helm said no" }),
+                            json!({}),
+                        ),
+                        namespace("yolab-copying", json!({}), json!({})),
+                        namespace("yolab-up", json!({}), json!({})),
+                        namespace("yolab-crashing", json!({}), json!({})),
+                        namespace("yolab-initbad", json!({}), json!({})),
+                        namespace(
+                            "yolab-notes-ab23",
+                            json!({
+                                ANN_APP_ID: "notes",
+                                ANN_CHART_VERSION: "1.2.3",
+                                ANN_CONFIG: r#"{"title":"Mine"}"#,
+                                ANN_BACKUP: r#"{"enabled":true,"schedule":"0 3 * * *"}"#
+                            }),
+                            json!({}),
+                        ),
+                    ],
+                ),
+            )
+            .await;
+            serve(
+                &c.server,
+                "/api/v1/pods",
+                200,
+                list(
+                    "Pod",
+                    vec![
+                        pod(
+                            "yolab-up",
+                            json!({ "phase": "Running", "conditions": [{ "type": "Ready", "status": "True" }] }),
+                        ),
+                        pod("yolab-crashing", crash("containerStatuses")),
+                        pod("yolab-initbad", crash("initContainerStatuses")),
+                        json!({ "metadata": { "name": "done", "namespace": "yolab-up" }, "status": { "phase": "Succeeded" } }),
+                    ],
+                ),
+            )
+            .await;
+            serve(
+                &c.server,
+                "/api/v1/persistentvolumeclaims",
+                200,
+                list(
+                    "PersistentVolumeClaim",
+                    vec![json!({
+                        "metadata": { "name": "data", "namespace": "yolab-copying" },
+                        "spec": { "dataSource": { "kind": "VolumeSnapshot", "name": "s" } },
+                        "status": { "phase": "Pending" }
+                    })],
+                ),
+            )
+            .await;
+            serve(&c.server, "/api/v1/events", 200, list("Event", vec![])).await;
+            let res = api(&c, FakeHost::new()).await.get("/api/apps").await;
+            assert!(res.status.is_success(), "{}", res.body);
+            let apps = res.json();
+            let of = |name: &str| {
+                apps.as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|a| a["instance_name"] == name)
+                    .cloned()
+                    .unwrap_or_else(|| panic!("{name} is listed: {apps}"))
+            };
+            assert_eq!(of("going")["status"], "uninstalling");
+            assert_eq!(of("broken")["status"], "failed");
+            assert_eq!(of("broken")["technical"], "Error: helm said no");
+            assert_eq!(of("copying")["status"], "copying");
+            assert_eq!(of("up")["status"], "running");
+            assert_eq!(of("crashing")["status"], "stopped");
+            assert_eq!(of("initbad")["status"], "failed");
+            let notes = of("notes-ab23");
+            assert_eq!(notes["status"], "starting");
+            assert_eq!(notes["app_id"], "notes");
+            assert_eq!(notes["instance_id"], "ab23");
+            assert_eq!(notes["chart_version"], "1.2.3");
+            assert_eq!(notes["config"]["title"], "Mine");
+            assert_eq!(notes["backup"]["enabled"], true);
+            assert_eq!(notes["since"], "2026-11-24T10:00:00Z");
+        }
+
+        #[tokio::test]
+        async fn the_list_fails_when_the_namespaces_cannot_be_read() {
+            let c = cluster().await;
+            serve(
+                &c.server,
+                "/api/v1/namespaces",
+                503,
+                status(503, "ServiceUnavailable"),
+            )
+            .await;
+            let res = api(&c, FakeHost::new()).await.get("/api/apps").await;
+            assert!(!res.status.is_success());
+            assert!(installed_apps(&c.kube).await.is_err());
+        }
+
+        #[tokio::test]
+        async fn only_services_that_stay_are_counted_as_installed() {
+            let c = cluster().await;
+            serve(
+                &c.server,
+                "/api/v1/namespaces",
+                200,
+                list(
+                    "Namespace",
+                    vec![
+                        namespace("yolab-a", json!({ ANN_APP_ID: "notes" }), json!({})),
+                        namespace(
+                            "yolab-b",
+                            json!({ ANN_APP_ID: "notes", ANN_UNINSTALLING: "t" }),
+                            json!({}),
+                        ),
+                        namespace(
+                            "yolab-c",
+                            json!({ ANN_APP_ID: "notes" }),
+                            json!({ "status": { "phase": "Terminating" } }),
+                        ),
+                        namespace("yolab-d", json!({}), json!({})),
+                        json!({ "metadata": { "name": "yolab-e" } }),
+                    ],
+                ),
+            )
+            .await;
+            let found = installed_apps(&c.kube).await.unwrap();
+            assert_eq!(found.len(), 1);
+            assert_eq!(found[0].namespace, "yolab-a");
+            assert_eq!(found[0].app_id, "notes");
+        }
+
+        async fn install(api: &TestApi, app: &str, body: Value) -> crate::testkit::Res {
+            api.post(&format!("/api/apps/{app}"), &body.to_string())
+                .await
+        }
+
+        #[tokio::test]
+        async fn an_install_is_queued_under_a_fresh_unique_name() {
+            let c = cluster().await;
+            let kept = crate::records::testing::kept(&c.server, "yolab-installs").await;
+            let api = api(&c, FakeHost::new()).await;
+            let res = install(
+                &api,
+                "notes",
+                json!({ "instance_name": "notes", "config": { "yolab_token": "tok-1", "title": "Mine" } }),
+            )
+            .await;
+            assert_eq!(res.status, StatusCode::ACCEPTED, "{}", res.body);
+            let name = res.json()["instance_name"].as_str().unwrap().to_string();
+            assert!(name.starts_with("notes-"), "{name}");
+            assert_eq!(kept.data("sets")[0]["namespace"], format!("yolab-{name}"));
+            let patched = patched(&c.server).await;
+            assert!(patched
+                .iter()
+                .any(|p| p["metadata"]["name"] == "yolab-install-plan"));
+            assert!(patched
+                .iter()
+                .any(|p| p["metadata"]["name"] == "yolab-tunnel-credentials"));
+        }
+
+        #[tokio::test]
+        async fn an_install_the_form_got_wrong_is_refused_before_anything_is_made() {
+            let c = cluster().await;
+            let api = api(&c, FakeHost::new()).await;
+            for (app, body, code) in [
+                (
+                    "notes",
+                    json!({ "instance_name": "Not OK" }),
+                    StatusCode::BAD_REQUEST,
+                ),
+                (
+                    "notes",
+                    json!({ "instance_name": "notes", "config": { "x": "a\u{7}b" } }),
+                    StatusCode::BAD_REQUEST,
+                ),
+                (
+                    "notes",
+                    json!({ "instance_name": "notes", "source": { "kind": "teleport" } }),
+                    StatusCode::BAD_REQUEST,
+                ),
+                (
+                    "nope",
+                    json!({ "instance_name": "nope" }),
+                    StatusCode::NOT_FOUND,
+                ),
+                (
+                    "notes",
+                    json!({ "instance_name": "notes", "source": { "kind": "duplicate", "from_instance": "gone" } }),
+                    StatusCode::BAD_REQUEST,
+                ),
+            ] {
+                let res = install(&api, app, body.clone()).await;
+                assert_eq!(res.status, code, "{body}: {}", res.body);
+            }
+            assert!(patched(&c.server).await.is_empty());
+        }
+
+        #[tokio::test]
+        async fn an_install_whose_name_cannot_be_checked_or_queued_is_refused() {
+            let c = cluster().await;
+            Mock::given(method("GET"))
+                .and(wiremock::matchers::path_regex(
+                    "^/api/v1/namespaces/yolab-notes-[a-z0-9]{4}$",
+                ))
+                .respond_with(
+                    ResponseTemplate::new(503).set_body_json(status(503, "ServiceUnavailable")),
+                )
+                .mount(&c.server)
+                .await;
+            let api = api(&c, FakeHost::new()).await;
+            let res = install(&api, "notes", json!({ "instance_name": "notes" })).await;
+            assert_eq!(res.status, StatusCode::BAD_REQUEST, "{}", res.body);
+            assert!(res.body.contains("unique name"));
+
+            let c = cluster().await;
+            Mock::given(method("POST"))
+                .respond_with(
+                    ResponseTemplate::new(500).set_body_json(status(500, "InternalError")),
+                )
+                .mount(&c.server)
+                .await;
+            let api = api(&c, FakeHost::new()).await;
+            let res = install(&api, "notes", json!({ "instance_name": "notes" })).await;
+            assert_eq!(
+                res.status,
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "{}",
+                res.body
+            );
+            let marks: Vec<_> = patched(&c.server)
+                .await
+                .into_iter()
+                .filter(|p| p["metadata"]["annotations"][ANN_INSTALL_FAILED].is_string())
+                .collect();
+            assert_eq!(marks.len(), 1);
+        }
+
+        fn running(chart_repo: &str) -> AppDefinition {
+            AppDefinition {
+                schema: DEFINITION_SCHEMA,
+                app_id: "notes".into(),
+                chart_repo: chart_repo.into(),
+                chart_version: "2.0.0".into(),
+                instance_name: "notes".into(),
+                release: "notes".into(),
+                service_name: String::new(),
+                config: serde_json::Map::new(),
+                volumes: Vec::new(),
+                resources: Default::default(),
+                backup: Default::default(),
+            }
+        }
+
+        async fn installed(c: &Cluster, repo: &str) {
+            serve(
+                &c.server,
+                "/api/v1/namespaces/yolab-notes",
+                200,
+                namespace(
+                    "yolab-notes",
+                    json!({ ANN_APP_ID: "notes", ANN_CHART_REPO: repo }),
+                    json!({}),
+                ),
+            )
+            .await;
+            let def = running(repo);
+            let mut secret =
+                secret_with(DEFINITION_SECRET_KEY, &serde_json::to_string(&def).unwrap());
+            secret["data"][CONFIG_SECRET_KEY] = json!(base64::Engine::encode(
+                &base64::engine::general_purpose::STANDARD,
+                r#"{"title":"Mine","pin":"1234"}"#
+            ));
+            serve(
+                &c.server,
+                "/api/v1/namespaces/yolab-notes/secrets/yolab-config",
+                200,
+                secret,
+            )
+            .await;
+        }
+
+        #[tokio::test]
+        async fn an_update_streams_its_progress_and_ends_on_the_new_version() {
+            let c = cluster().await;
+            installed(&c, "mine").await;
+            serve(
+                &c.server,
+                "/api/v1/namespaces/kube-system/configmaps/yolab-chart-repos",
+                200,
+                json!({
+                    "apiVersion": "v1", "kind": "ConfigMap",
+                    "metadata": { "name": "yolab-chart-repos", "namespace": "kube-system" },
+                    "data": { "mine": format!("{}/catalog.yaml", c.server.uri()) }
+                }),
+            )
+            .await;
+            let host = FakeHost::new()
+                .ok("helm template", "")
+                .ok("helm upgrade --install", "upgraded")
+                .fail("helm package", "no");
+            let api = api(&c, host).await;
+            let res = api
+                .post(
+                    "/api/apps/notes/update",
+                    &json!({ "config": { "title": "Yours", "yolab_token": "tok-2" } }).to_string(),
+                )
+                .await;
+            assert!(res.status.is_success(), "{}", res.body);
+            assert!(res.body.contains("Now on version 2.0.0"), "{}", res.body);
+            let res = api.post("/api/apps/notes/update", "{}").await;
+            assert!(res.status.is_success(), "{}", res.body);
+
+            let res = api.get("/api/apps/notes/definition").await;
+            assert!(res.status.is_success(), "{}", res.body);
+            assert_eq!(res.json()["app_id"], "notes");
+            let res = api.get("/api/apps/notes/schema").await;
+            assert!(res.status.is_success(), "{}", res.body);
+            let res = api
+                .send(
+                    "PUT",
+                    "/api/apps/notes/backup",
+                    Some(r#"{"enabled":true,"schedule":"0 4 * * *"}"#),
+                )
+                .await;
+            assert!(res.status.is_success(), "{}", res.body);
+            assert_eq!(res.json()["ok"], true);
+            let res = api
+                .send(
+                    "PUT",
+                    "/api/apps/notes/backup",
+                    Some(r#"{"enabled":true,"schedule":"whenever"}"#),
+                )
+                .await;
+            assert!(!res.status.is_success());
+        }
+
+        #[tokio::test]
+        async fn an_update_of_something_that_cannot_be_found_or_read_is_refused() {
+            let c = cluster().await;
+            let api = api(&c, FakeHost::new()).await;
+            let res = api.post("/api/apps/notes/update", "{}").await;
+            assert_eq!(res.status, StatusCode::NOT_FOUND, "{}", res.body);
+
+            installed(&c, "nowhere").await;
+            let res = api.post("/api/apps/notes/update", "{}").await;
+            assert_eq!(res.status, StatusCode::BAD_REQUEST, "{}", res.body);
+            let res = api
+                .post(
+                    "/api/apps/notes/update",
+                    &json!({ "config": { "x": "a\u{1}" } }).to_string(),
+                )
+                .await;
+            assert_eq!(res.status, StatusCode::BAD_REQUEST, "{}", res.body);
+
+            let c = cluster().await;
+            serve(
+                &c.server,
+                "/api/v1/namespaces/yolab-notes",
+                503,
+                status(503, "ServiceUnavailable"),
+            )
+            .await;
+            let api = TestApi::with_kube_and_host(c.kube.clone(), FakeHost::new())
+                .login()
+                .await;
+            let res = api.post("/api/apps/notes/update", "{}").await;
+            assert_eq!(res.status, StatusCode::SERVICE_UNAVAILABLE, "{}", res.body);
+
+            let c = cluster().await;
+            serve(
+                &c.server,
+                "/api/v1/namespaces/yolab-notes",
+                200,
+                namespace("yolab-notes", json!({ ANN_APP_ID: "notes" }), json!({})),
+            )
+            .await;
+            serve(
+                &c.server,
+                "/api/v1/namespaces/yolab-notes/secrets/yolab-config",
+                503,
+                status(503, "ServiceUnavailable"),
+            )
+            .await;
+            let api = TestApi::with_kube_and_host(c.kube.clone(), FakeHost::new())
+                .login()
+                .await;
+            let res = api.post("/api/apps/notes/update", "{}").await;
+            assert_eq!(res.status, StatusCode::SERVICE_UNAVAILABLE, "{}", res.body);
+            let res = api.get("/api/apps/notes/definition").await;
+            assert!(!res.status.is_success());
+        }
+    }
 }
