@@ -134,3 +134,7 @@ export async function streamEvents(
 
   return outcome ?? DROPPED;
 }
+
+export function reasonOf(e: unknown, fallback: string): string {
+  return e instanceof ApiError ? e.message : fallback;
+}

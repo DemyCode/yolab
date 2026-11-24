@@ -33,7 +33,7 @@ import {
   RollingNumber,
   Swap,
 } from "@/components/motion";
-import { api } from "@/lib/api";
+import { api, reasonOf } from "@/lib/api";
 import { useApi, useResource } from "@/lib/useResource";
 import { formatBytes } from "@/lib/format";
 import {
@@ -139,7 +139,7 @@ function StatusLine({
   movement: Movement | undefined;
 }) {
   const happening = isVisible(movement)
-    ? (movementCopy(movement)?.headline ?? null)
+    ? movementCopy(movement)!.headline
     : null;
   const line = statusLine(overview, policy?.target, happening);
   if (!line) return <Skeleton className="-mt-4 h-4 w-64" />;
@@ -392,14 +392,14 @@ function DiskRow({
     setErr(null);
     setConfirm(false);
     try {
-      const d = await api.put<{ ok?: boolean; error?: string }>(
+      const d = await api.put<{ ok: true } | { ok: false; error: string }>(
         `/api/disks/${node}/${disk.id}`,
         { desired: next },
       );
-      if (!d.ok) setErr(d.error ?? "Unknown error");
-      else onChanged();
+      if (d.ok) onChanged();
+      else setErr(d.error);
     } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
+      setErr(reasonOf(e, "The switch did not reach the server."));
     } finally {
       setBusy(false);
     }
@@ -565,7 +565,7 @@ function AddVirtualDisk({
       setOpen(false);
       onChanged();
     } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
+      setErr(reasonOf(e, "The server did not answer."));
     } finally {
       setBusy(false);
     }
@@ -639,7 +639,7 @@ function AddVirtualDisk({
           </p>
           <div className="flex flex-wrap items-center gap-2">
             <Button size="sm" loading={busy} onClick={() => void add()}>
-              Add {VDISK_SIZES.find((s) => s.box_type === boxType)?.label}
+              Add {vdiskSizeLabel(boxType)}
             </Button>
             <Button
               size="sm"
@@ -686,7 +686,7 @@ function DisksSection({
   const present: [string, DiskInfo][] = [];
   const past: [string, DiskInfo][] = [];
   for (const node of nodes) {
-    for (const disk of listed[node] ?? []) {
+    for (const disk of listed[node]!) {
       const v = vdiskFor(node, disk);
       const state = v ? virtualDiskState(disk, v) : diskState(disk);
       (state === "historical" ? past : present).push([node, disk]);
@@ -817,14 +817,10 @@ function ProtectionSection({
     setBusy(true);
     setErr(null);
     try {
-      const d = await api.put<{ ok?: boolean; error?: string }>(
-        "/api/storage/policy",
-        { size, failure_domain: domain },
-      );
-      if (d.ok) onChanged();
-      else setErr(d.error ?? "Unknown error");
+      await api.put("/api/storage/policy", { size, failure_domain: domain });
+      onChanged();
     } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
+      setErr(reasonOf(e, "The server did not answer."));
     } finally {
       setBusy(false);
     }

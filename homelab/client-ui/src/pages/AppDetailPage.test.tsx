@@ -684,10 +684,11 @@ describe("AppDetailPage, technical details", () => {
   });
 
   it("follows a part's logs, stops them, and switches to another part", async () => {
-    const first = deferred<Response>();
+    const first = deferred<void>();
     serve(gitea(), {
       "GET /api/apps/gitea/pods": [pod(), pod({ name: "gitea-1" })],
-      "GET /api/apps/gitea/logs/gitea-0": () => first.promise,
+      "GET /api/apps/gitea/logs/gitea-0": () =>
+        first.promise.then(() => stream("late line", "[DONE]")()),
       "GET /api/apps/gitea/logs/gitea-1": stream("hello", "world"),
     });
     open();
@@ -707,7 +708,7 @@ describe("AppDetailPage, technical details", () => {
     fireEvent.click(screen.getAllByRole("button", { name: "Logs" })[0]);
     fireEvent.click(screen.getByRole("button", { name: "Logs" }));
     expect(await screen.findByText(/hello\s+world/)).toBeTruthy();
-    first.resolve(stream("late line", "[DONE]")());
+    first.resolve();
     await settle();
     expect(screen.queryByText(/late line/)).toBeNull();
     await waitFor(() => expect(screen.getByText("Stopped")).toBeTruthy());

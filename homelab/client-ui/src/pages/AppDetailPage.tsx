@@ -23,7 +23,7 @@ import {
   Section,
   ValueRow,
 } from "@/components/ui/list";
-import { api, ApiError, streamEvents } from "@/lib/api";
+import { api, reasonOf, streamEvents } from "@/lib/api";
 import { backupPagePath, scheduleLabel } from "@/lib/backups";
 import { formatDateTime, relativeTime } from "@/lib/format";
 import { useApi } from "@/lib/useResource";
@@ -49,10 +49,6 @@ import {
 import { taglineFor } from "@/catalog/meta";
 import { cn } from "@/lib/utils";
 import type { AppInfo, CatalogApp, PodInfo } from "@/types/apps";
-
-function reasonOf(e: unknown, fallback: string): string {
-  return e instanceof ApiError ? e.message : fallback;
-}
 
 const DOT: Record<StatusTone, string> = {
   live: "bg-success",

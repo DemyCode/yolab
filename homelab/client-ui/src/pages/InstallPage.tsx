@@ -13,7 +13,7 @@ import { Card } from "@/components/ui/card";
 import { Switch } from "@/components/ui/input";
 import { Row, Section } from "@/components/ui/list";
 import { Banner, Spinner } from "@/components/ui/feedback";
-import { api, ApiError, streamEvents } from "@/lib/api";
+import { api, reasonOf, streamEvents } from "@/lib/api";
 import { useApi } from "@/lib/useResource";
 import { formatDateTime, generateSecret } from "@/lib/format";
 import { backupPagePath } from "@/lib/backups";
@@ -65,10 +65,6 @@ import type {
   CatalogApp,
   DomainResponse,
 } from "@/types/apps";
-
-function reasonOf(e: unknown, fallback: string): string {
-  return e instanceof ApiError ? e.message : fallback;
-}
 
 export function InstallPage() {
   const appId = useParams<"appId">().appId!;

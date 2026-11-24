@@ -1,5 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApiError, api, setUnauthorizedHandler, streamEvents } from "./api";
+import {
+  ApiError,
+  api,
+  reasonOf,
+  setUnauthorizedHandler,
+  streamEvents,
+} from "./api";
 
 type Read = () => Promise<{ done: boolean; value?: Uint8Array }>;
 
@@ -330,5 +336,14 @@ describe("streamEvents refusals", () => {
     const result = await streamEvents("/s", {}, (l) => lines.push(l));
     expect(lines).toEqual(["raw line", "[DONE]"]);
     expect(result).toEqual({ ok: true });
+  });
+});
+
+describe("reasonOf", () => {
+  it("gives the server's reason, or the caller's words for anything else", () => {
+    expect(reasonOf(new ApiError(500, "disk full"), "x")).toBe("disk full");
+    expect(reasonOf(new TypeError("Failed to fetch"), "No answer.")).toBe(
+      "No answer.",
+    );
   });
 });

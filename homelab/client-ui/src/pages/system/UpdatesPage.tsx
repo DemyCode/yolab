@@ -12,7 +12,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
-import { api, ApiError, streamEvents } from "@/lib/api";
+import { api, reasonOf, streamEvents } from "@/lib/api";
 import { switchChannel } from "@/lib/channel";
 import { useApi } from "@/lib/useResource";
 import { Swap } from "@/components/motion";
@@ -22,10 +22,6 @@ import { NotificationsCard } from "@/components/NotificationsCard";
 type Phase = "idle" | "git" | "rebuild" | "done";
 
 const POLL_MS = 2000;
-
-function reasonOf(e: unknown, fallback: string): string {
-  return e instanceof ApiError ? e.message : fallback;
-}
 
 function pollRebuildLog(
   alive: { current: boolean },
