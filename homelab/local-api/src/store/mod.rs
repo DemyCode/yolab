@@ -5,7 +5,7 @@ pub mod sync;
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::sync::Mutex;
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, AutomergeError, ReadDoc, ROOT};
@@ -445,8 +445,18 @@ fn this_node() -> String {
     "test-node".into()
 }
 
+#[cfg(test)]
 pub fn shared() -> &'static Mutex<Store> {
-    static SHARED: OnceLock<Mutex<Store>> = OnceLock::new();
+    thread_local! {
+        static SHARED: &'static Mutex<Store> =
+            Box::leak(Box::new(Mutex::new(Store::new(&this_node()))));
+    }
+    SHARED.with(|store| *store)
+}
+
+#[cfg(not(test))]
+pub fn shared() -> &'static Mutex<Store> {
+    static SHARED: std::sync::OnceLock<Mutex<Store>> = std::sync::OnceLock::new();
     SHARED.get_or_init(|| {
         let node = this_node();
         let path = default_path();
@@ -955,6 +965,21 @@ mod tests {
                 .map(String::as_str),
             Some("OFF")
         );
+    }
+
+    #[test]
+    fn each_test_thread_has_its_own_shared_store() {
+        let key = SshKey {
+            line: "ssh-ed25519 AAAA".into(),
+            label: String::new(),
+            removed: false,
+        };
+        locked().set_ssh_key("only-here", &key).unwrap();
+        let elsewhere = std::thread::spawn(|| locked().ssh_keys().unwrap().len())
+            .join()
+            .unwrap();
+        assert_eq!(elsewhere, 0);
+        assert!(locked().ssh_keys().unwrap().contains_key("only-here"));
     }
 
     #[test]

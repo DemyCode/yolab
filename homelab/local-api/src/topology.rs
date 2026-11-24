@@ -812,5 +812,200 @@ mod tests {
                 b.host.calls()
             );
         }
+
+        async fn two_nodes() -> (wiremock::MockServer, kube::Client) {
+            let (server, kube) = api_server().await;
+            Mock::given(method("GET"))
+                .and(path("/api/v1/nodes"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(list(
+                    "Node",
+                    vec![
+                        serde_json::json!({ "metadata": { "name": "node1" } }),
+                        serde_json::json!({ "metadata": { "name": "node2" } }),
+                    ],
+                )))
+                .mount(&server)
+                .await;
+            (server, kube)
+        }
+
+        fn ceph_with(osds: u64, mons: usize) -> FakeHost {
+            let mons: Vec<serde_json::Value> = (0..mons).map(|_| serde_json::json!({})).collect();
+            ceph_without_mons(osds).ok(
+                "ceph mon dump",
+                &serde_json::json!({ "mons": mons }).to_string(),
+            )
+        }
+
+        fn ceph_without_mons(osds: u64) -> FakeHost {
+            FakeHost::new()
+                .ok("ceph osd stat", &format!(r#"{{"num_up_osds": {osds}}}"#))
+                .ok(
+                    "ceph osd tree",
+                    r#"{"nodes": [{"type": "host", "children": [0]}]}"#,
+                )
+                .ok("ceph osd pool ls", "images\n")
+                .ok("ceph osd pool get images size", r#"{"size": 2}"#)
+                .ok("ceph osd pool set", "")
+        }
+
+        #[tokio::test]
+        async fn a_policy_is_applied_whatever_the_monitors_count() {
+            for mons in [1, 2, 3] {
+                let (_server, kube) = two_nodes().await;
+                let b = Backend {
+                    kube,
+                    host: ceph_with(2, mons),
+                };
+                apply_policy(&b, &policy(2, "host")).await;
+                assert!(b.host.ran("ceph osd pool set images min_size 1"), "{mons}");
+            }
+            let (_server, kube) = two_nodes().await;
+            let b = Backend {
+                kube,
+                host: ceph_without_mons(2).fail("ceph mon dump", "timed out"),
+            };
+            apply_policy(&b, &policy(2, "host")).await;
+            assert!(b.host.ran("ceph osd pool set images min_size 1"));
+        }
+
+        #[tokio::test]
+        async fn nothing_is_changed_without_disks_or_a_known_shape() {
+            let (_server, kube) = two_nodes().await;
+            let b = Backend {
+                kube,
+                host: ceph_with(0, 2),
+            };
+            apply_policy(&b, &policy(2, "host")).await;
+            assert!(!b.host.ran("ceph osd pool"));
+            let b = Backend {
+                kube: crate::k8s::testing::unreachable(),
+                host: ceph_with(2, 2),
+            };
+            apply_policy(&b, &policy(2, "host")).await;
+            assert!(!b.host.ran("ceph osd pool"));
+        }
+
+        #[tokio::test]
+        async fn a_tick_does_nothing_until_a_policy_is_chosen() {
+            let (_server, kube) = two_nodes().await;
+            let fresh = ceph_with(2, 2).fail(
+                "ceph config-key get yolab/storage-policy",
+                "Error ENOENT: key 'yolab/storage-policy' doesn't exist",
+            );
+            let b = Backend {
+                kube: kube.clone(),
+                host: fresh,
+            };
+            tick(&b).await;
+            assert!(!b.host.ran("ceph osd pool"));
+            let down =
+                ceph_with(2, 2).fail("ceph config-key get", "error connecting to the cluster");
+            let b = Backend { kube, host: down };
+            tick(&b).await;
+            assert!(!b.host.ran("ceph osd pool"));
+        }
+
+        #[tokio::test]
+        async fn the_policy_route_checks_saves_and_then_shows_the_target() {
+            let (_server, kube) = two_nodes().await;
+            let host = ceph_with(2, 2)
+                .ok("ceph config-key set yolab/storage-policy", "")
+                .fail(
+                    "ceph config-key get yolab/storage-policy",
+                    "Error ENOENT: key 'yolab/storage-policy' doesn't exist",
+                );
+            let api = crate::testkit::TestApi::with_kube_and_host(kube.clone(), host.clone())
+                .login()
+                .await;
+            let res = api.get("/api/storage/policy").await;
+            assert_eq!(
+                res.json()["policy"],
+                serde_json::Value::Null,
+                "{}",
+                res.body
+            );
+            for (body, why) in [
+                (r#"{}"#, "size and failure_domain are both required"),
+                (
+                    r#"{"size":0,"failure_domain":"host"}"#,
+                    "keep at least one copy",
+                ),
+                (
+                    r#"{"size":2,"failure_domain":"rack"}"#,
+                    "failure_domain must be osd or host",
+                ),
+            ] {
+                let res = api.send("PUT", "/api/storage/policy", Some(body)).await;
+                assert_eq!(res.status, StatusCode::BAD_REQUEST, "{body}");
+                assert_eq!(res.json()["error"], why);
+            }
+            let res = api
+                .send(
+                    "PUT",
+                    "/api/storage/policy",
+                    Some(r#"{"size":2,"failure_domain":"host"}"#),
+                )
+                .await;
+            assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+            assert!(host.ran("ceph config-key set yolab/storage-policy"));
+            let res = api.get("/api/storage/policy").await;
+            let shown = res.json();
+            assert_eq!(shown["policy"]["size"], 2, "{}", res.body);
+            assert_eq!(shown["topology"]["nodes"], 2);
+            assert_eq!(shown["target"]["mon"], 2);
+
+            use crate::runtime::Resource as _;
+            let c = TopologyController;
+            assert_eq!(c.name(), "topology");
+            assert_eq!(c.scope(), crate::runtime::Scope::Cluster);
+            assert_eq!(c.interval(), std::time::Duration::from_secs(60));
+            assert_eq!(
+                c.depends_on(),
+                &[crate::runtime::KUBE_API, crate::runtime::CEPH]
+            );
+            assert_eq!(c.pauses_during(), &[crate::runtime::Activity::Restore]);
+            tick(&Backend {
+                kube,
+                host: host.clone(),
+            })
+            .await;
+            assert!(host.ran("ceph osd pool set images min_size 1"));
+            let ctx = crate::runtime::Ctx {
+                node: "node1".into(),
+                tools: crate::tools::Tools::unreachable(),
+            };
+            assert!(matches!(
+                c.converge(&ctx).await.unwrap(),
+                crate::runtime::Tick::Done
+            ));
+        }
+
+        #[tokio::test]
+        async fn a_policy_ceph_will_not_take_is_an_error_and_not_recorded() {
+            let host =
+                FakeHost::new().fail("ceph config-key set", "error connecting to the cluster");
+            let api = crate::testkit::TestApi::with_kube_and_host(
+                crate::k8s::testing::unreachable(),
+                host,
+            )
+            .login()
+            .await;
+            let res = api
+                .send(
+                    "PUT",
+                    "/api/storage/policy",
+                    Some(r#"{"size":2,"failure_domain":"osd"}"#),
+                )
+                .await;
+            assert_eq!(res.status, StatusCode::INTERNAL_SERVER_ERROR);
+            assert!(crate::store::locked().storage_policy().unwrap().is_none());
+            let res = crate::testkit::TestApi::without_cluster()
+                .login()
+                .await
+                .get("/api/storage/policy")
+                .await;
+            assert!(!res.status.is_success());
+        }
     }
 }
