@@ -149,7 +149,8 @@ async fn a_node_without_a_name_is_an_error_before_any_disk_is_looked_at() {
 #[tokio::test]
 async fn a_tick_publishes_every_disk_this_machine_has_with_its_size_model_and_osd() {
     a_machine_with_a_system_lv_a_usb_disk_and_a_virtual_disk();
-    let host = a_cluster_that_answers(FakeHost::new()).ok("ceph config-key dump yolab/disks/", "{}");
+    let host =
+        a_cluster_that_answers(FakeHost::new()).ok("ceph config-key dump yolab/disks/", "{}");
 
     let tick = DisksController
         .converge(&ctx(host.clone(), "node-pub"))
@@ -211,7 +212,10 @@ async fn unreadable_disk_settings_mark_every_disk_unknown_and_change_nothing() {
             r#"{"blockdevices":[{"name":"sdq","type":"disk","mountpoints":[null]}]}"#,
         )
         .fail("ceph fsid", "error connecting to the cluster")
-        .fail("ceph config-key dump yolab/disks/", "error connecting to the cluster")
+        .fail(
+            "ceph config-key dump yolab/disks/",
+            "error connecting to the cluster",
+        )
         .ok("ceph config-key set", "");
 
     publish_local(&host, "node-unk").await.unwrap();
@@ -262,10 +266,7 @@ fn a_virtual_disk_says_so_on_the_wire() {
 fn a_blocked_disk_and_one_that_failed_three_times_are_stuck() {
     set_phase("stuck-blocked", Phase::Blocked, "mounted elsewhere");
     set_phase("stuck-retrying", Phase::Retrying, "zap failed");
-    progress_table()
-        .get_mut("stuck-retrying")
-        .unwrap()
-        .attempts = 3;
+    progress_table().get_mut("stuck-retrying").unwrap().attempts = 3;
     set_phase("stuck-not-yet", Phase::Retrying, "first failure");
 
     let stuck: Vec<(String, String)> = stuck_disks()
@@ -485,7 +486,14 @@ async fn an_osd_that_stops_being_safe_once_stopped_is_started_again() {
         )
         .ok("systemctl start yolab-ceph-osd@41.service", "");
 
-    remove_drained(&host, "disk-recheck", &disk_on("sdb", Ownership::Ours), 41, &empty_view()).await;
+    remove_drained(
+        &host,
+        "disk-recheck",
+        &disk_on("sdb", Ownership::Ours),
+        41,
+        &empty_view(),
+    )
+    .await;
 
     assert!(!is_stopped_for_removal(41));
     assert!(host.position("systemctl stop") < host.position("systemctl start"));
@@ -512,7 +520,14 @@ async fn an_osd_is_never_purged_while_data_elsewhere_cannot_be_rebuilt() {
             r#"[{"pgid":"1.0","state":"stale+active+clean"},{"pgid":"1.1","state":"active+clean"}]"#,
         );
 
-    remove_drained(&host, "disk-at-risk", &disk_on("sdb", Ownership::Ours), 42, &empty_view()).await;
+    remove_drained(
+        &host,
+        "disk-at-risk",
+        &disk_on("sdb", Ownership::Ours),
+        42,
+        &empty_view(),
+    )
+    .await;
 
     assert!(!host.ran("purge-actual"));
     assert!(host.ran("systemctl start yolab-ceph-osd@42.service"));
@@ -541,7 +556,14 @@ async fn a_purged_osd_without_a_device_is_removable_without_a_wipe() {
         .ok("ceph osd purge-actual", "purged osd.43")
         .ok("ceph osd ls", "[]");
 
-    remove_drained(&host, "disk-no-dev", &disk_on("", Ownership::Ours), 43, &empty_view()).await;
+    remove_drained(
+        &host,
+        "disk-no-dev",
+        &disk_on("", Ownership::Ours),
+        43,
+        &empty_view(),
+    )
+    .await;
 
     assert!(!host.ran("lvm zap"));
     assert_eq!(progress_of("disk-no-dev").phase, Phase::Removable);
@@ -572,9 +594,18 @@ fn a_reachable_cluster_with_no_osds() -> FakeHost {
 async fn a_switched_on_disk_is_blocked_waited_on_or_created_as_its_state_says() {
     let host = a_reachable_cluster_with_no_osds();
     let meta = HashMap::from([
-        ("disk-plan-blocked".to_string(), disk_on("sdb", Ownership::Ours)),
-        ("disk-plan-wait".to_string(), disk_on("sdc", Ownership::Blank)),
-        ("disk-plan-off".to_string(), disk_on("sde", Ownership::Blank)),
+        (
+            "disk-plan-blocked".to_string(),
+            disk_on("sdb", Ownership::Ours),
+        ),
+        (
+            "disk-plan-wait".to_string(),
+            disk_on("sdc", Ownership::Blank),
+        ),
+        (
+            "disk-plan-off".to_string(),
+            disk_on("sde", Ownership::Blank),
+        ),
     ]);
     {
         let mut p = progress_table();
@@ -599,7 +630,10 @@ async fn a_switched_on_disk_is_blocked_waited_on_or_created_as_its_state_says() 
 #[tokio::test]
 async fn a_switched_on_blank_disk_is_set_up_in_the_background() {
     let host = a_reachable_cluster_with_no_osds();
-    let meta = HashMap::from([("disk-plan-create".to_string(), disk_on("sdk", Ownership::Blank))]);
+    let meta = HashMap::from([(
+        "disk-plan-create".to_string(),
+        disk_on("sdk", Ownership::Blank),
+    )]);
     let desired = HashMap::from([(record_key("node1", "disk-plan-create"), "ON".to_string())]);
 
     reconcile_local_osds(&host, "node1", &meta, &desired, Some(&HashMap::new()), true).await;
@@ -703,7 +737,10 @@ async fn a_failed_or_unstartable_wipefs_still_lets_ceph_volume_try() {
     let failed = ours_host()
         .ok("ceph osd ls", "[]")
         .ok("ceph-volume lvm list", "{}")
-        .fail("wipefs --all /dev/sdp", "wipefs: probing initialization failed")
+        .fail(
+            "wipefs --all /dev/sdp",
+            "wipefs: probing initialization failed",
+        )
         .fail("ceph-volume lvm create", "Unable to create a new OSD id");
     create_osd(&failed, "disk-wipefs-fails", "/dev/sdp").await;
     assert!(failed.ran("lvm create"));
@@ -730,7 +767,11 @@ async fn a_stale_signature_that_cannot_be_erased_is_not_retried() {
         )
         .fail("ceph-volume lvm zap", "device busy");
     create_osd(&host, "disk-stale-zap-fails", "/dev/sdr").await;
-    let creates = host.calls().iter().filter(|c| c.contains("lvm create")).count();
+    let creates = host
+        .calls()
+        .iter()
+        .filter(|c| c.contains("lvm create"))
+        .count();
     assert_eq!(creates, 1);
     assert_eq!(progress_of("disk-stale-zap-fails").phase, Phase::Retrying);
 }
@@ -760,7 +801,10 @@ async fn a_failed_create_reclaims_the_osd_id_it_allocated() {
         .ok("ceph-volume lvm list", "{}")
         .ok("wipefs --all", "")
         .fail("ceph-volume lvm create", "Unable to create a new OSD id")
-        .ok("ceph osd safe-to-destroy osd.6", r#"{"safe_to_destroy":[6]}"#)
+        .ok(
+            "ceph osd safe-to-destroy osd.6",
+            r#"{"safe_to_destroy":[6]}"#,
+        )
         .ok("ceph osd dump", r#"{"osds":[],"pools":[]}"#)
         .ok("ceph osd purge-actual osd.6", "purged osd.6");
     create_osd(&host, "disk-leaked", "/dev/sdt").await;
@@ -855,7 +899,10 @@ fn a_list_with_both_clusters_osds_names_only_the_other_ones() {
     })
     .to_string();
     assert_eq!(foreign_osd_ids(&raw, OURS).unwrap(), vec![2]);
-    assert_eq!(foreign_osd_in_list(&raw, OURS, "/dev/sdc").unwrap(), Some(2));
+    assert_eq!(
+        foreign_osd_in_list(&raw, OURS, "/dev/sdc").unwrap(),
+        Some(2)
+    );
     assert_eq!(foreign_osd_in_list(&raw, OURS, "/dev/sdb").unwrap(), None);
     assert_eq!(
         parse_lvm_list(&raw, OURS).unwrap(),
@@ -913,9 +960,11 @@ async fn foreign_osd_units_cannot_be_stopped_without_the_list_the_id_or_systemct
 async fn forgotten_osds_are_found_only_from_a_readable_list_and_never_mid_create() {
     let silent = FakeHost::new().fail("ceph osd ls", "timed out");
     let map = HashMap::from([("disk-forgot-a".to_string(), 30)]);
-    assert!(erase_forgotten_osds(&silent, "node1", &HashMap::new(), &HashMap::new(), &map)
-        .await
-        .is_empty());
+    assert!(
+        erase_forgotten_osds(&silent, "node1", &HashMap::new(), &HashMap::new(), &map)
+            .await
+            .is_empty()
+    );
 
     creating().insert("disk-forgot-busy".into());
     let host = FakeHost::new()
@@ -927,9 +976,15 @@ async fn forgotten_osds_are_found_only_from_a_readable_list_and_never_mid_create
         ("disk-forgot-unplugged".to_string(), 32),
         ("disk-forgot-stuck".to_string(), 33),
     ]);
-    let meta = HashMap::from([("disk-forgot-stuck".to_string(), disk_on("sdv", Ownership::Ours))]);
+    let meta = HashMap::from([(
+        "disk-forgot-stuck".to_string(),
+        disk_on("sdv", Ownership::Ours),
+    )]);
     let desired = HashMap::from([
-        (record_key("node1", "disk-forgot-unplugged"), "ON".to_string()),
+        (
+            record_key("node1", "disk-forgot-unplugged"),
+            "ON".to_string(),
+        ),
         (record_key("node1", "disk-forgot-stuck"), "ON".to_string()),
     ]);
 
@@ -980,12 +1035,10 @@ async fn a_start_that_fails_or_cannot_run_is_only_logged() {
 
 #[tokio::test(start_paused = true)]
 async fn a_unit_that_will_not_stop_is_given_fifteen_seconds() {
-    let host = FakeHost::new()
-        .ok("systemctl stop", "")
-        .ok(
-            "systemctl show -p ActiveState --value yolab-ceph-osd@53.service",
-            "deactivating",
-        );
+    let host = FakeHost::new().ok("systemctl stop", "").ok(
+        "systemctl show -p ActiveState --value yolab-ceph-osd@53.service",
+        "deactivating",
+    );
     let started = tokio::time::Instant::now();
     disable_osd_unit(&host, 53).await;
     assert_eq!(started.elapsed(), Duration::from_secs(15));
@@ -1010,7 +1063,10 @@ async fn a_receipt_for(osd: i64) -> destructive::Purged {
         .await
         .unwrap()
         .unwrap();
-    destructive::purge_safe(&host, proof).await.unwrap().unwrap()
+    destructive::purge_safe(&host, proof)
+        .await
+        .unwrap()
+        .unwrap()
 }
 
 #[tokio::test]
@@ -1043,7 +1099,10 @@ async fn only_this_nodes_unplugged_down_and_out_osds_are_purged() {
     let host = FakeHost::new()
         .ok("systemctl stop", "")
         .ok("systemctl show", "inactive")
-        .ok("ceph osd safe-to-destroy osd.73", r#"{"safe_to_destroy":[73]}"#)
+        .ok(
+            "ceph osd safe-to-destroy osd.73",
+            r#"{"safe_to_destroy":[73]}"#,
+        )
         .ok("ceph osd dump", r#"{"osds":[],"pools":[]}"#)
         .ok("ceph osd purge-actual osd.73", "")
         .ok("ceph osd ls", "[]");
@@ -1053,7 +1112,11 @@ async fn only_this_nodes_unplugged_down_and_out_osds_are_purged() {
 
     assert!(host.ran("ceph osd purge-actual osd.73"));
     for spared in [70, 71, 72, 79] {
-        assert!(!host.ran(&format!("osd.{spared}")), "osd.{spared}: {:?}", host.calls());
+        assert!(
+            !host.ran(&format!("osd.{spared}")),
+            "osd.{spared}: {:?}",
+            host.calls()
+        );
     }
 
     let waiting = FakeHost::new();
@@ -1076,10 +1139,19 @@ async fn a_purge_of_an_unplugged_osd_waits_for_a_clear_yes_and_a_confirmed_remov
     let host = FakeHost::new()
         .ok("systemctl stop", "")
         .ok("systemctl show", "inactive")
-        .ok("ceph osd safe-to-destroy osd.80", r#"{"safe_to_destroy":[]}"#)
+        .ok(
+            "ceph osd safe-to-destroy osd.80",
+            r#"{"safe_to_destroy":[]}"#,
+        )
         .fail("ceph osd safe-to-destroy osd.81", "timed out")
-        .ok("ceph osd safe-to-destroy osd.82", r#"{"safe_to_destroy":[82]}"#)
-        .ok("ceph osd safe-to-destroy osd.83", r#"{"safe_to_destroy":[83]}"#)
+        .ok(
+            "ceph osd safe-to-destroy osd.82",
+            r#"{"safe_to_destroy":[82]}"#,
+        )
+        .ok(
+            "ceph osd safe-to-destroy osd.83",
+            r#"{"safe_to_destroy":[83]}"#,
+        )
         .ok("ceph osd dump", r#"{"osds":[],"pools":[]}"#)
         .ok("ceph osd purge-actual osd.82", "")
         .fail("ceph osd purge-actual osd.83", "EBUSY")
@@ -1108,7 +1180,10 @@ fn an_unreadable_store_entry_never_stops_the_other_disks_being_synced() {
     store.corrupt_disk_claim("node1--dev-bad");
     let meta = HashMap::from([
         ("dev-bad".to_string(), disk_on("sdb", Ownership::Blank)),
-        (SYSTEM_OSD_ID.to_string(), disk_on("/dev/mapper/pool-ceph", Ownership::Ours)),
+        (
+            SYSTEM_OSD_ID.to_string(),
+            disk_on("/dev/mapper/pool-ceph", Ownership::Ours),
+        ),
     ]);
     let mirror = HashMap::from([
         ("node1--dev-bad".to_string(), "ON".to_string()),
@@ -1134,7 +1209,10 @@ async fn a_store_that_cannot_be_saved_still_answers_from_what_it_holds() {
 
     let desired = read_desired(&host, "node1", &meta).await.unwrap();
 
-    assert_eq!(desired.get("node1--dev-save").map(String::as_str), Some("ON"));
+    assert_eq!(
+        desired.get("node1--dev-save").map(String::as_str),
+        Some("ON")
+    );
     assert!(path.is_dir());
 }
 

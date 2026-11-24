@@ -129,9 +129,13 @@ pub(super) fn disk_id(device: &str) -> String {
 }
 
 pub(super) fn stable_id_for(device: &str) -> Option<String> {
-    let target = std::fs::canonicalize(crate::storage::on_machine(&format!("/dev/{device}"))).ok()?;
+    let target =
+        std::fs::canonicalize(crate::storage::on_machine(&format!("/dev/{device}"))).ok()?;
     let mut best: Option<(usize, String)> = None;
-    for entry in std::fs::read_dir(crate::storage::on_machine(BY_ID_DIR)).ok()?.flatten() {
+    for entry in std::fs::read_dir(crate::storage::on_machine(BY_ID_DIR))
+        .ok()?
+        .flatten()
+    {
         let name = entry.file_name().to_string_lossy().into_owned();
         if name.ends_with("-part") || name.contains("-part") {
             continue;
@@ -165,13 +169,17 @@ pub(super) fn disk_id_from(device: &str, stable: Option<&str>) -> String {
 }
 
 pub(super) fn disk_meta(device: &str, our_fsid: &str, flags: DiskFlags) -> Disk {
-    let model = std::fs::read_to_string(crate::storage::on_machine(&format!("/sys/block/{device}/device/model")))
-        .map(|s| s.trim().to_string())
-        .unwrap_or_default();
-    let size_bytes: u64 = std::fs::read_to_string(crate::storage::on_machine(&format!("/sys/block/{device}/size")))
-        .ok()
-        .and_then(|s| s.trim().parse::<u64>().ok())
-        .unwrap_or(0)
+    let model = std::fs::read_to_string(crate::storage::on_machine(&format!(
+        "/sys/block/{device}/device/model"
+    )))
+    .map(|s| s.trim().to_string())
+    .unwrap_or_default();
+    let size_bytes: u64 = std::fs::read_to_string(crate::storage::on_machine(&format!(
+        "/sys/block/{device}/size"
+    )))
+    .ok()
+    .and_then(|s| s.trim().parse::<u64>().ok())
+    .unwrap_or(0)
         * 512;
     Disk {
         device: device.to_string(),

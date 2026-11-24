@@ -219,10 +219,7 @@ pub(crate) fn stuck_disks() -> Vec<(String, String)> {
 }
 
 fn progress_of(disk_id: &str) -> DiskProgress {
-    progress_table()
-        .get(disk_id)
-        .cloned()
-        .unwrap_or_default()
+    progress_table().get(disk_id).cloned().unwrap_or_default()
 }
 
 fn mark_progress(meta: &mut HashMap<String, Disk>) {
@@ -239,7 +236,10 @@ fn lv_size_bytes(dev: &str) -> u64 {
     std::fs::read_link(crate::storage::on_machine(dev))
         .ok()
         .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
-        .and_then(|dm| std::fs::read_to_string(crate::storage::on_machine(&format!("/sys/block/{dm}/size"))).ok())
+        .and_then(|dm| {
+            std::fs::read_to_string(crate::storage::on_machine(&format!("/sys/block/{dm}/size")))
+                .ok()
+        })
         .and_then(|s| s.trim().parse::<u64>().ok())
         .map(|sectors| sectors * 512)
         .unwrap_or(0)
