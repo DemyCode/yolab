@@ -136,7 +136,7 @@ function TechnicalDetails({ app }: { app: AppInfo }) {
   function stopLogs() {
     logStream.current?.abort();
     logStream.current = null;
-    setLogs((l) => (l ? { ...l, live: false } : null));
+    setLogs((l) => ({ ...l!, live: false }));
   }
 
   function startLogs(pod: string) {
@@ -146,7 +146,7 @@ function TechnicalDetails({ app }: { app: AppInfo }) {
     setLogs({ pod, lines: [], live: true });
     const settle = () => {
       if (logStream.current === ctrl) {
-        setLogs((l) => (l && l.pod === pod ? { ...l, live: false } : l));
+        setLogs((l) => ({ ...l!, live: false }));
       }
     };
     void streamEvents(
@@ -616,6 +616,11 @@ export function AppDetailPage() {
           }
         >
           <WhatHappened app={current} fallback="It did not say why." />
+          {notice?.tone === "error" && (
+            <p className="mt-1 font-medium">
+              {notice.title}: {notice.body}
+            </p>
+          )}
           {note ? (
             <WaitNote note={`It keeps trying on its own. ${note}`} />
           ) : (
