@@ -63,6 +63,29 @@ it run.
 Borrowed from umbrelOS, which runs ~95 of these per push and finds its RAID bugs
 in CI rather than on customers' machines.
 
+## Coverage and mutation gates
+
+Every Rust crate and `client-ui` must have 100% coverage (lines, functions and
+regions for Rust; lines, functions, branches and statements for Vitest), and
+every mutant must be caught:
+
+| check | tool | fails when |
+|---|---|---|
+| `<crate>-coverage`, `client-ui-coverage` | cargo-llvm-cov, Vitest v8 | anything below 100%; the log lists the missing lines |
+| `<crate>-mutants` | cargo-mutants (every mutant, no diff filter) | any mutant MISSED or TIMEOUT |
+| `client-ui-mutants` | StrykerJS + Vitest runner | mutation score below 100 |
+
+100% coverage only proves the code ran. The mutation checks prove that a test
+notices when the code changes.
+
+The only exceptions are whole files, listed with the reason they can't be
+unit-tested, in `nix/untested.nix` (Rust) and `homelab/client-ui/untested.json`
+(UI). Both tools read the same list, and `untested-exceptions-name-real-files`
+fails on an entry whose file no longer exists. The exceptions are per file
+because the toolchain is stable: function-level `#[coverage(off)]` needs a
+nightly feature. Code that can be tested but sits in an excepted file gets
+moved out of that file, not excused along with it.
+
 ## The rule for incidents
 
 **Every outage becomes a test in the highest tier that can hold it, in the same

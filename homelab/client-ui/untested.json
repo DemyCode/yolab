@@ -1,0 +1,3 @@
+{
+  "src/main.tsx": "mounts App into index.html; a jsdom test of it would only repeat App's own tests"
+}

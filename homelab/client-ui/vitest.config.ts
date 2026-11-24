@@ -1,5 +1,6 @@
 import { defineConfig } from "vitest/config";
 import path from "path";
+import untested from "./untested.json";
 
 export default defineConfig({
   resolve: {
@@ -9,5 +10,16 @@ export default defineConfig({
     environment: "jsdom",
     include: ["src/**/*.test.ts", "src/**/*.test.tsx"],
     restoreMocks: true,
+    coverage: {
+      provider: "v8",
+      include: ["src/**/*.{ts,tsx}"],
+      exclude: [
+        "src/**/*.test.{ts,tsx}",
+        "src/**/*.d.ts",
+        ...Object.keys(untested),
+      ],
+      reporter: ["text", "html"],
+      thresholds: { 100: true },
+    },
   },
 });

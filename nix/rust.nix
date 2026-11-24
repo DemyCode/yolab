@@ -2,6 +2,8 @@
   pkgs,
   inputs,
 }: let
+  untested = import ./untested.nix;
+
   rustToolchain = (pkgs.extend inputs.rust-overlay.overlays.default)
     .rust-bin.fromRustupToolchainFile ../homelab/local-api/rust-toolchain.toml;
 
@@ -14,7 +16,15 @@
     nativeBuildInputs ? [],
     buildInputs ? [],
     extraArgs ? {},
+    untested ? {},
   }: let
+    inherit (pkgs) lib;
+    untestedFiles = builtins.attrNames untested;
+    ignoreUntested =
+      lib.optionalString (untestedFiles != [])
+      "--ignore-filename-regex ${lib.escapeShellArg (lib.concatMapStringsSep "|" (f: "/${lib.escapeRegex f}$") untestedFiles)}";
+    excludeUntested = lib.concatMapStringsSep " " (f: "--exclude ${lib.escapeShellArg f}") untestedFiles;
+
     args =
       {
         inherit pname buildInputs;
@@ -35,7 +45,7 @@
     covArgs = args // {pname = "${pname}-coverage";};
     strict = args // {CARGO_BUILD_WARNINGS = "deny";};
   in {
-    inherit args cargoArtifacts;
+    inherit args cargoArtifacts untested;
 
     package = craneLib.buildPackage (strict
       // {
@@ -51,17 +61,34 @@
         cargoClippyExtraArgs = "--all-targets -- -D warnings";
       });
 
-    coverage = craneLib.cargoLlvmCov (covArgs
+    coverage = craneLib.mkCargoDerivation (covArgs
       // {
         cargoArtifacts = craneLib.buildDepsOnly covArgs;
-        cargoLlvmCovCommand = "test";
-        cargoLlvmCovExtraArgs = "--html --output-dir $out";
-        postInstall = ''
-          echo "── coverage summary: ${pname} ──"
-          cargo llvm-cov report --release --summary-only \
-            | tee "$out/coverage-summary.txt"
+        nativeBuildInputs = covArgs.nativeBuildInputs ++ [pkgs.cargo-llvm-cov];
+        doInstallCargoArtifacts = false;
+        buildPhaseCargoCommand = ''
+          cargo llvm-cov --release --no-report
+          cargo llvm-cov report --release --html --output-dir "$out" ${ignoreUntested}
+          cargo llvm-cov report --release --summary-only --show-missing-lines ${ignoreUntested} \
+            --fail-under-lines 100 --fail-under-functions 100 --fail-under-regions 100
         '';
+        installPhaseCommand = "";
       });
+
+    mutants = craneLib.mkCargoDerivation (args
+      // {
+        pname = "${pname}-mutants";
+        inherit cargoArtifacts;
+        nativeBuildInputs = args.nativeBuildInputs ++ [pkgs.cargo-mutants];
+        doInstallCargoArtifacts = false;
+        buildPhaseCargoCommand = ''
+          mkdir -p "$out"
+          cargo mutants --in-place --output "$out" ${excludeUntested}
+        '';
+        installPhaseCommand = "";
+      });
+
+    untestedMissing = lib.filter (f: !builtins.pathExists (path + "/${f}")) untestedFiles;
   };
 in {
   inherit rustToolchain craneLib;
@@ -77,17 +104,20 @@ in {
       };
       nativeBuildInputs = [pkgs.pkg-config pkgs.llvmPackages.bintools pkgs.gitMinimal];
       buildInputs = [pkgs.openssl];
+      untested = untested.local-api;
     };
 
     installer = mkCrate {
       pname = "yolab-installer";
       path = ../installer/nixos/backend-rs;
       nativeBuildInputs = [pkgs.pkg-config];
+      untested = untested.installer;
     };
 
     desktop-client = mkCrate {
       pname = "yolab-desktop";
       path = ../shells/desktop;
+      untested = untested.desktop-client;
 
       src = pkgs.lib.cleanSourceWith {
         name = "yolab-desktop-source";

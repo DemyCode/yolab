@@ -16,7 +16,7 @@
       ];
     };
     npmDepsFetcherVersion = 2;
-    npmDepsHash = "sha256-PSOjWXJuzbkMrSmkQPy+kQayjE0UU4U1xczculmJY/w=";
+    npmDepsHash = "sha256-WJAZj9c+1g8tWCuU6N7X7raEMnd5ZotzUxNTSztBusI=";
     npmFlags = ["--legacy-peer-deps"];
     dontNpmBuild = true;
     installPhase = ''
@@ -57,6 +57,18 @@ in {
     npm run test
     touch $out
   '';
+
+  clientUiCoverage = withNodeModules "client-ui-coverage" ''
+    npm run test:coverage
+    cp -r coverage $out
+  '';
+
+  clientUiMutants = withNodeModules "client-ui-mutants" ''
+    npm run mutants
+    cp -r reports $out
+  '';
+
+  clientUiUntested = builtins.fromJSON (builtins.readFile ./client-ui/untested.json);
 
   clientUiLint = withNodeModules "client-ui-lint" ''
     npm run lint
