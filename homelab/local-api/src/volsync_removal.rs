@@ -240,4 +240,6 @@ mod tests {
         assert_eq!(c["metadata"]["namespace"], "kube-system");
         assert_eq!(c["metadata"]["name"], "volsync");
     }
+
+    mod controller;
 }

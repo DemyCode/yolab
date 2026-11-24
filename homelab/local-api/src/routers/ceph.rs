@@ -1796,9 +1796,15 @@ mod machine_health_tests {
                     "Cannot tell whether anything on this machine failed"
                 ]
             );
-            let host = healthy()
+            let host = FakeHost::new()
+                .ok(
+                    "ceph health detail",
+                    r#"{"status": "HEALTH_OK", "checks": {}}"#,
+                )
                 .fail("df", "df: /: no such file")
-                .fail("systemctl list-units", "no bus");
+                .fail("systemctl list-units", "no bus")
+                .ok("ceph osd stat", ALL_UP)
+                .fail("ceph daemon", "no admin socket");
             let h = compute_cluster_health(&host, None).await;
             assert_eq!(h.issues.len(), 2);
         }

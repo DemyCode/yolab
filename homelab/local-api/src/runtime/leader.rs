@@ -1,5 +1,5 @@
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use chrono::{DateTime, SecondsFormat, Utc};
@@ -12,10 +12,25 @@ use crate::k8s::Kube;
 pub const LEASE_NAME: &str = "yolab-leader";
 pub const LEASE_NS: &str = "kube-system";
 const LEASE_SECS: i64 = 30;
+#[cfg(not(test))]
 const RENEW_EVERY: Duration = Duration::from_secs(10);
+#[cfg(test)]
+const RENEW_EVERY: Duration = Duration::from_millis(50);
 const ACT_WITHIN_MS: i64 = 20_000;
 
-static RENEWED: OnceLock<Arc<AtomicI64>> = OnceLock::new();
+#[cfg(not(test))]
+fn renewed() -> Arc<AtomicI64> {
+    static RENEWED: std::sync::OnceLock<Arc<AtomicI64>> = std::sync::OnceLock::new();
+    RENEWED.get_or_init(|| Arc::new(AtomicI64::new(0))).clone()
+}
+
+#[cfg(test)]
+fn renewed() -> Arc<AtomicI64> {
+    thread_local! {
+        static RENEWED: Arc<AtomicI64> = Arc::new(AtomicI64::new(0));
+    }
+    RENEWED.with(Arc::clone)
+}
 
 fn held(last_renewed_ms: i64, now: i64) -> bool {
     last_renewed_ms > 0 && now - last_renewed_ms < ACT_WITHIN_MS
@@ -53,9 +68,7 @@ impl Leadership {
 }
 
 pub fn current_holder_is_me() -> bool {
-    RENEWED
-        .get()
-        .is_some_and(|last| held(last.load(Ordering::SeqCst), now_ms()))
+    held(renewed().load(Ordering::SeqCst), now_ms())
 }
 
 fn now_ms() -> i64 {
@@ -63,7 +76,7 @@ fn now_ms() -> i64 {
 }
 
 pub fn start(identity: String, kube: Kube) -> Leadership {
-    let last = RENEWED.get_or_init(|| Arc::new(AtomicI64::new(0))).clone();
+    let last = renewed();
     let handle = Leadership {
         last_renewed_ms: last.clone(),
         fixed: None,
@@ -251,7 +264,7 @@ mod tests {
     #[test]
     fn the_status_page_and_the_controllers_read_leadership_the_same_way() {
         let now = now_ms();
-        let last = RENEWED.get_or_init(|| Arc::new(AtomicI64::new(0)));
+        let last = renewed();
         let controllers = Leadership {
             last_renewed_ms: last.clone(),
             fixed: None,
@@ -338,10 +351,10 @@ mod tests {
     #[test]
     fn renewing_our_own_lease_keeps_the_original_acquire_time() {
         let now = Utc::now();
-        match decide(&lease("n1", 5, now), "n1", now, Duration::ZERO) {
-            LeaseDecision::Take { acquire_time } => assert!(acquire_time < now),
-            other => panic!("expected Take, got {other:?}"),
-        }
+        assert!(matches!(
+            decide(&lease("n1", 5, now), "n1", now, Duration::ZERO),
+            LeaseDecision::Take { acquire_time } if acquire_time < now
+        ));
     }
 
     #[test]
@@ -422,4 +435,6 @@ mod tests {
         l.last_renewed_ms.store(0, Ordering::SeqCst);
         assert!(!l.is_leader());
     }
+
+    mod lease;
 }
