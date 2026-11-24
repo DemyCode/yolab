@@ -32,18 +32,14 @@ import type { StatusInfo } from "@/types/status";
 import type { ClusterHealth } from "@/types/health";
 
 function NavRow({
-  to,
-  href,
-  onClick,
+  target,
   icon: Icon,
   label,
   detail,
   tone,
   external,
 }: {
-  to?: string;
-  href?: string;
-  onClick?: () => void;
+  target: { to: string } | { onClick: () => void };
   icon: typeof Database;
   label: string;
   detail?: ReactNode;
@@ -77,7 +73,7 @@ function NavRow({
           </div>
         )}
       </div>
-      {href || external ? (
+      {external ? (
         <ExternalLink className="h-4 w-4 shrink-0 text-fg-subtle" />
       ) : (
         <ChevronRight className="h-5 w-5 shrink-0 text-fg-subtle" />
@@ -88,28 +84,18 @@ function NavRow({
   const className =
     "flex items-center gap-4 px-5 py-4 transition-colors hover:bg-surface-2 border-b border-border last:border-0";
 
-  if (onClick) {
+  if ("onClick" in target) {
     return (
-      <button onClick={onClick} className={cn(className, "w-full text-left")}>
+      <button
+        onClick={target.onClick}
+        className={cn(className, "w-full text-left")}
+      >
         {inner}
       </button>
     );
   }
-
-  if (href) {
-    return (
-      <a
-        href={href}
-        target="_blank"
-        rel="noopener noreferrer"
-        className={className}
-      >
-        {inner}
-      </a>
-    );
-  }
   return (
-    <Link to={to ?? "#"} className={className}>
+    <Link to={target.to} className={className}>
       {inner}
     </Link>
   );
@@ -127,14 +113,12 @@ export function SystemPage() {
     "backups-s3",
     "/api/backups/s3",
   );
+  const consoleUrl = status.data?.console_url;
   const billing = useApi<{
     credit_cents: number;
     suspended: boolean;
     stops_on: string | null;
-  }>(
-    status.data?.console_url ? "billing-credit" : null,
-    "/api/billing/balance",
-  );
+  }>(consoleUrl ? "billing-credit" : null, "/api/billing/balance");
   const credit = billing.data ? creditStatus(billing.data) : undefined;
   const creditDetail =
     billing.data && credit ? (
@@ -154,7 +138,7 @@ export function SystemPage() {
     "Starting up…"
   ) : undefined;
 
-  async function openConsole() {
+  async function openConsole(fallback: string) {
     const w = window.open("about:blank", "_blank");
 
     const go = (url: string) => {
@@ -170,9 +154,7 @@ export function SystemPage() {
       const { url } = await api.get<{ url: string }>("/api/console/link");
       go(url);
     } catch {
-      const fallback = status.data?.console_url;
-      if (fallback) go(fallback);
-      else w?.close();
+      go(fallback);
     }
   }
 
@@ -192,7 +174,7 @@ export function SystemPage() {
     >
       <Card className="mb-4 overflow-hidden p-0">
         <NavRow
-          to="/system/storage"
+          target={{ to: "/system/storage" }}
           icon={Database}
           label="Storage"
           detail={
@@ -207,7 +189,7 @@ export function SystemPage() {
           }
         />
         <NavRow
-          to="/system/backups"
+          target={{ to: "/system/backups" }}
           icon={Cloud}
           label="Backups"
           detail={
@@ -220,21 +202,25 @@ export function SystemPage() {
           tone={backups.data && !backups.data.configured ? "warn" : undefined}
         />
         <NavRow
-          to="/system/machines"
+          target={{ to: "/system/machines" }}
           icon={Server}
           label="Machines"
           detail={nodesDetail}
         />
-        <NavRow to="/system/updates" icon={Wrench} label="Updates" />
         <NavRow
-          to="/system/settings"
+          target={{ to: "/system/updates" }}
+          icon={Wrench}
+          label="Updates"
+        />
+        <NavRow
+          target={{ to: "/system/settings" }}
           icon={SlidersHorizontal}
           label="Settings"
           detail="Backups of new services and SSH access, on all your machines"
         />
-        {status.data?.console_url && (
+        {consoleUrl && (
           <NavRow
-            onClick={openConsole}
+            target={{ onClick: () => void openConsole(consoleUrl) }}
             icon={CreditCard}
             label="Account and billing"
             detail={creditDetail ?? "Your credit, top-ups and referral code"}
@@ -260,7 +246,7 @@ export function SystemPage() {
       </p>
       <Card className="mb-4 overflow-hidden p-0">
         <NavRow
-          to="/system/logs"
+          target={{ to: "/system/logs" }}
           icon={ScrollText}
           label="Logs"
           detail="What the machine has been saying"
@@ -270,14 +256,14 @@ export function SystemPage() {
       <Card className="overflow-hidden p-0">
         {inYolabShell() && (
           <NavRow
-            onClick={() => changeServer()}
+            target={{ onClick: () => changeServer() }}
             icon={ArrowLeftRight}
             label="Change server"
             detail="Open a different YoLab address in this app"
           />
         )}
         <NavRow
-          onClick={() => void signOut()}
+          target={{ onClick: () => void signOut() }}
           icon={LogOut}
           label="Sign out"
           detail="Sign out of your server on this device"
