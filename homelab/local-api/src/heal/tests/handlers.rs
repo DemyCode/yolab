@@ -138,7 +138,10 @@ async fn a_peer_answers_with_its_name_address_and_part_in_a_heal() {
 async fn a_peer_without_a_boot_id_or_with_a_garbled_reset_cannot_answer() {
     let res = api(FakeHost::new()).get("/api/heal/peer").await;
     assert_eq!(res.status, StatusCode::INTERNAL_SERVER_ERROR);
-    assert_eq!(res.json()["error"], "read this boot's id");
+    assert!(res.json()["error"]
+        .as_str()
+        .unwrap()
+        .starts_with("read this boot's id: "));
 
     booted("");
     let res = api(FakeHost::new()).get("/api/heal/peer").await;

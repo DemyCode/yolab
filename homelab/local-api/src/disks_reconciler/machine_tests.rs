@@ -1254,6 +1254,6 @@ fn a_device_is_compared_by_what_its_name_resolves_to() {
 #[tokio::test]
 async fn a_full_device_path_is_wiped_as_it_is() {
     let host = FakeHost::new().fail("ceph-volume lvm zap", "device busy");
-    wipe_device(&host, "/dev/mapper/x", a_receipt_for(61).await).await;
-    assert!(host.ran("ceph-volume lvm zap --destroy /dev/mapper/x"));
+    wipe_device(&host, "/dev/sdx", a_receipt_for(61).await).await;
+    assert!(host.ran("ceph-volume lvm zap --destroy /dev/sdx"));
 }

@@ -42,29 +42,13 @@ where
     F: FnOnce() -> Fut,
     Fut: Future<Output = Result<Tick>>,
 {
-    locked_tick_in(std::path::Path::new(lock::LOCK_DIR), job, f).await
-}
-
-async fn locked_tick_in<F, Fut>(dir: &std::path::Path, job: &str, f: F) -> Result<Tick>
-where
-    F: FnOnce() -> Fut,
-    Fut: Future<Output = Result<Tick>>,
-{
-    let Some(_guard) = lock::try_acquire_in(dir, &lock_name(job))? else {
+    let dir = crate::storage::on_machine(lock::LOCK_DIR);
+    let Some(_guard) = lock::try_acquire_in(&dir, &lock_name(job))? else {
         return Ok(Tick::Idle(format!(
             "another run of {job} holds its lock right now"
         )));
     };
     f().await
-}
-
-#[cfg(test)]
-async fn locked_in<F, Fut>(dir: &std::path::Path, job: &str, f: F) -> Result<Tick>
-where
-    F: FnOnce() -> Fut,
-    Fut: Future<Output = Result<()>>,
-{
-    locked_tick_in(dir, job, || done(f())).await
 }
 
 macro_rules! storage_controller {
@@ -291,7 +275,7 @@ impl Resource for CsiRecoveryController {
     }
     async fn converge(&self, ctx: &Ctx) -> Result<Tick> {
         once_per_boot(
-            std::path::Path::new(CSI_RECOVERED_MARKER),
+            &crate::storage::on_machine(CSI_RECOVERED_MARKER),
             &ctx.tools.kube().await?,
         )
         .await
@@ -306,10 +290,7 @@ async fn once_per_boot(marker: &std::path::Path, client: &kube::Client) -> Resul
         return Ok(Tick::RequeueAfter(Duration::from_secs(15)));
     }
     crate::csi::restart_local_plugin(client).await?;
-    if let Some(dir) = marker.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    std::fs::write(marker, "")?;
+    crate::config::write_private_file(marker, b"")?;
     Ok(Tick::Done)
 }
 
@@ -319,6 +300,10 @@ pub const K3S_UNIT: &str = "k3s.service";
 mod tests {
     use super::*;
     use crate::host::fake::FakeHost;
+
+    fn locks() -> std::path::PathBuf {
+        crate::storage::on_machine(lock::LOCK_DIR)
+    }
 
     #[tokio::test]
     async fn csi_recovery_runs_once_per_boot() {
@@ -386,12 +371,11 @@ mod tests {
 
     #[tokio::test]
     async fn a_job_whose_lock_is_held_is_skipped_not_failed() {
-        let dir = tempfile::tempdir().unwrap();
-        let _boot_unit = lock::try_acquire_in(dir.path(), &lock_name("images-rbd"))
+        let _boot_unit = lock::try_acquire_in(&locks(), &lock_name("images-rbd"))
             .unwrap()
             .unwrap();
         let ran = std::sync::atomic::AtomicBool::new(false);
-        let tick = locked_in(dir.path(), "images-rbd", || async {
+        let tick = locked("images-rbd", || async {
             ran.store(true, std::sync::atomic::Ordering::SeqCst);
             Ok::<(), anyhow::Error>(())
         })
@@ -411,12 +395,11 @@ mod tests {
 
     #[tokio::test]
     async fn a_free_job_runs_and_its_error_is_the_tick_error() {
-        let dir = tempfile::tempdir().unwrap();
-        let ok = locked_in(dir.path(), "osd-activate", succeed).await;
+        let ok = locked("osd-activate", succeed).await;
         assert_eq!(ok.unwrap(), Tick::Done);
-        let failed = locked_in(dir.path(), "osd-activate", time_out).await;
+        let failed = locked("osd-activate", time_out).await;
         assert!(failed.is_err());
-        let free = lock::try_acquire_in(dir.path(), &lock_name("osd-activate"));
+        let free = lock::try_acquire_in(&locks(), &lock_name("osd-activate"));
         assert!(free.unwrap().is_some());
     }
 
@@ -458,4 +441,6 @@ mod tests {
             host.calls()
         );
     }
+
+    mod converge;
 }
