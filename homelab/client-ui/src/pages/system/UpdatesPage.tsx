@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   RefreshCw,
   GitCommit,
@@ -12,7 +12,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
-import { api, streamEvents } from "@/lib/api";
+import { api, ApiError, streamEvents } from "@/lib/api";
 import { switchChannel } from "@/lib/channel";
 import { useApi } from "@/lib/useResource";
 import { Swap } from "@/components/motion";
@@ -20,6 +20,33 @@ import type { StatusInfo, RebuildLog, ChannelInfo } from "@/types/status";
 import { NotificationsCard } from "@/components/NotificationsCard";
 
 type Phase = "idle" | "git" | "rebuild" | "done";
+
+const POLL_MS = 2000;
+
+function reasonOf(e: unknown, fallback: string): string {
+  return e instanceof ApiError ? e.message : fallback;
+}
+
+function pollRebuildLog(
+  alive: { current: boolean },
+  offset: { current: number },
+  onLines: (lines: string[]) => void,
+  onDone: () => void,
+) {
+  async function tick() {
+    try {
+      const d = await api.get<RebuildLog>("/api/rebuild-log");
+      if (!alive.current) return;
+      onLines(d.log.slice(offset.current));
+      offset.current = d.log.length;
+      if (d.running) setTimeout(() => void tick(), POLL_MS);
+      else onDone();
+    } catch {
+      if (alive.current) setTimeout(() => void tick(), POLL_MS);
+    }
+  }
+  void tick();
+}
 
 function LogLine({ line }: { line: string }) {
   const isError = line.startsWith("[ERROR]") || line.includes("error:");
@@ -71,9 +98,6 @@ export function UpdatesPage() {
   const [editUrl, setEditUrl] = useState("");
   const [editRef, setEditRef] = useState("");
 
-  // While the editor is closed, the fields follow the saved channel; once it
-  // is open they hold what the user types. Adjusted during render rather than
-  // in an effect, so there is no extra render with stale values.
   const following = channelOpen ? null : (channel ?? null);
   const [followed, setFollowed] = useState<ChannelInfo | null>(null);
   if (following !== followed) {
@@ -88,71 +112,73 @@ export function UpdatesPage() {
 
   const [rebootConfirm, setRebootConfirm] = useState(false);
   const [rebooting, setRebooting] = useState(false);
+  const [rebootError, setRebootError] = useState<string | null>(null);
+  const [readError, setReadError] = useState<string | null>(null);
+  const alive = useRef(true);
+  const refreshStatus = useRef(statusRes.refresh);
+
+  useEffect(() => {
+    refreshStatus.current = statusRes.refresh;
+  });
+
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+    };
+  }, []);
 
   useEffect(() => {
     if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
   }, [log]);
 
-  function appendLines(lines: string[]) {
-    if (lines.length > 0) setLog((prev) => [...prev, ...lines]);
-  }
-
-  function pollRebuildLog() {
-    let cancelled = false;
-    async function tick() {
-      if (cancelled) return;
-      try {
-        const d = await api.get<RebuildLog>("/api/rebuild-log");
-        if (cancelled) return;
-        const newLines = (d.log ?? []).slice(rebuildOffsetRef.current);
-        rebuildOffsetRef.current = (d.log ?? []).length;
-        appendLines(newLines);
-        if (d.running) {
-          setTimeout(tick, 2000);
-        } else {
-          setPhase("done");
-          void statusRes.refresh();
-        }
-      } catch {
-        if (!cancelled) setTimeout(tick, 2000);
-      }
-    }
-    tick();
-    return () => {
-      cancelled = true;
-    };
-  }
+  const follow = useCallback(() => {
+    pollRebuildLog(
+      alive,
+      rebuildOffsetRef,
+      (lines) => setLog((prev) => [...prev, ...lines]),
+      () => {
+        setPhase("done");
+        void refreshStatus.current();
+      },
+    );
+  }, []);
 
   useEffect(() => {
-    api
-      .get<RebuildLog>("/api/rebuild-log")
-      .then((d) => {
+    api.get<RebuildLog>("/api/rebuild-log").then(
+      (d) => {
+        if (!alive.current) return;
         if (d.running) {
-          setLog(d.log ?? []);
-          rebuildOffsetRef.current = (d.log ?? []).length;
+          setLog(d.log);
+          rebuildOffsetRef.current = d.log.length;
           setPhase("rebuild");
-          pollRebuildLog();
-        } else if ((d.log ?? []).length > 0) {
-          setLog(d.log ?? []);
+          follow();
+        } else if (d.log.length > 0) {
+          setLog(d.log);
           setPhase("done");
         }
-      })
-      .catch(() => {});
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+      },
+      (e: unknown) => {
+        if (alive.current)
+          setReadError(reasonOf(e, "Could not read the last build"));
+      },
+    );
+  }, [follow]);
 
   async function streamUpdate(url: string) {
     setLog([]);
     setPhase("git");
-    rebuildOffsetRef.current = 0;
-    try {
-      await streamEvents(url, { method: "POST" }, (line) =>
-        appendLines([line]),
-      );
-      // eslint-disable-next-line no-empty
-    } catch {}
+    let sawError = false;
+    const result = await streamEvents(url, { method: "POST" }, (line) => {
+      if (line.startsWith("[ERROR]")) sawError = true;
+      setLog((prev) => [...prev, line]);
+    });
+    if (!result.ok && !sawError) {
+      setLog((prev) => [...prev, `[ERROR] ${result.error}`]);
+    }
     setPhase("rebuild");
     rebuildOffsetRef.current = 0;
-    pollRebuildLog();
+    follow();
   }
 
   const runUpdate = () => streamUpdate("/api/update");
@@ -161,14 +187,16 @@ export function UpdatesPage() {
   async function rebootAll() {
     setRebooting(true);
     setRebootConfirm(false);
+    setRebootError(null);
     try {
       await api.post("/api/system/reboot/all");
-      // eslint-disable-next-line no-empty
-    } catch {}
+    } catch (e) {
+      setRebooting(false);
+      setRebootError(reasonOf(e, "The machines did not answer"));
+    }
   }
 
   async function saveChannelAndUpdate() {
-    if (!editUrl.trim() || !editRef.trim()) return;
     setChannelSaving(true);
     setChannelError(null);
     const failed = await switchChannel(editUrl, editRef);
@@ -235,12 +263,18 @@ export function UpdatesPage() {
         </Card>
       </div>
 
-      {status?.error && (
-        <div className="flex items-start gap-2 rounded-control border border-danger/30 bg-danger/5 p-4">
-          <AlertCircle className="h-4 w-4 text-danger mt-0.5 flex-shrink-0" />
-          <p className="text-sm text-danger">{status.error}</p>
-        </div>
-      )}
+      {[status?.error, readError, rebootError]
+        .filter((problem): problem is string => Boolean(problem))
+        .map((problem) => (
+          <div
+            key={problem}
+            role="alert"
+            className="flex items-start gap-2 rounded-control border border-danger/30 bg-danger/5 p-4"
+          >
+            <AlertCircle className="h-4 w-4 text-danger mt-0.5 flex-shrink-0" />
+            <p className="text-sm text-danger">{problem}</p>
+          </div>
+        ))}
 
       <NotificationsCard />
 
