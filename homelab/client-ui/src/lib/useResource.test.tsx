@@ -1,4 +1,5 @@
-import { act, renderHook, waitFor } from "@testing-library/react";
+import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
+import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "./api";
 import { forget, recall, remember } from "./localCache";
@@ -7,6 +8,7 @@ import { useHealStatus } from "./heal";
 
 let n = 0;
 const freshKey = () => `use-resource-test-${++n}`;
+const useKey = () => useState(freshKey)[0];
 
 function deferred<T>() {
   let resolve!: (v: T) => void;
@@ -27,6 +29,7 @@ function setVisibility(state: DocumentVisibilityState) {
 
 beforeEach(() => setVisibility("visible"));
 afterEach(() => {
+  cleanup();
   vi.useRealTimers();
   vi.unstubAllGlobals();
 });
@@ -34,9 +37,7 @@ afterEach(() => {
 describe("useResource", () => {
   it("is loading until the first answer arrives, then shows it", async () => {
     const d = deferred<string>();
-    const { result } = renderHook(() =>
-      useResource(freshKey(), () => d.promise),
-    );
+    const { result } = renderHook(() => useResource(useKey(), () => d.promise));
     expect(result.current.loading).toBe(true);
     expect(result.current.data).toBeUndefined();
 
@@ -87,7 +88,7 @@ describe("useResource", () => {
   it("keeps the last value and marks it stale when a fetch fails", async () => {
     let fail = false;
     const { result } = renderHook(() =>
-      useResource(freshKey(), async () => {
+      useResource(useKey(), async () => {
         if (fail) throw new Error("server is down");
         return "first";
       }),
@@ -110,7 +111,7 @@ describe("useResource", () => {
 
   it("says something went wrong when the failure carries no message", async () => {
     const { result } = renderHook(() =>
-      useResource(freshKey(), () => Promise.reject("not an Error")),
+      useResource(useKey(), () => Promise.reject("not an Error")),
     );
     await waitFor(() =>
       expect(result.current.error).toBe("Something went wrong"),
@@ -119,7 +120,7 @@ describe("useResource", () => {
 
   it("shows no error for an expired session, which sends the user to sign in instead", async () => {
     const { result } = renderHook(() =>
-      useResource(freshKey(), () =>
+      useResource(useKey(), () =>
         Promise.reject(new ApiError(401, "Your session expired.")),
       ),
     );
@@ -129,7 +130,7 @@ describe("useResource", () => {
 
   it("shows an error for any other refusal", async () => {
     const { result } = renderHook(() =>
-      useResource(freshKey(), () =>
+      useResource(useKey(), () =>
         Promise.reject(new ApiError(403, "Not allowed")),
       ),
     );
@@ -184,8 +185,8 @@ describe("useResource", () => {
   it("drops an answer, or a failure, that arrives after it is gone", async () => {
     const ok = deferred<string>();
     const bad = deferred<string>();
-    const first = renderHook(() => useResource(freshKey(), () => ok.promise));
-    const second = renderHook(() => useResource(freshKey(), () => bad.promise));
+    const first = renderHook(() => useResource(useKey(), () => ok.promise));
+    const second = renderHook(() => useResource(useKey(), () => bad.promise));
     first.unmount();
     second.unmount();
     await act(async () => {
@@ -232,7 +233,7 @@ describe("useResource", () => {
     vi.useFakeTimers();
     let calls = 0;
     const { unmount } = renderHook(() =>
-      useResource(freshKey(), async () => ++calls, { pollMs: 1000 }),
+      useResource(useKey(), async () => ++calls, { pollMs: 1000 }),
     );
     await act(async () => {});
     expect(calls).toBe(1);
@@ -259,7 +260,7 @@ describe("useResource", () => {
   it("does not fetch on a visibility change to hidden", async () => {
     let calls = 0;
     renderHook(() =>
-      useResource(freshKey(), async () => ++calls, { pollMs: 1000 }),
+      useResource(useKey(), async () => ++calls, { pollMs: 1000 }),
     );
     await waitFor(() => expect(calls).toBe(1));
     setVisibility("hidden");
@@ -272,14 +273,14 @@ describe("useResource", () => {
   it("does not poll without an interval", async () => {
     vi.useFakeTimers();
     let calls = 0;
-    renderHook(() => useResource(freshKey(), async () => ++calls));
+    renderHook(() => useResource(useKey(), async () => ++calls));
     await act(async () => {});
     await act(() => vi.advanceTimersByTimeAsync(60_000));
     expect(calls).toBe(1);
   });
 
   it("replaces the shown value with mutate, by value or from the previous one", async () => {
-    const { result } = renderHook(() => useResource(freshKey(), async () => 1));
+    const { result } = renderHook(() => useResource(useKey(), async () => 1));
     await waitFor(() => expect(result.current.data).toBe(1));
     act(() => result.current.mutate(5));
     expect(result.current.data).toBe(5);
