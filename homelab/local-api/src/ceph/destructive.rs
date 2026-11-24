@@ -301,6 +301,34 @@ mod tests {
         assert!(purge_safe(&lingering, proof).await.unwrap().is_none());
     }
 
+    #[tokio::test]
+    async fn a_purge_the_mon_refuses_or_cannot_confirm_is_an_error_not_a_receipt() {
+        let refused = FakeHost::new()
+            .ok(
+                "ceph osd safe-to-destroy osd.3",
+                r#"{"safe_to_destroy":[3]}"#,
+            )
+            .ok("ceph osd dump", DUMP_OSD3_DOWN)
+            .fail(
+                "ceph osd purge-actual osd.3",
+                "Error EBUSY: osd.3 is still up",
+            );
+        let proof = safe_to_destroy(&refused, 3).await.unwrap().unwrap();
+        assert!(purge_safe(&refused, proof).await.is_err());
+        assert!(!refused.ran("ceph osd ls"));
+
+        let unconfirmed = FakeHost::new()
+            .ok(
+                "ceph osd safe-to-destroy osd.3",
+                r#"{"safe_to_destroy":[3]}"#,
+            )
+            .ok("ceph osd dump", DUMP_OSD3_DOWN)
+            .ok("ceph osd purge-actual osd.3", "")
+            .fail("ceph osd ls", "timed out");
+        let proof = safe_to_destroy(&unconfirmed, 3).await.unwrap().unwrap();
+        assert!(purge_safe(&unconfirmed, proof).await.is_err());
+    }
+
     const DUMP_OSD3_DOWN: &str =
         r#"{"osds":[{"osd":1,"up":1,"in":1},{"osd":3,"up":0,"in":0}],"pools":[]}"#;
 

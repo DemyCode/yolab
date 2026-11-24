@@ -89,7 +89,7 @@ pub fn valid(
     now: i64,
 ) -> Option<Session> {
     let session = parse(key, token)?;
-    let fp = token.rsplit('.').nth(1)?;
+    let fp = token.rsplit('.').nth(1).unwrap_or_default();
     if password_hash.is_empty()
         || session.expires <= now
         || !ct_eq(fp, &fingerprint(password_hash))
@@ -190,6 +190,26 @@ mod tests {
         let token = issue(KEY, HASH, "id1", 2000);
         assert_eq!(check(&token, HASH, &["id1"]), None);
         assert!(check(&issue(KEY, HASH, "id2", 2000), HASH, &["id1"]).is_some());
+    }
+
+    #[test]
+    fn signed(body: &str) -> String {
+        let mac = hex::encode(hmac_sha256(KEY.as_bytes(), body.as_bytes()));
+        format!("{body}.{mac}")
+    }
+
+    #[test]
+    fn a_signed_token_missing_a_part_or_with_an_unreadable_expiry_is_refused() {
+        for body in [
+            "v1",
+            "v1.2000",
+            "v1.2000.id1",
+            "v1.soon.id1.fp",
+            "v0.2000.id1.fp",
+        ] {
+            assert_eq!(parse(KEY, &signed(body)), None, "{body}");
+        }
+        assert_eq!(parse(KEY, "no-dot-at-all"), None);
     }
 
     #[test]

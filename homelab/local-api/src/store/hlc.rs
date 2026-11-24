@@ -19,10 +19,10 @@ impl Hlc {
     }
 
     pub fn decode(raw: &str) -> Option<Self> {
-        let mut parts = raw.splitn(3, '-');
-        let millis = parts.next()?.parse().ok()?;
-        let counter = parts.next()?.parse().ok()?;
-        let node = parts.next()?;
+        let (millis, rest) = raw.split_once('-')?;
+        let (counter, node) = rest.split_once('-')?;
+        let millis = millis.parse().ok()?;
+        let counter = counter.parse().ok()?;
         if node.is_empty() {
             return None;
         }
@@ -146,6 +146,14 @@ mod tests {
         assert_eq!(Hlc::decode("not-a-timestamp"), None);
         assert_eq!(Hlc::decode("1-2-"), None);
         assert_eq!(Hlc::decode("1"), None);
+        assert_eq!(Hlc::decode("1-2"), None);
+        assert_eq!(Hlc::decode("1-x-n1"), None);
+        assert_eq!(
+            Hlc::decode("0000000000001-00002-node-a").map(|h| h.node),
+            Some("node-a".to_string())
+        );
+        assert!(serde_json::from_value::<Hlc>(serde_json::json!(5)).is_err());
+        assert!(serde_json::from_value::<Hlc>(serde_json::json!("junk")).is_err());
     }
 
     #[test]

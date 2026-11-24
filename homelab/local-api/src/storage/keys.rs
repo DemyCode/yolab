@@ -175,4 +175,33 @@ mod tests {
         let err = mint(&host, dir.path(), "n1", "mgr").await.unwrap_err();
         assert!(err.to_string().contains("chown ceph:ceph"));
     }
+
+    #[tokio::test]
+    async fn a_key_folder_that_cannot_be_made_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("var"), "").unwrap();
+        assert!(mint(&FakeHost::new(), dir.path(), "n1", "mgr")
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn a_key_the_cluster_refuses_to_mint_is_an_error_and_nothing_is_chowned() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = FakeHost::new()
+            .ok("ceph -s", "")
+            .fail("ceph auth get-or-create", "Error EACCES: access denied");
+        assert!(mint(&host, dir.path(), "n1", "mgr").await.is_err());
+        assert!(!host.ran("chown"));
+    }
+
+    #[tokio::test]
+    async fn a_chown_that_cannot_start_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = FakeHost::new()
+            .ok("ceph -s", "")
+            .ok("ceph auth get-or-create", "")
+            .unstartable("chown");
+        assert!(mint(&host, dir.path(), "n1", "mgr").await.is_err());
+    }
 }

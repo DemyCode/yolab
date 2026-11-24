@@ -94,7 +94,7 @@ impl PgBrief {
 }
 
 pub fn pool_of(pgid: &str) -> Option<i64> {
-    pgid.split('.').next()?.parse().ok()
+    pgid.split('.').next().unwrap_or_default().parse().ok()
 }
 
 pub fn parse_pgs_brief(cmd: &str, raw: &str) -> Result<Vec<PgBrief>, CmdError> {
@@ -240,6 +240,19 @@ mod tests {
     }
 
     #[test]
+    fn an_up_flag_that_is_not_a_number_is_refused() {
+        let raw = r#"{"osds":[{"osd":0,"up":"yes","in":1}],"pools":[]}"#;
+        assert!(serde_json::from_str::<OsdDump>(raw).is_err());
+    }
+
+    #[test]
+    fn a_placement_group_names_its_pool_before_the_dot() {
+        assert_eq!(pool_of("3.1f"), Some(3));
+        assert_eq!(pool_of("7"), Some(7));
+        assert_eq!(pool_of("x.1"), None);
+    }
+
+    #[test]
     fn an_up_flag_that_is_not_zero_or_one_is_refused() {
         let raw = r#"{"osds":[{"osd":0,"up":7,"in":1}],"pools":[]}"#;
         assert!(serde_json::from_str::<OsdDump>(raw).is_err());
@@ -286,6 +299,7 @@ mod tests {
         assert!(parse_lvm_list("").is_err());
         assert!(parse_lvm_list("--> no json here").is_err());
         assert!(parse_lvm_list("{\"x\": []}").is_err());
+        assert!(parse_lvm_list("{oops").is_err());
         assert!(parse_lvm_list("{}").unwrap().is_empty());
     }
 }

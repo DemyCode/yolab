@@ -166,4 +166,21 @@ mod tests {
         let host = FakeHost::new().ok("ceph config-key dump yolab/disk-status/", "{}");
         assert!(dump(&host, DISK_STATUS).await.unwrap().is_empty());
     }
+
+    #[tokio::test]
+    async fn a_value_json_cannot_hold_is_refused_before_anything_is_written() {
+        let host = FakeHost::new();
+        let unkeyable = std::collections::BTreeMap::from([((1, 2), 3)]);
+        let err = set_json(&host, STORAGE_POLICY, &unkeyable)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("serialise"), "{err}");
+        assert!(host.calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_settings_dump_that_is_not_an_object_is_an_error() {
+        let host = FakeHost::new().ok("ceph config-key dump", "[]");
+        assert!(dump(&host, DISKS).await.is_err());
+    }
 }

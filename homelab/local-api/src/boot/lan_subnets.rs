@@ -324,4 +324,41 @@ mod tests {
             "{err:#}"
         );
     }
+
+    #[tokio::test]
+    async fn any_ipset_step_that_fails_stops_the_swap_with_its_error() {
+        for failing in [
+            "ipset create lan4 hash:net",
+            "ipset create lan4-next",
+            "ipset flush",
+            "ipset add",
+            "ipset swap",
+            "ipset destroy",
+        ] {
+            let host = scripted(WIRED_V4, WIRED_V6).fail(failing, "ipset: Kernel error");
+            let mut last = None;
+            assert!(
+                sync_family(&host, "lan4", Family::V4, &mut last)
+                    .await
+                    .is_err(),
+                "{failing}"
+            );
+            assert_eq!(last, None, "{failing}");
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_watch_keeps_both_families_in_step_until_the_routing_table_goes_away() {
+        let host = FakeHost::new()
+            .ok("ip -j -4 route show table main", WIRED_V4)
+            .fail(
+                "ip -j -4 route show table main",
+                "Cannot open netlink socket",
+            )
+            .ok("ip -j -6 route show table main", WIRED_V6)
+            .ok("ipset", "");
+        assert!(run(&host, "lan4", "lan6").await.is_err());
+        assert!(host.ran("ipset swap lan4-next lan4"));
+        assert!(host.ran("ipset swap lan6-next lan6"));
+    }
 }

@@ -100,7 +100,7 @@ pub fn from_lvs(raw: &str) -> Result<String, CmdError> {
             "vg_name": v.row.vg_name,
         }));
     }
-    serde_json::to_string(&osds).map_err(|e| CmdError::parse(cmd, e))
+    Ok(json!(osds).to_string())
 }
 
 #[cfg(test)]

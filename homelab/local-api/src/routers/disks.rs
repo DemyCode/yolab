@@ -355,6 +355,39 @@ mod tests {
         }
 
         #[tokio::test]
+        async fn a_machine_that_published_no_disk_list_shows_no_disks() {
+            let status = serde_json::json!({
+                "yolab/disk-status/node1": serde_json::json!({ "phase": "booting" }).to_string()
+            })
+            .to_string();
+            let host = FakeHost::new()
+                .ok("ceph config-key dump yolab/disks/", "{}")
+                .ok("ceph config-key dump yolab/disk-status/", &status);
+            let res = signed_in(host).await.get("/api/disks").await;
+            assert_eq!(res.json(), serde_json::json!({}), "{}", res.body);
+        }
+
+        #[tokio::test]
+        async fn the_disks_page_is_an_error_when_the_disk_states_cannot_be_read() {
+            let host = FakeHost::new()
+                .ok("ceph config-key dump yolab/disks/", "{}")
+                .fail("ceph config-key dump yolab/disk-status/", "timed out");
+            assert!(!signed_in(host)
+                .await
+                .get("/api/disks")
+                .await
+                .status
+                .is_success());
+        }
+
+        #[tokio::test]
+        async fn data_movement_reads_unknown_when_ceph_does_not_answer() {
+            let host = FakeHost::new().fail("ceph", "timed out");
+            let res = signed_in(host).await.get("/api/storage/movement").await;
+            assert_eq!(res.status, axum::http::StatusCode::OK, "{}", res.body);
+        }
+
+        #[tokio::test]
         async fn the_disks_page_is_an_error_while_ceph_cannot_be_read() {
             let api = signed_in(FakeHost::new().fail("ceph config-key dump", "timed out")).await;
             assert!(!api.get("/api/disks").await.status.is_success());

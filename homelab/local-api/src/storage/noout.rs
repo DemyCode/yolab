@@ -199,4 +199,19 @@ mod tests {
         set(&host, dir.path()).await.unwrap();
         assert!(!host.ran("osd set noout"));
     }
+
+    #[tokio::test]
+    async fn a_marker_that_cannot_be_dropped_is_an_error() {
+        let host = FakeHost::new()
+            .ok("ceph -s", "")
+            .ok("ceph osd dump", "flags sortbitwise")
+            .ok("ceph osd set noout", "");
+        let no_folder = tempfile::tempdir().unwrap();
+        std::fs::write(no_folder.path().join("var"), "").unwrap();
+        assert!(set(&host, no_folder.path()).await.is_err());
+
+        let taken = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(marker_path(taken.path())).unwrap();
+        assert!(set(&host, taken.path()).await.is_err());
+    }
 }
