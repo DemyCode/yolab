@@ -63,10 +63,14 @@ in {
     cp -r coverage $out
   '';
 
-  clientUiMutants = withNodeModules "client-ui-mutants" ''
-    npm run mutants
-    cp -r reports $out
-  '';
+  clientUiMutants =
+    (withNodeModules "client-ui-mutants" ''
+      npm run mutants
+      cp -r reports $out
+    '')
+    .overrideAttrs (old: {
+      nativeBuildInputs = old.nativeBuildInputs ++ [pkgs.procps];
+    });
 
   clientUiUntested = builtins.fromJSON (builtins.readFile ./client-ui/untested.json);
 
