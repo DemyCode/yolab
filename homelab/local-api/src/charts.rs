@@ -229,10 +229,15 @@ async fn pull_into<H: Host>(
         anyhow::bail!("pull {reference}:{}: {}", entry.version, out.stderr.trim());
     }
     let pulled = staging.path().join(&entry.name);
-    if pulled.join("Chart.yaml").is_file() {
-        crate::error::remove_dir_if_present(&dir.join(&entry.name)).await?;
-        tokio::fs::rename(&pulled, dir.join(&entry.name)).await?;
+    if !pulled.join("Chart.yaml").is_file() {
+        anyhow::bail!(
+            "pull {reference}:{}: helm finished but left no chart named {} behind",
+            entry.version,
+            entry.name
+        );
     }
+    crate::error::remove_dir_if_present(&dir.join(&entry.name)).await?;
+    tokio::fs::rename(&pulled, dir.join(&entry.name)).await?;
     Ok(())
 }
 
@@ -810,6 +815,57 @@ mod tests {
 
         const REPOS_PATH: &str = "/api/v1/namespaces/kube-system/configmaps/yolab-chart-repos";
 
+        fn pulling() -> FakeHost {
+            FakeHost::new()
+                .ok("helm pull", "")
+                .effect("helm pull", |_, args| {
+                    let name = args[1].rsplit('/').next().unwrap();
+                    let dir = std::path::Path::new(args[6]).join(name);
+                    std::fs::create_dir_all(&dir).unwrap();
+                    std::fs::write(
+                        dir.join("Chart.yaml"),
+                        format!("name: {name}\nversion: {}\n", args[3]),
+                    )
+                    .unwrap();
+                })
+        }
+
+        #[tokio::test]
+        async fn a_pull_that_leaves_no_chart_behind_is_an_error() {
+            let (_server, repo) = catalog(
+                "registry: oci://ghcr.io/x/charts\ncharts:\n  - name: notes\n    version: \"1\"\n",
+            )
+            .await;
+            let host = FakeHost::new().ok("helm pull", "");
+            let cache = tempfile::tempdir().unwrap();
+            assert_eq!(
+                sync_chart(&host, cache.path(), &repo, "notes")
+                    .await
+                    .unwrap_err()
+                    .to_string(),
+                "pull oci://ghcr.io/x/charts/notes:1: helm finished but left no chart named notes behind"
+            );
+        }
+
+        #[tokio::test]
+        async fn a_pulled_chart_replaces_the_cached_copy() {
+            let (_server, repo) = catalog(
+                "registry: oci://ghcr.io/x/charts\ncharts:\n  - name: notes\n    version: \"2\"\n",
+            )
+            .await;
+            let cache = tempfile::tempdir().unwrap();
+            let dir = cache.path().join(&repo.name).join("notes");
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("Chart.yaml"), "name: notes\nversion: 1\n").unwrap();
+            sync_chart(&pulling(), cache.path(), &repo, "notes")
+                .await
+                .unwrap();
+            assert_eq!(
+                std::fs::read_to_string(dir.join("Chart.yaml")).unwrap(),
+                "name: notes\nversion: 2\n"
+            );
+        }
+
         async fn catalog(body: &str) -> (MockServer, ChartRepo) {
             let server = MockServer::start().await;
             Mock::given(method("GET"))
@@ -861,7 +917,7 @@ mod tests {
                 "registry: oci://ghcr.io/x/charts/\ncharts:\n  - name: notes\n    version: \"1.2.3\"\n",
             )
             .await;
-            let host = FakeHost::new().ok("helm pull", "");
+            let host = pulling();
             let cache = tempfile::tempdir().unwrap();
             sync_chart(&host, cache.path(), &repo, "notes")
                 .await
@@ -891,7 +947,7 @@ mod tests {
                 )
                 .unwrap();
             }
-            let host = FakeHost::new().ok("helm pull", "");
+            let host = pulling();
             assert_eq!(sync_repo(&host, cache.path(), &repo).await.unwrap(), 1);
             assert!(host.ran("helm pull oci://ghcr.io/x/charts/wiki --version 2.0.0"));
             assert!(!host.ran("charts/notes"));
@@ -914,7 +970,7 @@ mod tests {
                 "name: yolab-common\nversion: 0.1.0\n",
             )
             .unwrap();
-            let host = FakeHost::new().ok("helm pull", "");
+            let host = pulling();
             sync_repo(&host, cache.path(), &repo).await.unwrap();
             assert!(host.ran("helm pull oci://ghcr.io/x/charts/yolab-stack --version 0.1.0"));
             assert!(!host.ran("charts/yolab-common"));
@@ -974,7 +1030,7 @@ mod tests {
                 url: "http://[::1]:9/unreachable.yaml".into(),
                 removable: false,
             };
-            let host = FakeHost::new().ok("helm pull", "");
+            let host = pulling();
             let cache = tempfile::tempdir().unwrap();
             let from = fetch_newest(
                 &host,
@@ -1000,7 +1056,7 @@ mod tests {
                 name: "second".into(),
                 ..with
             };
-            let host = FakeHost::new().ok("helm pull", "");
+            let host = pulling();
             let cache = tempfile::tempdir().unwrap();
             let from = fetch_newest(&host, cache.path(), &[without, with], "notes", None)
                 .await
@@ -1034,7 +1090,7 @@ mod tests {
                 "registry: oci://ghcr.io/x/charts\ncharts:\n  - name: notes\n    version: \"9.0.0\"\n",
             )
             .await;
-            let host = FakeHost::new().ok("helm pull", "");
+            let host = pulling();
             let dest = tempfile::tempdir().unwrap();
             let dir = fetch_exact(&host, dest.path(), &[repo], "notes", "1.2.3", "community")
                 .await

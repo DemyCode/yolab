@@ -18,7 +18,7 @@ pub enum HealthLevel {
     Error,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Debug, PartialEq)]
 pub struct HealthIssue {
     pub level: HealthLevel,
     pub title: String,
@@ -136,7 +136,7 @@ pub(crate) fn failed_units_issue(units: Option<&[String]>) -> Option<HealthIssue
 }
 
 fn system_uptime_secs() -> u64 {
-    std::fs::read_to_string("/proc/uptime")
+    std::fs::read_to_string(crate::storage::on_machine("/proc/uptime"))
         .ok()
         .and_then(|s| s.split_whitespace().next()?.parse::<f64>().ok())
         .map(|f| f as u64)
@@ -292,21 +292,13 @@ async fn compute_cluster_health<H: Host>(host: &H, kube: Option<&kube::Client>) 
         },
         HealthLevel::Warn => ClusterHealth {
             level: HealthLevel::Warn,
-            title: if starting {
-                "Storage is warming up".into()
-            } else {
-                "Storage has warnings".into()
-            },
-            message: if starting {
-                "Your storage is recovering after a restart. Apps will be available shortly.".into()
-            } else {
-                "Your cluster is operational but has non-critical issues.".into()
-            },
+            title: "Storage has warnings".into(),
+            message: "Your cluster is operational but has non-critical issues.".into(),
             issues,
             pg_unavailable,
             mon_quorum_ok,
             osd_full,
-            starting,
+            starting: false,
             provisioning,
             storage_unrecoverable,
         },
@@ -1056,8 +1048,9 @@ mod tests {
             "POOL_TOTAL_SIZE_MIN_SIZE_REACHED",
         ];
         for code in codes {
-            let issue = translate_health_check(code, &warn(), 3, None)
-                .unwrap_or_else(|| panic!("{code} should be surfaced, not suppressed"));
+            let issue = translate_health_check(code, &warn(), 3, None);
+            assert!(issue.is_some(), "{code} should be surfaced, not suppressed");
+            let issue = issue.expect("checked above");
             assert!(!issue.title.trim().is_empty(), "{code} has a blank title");
             assert!(
                 !issue.description.trim().is_empty(),
@@ -1089,11 +1082,6 @@ pub(crate) fn dashboard_origin_from(services: &serde_json::Value) -> Option<Stri
     let parsed = crate::http::Url::parse(url).ok()?;
     let host = parsed.host_str()?;
     let port = parsed.port().unwrap_or(7000);
-    let host = if host.contains(':') && !host.starts_with('[') {
-        format!("[{host}]")
-    } else {
-        host.to_string()
-    };
     Some(format!("{}://{}:{}", parsed.scheme(), host, port))
 }
 
@@ -1177,7 +1165,7 @@ async fn proxy_via<H: Host>(
         out = out.header(name, value);
     }
     out.body(axum::body::Body::from(bytes))
-        .unwrap_or_else(|_| (StatusCode::BAD_GATEWAY, "dashboard unavailable").into_response())
+        .expect("a status and headers copied from a response the dashboard sent are valid")
 }
 
 #[cfg(test)]
@@ -1225,6 +1213,7 @@ mod dashboard_tests {
         assert!(dashboard_origin_from(&json!({"dashboard": ""})).is_none());
         assert!(dashboard_origin_from(&json!({"dashboard": "not a url"})).is_none());
         assert!(dashboard_origin_from(&json!({"prometheus": "http://x:9283/"})).is_none());
+        assert!(dashboard_origin_from(&json!({"dashboard": "data:text/plain,x"})).is_none());
     }
 
     use crate::host::fake::FakeHost;
@@ -1330,6 +1319,60 @@ mod dashboard_tests {
         )
         .await;
         assert_eq!(res.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn a_body_over_the_limit_is_refused_before_the_dashboard_is_asked() {
+        let port = crate::testkit::closed_port();
+        let big = axum::http::Request::builder()
+            .method("POST")
+            .uri("/ceph-dashboard/api/upload")
+            .body(Body::from(vec![0u8; 32 * 1024 * 1024 + 1]))
+            .unwrap();
+        let res = proxy_via(
+            &mgr_serving(port),
+            &crate::http::client_without_redirects(),
+            big,
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(body_of(res).await, "request body too large");
+    }
+
+    #[tokio::test]
+    async fn a_dashboard_that_hangs_up_mid_answer_is_unavailable() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("[::1]:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let (mut conn, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 4096];
+            let read = conn.read(&mut buf).await.unwrap();
+            assert!(read > 0);
+            conn.write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 100\r\n\r\npartial")
+                .await
+                .unwrap();
+        });
+        let res = proxy_via(
+            &mgr_serving(port),
+            &crate::http::client_without_redirects(),
+            login_request(),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::BAD_GATEWAY);
+        assert_eq!(body_of(res).await, "dashboard unavailable");
+    }
+
+    #[tokio::test]
+    async fn the_dashboard_route_proxies_through_this_machine() {
+        let res = crate::testkit::TestApi::with_kube_and_host(
+            crate::k8s::testing::unreachable(),
+            FakeHost::new(),
+        )
+        .with_peer_token()
+        .get("/ceph-dashboard/")
+        .await;
+        assert_eq!(res.status, StatusCode::SERVICE_UNAVAILABLE);
     }
 
     #[tokio::test]
@@ -1500,6 +1543,58 @@ mod machine_health_tests {
     }
 
     #[test]
+    fn pools_without_an_id_or_a_size_and_unnamed_pools_stay_out_of_the_loss() {
+        assert_eq!(
+            compute_pg_loss(&json!({}), &json!([{ "state": "down" }])),
+            None
+        );
+        let dump = json!({
+            "pools": [
+                { "pool_name": "no-id", "size": 1 },
+                { "pool": 2, "pool_name": "no-size" },
+                { "pool": 1, "pool_name": "", "size": 1 },
+                { "pool": 3, "pool_name": "data", "size": 1 },
+            ],
+            "osds": [],
+        });
+        assert_eq!(compute_pg_loss(&dump, &json!([])), None);
+        let pgs = json!([
+            { "pgid": "1.0", "state": "down" },
+            { "pgid": "3.0", "state": "down" },
+            { "pgid": "3.1", "state": "incomplete" },
+            { "pgid": "3.2", "state": "active+clean" },
+        ]);
+        assert_eq!(
+            compute_pg_loss(&dump, &pgs),
+            Some(PgLoss {
+                stuck: 3,
+                total: 4,
+                unrecoverable: true,
+                unrecoverable_pools: vec!["data".into()],
+                confirmed_lost: true,
+                confirmed_lost_pools: vec!["data".into()],
+            })
+        );
+    }
+
+    #[test]
+    fn a_loss_without_a_count_of_groups_speaks_of_some_files() {
+        let loss = PgLoss {
+            stuck: 0,
+            total: 0,
+            unrecoverable: true,
+            unrecoverable_pools: vec![],
+            confirmed_lost: false,
+            confirmed_lost_pools: vec![],
+        };
+        let (_, description) = unavailable_message(Some(&loss));
+        assert!(
+            description.starts_with("Some of your files are on a disk"),
+            "{description}"
+        );
+    }
+
+    #[test]
     fn a_filling_root_disk_warns_before_it_is_an_emergency() {
         let issue = root_disk_issue(Some(ROOT_DISK_WARN_PERCENT)).expect("should warn");
         assert_eq!(issue.level, HealthLevel::Warn);
@@ -1517,6 +1612,7 @@ mod machine_health_tests {
     mod against_the_machine {
         use super::*;
         use crate::host::fake::FakeHost;
+        use serde_json::json;
 
         const DF: &str = "Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/sda1 100 40 60 40% /\n";
 
@@ -1542,11 +1638,7 @@ mod machine_health_tests {
         async fn a_healthy_cluster_on_a_roomy_disk_reports_nothing_to_do() {
             let h = compute_cluster_health(&healthy(), None).await;
             assert_eq!(h.level, HealthLevel::Ok);
-            assert!(
-                h.issues.is_empty(),
-                "{:?}",
-                h.issues.iter().map(|i| &i.title).collect::<Vec<_>>()
-            );
+            assert_eq!(h.issues, vec![]);
             assert!(!h.mon_quorum_ok);
             assert!(!h.provisioning);
         }
@@ -1574,6 +1666,185 @@ mod machine_health_tests {
                 .issues
                 .iter()
                 .any(|i| i.description.contains("yolab-ceph-bootstrap.service")));
+        }
+
+        fn booted_secs_ago(secs: u64) {
+            let p = crate::storage::on_machine("/proc/uptime");
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, format!("{secs}.0 1.0\n")).unwrap();
+        }
+
+        fn reporting(health: serde_json::Value) -> FakeHost {
+            let host = healthy();
+            host.now_answers("ceph health detail", &health.to_string());
+            host
+        }
+
+        #[tokio::test]
+        async fn an_unreachable_monitor_is_an_error_unless_the_machine_just_booted() {
+            let silent = FakeHost::new();
+            let h = compute_cluster_health(&silent, None).await;
+            assert_eq!(
+                (h.level, h.title.as_str(), h.starting),
+                (HealthLevel::Error, "Storage cluster unreachable", false)
+            );
+            booted_secs_ago(60);
+            let h = compute_cluster_health(&silent, None).await;
+            assert_eq!(
+                (h.level, h.title.as_str(), h.starting),
+                (HealthLevel::Warn, "Storage is warming up", true)
+            );
+        }
+
+        #[tokio::test]
+        async fn a_warning_is_a_warning_and_a_garbled_uptime_is_not_a_fresh_boot() {
+            let p = crate::storage::on_machine("/proc/uptime");
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, "soon\n").unwrap();
+            let host = reporting(json!({
+                "status": "HEALTH_WARN",
+                "checks": { "OSD_NEARFULL": { "severity": "HEALTH_WARN" } },
+            }));
+            let h = compute_cluster_health(&host, None).await;
+            assert_eq!(
+                (h.level, h.title.as_str(), h.starting),
+                (HealthLevel::Warn, "Storage has warnings", false)
+            );
+        }
+
+        fn unavailable() -> FakeHost {
+            reporting(json!({
+                "status": "HEALTH_WARN",
+                "checks": {
+                    "OSD_NEARFULL": { "severity": "HEALTH_WARN" },
+                    "PG_AVAILABILITY": { "severity": "HEALTH_WARN" },
+                },
+            }))
+        }
+
+        #[tokio::test]
+        async fn unavailable_data_is_critical_errors_first_and_hidden_while_warming_up() {
+            let h = compute_cluster_health(&unavailable(), None).await;
+            assert_eq!(
+                (h.level.clone(), h.title.as_str(), h.pg_unavailable),
+                (
+                    HealthLevel::Error,
+                    "Storage cluster has critical errors",
+                    true
+                )
+            );
+            let levels: Vec<HealthLevel> = h.issues.iter().map(|i| i.level.clone()).collect();
+            assert_eq!(levels, [HealthLevel::Error, HealthLevel::Warn]);
+            assert!(
+                !h.provisioning,
+                "provisioning is not asked while data is unavailable"
+            );
+
+            booted_secs_ago(60);
+            let h = compute_cluster_health(&unavailable(), None).await;
+            assert_eq!(
+                (h.level, h.title.as_str(), h.issues, h.starting),
+                (HealthLevel::Warn, "Storage is warming up", vec![], true)
+            );
+        }
+
+        #[tokio::test]
+        async fn data_held_once_on_a_stopped_disk_is_unrecoverable_until_it_returns() {
+            let host = unavailable()
+                .ok(
+                    "ceph osd dump",
+                    &json!({
+                        "pools": [{ "pool": 1, "pool_name": "yolab-data", "size": 1 }],
+                        "osds": [{ "osd": 0, "in": 1 }],
+                    })
+                    .to_string(),
+                )
+                .ok(
+                    "ceph pg dump pgs_brief",
+                    &json!({ "pg_stats": [
+                        { "pgid": "1.0", "state": "down", "acting": [0] },
+                    ] })
+                    .to_string(),
+                );
+            let h = compute_cluster_health(&host, None).await;
+            assert!(h.storage_unrecoverable);
+        }
+
+        #[tokio::test]
+        async fn a_monitor_in_quorum_is_reported() {
+            let host = healthy().ok(
+                "ceph daemon mon",
+                r#"{"state":"leader","monmap":{"mons":[]}}"#,
+            );
+            assert!(compute_cluster_health(&host, None).await.mon_quorum_ok);
+        }
+
+        #[tokio::test]
+        async fn without_df_or_systemd_answers_the_machine_checks_say_they_cannot_tell() {
+            let host = healthy()
+                .unstartable("df")
+                .unstartable("systemctl list-units");
+            let h = compute_cluster_health(&host, None).await;
+            assert_eq!(
+                h.issues
+                    .iter()
+                    .map(|i| i.title.as_str())
+                    .collect::<Vec<_>>(),
+                [
+                    "Cannot tell how full this machine's system disk is",
+                    "Cannot tell whether anything on this machine failed"
+                ]
+            );
+            let host = healthy()
+                .fail("df", "df: /: no such file")
+                .fail("systemctl list-units", "no bus");
+            let h = compute_cluster_health(&host, None).await;
+            assert_eq!(h.issues.len(), 2);
+        }
+
+        async fn nodes(count: usize) -> kube::Client {
+            let (server, kube) = crate::k8s::testing::api_server().await;
+            crate::k8s::testing::serve(
+                &server,
+                "/api/v1/nodes",
+                200,
+                crate::k8s::testing::list(
+                    "Node",
+                    (0..count)
+                        .map(|i| json!({ "metadata": { "name": format!("node{i}") } }))
+                        .collect(),
+                ),
+            )
+            .await;
+            std::mem::forget(server);
+            kube
+        }
+
+        fn single_copy(hosts: usize, osds: u64) -> FakeHost {
+            let tree: Vec<serde_json::Value> = (0..hosts)
+                .map(|i| json!({ "type": "host", "name": format!("node{i}"), "children": [i] }))
+                .collect();
+            let host = reporting(json!({
+                "status": "HEALTH_WARN",
+                "checks": { "POOL_NO_REDUNDANCY": { "severity": "HEALTH_WARN" } },
+            }));
+            host.now_answers(
+                "ceph osd stat",
+                &json!({ "num_up_osds": osds, "num_in_osds": osds }).to_string(),
+            );
+            host.ok("ceph osd tree", &json!({ "nodes": tree }).to_string())
+        }
+
+        #[tokio::test]
+        async fn the_places_for_a_second_copy_are_machines_or_else_disks() {
+            let h = compute_cluster_health(&single_copy(2, 2), Some(&nodes(2).await)).await;
+            assert!(h.issues[0]
+                .description
+                .contains("this cluster has 2 places"));
+            let h = compute_cluster_health(&single_copy(1, 3), Some(&nodes(1).await)).await;
+            assert!(h.issues[0]
+                .description
+                .contains("this cluster has 3 places"));
         }
 
         #[tokio::test]
