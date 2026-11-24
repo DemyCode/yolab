@@ -15,6 +15,9 @@ use crate::store::{DiskIntent, Store};
 mod devices;
 use devices::*;
 
+#[cfg(test)]
+mod machine_tests;
+
 const INTERVAL_SECS: u64 = 60;
 
 const SYSTEM_OSD_DEV: &str = "/dev/mapper/pool-ceph";
@@ -64,6 +67,18 @@ static PROGRESS: std::sync::LazyLock<std::sync::Mutex<HashMap<String, DiskProgre
 
 static CREATING: std::sync::LazyLock<std::sync::Mutex<std::collections::HashSet<String>>> =
     std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashSet::new()));
+
+fn progress_table() -> std::sync::MutexGuard<'static, HashMap<String, DiskProgress>> {
+    PROGRESS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+fn creating() -> std::sync::MutexGuard<'static, std::collections::HashSet<String>> {
+    CREATING
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
 
 static STOPPED_FOR_REMOVAL: std::sync::LazyLock<std::sync::Mutex<std::collections::HashSet<i64>>> =
     std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashSet::new()));
@@ -184,16 +199,14 @@ impl Disk {
 }
 
 fn set_phase(disk_id: &str, phase: Phase, message: impl Into<String>) {
-    let Ok(mut p) = PROGRESS.lock() else { return };
+    let mut p = progress_table();
     let e = p.entry(disk_id.to_string()).or_default();
     e.phase = phase;
     e.message = message.into();
 }
 
 pub(crate) fn stuck_disks() -> Vec<(String, String)> {
-    let Ok(progress) = PROGRESS.lock() else {
-        return Vec::new();
-    };
+    let progress = progress_table();
     let mut out: Vec<(String, String)> = progress
         .iter()
         .filter(|(_, p)| {
@@ -206,10 +219,9 @@ pub(crate) fn stuck_disks() -> Vec<(String, String)> {
 }
 
 fn progress_of(disk_id: &str) -> DiskProgress {
-    PROGRESS
-        .lock()
-        .ok()
-        .and_then(|p| p.get(disk_id).cloned())
+    progress_table()
+        .get(disk_id)
+        .cloned()
         .unwrap_or_default()
 }
 
@@ -220,14 +232,14 @@ fn mark_progress(meta: &mut HashMap<String, Disk>) {
 }
 
 fn system_osd_present() -> bool {
-    Path::new(SYSTEM_OSD_DEV).exists()
+    crate::storage::on_machine(SYSTEM_OSD_DEV).exists()
 }
 
 fn lv_size_bytes(dev: &str) -> u64 {
-    std::fs::read_link(dev)
+    std::fs::read_link(crate::storage::on_machine(dev))
         .ok()
         .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
-        .and_then(|dm| std::fs::read_to_string(format!("/sys/block/{dm}/size")).ok())
+        .and_then(|dm| std::fs::read_to_string(crate::storage::on_machine(&format!("/sys/block/{dm}/size"))).ok())
         .and_then(|s| s.trim().parse::<u64>().ok())
         .map(|sectors| sectors * 512)
         .unwrap_or(0)
@@ -280,7 +292,7 @@ pub(crate) async fn system_osd_attempt<H: Host>(
 async fn lv_osd_attempt<H: Host>(host: &H, dev: &str) -> Result<crate::storage::wait::Attempt<()>> {
     use crate::storage::wait::Attempt;
 
-    if !Path::new(dev).exists() {
+    if !crate::storage::on_machine(dev).exists() {
         anyhow::bail!(
             "{dev} does not exist — this machine was not installed with the \
              YoLab disk layout, so it has nowhere to keep its image store"
@@ -492,7 +504,7 @@ async fn publish_local<H: Host + 'static>(host: &H, node: &str) -> Result<()> {
     if system_osd_present() {
         meta.insert(SYSTEM_OSD_ID.to_string(), system_osd_meta(&our_fsid));
     }
-    for id in attached_vdisks(Path::new("/")) {
+    for id in attached_vdisks(crate::storage::root()) {
         meta.insert(crate::vdisk::record::disk_id(id), vdisk_meta(id, &our_fsid));
     }
 
@@ -875,14 +887,13 @@ async fn remove_drained<H: Host>(
     } else {
         None
     };
-    let safe_after = after.is_some();
-    let loss = if safe_after {
+    let loss = if after.is_some() {
         crate::routers::ceph::assess_pg_loss_via(host).await
     } else {
         None
     };
 
-    match plan_purge(safe_before, safe_after, loss.as_ref()) {
+    let proof = match plan_purge(safe_before, after, loss.as_ref()) {
         PurgeVerdict::Wait if before.is_some() => {
             tracing::debug!(
                 "{osd} ({disk_id}): empty, waiting for every placement group to be \
@@ -912,16 +923,12 @@ async fn remove_drained<H: Host>(
             keep_running(host, osd_id).await;
             return;
         }
-        PurgeVerdict::RefuseDataAtRisk => {
+        PurgeVerdict::RefuseDataAtRisk { stuck, total } => {
             keep_running(host, osd_id).await;
-            if let Some(l) = loss.as_ref() {
-                tracing::warn!(
-                    "{osd} ({disk_id}): NOT purging — {} of {} placement groups are unreadable \
-                     and cannot be rebuilt, and this disk may hold the only copy",
-                    l.stuck,
-                    l.total
-                );
-            }
+            tracing::warn!(
+                "{osd} ({disk_id}): NOT purging — {stuck} of {total} placement groups are unreadable \
+                 and cannot be rebuilt, and this disk may hold the only copy"
+            );
             set_phase(
                 disk_id,
                 Phase::Removing,
@@ -930,10 +937,7 @@ async fn remove_drained<H: Host>(
             );
             return;
         }
-        PurgeVerdict::Purge => {}
-    }
-    let Some(proof) = after else {
-        return;
+        PurgeVerdict::Purge(proof) => proof,
     };
 
     match destructive::purge_safe(host, proof).await {
@@ -979,34 +983,28 @@ async fn reconcile_local_osds<H: Host + 'static>(
     disk_to_osd: Option<&HashMap<String, i64>>,
     map_is_complete: bool,
 ) {
-    match plan_tick(host.reachable().await, disk_to_osd.is_some()) {
-        TickPlan::Unreachable => {
-            tracing::debug!("reconcile_local_osds: ceph unreachable, skipping this tick");
-            for disk_id in meta.keys() {
-                set_phase(
-                    disk_id,
-                    Phase::Unknown,
-                    "Waiting for the storage cluster to answer.",
-                );
-            }
-            return;
-        }
-        TickPlan::UnknownOsdMap => {
-            tracing::warn!(
-                "reconcile_local_osds: the local OSD map is unknown this tick — making no changes"
+    if !host.reachable().await {
+        tracing::debug!("reconcile_local_osds: ceph unreachable, skipping this tick");
+        for disk_id in meta.keys() {
+            set_phase(
+                disk_id,
+                Phase::Unknown,
+                "Waiting for the storage cluster to answer.",
             );
-            for disk_id in meta.keys() {
-                set_phase(
-                    disk_id,
-                    Phase::Unknown,
-                    "Cannot read this machine's disk setup right now. Nothing will be changed until it can.",
-                );
-            }
-            return;
         }
-        TickPlan::Proceed => {}
+        return;
     }
     let Some(disk_to_osd) = disk_to_osd else {
+        tracing::warn!(
+            "reconcile_local_osds: the local OSD map is unknown this tick — making no changes"
+        );
+        for disk_id in meta.keys() {
+            set_phase(
+                disk_id,
+                Phase::Unknown,
+                "Cannot read this machine's disk setup right now. Nothing will be changed until it can.",
+            );
+        }
         return;
     };
     let forgotten = erase_forgotten_osds(host, node, meta, desired, disk_to_osd).await;
@@ -1028,14 +1026,9 @@ async fn reconcile_local_osds<H: Host + 'static>(
         if forgotten.contains(disk_id) {
             continue;
         }
-        let creating = CREATING
-            .lock()
-            .map(|c| c.contains(disk_id))
-            .unwrap_or(false);
-        let (attempts, since_last) = PROGRESS
-            .lock()
-            .ok()
-            .and_then(|p| p.get(disk_id).cloned())
+        let in_flight = creating().contains(disk_id);
+        let (attempts, since_last) = progress_table()
+            .get(disk_id)
             .map(|p| (p.attempts, p.last_attempt.map(|t| t.elapsed())))
             .unwrap_or((0, None));
         match plan_create(
@@ -1044,7 +1037,7 @@ async fn reconcile_local_osds<H: Host + 'static>(
             m,
             desired,
             disk_to_osd,
-            creating,
+            in_flight,
             attempts,
             since_last,
         ) {
@@ -1138,24 +1131,16 @@ fn any_unplugged_but_wanted(
 }
 
 fn spawn_create<H: Host + 'static>(host: H, disk_id: String, dev_path: String) {
-    {
-        let Ok(mut running) = CREATING.lock() else {
-            return;
-        };
-        if !running.insert(disk_id.clone()) {
-            return;
-        }
+    if !creating().insert(disk_id.clone()) {
+        return;
     }
 
     let attempt = {
-        let mut n = 1;
-        if let Ok(mut p) = PROGRESS.lock() {
-            let e = p.entry(disk_id.clone()).or_default();
-            e.attempts += 1;
-            e.last_attempt = Some(std::time::Instant::now());
-            n = e.attempts;
-        }
-        n
+        let mut p = progress_table();
+        let e = p.entry(disk_id.clone()).or_default();
+        e.attempts += 1;
+        e.last_attempt = Some(std::time::Instant::now());
+        e.attempts
     };
     set_phase(
         &disk_id,
@@ -1172,9 +1157,7 @@ fn spawn_create<H: Host + 'static>(host: H, disk_id: String, dev_path: String) {
 
     tokio::spawn(async move {
         create_osd(&host, &disk_id, &dev_path).await;
-        if let Ok(mut c) = CREATING.lock() {
-            c.remove(&disk_id);
-        }
+        creating().remove(&disk_id);
     });
 }
 
@@ -1284,7 +1267,8 @@ async fn create_osd<H: Host>(host: &H, disk_id: &str, dev_path: &str) {
                 if let Some((_, osd_id)) = local.iter().find(|(d, _)| canonical_device(d) == want) {
                     ensure_osd_unit_running(host, *osd_id).await;
                     set_phase(disk_id, Phase::Active, "");
-                    if let Ok(mut p) = PROGRESS.lock() {
+                    {
+                        let mut p = progress_table();
                         let e = p.entry(disk_id.to_string()).or_default();
                         e.attempts = 0;
                         e.last_attempt = None;
@@ -1322,9 +1306,10 @@ async fn create_osd<H: Host>(host: &H, disk_id: &str, dev_path: &str) {
                 tracing::warn!(
                     "{disk_id}: create failed after allocating osd.{id} — reclaiming it"
                 );
-                if let Ok(mut p) = PROGRESS.lock() {
-                    p.entry(disk_id.to_string()).or_default().orphan_osd_id = Some(id);
-                }
+                progress_table()
+                    .entry(disk_id.to_string())
+                    .or_default()
+                    .orphan_osd_id = Some(id);
                 reclaim_orphan(host, disk_id).await;
             }
             tracing::warn!("{disk_id}: ceph-volume create failed: {e}");
@@ -1338,11 +1323,7 @@ async fn create_osd<H: Host>(host: &H, disk_id: &str, dev_path: &str) {
 }
 
 async fn reclaim_orphan<H: Host>(host: &H, disk_id: &str) {
-    let Some(id) = PROGRESS
-        .lock()
-        .ok()
-        .and_then(|p| p.get(disk_id).and_then(|d| d.orphan_osd_id))
-    else {
+    let Some(id) = progress_table().get(disk_id).and_then(|d| d.orphan_osd_id) else {
         return;
     };
 
@@ -1354,9 +1335,10 @@ async fn reclaim_orphan<H: Host>(host: &H, disk_id: &str) {
         return;
     };
     if !existing.contains(&id) {
-        if let Ok(mut p) = PROGRESS.lock() {
-            p.entry(disk_id.to_string()).or_default().orphan_osd_id = None;
-        }
+        progress_table()
+            .entry(disk_id.to_string())
+            .or_default()
+            .orphan_osd_id = None;
         return;
     }
 
@@ -1377,9 +1359,10 @@ async fn reclaim_orphan<H: Host>(host: &H, disk_id: &str) {
     match destructive::purge_safe(host, proof).await {
         Ok(Some(_)) => {
             tracing::info!("{disk_id}: removed osd.{id}, left behind by a failed setup");
-            if let Ok(mut p) = PROGRESS.lock() {
-                p.entry(disk_id.to_string()).or_default().orphan_osd_id = None;
-            }
+            progress_table()
+                .entry(disk_id.to_string())
+                .or_default()
+                .orphan_osd_id = None;
         }
         Ok(None) => tracing::warn!(
             "{disk_id}: purge of osd.{id} reported success but it is still listed — keeping the record"
@@ -1398,11 +1381,11 @@ fn mark_known_osds(meta: &mut HashMap<String, Disk>, disk_to_osd: &HashMap<Strin
 }
 
 #[derive(Debug, PartialEq, Eq)]
-enum PurgeVerdict {
+enum PurgeVerdict<P> {
     Wait,
     Recheck,
-    RefuseDataAtRisk,
-    Purge,
+    RefuseDataAtRisk { stuck: u32, total: u32 },
+    Purge(P),
 }
 
 fn cluster_settled(status: &Value) -> bool {
@@ -1427,38 +1410,24 @@ fn cluster_settled(status: &Value) -> bool {
     total > 0 && clean == total
 }
 
-fn plan_purge(
+fn plan_purge<P>(
     safe_before_stop: bool,
-    safe_after_stop: bool,
+    safe_after_stop: Option<P>,
     loss: Option<&crate::routers::ceph::PgLoss>,
-) -> PurgeVerdict {
+) -> PurgeVerdict<P> {
     if !safe_before_stop {
         return PurgeVerdict::Wait;
     }
-    if !safe_after_stop {
+    let Some(proof) = safe_after_stop else {
         return PurgeVerdict::Recheck;
+    };
+    if let Some(l) = loss.filter(|l| l.unrecoverable && l.stuck > 0) {
+        return PurgeVerdict::RefuseDataAtRisk {
+            stuck: l.stuck,
+            total: l.total,
+        };
     }
-    if loss.is_some_and(|l| l.unrecoverable && l.stuck > 0) {
-        return PurgeVerdict::RefuseDataAtRisk;
-    }
-    PurgeVerdict::Purge
-}
-
-#[derive(Debug, PartialEq, Eq)]
-enum TickPlan {
-    Unreachable,
-    UnknownOsdMap,
-    Proceed,
-}
-
-fn plan_tick(reachable: bool, disk_to_osd_known: bool) -> TickPlan {
-    if !reachable {
-        TickPlan::Unreachable
-    } else if !disk_to_osd_known {
-        TickPlan::UnknownOsdMap
-    } else {
-        TickPlan::Proceed
-    }
+    PurgeVerdict::Purge(proof)
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -1504,7 +1473,7 @@ fn plan_create(
         return CreatePlan::Blocked(reason);
     }
     let Some(dev_path) = d.dev_path() else {
-        return CreatePlan::Skip;
+        return CreatePlan::Blocked("This disk disappeared before it could be set up.");
     };
     if !retry_due(attempts, since_last_attempt) {
         return CreatePlan::Waiting;
@@ -1535,54 +1504,76 @@ fn refuse_osd_creation(d: &Disk) -> Option<&'static str> {
         }
         Ownership::Foreign | Ownership::Blank => {}
     }
-    if d.dev_path().is_none() {
-        return Some("This disk disappeared before it could be set up.");
-    }
     if d.mounted {
         return Some("This machine is using this disk for something else.");
     }
     None
 }
 
-pub(crate) fn parse_lvm_list(raw: &str, our_fsid: &str) -> Result<Vec<(String, i64)>> {
+struct LvmDevice {
+    path: String,
+    osd: i64,
+    fsid: String,
+}
+
+fn lvm_devices(raw: &str) -> Result<Vec<LvmDevice>> {
     let mut out = Vec::new();
     for (id, volumes) in crate::ceph::model::parse_lvm_list(raw)? {
         for v in volumes {
-            let fsid = v.cluster_fsid().unwrap_or_default();
-            if !fsid.is_empty() && !our_fsid.is_empty() && fsid != our_fsid {
-                continue;
-            }
+            let fsid = v.cluster_fsid().unwrap_or_default().to_string();
             out.extend(
                 std::iter::once(v.lv_path)
                     .chain(v.devices)
                     .filter(|p| !p.is_empty())
-                    .map(|p| (p, id)),
+                    .map(|path| LvmDevice {
+                        path,
+                        osd: id,
+                        fsid: fsid.clone(),
+                    }),
             );
         }
     }
     Ok(out)
 }
 
-fn foreign_osd_ids(raw: &str, our_fsid: &str) -> Result<Vec<i64>> {
-    let all = parse_lvm_list(raw, "")?;
-    let ours = parse_lvm_list(raw, our_fsid)?;
-    let our_ids: Vec<i64> = ours.iter().map(|(_, id)| *id).collect();
-    Ok(all
-        .iter()
-        .map(|(_, id)| *id)
-        .filter(|id| !our_ids.contains(id))
-        .collect::<std::collections::BTreeSet<_>>()
+fn belongs_to(d: &LvmDevice, our_fsid: &str) -> bool {
+    d.fsid.is_empty() || our_fsid.is_empty() || d.fsid == our_fsid
+}
+
+pub(crate) fn parse_lvm_list(raw: &str, our_fsid: &str) -> Result<Vec<(String, i64)>> {
+    Ok(lvm_devices(raw)?
         .into_iter()
+        .filter(|d| belongs_to(d, our_fsid))
+        .map(|d| (d.path, d.osd))
         .collect())
 }
 
-fn foreign_osd_in_list(raw: &str, our_fsid: &str, dev_path: &str) -> Result<Option<i64>> {
-    let foreign = foreign_osd_ids(raw, our_fsid)?;
-    let want = canonical_device(dev_path);
-    Ok(parse_lvm_list(raw, "")?
+fn foreign_ids_in(all: &[LvmDevice], our_fsid: &str) -> Vec<i64> {
+    let ours: Vec<i64> = all
+        .iter()
+        .filter(|d| belongs_to(d, our_fsid))
+        .map(|d| d.osd)
+        .collect();
+    all.iter()
+        .map(|d| d.osd)
+        .filter(|id| !ours.contains(id))
+        .collect::<std::collections::BTreeSet<_>>()
         .into_iter()
-        .find(|(d, id)| foreign.contains(id) && canonical_device(d) == want)
-        .map(|(_, id)| id))
+        .collect()
+}
+
+fn foreign_osd_ids(raw: &str, our_fsid: &str) -> Result<Vec<i64>> {
+    Ok(foreign_ids_in(&lvm_devices(raw)?, our_fsid))
+}
+
+fn foreign_osd_in_list(raw: &str, our_fsid: &str, dev_path: &str) -> Result<Option<i64>> {
+    let all = lvm_devices(raw)?;
+    let foreign = foreign_ids_in(&all, our_fsid);
+    let want = canonical_device(dev_path);
+    Ok(all
+        .into_iter()
+        .find(|d| foreign.contains(&d.osd) && canonical_device(&d.path) == want)
+        .map(|d| d.osd))
 }
 
 fn is_running(state: Option<&str>) -> bool {
@@ -1645,7 +1636,7 @@ async fn erase_forgotten_osds<H: Host>(
         if disk_id == SYSTEM_OSD_ID || ids.contains(&osd_id) {
             continue;
         }
-        if CREATING.lock().map(|c| c.contains(disk_id)).unwrap_or(true) {
+        if creating().contains(disk_id) {
             continue;
         }
         forgotten.insert(disk_id.clone());
@@ -1700,7 +1691,7 @@ pub(crate) async fn ensure_osd_unit_running<H: Host>(host: &H, osd_id: i64) {
     if is_running(osd_unit_state(host, osd_id).await.as_deref()) {
         return;
     }
-    if !crate::vdisk::placement_allows_start(host, Path::new("/"), osd_id).await {
+    if !crate::vdisk::placement_allows_start(host, crate::storage::root(), osd_id).await {
         return;
     }
     tracing::warn!("osd.{osd_id}: {unit} is not running — starting it");
@@ -1950,15 +1941,11 @@ fn sync_store(
                 }
             }
         }
-        match store.mark_disks_seeded() {
-            Ok(true) => {
-                changed = true;
-                tracing::info!(
-                    "the desired-state store now holds every disk setting and can be used on its own"
-                );
-            }
-            Ok(false) => {}
-            Err(e) => tracing::warn!("could not record the store as seeded ({e})"),
+        if store.mark_disks_seeded() {
+            changed = true;
+            tracing::info!(
+                "the desired-state store now holds every disk setting and can be used on its own"
+            );
         }
     }
 
@@ -2032,7 +2019,6 @@ fn merge_desired(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
 
     use crate::host::fake::FakeHost;
     use crate::storage::wait::not_yet;
@@ -2415,7 +2401,7 @@ mod tests {
             "{:?}",
             host.calls()
         );
-        assert!(!CREATING.lock().unwrap().contains("disk-new-osd"));
+        assert!(!creating().contains("disk-new-osd"));
         assert!(
             host.ran("systemctl start yolab-ceph-osd@5.service"),
             "{:?}",
@@ -2526,11 +2512,12 @@ mod tests {
         buf
     }
 
-    fn fake_device(dir: &tempfile::TempDir, name: &str, bytes: &[u8]) -> String {
-        let path = dir.path().join(name);
-        let mut f = std::fs::File::create(&path).unwrap();
-        f.write_all(bytes).unwrap();
-        path.to_str().unwrap().to_string()
+    fn fake_device(name: &str, bytes: &[u8]) -> String {
+        let dev = format!("/dev/{name}");
+        let path = crate::storage::on_machine(&dev);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, bytes).unwrap();
+        dev
     }
 
     #[test]
@@ -2597,22 +2584,19 @@ mod tests {
 
     #[test]
     fn bluestore_fsid_reads_a_well_formed_label() {
-        let dir = tempfile::tempdir().unwrap();
-        let dev = fake_device(&dir, "sda", &bluestore_label(OURS));
+        let dev = fake_device("sda", &bluestore_label(OURS));
         assert_eq!(bluestore_fsid(&dev).unwrap().as_deref(), Some(OURS));
     }
 
     #[test]
     fn bluestore_fsid_returns_none_without_the_magic() {
-        let dir = tempfile::tempdir().unwrap();
-        let dev = fake_device(&dir, "sdb", &vec![0u8; 4096]);
+        let dev = fake_device("sdb", &vec![0u8; 4096]);
         assert_eq!(bluestore_fsid(&dev).unwrap(), None);
     }
 
     #[test]
     fn bluestore_fsid_fails_for_a_device_shorter_than_the_header() {
-        let dir = tempfile::tempdir().unwrap();
-        let dev = fake_device(&dir, "sdc", b"bluestore block device\n");
+        let dev = fake_device("sdc", b"bluestore block device\n");
         assert!(bluestore_fsid(&dev).is_err());
     }
 
@@ -2634,28 +2618,25 @@ mod tests {
 
     #[test]
     fn bluestore_fsid_returns_none_when_the_length_prefix_is_not_36() {
-        let dir = tempfile::tempdir().unwrap();
         let mut buf = bluestore_label(OURS);
         let vs = 512 + CEPH_FSID_KEY.len();
         buf[vs..vs + 4].copy_from_slice(&16u32.to_le_bytes());
-        let dev = fake_device(&dir, "sdd", &buf);
+        let dev = fake_device("sdd", &buf);
         assert_eq!(bluestore_fsid(&dev).unwrap(), None);
     }
 
     #[test]
     fn bluestore_fsid_never_returns_a_non_uuid_value() {
-        let dir = tempfile::tempdir().unwrap();
         let mut buf = bluestore_label(OURS);
         let vs = 512 + CEPH_FSID_KEY.len();
         buf[vs + 4..vs + 40].fill(b' ');
-        let dev = fake_device(&dir, "sde", &buf);
+        let dev = fake_device("sde", &buf);
         assert_eq!(bluestore_fsid(&dev).unwrap(), None);
     }
 
     #[test]
     fn a_label_matching_our_cluster_is_ours() {
-        let dir = tempfile::tempdir().unwrap();
-        let dev = fake_device(&dir, "sda", &bluestore_label(OURS));
+        let dev = fake_device("sda", &bluestore_label(OURS));
         assert_eq!(
             disk_meta(&dev, OURS, DiskFlags::default()).ownership,
             Ownership::Ours
@@ -2664,8 +2645,7 @@ mod tests {
 
     #[test]
     fn a_label_from_another_cluster_is_foreign() {
-        let dir = tempfile::tempdir().unwrap();
-        let dev = fake_device(&dir, "sda", &bluestore_label(THEIRS));
+        let dev = fake_device("sda", &bluestore_label(THEIRS));
         assert_eq!(
             disk_meta(&dev, OURS, DiskFlags::default()).ownership,
             Ownership::Foreign
@@ -2674,8 +2654,7 @@ mod tests {
 
     #[test]
     fn a_label_we_cannot_attribute_is_unknown_and_still_refuses() {
-        let dir = tempfile::tempdir().unwrap();
-        let dev = fake_device(&dir, "sda", &bluestore_label(OURS));
+        let dev = fake_device("sda", &bluestore_label(OURS));
         let d = disk_meta(&dev, "", DiskFlags::default());
         assert_eq!(d.ownership, Ownership::Unknown);
         assert!(refuse_osd_creation(&d).is_some());
@@ -2683,8 +2662,7 @@ mod tests {
 
     #[test]
     fn an_unlabelled_disk_is_blank() {
-        let dir = tempfile::tempdir().unwrap();
-        let dev = fake_device(&dir, "sda", &vec![0u8; 4096]);
+        let dev = fake_device("sda", &vec![0u8; 4096]);
         assert_eq!(
             disk_meta(&dev, OURS, DiskFlags::default()).ownership,
             Ownership::Blank
@@ -3772,26 +3750,6 @@ mod tests {
         assert!(!m.contains("until this finishes"), "{m}");
     }
 
-    #[test]
-    fn an_unreachable_cluster_does_nothing() {
-        assert_eq!(plan_tick(false, true), TickPlan::Unreachable);
-    }
-
-    #[test]
-    fn an_unreadable_osd_map_does_nothing() {
-        assert_eq!(plan_tick(true, false), TickPlan::UnknownOsdMap);
-    }
-
-    #[test]
-    fn an_unreachable_cluster_is_reported_before_an_unreadable_map() {
-        assert_eq!(plan_tick(false, false), TickPlan::Unreachable);
-    }
-
-    #[test]
-    fn a_reachable_cluster_with_a_readable_map_proceeds() {
-        assert_eq!(plan_tick(true, true), TickPlan::Proceed);
-    }
-
     fn osds(pairs: &[(&str, i64)]) -> HashMap<String, i64> {
         pairs.iter().map(|(k, v)| (k.to_string(), *v)).collect()
     }
@@ -4008,10 +3966,10 @@ mod tests {
             0,
             None,
         );
-        let CreatePlan::Blocked(reason) = plan else {
-            panic!("expected a reason, got {plan:?}");
-        };
-        assert!(reason.contains("disappeared"), "{reason}");
+        assert_eq!(
+            plan,
+            CreatePlan::Blocked("This disk disappeared before it could be set up.")
+        );
     }
 
     #[test]
@@ -4127,53 +4085,56 @@ mod tests {
 
     #[test]
     fn a_drain_still_in_progress_waits() {
-        assert_eq!(plan_purge(false, false, None), PurgeVerdict::Wait);
+        assert_eq!(plan_purge(false, None::<()>, None), PurgeVerdict::Wait);
     }
 
     #[test]
     fn an_unsafe_osd_waits_whatever_else_is_true() {
         assert_eq!(
-            plan_purge(false, true, Some(&loss(0, 100, false))),
+            plan_purge(false, Some(()), Some(&loss(0, 100, false))),
             PurgeVerdict::Wait
         );
     }
 
     #[test]
     fn an_osd_that_stops_being_safe_after_the_daemon_stops_is_left_alone() {
-        assert_eq!(plan_purge(true, false, None), PurgeVerdict::Recheck);
+        assert_eq!(plan_purge(true, None::<()>, None), PurgeVerdict::Recheck);
     }
 
     #[test]
     fn a_cluster_with_unrecoverable_stuck_pgs_refuses_to_purge() {
         assert_eq!(
-            plan_purge(true, true, Some(&loss(63, 200, true))),
-            PurgeVerdict::RefuseDataAtRisk
+            plan_purge(true, Some(()), Some(&loss(63, 200, true))),
+            PurgeVerdict::RefuseDataAtRisk {
+                stuck: 63,
+                total: 200
+            }
         );
     }
 
     #[test]
     fn stuck_pgs_that_can_still_be_rebuilt_do_not_block_a_purge() {
         assert_eq!(
-            plan_purge(true, true, Some(&loss(63, 200, false))),
-            PurgeVerdict::Purge
+            plan_purge(true, Some(()), Some(&loss(63, 200, false))),
+            PurgeVerdict::Purge(())
         );
     }
 
     #[test]
     fn a_single_copy_pool_with_nothing_stuck_does_not_block_a_purge() {
         assert_eq!(
-            plan_purge(true, true, Some(&loss(0, 200, true))),
-            PurgeVerdict::Purge
+            plan_purge(true, Some(()), Some(&loss(0, 200, true))),
+            PurgeVerdict::Purge(())
         );
     }
 
     #[test]
     fn a_healthy_cluster_purges() {
         assert_eq!(
-            plan_purge(true, true, Some(&loss(0, 200, false))),
-            PurgeVerdict::Purge
+            plan_purge(true, Some(()), Some(&loss(0, 200, false))),
+            PurgeVerdict::Purge(())
         );
-        assert_eq!(plan_purge(true, true, None), PurgeVerdict::Purge);
+        assert_eq!(plan_purge(true, Some(()), None), PurgeVerdict::Purge(()));
     }
 
     #[test]
@@ -4188,10 +4149,10 @@ mod tests {
                     Some(loss(5, 10, true)),
                 ] {
                     let at_risk = l.as_ref().is_some_and(|x| x.unrecoverable && x.stuck > 0);
-                    let verdict = plan_purge(before, after, l.as_ref());
+                    let verdict = plan_purge(before, after.then_some(()), l.as_ref());
                     let should_purge = before && after && !at_risk;
                     assert_eq!(
-                        verdict == PurgeVerdict::Purge,
+                        verdict == PurgeVerdict::Purge(()),
                         should_purge,
                         "before={before} after={after} at_risk={at_risk} gave {verdict:?}"
                     );
@@ -4253,8 +4214,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_unreachable_cluster_is_waited_for() {
-        let dir = tempfile::tempdir().unwrap();
-        let dev = fake_device(&dir, "pool-ceph", &vec![0u8; 4096]);
+        let dev = fake_device("pool-ceph", &vec![0u8; 4096]);
         let host = FakeHost::new().fail("ceph fsid", "error connecting to the cluster");
         let why = not_yet(lv_osd_attempt(&host, &dev).await.unwrap());
         assert!(why.contains("cluster's id"), "{why}");
@@ -4263,8 +4223,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_existing_system_osd_is_started_and_nothing_is_created() {
-        let dir = tempfile::tempdir().unwrap();
-        let dev = fake_device(&dir, "pool-ceph", &vec![0u8; 4096]);
+        let dev = fake_device("pool-ceph", &vec![0u8; 4096]);
         let host = our_fsid_host()
             .ok("ceph-volume lvm list", &listed_on(&dev, 0))
             .ok("ceph osd ls", "[0, 1]")
@@ -4279,8 +4238,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_system_osd_the_cluster_forgot_is_erased_and_made_again() {
-        let dir = tempfile::tempdir().unwrap();
-        let dev = fake_device(&dir, "pool-ceph", &vec![0u8; 4096]);
+        let dev = fake_device("pool-ceph", &vec![0u8; 4096]);
         let host = our_fsid_host()
             .ok("ceph-volume lvm list", &listed_on(&dev, 3))
             .ok("ceph osd ls", "[]")
@@ -4305,8 +4263,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_system_osd_is_never_erased_when_the_cluster_cannot_say() {
-        let dir = tempfile::tempdir().unwrap();
-        let dev = fake_device(&dir, "pool-ceph", &vec![0u8; 4096]);
+        let dev = fake_device("pool-ceph", &vec![0u8; 4096]);
         let host = our_fsid_host()
             .ok("ceph-volume lvm list", &listed_on(&dev, 3))
             .fail("ceph osd ls", "timed out");
@@ -4319,8 +4276,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_blank_system_lv_becomes_an_osd() {
-        let dir = tempfile::tempdir().unwrap();
-        let dev = fake_device(&dir, "pool-ceph", &vec![0u8; 4096]);
+        let dev = fake_device("pool-ceph", &vec![0u8; 4096]);
         let host = our_fsid_host()
             .ok("ceph osd ls", "[]")
             .ok("ceph-volume lvm list", "{}")
@@ -4338,8 +4294,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_failed_create_is_waited_on_and_says_so() {
-        let dir = tempfile::tempdir().unwrap();
-        let dev = fake_device(&dir, "pool-ceph", &vec![0u8; 4096]);
+        let dev = fake_device("pool-ceph", &vec![0u8; 4096]);
         let host = our_fsid_host()
             .ok("ceph osd ls", "[]")
             .ok("ceph-volume lvm list", "{}")
@@ -4356,8 +4311,7 @@ mod tests {
 
     #[tokio::test]
     async fn our_own_label_without_an_osd_is_never_wiped() {
-        let dir = tempfile::tempdir().unwrap();
-        let dev = fake_device(&dir, "pool-ceph", &bluestore_label(OURS));
+        let dev = fake_device("pool-ceph", &bluestore_label(OURS));
         let host = our_fsid_host().ok("ceph-volume lvm list", "{}");
 
         let why = not_yet(lv_osd_attempt(&host, &dev).await.unwrap());

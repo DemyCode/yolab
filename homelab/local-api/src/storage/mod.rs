@@ -26,8 +26,23 @@ use std::time::Duration;
 
 use anyhow::Result;
 
+#[cfg(not(test))]
 pub(crate) fn root() -> &'static Path {
     Path::new("/")
+}
+
+#[cfg(test)]
+pub(crate) fn root() -> &'static Path {
+    thread_local! {
+        static ROOT: &'static Path = Box::leak(
+            std::path::PathBuf::from(crate::testkit::thread_dir("root")).into_boxed_path(),
+        );
+    }
+    ROOT.with(|root| *root)
+}
+
+pub(crate) fn on_machine(path: &str) -> std::path::PathBuf {
+    root().join(path.trim_start_matches('/'))
 }
 
 #[derive(Clone, Debug)]

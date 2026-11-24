@@ -77,10 +77,7 @@ fn sync_policy(store: &mut Store, mirror: Option<Option<&StoragePolicy>>) -> Syn
                 }
             }
         }
-        match store.mark_policy_seeded() {
-            Ok(written) => changed |= written,
-            Err(e) => tracing::warn!("could not record the storage policy as seeded ({e})"),
-        }
+        changed |= store.mark_policy_seeded();
     }
     let stored = store.storage_policy().unwrap_or_else(|e| {
         tracing::error!("the stored storage policy is unreadable ({e})");
@@ -650,7 +647,7 @@ mod tests {
     #[test]
     fn taking_the_cluster_policy_in_does_not_undo_one_chosen_since() {
         let mut store = Store::new("node1");
-        store.mark_policy_seeded().unwrap();
+        store.mark_policy_seeded();
         store.set_storage_policy(&policy(3, "host")).unwrap();
 
         let synced = sync_policy(&mut store, Some(Some(&policy(2, "osd"))));

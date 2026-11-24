@@ -75,7 +75,7 @@ pub(super) fn read_bluestore_header(device: &str) -> std::io::Result<[u8; 4096]>
         format!("/dev/{device}")
     };
     let mut buf = [0u8; 4096];
-    let mut f = std::fs::File::open(path)?;
+    let mut f = std::fs::File::open(crate::storage::on_machine(&path))?;
     f.read_exact(&mut buf)?;
     Ok(buf)
 }
@@ -105,7 +105,7 @@ pub(super) fn fsid_in_label(buf: &[u8; 4096]) -> Option<String> {
     if vs + 40 > buf.len() {
         return None;
     }
-    if u32::from_le_bytes(buf[vs..vs + 4].try_into().ok()?) != 36 {
+    if u32::from_le_bytes([buf[vs], buf[vs + 1], buf[vs + 2], buf[vs + 3]]) != 36 {
         return None;
     }
     let fsid = std::str::from_utf8(&buf[vs + 4..vs + 40]).ok()?;
@@ -129,9 +129,9 @@ pub(super) fn disk_id(device: &str) -> String {
 }
 
 pub(super) fn stable_id_for(device: &str) -> Option<String> {
-    let target = std::fs::canonicalize(format!("/dev/{device}")).ok()?;
+    let target = std::fs::canonicalize(crate::storage::on_machine(&format!("/dev/{device}"))).ok()?;
     let mut best: Option<(usize, String)> = None;
-    for entry in std::fs::read_dir(BY_ID_DIR).ok()?.flatten() {
+    for entry in std::fs::read_dir(crate::storage::on_machine(BY_ID_DIR)).ok()?.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
         if name.ends_with("-part") || name.contains("-part") {
             continue;
@@ -165,10 +165,10 @@ pub(super) fn disk_id_from(device: &str, stable: Option<&str>) -> String {
 }
 
 pub(super) fn disk_meta(device: &str, our_fsid: &str, flags: DiskFlags) -> Disk {
-    let model = std::fs::read_to_string(format!("/sys/block/{device}/device/model"))
+    let model = std::fs::read_to_string(crate::storage::on_machine(&format!("/sys/block/{device}/device/model")))
         .map(|s| s.trim().to_string())
         .unwrap_or_default();
-    let size_bytes: u64 = std::fs::read_to_string(format!("/sys/block/{device}/size"))
+    let size_bytes: u64 = std::fs::read_to_string(crate::storage::on_machine(&format!("/sys/block/{device}/size")))
         .ok()
         .and_then(|s| s.trim().parse::<u64>().ok())
         .unwrap_or(0)

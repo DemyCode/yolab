@@ -265,12 +265,21 @@ impl Store {
         Ok(out)
     }
 
-    fn flag(&mut self, key: &str) -> Result<bool, StoreError> {
+    fn flag(&mut self, key: &str) -> bool {
         if self.flagged(key) {
-            return Ok(false);
+            return false;
         }
-        self.doc.put(ROOT, key, "1")?;
-        Ok(true)
+        self.doc
+            .put(ROOT, key, "1")
+            .expect("the root map takes any value under a non-empty key");
+        true
+    }
+
+    #[cfg(test)]
+    pub(crate) fn corrupt_disk_claim(&mut self, record_key: &str) {
+        self.doc
+            .put(ROOT, format!("{DISK_CLAIM_PREFIX}{record_key}"), "not json")
+            .expect("the root map takes any value under a non-empty key");
     }
 
     fn flagged(&self, key: &str) -> bool {
@@ -322,7 +331,7 @@ impl Store {
             .collect())
     }
 
-    pub fn mark_disks_seeded(&mut self) -> Result<bool, StoreError> {
+    pub fn mark_disks_seeded(&mut self) -> bool {
         self.flag(DISKS_SEEDED_KEY)
     }
 
@@ -344,7 +353,7 @@ impl Store {
             .map(|e| e.value))
     }
 
-    pub fn mark_policy_seeded(&mut self) -> Result<bool, StoreError> {
+    pub fn mark_policy_seeded(&mut self) -> bool {
         self.flag(POLICY_SEEDED_KEY)
     }
 
@@ -872,7 +881,7 @@ mod tests {
             .set_disk_intent("node1", "wwn-a", DiskIntent::On)
             .unwrap();
         store.set_storage_policy(&policy(2)).unwrap();
-        store.mark_disks_seeded().unwrap();
+        store.mark_disks_seeded();
 
         assert_eq!(store.disk_claims().unwrap().len(), 1);
         assert!(store.machines().unwrap().is_empty());
