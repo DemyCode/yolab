@@ -224,15 +224,13 @@ pub async fn run<H: Host>(host: &H, node: &str, policy: &DashboardPolicy) -> Res
         return Ok(());
     };
 
-    std::fs::write(&policy.password_file, &pw)?;
-    #[cfg(unix)]
-    {
+    std::fs::write(&policy.password_file, &pw).and_then(|()| {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(
             &policy.password_file,
             std::fs::Permissions::from_mode(0o600),
-        )?;
-    }
+        )
+    })?;
 
     let user_exists = match host.ceph(&["dashboard", "ac-user-show", "admin"]).await {
         Ok(_) => true,
@@ -600,5 +598,368 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         run(&host, "yolab-n1", &local_policy(&dir)).await.unwrap();
         assert!(!host.ran("ac-user-set-password"));
+    }
+
+    fn up() -> FakeHost {
+        FakeHost::new()
+            .ok("ceph -s", "")
+            .ok("ceph mgr module ls", r#"{"enabled_modules":["dashboard"]}"#)
+    }
+
+    fn configured(active: &str) -> FakeHost {
+        up().ok("ceph config set", "").ok(
+            "ceph mgr stat",
+            &serde_json::json!({ "active_name": active }).to_string(),
+        )
+    }
+
+    fn served(url: &str) -> String {
+        serde_json::json!({ "dashboard": url }).to_string()
+    }
+
+    fn mgr_services_calls(host: &FakeHost) -> usize {
+        host.calls()
+            .iter()
+            .filter(|c| c.as_str() == "ceph mgr services")
+            .count()
+    }
+
+    #[tokio::test]
+    async fn a_module_list_that_cannot_be_read_is_an_error() {
+        let host = FakeHost::new()
+            .ok("ceph -s", "")
+            .fail("ceph mgr module ls", "error connecting to the cluster");
+        assert!(run(&host, "yolab-n1", &policy()).await.is_err());
+        assert!(!host.ran("config set"));
+    }
+
+    #[tokio::test]
+    async fn a_module_that_will_not_enable_is_retried_on_a_later_run() {
+        let host = FakeHost::new()
+            .ok("ceph -s", "")
+            .ok("ceph mgr module ls", r#"{"enabled_modules":["iostat"]}"#)
+            .fail(
+                "ceph mgr module enable dashboard",
+                "error connecting to the cluster",
+            );
+        run(&host, "yolab-n1", &policy()).await.unwrap();
+        assert!(host.ran("ceph mgr module enable dashboard"));
+        assert!(!host.ran("config set"));
+    }
+
+    #[tokio::test]
+    async fn a_missing_module_is_enabled_and_then_configured() {
+        let host = FakeHost::new()
+            .ok("ceph -s", "")
+            .ok("ceph mgr module ls", r#"{"enabled_modules":[]}"#)
+            .ok("ceph mgr module enable dashboard", "")
+            .ok("ceph config set", "")
+            .ok("ceph mgr stat", r#"{"active_name":"yolab-n2"}"#)
+            .ok("ceph mgr services", &served(""))
+            .ok(
+                "ceph config-key get yolab/dashboard/admin-password",
+                "clusterpw123",
+            )
+            .ok("ceph dashboard ac-user-show admin", "");
+        let dir = tempfile::tempdir().unwrap();
+        run(&host, "yolab-n1", &local_policy(&dir)).await.unwrap();
+        assert!(host.ran("ceph mgr module enable dashboard"));
+        assert!(host.ran("ceph config set mgr mgr/dashboard/ssl false"));
+    }
+
+    #[tokio::test]
+    async fn a_setting_that_cannot_be_written_is_an_error() {
+        let host = up().fail("ceph config set", "error connecting to the cluster");
+        let err = run(&host, "yolab-n1", &policy()).await.unwrap_err();
+        assert!(
+            format!("{err:#}").contains("config set mgr mgr/dashboard/ssl"),
+            "{err:#}"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unknown_active_mgr_is_an_error() {
+        let host = up()
+            .ok("ceph config set", "")
+            .fail("ceph mgr stat", "error connecting to the cluster");
+        assert!(run(&host, "yolab-n1", &policy()).await.is_err());
+        assert!(!host.ran("mgr services"));
+    }
+
+    #[tokio::test]
+    async fn an_unknown_dashboard_address_is_an_error() {
+        let host =
+            configured("yolab-n1").fail("ceph mgr services", "error connecting to the cluster");
+        let err = run(&host, "yolab-n1", &policy()).await.unwrap_err();
+        assert!(
+            format!("{err:#}").contains("ask the mgr where it serves"),
+            "{err:#}"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_active_mgr_serving_the_right_place_is_not_restarted() {
+        let (_server, url) = dashboard_answering(201).await;
+        let port: u16 = url
+            .trim_start_matches("http://[::1]:")
+            .trim_end_matches("/ceph-dashboard/")
+            .parse()
+            .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let mut p = local_policy(&dir);
+        p.port = port;
+        let host = configured("yolab-n1")
+            .ok("ceph mgr services", &served(&url))
+            .ok(
+                "ceph config-key get yolab/dashboard/admin-password",
+                "clusterpw123",
+            )
+            .ok("ceph dashboard ac-user-show admin", "");
+        run(&host, "yolab-n1", &p).await.unwrap();
+        assert!(!host.ran("mgr module disable"));
+    }
+
+    #[tokio::test]
+    async fn a_dashboard_on_the_wrong_prefix_is_restarted_until_it_serves_the_right_one() {
+        let (_server, url) = dashboard_answering(201).await;
+        let wrong = url.trim_end_matches("ceph-dashboard/").to_string();
+        let host = configured("yolab-n1")
+            .ok("ceph mgr services", &served(&wrong))
+            .ok("ceph mgr services", &served(&url))
+            .ok("ceph mgr module disable dashboard", "")
+            .ok("ceph mgr module enable dashboard", "")
+            .ok(
+                "ceph config-key get yolab/dashboard/admin-password",
+                "clusterpw123",
+            )
+            .ok("ceph dashboard ac-user-show admin", "");
+        let dir = tempfile::tempdir().unwrap();
+        run(&host, "yolab-n1", &local_policy(&dir)).await.unwrap();
+        assert!(host.ran("ceph mgr module disable dashboard"));
+        assert!(host.ran("ceph mgr module enable dashboard"));
+        assert_eq!(mgr_services_calls(&host), 3);
+        assert!(!host.ran("ac-user-set-password"));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_dashboard_that_never_comes_back_after_a_restart_is_waited_for_then_reported() {
+        let host = configured("yolab-n1")
+            .ok("ceph mgr services", &served("http://[::1]:7000/"))
+            .fail("ceph mgr services", "error connecting to the cluster")
+            .ok("ceph mgr module disable dashboard", "")
+            .ok("ceph mgr module enable dashboard", "")
+            .ok(
+                "ceph config-key get yolab/dashboard/admin-password",
+                "clusterpw123",
+            )
+            .ok("ceph dashboard ac-user-show admin", "");
+        let dir = tempfile::tempdir().unwrap();
+        assert!(run(&host, "yolab-n1", &local_policy(&dir)).await.is_err());
+        assert_eq!(mgr_services_calls(&host), 32);
+    }
+
+    #[tokio::test]
+    async fn a_dashboard_module_that_will_not_stop_keeps_its_old_prefix() {
+        let url = format!("http://[::1]:{}/", crate::testkit::closed_port());
+        let host = configured("yolab-n1")
+            .ok("ceph mgr services", &served(&url))
+            .fail(
+                "ceph mgr module disable dashboard",
+                "error connecting to the cluster",
+            )
+            .ok(
+                "ceph config-key get yolab/dashboard/admin-password",
+                "clusterpw123",
+            )
+            .ok("ceph dashboard ac-user-show admin", "");
+        let dir = tempfile::tempdir().unwrap();
+        run(&host, "yolab-n1", &local_policy(&dir)).await.unwrap();
+        assert!(!host.ran("ceph mgr module enable"));
+        assert!(!host.ran("ac-user-set-password"));
+    }
+
+    #[tokio::test]
+    async fn a_dashboard_module_that_will_not_start_again_keeps_its_old_prefix() {
+        let url = format!("http://[::1]:{}/", crate::testkit::closed_port());
+        let host = configured("yolab-n1")
+            .ok("ceph mgr services", &served(&url))
+            .ok("ceph mgr module disable dashboard", "")
+            .fail(
+                "ceph mgr module enable dashboard",
+                "error connecting to the cluster",
+            )
+            .ok(
+                "ceph config-key get yolab/dashboard/admin-password",
+                "clusterpw123",
+            )
+            .ok("ceph dashboard ac-user-show admin", "");
+        let dir = tempfile::tempdir().unwrap();
+        run(&host, "yolab-n1", &local_policy(&dir)).await.unwrap();
+        assert_eq!(mgr_services_calls(&host), 2);
+    }
+
+    #[tokio::test]
+    async fn a_password_folder_that_cannot_be_made_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("a-file");
+        std::fs::write(&file, "").unwrap();
+        let mut p = policy();
+        p.password_file = file.join("sub").join("pw").to_string_lossy().into_owned();
+        let host = configured("yolab-n2").ok("ceph mgr services", &served(""));
+        assert!(run(&host, "yolab-n1", &p).await.is_err());
+        assert!(!host.ran("config-key get"));
+    }
+
+    #[tokio::test]
+    async fn a_password_file_with_no_parent_that_cannot_be_written_is_an_error() {
+        let mut p = policy();
+        p.password_file = "/".into();
+        let host = configured("yolab-n2")
+            .ok("ceph mgr services", &served(""))
+            .ok(
+                "ceph config-key get yolab/dashboard/admin-password",
+                "clusterpw123",
+            );
+        assert!(run(&host, "yolab-n1", &p).await.is_err());
+        assert!(!host.ran("ac-user-show"));
+    }
+
+    fn no_cluster_password() -> FakeHost {
+        configured("yolab-n2")
+            .ok("ceph mgr services", &served(""))
+            .fail(
+                "ceph config-key get yolab/dashboard/admin-password",
+                "Error ENOENT: key does not exist",
+            )
+    }
+
+    #[tokio::test]
+    async fn this_nodes_password_is_promoted_to_the_cluster_wide_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = local_policy(&dir);
+        std::fs::write(&p.password_file, "localpw\n").unwrap();
+        let host = no_cluster_password()
+            .ok(
+                "ceph config-key get yolab/dashboard/admin-password",
+                "localpw",
+            )
+            .ok("ceph config-key set yolab/dashboard/admin-password", "")
+            .ok("ceph dashboard ac-user-show admin", "");
+        run(&host, "yolab-n1", &p).await.unwrap();
+        assert!(host.ran("ceph config-key set yolab/dashboard/admin-password localpw"));
+        assert_eq!(
+            std::fs::read_to_string(&p.password_file).unwrap(),
+            "localpw"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_local_password_file_that_cannot_be_read_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut p = policy();
+        p.password_file = dir.path().to_string_lossy().into_owned();
+        let host = no_cluster_password();
+        let err = run(&host, "yolab-n1", &p).await.unwrap_err();
+        assert!(format!("{err:#}").contains("dashboard: read"), "{err:#}");
+        assert!(!host.ran("config-key set"));
+    }
+
+    #[tokio::test]
+    async fn a_password_the_cluster_will_not_store_is_retried_on_a_later_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = local_policy(&dir);
+        let host = no_cluster_password().fail(
+            "ceph config-key set yolab/dashboard/admin-password",
+            "error connecting to the cluster",
+        );
+        run(&host, "yolab-n1", &p).await.unwrap();
+        assert!(!std::path::Path::new(&p.password_file).exists());
+        assert!(!host.ran("ac-user-show"));
+    }
+
+    #[tokio::test]
+    async fn a_stored_password_that_cannot_be_read_back_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = no_cluster_password()
+            .fail(
+                "ceph config-key get yolab/dashboard/admin-password",
+                "error connecting to the cluster",
+            )
+            .ok("ceph config-key set yolab/dashboard/admin-password", "");
+        assert!(run(&host, "yolab-n1", &local_policy(&dir)).await.is_err());
+        assert!(!host.ran("ac-user-show"));
+    }
+
+    #[tokio::test]
+    async fn a_stored_password_that_reads_back_as_absent_is_retried_on_a_later_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = local_policy(&dir);
+        let host =
+            no_cluster_password().ok("ceph config-key set yolab/dashboard/admin-password", "");
+        run(&host, "yolab-n1", &p).await.unwrap();
+        assert!(host.ran("ceph config-key set yolab/dashboard/admin-password"));
+        assert!(!std::path::Path::new(&p.password_file).exists());
+    }
+
+    fn with_password() -> FakeHost {
+        configured("yolab-n2").ok(
+            "ceph config-key get yolab/dashboard/admin-password",
+            "clusterpw123",
+        )
+    }
+
+    #[tokio::test]
+    async fn an_admin_user_that_cannot_be_looked_up_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = with_password().ok("ceph mgr services", &served("")).fail(
+            "ceph dashboard ac-user-show admin",
+            "error connecting to the cluster",
+        );
+        assert!(run(&host, "yolab-n1", &local_policy(&dir)).await.is_err());
+        assert!(!host.ran("ac-user-create"));
+    }
+
+    #[tokio::test]
+    async fn an_admin_user_that_cannot_be_created_is_retried_on_a_later_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = with_password()
+            .ok("ceph mgr services", &served(""))
+            .fail(
+                "ceph dashboard ac-user-show admin",
+                "Error ENOENT: User 'admin' does not exist",
+            )
+            .fail(
+                "ceph dashboard ac-user-create",
+                "error connecting to the cluster",
+            );
+        run(&host, "yolab-n1", &local_policy(&dir)).await.unwrap();
+        assert!(host.ran("ceph dashboard ac-user-create admin -i"));
+        assert_eq!(mgr_services_calls(&host), 1);
+    }
+
+    #[tokio::test]
+    async fn a_dashboard_address_that_cannot_be_read_before_the_login_check_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = with_password()
+            .ok("ceph mgr services", &served(""))
+            .fail("ceph mgr services", "error connecting to the cluster")
+            .ok("ceph dashboard ac-user-show admin", "");
+        assert!(run(&host, "yolab-n1", &local_policy(&dir)).await.is_err());
+        assert_eq!(mgr_services_calls(&host), 2);
+    }
+
+    #[tokio::test]
+    async fn a_password_that_cannot_be_applied_again_is_left_for_a_later_run() {
+        let (_server, url) = dashboard_answering(401).await;
+        let dir = tempfile::tempdir().unwrap();
+        let host = with_password()
+            .ok("ceph mgr services", &served(&url))
+            .ok("ceph dashboard ac-user-show admin", "")
+            .fail(
+                "ceph dashboard ac-user-set-password",
+                "error connecting to the cluster",
+            );
+        run(&host, "yolab-n1", &local_policy(&dir)).await.unwrap();
+        assert!(host.ran("ceph dashboard ac-user-set-password admin -i"));
     }
 }

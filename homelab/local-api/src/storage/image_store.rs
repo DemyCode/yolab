@@ -386,8 +386,7 @@ mod tests {
     }
 
     fn at(host: &FakeHost, needle: &str) -> usize {
-        host.position(needle)
-            .unwrap_or_else(|| panic!("never ran {needle}: {:?}", host.calls()))
+        host.position(needle).expect(needle)
     }
 
     fn ran_mount(host: &FakeHost) -> bool {
@@ -728,10 +727,13 @@ mod tests {
                 .fail("blkid /dev/rbd0", "")
                 .ok("mkfs.xfs", "")
                 .ok("mount", "");
-            match up(&host, dir.path(), "yolab-n1", &policy(), RETRY).await {
-                Up::LeftOnRootDisk(why) => assert!(why.contains(comm), "{why}"),
-                Up::Mounted => panic!("the store was reported mounted under a live {comm}"),
-            }
+            assert_eq!(
+                up(&host, dir.path(), "yolab-n1", &policy(), RETRY).await,
+                Up::LeftOnRootDisk(format!(
+                    "{comm} is already running on the root disk, so the image store is mounted \
+                     at the next boot instead of under it"
+                ))
+            );
             assert!(!host.ran("mkfs"), "{comm}: {:?}", host.calls());
             assert!(!ran_mount(&host), "{comm}: {:?}", host.calls());
         }
@@ -812,5 +814,169 @@ mod tests {
         assert_eq!(mount_resting_on(&neighbour, dr), None);
         let the_store_itself = format!("90 22 0:50 / {} rw - xfs /dev/rbd0 rw", dr.display());
         assert_eq!(mount_resting_on(&the_store_itself, dr), None);
+    }
+
+    #[test]
+    fn a_mountinfo_line_too_short_to_name_a_target_rests_on_nothing() {
+        let dr = Path::new("/var/lib/rancher/k3s/agent/containerd");
+        assert_eq!(mount_resting_on("90 22 0:50 /", dr), None);
+    }
+
+    fn blank_and_formatted() -> FakeHost {
+        mapped().fail("blkid /dev/rbd0", "").ok("mkfs.xfs", "")
+    }
+
+    #[tokio::test]
+    async fn a_store_folder_that_cannot_be_made_is_an_error_and_nothing_is_mounted() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("var/lib/rancher")).unwrap();
+        std::fs::write(dir.path().join("var/lib/rancher/k3s"), "").unwrap();
+        let host = blank_and_formatted();
+        assert!(attempt(&host, dir.path(), "yolab-n1", &policy())
+            .await
+            .is_err());
+        assert!(!ran_mount(&host), "{:?}", host.calls());
+    }
+
+    #[tokio::test]
+    async fn a_mount_that_cannot_be_started_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = blank_and_formatted().unstartable("mount ");
+        let err = attempt(&host, dir.path(), "yolab-n1", &policy())
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("could not start"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_store_that_cannot_be_read_after_mounting_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let host =
+            blank_and_formatted()
+                .ok("mount", "")
+                .effect("mount", |_: &str, args: &[&str]| {
+                    std::fs::remove_dir(args[1]).unwrap();
+                });
+        let err = attempt(&host, dir.path(), "yolab-n1", &policy())
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("cannot be read"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_rebuilt_store_that_cannot_be_marked_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let host =
+            blank_and_formatted()
+                .ok("mount", "")
+                .effect("mount", |_: &str, args: &[&str]| {
+                    std::fs::create_dir(Path::new(args[1]).join(BUILT_HERE)).unwrap();
+                });
+        let err = attempt(&host, dir.path(), "yolab-n1", &policy())
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("cannot be written"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_pool_listing_that_cannot_start_is_waited_for_and_says_why() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = booting().unstartable("rbd ls");
+        let why = not_yet(
+            attempt(&host, dir.path(), "yolab-n1", &policy())
+                .await
+                .unwrap(),
+        );
+        assert!(why.contains("could not start"), "{why}");
+        assert!(!host.ran("rbd map"));
+    }
+
+    #[tokio::test]
+    async fn a_mapping_list_that_cannot_start_maps_the_image_anew() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = keyed(FakeHost::new())
+            .unstartable("rbd showmapped")
+            .ok("rbd map images/yolab-n1", "/dev/rbd0\n");
+        assert_eq!(
+            mapped_device(&host, dir.path(), "images", "yolab-n1").await,
+            Ok("/dev/rbd0".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unreadable_mapping_list_maps_the_image_anew() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = keyed(FakeHost::new())
+            .ok("rbd showmapped --format json", "not json")
+            .ok("rbd map images/yolab-n1", "/dev/rbd1\n");
+        assert_eq!(
+            mapped_device(&host, dir.path(), "images", "yolab-n1").await,
+            Ok("/dev/rbd1".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn an_image_identity_that_cannot_be_made_is_never_mapped() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = FakeHost::new()
+            .ok("rbd showmapped --format json", "[]")
+            .fail(
+                "ceph auth get-or-create client.yolab-images",
+                "error connecting to the cluster",
+            );
+        let why = mapped_device(&host, dir.path(), "images", "yolab-n1")
+            .await
+            .unwrap_err();
+        assert!(why.contains("create client.yolab-images"), "{why}");
+        assert!(!host.ran("rbd map"));
+    }
+
+    #[tokio::test]
+    async fn a_map_that_cannot_start_says_why() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = keyed(FakeHost::new())
+            .ok("rbd showmapped --format json", "[]")
+            .unstartable("rbd map");
+        let why = mapped_device(&host, dir.path(), "images", "yolab-n1")
+            .await
+            .unwrap_err();
+        assert!(why.contains("could not start"), "{why}");
+    }
+
+    #[tokio::test]
+    async fn a_map_that_prints_no_device_and_no_reason_says_so() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = keyed(FakeHost::new())
+            .ok("rbd showmapped --format json", "[]")
+            .ok("rbd map", "");
+        assert_eq!(
+            mapped_device(&host, dir.path(), "images", "yolab-n1").await,
+            Err("rbd map printed no device (success=true)".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn a_probe_folder_that_cannot_be_made_reads_as_unusable_without_mounting() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("tmp"), "").unwrap();
+        let host = FakeHost::new();
+        assert!(!filesystem_is_usable(&host, dir.path(), "/dev/rbd0").await);
+        assert!(host.calls().is_empty(), "{:?}", host.calls());
+    }
+
+    #[tokio::test]
+    async fn a_mkfs_that_cannot_start_is_an_error() {
+        let host = FakeHost::new()
+            .unstartable("mkfs.xfs")
+            .unstartable("mkfs.ext4");
+        assert!(mkfs(&host, "/dev/rbd0", Filesystem::Xfs).await.is_err());
+        assert!(mkfs(&host, "/dev/rbd0", Filesystem::Ext4).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn an_ext4_store_is_made_without_discarding_the_image() {
+        let host = FakeHost::new().ok("mkfs.ext4", "");
+        mkfs(&host, "/dev/rbd0", Filesystem::Ext4).await.unwrap();
+        assert!(host.ran("mkfs.ext4 -q -F -m0 -E nodiscard /dev/rbd0"));
     }
 }

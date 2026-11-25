@@ -591,6 +591,18 @@ async fn sweep_staging(keep: &[String]) {
     }
 }
 
+#[cfg(unix)]
+fn private_dir(dir: &str) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::create_dir_all(dir)
+        .and_then(|()| std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)))
+}
+
+#[cfg(not(unix))]
+fn private_dir(dir: &str) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)
+}
+
 async fn snapshot_cluster<H: Host>(
     b: &Backend<H>,
     cfg: &BackupConfig,
@@ -603,12 +615,7 @@ async fn snapshot_cluster<H: Host>(
     tokio::fs::remove_dir_all(&tmp_dir)
         .await
         .debug_on_err("backup: clear the staging directory");
-    tokio::fs::create_dir_all(&tmp_dir).await?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        tokio::fs::set_permissions(&tmp_dir, std::fs::Permissions::from_mode(0o700)).await?;
-    }
+    private_dir(&tmp_dir)?;
 
     let result = snapshot_cluster_inner(b, cfg, &tmp_dir, pinned, target, run_id).await;
     tokio::fs::remove_dir_all(&tmp_dir)
@@ -675,7 +682,7 @@ async fn export_cluster_scoped(client: &Client, tmp_dir: &str) -> anyhow::Result
     let list = json!({ "apiVersion": "v1", "kind": "List", "items": sanitized });
     tokio::fs::write(
         format!("{tmp_dir}/cluster-resources.yaml"),
-        serde_json::to_string_pretty(&list)?,
+        format!("{list:#}"),
     )
     .await?;
     Ok(())
@@ -791,11 +798,8 @@ async fn snapshot_cluster_inner<H: Host>(
         items.extend(workloads.iter().cloned());
 
         let sanitized = sanitize_k8s_items_for_backup(&items);
-        if !sanitized.is_empty() {
-            let list = json!({ "apiVersion": "v1", "kind": "List", "items": sanitized });
-            let s = serde_json::to_string_pretty(&list)?;
-            tokio::fs::write(format!("{tmp_dir}/{ns}.yaml"), s.as_bytes()).await?;
-        }
+        let list = json!({ "apiVersion": "v1", "kind": "List", "items": sanitized });
+        tokio::fs::write(format!("{tmp_dir}/{ns}.yaml"), format!("{list:#}")).await?;
 
         let ann = ns_obj
             .as_ref()
@@ -880,11 +884,7 @@ async fn snapshot_cluster_inner<H: Host>(
     tokio::fs::write(format!("{tmp_dir}/catalog.json"), catalog.to_string()).await?;
 
     let manifest = rebuild_manifest(&b.kube, &services).await;
-    tokio::fs::write(
-        format!("{tmp_dir}/manifest.json"),
-        serde_json::to_string_pretty(&manifest)?,
-    )
-    .await?;
+    tokio::fs::write(format!("{tmp_dir}/manifest.json"), format!("{manifest:#}")).await?;
 
     cfg.unlock(&b.host, "cluster-backup").await;
     let check = restic_with(
@@ -1167,17 +1167,17 @@ async fn schedule<H: Host + Clone + 'static>(b: &Backend<H>) -> anyhow::Result<T
         }
     }
 
-    if queued_for(&sets, "").is_none() && !running_for(&sets, "") {
-        if let Ok(schedule) = crate::cron::Cron::parse(DR_SCHEDULE) {
-            if schedule.due(last_ok_for(&sets, ""), now) {
-                match start(b, "schedule-dr").await {
-                    Ok(id) => {
-                        tracing::info!("backup: queued DR snapshot ({id})");
-                        queued += 1;
-                    }
-                    Err(e) => tracing::warn!("backup: could not queue DR snapshot: {e}"),
-                }
+    if queued_for(&sets, "").is_none()
+        && !running_for(&sets, "")
+        && crate::cron::Cron::parse(DR_SCHEDULE)
+            .is_ok_and(|schedule| schedule.due(last_ok_for(&sets, ""), now))
+    {
+        match start(b, "schedule-dr").await {
+            Ok(id) => {
+                tracing::info!("backup: queued DR snapshot ({id})");
+                queued += 1;
             }
+            Err(e) => tracing::warn!("backup: could not queue DR snapshot: {e}"),
         }
     }
 
@@ -1877,9 +1877,21 @@ mod tests {
             code: u16,
             settings: Value,
         ) -> (MockServer, Client, crate::records::testing::Kept) {
+            a_service_in("yolab-notes", pvcs, volumes, code, settings).await
+        }
+
+        async fn a_service_in(
+            ns: &str,
+            pvcs: Vec<Value>,
+            volumes: Vec<Value>,
+            code: u16,
+            settings: Value,
+        ) -> (MockServer, Client, crate::records::testing::Kept) {
             let (server, kube) = api_server().await;
             Mock::given(method("GET"))
-                .and(path("/api/v1/namespaces/yolab-notes/secrets/yolab-config"))
+                .and(path(format!(
+                    "/api/v1/namespaces/{ns}/secrets/yolab-config"
+                )))
                 .respond_with(ResponseTemplate::new(code).set_body_json(settings))
                 .mount(&server)
                 .await;
@@ -1888,19 +1900,16 @@ mod tests {
             serve(
                 &server,
                 "/api/v1/namespaces",
-                list(
-                    "Namespace",
-                    vec![json!({ "metadata": { "name": "yolab-notes" } })],
-                ),
+                list("Namespace", vec![json!({ "metadata": { "name": ns } })]),
             )
             .await;
             serve(
                 &server,
-                "/api/v1/namespaces/yolab-notes",
+                &format!("/api/v1/namespaces/{ns}"),
                 json!({
                     "apiVersion": "v1", "kind": "Namespace",
                     "metadata": {
-                        "name": "yolab-notes",
+                        "name": ns,
                         "annotations": {
                             ANN_APP_ID: "notes",
                             ANN_CHART_REPO: "https://charts.example",
@@ -1924,11 +1933,11 @@ mod tests {
             .await;
             serve(
                 &server,
-                "/apis/apps/v1/namespaces/yolab-notes/deployments",
+                &format!("/apis/apps/v1/namespaces/{ns}/deployments"),
                 list(
                     "Deployment",
                     vec![json!({
-                        "metadata": { "name": "notes", "namespace": "yolab-notes" },
+                        "metadata": { "name": "notes", "namespace": ns },
                         "spec": { "template": { "spec": {
                             "initContainers": [{ "name": "init", "image": "busybox:1" }],
                             "containers": [
@@ -1942,14 +1951,14 @@ mod tests {
             .await;
             for (p, kind) in [
                 (
-                    "/apis/apps/v1/namespaces/yolab-notes/daemonsets",
+                    format!("/apis/apps/v1/namespaces/{ns}/daemonsets"),
                     "DaemonSet",
                 ),
-                ("/api/v1/namespaces/yolab-notes/services", "Service"),
-                ("/api/v1/namespaces/yolab-notes/secrets", "Secret"),
-                ("/api/v1/namespaces/yolab-notes/configmaps", "ConfigMap"),
+                (format!("/api/v1/namespaces/{ns}/services"), "Service"),
+                (format!("/api/v1/namespaces/{ns}/secrets"), "Secret"),
+                (format!("/api/v1/namespaces/{ns}/configmaps"), "ConfigMap"),
             ] {
-                serve(&server, p, list(kind, vec![])).await;
+                serve(&server, &p, list(kind, vec![])).await;
             }
             serve(
                 &server,

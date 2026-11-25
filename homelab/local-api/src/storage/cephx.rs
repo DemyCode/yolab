@@ -32,9 +32,7 @@ pub fn keyring_key(text: &str, entity: &str) -> Option<String> {
 
 async fn write_keyring<H: Host>(host: &H, path: &Path, text: &str) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
+    std::fs::create_dir_all(path.parent().unwrap_or(Path::new("")))?;
     let staged = path.with_extension("yolab-new");
     std::fs::write(&staged, text).with_context(|| format!("write {}", staged.display()))?;
     std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o600))?;
@@ -134,5 +132,129 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let host = FakeHost::new().fail("ceph auth get-or-create client.yolab-images", "EACCES");
         assert!(images_identity(&host, root.path(), "images").await.is_err());
+    }
+
+    #[test]
+    fn lines_before_the_key_in_the_named_entity_are_skipped() {
+        let text = "[client.x]\n\tcaps mon = \"allow r\"\n\tkey = X\n";
+        assert_eq!(keyring_key(text, "client.x"), Some("X".into()));
+    }
+
+    #[tokio::test]
+    async fn a_keyring_file_without_a_key_is_replaced_by_a_minted_one() {
+        let root = tempfile::tempdir().unwrap();
+        let path = images_keyring_path(root.path());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            "[client.yolab-images]\n\tcaps mon = \"profile rbd\"\n",
+        )
+        .unwrap();
+        let host = FakeHost::new()
+            .ok(
+                "ceph auth get-or-create client.yolab-images",
+                "[client.yolab-images]\n\tkey = K\n",
+            )
+            .ok("chown", "");
+        assert_eq!(
+            images_identity(&host, root.path(), "images").await.unwrap(),
+            path
+        );
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(keyring_key(&text, IMAGES_ENTITY), Some("K".into()));
+    }
+
+    #[tokio::test]
+    async fn a_keyring_path_that_cannot_be_read_is_an_error_not_a_missing_key() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(images_keyring_path(root.path())).unwrap();
+        let host = FakeHost::new();
+        let err = images_identity(&host, root.path(), "images")
+            .await
+            .unwrap_err();
+        assert!(err.to_string().starts_with("read "), "{err}");
+        assert!(host.calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn ceph_printing_no_key_is_an_error() {
+        let root = tempfile::tempdir().unwrap();
+        let host = FakeHost::new().ok("ceph auth get-or-create client.yolab-images", "");
+        let err = images_identity(&host, root.path(), "images")
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "ceph printed no key for client.yolab-images"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_minted_key_that_cannot_be_handed_to_ceph_is_an_error() {
+        let root = tempfile::tempdir().unwrap();
+        let host = FakeHost::new()
+            .ok(
+                "ceph auth get-or-create client.yolab-images",
+                "[client.yolab-images]\n\tkey = K\n",
+            )
+            .fail("chown", "EPERM");
+        let err = images_identity(&host, root.path(), "images")
+            .await
+            .unwrap_err();
+        assert!(err.to_string().starts_with("chown ceph:ceph "), "{err}");
+        assert!(!images_keyring_path(root.path()).exists());
+    }
+
+    #[tokio::test]
+    async fn a_chown_that_cannot_start_is_an_error() {
+        let root = tempfile::tempdir().unwrap();
+        let host = FakeHost::new().unstartable("chown");
+        let path = root.path().join("k.keyring");
+        assert!(write_keyring(&host, &path, "k").await.is_err());
+        assert!(!path.exists());
+    }
+
+    #[tokio::test]
+    async fn a_keyring_folder_that_cannot_be_made_is_an_error() {
+        let root = tempfile::tempdir().unwrap();
+        let file = root.path().join("file");
+        std::fs::write(&file, "").unwrap();
+        let host = FakeHost::new();
+        assert!(write_keyring(&host, &file.join("k.keyring"), "k")
+            .await
+            .is_err());
+        assert!(host.calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_staged_keyring_that_cannot_be_written_is_an_error() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("k.keyring");
+        std::fs::create_dir_all(path.with_extension("yolab-new")).unwrap();
+        let host = FakeHost::new();
+        let err = write_keyring(&host, &path, "k").await.unwrap_err();
+        assert!(err.to_string().starts_with("write "), "{err}");
+        assert!(host.calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_staged_keyring_whose_mode_cannot_be_set_is_an_error() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("k.keyring");
+        std::os::unix::fs::symlink("/proc/thread-self/comm", path.with_extension("yolab-new"))
+            .unwrap();
+        let host = FakeHost::new();
+        assert!(write_keyring(&host, &path, "yolab-test").await.is_err());
+        assert!(host.calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_keyring_that_cannot_replace_the_old_one_is_an_error() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("k.keyring");
+        std::fs::create_dir_all(path.join("inside")).unwrap();
+        let host = FakeHost::new().ok("chown", "");
+        let err = write_keyring(&host, &path, "k").await.unwrap_err();
+        assert!(err.to_string().starts_with("replace "), "{err}");
     }
 }

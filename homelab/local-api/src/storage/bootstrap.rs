@@ -47,9 +47,7 @@ pub fn validate_join_fsid(bundle_fsid: &str, expected_fsid: &str, seed: &str) ->
 
 fn write_keyring(path: &Path, contents: &str) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
+    std::fs::create_dir_all(path.parent().unwrap_or(Path::new("")))?;
     std::fs::write(path, contents)?;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
     Ok(())
@@ -89,9 +87,7 @@ async fn create_cluster<H: Host>(
     let admin = admin_keyring_path(root);
     let bootstrap_osd = bootstrap_osd_keyring_path(root);
     for p in [&tmp_mon, &admin, &bootstrap_osd] {
-        if let Some(parent) = p.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
+        std::fs::create_dir_all(p.parent().unwrap_or(Path::new("")))?;
     }
     let tmp_mon_s = tmp_mon.to_string_lossy().into_owned();
     let admin_s = admin.to_string_lossy().into_owned();
@@ -309,9 +305,7 @@ mod tests {
             None
         };
         if let Some(path) = path {
-            if let Some(parent) = std::path::Path::new(path).parent() {
-                std::fs::create_dir_all(parent).unwrap();
-            }
+            std::fs::create_dir_all(std::path::Path::new(path).parent().unwrap()).unwrap();
             std::fs::write(path, "fake-bytes-from-a-real-binary").unwrap();
         }
     }
@@ -560,5 +554,283 @@ mod tests {
             .await
             .unwrap_err();
         assert!(format!("{err:#}").contains("did not hand over the cluster credentials"));
+    }
+
+    fn creating() -> BootstrapArgs {
+        BootstrapArgs {
+            fsid: FSID.to_string(),
+            mon_addr: "fd00:cafe::1".to_string(),
+            join_seed_addr: String::new(),
+            config_path: "/nonexistent/config.toml".to_string(),
+            api_port: 3001,
+        }
+    }
+
+    fn a_file_at(path: &Path) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, "").unwrap();
+    }
+
+    fn authtool_calls(host: &FakeHost) -> usize {
+        host.calls()
+            .iter()
+            .filter(|c| c.starts_with("ceph-authtool"))
+            .count()
+    }
+
+    #[tokio::test]
+    async fn each_refused_key_step_stops_the_new_cluster_there() {
+        for passing in 0..5 {
+            let mut host = FakeHost::new();
+            for _ in 0..passing {
+                host = host.ok("ceph-authtool", "");
+            }
+            let host = host.fail("ceph-authtool", "denied");
+            let dir = tempfile::tempdir().unwrap();
+            assert!(
+                create_cluster(&host, dir.path(), "yolab-n1", "fd00:cafe::1", FSID)
+                    .await
+                    .is_err()
+            );
+            assert_eq!(authtool_calls(&host), passing + 1);
+            assert!(!host.ran("monmaptool"));
+        }
+    }
+
+    #[tokio::test]
+    async fn a_refused_monmap_stops_the_new_cluster_before_its_monitor_folder() {
+        let host = FakeHost::new()
+            .ok("ceph-authtool", "")
+            .fail("monmaptool", "bad address");
+        let dir = tempfile::tempdir().unwrap();
+        assert!(
+            create_cluster(&host, dir.path(), "yolab-n1", "fd00:cafe::1", FSID)
+                .await
+                .is_err()
+        );
+        assert!(!mon_dir(dir.path(), "yolab-n1").exists());
+    }
+
+    #[tokio::test]
+    async fn a_monitor_folder_that_cannot_be_made_stops_the_new_cluster() {
+        let host = FakeHost::new().ok("ceph-authtool", "").ok("monmaptool", "");
+        let dir = tempfile::tempdir().unwrap();
+        a_file_at(&dir.path().join("var/lib/ceph/mon"));
+        assert!(
+            create_cluster(&host, dir.path(), "yolab-n1", "fd00:cafe::1", FSID)
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_key_folder_that_cannot_be_made_stops_the_new_cluster_before_any_tool() {
+        let host = FakeHost::new();
+        let dir = tempfile::tempdir().unwrap();
+        a_file_at(&dir.path().join("tmp"));
+        assert!(run(&host, dir.path(), "yolab-n1", &creating())
+            .await
+            .is_err());
+        assert!(host.calls().is_empty());
+    }
+
+    #[test]
+    fn a_keyring_at_a_folder_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("k.keyring");
+        std::fs::create_dir_all(&path).unwrap();
+        assert!(write_keyring(&path, "k").is_err());
+    }
+
+    #[test]
+    fn a_keyring_whose_mode_cannot_be_set_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("k.keyring");
+        std::os::unix::fs::symlink("/proc/thread-self/comm", &path).unwrap();
+        assert!(write_keyring(&path, "yolab-test").is_err());
+    }
+
+    #[tokio::test]
+    async fn each_bundle_keyring_that_cannot_be_written_stops_the_join() {
+        for blocked in ["etc/ceph", "var/lib/ceph/bootstrap-osd", "tmp"] {
+            let host = joining_host();
+            let dir = tempfile::tempdir().unwrap();
+            a_file_at(&dir.path().join(blocked));
+            assert!(join_cluster(&host, dir.path(), "yolab-n2", &bundle(FSID))
+                .await
+                .is_err());
+            assert!(host.calls().is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn a_refused_chown_of_the_admin_keyring_stops_the_join() {
+        let host = FakeHost::new().fail("chown", "EPERM");
+        let dir = tempfile::tempdir().unwrap();
+        assert!(join_cluster(&host, dir.path(), "yolab-n2", &bundle(FSID))
+            .await
+            .is_err());
+        assert_eq!(host.calls().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_refused_chown_of_the_osd_keyring_stops_the_join() {
+        let host = FakeHost::new().ok("chown", "").fail("chown", "EPERM");
+        let dir = tempfile::tempdir().unwrap();
+        assert!(join_cluster(&host, dir.path(), "yolab-n2", &bundle(FSID))
+            .await
+            .is_err());
+        assert_eq!(host.calls().len(), 2);
+        assert!(!host.ran("mon getmap"));
+    }
+
+    #[tokio::test]
+    async fn an_old_monmap_that_cannot_be_removed_stops_the_join() {
+        let host = joining_host();
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp_monmap_path(dir.path()).join("inside")).unwrap();
+        let err = join_cluster(&host, dir.path(), "yolab-n2", &bundle(FSID))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().starts_with("remove "), "{err}");
+        assert!(!host.ran("mon getmap"));
+    }
+
+    #[tokio::test]
+    async fn a_stale_monitor_store_is_wiped_before_the_join() {
+        let host = joining_host();
+        let dir = tempfile::tempdir().unwrap();
+        let mon = mon_dir(dir.path(), "yolab-n2");
+        a_file_at(&mon.join("store.db"));
+        join_cluster(&host, dir.path(), "yolab-n2", &bundle(FSID))
+            .await
+            .unwrap();
+        assert!(mon.is_dir());
+        assert!(!mon.join("store.db").exists());
+    }
+
+    #[tokio::test]
+    async fn a_monitor_store_that_cannot_be_wiped_stops_the_join() {
+        let host = joining_host();
+        let dir = tempfile::tempdir().unwrap();
+        a_file_at(&mon_dir(dir.path(), "yolab-n2"));
+        let err = join_cluster(&host, dir.path(), "yolab-n2", &bundle(FSID))
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().starts_with("remove stale mon store "),
+            "{err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_monitor_folder_that_cannot_be_made_stops_the_join() {
+        let host = joining_host();
+        let dir = tempfile::tempdir().unwrap();
+        let mons = dir.path().join("var/lib/ceph/mon");
+        std::fs::create_dir_all(mons.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(dir.path().join("gone"), &mons).unwrap();
+        assert!(join_cluster(&host, dir.path(), "yolab-n2", &bundle(FSID))
+            .await
+            .is_err());
+        assert!(host.ran("mon getmap"));
+    }
+
+    #[tokio::test]
+    async fn a_join_that_fails_after_the_seed_answered_is_the_run_error() {
+        let (_server, port) = seed(200, &bundle(FSID)).await;
+        let j = Joiner::new(port, WITH_TOKEN);
+        let host = FakeHost::new().fail("chown", "EPERM");
+        assert!(run(&host, &j.root(), "yolab-n2", &j.args).await.is_err());
+        assert!(!host.ran("ceph-mon --mkfs"));
+    }
+
+    fn mkfs_ready(root: &Path) {
+        std::fs::create_dir_all(mon_dir(root, "yolab-n2")).unwrap();
+        a_file_at(&tmp_mon_keyring_path(root));
+        a_file_at(&tmp_monmap_path(root));
+    }
+
+    fn becomes_a_folder(path: std::path::PathBuf) -> impl Fn(&str, &[&str]) + Send + Sync {
+        move |_: &str, _: &[&str]| {
+            std::fs::remove_file(&path).unwrap();
+            std::fs::create_dir_all(path.join("inside")).unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn a_refused_mkfs_is_an_error() {
+        let host = FakeHost::new().fail("ceph-mon --mkfs", "corrupt monmap");
+        let dir = tempfile::tempdir().unwrap();
+        mkfs_ready(dir.path());
+        assert!(finish_mkfs(&host, dir.path(), "yolab-n2").await.is_err());
+        assert!(!host.ran("chown"));
+    }
+
+    #[tokio::test]
+    async fn a_monitor_key_that_cannot_be_copied_is_an_error() {
+        let host = FakeHost::new().ok("ceph-mon --mkfs", "");
+        let dir = tempfile::tempdir().unwrap();
+        assert!(finish_mkfs(&host, dir.path(), "yolab-n2").await.is_err());
+        assert!(!host.ran("chown"));
+    }
+
+    #[tokio::test]
+    async fn a_refused_chown_of_the_ceph_folder_is_an_error() {
+        let host = FakeHost::new()
+            .ok("ceph-mon --mkfs", "")
+            .fail("chown -R", "EPERM");
+        let dir = tempfile::tempdir().unwrap();
+        mkfs_ready(dir.path());
+        assert!(finish_mkfs(&host, dir.path(), "yolab-n2").await.is_err());
+        assert!(!host.ran("chown ceph:ceph"));
+    }
+
+    #[tokio::test]
+    async fn a_refused_chown_of_the_admin_keyring_after_mkfs_is_an_error() {
+        let host = FakeHost::new()
+            .ok("ceph-mon --mkfs", "")
+            .ok("chown -R", "")
+            .fail("chown ceph:ceph", "EPERM");
+        let dir = tempfile::tempdir().unwrap();
+        mkfs_ready(dir.path());
+        assert!(finish_mkfs(&host, dir.path(), "yolab-n2").await.is_err());
+        assert!(tmp_mon_keyring_path(dir.path()).exists());
+    }
+
+    #[tokio::test]
+    async fn a_temporary_monitor_key_that_cannot_be_removed_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        mkfs_ready(dir.path());
+        let host = FakeHost::new()
+            .ok("ceph-mon --mkfs", "")
+            .ok("chown", "")
+            .effect(
+                "chown ceph:ceph",
+                becomes_a_folder(tmp_mon_keyring_path(dir.path())),
+            );
+        let err = finish_mkfs(&host, dir.path(), "yolab-n2")
+            .await
+            .unwrap_err();
+        assert!(err.to_string().starts_with("remove "), "{err}");
+        assert!(tmp_monmap_path(dir.path()).exists());
+    }
+
+    #[tokio::test]
+    async fn a_temporary_monmap_that_cannot_be_removed_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        mkfs_ready(dir.path());
+        let host = FakeHost::new()
+            .ok("ceph-mon --mkfs", "")
+            .ok("chown", "")
+            .effect(
+                "chown ceph:ceph",
+                becomes_a_folder(tmp_monmap_path(dir.path())),
+            );
+        let err = finish_mkfs(&host, dir.path(), "yolab-n2")
+            .await
+            .unwrap_err();
+        assert!(err.to_string().starts_with("remove "), "{err}");
+        assert!(!tmp_mon_keyring_path(dir.path()).exists());
     }
 }

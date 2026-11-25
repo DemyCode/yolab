@@ -353,6 +353,21 @@ mod tests {
         assert!(matches!(done, Gate::Clear));
     }
 
+    #[tokio::test]
+    async fn the_same_gate_clears_a_finished_restore_and_pauses_a_running_one() {
+        let asked = Asked::new();
+        let answers = [Some(false), Some(true)];
+        let ask = |_: Activity| asked.answer(answers[asked.count()]);
+        assert_eq!(
+            gate_in(&Cache::default(), &[Activity::Restore], ask).await,
+            Gate::Clear
+        );
+        assert_eq!(
+            gate_in(&Cache::default(), &[Activity::Restore], ask).await,
+            Gate::Paused("an app restore is running".into())
+        );
+    }
+
     #[tokio::test(start_paused = true)]
     async fn a_restore_that_just_started_is_seen_once_the_cached_answer_expires() {
         let cache = Cache::default();

@@ -266,6 +266,69 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_cluster_controller_run_by_hand_needs_a_cluster() {
+        let err = run_named("backup-scheduler").await.unwrap_err();
+        assert_eq!(err.to_string(), "this test runs without a cluster");
+    }
+
+    struct Dangling;
+
+    impl runtime::Resource for Dangling {
+        fn name(&self) -> &'static str {
+            "test-controllers-dangling"
+        }
+        fn depends_on(&self) -> &[&'static str] {
+            &["test-controllers-nobody"]
+        }
+        fn interval(&self) -> std::time::Duration {
+            std::time::Duration::from_secs(1)
+        }
+        async fn converge(&self, _ctx: &runtime::Ctx) -> anyhow::Result<runtime::Tick> {
+            Ok(runtime::Tick::Idle("nothing depends on this".into()))
+        }
+    }
+
+    #[test]
+    fn every_controller_and_watch_is_started_and_a_broken_graph_is_reported() {
+        use crate::runtime::Resource as _;
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        assert_eq!(
+            rt.block_on(Dangling.converge(&runtime::Ctx {
+                node: "node1".into(),
+                tools: Tools::unreachable(),
+            }))
+            .unwrap(),
+            runtime::Tick::Idle("nothing depends on this".into())
+        );
+        let _inside = rt.enter();
+        runtime::spawn(
+            Dangling,
+            Leadership::fixed_for_tests(false),
+            Tools::unreachable(),
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let config = std::sync::Arc::new(Config::for_test(&dir.path().join("config.toml")));
+        let state = crate::AppState {
+            auth: crate::auth::AuthState::isolated(std::sync::Arc::clone(&config)),
+            config,
+            kube: crate::k8s::Kube::with(crate::k8s::testing::unreachable()),
+            http: crate::http::Client::new(),
+            proxy_http: crate::http::Client::new(),
+            host: crate::host::fake::FakeHost::new(),
+        };
+        spawn_all(Leadership::fixed_for_tests(false), &state);
+        assert!(runtime::resource::problems().contains(
+            &"test-controllers-dangling depends on 'test-controllers-nobody', which is not a registered resource"
+                .to_string()
+        ));
+        assert!(runtime::registry().get("backup-scheduler").is_some());
+        assert!(runtime::registry().get(runtime::KUBE_API).is_some());
+    }
+
+    #[tokio::test]
     async fn an_unknown_controller_name_is_refused() {
         let err = run_named("not-a-controller").await.unwrap_err();
         assert!(err.to_string().contains("unknown controller"), "{err}");

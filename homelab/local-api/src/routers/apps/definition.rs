@@ -77,8 +77,8 @@ pub(crate) async fn write_definition(
     def: &AppDefinition,
     app: &crate::appschema::AppSchema,
 ) -> anyhow::Result<()> {
-    let full = serde_json::to_string(def)?;
-    let config_json = serde_json::to_string(&def.config)?;
+    let full = serde_json::to_string(def).expect("an app definition is plain data");
+    let config_json = Value::Object(def.config.clone()).to_string();
     crate::k8s::apply(
         client,
         &crate::k8s::secret_manifest(
@@ -93,8 +93,9 @@ pub(crate) async fn write_definition(
     )
     .await?;
     let redacted = redact_credentials(&def.config, &app.credentials());
-    annotate_ns(client, ns, ANN_CONFIG, &serde_json::to_string(&redacted)?).await;
-    annotate_ns(client, ns, ANN_BACKUP, &serde_json::to_string(&def.backup)?).await;
+    annotate_ns(client, ns, ANN_CONFIG, &Value::Object(redacted).to_string()).await;
+    let backup = serde_json::to_string(&def.backup).expect("a backup policy is plain data");
+    annotate_ns(client, ns, ANN_BACKUP, &backup).await;
     crate::runtime::wake("outputs");
     Ok(())
 }
@@ -341,6 +342,28 @@ mod tests {
         let d = read_definition(&kube, "yolab-notes").await.unwrap();
         assert_eq!(d.app_id, "");
         assert_eq!(d.instance_name, "");
+    }
+
+    #[tokio::test]
+    async fn a_settings_secret_without_the_settings_is_an_error() {
+        let (server, kube) = api_server().await;
+        serve(&server, SECRET_PATH, 200, secret(&[("other", "x")])).await;
+        let err = read_definition_opt(&kube, "yolab-notes").await.unwrap_err();
+        assert!(err.to_string().contains("has no"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn old_settings_whose_namespace_cannot_be_read_are_an_error() {
+        let (server, kube) = api_server().await;
+        serve(
+            &server,
+            SECRET_PATH,
+            200,
+            secret(&[(CONFIG_SECRET_KEY, "{}")]),
+        )
+        .await;
+        serve(&server, NS_PATH, 500, status(500, "InternalError")).await;
+        assert!(read_definition_opt(&kube, "yolab-notes").await.is_err());
     }
 
     #[tokio::test]

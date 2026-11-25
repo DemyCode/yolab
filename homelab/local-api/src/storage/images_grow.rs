@@ -52,7 +52,7 @@ pub async fn run<H: Host>(
         share_of_pool: policy.share_of_pool,
         min_size_gb: policy.min_size_gb,
     };
-    let Some(want_mb) = images_sizing::compute(host, &sizing).await? else {
+    let Some(want_mb) = images_sizing::compute(host, &sizing).await else {
         tracing::info!("images-grow: could not read pool capacity — nothing to grow");
         return Ok(());
     };

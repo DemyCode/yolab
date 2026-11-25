@@ -128,7 +128,7 @@ pub(crate) async fn read_all(client: &Client) -> anyhow::Result<HashMap<String, 
 
 async fn store(client: &Client, repo: &str, stats: &RepoStats) -> anyhow::Result<()> {
     let mut patch = stats_ref();
-    patch["data"] = json!({ key_for(repo): serde_json::to_string(stats)? });
+    patch["data"] = json!({ key_for(repo): json!(stats).to_string() });
     match crate::k8s::merge_patch(client, &patch).await {
         Err(e) if crate::k8s::refused_with(&e, 404) => crate::k8s::apply(client, &patch).await,
         other => other,
@@ -304,5 +304,212 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(got, Fetched::Missing);
+    }
+
+    async fn github_answering(answers: &[(&str, u16, Value)]) -> MockServer {
+        let server = MockServer::start().await;
+        for (repo, code, body) in answers {
+            Mock::given(method("GET"))
+                .and(path(format!("/repos/{repo}")))
+                .respond_with(ResponseTemplate::new(*code).set_body_json(body.clone()))
+                .mount(&server)
+                .await;
+        }
+        server
+    }
+
+    const STATS_PATH: &str = "/api/v1/namespaces/kube-system/configmaps/yolab-github-stats";
+
+    fn stats_config_map() -> Value {
+        json!({ "apiVersion": "v1", "kind": "ConfigMap", "metadata": { "name": STATS_CM } })
+    }
+
+    async fn kube_without_stats() -> (MockServer, Client) {
+        let (server, client) = crate::k8s::testing::api_server().await;
+        crate::k8s::testing::serve(
+            &server,
+            STATS_PATH,
+            404,
+            crate::k8s::testing::status(404, "NotFound"),
+        )
+        .await;
+        (server, client)
+    }
+
+    async fn patches_with(server: &MockServer, content_type: &str) -> Vec<Value> {
+        server
+            .received_requests()
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|r| r.method.as_str() == "PATCH")
+            .filter(|r| r.headers.get("content-type").unwrap().to_str().unwrap() == content_type)
+            .map(|r| serde_json::from_slice(&r.body).unwrap())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn an_unreachable_github_is_an_error() {
+        let base = format!("http://127.0.0.1:{}", crate::testkit::closed_port());
+        assert!(fetch(&crate::testkit::http(), &base, "a/b", NOW)
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn an_answer_that_is_not_json_is_an_error() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("{not json"))
+            .mount(&server)
+            .await;
+        assert!(fetch(&crate::testkit::http(), &server.uri(), "a/b", NOW)
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn an_answer_without_a_star_count_is_an_error_not_zero_stars() {
+        let server = github_answering(&[("a/b", 200, json!({ "message": "hi" }))]).await;
+        let err = fetch(&crate::testkit::http(), &server.uri(), "a/b", NOW)
+            .await
+            .unwrap_err();
+        assert_eq!(err.to_string(), "a/b: GitHub answered without a star count");
+    }
+
+    #[tokio::test]
+    async fn an_unexpected_status_is_an_error() {
+        let server = github_answering(&[("a/b", 500, json!({}))]).await;
+        let err = fetch(&crate::testkit::http(), &server.uri(), "a/b", NOW)
+            .await
+            .unwrap_err();
+        assert_eq!(err.to_string(), "a/b: GitHub answered 500");
+    }
+
+    #[test]
+    fn a_stored_value_that_is_not_text_is_skipped() {
+        let cm = json!({ "data": { "a__b": 7 } });
+        assert!(from_config_map(&cm).is_empty());
+    }
+
+    #[tokio::test]
+    async fn stats_that_cannot_be_read_from_kubernetes_are_an_error() {
+        assert!(read_all(&crate::k8s::testing::unreachable()).await.is_err());
+        let refreshed = refresh(
+            &crate::k8s::testing::unreachable(),
+            &crate::testkit::http(),
+            "http://127.0.0.1:9",
+            &["a/b".to_string()],
+            NOW,
+        )
+        .await;
+        assert!(refreshed.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_refresh_stores_stars_marks_gone_repositories_archived_and_stops_at_a_rate_limit() {
+        let github = github_answering(&[
+            ("o/a-stars", 200, json!({ "stargazers_count": 9 })),
+            ("o/b-gone", 404, json!({})),
+            ("o/c-limited", 429, json!({})),
+            ("o/d-later", 200, json!({ "stargazers_count": 1 })),
+        ])
+        .await;
+        let (kube, client) = kube_without_stats().await;
+        Mock::given(method("PATCH"))
+            .and(path(STATS_PATH))
+            .and(header("content-type", "application/merge-patch+json"))
+            .and(wiremock::matchers::body_string_contains("o__a-stars"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(stats_config_map()))
+            .with_priority(1)
+            .mount(&kube)
+            .await;
+        Mock::given(method("PATCH"))
+            .and(path(STATS_PATH))
+            .and(header("content-type", "application/merge-patch+json"))
+            .respond_with(
+                ResponseTemplate::new(404)
+                    .set_body_json(crate::k8s::testing::status(404, "NotFound")),
+            )
+            .with_priority(2)
+            .mount(&kube)
+            .await;
+        Mock::given(method("PATCH"))
+            .and(path(STATS_PATH))
+            .and(header("content-type", "application/apply-patch+yaml"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(stats_config_map()))
+            .with_priority(2)
+            .mount(&kube)
+            .await;
+        let repos: Vec<String> = ["o/d-later", "o/c-limited", "o/b-gone", "o/a-stars"]
+            .iter()
+            .map(|r| r.to_string())
+            .collect();
+        let refreshed = refresh(&client, &crate::testkit::http(), &github.uri(), &repos, NOW)
+            .await
+            .unwrap();
+        assert_eq!(refreshed, 2);
+        let stars = RepoStats {
+            stars: 9,
+            pushed_at: None,
+            archived: false,
+            fetched_at: NOW,
+        };
+        let gone = RepoStats {
+            stars: 0,
+            pushed_at: None,
+            archived: true,
+            fetched_at: NOW,
+        };
+        let merged = patches_with(&kube, "application/merge-patch+json").await;
+        assert_eq!(
+            merged.iter().map(from_config_map).collect::<Vec<_>>(),
+            vec![
+                HashMap::from([("o/a-stars".to_string(), stars)]),
+                HashMap::from([("o/b-gone".to_string(), gone.clone())]),
+            ]
+        );
+        let applied = patches_with(&kube, "application/apply-patch+yaml").await;
+        assert_eq!(
+            applied.iter().map(from_config_map).collect::<Vec<_>>(),
+            vec![HashMap::from([("o/b-gone".to_string(), gone)])]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_refresh_whose_fetch_fails_is_an_error() {
+        let github = github_answering(&[("o/a", 500, json!({}))]).await;
+        let (_kube, client) = kube_without_stats().await;
+        let refreshed = refresh(
+            &client,
+            &crate::testkit::http(),
+            &github.uri(),
+            &["o/a".to_string()],
+            NOW,
+        )
+        .await;
+        assert!(refreshed.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_refresh_whose_store_fails_is_an_error() {
+        let github = github_answering(&[("o/a", 200, json!({ "stargazers_count": 3 }))]).await;
+        let (kube, client) = kube_without_stats().await;
+        Mock::given(method("PATCH"))
+            .respond_with(
+                ResponseTemplate::new(500)
+                    .set_body_json(crate::k8s::testing::status(500, "InternalError")),
+            )
+            .mount(&kube)
+            .await;
+        let refreshed = refresh(
+            &client,
+            &crate::testkit::http(),
+            &github.uri(),
+            &["o/a".to_string()],
+            NOW,
+        )
+        .await;
+        assert!(refreshed.is_err());
     }
 }

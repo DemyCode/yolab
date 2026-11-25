@@ -113,14 +113,14 @@ pub async fn read_remembered(client: &Client, ns: &str) -> anyhow::Result<Option
     Ok(secret.map(|data| parse_remembered(data.get(SECRET_KEY).map(String::as_str))))
 }
 
-fn secret_manifest(ns: &str, remembered: &Remembered) -> anyhow::Result<Value> {
-    let encoded = serde_json::to_string(remembered)?;
-    Ok(crate::k8s::secret_manifest(
+fn secret_manifest(ns: &str, remembered: &Remembered) -> Value {
+    let encoded = serde_json::json!(remembered).to_string();
+    crate::k8s::secret_manifest(
         SECRET,
         ns,
         &[(SECRET_KEY, encoded.as_str())],
         &[("yolab.io/managed", "true"), ("yolab.io/outputs", "true")],
-    ))
+    )
 }
 
 pub async fn remembered_everywhere(client: &Client) -> BTreeMap<String, Remembered> {
@@ -192,7 +192,7 @@ pub async fn rescan(client: &Client, ns: &str, app: &AppSchema) -> anyhow::Resul
     }
 
     if changed || (!existed && !remembered.is_empty()) {
-        crate::k8s::apply(client, &secret_manifest(ns, &remembered)?).await?;
+        crate::k8s::apply(client, &secret_manifest(ns, &remembered)).await?;
     }
     Ok(remembered)
 }
@@ -811,6 +811,185 @@ mod tests {
                 !asked(&server, "yolab-leaving").await,
                 "an app being removed is left alone"
             );
+        }
+
+        #[tokio::test]
+        async fn pods_that_cannot_be_listed_are_an_error_not_an_empty_answer() {
+            let (server, kube) = api_server().await;
+            nothing_stored(&server).await;
+            serve(
+                &server,
+                &format!("{NS_PATH}/pods"),
+                503,
+                status(503, "ServiceUnavailable"),
+            )
+            .await;
+
+            assert!(rescan(&kube, NS, &app()).await.is_err());
+        }
+
+        #[tokio::test]
+        async fn a_pod_without_a_name_is_skipped_and_the_others_are_read() {
+            let (server, kube) = api_server().await;
+            nothing_stored(&server).await;
+            serve(
+                &server,
+                &format!("{NS_PATH}/pods"),
+                200,
+                list(
+                    "Pod",
+                    vec![
+                        json!({ "metadata": {}, "spec": { "containers": [{ "name": "caddy" }] } }),
+                        json!({
+                            "metadata": { "name": "gateway-7f" },
+                            "spec": { "containers": [{ "name": "caddy" }] }
+                        }),
+                    ],
+                ),
+            )
+            .await;
+            serve_logs(&server, POD_PATH, "caddy", &printed("s3cret")).await;
+            accept_patches(&server).await;
+
+            let found = rescan(&kube, NS, &app()).await.unwrap();
+
+            assert_eq!(found["file_explorer_password"].value, "s3cret");
+        }
+
+        #[tokio::test]
+        async fn a_value_that_cannot_be_saved_is_an_error() {
+            let (server, kube) = api_server().await;
+            nothing_stored(&server).await;
+            pods(&server).await;
+            serve_logs(&server, POD_PATH, "file-explorer-init", &printed("s3cret")).await;
+            serve_logs(&server, POD_PATH, "caddy", "").await;
+            wiremock::Mock::given(wiremock::matchers::method("PATCH"))
+                .respond_with(
+                    wiremock::ResponseTemplate::new(500)
+                        .set_body_json(status(500, "InternalError")),
+                )
+                .mount(&server)
+                .await;
+
+            assert!(rescan(&kube, NS, &app()).await.is_err());
+        }
+
+        #[tokio::test]
+        async fn a_store_without_a_namespace_is_skipped_and_one_without_data_holds_nothing() {
+            let (server, kube) = api_server().await;
+            serve(
+                &server,
+                "/api/v1/secrets",
+                200,
+                list(
+                    "Secret",
+                    vec![
+                        json!({ "metadata": { "name": "yolab-outputs" },
+                                "data": { "outputs.json": "e30=" } }),
+                        json!({ "metadata": { "name": "yolab-outputs", "namespace": "yolab-c" } }),
+                    ],
+                ),
+            )
+            .await;
+
+            let everywhere = remembered_everywhere(&kube).await;
+
+            assert_eq!(
+                everywhere,
+                BTreeMap::from([("yolab-c".to_string(), Remembered::new())])
+            );
+        }
+
+        fn ctx_with(kube: crate::k8s::Kube) -> crate::runtime::Ctx {
+            crate::runtime::Ctx {
+                node: "node1".into(),
+                tools: crate::tools::Tools {
+                    host: Default::default(),
+                    kube,
+                    http: crate::http::client(),
+                },
+            }
+        }
+
+        #[tokio::test]
+        async fn the_outputs_controller_runs_cluster_wide_every_minute_after_the_kube_api() {
+            use crate::runtime::Resource as _;
+            let c = OutputsController;
+            assert_eq!(c.name(), "outputs");
+            assert_eq!(c.scope(), crate::runtime::Scope::Cluster);
+            assert_eq!(c.interval(), Duration::from_secs(60));
+            assert_eq!(c.depends_on(), &[crate::runtime::KUBE_API]);
+            let (server, kube) = api_server().await;
+            serve(
+                &server,
+                "/api/v1/namespaces",
+                200,
+                list("Namespace", vec![]),
+            )
+            .await;
+            assert_eq!(
+                c.converge(&ctx_with(crate::k8s::Kube::with(kube)))
+                    .await
+                    .unwrap(),
+                crate::runtime::Tick::Done
+            );
+        }
+
+        #[tokio::test]
+        async fn the_outputs_controller_names_the_apps_it_could_not_rescan() {
+            use crate::runtime::Resource as _;
+            let (server, kube) = api_server().await;
+            serve(
+                &server,
+                "/api/v1/namespaces",
+                200,
+                list(
+                    "Namespace",
+                    vec![json!({
+                        "metadata": {
+                            "name": "yolab-broken",
+                            "annotations": { "yolab.io/app-id": "no-such-chart-here" }
+                        },
+                        "status": { "phase": "Active" }
+                    })],
+                ),
+            )
+            .await;
+            serve(
+                &server,
+                "/api/v1/namespaces/yolab-broken/secrets/yolab-outputs",
+                503,
+                status(503, "ServiceUnavailable"),
+            )
+            .await;
+            assert_eq!(
+                OutputsController
+                    .converge(&ctx_with(crate::k8s::Kube::with(kube)))
+                    .await
+                    .unwrap(),
+                crate::runtime::Tick::NotYet("could not rescan yolab-broken".into())
+            );
+        }
+
+        #[tokio::test]
+        async fn the_outputs_controller_fails_without_a_cluster_or_a_list_of_apps() {
+            use crate::runtime::Resource as _;
+            assert!(OutputsController
+                .converge(&ctx_with(crate::k8s::Kube::from_environment()))
+                .await
+                .is_err());
+            let (server, kube) = api_server().await;
+            serve(
+                &server,
+                "/api/v1/namespaces",
+                503,
+                status(503, "ServiceUnavailable"),
+            )
+            .await;
+            assert!(OutputsController
+                .converge(&ctx_with(crate::k8s::Kube::with(kube)))
+                .await
+                .is_err());
         }
     }
 }

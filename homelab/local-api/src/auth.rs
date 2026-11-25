@@ -63,7 +63,8 @@ fn forwarded_for(headers: &HeaderMap) -> Option<IpAddr> {
         .to_str()
         .ok()?
         .split(',')
-        .next()?
+        .next()
+        .unwrap_or_default()
         .trim()
         .parse()
         .ok()
@@ -1106,5 +1107,144 @@ mod tests {
         req = with_header(req, "origin", "https://elsewhere.example");
         let res = write_router(state.auth.clone()).oneshot(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::OK);
+    }
+
+    fn store_holding_garbage_at(key: &str) -> &'static Mutex<Store> {
+        use automerge::transaction::Transactable as _;
+        let mut doc = automerge::AutoCommit::new();
+        doc.put(automerge::ROOT, key, "not json").unwrap();
+        let store = Store::load("test", &doc.save()).unwrap();
+        Box::leak(Box::new(Mutex::new(store)))
+    }
+
+    fn state_over(
+        config: Arc<Config>,
+        store: &'static Mutex<Store>,
+        store_path: Option<PathBuf>,
+    ) -> crate::AppState {
+        crate::AppState {
+            auth: AuthState {
+                config: Arc::clone(&config),
+                store,
+                store_path,
+                failures: Arc::default(),
+            },
+            config,
+            kube: crate::k8s::Kube::with(crate::k8s::testing::unreachable()),
+            http: crate::http::Client::new(),
+            proxy_http: crate::http::Client::new(),
+            host: Default::default(),
+        }
+    }
+
+    fn jar_holding(token: &str) -> CookieJar {
+        CookieJar::new().add(Cookie::new(COOKIE, token.to_string()))
+    }
+
+    #[test]
+    fn a_loopback_caller_without_a_readable_forwarded_for_is_counted_as_itself() {
+        assert_eq!(client_of(Some("127.0.0.1:5000"), None), "127.0.0.1");
+        let mut req = request("/api/login", Some("127.0.0.1:5000"));
+        req.headers_mut().insert(
+            "x-forwarded-for",
+            axum::http::HeaderValue::from_bytes(b"\xff").unwrap(),
+        );
+        assert_eq!(login_client(&req).0, "127.0.0.1");
+    }
+
+    #[test]
+    fn a_caller_with_no_known_address_is_one_unknown_client() {
+        assert_eq!(client_of(None, None), "unknown");
+    }
+
+    #[test]
+    fn a_write_with_an_origin_but_no_host_is_cross_site() {
+        let req = with_header(
+            Request::builder()
+                .method("POST")
+                .uri("/api/system/reboot/all")
+                .body(Body::empty())
+                .unwrap(),
+            "origin",
+            "https://cluster.5.yolab.io",
+        );
+        assert!(is_cross_site_write(&req));
+    }
+
+    #[tokio::test]
+    async fn a_login_on_the_machine_state_saves_the_shared_store_to_its_file() {
+        let (_d, cfg) = provisioned();
+        let auth = AuthState::new(Arc::clone(&cfg));
+        assert_eq!(auth.store_path, Some(crate::store::default_path()));
+        let state = crate::AppState {
+            auth,
+            ..app_state(cfg)
+        };
+        assert_eq!(do_login(&state, PASSWORD).await.status(), StatusCode::OK);
+        assert!(crate::store::default_path().exists());
+    }
+
+    #[tokio::test]
+    async fn a_store_that_cannot_be_saved_fails_login_and_logout_instead_of_pretending() {
+        let (dir, cfg) = provisioned();
+        let blocked = dir.path().join("config.toml").join("store.automerge");
+        let store = AuthState::isolated(Arc::clone(&cfg)).store;
+        let token = signed_in_token(&state_over(Arc::clone(&cfg), store, None)).await;
+        let unsaveable = state_over(cfg, store, Some(blocked));
+        assert_eq!(
+            do_login(&unsaveable, PASSWORD).await.status(),
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
+        assert_eq!(
+            logout(State(unsaveable.clone()), jar_holding(&token))
+                .await
+                .status(),
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unreadable_session_key_is_a_server_error_not_a_sign_in_or_out() {
+        let (_d, cfg) = provisioned();
+        let state = state_over(cfg, store_holding_garbage_at("secret:session"), None);
+        assert_eq!(
+            do_login(&state, PASSWORD).await.status(),
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
+        assert_eq!(
+            logout(State(state.clone()), jar_holding("some-token"))
+                .await
+                .status(),
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
+        assert_eq!(
+            reaches(&state, "some-token").await,
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unreadable_revocation_list_is_a_server_error_for_sessions_and_logout() {
+        let (_d, cfg) = provisioned();
+        let state = state_over(cfg, store_holding_garbage_at("revoked:old"), None);
+        let token = signed_in_token(&state).await;
+        assert_eq!(
+            reaches(&state, &token).await,
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
+        assert_eq!(
+            logout(State(state.clone()), jar_holding(&token))
+                .await
+                .status(),
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
+    }
+
+    #[tokio::test]
+    async fn logging_out_with_a_token_that_was_never_issued_just_clears_the_cookie() {
+        let (_d, cfg) = provisioned();
+        let res = logout(State(app_state(cfg)), jar_holding("garbage")).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        assert!(issued_cookie(&res).unwrap().contains("Max-Age=0"));
     }
 }

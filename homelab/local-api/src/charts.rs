@@ -55,6 +55,23 @@ pub(crate) mod testing {
         )
         .expect("a Chart.yaml");
     }
+
+    thread_local! {
+        pub(super) static OFFICIAL_URL: RefCell<Option<String>> = const { RefCell::new(None) };
+    }
+
+    pub(crate) struct OfficialAt;
+
+    impl Drop for OfficialAt {
+        fn drop(&mut self) {
+            OFFICIAL_URL.with(|url| *url.borrow_mut() = None);
+        }
+    }
+
+    pub(crate) fn official_at(url: &str) -> OfficialAt {
+        OFFICIAL_URL.with(|official| *official.borrow_mut() = Some(url.to_string()));
+        OfficialAt
+    }
 }
 
 pub const OFFICIAL: &str = "official";
@@ -73,7 +90,19 @@ fn yes() -> bool {
     true
 }
 
+#[cfg(not(test))]
 fn official_url() -> String {
+    default_official_url()
+}
+
+#[cfg(test)]
+fn official_url() -> String {
+    testing::OFFICIAL_URL
+        .with(|url| url.borrow().clone())
+        .unwrap_or_else(default_official_url)
+}
+
+fn default_official_url() -> String {
     std::env::var("YOLAB_OFFICIAL_CHART_REPO").unwrap_or_else(|_| {
         "https://raw.githubusercontent.com/DemyCode/yolab/refs/heads/main/catalog.yaml".into()
     })
@@ -250,9 +279,9 @@ const MANIFEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30)
 fn github_contents_url(api: &str, url: &str) -> Option<String> {
     let rest = url.strip_prefix("https://raw.githubusercontent.com/")?;
     let mut parts = rest.splitn(3, '/');
-    let owner = parts.next()?;
-    let repo = parts.next()?;
-    let tail = parts.next()?;
+    let (Some(owner), Some(repo), Some(tail)) = (parts.next(), parts.next(), parts.next()) else {
+        return None;
+    };
     let (git_ref, file) = tail
         .strip_prefix("refs/heads/")
         .or_else(|| tail.strip_prefix("refs/tags/"))
@@ -557,7 +586,7 @@ impl crate::runtime::Resource for ChartSyncController {
     }
 }
 
-async fn refresh_github_stars(client: &Client) {
+async fn refresh_github_stars(client: &Client, api: &str) {
     let dirs: Vec<PathBuf> = chart_sources(client)
         .await
         .into_iter()
@@ -565,7 +594,7 @@ async fn refresh_github_stars(client: &Client) {
         .collect();
     let repos = github_repos(&dirs);
     let now = i64::try_from(crate::system::now_secs()).unwrap_or(i64::MAX);
-    match crate::github::refresh(client, &http(), crate::github::API, &repos, now).await {
+    match crate::github::refresh(client, &http(), api, &repos, now).await {
         Ok(n) if n > 0 => tracing::info!("chart sync: GitHub stars refreshed for {n} project(s)"),
         Ok(_) => {}
         Err(e) => tracing::warn!("chart sync: GitHub stars not refreshed: {e:#}"),
@@ -573,6 +602,15 @@ async fn refresh_github_stars(client: &Client) {
 }
 
 async fn sync_all<H: Host>(client: &Client, host: &H) -> anyhow::Result<crate::runtime::Tick> {
+    sync_all_with(client, host, &LAST_STARS, crate::github::API).await
+}
+
+async fn sync_all_with<H: Host>(
+    client: &Client,
+    host: &H,
+    stars: &std::sync::atomic::AtomicU64,
+    github_api: &str,
+) -> anyhow::Result<crate::runtime::Tick> {
     let mut failed = Vec::new();
     for repo in list_repos(client).await {
         match sync_repo(host, &cache_root(), &repo).await {
@@ -581,8 +619,8 @@ async fn sync_all<H: Host>(client: &Client, host: &H) -> anyhow::Result<crate::r
             Err(e) => failed.push(format!("{}: {e}", repo.name)),
         }
     }
-    if stars_due(&LAST_STARS, crate::system::now_secs()) {
-        refresh_github_stars(client).await;
+    if stars_due(stars, crate::system::now_secs()) {
+        refresh_github_stars(client, github_api).await;
     }
     if failed.is_empty() {
         Ok(crate::runtime::Tick::Done)
@@ -1202,6 +1240,483 @@ mod tests {
                 .is_err());
             assert!(remove_repo(&kube, OFFICIAL).await.is_err());
             assert!(server.received_requests().await.unwrap().is_empty());
+        }
+
+        use std::os::unix::fs::PermissionsExt as _;
+
+        const STATS_PATH: &str = "/api/v1/namespaces/kube-system/configmaps/yolab-github-stats";
+        const NOTES_V1: &str =
+            "registry: oci://ghcr.io/x/charts\ncharts:\n  - name: notes\n    version: \"1\"\n";
+
+        fn config_map(name: &str, data: serde_json::Value) -> serde_json::Value {
+            serde_json::json!({
+                "apiVersion": "v1",
+                "kind": "ConfigMap",
+                "metadata": { "name": name, "namespace": REPO_NS },
+                "data": data,
+            })
+        }
+
+        async fn repos_stored(server: &MockServer, data: serde_json::Value) {
+            crate::k8s::testing::serve(server, REPOS_PATH, 200, config_map(REPO_CM, data)).await;
+        }
+
+        async fn nothing_at(server: &MockServer, at: &str) {
+            crate::k8s::testing::serve(server, at, 404, status(404, "NotFound")).await;
+        }
+
+        async fn accepts_patches(server: &MockServer, at: &str) {
+            Mock::given(method("PATCH"))
+                .and(path(at))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_json(config_map("x", serde_json::json!({}))),
+                )
+                .mount(server)
+                .await;
+        }
+
+        async fn refuses_patches(server: &MockServer, at: &str, code: u16) {
+            Mock::given(method("PATCH"))
+                .and(path(at))
+                .respond_with(ResponseTemplate::new(code).set_body_json(status(code, "Refused")))
+                .mount(server)
+                .await;
+        }
+
+        fn set_mode(dir: &Path, mode: u32) {
+            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(mode)).unwrap();
+        }
+
+        fn closed_url() -> String {
+            format!(
+                "http://[::1]:{}/catalog.yaml",
+                crate::testkit::closed_port()
+            )
+        }
+
+        fn ctx_with(kube: crate::k8s::Kube) -> crate::runtime::Ctx {
+            crate::runtime::Ctx {
+                node: "node1".into(),
+                tools: crate::tools::Tools {
+                    host: FakeHost::new(),
+                    kube,
+                    http: crate::http::client(),
+                },
+            }
+        }
+
+        #[test]
+        fn a_stored_repository_without_a_removable_flag_can_be_removed() {
+            let repo: ChartRepo = serde_json::from_value(serde_json::json!({
+                "name": "community", "url": "https://c.example/catalog.yaml"
+            }))
+            .unwrap();
+            assert!(repo.removable);
+        }
+
+        #[tokio::test]
+        async fn added_repositories_follow_the_official_one_which_they_cannot_replace() {
+            let (server, kube) = api_server().await;
+            repos_stored(
+                &server,
+                serde_json::json!({
+                    "official": "https://evil.example/catalog.yaml",
+                    "community": "https://c.example/catalog.yaml"
+                }),
+            )
+            .await;
+            assert_eq!(
+                list_repos(&kube).await,
+                vec![
+                    ChartRepo {
+                        name: OFFICIAL.into(),
+                        url: official_url(),
+                        removable: false,
+                    },
+                    ChartRepo {
+                        name: "community".into(),
+                        url: "https://c.example/catalog.yaml".into(),
+                        removable: true,
+                    },
+                ]
+            );
+        }
+
+        #[tokio::test]
+        async fn a_repository_list_that_is_not_a_name_to_url_map_lists_only_the_official_one() {
+            let (server, kube) = api_server().await;
+            repos_stored(&server, serde_json::json!({ "community": 5 })).await;
+            let repos = list_repos(&kube).await;
+            assert_eq!(
+                repos.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(),
+                vec![OFFICIAL]
+            );
+        }
+
+        #[tokio::test]
+        async fn a_removed_repository_is_forgotten_and_its_cached_charts_deleted() {
+            let cache = crate::charts::testing::cache_in_temp();
+            crate::charts::testing::chart(cache.dir.path(), "community", "notes", "1");
+            let (server, kube) = api_server().await;
+            accepts_patches(&server, REPOS_PATH).await;
+            remove_repo(&kube, "community").await.unwrap();
+            assert!(!cache.dir.path().join("community").exists());
+            let (missing, kube) = api_server().await;
+            refuses_patches(&missing, REPOS_PATH, 404).await;
+            remove_repo(&kube, "community").await.unwrap();
+        }
+
+        #[tokio::test]
+        async fn a_repository_list_that_cannot_be_updated_keeps_the_cached_charts() {
+            let cache = crate::charts::testing::cache_in_temp();
+            crate::charts::testing::chart(cache.dir.path(), "community", "notes", "1");
+            let (server, kube) = api_server().await;
+            refuses_patches(&server, REPOS_PATH, 500).await;
+            assert!(remove_repo(&kube, "community").await.is_err());
+            assert!(cache.dir.path().join("community").join("notes").is_dir());
+        }
+
+        #[tokio::test]
+        async fn cached_charts_that_cannot_be_deleted_make_the_removal_an_error() {
+            let cache = crate::charts::testing::cache_in_temp();
+            std::fs::write(cache.dir.path().join("community"), "not a folder").unwrap();
+            let (server, kube) = api_server().await;
+            accepts_patches(&server, REPOS_PATH).await;
+            assert!(remove_repo(&kube, "community").await.is_err());
+        }
+
+        #[test]
+        fn a_raw_github_url_missing_its_owner_repository_or_file_is_read_from_its_own_url() {
+            for url in [
+                "https://raw.githubusercontent.com/me",
+                "https://raw.githubusercontent.com/me/charts",
+                "https://raw.githubusercontent.com//charts/main/catalog.yaml",
+            ] {
+                assert_eq!(
+                    github_contents_url("https://api.github.com", url),
+                    None,
+                    "{url}"
+                );
+            }
+        }
+
+        #[tokio::test]
+        async fn a_catalog_that_is_not_yaml_names_its_repository() {
+            let (_server, repo) = catalog("registry: [unclosed").await;
+            let e = fetch_manifest(&repo).await.unwrap_err();
+            assert!(
+                e.to_string()
+                    .starts_with("community: catalog manifest is not valid: "),
+                "{e}"
+            );
+        }
+
+        #[tokio::test]
+        async fn a_catalog_whose_body_breaks_off_is_an_error() {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let listener = tokio::net::TcpListener::bind("[::1]:0").await.unwrap();
+            let port = listener.local_addr().unwrap().port();
+            tokio::spawn(async move {
+                let (mut channel, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                let mut buf = [0u8; 4096];
+                while !request.ends_with(b"\r\n\r\n") {
+                    let read = channel.read(&mut buf).await.unwrap();
+                    request.extend_from_slice(&buf[..read]);
+                }
+                channel
+                    .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 100\r\n\r\nregistry")
+                    .await
+                    .unwrap();
+            });
+            let repo = ChartRepo {
+                name: "community".into(),
+                url: format!("http://[::1]:{port}/catalog.yaml"),
+                removable: true,
+            };
+            assert!(fetch_manifest(&repo).await.is_err());
+        }
+
+        #[tokio::test]
+        async fn an_unusable_chart_name_is_refused_before_any_catalog_is_read() {
+            let host = FakeHost::new();
+            let repo = ChartRepo {
+                name: "community".into(),
+                url: closed_url(),
+                removable: true,
+            };
+            assert_eq!(
+                sync_chart(&host, Path::new("/unused"), &repo, "../etc")
+                    .await
+                    .unwrap_err()
+                    .to_string(),
+                "unusable chart name \"../etc\""
+            );
+            assert_eq!(
+                fetch_exact(
+                    &host,
+                    Path::new("/unused"),
+                    &[repo],
+                    "../etc",
+                    "1",
+                    "community"
+                )
+                .await
+                .unwrap_err()
+                .to_string(),
+                "unusable chart name \"../etc\""
+            );
+            assert!(host.calls().is_empty());
+        }
+
+        #[tokio::test]
+        async fn a_chart_cache_that_is_a_file_is_an_error() {
+            let (_server, repo) = catalog(NOTES_V1).await;
+            let file = tempfile::NamedTempFile::new().unwrap();
+            assert!(sync_chart(&pulling(), file.path(), &repo, "notes")
+                .await
+                .is_err());
+            assert!(sync_repo(&pulling(), file.path(), &repo).await.is_err());
+        }
+
+        #[tokio::test]
+        async fn helm_that_cannot_start_is_an_error() {
+            let (_server, repo) = catalog(NOTES_V1).await;
+            let host = FakeHost::new().unstartable("helm pull");
+            let cache = tempfile::tempdir().unwrap();
+            assert!(sync_chart(&host, cache.path(), &repo, "notes")
+                .await
+                .is_err());
+            assert!(host.ran("helm pull oci://ghcr.io/x/charts/notes"));
+        }
+
+        #[tokio::test]
+        async fn a_cached_copy_that_cannot_be_removed_is_an_error() {
+            let (_server, repo) = catalog(NOTES_V1).await;
+            let cache = tempfile::tempdir().unwrap();
+            let dir = cache.path().join(&repo.name);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("notes"), "a file, not a chart").unwrap();
+            assert!(sync_chart(&pulling(), cache.path(), &repo, "notes")
+                .await
+                .is_err());
+        }
+
+        #[tokio::test]
+        async fn a_cache_folder_without_room_for_a_staging_folder_is_an_error() {
+            let (_server, repo) = catalog(NOTES_V1).await;
+            let cache = tempfile::tempdir().unwrap();
+            let dir = cache.path().join(&repo.name);
+            std::fs::create_dir_all(&dir).unwrap();
+            set_mode(&dir, 0o555);
+            let e = sync_chart(&FakeHost::new(), cache.path(), &repo, "notes")
+                .await
+                .unwrap_err();
+            set_mode(&dir, 0o755);
+            assert_eq!(
+                e.downcast_ref::<std::io::Error>().unwrap().kind(),
+                std::io::ErrorKind::PermissionDenied
+            );
+        }
+
+        #[tokio::test]
+        async fn a_pulled_chart_that_cannot_be_moved_into_the_cache_is_an_error() {
+            let (_server, repo) = catalog(NOTES_V1).await;
+            let cache = tempfile::tempdir().unwrap();
+            let host = FakeHost::new()
+                .ok("helm pull", "")
+                .effect("helm pull", |_, args| {
+                    let staging = std::path::Path::new(args[6]);
+                    let pulled = staging.join("notes");
+                    std::fs::create_dir_all(&pulled).unwrap();
+                    std::fs::write(pulled.join("Chart.yaml"), "name: notes\nversion: 1\n").unwrap();
+                    set_mode(staging.parent().unwrap(), 0o555);
+                });
+            let e = sync_chart(&host, cache.path(), &repo, "notes")
+                .await
+                .unwrap_err();
+            set_mode(&cache.path().join(&repo.name), 0o755);
+            assert_eq!(
+                e.downcast_ref::<std::io::Error>().unwrap().kind(),
+                std::io::ErrorKind::PermissionDenied
+            );
+            assert!(!cache.path().join(&repo.name).join("notes").exists());
+        }
+
+        #[tokio::test]
+        async fn an_exact_chart_fails_when_its_catalog_or_its_destination_cannot_be_used() {
+            let gone = ChartRepo {
+                name: "community".into(),
+                url: closed_url(),
+                removable: true,
+            };
+            assert!(fetch_exact(
+                &FakeHost::new(),
+                Path::new("/unused"),
+                &[gone],
+                "notes",
+                "1",
+                "community"
+            )
+            .await
+            .is_err());
+            let (_server, repo) = catalog(NOTES_V1).await;
+            let file = tempfile::NamedTempFile::new().unwrap();
+            let host = pulling();
+            let e = fetch_exact(
+                &host,
+                &file.path().join("charts"),
+                &[repo],
+                "notes",
+                "1",
+                "community",
+            )
+            .await
+            .unwrap_err();
+            assert!(e.downcast_ref::<std::io::Error>().is_some(), "{e}");
+            assert!(host.calls().is_empty());
+        }
+
+        #[test]
+        fn a_cached_chart_without_a_version_is_not_used() {
+            let root = tempfile::tempdir().unwrap();
+            let dir = root.path().join(CUSTOM).join("notes");
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("Chart.yaml"), "name: notes\n").unwrap();
+            assert_eq!(cached_at_version(root.path(), CUSTOM, "notes", "1"), None);
+        }
+
+        #[tokio::test]
+        async fn a_sync_skips_unusable_names_and_carries_on_past_failed_pulls() {
+            let (_server, repo) = catalog(
+                "registry: oci://ghcr.io/x/charts\n\
+                 libraries:\n  - name: \"../evil\"\n    version: \"1\"\n  - name: yolab-common\n    version: \"1\"\n\
+                 charts:\n  - name: Bad\n    version: \"1\"\n  - name: notes\n    version: \"1\"\n",
+            )
+            .await;
+            let host = FakeHost::new().fail("helm pull", "manifest unknown");
+            let cache = tempfile::tempdir().unwrap();
+            assert_eq!(sync_repo(&host, cache.path(), &repo).await.unwrap(), 0);
+            assert!(host.ran("charts/yolab-common --version 1"));
+            assert!(host.ran("charts/notes --version 1"));
+            assert!(!host.ran("evil"));
+            assert!(!host.ran("charts/Bad"));
+        }
+
+        #[tokio::test]
+        async fn a_sync_of_every_catalog_pulls_what_moved_and_refreshes_stars_when_due() {
+            let cache = crate::charts::testing::cache_in_temp();
+            let custom = cache.dir.path().join(CUSTOM).join("mine");
+            std::fs::create_dir_all(&custom).unwrap();
+            std::fs::write(
+                custom.join("Chart.yaml"),
+                "name: mine\nversion: 1.0.0\nannotations:\n  yolab.io/github: o/mine\n",
+            )
+            .unwrap();
+            let (_catalog, official) = catalog(NOTES_V1).await;
+            let _official = crate::charts::testing::official_at(&official.url);
+            let github = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/repos/o/mine"))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_json(serde_json::json!({ "stargazers_count": 5 })),
+                )
+                .expect(1)
+                .mount(&github)
+                .await;
+            let (server, kube) = api_server().await;
+            nothing_at(&server, REPOS_PATH).await;
+            nothing_at(&server, STATS_PATH).await;
+            accepts_patches(&server, STATS_PATH).await;
+            let host = pulling();
+            let stars = std::sync::atomic::AtomicU64::new(0);
+
+            let tick = sync_all_with(&kube, &host, &stars, &github.uri())
+                .await
+                .unwrap();
+
+            assert_eq!(tick, crate::runtime::Tick::Done);
+            assert!(host.ran("helm pull oci://ghcr.io/x/charts/notes --version 1"));
+            assert!(crate::k8s::testing::patched(&server)
+                .await
+                .iter()
+                .any(|p| p["data"]["o__mine"].is_string()));
+        }
+
+        #[tokio::test]
+        async fn a_sync_with_nothing_new_asks_for_stars_only_once_an_hour() {
+            let _cache = crate::charts::testing::cache_in_temp();
+            let (_catalog, official) = catalog("registry: oci://ghcr.io/x/charts\n").await;
+            let _official = crate::charts::testing::official_at(&official.url);
+            let (server, kube) = api_server().await;
+            nothing_at(&server, REPOS_PATH).await;
+            nothing_at(&server, STATS_PATH).await;
+            let host = FakeHost::new();
+            let stars = std::sync::atomic::AtomicU64::new(0);
+
+            for _ in 0..2 {
+                assert_eq!(
+                    sync_all_with(&kube, &host, &stars, &closed_url())
+                        .await
+                        .unwrap(),
+                    crate::runtime::Tick::Done
+                );
+            }
+
+            let stats_reads = server
+                .received_requests()
+                .await
+                .unwrap()
+                .iter()
+                .filter(|r| r.url.path() == STATS_PATH)
+                .count();
+            assert_eq!(stats_reads, 1);
+            assert!(host.calls().is_empty());
+        }
+
+        #[tokio::test]
+        async fn a_catalog_that_cannot_be_read_fails_the_sync_and_names_it() {
+            let _cache = crate::charts::testing::cache_in_temp();
+            let _official = crate::charts::testing::official_at(&closed_url());
+            let stars = std::sync::atomic::AtomicU64::new(0);
+            let e = sync_all_with(
+                &crate::k8s::testing::unreachable(),
+                &FakeHost::new(),
+                &stars,
+                &closed_url(),
+            )
+            .await
+            .unwrap_err();
+            assert!(e.to_string().starts_with("official: "), "{e}");
+        }
+
+        #[tokio::test]
+        async fn the_chart_sync_runs_on_every_machine_every_ten_minutes_after_the_kube_api() {
+            use crate::runtime::Resource as _;
+            let c = ChartSyncController;
+            assert_eq!(c.name(), "chart-sync");
+            assert_eq!(c.scope(), crate::runtime::Scope::Node);
+            assert_eq!(c.interval(), CHART_SYNC_EVERY);
+            assert_eq!(c.depends_on(), &[crate::runtime::KUBE_API]);
+            assert!(c
+                .converge(&ctx_with(crate::k8s::Kube::from_environment()))
+                .await
+                .is_err());
+
+            let _cache = crate::charts::testing::cache_in_temp();
+            let (_catalog, official) = catalog("registry: oci://ghcr.io/x/charts\n").await;
+            let _official = crate::charts::testing::official_at(&official.url);
+            let (server, kube) = api_server().await;
+            nothing_at(&server, REPOS_PATH).await;
+            nothing_at(&server, STATS_PATH).await;
+            assert_eq!(
+                c.converge(&ctx_with(crate::k8s::Kube::with(kube)))
+                    .await
+                    .unwrap(),
+                crate::runtime::Tick::Done
+            );
         }
     }
 }

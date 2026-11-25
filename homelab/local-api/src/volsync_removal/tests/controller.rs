@@ -130,3 +130,51 @@ async fn a_replication_list_the_api_refuses_stops_the_survey() {
         .await;
     assert!(VolsyncRemovalController.converge(&ctx(kube)).await.is_err());
 }
+
+async fn converge_refusing(at: &str) -> anyhow::Result<Tick> {
+    let (server, kube) = api_server().await;
+    Mock::given(path(at))
+        .respond_with(ResponseTemplate::new(500).set_body_json(status(500, "InternalError")))
+        .mount(&server)
+        .await;
+    serve(&server, CLAIMS, 200, list("PersistentVolumeClaim", vec![])).await;
+    otherwise_absent(&server).await;
+    VolsyncRemovalController.converge(&ctx(kube)).await
+}
+
+#[tokio::test]
+async fn any_lookup_the_api_refuses_stops_the_survey_before_anything_is_deleted() {
+    for at in [
+        CLAIMS,
+        "/apis/helm.cattle.io/v1/namespaces/kube-system/helmcharts/volsync",
+        "/apis/apiextensions.k8s.io/v1/customresourcedefinitions/replicationsources.volsync.backube",
+        "/api/v1/namespaces/volsync-system",
+    ] {
+        assert!(converge_refusing(at).await.is_err(), "{at}");
+    }
+}
+
+#[tokio::test]
+async fn a_delete_the_api_refuses_fails_the_tick() {
+    let (server, kube) = api_server().await;
+    serve(
+        &server,
+        SOURCES,
+        200,
+        list(
+            "ReplicationSource",
+            vec![serde_json::json!({
+                "apiVersion": API, "kind": "ReplicationSource",
+                "metadata": { "namespace": "yolab-notes", "name": "volsync-notes-data" },
+            })],
+        ),
+    )
+    .await;
+    serve(&server, CLAIMS, 200, list("PersistentVolumeClaim", vec![])).await;
+    Mock::given(method("DELETE"))
+        .respond_with(ResponseTemplate::new(500).set_body_json(status(500, "InternalError")))
+        .mount(&server)
+        .await;
+    otherwise_absent(&server).await;
+    assert!(VolsyncRemovalController.converge(&ctx(kube)).await.is_err());
+}

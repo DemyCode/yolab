@@ -230,3 +230,16 @@ async fn a_marker_that_cannot_be_written_leaves_the_recovery_to_run_again() {
     plugin_pods_deleted(&server, 200).await;
     assert!(once_per_boot(&marker, &client).await.is_err());
 }
+
+#[tokio::test]
+async fn a_machine_that_cannot_join_the_cluster_is_a_tick_error() {
+    let mut joining = env();
+    joining.join_seed_addr = "fd00::9".into();
+    let host = FakeHost::new();
+    let err = CephJoinController { env: joining }
+        .converge(&ctx(host.clone()))
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("no tunnel.account_token"), "{err}");
+    assert!(!host.ran("systemctl"));
+}

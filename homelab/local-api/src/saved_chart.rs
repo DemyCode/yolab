@@ -62,7 +62,11 @@ async fn run<H: Host>(host: &H, bin: &str, args: &[&str]) -> anyhow::Result<()> 
 }
 
 pub(crate) async fn package<H: Host>(host: &H, chart_dir: &Path) -> anyhow::Result<Vec<u8>> {
-    let out = tempfile::tempdir()?;
+    package_in(host, chart_dir, &std::env::temp_dir()).await
+}
+
+async fn package_in<H: Host>(host: &H, chart_dir: &Path, base: &Path) -> anyhow::Result<Vec<u8>> {
+    let out = tempfile::tempdir_in(base)?;
     run(
         host,
         "helm",
@@ -180,11 +184,22 @@ pub(crate) async fn unpack<H: Host>(
     tgz: &[u8],
     app_id: &str,
 ) -> anyhow::Result<Unpacked> {
-    let dir = tempfile::tempdir()?;
+    unpack_in(host, tgz, app_id, &std::env::temp_dir()).await
+}
+
+async fn unpack_in<H: Host>(
+    host: &H,
+    tgz: &[u8],
+    app_id: &str,
+    base: &Path,
+) -> anyhow::Result<Unpacked> {
+    let dir = tempfile::tempdir_in(base).and_then(|dir| {
+        std::fs::write(dir.path().join(KEY), tgz)
+            .and_then(|()| std::fs::create_dir_all(dir.path().join("charts")))
+            .map(|()| dir)
+    })?;
     let archive = dir.path().join(KEY);
-    tokio::fs::write(&archive, tgz).await?;
     let charts = dir.path().join("charts");
-    tokio::fs::create_dir_all(&charts).await?;
     run(
         host,
         "tar",
@@ -301,5 +316,200 @@ mod tests {
         let host = FakeHost::new().ok("tar -xzf", "");
         let e = unpack(&host, &[1, 2, 3], "immich").await.err().unwrap();
         assert!(e.to_string().contains("not immich"), "{e}");
+    }
+
+    fn packaging(size: usize) -> FakeHost {
+        FakeHost::new().ok("helm package", "").effect(
+            "helm package",
+            move |_: &str, args: &[&str]| {
+                std::fs::write(format!("{}/notes-0.1.0.tgz", args[3]), vec![7u8; size]).unwrap();
+            },
+        )
+    }
+
+    fn untarring(app: &'static str) -> FakeHost {
+        FakeHost::new()
+            .ok("tar -xzf", "")
+            .effect("tar -xzf", move |_: &str, args: &[&str]| {
+                let root = format!("{}/{app}", args[3]);
+                std::fs::create_dir_all(&root).unwrap();
+                std::fs::write(format!("{root}/Chart.yaml"), "name: x").unwrap();
+            })
+    }
+
+    async fn saving(prepare: impl FnOnce(&Path)) -> (anyhow::Result<()>, Vec<Value>) {
+        let (server, client) = crate::k8s::testing::api_server().await;
+        crate::k8s::testing::accept_patches(&server).await;
+        let dir = tempfile::tempdir().unwrap();
+        prepare(dir.path());
+        let result = save(&packaging(3), &client, "yolab-x", dir.path()).await;
+        (result, crate::k8s::testing::patched(&server).await)
+    }
+
+    #[test]
+    fn objects_without_items_hold_no_chart_and_no_schema() {
+        assert_eq!(in_objects(&json!({})), None);
+        assert_eq!(schema_in_objects(&json!({})), None);
+    }
+
+    #[tokio::test]
+    async fn the_chart_helm_packaged_is_read_back_whole() {
+        let host = packaging(5);
+        let bytes = package(&host, Path::new("/nowhere/notes")).await.unwrap();
+        assert_eq!(bytes, vec![7u8; 5]);
+    }
+
+    #[tokio::test]
+    async fn a_chart_too_big_for_a_config_map_is_refused() {
+        let host = packaging(MAX_BYTES + 1);
+        let e = package(&host, Path::new("/nowhere/notes"))
+            .await
+            .unwrap_err();
+        assert!(e.to_string().contains("more than the 900 KiB"), "{e}");
+    }
+
+    #[tokio::test]
+    async fn helm_that_cannot_start_is_an_error() {
+        let host = FakeHost::new().unstartable("helm package");
+        assert!(package(&host, Path::new("/nowhere/notes")).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_scratch_folder_that_cannot_be_made_is_an_error() {
+        let host = FakeHost::new();
+        let base = Path::new("/yolab-no-such-dir");
+        assert!(package_in(&host, Path::new("/nowhere/notes"), base)
+            .await
+            .is_err());
+        assert!(unpack_in(&host, &[1], "notes", base).await.is_err());
+        assert!(host.calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_destination_that_vanished_before_reading_is_an_error() {
+        let host = FakeHost::new().ok("helm package", "").effect(
+            "helm package",
+            |_: &str, args: &[&str]| {
+                std::fs::remove_dir(args[3]).unwrap();
+            },
+        );
+        assert!(package(&host, Path::new("/nowhere/notes")).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_packaged_chart_that_cannot_be_read_is_an_error() {
+        let host = FakeHost::new().ok("helm package", "").effect(
+            "helm package",
+            |_: &str, args: &[&str]| {
+                std::fs::create_dir(format!("{}/notes.tgz", args[3])).unwrap();
+            },
+        );
+        assert!(package(&host, Path::new("/nowhere/notes")).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn an_archive_holding_the_app_unpacks_to_its_chart_folder() {
+        let host = untarring("notes");
+        let unpacked = unpack(&host, &[1, 2, 3], "notes").await.unwrap();
+        assert!(unpacked.chart_dir().ends_with("charts/notes"));
+        assert!(unpacked.chart_dir().join("Chart.yaml").is_file());
+    }
+
+    #[tokio::test]
+    async fn an_archive_tar_cannot_read_is_refused_with_tars_reason() {
+        let host = FakeHost::new().fail("tar -xzf", "gzip: stdin: not in gzip format");
+        let e = unpack(&host, &[1, 2, 3], "notes").await.err().unwrap();
+        assert!(e.to_string().contains("not in gzip format"), "{e}");
+    }
+
+    #[tokio::test]
+    async fn a_chart_that_cannot_be_packaged_is_not_saved() {
+        let host = FakeHost::new().fail("helm package", "broken");
+        let client = crate::k8s::testing::unreachable();
+        let saved = save(&host, &client, "yolab-x", Path::new("/nowhere/notes")).await;
+        assert!(saved.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_chart_the_api_cannot_take_is_an_error() {
+        let client = crate::k8s::testing::unreachable();
+        let dir = tempfile::tempdir().unwrap();
+        assert!(save(&packaging(3), &client, "yolab-x", dir.path())
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn a_chart_without_a_schema_is_saved_with_a_null_schema() {
+        let (result, patched) = saving(|_| {}).await;
+        result.unwrap();
+        assert_eq!(patched.len(), 2);
+        assert_eq!(tgz_of(&patched[0]), Some(vec![7u8; 3]));
+        assert_eq!(schema_of(&patched[1]), Some(Value::Null));
+    }
+
+    #[tokio::test]
+    async fn a_chart_with_a_schema_is_saved_with_that_schema() {
+        let (result, patched) = saving(|dir| {
+            std::fs::write(dir.join("values.schema.json"), r#"{"type":"object"}"#).unwrap();
+        })
+        .await;
+        result.unwrap();
+        assert_eq!(schema_of(&patched[1]), Some(json!({ "type": "object" })));
+    }
+
+    #[tokio::test]
+    async fn a_schema_that_is_not_json_is_an_error_and_is_not_saved() {
+        let (result, patched) = saving(|dir| {
+            std::fs::write(dir.join("values.schema.json"), "{not json").unwrap();
+        })
+        .await;
+        let e = result.unwrap_err();
+        assert!(e.to_string().contains("is not valid JSON"), "{e}");
+        assert_eq!(patched.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_schema_that_cannot_be_read_is_an_error() {
+        let (result, patched) = saving(|dir| {
+            std::fs::create_dir(dir.join("values.schema.json")).unwrap();
+        })
+        .await;
+        let e = result.unwrap_err();
+        assert!(e.to_string().starts_with("read "), "{e}");
+        assert_eq!(patched.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn every_namespace_with_a_readable_schema_is_listed_by_namespace() {
+        let (server, client) = crate::k8s::testing::api_server().await;
+        let named = schema_manifest("yolab-a", &json!({ "type": "object" }));
+        let garbled = json!({
+            "metadata": { "name": SCHEMA_MAP, "namespace": "yolab-b" },
+            "data": { SCHEMA_KEY: "{" },
+        });
+        let homeless = json!({
+            "metadata": { "name": SCHEMA_MAP },
+            "data": { SCHEMA_KEY: "{}" },
+        });
+        crate::k8s::testing::serve(
+            &server,
+            "/api/v1/configmaps",
+            200,
+            crate::k8s::testing::list("ConfigMap", vec![named, garbled, homeless]),
+        )
+        .await;
+        let schemas = all_schemas(&client).await.unwrap();
+        assert_eq!(
+            schemas,
+            std::collections::HashMap::from([("yolab-a".to_string(), json!({ "type": "object" }))])
+        );
+    }
+
+    #[tokio::test]
+    async fn an_api_that_cannot_be_reached_is_an_error_not_no_chart_or_schema() {
+        let client = crate::k8s::testing::unreachable();
+        assert!(all_schemas(&client).await.is_err());
+        assert!(read(&client, "yolab-x").await.is_err());
     }
 }

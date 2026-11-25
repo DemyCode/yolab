@@ -211,5 +211,113 @@ mod tests {
             assert!(ensure(&host).await.is_err());
             assert!(!host.ran("ceph osd pool create") && !host.ran("ceph fs new"));
         }
+
+        const UP: &str = r#"{"num_osds": 1, "num_up_osds": 1, "num_in_osds": 1}"#;
+
+        #[tokio::test]
+        async fn the_cephfs_controller_runs_cluster_wide_every_two_minutes_after_ceph_and_kube() {
+            use crate::runtime::Resource as _;
+            let c = CephFsController;
+            assert_eq!(c.name(), "cephfs");
+            assert_eq!(c.scope(), Scope::Cluster);
+            assert_eq!(c.interval(), Duration::from_secs(120));
+            assert_eq!(
+                c.depends_on(),
+                &[crate::runtime::CEPH, crate::runtime::KUBE_API]
+            );
+            assert_eq!(c.pauses_during(), &[Activity::Restore]);
+            let host = FakeHost::new().ok(
+                "ceph osd stat",
+                r#"{"num_osds": 1, "num_up_osds": 0, "num_in_osds": 0}"#,
+            );
+            let ctx = Ctx {
+                node: "node1".into(),
+                tools: crate::tools::Tools {
+                    host: host.clone(),
+                    kube: crate::k8s::Kube::with(crate::k8s::testing::unreachable()),
+                    http: crate::http::client(),
+                },
+            };
+            assert_eq!(
+                c.converge(&ctx).await.unwrap(),
+                Tick::Idle("no OSD is up yet".into())
+            );
+            assert!(host.ran("ceph osd stat"));
+        }
+
+        #[tokio::test]
+        async fn an_unreadable_osd_stat_is_an_error() {
+            let host = FakeHost::new().fail("ceph osd stat", "timed out");
+            assert!(ensure(&host).await.is_err());
+            assert!(!host.ran("ceph fs ls"));
+        }
+
+        #[tokio::test]
+        async fn an_unreadable_subvolume_group_list_on_an_existing_filesystem_is_an_error() {
+            let host = FakeHost::new()
+                .ok("ceph osd stat", UP)
+                .ok("ceph fs ls", r#"[{"name": "yolab-fs"}]"#)
+                .fail("ceph fs subvolumegroup ls", "timed out");
+            assert!(ensure(&host).await.is_err());
+            assert!(!host.ran("ceph fs subvolumegroup create"));
+        }
+
+        #[tokio::test]
+        async fn an_unreadable_pool_list_stops_before_any_pool_is_made() {
+            let host = FakeHost::new()
+                .ok("ceph osd stat", UP)
+                .ok("ceph fs ls", "[]")
+                .fail("ceph osd pool ls", "timed out");
+            assert!(ensure(&host).await.is_err());
+            assert!(!host.ran("ceph osd pool create"));
+        }
+
+        #[tokio::test]
+        async fn a_pool_that_cannot_be_made_stops_before_its_size_is_set() {
+            let host = FakeHost::new()
+                .ok("ceph osd stat", UP)
+                .ok("ceph fs ls", "[]")
+                .ok("ceph osd pool ls", "")
+                .fail("ceph osd pool create", "no space");
+            assert!(ensure(&host).await.is_err());
+            assert!(!host.ran("ceph osd pool set"));
+        }
+
+        #[tokio::test]
+        async fn a_pool_size_that_cannot_be_set_stops_before_the_filesystem_is_made() {
+            let host = FakeHost::new()
+                .ok("ceph osd stat", UP)
+                .ok("ceph fs ls", "[]")
+                .ok("ceph osd pool ls", "")
+                .ok("ceph osd pool create", "")
+                .fail("ceph osd pool set", "refused");
+            assert!(ensure(&host).await.is_err());
+            assert!(!host.ran("ceph fs new"));
+        }
+
+        #[tokio::test]
+        async fn a_filesystem_that_cannot_be_made_stops_before_its_subvolume_group() {
+            let host = FakeHost::new()
+                .ok("ceph osd stat", UP)
+                .ok("ceph fs ls", "[]")
+                .ok("ceph osd pool ls", "yolab-fs-metadata\nyolab-fs-data0\n")
+                .fail("ceph fs new", "refused");
+            assert!(ensure(&host).await.is_err());
+            assert!(!host.ran("ceph osd pool create"));
+            assert!(!host.ran("ceph fs subvolumegroup"));
+        }
+
+        #[tokio::test]
+        async fn a_subvolume_group_that_cannot_be_made_after_the_filesystem_is_an_error() {
+            let host = FakeHost::new()
+                .ok("ceph osd stat", UP)
+                .ok("ceph fs ls", "[]")
+                .ok("ceph osd pool ls", "yolab-fs-metadata\nyolab-fs-data0\n")
+                .ok("ceph fs new", "")
+                .ok("ceph fs subvolumegroup ls", "[]")
+                .fail("ceph fs subvolumegroup create", "refused");
+            assert!(ensure(&host).await.is_err());
+            assert!(host.ran("ceph fs subvolumegroup create yolab-fs csi"));
+        }
     }
 }

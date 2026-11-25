@@ -305,6 +305,15 @@ mod tests {
         assert!(!res.truncated);
     }
 
+    #[tokio::test]
+    async fn a_journalctl_that_cannot_start_is_an_empty_page_not_an_error() {
+        let host = FakeHost::new().unstartable("journalctl");
+        let res = read_logs(&host, &query()).await;
+        assert!(res.entries.is_empty());
+        assert!(res.units.is_empty());
+        assert!(!res.truncated);
+    }
+
     #[test]
     fn an_entry_without_a_readable_time_or_text_keeps_its_place_with_blanks() {
         let raw = r#"{"__REALTIME_TIMESTAMP":"soon","_SYSTEMD_UNIT":"k3s.service","MESSAGE":null}"#;

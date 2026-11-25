@@ -374,15 +374,8 @@ mod tests {
         let _boot_unit = lock::try_acquire_in(&locks(), &lock_name("images-rbd"))
             .unwrap()
             .unwrap();
-        let ran = std::sync::atomic::AtomicBool::new(false);
-        let tick = locked("images-rbd", || async {
-            ran.store(true, std::sync::atomic::Ordering::SeqCst);
-            Ok::<(), anyhow::Error>(())
-        })
-        .await
-        .unwrap();
+        let tick = locked("images-rbd", time_out).await.unwrap();
         assert!(matches!(tick, Tick::Idle(_)));
-        assert!(!ran.load(std::sync::atomic::Ordering::SeqCst));
     }
 
     async fn succeed() -> Result<()> {

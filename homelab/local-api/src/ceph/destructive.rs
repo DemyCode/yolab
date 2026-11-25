@@ -372,6 +372,20 @@ mod tests {
         assert_eq!(dumps, 2);
     }
 
+    #[tokio::test]
+    async fn an_unreadable_osdmap_is_an_error_and_nothing_is_purged() {
+        let host = FakeHost::new()
+            .ok(
+                "ceph osd safe-to-destroy osd.3",
+                r#"{"safe_to_destroy":[3]}"#,
+            )
+            .fail("ceph osd dump", "timed out")
+            .ok("ceph osd purge-actual osd.3", "");
+        let proof = safe_to_destroy(&host, 3).await.unwrap().unwrap();
+        assert!(purge_safe(&host, proof).await.is_err());
+        assert!(!host.ran("purge-actual"));
+    }
+
     #[tokio::test(start_paused = true)]
     async fn an_osd_the_mon_still_sees_up_is_never_purged() {
         let host = FakeHost::new()

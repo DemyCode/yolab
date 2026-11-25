@@ -141,6 +141,14 @@ impl Channel {
 
 pub const FLAKE_TARGET: &str = "yolab";
 
+fn port_from(var: Result<String, std::env::VarError>) -> u16 {
+    var.map(|v| {
+        v.parse()
+            .unwrap_or_else(|e| panic!("YOLAB_PORT={v:?} is not a port number: {e}"))
+    })
+    .unwrap_or(3001)
+}
+
 #[derive(Clone, Debug)]
 pub struct Config {
     pub machine_dir: String,
@@ -174,12 +182,7 @@ impl Config {
                 .unwrap_or_else(|_| format!("{machine_dir}/config.toml")),
             machine_dir,
             node_ipv6: std::env::var("YOLAB_NODE_IPV6").unwrap_or_else(|_| "::1".into()),
-            port: std::env::var("YOLAB_PORT")
-                .map(|v| {
-                    v.parse()
-                        .unwrap_or_else(|e| panic!("YOLAB_PORT={v:?} is not a port number: {e}"))
-                })
-                .unwrap_or(3001),
+            port: port_from(std::env::var("YOLAB_PORT")),
             rebuild_log: PathBuf::from("/var/log/yolab-rebuild.log"),
             rebuild_pid: PathBuf::from("/run/yolab-rebuild.pid"),
             channel_file: built_dir.join("channel.json"),
@@ -477,5 +480,79 @@ mod tests {
                 "body: {body}"
             );
         }
+    }
+
+    #[test]
+    fn a_node_section_without_a_k3s_token_gives_no_cluster_token() {
+        let (_d, no_k3s) = config_with("[node]\nhostname = \"yolab\"\n");
+        assert_eq!(no_k3s.cluster_token(), "");
+        let (_d, no_token) = config_with("[node.k3s]\nserver = \"x\"\n");
+        assert_eq!(no_token.cluster_token(), "");
+    }
+
+    #[test]
+    fn a_zero_length_subnet_holds_every_ipv6_address() {
+        let any = parse_subnet("fd00::/0").unwrap();
+        assert!(subnet_contains(any, "2001:db8::1".parse().unwrap()));
+    }
+
+    #[test]
+    fn a_private_file_needs_a_directory_to_live_in() {
+        assert_eq!(
+            write_private_file(std::path::Path::new("/"), b"x")
+                .unwrap_err()
+                .to_string(),
+            "a path without a directory"
+        );
+    }
+
+    #[test]
+    fn a_private_file_that_cannot_be_written_is_an_error_and_replaces_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("secret.json");
+        std::os::unix::fs::symlink("/dev/full", dir.path().join("secret.tmp")).unwrap();
+        assert!(write_private_file(&path, b"x").is_err());
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn a_private_file_that_cannot_be_synced_is_an_error_and_replaces_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("secret.json");
+        std::os::unix::fs::symlink("/dev/null", dir.path().join("secret.tmp")).unwrap();
+        assert!(write_private_file(&path, b"x").is_err());
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn an_unreadable_channel_file_falls_back_to_the_default_and_cannot_be_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = channel_cfg(&dir);
+        std::fs::create_dir_all(&cfg.channel_file).unwrap();
+        assert_eq!(cfg.channel(), Channel::default());
+        assert!(cfg.write_channel(&Channel::default()).is_err());
+    }
+
+    #[test]
+    fn no_private_subnet_or_tunnel_without_a_readable_node_section() {
+        let missing = Config::for_test(std::path::Path::new("/nonexistent/config.toml"));
+        assert_eq!(missing.private_subnet(), None);
+        assert_eq!(missing.tunnel_table(), None);
+        let (_d, no_node) = config_with("[tunnel]\naccount_token = \"t\"\n");
+        assert_eq!(no_node.private_subnet(), None);
+        let (_d, not_text) = config_with("[node]\nsub_ipv6_private_subnet = 5\n");
+        assert_eq!(not_text.private_subnet(), None);
+    }
+
+    #[test]
+    fn the_port_defaults_to_3001_and_follows_yolab_port() {
+        assert_eq!(port_from(Err(std::env::VarError::NotPresent)), 3001);
+        assert_eq!(port_from(Ok("8080".into())), 8080);
+    }
+
+    #[test]
+    #[should_panic(expected = "is not a port number")]
+    fn a_yolab_port_that_is_not_a_number_stops_the_api() {
+        port_from(Ok("http".into()));
     }
 }

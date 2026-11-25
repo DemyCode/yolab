@@ -48,14 +48,14 @@ fn want_mb(total_mb: u64, replicas: u64, hosts: u64, share_of_pool: f64, min_siz
     want.min(cap_mb)
 }
 
-pub async fn compute<H: Host>(host: &H, policy: &SizingPolicy) -> anyhow::Result<Option<u64>> {
+pub async fn compute<H: Host>(host: &H, policy: &SizingPolicy) -> Option<u64> {
     let Some(hosts) = host
         .ceph_json(&["osd", "tree"])
         .await
         .ok_or_warn("images: read the osd tree to size the images disk")
         .map(|v| host_count(&v))
     else {
-        return Ok(None);
+        return None;
     };
 
     let Some(t_mb) = host
@@ -64,7 +64,7 @@ pub async fn compute<H: Host>(host: &H, policy: &SizingPolicy) -> anyhow::Result
         .ok_or_warn("images: read ceph df to size the images disk")
         .and_then(|v| total_mb(&v))
     else {
-        return Ok(None);
+        return None;
     };
 
     let Some(replicas) = host
@@ -76,16 +76,16 @@ pub async fn compute<H: Host>(host: &H, policy: &SizingPolicy) -> anyhow::Result
         ))
         .map(|v| replica_count(&v))
     else {
-        return Ok(None);
+        return None;
     };
 
-    Ok(Some(want_mb(
+    Some(want_mb(
         t_mb,
         replicas,
         hosts,
         policy.share_of_pool,
         policy.min_size_gb,
-    )))
+    ))
 }
 
 #[cfg(test)]
@@ -161,7 +161,7 @@ mod tests {
             share_of_pool: 0.25,
             min_size_gb: 40,
         };
-        assert_eq!(compute(&host, &policy).await.unwrap(), None);
+        assert_eq!(compute(&host, &policy).await, None);
     }
 
     #[tokio::test]
@@ -175,7 +175,7 @@ mod tests {
             share_of_pool: 0.25,
             min_size_gb: 40,
         };
-        assert_eq!(compute(&host, &policy).await.unwrap(), Some(250_000));
+        assert_eq!(compute(&host, &policy).await, Some(250_000));
     }
 
     #[tokio::test]
@@ -192,7 +192,7 @@ mod tests {
             share_of_pool: 0.25,
             min_size_gb: 40,
         };
-        assert_eq!(compute(&host, &policy).await.unwrap(), None);
+        assert_eq!(compute(&host, &policy).await, None);
     }
 
     #[tokio::test]
@@ -206,6 +206,6 @@ mod tests {
             share_of_pool: 0.25,
             min_size_gb: 40,
         };
-        assert_eq!(compute(&host, &policy).await.unwrap(), None);
+        assert_eq!(compute(&host, &policy).await, None);
     }
 }

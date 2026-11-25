@@ -53,21 +53,21 @@ pub(crate) async fn drive_teardown<H: crate::host::Host + Clone + 'static>(
     }
 }
 
-pub(crate) fn uninstall_request(delete: &[String], delete_backups: bool) -> anyhow::Result<Value> {
+pub(crate) fn uninstall_request(delete: &[String], delete_backups: bool) -> Value {
     let doomed = match delete {
         [] => Value::Null,
-        folders => Value::String(serde_json::to_string(folders)?),
+        folders => Value::String(Value::from(folders).to_string()),
     };
     let backups = if delete_backups {
         Value::String("true".into())
     } else {
         Value::Null
     };
-    Ok(serde_json::json!({
+    serde_json::json!({
         ANN_UNINSTALLING: chrono::Utc::now().to_rfc3339(),
         ANN_DELETE_FOLDERS: doomed,
         ANN_DELETE_BACKUPS: backups,
-    }))
+    })
 }
 
 pub(crate) async fn register_uninstall(
@@ -88,7 +88,7 @@ pub(crate) async fn register_uninstall(
     }
     let mut request = namespace_ref(ns);
     request["metadata"]["resourceVersion"] = existing["metadata"]["resourceVersion"].clone();
-    request["metadata"]["annotations"] = uninstall_request(delete, delete_backups)?;
+    request["metadata"]["annotations"] = uninstall_request(delete, delete_backups);
     match crate::k8s::merge_patch(client, &request).await {
         Ok(()) => Ok(true),
         Err(e) if crate::k8s::refused_with(&e, 409) => Ok(false),

@@ -288,3 +288,108 @@ fn a_chart_without_a_display_name_shows_its_chart_name() {
         "Named Thing"
     );
 }
+
+async fn a_catalog_serving(body: &str) -> MockServer {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/catalog.yaml"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(body))
+        .mount(&server)
+        .await;
+    server
+}
+
+async fn a_cluster_with_repo(catalog: &MockServer) -> (MockServer, kube::Client) {
+    let (server, kube) = api_server().await;
+    repos_accept_changes(&server).await;
+    serve(
+        &server,
+        REPOS,
+        200,
+        json!({
+            "apiVersion": "v1", "kind": "ConfigMap",
+            "metadata": { "name": "yolab-chart-repos" },
+            "data": { "mine": format!("{}/catalog.yaml", catalog.uri()) },
+        }),
+    )
+    .await;
+    (server, kube)
+}
+
+#[tokio::test]
+async fn a_repository_that_syncs_is_reported_ok_and_an_unreadable_folder_is_skipped() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let cache = crate::charts::testing::cache_in_temp();
+    let catalog = a_catalog_serving("registry: oci://ghcr.io/x/charts\ncharts: []\n").await;
+    let (_server, kube) = a_cluster_with_repo(&catalog).await;
+    let api = TestApi::with_kube(kube).with_peer_token();
+
+    let res = api
+        .post(
+            "/api/apps/repos",
+            r#"{"name":"mine","url":"https://charts.example/catalog.yaml"}"#,
+        )
+        .await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+    assert_eq!(res.json(), json!({ "ok": true }));
+
+    let res = api.post("/api/apps/repos/sync", "").await;
+    assert_eq!(res.json()["mine"], json!({ "ok": true, "charts": 0 }));
+
+    chart_with(cache.dir.path(), "custom", "notes", "");
+    let locked = cache.dir.path().join("custom");
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let res = api.get("/api/apps/catalog").await;
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+    assert_eq!(res.json(), json!([]));
+}
+
+#[tokio::test]
+async fn a_refreshed_chart_is_fetched_and_shown_from_its_catalog() {
+    let _cache = crate::charts::testing::cache_in_temp();
+    let catalog = a_catalog_serving(
+        "registry: oci://ghcr.io/x/charts\ncharts:\n  - name: notes\n    version: \"2.0.0\"\n",
+    )
+    .await;
+    let (_server, kube) = a_cluster_with_repo(&catalog).await;
+    let host = crate::host::fake::FakeHost::new()
+        .ok("helm pull", "")
+        .effect("helm pull", |_, args| {
+            let dir = std::path::Path::new(args[6]).join("notes");
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                dir.join("Chart.yaml"),
+                format!("apiVersion: v2\nname: notes\nversion: {}\n", args[3]),
+            )
+            .unwrap();
+        });
+    let res = TestApi::with_kube_and_host(kube, host)
+        .with_peer_token()
+        .post("/api/apps/catalog/notes/refresh", "")
+        .await;
+    assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+    let body = res.json();
+    assert_eq!(body["refreshed"], true);
+    assert_eq!(body["note"], "");
+    assert_eq!(body["app"]["id"], "notes");
+}
+
+#[tokio::test]
+async fn refreshing_a_chart_no_catalog_folder_holds_finds_no_app() {
+    let cache = crate::charts::testing::cache_in_temp();
+    chart_with(cache.dir.path(), "custom", "other", "");
+    let (_server, kube) = a_cluster_with_stars().await;
+    let res = TestApi::with_kube(kube)
+        .with_peer_token()
+        .post("/api/apps/catalog/missing/refresh", "")
+        .await;
+    assert_eq!(res.json()["app"], Value::Null);
+}
+
+#[test]
+fn a_chart_whose_chart_file_is_not_valid_is_not_a_chart() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("Chart.yaml"), "version: [unclosed\n").unwrap();
+    assert!(read_chart(dir.path()).is_none());
+}

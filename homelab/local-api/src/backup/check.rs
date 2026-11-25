@@ -288,6 +288,19 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_check_with_no_words_says_how_many_problems_restic_counted() {
+        assert_eq!(
+            verdict(false, "", " \n"),
+            Verdict::Broken("restic found 0 problem(s)".into())
+        );
+        let summary = r#"{"message_type":"summary","num_errors":2,"suggest_repair_index":false}"#;
+        assert_eq!(
+            verdict(true, summary, ""),
+            Verdict::Broken("restic found 2 problem(s)".into())
+        );
+    }
+
+    #[test]
     fn each_store_is_checked_once_a_week() {
         let now = Utc::now();
         let at = |days: i64| Checked {
@@ -402,6 +415,18 @@ mod against_restic {
             .ok("restic check", DAMAGED_INDEX)
             .unstartable("restic repair");
         assert!(checked(repair_unstartable).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_check_that_cannot_start_again_after_a_repair_is_an_error() {
+        let host = FakeHost::new()
+            .ok("restic check", DAMAGED_INDEX)
+            .ok("restic repair index", "");
+        let later = host.clone();
+        let host = host.effect("restic repair index", move |_: &str, _: &[&str]| {
+            later.clone().unstartable("restic check");
+        });
+        assert!(checked(host).await.is_err());
     }
 
     async fn backups_enabled(server: &MockServer, on: bool) {
@@ -545,6 +570,56 @@ mod against_restic {
             matches!(t, Tick::Idle(why) if why == "cluster-backup is in use, it is checked later")
         );
         assert!(written(&server).await.is_empty());
+    }
+
+    async fn enabled_with(
+        sizes: Option<Value>,
+        checks: Option<Value>,
+    ) -> (MockServer, kube::Client) {
+        let (server, kube) = api_server().await;
+        backups_enabled(&server, true).await;
+        record(&server, "yolab-backup-sizes", "services", sizes).await;
+        record(&server, "yolab-backup-checks", "stores", checks).await;
+        (server, kube)
+    }
+
+    #[tokio::test]
+    async fn unreadable_sizes_or_checks_are_errors_not_a_quiet_week() {
+        let (_server, kube) = enabled_with(Some(json!("garbage")), None).await;
+        let host = FakeHost::new().ok("restic check", CLEAN);
+        assert!(check_due(&Backend { kube, host }).await.is_err());
+        let (_server, kube) = enabled_with(None, Some(json!("garbage"))).await;
+        let host = FakeHost::new().ok("restic check", CLEAN);
+        assert!(check_due(&Backend { kube, host }).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_check_that_cannot_start_is_an_error_and_nothing_is_recorded() {
+        let (server, kube) = enabled_with(None, None).await;
+        accept_writes(&server).await;
+        let host = FakeHost::new().unstartable("restic check");
+        assert!(check_due(&Backend { kube, host }).await.is_err());
+        assert!(written(&server).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_result_that_cannot_be_recorded_is_an_error() {
+        let (server, kube) = enabled_with(None, None).await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(500).set_body_json(status(500, "InternalError")))
+            .mount(&server)
+            .await;
+        let host = FakeHost::new().ok("restic check", CLEAN);
+        assert!(check_due(&Backend { kube, host }).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn the_check_controller_without_a_cluster_is_an_error() {
+        let ctx = Ctx {
+            node: "node1".into(),
+            tools: crate::tools::Tools::real(),
+        };
+        assert!(BackupCheckController.converge(&ctx).await.is_err());
     }
 
     #[tokio::test]

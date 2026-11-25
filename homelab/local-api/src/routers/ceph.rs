@@ -815,6 +815,15 @@ mod tests {
     }
 
     #[test]
+    fn an_incomplete_pg_of_a_pool_the_dump_does_not_list_is_lost_without_a_pool_name() {
+        let dump = dump_with_osds(json!([pool(2, "yolab-fs-metadata", 2)]), json!([osd(0, 1)]));
+        let loss = compute_pg_loss(&dump, &pg_acting("9.a", "incomplete", json!([0]))).unwrap();
+        assert!(loss.unrecoverable && loss.confirmed_lost);
+        assert_eq!(loss.unrecoverable_pools, Vec::<String>::new());
+        assert_eq!(loss.confirmed_lost_pools, Vec::<String>::new());
+    }
+
+    #[test]
     fn the_purge_gate_still_refuses_while_a_daemon_is_only_down() {
         let dump = dump_with_osds(
             json!([pool(2, "yolab-fs-metadata", 1)]),
@@ -1387,6 +1396,31 @@ mod dashboard_tests {
         assert_eq!(res.status(), StatusCode::BAD_GATEWAY);
     }
 
+    #[tokio::test]
+    async fn a_request_with_no_path_reaches_the_dashboards_root() {
+        let (server, port) = mgr(|_| {
+            Mock::given(matchers::method("GET"))
+                .and(matchers::path("/"))
+                .respond_with(ResponseTemplate::new(200).set_body_string("root"))
+                .expect(1)
+        })
+        .await;
+        let bare = axum::http::Request::builder()
+            .method("GET")
+            .uri("node3:7000")
+            .body(Body::empty())
+            .unwrap();
+        let res = proxy_via(
+            &mgr_serving(port),
+            &crate::http::client_without_redirects(),
+            bare,
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(body_of(res).await, "root");
+        drop(server);
+    }
+
     #[test]
     fn the_dashboard_password_is_offered_once_it_exists() {
         let dir = tempfile::tempdir().unwrap();
@@ -1858,6 +1892,27 @@ mod machine_health_tests {
         async fn osds_that_are_in_but_not_yet_up_mean_disks_are_still_being_prepared() {
             let host = machine(DF, "", r#"{"num_up_osds": 1, "num_in_osds": 2}"#);
             assert!(compute_cluster_health(&host, None).await.provisioning);
+        }
+
+        #[tokio::test]
+        async fn checks_that_are_not_a_map_or_are_routine_raise_no_issue() {
+            let host = reporting(json!({ "status": "HEALTH_WARN", "checks": [] }));
+            let h = compute_cluster_health(&host, None).await;
+            assert_eq!((h.level, h.issues), (HealthLevel::Warn, vec![]));
+            let host = reporting(json!({
+                "status": "HEALTH_WARN",
+                "checks": { "PG_NOT_SCRUBBED": { "severity": "HEALTH_WARN" } },
+            }));
+            let h = compute_cluster_health(&host, None).await;
+            assert_eq!(h.issues, vec![]);
+        }
+
+        #[test]
+        fn an_empty_uptime_is_not_a_fresh_boot() {
+            let p = crate::storage::on_machine("/proc/uptime");
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, "\n").unwrap();
+            assert_eq!(system_uptime_secs(), u64::MAX);
         }
     }
 }

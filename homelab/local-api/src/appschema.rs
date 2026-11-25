@@ -229,6 +229,14 @@ mod tests {
     }
 
     #[test]
+    fn a_line_that_matches_without_filling_the_group_has_no_value() {
+        let optional = parse_output("k", &json!({ "x-yolab-capture": "ready(?: at (\\S+))?" }))
+            .expect("an optional group is still one group");
+        assert_eq!(optional.find_in("ready"), None);
+        assert_eq!(optional.find_in("ready at here"), Some("here".to_string()));
+    }
+
+    #[test]
     fn a_key_with_regex_characters_is_matched_literally_by_the_default_capture() {
         let dotted = parse_output("a.b", &json!({})).unwrap();
         assert_eq!(dotted.find_in("YOLAB_OUTPUT a.b v"), Some("v".to_string()));

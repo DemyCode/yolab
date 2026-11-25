@@ -245,4 +245,84 @@ mod tests {
             .await;
         assert!(res.body.contains("could not read the logs"), "{}", res.body);
     }
+
+    #[test]
+    fn an_event_without_its_own_time_falls_back_to_when_it_was_created() {
+        let events = vec![
+            json!({ "involvedObject": { "kind": "Pod", "name": "web" }, "reason": "Created",
+                    "metadata": { "creationTimestamp": "2026-10-08T17:46:20Z" } }),
+            json!({ "involvedObject": { "kind": "Pod", "name": "web" }, "reason": "Odd" }),
+        ];
+        assert_eq!(
+            pod_events(&events, "web"),
+            vec![
+                PodEvent {
+                    warning: false,
+                    reason: "Odd".into(),
+                    message: String::new(),
+                    at: String::new(),
+                    count: 1,
+                },
+                PodEvent {
+                    warning: false,
+                    reason: "Created".into(),
+                    message: String::new(),
+                    at: "2026-10-08T17:46:20Z".into(),
+                    count: 1,
+                },
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn pods_that_cannot_be_listed_are_an_error_not_an_empty_app() {
+        let (server, kube) = crate::k8s::testing::api_server().await;
+        crate::k8s::testing::serve(
+            &server,
+            "/api/v1/namespaces/yolab-notes/pods",
+            500,
+            crate::k8s::testing::status(500, "InternalError"),
+        )
+        .await;
+        let res = crate::testkit::TestApi::with_kube(kube)
+            .login()
+            .await
+            .get("/api/apps/notes/pods")
+            .await;
+        assert!(res.status.is_server_error(), "{}", res.body);
+    }
+
+    #[tokio::test]
+    async fn a_container_whose_logs_cannot_be_opened_says_so_in_the_stream() {
+        use futures::StreamExt as _;
+        let (server, kube) = crate::k8s::testing::api_server().await;
+        crate::k8s::testing::serve(
+            &server,
+            "/api/v1/namespaces/yolab-notes/pods/notes-0",
+            200,
+            json!({
+                "metadata": { "name": "notes-0", "namespace": "yolab-notes" },
+                "spec": { "containers": [{ "name": "app" }] }
+            }),
+        )
+        .await;
+        crate::k8s::testing::serve(
+            &server,
+            "/api/v1/namespaces/yolab-notes/pods/notes-0/log",
+            400,
+            crate::k8s::testing::status(400, "ContainerCreating"),
+        )
+        .await;
+        let lines: Vec<String> = follow_pod_logs(&kube, "yolab-notes", "notes-0")
+            .await
+            .unwrap()
+            .collect()
+            .await;
+        assert_eq!(lines.len(), 1);
+        assert!(
+            lines[0].starts_with("[yolab] [pod/notes-0/app] "),
+            "{}",
+            lines[0]
+        );
+    }
 }

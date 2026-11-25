@@ -39,14 +39,23 @@ fn taken(attempt: Result<(), TryLockError>) -> std::io::Result<bool> {
 
 pub fn try_acquire_in(dir: &Path, name: &str) -> std::io::Result<Option<LockGuard>> {
     let file = open(dir, name)?;
-    Ok(taken(file.try_lock())?.then(|| LockGuard {
+    let attempt = file.try_lock();
+    guard(file, name, attempt)
+}
+
+fn guard(
+    file: File,
+    name: &str,
+    attempt: Result<(), TryLockError>,
+) -> std::io::Result<Option<LockGuard>> {
+    Ok(taken(attempt)?.then(|| LockGuard {
         _file: file,
         name: name.to_string(),
     }))
 }
 
 pub async fn acquire(name: &str, timeout: Duration) -> std::io::Result<Option<LockGuard>> {
-    acquire_in(Path::new(LOCK_DIR), name, timeout).await
+    acquire_in(&crate::storage::on_machine(LOCK_DIR), name, timeout).await
 }
 
 pub async fn acquire_in(
@@ -89,6 +98,36 @@ mod tests {
         );
         assert!(!taken(Err(TryLockError::WouldBlock)).unwrap());
         assert!(taken(Ok(())).unwrap());
+    }
+
+    #[test]
+    fn a_lock_the_kernel_refuses_hands_out_no_guard() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = open(dir.path(), "refused").unwrap();
+        let refused = TryLockError::Error(std::io::Error::from(std::io::ErrorKind::Unsupported));
+        assert_eq!(
+            guard(file, "refused", Err(refused)).unwrap_err().kind(),
+            std::io::ErrorKind::Unsupported
+        );
+    }
+
+    #[tokio::test]
+    async fn a_machine_lock_lives_in_the_machine_lock_folder() {
+        let got = acquire("machine", Duration::ZERO).await.unwrap();
+        assert!(got.is_some());
+        assert!(crate::storage::on_machine(LOCK_DIR)
+            .join("machine.lock")
+            .exists());
+    }
+
+    #[tokio::test]
+    async fn waiting_on_a_lock_folder_that_cannot_be_made_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("not-a-folder");
+        std::fs::write(&file, "").unwrap();
+        assert!(acquire_in(&file, "store", Duration::from_secs(1))
+            .await
+            .is_err());
     }
 
     #[test]

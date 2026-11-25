@@ -326,6 +326,21 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_watch_stops_with_the_error_when_only_the_ipv6_table_is_unreadable() {
+        let host = FakeHost::new()
+            .ok("ip -j -4 route show table main", WIRED_V4)
+            .fail(
+                "ip -j -6 route show table main",
+                "Cannot open netlink socket",
+            )
+            .ok("ipset", "");
+        let err = run(&host, "lan4", "lan6").await.unwrap_err();
+        assert_eq!(format!("{err}"), "read the routing table");
+        assert!(host.ran("ipset swap lan4-next lan4"));
+        assert!(!host.ran("ipset swap lan6-next lan6"));
+    }
+
+    #[tokio::test]
     async fn any_ipset_step_that_fails_stops_the_swap_with_its_error() {
         for failing in [
             "ipset create lan4 hash:net",

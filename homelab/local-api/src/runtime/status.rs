@@ -139,9 +139,11 @@ impl Registry {
 pub const SNAPSHOT_PATH: &str = "/run/yolab/controllers.json";
 
 pub fn publish_snapshot() {
-    if cfg!(test) {
-        return;
-    }
+    #[cfg(not(test))]
+    write_snapshot(std::path::Path::new(SNAPSHOT_PATH));
+}
+
+fn write_snapshot(path: &std::path::Path) {
     let snap = serde_json::json!({
         "node": crate::system::hostname(),
         "written_at": Utc::now(),
@@ -149,19 +151,15 @@ pub fn publish_snapshot() {
         "controllers": super::registry().snapshot(),
         "resources": super::resource::states(),
     });
-    let Ok(body) = serde_json::to_vec_pretty(&snap) else {
-        return;
-    };
-    let path = std::path::Path::new(SNAPSHOT_PATH);
     let tmp = path.with_extension("json.tmp");
     let written = path
         .parent()
         .map(std::fs::create_dir_all)
         .transpose()
-        .and_then(|_| std::fs::write(&tmp, body))
+        .and_then(|_| std::fs::write(&tmp, format!("{snap:#}")))
         .and_then(|_| std::fs::rename(&tmp, path));
     if let Err(e) = written {
-        tracing::debug!("could not write {SNAPSHOT_PATH}: {e}");
+        tracing::debug!("could not write {}: {e}", path.display());
     }
 }
 
@@ -224,6 +222,33 @@ mod tests {
         assert_eq!(v["phase"], "starting");
         assert!(v.get("reason").is_none());
         assert_eq!(v["interval_secs"], 5);
+    }
+
+    #[test]
+    fn the_snapshot_is_written_whole_for_the_status_page() {
+        publish_snapshot();
+        super::super::registry().register("test-snapshot", Scope::Node, Duration::from_secs(1));
+        let path = crate::storage::on_machine(SNAPSHOT_PATH);
+        write_snapshot(&path);
+        let body: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert!(body["leader"].is_boolean());
+        assert!(body["controllers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["name"] == "test-snapshot"));
+        assert!(!path.with_extension("json.tmp").exists());
+    }
+
+    #[test]
+    fn a_snapshot_that_cannot_be_written_is_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        let blocker = dir.path().join("run");
+        std::fs::write(&blocker, "").unwrap();
+        let path = blocker.join("controllers.json");
+        write_snapshot(&path);
+        assert!(!path.exists());
     }
 
     #[tokio::test]

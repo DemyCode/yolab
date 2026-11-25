@@ -243,4 +243,36 @@ mod tests {
 
         assert!(!host.ran("mon add"));
     }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_node_that_never_shows_up_in_the_monmap_is_only_warned_about() {
+        let host = FakeHost::new()
+            .ok("systemctl is-active --quiet ceph-mon-yolab-n2.service", "")
+            .ok("ceph --connect-timeout 10 -s", "")
+            .ok(
+                "ceph --connect-timeout 10 mon dump",
+                &dump_with(&["yolab-n1"]),
+            )
+            .ok("ceph --connect-timeout 10 mon add", "");
+        let dir = tempfile::tempdir().unwrap();
+        joined(&dir, "yolab-n2");
+
+        run(
+            &host,
+            dir.path(),
+            "yolab-n2",
+            &MonMemberArgs {
+                mon_addr: "fd00:cafe::2".into(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let dumps = host
+            .calls()
+            .iter()
+            .filter(|c| c.contains("mon dump"))
+            .count();
+        assert_eq!(dumps, 61);
+    }
 }

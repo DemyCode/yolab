@@ -180,33 +180,66 @@ pub fn lock_name(job: &str) -> String {
 
 const BOOT_LOCK_WAIT: Duration = Duration::from_secs(120);
 
+enum Job {
+    NooutClear,
+    NooutSet,
+    Bootstrap,
+    ResetWipe,
+    Release,
+    VdiskDetachAll,
+    ImageStoreUp,
+}
+
+impl Job {
+    fn named(sub: &str) -> Option<Self> {
+        match sub {
+            "noout-clear" => Some(Job::NooutClear),
+            "noout-set" => Some(Job::NooutSet),
+            "bootstrap" => Some(Job::Bootstrap),
+            "reset-wipe" => Some(Job::ResetWipe),
+            "release" => Some(Job::Release),
+            "vdisk-detach-all" => Some(Job::VdiskDetachAll),
+            "image-store-up" => Some(Job::ImageStoreUp),
+            _ => None,
+        }
+    }
+
+    fn takes_the_lock(&self) -> bool {
+        !matches!(self, Job::NooutSet | Job::Release | Job::VdiskDetachAll)
+    }
+}
+
 pub async fn run(args: &[String]) -> i32 {
-    let host = crate::tools::Tools::real().host;
+    run_on(
+        &crate::tools::Tools::real().host,
+        args,
+        &StorageEnv::from_env(),
+        &crate::system::hostname(),
+        Path::new(crate::runtime::lock::LOCK_DIR),
+        &crate::config::machine_dir().join("config.toml"),
+    )
+    .await
+}
+
+async fn run_on<H: crate::host::Host>(
+    host: &H,
+    args: &[String],
+    env: &StorageEnv,
+    node: &str,
+    lock_dir: &Path,
+    config: &Path,
+) -> i32 {
     let Some(sub) = args.first().map(String::as_str) else {
         eprintln!("storage: missing subcommand");
         return 2;
     };
-    let env = StorageEnv::from_env();
-    let node = crate::system::hostname();
-
-    let known = [
-        "noout-clear",
-        "noout-set",
-        "bootstrap",
-        "reset-wipe",
-        "release",
-        "vdisk-detach-all",
-        "image-store-up",
-    ];
-    if !known.contains(&sub) {
+    let Some(job) = Job::named(sub) else {
         eprintln!("storage: unknown subcommand '{sub}'");
         return 2;
-    }
+    };
 
-    let _guard = if sub == "noout-set" || sub == "release" || sub == "vdisk-detach-all" {
-        None
-    } else {
-        match crate::runtime::lock::acquire(&lock_name(sub), BOOT_LOCK_WAIT).await {
+    let _guard = if job.takes_the_lock() {
+        match crate::runtime::lock::acquire_in(lock_dir, &lock_name(sub), BOOT_LOCK_WAIT).await {
             Ok(Some(g)) => Some(g),
             Ok(None) => {
                 eprintln!(
@@ -220,19 +253,17 @@ pub async fn run(args: &[String]) -> i32 {
                 return 1;
             }
         }
+    } else {
+        None
     };
-    let result: Result<()> = match sub {
-        "noout-clear" => noout::clear(&host, root()).await,
-        "noout-set" => noout::set(&host, root()).await,
-        "release" => release::run(&host, root(), controllers::K3S_UNIT, release::WAITS).await,
-        "vdisk-detach-all" => crate::vdisk::detach_all(&host, root()).await,
-        "image-store-up" => image_store_up(&host, &env, &node).await,
-        "bootstrap" => bootstrap::run(&host, root(), &node, &env.bootstrap_args()).await,
-        "reset-wipe" => {
-            let config = crate::config::machine_dir().join("config.toml");
-            reset_wipe::run(&host, root(), &config).await
-        }
-        _ => unreachable!("checked against `known` above"),
+    let result: Result<()> = match job {
+        Job::NooutClear => noout::clear(host, root()).await,
+        Job::NooutSet => noout::set(host, root()).await,
+        Job::Release => release::run(host, root(), controllers::K3S_UNIT, release::WAITS).await,
+        Job::VdiskDetachAll => crate::vdisk::detach_all(host, root()).await,
+        Job::ImageStoreUp => image_store_up(host, env, node).await,
+        Job::Bootstrap => bootstrap::run(host, root(), node, &env.bootstrap_args()).await,
+        Job::ResetWipe => reset_wipe::run(host, root(), config).await,
     };
 
     match result {
@@ -381,5 +412,153 @@ mod tests {
         assert_eq!(env.images_share, 0.25);
         assert_eq!(env.images_min_gb, 40);
         assert_eq!(env.dashboard_port, 7000);
+    }
+
+    #[tokio::test]
+    async fn a_containerd_already_on_the_root_disk_still_lets_k3s_start() {
+        let proc = root().join("proc/4242");
+        std::fs::create_dir_all(&proc).unwrap();
+        std::fs::write(proc.join("comm"), "containerd\n").unwrap();
+        let host = FakeHost::new()
+            .fail("findmnt -rno TARGET --mountpoint", "")
+            .ok("systemctl start --no-block k3s.service", "");
+        image_store_up(&host, &ceph_settings(), "yolab-n1")
+            .await
+            .unwrap();
+        assert!(host.ran("systemctl start --no-block k3s.service"));
+        assert!(!host.ran("rbd"), "{:?}", host.calls());
+    }
+
+    #[tokio::test]
+    async fn a_systemctl_that_cannot_be_started_is_an_error() {
+        let host = FakeHost::new()
+            .ok("findmnt -rno TARGET --mountpoint", "")
+            .unstartable("systemctl start");
+        assert!(image_store_up(&host, &ceph_settings(), "yolab-n1")
+            .await
+            .is_err());
+    }
+
+    async fn run_job(host: &FakeHost, sub: &str, env: &StorageEnv, lock_dir: &Path) -> i32 {
+        run_on(
+            host,
+            &[sub.to_string()],
+            env,
+            "yolab-n1",
+            lock_dir,
+            &lock_dir.join("missing-config.toml"),
+        )
+        .await
+    }
+
+    fn lock_files(dir: &Path) -> Vec<String> {
+        std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn noout_clear_runs_under_its_own_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = FakeHost::new().ok("ceph -s", "");
+        let env = ceph_settings();
+        assert_eq!(run_job(&host, "noout-clear", &env, dir.path()).await, 0);
+        assert_eq!(lock_files(dir.path()), ["storage-noout-clear.lock"]);
+    }
+
+    #[tokio::test]
+    async fn noout_set_runs_without_a_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = FakeHost::new();
+        let env = ceph_settings();
+        assert_eq!(run_job(&host, "noout-set", &env, dir.path()).await, 0);
+        assert!(lock_files(dir.path()).is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_release_while_k3s_keeps_running_fails_without_a_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = FakeHost::new().ok("systemctl is-active --quiet k3s.service", "");
+        let env = ceph_settings();
+        assert_eq!(run_job(&host, "release", &env, dir.path()).await, 1);
+        assert!(lock_files(dir.path()).is_empty());
+    }
+
+    #[tokio::test]
+    async fn detaching_no_virtual_disks_succeeds_without_a_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = FakeHost::new();
+        let env = ceph_settings();
+        assert_eq!(
+            run_job(&host, "vdisk-detach-all", &env, dir.path()).await,
+            0
+        );
+        assert!(lock_files(dir.path()).is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_image_store_without_ceph_settings_fails_the_subcommand() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = FakeHost::new();
+        let env = StorageEnv::from_lookup(|_| None);
+        assert_eq!(run_job(&host, "image-store-up", &env, dir.path()).await, 1);
+        assert_eq!(lock_files(dir.path()), ["storage-image-store-up.lock"]);
+    }
+
+    #[tokio::test]
+    async fn a_join_without_an_account_token_fails_the_bootstrap() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir
+            .path()
+            .join("no-config.toml")
+            .to_string_lossy()
+            .into_owned();
+        let env = StorageEnv::from_lookup(|name| match name {
+            "YOLAB_CEPH_FSID" => Some("f".into()),
+            "YOLAB_CEPH_MON_ADDR" => Some("fd00:cafe::1".into()),
+            "YOLAB_CEPH_JOIN_SEED_ADDR" => Some("fd00:cafe::2".into()),
+            "YOLAB_CONFIG" => Some(config.clone()),
+            _ => None,
+        });
+        let host = FakeHost::new();
+        assert_eq!(run_job(&host, "bootstrap", &env, dir.path()).await, 1);
+        assert!(host.calls().is_empty(), "{:?}", host.calls());
+    }
+
+    #[tokio::test]
+    async fn a_reset_wipe_without_a_machine_config_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = FakeHost::new();
+        let env = ceph_settings();
+        assert_eq!(run_job(&host, "reset-wipe", &env, dir.path()).await, 1);
+        assert!(host.calls().is_empty(), "{:?}", host.calls());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_job_whose_lock_stays_held_gives_up_without_running() {
+        let dir = tempfile::tempdir().unwrap();
+        let held = crate::runtime::lock::try_acquire_in(dir.path(), "storage-noout-clear")
+            .unwrap()
+            .unwrap();
+        let host = FakeHost::new().ok("ceph -s", "");
+        let env = ceph_settings();
+        assert_eq!(run_job(&host, "noout-clear", &env, dir.path()).await, 1);
+        assert!(host.calls().is_empty(), "{:?}", host.calls());
+        drop(held);
+    }
+
+    #[tokio::test]
+    async fn a_lock_folder_that_cannot_be_made_fails_without_running() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("a-file");
+        std::fs::write(&file, "").unwrap();
+        let host = FakeHost::new().ok("ceph -s", "");
+        let env = ceph_settings();
+        assert_eq!(
+            run_job(&host, "noout-clear", &env, &file.join("locks")).await,
+            1
+        );
+        assert!(host.calls().is_empty(), "{:?}", host.calls());
     }
 }

@@ -199,9 +199,10 @@ pub fn sync_file(path: &Path, wanted: &str) -> anyhow::Result<bool> {
         .mode(0o644)
         .open(&tmp)
         .with_context(|| format!("open {}", tmp.display()))?;
-    file.write_all(wanted.as_bytes())?;
-    file.sync_all()?;
-    std::fs::rename(&tmp, path).with_context(|| format!("replace {}", path.display()))?;
+    file.write_all(wanted.as_bytes())
+        .and_then(|()| file.sync_all())
+        .and_then(|()| std::fs::rename(&tmp, path))
+        .with_context(|| format!("replace {}", path.display()))?;
     Ok(true)
 }
 
@@ -301,15 +302,17 @@ pub async fn add(State(state): State<crate::AppState>, Json(body): Json<AddKey>)
                 format!("At most {MAX_KEYS} keys can be added; remove one you no longer use"),
             )));
         }
-        store.set_ssh_key(
-            &parsed.id(),
-            &SshKey {
-                line: parsed.line(),
-                label,
-                removed: false,
-            },
-        )?;
-        saved(&mut store)?;
+        store
+            .set_ssh_key(
+                &parsed.id(),
+                &SshKey {
+                    line: parsed.line(),
+                    label,
+                    removed: false,
+                },
+            )
+            .map_err(anyhow::Error::from)
+            .and_then(|()| saved(&mut store))?;
         Ok(None)
     })();
     match stored {
@@ -337,14 +340,16 @@ pub async fn remove(State(state): State<crate::AppState>, Json(body): Json<Remov
         if entry.value.removed {
             return Ok(false);
         }
-        store.set_ssh_key(
-            &body.id,
-            &SshKey {
-                removed: true,
-                ..entry.value
-            },
-        )?;
-        saved(&mut store)?;
+        store
+            .set_ssh_key(
+                &body.id,
+                &SshKey {
+                    removed: true,
+                    ..entry.value
+                },
+            )
+            .map_err(anyhow::Error::from)
+            .and_then(|()| saved(&mut store))?;
         Ok(true)
     })();
     match removed {
@@ -662,5 +667,105 @@ mod tests {
         assert!(!sync_file(&path, "a\n").unwrap());
         assert!(sync_file(&path, "").unwrap());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "");
+    }
+
+    #[test]
+    fn a_keys_file_that_cannot_be_put_in_place_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let why = sync_file(&dir.path().join("keys/"), "a\n").unwrap_err();
+        assert!(format!("{why:#}").starts_with("replace "), "{why:#}");
+    }
+
+    #[test]
+    fn a_key_body_too_short_to_name_its_type_is_refused() {
+        let why = parse_key("ssh-ed25519 AAAA").unwrap_err();
+        assert!(why.contains("does not match its type"), "{why}");
+    }
+
+    #[test]
+    fn there_is_no_ssh_port_without_a_config_or_its_homelab_table() {
+        assert_eq!(
+            ssh_port(&crate::config::Config::for_test(std::path::Path::new(
+                "/nonexistent/config.toml"
+            ))),
+            None
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("config.toml");
+        std::fs::write(&file, "[tunnel]\n").unwrap();
+        assert_eq!(ssh_port(&crate::config::Config::for_test(&file)), None);
+    }
+
+    fn store_with_an_unreadable_key_record() -> Store {
+        use automerge::transaction::Transactable as _;
+        let mut doc = automerge::AutoCommit::new();
+        doc.put(automerge::ROOT, "ssh_key:bad", "not json").unwrap();
+        Store::load("node1", &doc.save()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn an_unreadable_key_record_fails_the_listing_every_change_and_the_controller() {
+        use serde_json::json;
+        let api = crate::testkit::TestApi::provisioned().login().await;
+        *crate::store::locked() = store_with_an_unreadable_key_record();
+        let ctx = crate::runtime::Ctx {
+            node: "node1".into(),
+            tools: crate::tools::Tools::unreachable(),
+        };
+        assert!(SshKeysController.converge(&ctx).await.is_err());
+        assert_eq!(
+            api.get("/api/ssh/keys").await.status,
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
+        let add = json!({ "key": key_of("ssh-ed25519", &[31; 32]) }).to_string();
+        assert_eq!(
+            api.post("/api/ssh/keys", &add).await.status,
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
+        let remove = json!({ "id": "bad" }).to_string();
+        assert_eq!(
+            api.post("/api/ssh/keys/remove", &remove).await.status,
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
+    }
+
+    #[tokio::test]
+    async fn a_keys_file_or_store_that_cannot_be_written_fails_the_change() {
+        use serde_json::json;
+        let api = crate::testkit::TestApi::provisioned().login().await;
+        let add = |key: &str| json!({ "key": key }).to_string();
+        let remove = |id: &str| json!({ "id": id }).to_string();
+
+        let keys = keys_file();
+        crate::config::remove_if_present(&keys).unwrap();
+        std::fs::create_dir_all(keys.join("blocker")).unwrap();
+        let first = key_of("ssh-ed25519", &[41; 32]);
+        let first_id = parse_key(&first).unwrap().id();
+        assert_eq!(
+            api.post("/api/ssh/keys", &add(&first)).await.status,
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
+        assert_eq!(
+            api.post("/api/ssh/keys/remove", &remove(&first_id))
+                .await
+                .status,
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
+
+        let store_file = crate::store::default_path();
+        crate::config::remove_if_present(&store_file).unwrap();
+        std::fs::create_dir_all(store_file.join("blocker")).unwrap();
+        let second = key_of("ssh-ed25519", &[42; 32]);
+        let second_id = parse_key(&second).unwrap().id();
+        assert_eq!(
+            api.post("/api/ssh/keys", &add(&second)).await.status,
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
+        assert_eq!(
+            api.post("/api/ssh/keys/remove", &remove(&second_id))
+                .await
+                .status,
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
     }
 }

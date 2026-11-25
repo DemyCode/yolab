@@ -71,9 +71,6 @@ fn every_removal(removable: &[usize], k: usize, mut each: impl FnMut(&[usize])) 
         each(&gone);
         let mut i = k;
         loop {
-            if i == 0 {
-                return;
-            }
             i -= 1;
             if idx[i] != i + removable.len() - k {
                 break;
@@ -191,17 +188,19 @@ fn subset_for_offset(
         back.push(bk);
         dp = nd;
     }
-    let end = (0..n)
+    (0..n)
         .filter(|&j| next_forced[j] == n && dp[j].is_finite())
-        .min_by(|&x, &y| dp[x].total_cmp(&dp[y]))?;
-    let mut j = end;
-    let mut picked = vec![j];
-    for k in (1..m).rev() {
-        j = back[k - 1][j];
-        picked.push(j);
-    }
-    picked.reverse();
-    Some(picked)
+        .min_by(|&x, &y| dp[x].total_cmp(&dp[y]))
+        .map(|end| {
+            let mut j = end;
+            let mut picked = vec![j];
+            for k in (1..m).rev() {
+                j = back[k - 1][j];
+                picked.push(j);
+            }
+            picked.reverse();
+            picked
+        })
 }
 
 pub(crate) fn best_subset(times: &[i64], forced: &[bool], m: usize) -> Option<Vec<usize>> {
@@ -433,6 +432,52 @@ mod tests {
         assert_eq!(compact(&forced, 2), Some(vec![0, 3]));
         assert_eq!(compact(&forced, 1), None);
         assert_eq!(compact(&forced, 5), Some(vec![0, 1, 2, 3, 4]));
+    }
+
+    fn removals(removable: &[usize], k: usize) -> Vec<Vec<usize>> {
+        let mut seen = Vec::new();
+        every_removal(removable, k, |gone| seen.push(gone.to_vec()));
+        seen
+    }
+
+    #[test]
+    fn removing_nothing_is_one_way_and_removing_more_than_there_is_is_none() {
+        assert_eq!(removals(&[3, 4], 0), vec![Vec::<usize>::new()]);
+        assert_eq!(removals(&[3], 2), Vec::<Vec<usize>>::new());
+        assert_eq!(removals(&[3, 4], 2), vec![vec![3, 4]]);
+    }
+
+    #[test]
+    fn keeping_as_many_as_there_are_keeps_everything() {
+        let times = nights(&[0, 1]);
+        assert_eq!(ranked(&times, &only_newest(2), 2, 1), vec![vec![0, 1]]);
+        assert_eq!(best_subset(&times, &only_newest(2), 3), Some(vec![0, 1]));
+    }
+
+    #[test]
+    fn keeping_none_offers_nothing() {
+        let times = nights(&[0, 1]);
+        assert!(ranked(&times, &[false, false], 0, 1).is_empty());
+        assert_eq!(best_subset(&times, &only_newest(2), 0), None);
+    }
+
+    #[test]
+    fn asking_for_no_shaped_candidates_offers_only_the_newest() {
+        let times = nights(&[0, 1, 2]);
+        assert_eq!(ranked(&times, &only_newest(3), 2, 0), vec![vec![0, 1]]);
+    }
+
+    #[test]
+    fn one_backup_has_no_search_to_do() {
+        assert_eq!(search_work(&[0], 1), 0.0);
+    }
+
+    #[test]
+    fn the_exact_search_needs_the_newest_kept_and_room_for_everything_that_must_stay() {
+        let times = nights(&[0, 1, 2, 3]);
+        assert_eq!(best_subset(&times, &[false, true, false, false], 2), None);
+        assert_eq!(best_subset(&times, &[true, true, true, false], 2), None);
+        assert_eq!(best_subset(&times, &only_newest(4), 1), Some(vec![0]));
     }
 
     #[test]

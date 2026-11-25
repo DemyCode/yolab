@@ -363,6 +363,9 @@ pub(crate) fn sanitize_k8s_items_for_backup(items: &[serde_json::Value]) -> Vec<
                 return None;
             }
             let mut obj = item.clone();
+            if let Some(m) = obj.as_object_mut() {
+                m.remove("status");
+            }
             if let Some(meta) = obj["metadata"].as_object_mut() {
                 for &f in META_DROP {
                     meta.remove(f);
@@ -375,9 +378,6 @@ pub(crate) fn sanitize_k8s_items_for_backup(items: &[serde_json::Value]) -> Vec<
                         meta.remove("annotations");
                     }
                 }
-            }
-            if let Some(m) = obj.as_object_mut() {
-                m.remove("status");
             }
             if kind == "Service" {
                 if let Some(spec) = obj["spec"].as_object_mut() {
@@ -489,27 +489,21 @@ mod tests {
         let mut offenders = Vec::new();
 
         fn walk(dir: &std::path::Path, offenders: &mut Vec<String>) {
-            let Ok(entries) = std::fs::read_dir(dir) else {
-                return;
-            };
-            for entry in entries.flatten() {
+            for entry in std::fs::read_dir(dir).unwrap().flatten() {
                 let path = entry.path();
                 if path.is_dir() {
                     walk(&path, offenders);
                     continue;
                 }
                 if path.extension().is_some_and(|e| e == "rs") {
-                    let Ok(text) = std::fs::read_to_string(&path) else {
-                        continue;
-                    };
-                    for (n, line) in text.lines().enumerate() {
-                        if line.trim_start().starts_with("//") {
-                            continue;
-                        }
-                        if line.contains("&[\"snapshots\"") && !line.contains("--no-lock") {
-                            offenders.push(format!("{}:{}", path.display(), n + 1));
-                        }
-                    }
+                    let text = std::fs::read_to_string(&path).unwrap();
+                    offenders.extend(text.lines().enumerate().filter_map(|(n, line)| {
+                        let at = format!("{}:{}", path.display(), n + 1);
+                        (!line.trim_start().starts_with("//")
+                            && line.contains("&[\"snapshots\"")
+                            && !line.contains("--no-lock"))
+                        .then_some(at)
+                    }));
                 }
             }
         }
@@ -706,6 +700,14 @@ mod tests {
             serde_json::json!({"kind": "Service"}),
         ];
         assert_eq!(sanitize_k8s_items_for_backup(&items).len(), 2);
+    }
+
+    #[test]
+    fn a_null_item_is_kept_as_an_object_with_no_metadata() {
+        assert_eq!(
+            sanitize_k8s_items_for_backup(&[serde_json::Value::Null]),
+            vec![serde_json::json!({ "metadata": null })]
+        );
     }
 
     mod against_the_cluster {
@@ -1234,6 +1236,179 @@ mod tests {
                 "a merge patch null removes only the hold, keeping the vendor selector"
             );
             assert_eq!(released.len(), 1);
+        }
+
+        async fn refused(server: &MockServer, verb: &str, at: &str) {
+            Mock::given(method(verb))
+                .and(path(at))
+                .respond_with(
+                    ResponseTemplate::new(503).set_body_json(status(503, "ServiceUnavailable")),
+                )
+                .mount(server)
+                .await;
+        }
+
+        #[tokio::test]
+        async fn an_unreachable_cluster_is_not_read_as_an_unacknowledged_recovery_key() {
+            let (server, client) = api_server().await;
+            refused(&server, "GET", ACK_PATH).await;
+            assert!(recovery_key_acknowledged(&client).await.is_err());
+        }
+
+        #[tokio::test]
+        async fn an_unlock_that_removed_locks_says_so_and_one_that_cannot_start_is_not_fatal() {
+            let host = FakeHost::new().ok("restic unlock", "successfully removed 1 locks");
+            restic_unlock_with(&host, "s3:x/y", "pw", "AKID", "SECRET", false).await;
+            assert!(host.ran("restic unlock"));
+            for loud in [true, false] {
+                let host = FakeHost::new().unstartable("restic unlock");
+                restic_unlock_with(&host, "s3:x/y", "pw", "AKID", "SECRET", loud).await;
+                assert!(host.ran("restic unlock"));
+            }
+        }
+
+        async fn platform_gives(bucket: &str, key: &str, secret: &str) -> MockServer {
+            let platform = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/storage/s3"))
+                .respond_with(
+                    ResponseTemplate::new(200).set_body_json(platform_key(bucket, key, secret)),
+                )
+                .mount(&platform)
+                .await;
+            platform
+        }
+
+        #[tokio::test]
+        async fn a_first_backup_whose_config_cannot_be_saved_fails() {
+            let (server, client) = api_server().await;
+            serve_config(&server, 404, status(404, "NotFound")).await;
+            refused(&server, "PATCH", CONFIG_PATH).await;
+            let platform = platform_gives("b-new", "K", "S").await;
+
+            assert!(ensure_master_config_with(&client, &platform.uri(), "tok")
+                .await
+                .is_err());
+        }
+
+        #[tokio::test]
+        async fn a_platform_that_cannot_be_reached_or_answers_garbage_gives_no_storage() {
+            let (server, client) = api_server().await;
+            serve_config(&server, 404, status(404, "NotFound")).await;
+            let closed = format!("http://[::1]:{}", crate::testkit::closed_port());
+            assert!(ensure_master_config_with(&client, &closed, "tok")
+                .await
+                .is_err());
+
+            let platform = MockServer::start().await;
+            Mock::given(method("POST"))
+                .respond_with(ResponseTemplate::new(200).set_body_string("not json"))
+                .mount(&platform)
+                .await;
+            assert!(ensure_master_config_with(&client, &platform.uri(), "tok")
+                .await
+                .is_err());
+        }
+
+        #[tokio::test]
+        async fn a_key_refresh_that_cannot_read_the_config_fails() {
+            let (server, client) = api_server().await;
+            serve_config(&server, 503, status(503, "ServiceUnavailable")).await;
+            let platform = platform_gives("bucket-1", "AKID2", "SECRET2").await;
+
+            assert!(refresh_master_key_with(&client, &platform.uri(), "tok")
+                .await
+                .is_err());
+        }
+
+        #[tokio::test]
+        async fn a_reissued_key_that_cannot_be_saved_fails_the_refresh() {
+            let (server, client) = api_server().await;
+            serve_config(&server, 200, stored_config("pw")).await;
+            refused(&server, "PATCH", CONFIG_PATH).await;
+            let platform = platform_gives("bucket-1", "AKID2", "SECRET2").await;
+
+            assert!(refresh_master_key_with(&client, &platform.uri(), "tok")
+                .await
+                .is_err());
+        }
+
+        async fn managed(server: &MockServer) {
+            Mock::given(method("GET"))
+                .and(path("/api/v1/namespaces"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(list(
+                    "Namespace",
+                    vec![json!({ "metadata": { "name": "yolab-a" } })],
+                )))
+                .mount(server)
+                .await;
+        }
+
+        #[tokio::test]
+        async fn volumes_that_cannot_be_listed_are_an_error_not_no_volumes() {
+            let (server, client) = api_server().await;
+            managed(&server).await;
+            refused(&server, "GET", "/api/v1/persistentvolumeclaims").await;
+            assert!(user_pvcs(&client).await.is_err());
+        }
+
+        #[tokio::test]
+        async fn a_claim_without_a_namespace_or_a_name_is_not_backed_up() {
+            let (server, client) = api_server().await;
+            managed(&server).await;
+            Mock::given(method("GET"))
+                .and(path("/api/v1/persistentvolumeclaims"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(list(
+                    "PersistentVolumeClaim",
+                    vec![
+                        json!({ "metadata": { "name": "nowhere" } }),
+                        json!({ "metadata": { "namespace": "yolab-a" } }),
+                        claim("yolab-a", "data", Some("5Gi")),
+                    ],
+                )))
+                .mount(&server)
+                .await;
+
+            let pvcs = user_pvcs(&client).await.unwrap();
+            let names: Vec<&str> = pvcs.iter().map(|p| p.name.as_str()).collect();
+            assert_eq!(names, vec!["data"]);
+        }
+
+        const DAEMONSETS: &str = "/apis/apps/v1/namespaces/yolab-ai/daemonsets";
+
+        #[tokio::test]
+        async fn daemonsets_that_cannot_be_listed_fail_the_hold() {
+            let (server, client) = api_server().await;
+            refused(&server, "GET", DAEMONSETS).await;
+            assert!(hold_daemonsets(&client, "yolab-ai", true).await.is_err());
+        }
+
+        #[tokio::test]
+        async fn a_daemonset_without_a_name_is_skipped_and_a_refused_hold_fails() {
+            let (server, client) = api_server().await;
+            crate::k8s::testing::serve(
+                &server,
+                DAEMONSETS,
+                200,
+                list("DaemonSet", vec![json!({ "metadata": {} })]),
+            )
+            .await;
+            hold_daemonsets(&client, "yolab-ai", true).await.unwrap();
+            assert!(crate::k8s::testing::patched(&server).await.is_empty());
+
+            let (server, client) = api_server().await;
+            crate::k8s::testing::serve(
+                &server,
+                DAEMONSETS,
+                200,
+                list(
+                    "DaemonSet",
+                    vec![json!({ "metadata": { "name": "ollama-nvidia" } })],
+                ),
+            )
+            .await;
+            refused(&server, "PATCH", &format!("{DAEMONSETS}/ollama-nvidia")).await;
+            assert!(hold_daemonsets(&client, "yolab-ai", true).await.is_err());
         }
     }
 }

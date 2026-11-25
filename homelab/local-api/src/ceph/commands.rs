@@ -340,10 +340,12 @@ fn value(ty: Ty, word: &str) -> Option<Value> {
 fn store(map: &mut Map<String, Value>, arg: &Arg, word: &str) -> Option<()> {
     let v = value(arg.ty, word)?;
     if arg.ty == List {
-        map.entry(arg.name)
-            .or_insert_with(|| json!([]))
-            .as_array_mut()?
-            .push(v);
+        match map.get_mut(arg.name) {
+            Some(Value::Array(list)) => list.push(v),
+            _ => {
+                map.insert(arg.name.into(), json!([v]));
+            }
+        }
         return Some(());
     }
     if map.contains_key(arg.name) {
@@ -410,7 +412,7 @@ mod tests {
 
     fn sent(args: &[&str]) -> Value {
         mon_command(args)
-            .unwrap_or_else(|| panic!("{args:?} should go through librados"))
+            .expect("the command should go through librados")
             .json
     }
 
@@ -679,5 +681,68 @@ mod tests {
             .json_format());
         assert!(!mon_command(&["df", "-f", "plain"]).unwrap().json_format());
         assert!(!mon_command(&["fsid"]).unwrap().json_format());
+    }
+
+    #[test]
+    fn the_signature_builders_record_name_type_and_requiredness() {
+        let r = req("id", Osd);
+        let o = opt("force", Bool);
+        let s = sig(&["osd", "purge"], OSD_REMOVAL);
+        assert_eq!((r.name, r.ty, r.required), ("id", Osd, true));
+        assert_eq!((o.name, o.ty, o.required), ("force", Bool, false));
+        assert_eq!(s.prefix, &["osd", "purge"]);
+        assert_eq!(s.args.len(), 3);
+    }
+
+    #[test]
+    fn an_inline_format_is_sent_like_a_separate_one() {
+        assert_eq!(
+            sent(&["df", "--format=json"]),
+            json!({"prefix": "df", "format": "json"})
+        );
+    }
+
+    #[test]
+    fn a_global_option_missing_its_value_stays_on_the_cli() {
+        assert_eq!(mon_command(&["df", "-f"]), None);
+        assert_eq!(mon_command(&["df", "--connect-timeout"]), None);
+    }
+
+    #[test]
+    fn a_weight_that_is_not_a_finite_number_stays_on_the_cli() {
+        assert_eq!(
+            mon_command(&["osd", "crush", "reweight", "osd.2", "inf"]),
+            None
+        );
+        assert_eq!(
+            mon_command(&["osd", "crush", "reweight", "osd.2", "heavy"]),
+            None
+        );
+    }
+
+    #[test]
+    fn an_inline_boolean_is_parsed_and_an_unreadable_one_stays_on_the_cli() {
+        assert_eq!(
+            sent(&["osd", "purge", "3", "--force=false"]),
+            json!({"prefix": "osd purge", "id": 3, "force": false})
+        );
+        assert_eq!(
+            sent(&["osd", "purge", "3", "--force=0"]),
+            json!({"prefix": "osd purge", "id": 3, "force": false})
+        );
+        assert_eq!(mon_command(&["osd", "purge", "3", "--force=maybe"]), None);
+    }
+
+    #[test]
+    fn an_argument_given_twice_stays_on_the_cli() {
+        assert_eq!(
+            mon_command(&["osd", "pool", "delete", "a", "--pool", "b"]),
+            None
+        );
+    }
+
+    #[test]
+    fn a_named_argument_without_its_value_stays_on_the_cli() {
+        assert_eq!(mon_command(&["osd", "pool", "delete", "--pool"]), None);
     }
 }

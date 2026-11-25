@@ -86,6 +86,51 @@ mod tests {
         assert_eq!(left, 0);
     }
 
+    fn scripted(steps: Vec<Step<u8>>) -> impl FnMut() -> std::future::Ready<Step<u8>> {
+        let mut steps = steps.into_iter();
+        move || std::future::ready(steps.next().unwrap())
+    }
+
+    #[tokio::test]
+    async fn the_same_check_can_finish_fail_or_run_out_of_time() {
+        let minute = Duration::from_secs(60);
+        assert_eq!(
+            until(
+                minute,
+                NOW,
+                scripted(vec![
+                    Step::Pending(anyhow::anyhow!("not yet")),
+                    Step::Done(1)
+                ])
+            )
+            .await
+            .unwrap(),
+            1
+        );
+        assert_eq!(
+            until(
+                minute,
+                NOW,
+                scripted(vec![Step::Failed(anyhow::anyhow!("it broke"))])
+            )
+            .await
+            .unwrap_err()
+            .to_string(),
+            "it broke"
+        );
+        assert_eq!(
+            until(
+                NOW,
+                NOW,
+                scripted(vec![Step::Pending(anyhow::anyhow!("still"))])
+            )
+            .await
+            .unwrap_err()
+            .to_string(),
+            "still"
+        );
+    }
+
     #[tokio::test]
     async fn the_check_always_runs_at_least_once_even_with_no_time() {
         let mut calls = 0;

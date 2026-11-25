@@ -1832,10 +1832,15 @@ mod tests {
 
     #[test]
     fn namespaces_outside_the_yolab_prefix_are_never_torn_down() {
-        let list = vec![serde_json::json!(
-            { "metadata": { "name": "kube-system",
-                            "annotations": { ANN_UNINSTALLING: "2026-01-01T00:00:00Z" } } }
-        )];
+        let list = vec![
+            serde_json::json!(
+                { "metadata": { "name": "kube-system",
+                                "annotations": { ANN_UNINSTALLING: "2026-01-01T00:00:00Z" } } }
+            ),
+            serde_json::json!(
+                { "metadata": { "annotations": { ANN_UNINSTALLING: "2026-01-01T00:00:00Z" } } }
+            ),
+        ];
         assert!(registered_in(&list).is_empty());
     }
 
@@ -1847,11 +1852,11 @@ mod tests {
     #[test]
     fn an_uninstall_request_remembers_the_folders_and_whether_backups_go_too() {
         let doomed = vec!["notes".to_string()];
-        let asked = uninstall_request(&doomed, true).unwrap();
+        let asked = uninstall_request(&doomed, true);
         assert_eq!(asked[ANN_DELETE_FOLDERS], "[\"notes\"]");
         assert_eq!(asked[ANN_DELETE_BACKUPS], "true");
         assert!(asked[ANN_UNINSTALLING].as_str().is_some());
-        let kept = uninstall_request(&[], false).unwrap();
+        let kept = uninstall_request(&[], false);
         assert!(kept[ANN_DELETE_FOLDERS].is_null());
         assert!(kept[ANN_DELETE_BACKUPS].is_null());
     }
@@ -2919,6 +2924,151 @@ mod tests {
                 .mount(&server)
                 .await;
             release_tree_volumes(&kube, "yolab-notes").await.unwrap();
+        }
+
+        async fn volumes_unlistable(server: &MockServer) {
+            Mock::given(method("GET"))
+                .and(path("/api/v1/persistentvolumes"))
+                .respond_with(
+                    ResponseTemplate::new(503).set_body_json(status(503, "ServiceUnavailable")),
+                )
+                .mount(server)
+                .await;
+        }
+
+        async fn teardown_of(kube: Client) -> anyhow::Result<()> {
+            run_teardown(
+                &Backend {
+                    kube,
+                    host: FakeHost::new(),
+                },
+                "notes",
+                "yolab-notes",
+            )
+            .await
+        }
+
+        #[tokio::test]
+        async fn an_uninstall_whose_namespace_cannot_be_read_is_refused() {
+            let (server, kube) = api_server().await;
+            volumes_are(&server, vec![]).await;
+            namespace_is(&server, 503, status(503, "ServiceUnavailable")).await;
+            let api = crate::testkit::TestApi::with_kube(kube).login().await;
+            let res = api.send("DELETE", "/api/apps/notes", None).await;
+            assert!(!res.status.is_success(), "{}", res.body);
+        }
+
+        #[tokio::test]
+        async fn backups_asked_to_go_with_the_service_are_deleted_when_they_can_be_reached() {
+            let (server, kube) = api_server().await;
+            namespace_is(
+                &server,
+                200,
+                ns(json!({ ANN_DELETE_BACKUPS: "true" }), "Terminating"),
+            )
+            .await;
+            namespace_deletes(&server).await;
+            volumes_are(&server, vec![]).await;
+            Mock::given(method("GET"))
+                .and(path(
+                    "/api/v1/namespaces/kube-system/secrets/yolab-backup-config",
+                ))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_json(crate::k8s::testing::secret_with("restic_password", "pw")),
+                )
+                .mount(&server)
+                .await;
+            let b = Backend {
+                kube,
+                host: FakeHost::new().ok("restic", "[]"),
+            };
+            drive_teardown(&b, "notes", "yolab-notes").await.unwrap();
+            assert!(b.host.ran("restic snapshots"));
+        }
+
+        #[tokio::test]
+        async fn a_teardown_whose_folders_to_delete_are_garbled_stops() {
+            let (server, kube) = api_server().await;
+            namespace_is(
+                &server,
+                200,
+                ns(json!({ ANN_DELETE_FOLDERS: "not a list" }), "Terminating"),
+            )
+            .await;
+            assert!(teardown_of(kube).await.is_err());
+        }
+
+        #[tokio::test]
+        async fn a_teardown_whose_saved_settings_cannot_be_read_stops_before_helm() {
+            let (server, kube) = api_server().await;
+            namespace_is(&server, 200, ns(json!({}), "Active")).await;
+            Mock::given(method("GET"))
+                .and(path("/api/v1/namespaces/yolab-notes/secrets/yolab-config"))
+                .respond_with(
+                    ResponseTemplate::new(503).set_body_json(status(503, "ServiceUnavailable")),
+                )
+                .mount(&server)
+                .await;
+            assert!(teardown_of(kube).await.is_err());
+        }
+
+        #[tokio::test]
+        async fn a_teardown_that_cannot_list_volumes_does_not_claim_the_folders_are_gone() {
+            let (server, kube) = api_server().await;
+            namespace_is(
+                &server,
+                200,
+                ns(json!({ ANN_DELETE_FOLDERS: "[\"notes\"]" }), "Terminating"),
+            )
+            .await;
+            volumes_unlistable(&server).await;
+            assert!(teardown_of(kube).await.is_err());
+        }
+
+        #[tokio::test]
+        async fn a_teardown_that_cannot_list_volumes_does_not_claim_they_were_let_go() {
+            let (server, kube) = api_server().await;
+            namespace_is(&server, 200, ns(json!({}), "Terminating")).await;
+            namespace_deletes(&server).await;
+            volumes_unlistable(&server).await;
+            assert!(teardown_of(kube).await.is_err());
+        }
+
+        #[tokio::test]
+        async fn a_tree_volume_that_will_not_delete_is_an_error() {
+            let (server, kube) = api_server().await;
+            volumes_are(
+                &server,
+                vec![tree_pv(
+                    "yolab-notes.notes-data",
+                    "yolab-notes",
+                    "/tree/notes",
+                )],
+            )
+            .await;
+            Mock::given(method("DELETE"))
+                .and(path("/api/v1/persistentvolumes/yolab-notes.notes-data"))
+                .respond_with(
+                    ResponseTemplate::new(500).set_body_json(status(500, "InternalError")),
+                )
+                .mount(&server)
+                .await;
+            assert!(release_tree_volumes(&kube, "yolab-notes").await.is_err());
+        }
+
+        #[tokio::test]
+        async fn the_background_finisher_needs_the_cluster() {
+            use crate::runtime::Resource as _;
+            let ctx = crate::runtime::Ctx {
+                node: "node1".into(),
+                tools: crate::tools::Tools {
+                    host: Default::default(),
+                    kube: crate::k8s::Kube::from_environment(),
+                    http: crate::http::client(),
+                },
+            };
+            assert!(UninstallsController.converge(&ctx).await.is_err());
         }
 
         #[tokio::test]

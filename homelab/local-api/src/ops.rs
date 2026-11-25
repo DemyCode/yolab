@@ -293,6 +293,11 @@ mod tests {
         j.state == QUEUED
     }
 
+    fn start(j: &mut Job) {
+        j.state = RUNNING.into();
+        j.attempts += 1;
+    }
+
     #[test]
     fn a_job_that_still_heartbeats_keeps_everything_else_waiting() {
         let jobs = [job("new", QUEUED), job("live", RUNNING)];
@@ -332,17 +337,8 @@ mod tests {
             owner: "node2".into(),
             heartbeat: NOW.into(),
         };
-        let taken = take_in(
-            &mut jobs,
-            "b",
-            queued,
-            |j| {
-                j.state = RUNNING.into();
-                j.attempts += 1;
-            },
-            &mine,
-        )
-        .expect("a queued job is takeable");
+        let taken =
+            take_in(&mut jobs, "b", queued, start, &mine).expect("a queued job is takeable");
         assert_eq!(taken.claim, mine);
         assert_eq!(taken.attempts, 1);
         assert_eq!(jobs[1].state, RUNNING);
@@ -353,11 +349,11 @@ mod tests {
     fn a_job_someone_else_took_first_is_not_taken_again() {
         let mut jobs = vec![job("a", RUNNING)];
         let mine = Claim::mine(at(NOW));
-        let again = take_in(&mut jobs, "a", queued, |j| j.attempts += 1, &mine);
+        let again = take_in(&mut jobs, "a", queued, start, &mine);
         assert!(again.is_none());
         assert_eq!(jobs[0].attempts, 0);
         assert_eq!(jobs[0].claim, claim("node1"));
-        assert!(take_in(&mut jobs, "gone", queued, |_| {}, &mine).is_none());
+        assert!(take_in(&mut jobs, "gone", queued, start, &mine).is_none());
     }
 
     #[tokio::test]
@@ -414,5 +410,53 @@ mod tests {
         let c = Claim::mine(at(NOW));
         assert_eq!(c.owner, crate::system::hostname());
         assert_eq!(c.heartbeat, at(NOW).to_rfc3339());
+    }
+
+    #[test]
+    fn a_record_first_seen_has_been_silent_for_no_time() {
+        assert_eq!(
+            silent_for(&job("ops-first-seen-job", RUNNING)),
+            Duration::ZERO
+        );
+        assert_eq!(
+            silent_for(&rec("ops-first-seen-rec", "running", claim("node1"))),
+            Duration::ZERO
+        );
+    }
+
+    #[tokio::test]
+    async fn a_job_cannot_be_taken_while_the_cluster_is_unreachable() {
+        let unreachable = crate::k8s::testing::unreachable();
+        assert!(take::<Job>(BEATS, &unreachable, "a", queued, start)
+            .await
+            .is_err());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_heartbeat_that_cannot_be_written_is_tried_again_on_the_next_beat() {
+        use wiremock::{matchers::method, Mock, ResponseTemplate};
+        let (server, client) = crate::k8s::testing::api_server().await;
+        Mock::given(method("GET"))
+            .respond_with(
+                ResponseTemplate::new(404)
+                    .set_body_json(crate::k8s::testing::status(404, "NotFound")),
+            )
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .respond_with(
+                ResponseTemplate::new(500)
+                    .set_body_json(crate::k8s::testing::status(500, "InternalError")),
+            )
+            .mount(&server)
+            .await;
+        let beats = async {
+            while server.received_requests().await.unwrap().len() < 3 {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+        };
+        drive::<Job, _>(BEATS, &client, "a", beats).await;
+        assert!(server.received_requests().await.unwrap().len() >= 3);
     }
 }

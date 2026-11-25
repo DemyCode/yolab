@@ -607,6 +607,135 @@ mod tests {
         assert_eq!(writes(&server, "PUT").await.len(), CAS_ATTEMPTS);
     }
 
+    #[derive(Default, serde::Deserialize)]
+    struct Doc(Vec<String>);
+
+    impl serde::Serialize for Doc {
+        fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+            if self.0.iter().any(|e| e == "unwritable") {
+                return Err(serde::ser::Error::custom("this value has no JSON form"));
+            }
+            serde::Serialize::serialize(&self.0, s)
+        }
+    }
+
+    fn push(d: &mut Doc) {
+        d.0.push("x".into());
+    }
+
+    async fn change(client: &kube::Client, f: &mut dyn FnMut(&mut Doc)) -> Result<(), RecordError> {
+        STORE.update(client, f).await
+    }
+
+    #[tokio::test]
+    async fn one_update_shape_reads_creates_replaces_and_keeps_corrupt_content() {
+        let (server, client) = api_server().await;
+        get_answers(&server, 503, status(503, "ServiceUnavailable"), None).await;
+        let r = change(&client, &mut push).await;
+        assert!(matches!(r, Err(RecordError::Cluster(_))));
+
+        let (server, client) = api_server().await;
+        get_answers(&server, 404, status(404, "NotFound"), None).await;
+        Mock::given(method("POST"))
+            .respond_with(ok_write())
+            .mount(&server)
+            .await;
+        change(&client, &mut push).await.unwrap();
+        change(&client, &mut |_: &mut Doc| {}).await.unwrap();
+        let created = writes(&server, "POST").await;
+        assert_eq!(created.len(), 1);
+        assert_eq!(created[0]["data"]["sets"], r#"["x"]"#);
+
+        let (server, client) = api_server().await;
+        get_answers(&server, 200, cm(r#"["a"]"#, "1"), None).await;
+        Mock::given(method("PUT"))
+            .respond_with(ok_write())
+            .mount(&server)
+            .await;
+        change(&client, &mut push).await.unwrap();
+        assert_eq!(
+            writes(&server, "PUT").await[0]["data"]["sets"],
+            r#"["a","x"]"#
+        );
+
+        let (server, client) = api_server().await;
+        get_answers(&server, 200, cm("not json {", "2"), None).await;
+        Mock::given(method("PUT"))
+            .respond_with(ok_write())
+            .mount(&server)
+            .await;
+        change(&client, &mut push).await.unwrap();
+        let write = &writes(&server, "PUT").await[0];
+        assert_eq!(write["data"]["sets.corrupt"], "not json {");
+        assert_eq!(write["data"]["sets"], r#"["x"]"#);
+    }
+
+    #[tokio::test]
+    async fn one_update_shape_refuses_unwritable_records_and_unversioned_objects() {
+        let (server, client) = api_server().await;
+        get_answers(&server, 200, cm(r#"["unwritable"]"#, "1"), None).await;
+        let before = change(&client, &mut push).await;
+        assert!(matches!(before, Err(RecordError::Corrupt { .. })));
+
+        let (server, client) = api_server().await;
+        get_answers(&server, 200, cm("[]", "1"), None).await;
+        let after = change(&client, &mut |d: &mut Doc| d.0.push("unwritable".into())).await;
+        assert!(matches!(after, Err(RecordError::Corrupt { .. })));
+        assert!(writes(&server, "PUT").await.is_empty());
+
+        let (server, client) = api_server().await;
+        get_answers(
+            &server,
+            200,
+            json!({
+                "apiVersion": "v1", "kind": "ConfigMap",
+                "metadata": { "name": "yolab-test", "namespace": "kube-system" },
+                "data": { "sets": "[]" }
+            }),
+            None,
+        )
+        .await;
+        let unversioned = change(&client, &mut push).await;
+        assert!(matches!(unversioned, Err(RecordError::Corrupt { .. })));
+        assert!(writes(&server, "PUT").await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn one_update_shape_retries_conflicts_and_stops_on_refusal_or_endless_contention() {
+        let (server, client) = api_server().await;
+        get_answers(&server, 200, cm("[]", "1"), None).await;
+        Mock::given(method("PUT"))
+            .respond_with(conflict())
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("PUT"))
+            .respond_with(ok_write())
+            .mount(&server)
+            .await;
+        change(&client, &mut push).await.unwrap();
+        assert_eq!(writes(&server, "PUT").await.len(), 2);
+
+        let (server, client) = api_server().await;
+        get_answers(&server, 200, cm("[]", "1"), None).await;
+        Mock::given(method("PUT"))
+            .respond_with(ResponseTemplate::new(403).set_body_json(status(403, "Forbidden")))
+            .mount(&server)
+            .await;
+        let refused = change(&client, &mut push).await;
+        assert!(matches!(refused, Err(RecordError::Cluster(_))));
+
+        let (server, client) = api_server().await;
+        get_answers(&server, 200, cm("[]", "1"), None).await;
+        Mock::given(method("PUT"))
+            .respond_with(conflict())
+            .mount(&server)
+            .await;
+        let contended = change(&client, &mut push).await;
+        assert!(matches!(contended, Err(RecordError::Contended { .. })));
+        assert_eq!(writes(&server, "PUT").await.len(), CAS_ATTEMPTS);
+    }
+
     #[test]
     fn the_test_fixture_is_what_the_store_reads() {
         let v = stored("yolab-test", &json!(["a"]), "3");

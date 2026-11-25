@@ -228,15 +228,14 @@ fn record_intent(node: &str, disk_id: &str, desired: &str) {
 
 fn store_intent(node: &str, disk_id: &str, intent: DiskIntent) {
     let mut store = crate::store::locked();
-    if let Err(e) = store.set_disk_intent(node, disk_id, intent) {
+    if let Err(e) = store
+        .set_disk_intent(node, disk_id, intent)
+        .and_then(|()| store.persist(&crate::store::default_path()))
+    {
         tracing::warn!(
-            "{node}--{disk_id}: the switch was saved but not recorded as a choice ({e}) — the \
-             next reconcile will take it from the cluster settings"
+            "{node}--{disk_id}: the switch was saved but the choice could not be recorded ({e}) \
+             — the next reconcile will take it from the cluster settings"
         );
-        return;
-    }
-    if let Err(e) = store.persist(&crate::store::default_path()) {
-        tracing::warn!("{node}--{disk_id}: the choice could not be saved to disk ({e})");
     }
 }
 
@@ -309,6 +308,14 @@ mod tests {
         let down = FakeHost::new().fail("ceph config-key rm", "Error EACCES: access denied");
         let err = forget_disk(&down, "node1", "dev-sdb").await.unwrap_err();
         assert!(err.contains("could not be removed"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_choice_that_cannot_be_written_to_disk_still_leaves_the_switch_saved() {
+        std::fs::create_dir_all(crate::store::default_path()).unwrap();
+        let host = FakeHost::new().ok("ceph config-key rm", "");
+        forget_disk(&host, "node1", "dev-sdb").await.unwrap();
+        assert!(crate::store::default_path().is_dir());
     }
 
     mod over_http {

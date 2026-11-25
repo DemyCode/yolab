@@ -101,6 +101,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn outputs_that_cannot_be_read_are_an_error_not_an_empty_list() {
+        let (server, kube) = api_server().await;
+        serve(
+            &server,
+            "/api/v1/namespaces/yolab-notes",
+            200,
+            json!({ "apiVersion": "v1", "kind": "Namespace", "metadata": { "name": "yolab-notes" } }),
+        )
+        .await;
+        serve(
+            &server,
+            "/api/v1/namespaces/yolab-notes/configmaps/yolab-schema",
+            404,
+            status(404, "NotFound"),
+        )
+        .await;
+        serve(
+            &server,
+            "/api/v1/namespaces/yolab-notes/secrets/yolab-outputs",
+            500,
+            status(500, "InternalError"),
+        )
+        .await;
+        let api = TestApi::with_kube(kube).login().await;
+        assert!(!api.get("/api/apps/notes/outputs").await.status.is_success());
+        assert!(!api
+            .post("/api/apps/notes/scan-outputs", "")
+            .await
+            .status
+            .is_success());
+    }
+
+    #[tokio::test]
     async fn the_outputs_of_a_service_that_is_not_there_are_an_error() {
         let (server, kube) = api_server().await;
         serve(

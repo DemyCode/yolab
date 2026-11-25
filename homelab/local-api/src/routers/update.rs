@@ -159,9 +159,8 @@ pub async fn trigger_update(State(state): State<AppState>) -> Json<serde_json::V
 
     let log_path = cfg.rebuild_log.clone();
     tokio::spawn(async move {
-        if let Some(parent) = log_path.parent() {
-            std::fs::create_dir_all(parent).warn_on_err(format!("create {}", parent.display()));
-        }
+        let parent = log_path.parent().unwrap_or(std::path::Path::new("/"));
+        std::fs::create_dir_all(parent).warn_on_err(format!("create {}", parent.display()));
         while let Some(line) = rx.recv().await {
             std::fs::OpenOptions::new()
                 .create(true)
@@ -529,6 +528,28 @@ mod tests {
             .await;
         let err = fleet(port).act(PEER).await.unwrap_err();
         assert!(err.to_string().contains("refused to start updating"));
+    }
+
+    #[tokio::test]
+    async fn a_peer_that_hangs_up_on_the_update_call_stops_the_roll() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("[::1]:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let mut buf = [0u8; 4096];
+            let (mut channel, _) = listener.accept().await.unwrap();
+            let read = channel.read(&mut buf).await.unwrap();
+            assert!(read > 0);
+            channel
+                .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\nconnection: close\r\n\r\n")
+                .await
+                .unwrap();
+            drop(channel);
+            let (trigger, _) = listener.accept().await.unwrap();
+            drop(trigger);
+        });
+        let err = fleet(port).act(PEER).await.unwrap_err();
+        assert!(!err.to_string().contains("refused"), "{err:#}");
     }
 
     #[tokio::test]

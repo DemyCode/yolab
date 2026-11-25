@@ -90,7 +90,10 @@ fn caps_of(found: &Value) -> BTreeMap<String, String> {
 
 fn wanted_caps(caps: &[&str]) -> BTreeMap<String, String> {
     caps.chunks(2)
-        .filter_map(|pair| Some((pair.first()?.to_string(), pair.get(1)?.to_string())))
+        .filter_map(|pair| match pair {
+            [k, v] => Some((k.to_string(), v.to_string())),
+            _ => None,
+        })
         .collect()
 }
 
@@ -503,5 +506,146 @@ mod tests {
         let b = Backend { kube, host };
         assert!(run(&b).await.is_err());
         assert!(!b.host.ran("auth get-or-create"));
+    }
+
+    #[test]
+    fn a_mon_without_a_v2_address_is_left_out() {
+        let d = json!({"mons": [
+            {"name": "bare"},
+            {"public_addrs": {"addrvec": [{"type": "v1", "addr": "[fd00::1]:6789"}]}},
+        ]});
+        assert!(mon_v2_addrs(&d).is_empty());
+    }
+
+    #[test]
+    fn a_cap_that_is_not_text_is_ignored() {
+        let found = json!([{"caps": {"mon": "allow r", "osd": 5}}]);
+        assert_eq!(
+            caps_of(&found),
+            BTreeMap::from([("mon".to_string(), "allow r".to_string())])
+        );
+    }
+
+    #[test]
+    fn a_cap_name_without_a_grant_is_not_wanted() {
+        assert_eq!(
+            wanted_caps(&["mon", "allow r", "osd"]),
+            BTreeMap::from([("mon".to_string(), "allow r".to_string())])
+        );
+    }
+
+    fn mons_readable() -> FakeHost {
+        FakeHost::new().ok("ceph -s", "").ok(
+            "ceph mon dump",
+            &dump_with(&[("yolab-n1", "fd00:cafe::1")]).to_string(),
+        )
+    }
+
+    const NO_PROVISIONER: &str =
+        "Error ENOENT: failed to find client.csi-cephfs-provisioner in keyring";
+
+    #[tokio::test]
+    async fn an_unreadable_mon_dump_is_an_error() {
+        let (server, kube) = cluster_up().await;
+        let host = FakeHost::new()
+            .ok("ceph -s", "")
+            .fail("ceph mon dump", "RADOS timed out");
+        let b = Backend { kube, host };
+        assert!(run(&b).await.is_err());
+        assert!(patched(&server).await.is_empty());
+        assert!(!b.host.ran("ceph auth"));
+    }
+
+    #[tokio::test]
+    async fn a_key_ceph_refuses_to_create_is_an_error() {
+        let (server, kube) = cluster_up().await;
+        let host = mons_readable()
+            .fail(
+                "ceph auth get-key client.csi-cephfs-provisioner",
+                NO_PROVISIONER,
+            )
+            .fail(
+                "ceph auth get-or-create client.csi-cephfs-provisioner",
+                "Error EACCES: access denied",
+            );
+        let b = Backend { kube, host };
+        assert!(run(&b).await.is_err());
+        assert!(patched(&server).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_created_key_that_cannot_be_read_back_is_an_error() {
+        let (server, kube) = cluster_up().await;
+        let host = mons_readable()
+            .fail(
+                "ceph auth get-key client.csi-cephfs-provisioner",
+                NO_PROVISIONER,
+            )
+            .fail(
+                "ceph auth get-key client.csi-cephfs-provisioner",
+                "RADOS timed out",
+            )
+            .ok("ceph auth get-or-create client.csi-cephfs-provisioner", "");
+        let b = Backend { kube, host };
+        assert!(run(&b).await.is_err());
+        assert!(b
+            .host
+            .ran("auth get-or-create client.csi-cephfs-provisioner"));
+        assert!(patched(&server).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_unreadable_node_key_is_an_error() {
+        let (server, kube) = cluster_up().await;
+        let host = mons_readable()
+            .ok("ceph auth get-key client.csi-cephfs-provisioner", "provkey")
+            .fail(
+                "ceph auth get-key client.csi-cephfs-node",
+                "RADOS timed out",
+            );
+        let b = Backend { kube, host };
+        assert!(run(&b).await.is_err());
+        assert!(!b.host.ran("auth get-or-create"));
+        assert!(patched(&server).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_refused_provisioner_secret_fails_the_run_and_is_named() {
+        let (server, kube) = cluster_up().await;
+        refuse_patch_of(
+            &server,
+            "/api/v1/namespaces/ceph-csi/secrets/csi-cephfs-provisioner",
+        )
+        .await;
+        let err = run(&Backend {
+            kube,
+            host: ceph_ok(),
+        })
+        .await
+        .unwrap_err();
+        assert!(
+            format!("{err:#}").contains("apply the secret csi-cephfs-provisioner"),
+            "{err:#}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_refused_static_volume_secret_fails_the_run_and_is_named() {
+        let (server, kube) = cluster_up().await;
+        refuse_patch_of(
+            &server,
+            "/api/v1/namespaces/ceph-csi/secrets/yolab-cephfs-static",
+        )
+        .await;
+        let err = run(&Backend {
+            kube,
+            host: ceph_ok(),
+        })
+        .await
+        .unwrap_err();
+        assert!(
+            format!("{err:#}").contains("apply the secret yolab-cephfs-static"),
+            "{err:#}"
+        );
     }
 }

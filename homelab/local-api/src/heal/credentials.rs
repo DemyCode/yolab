@@ -57,7 +57,10 @@ fn read_copy(root: &Path) -> Result<Option<Credentials>> {
 }
 
 fn write_copy(root: &Path, credentials: &Credentials) -> Result<()> {
-    crate::config::write_private_file(&copy_path(root), &serde_json::to_vec(credentials)?)
+    crate::config::write_private_file(
+        &copy_path(root),
+        serde_json::json!(credentials).to_string().as_bytes(),
+    )
 }
 
 pub struct BackupCredentialsController;
@@ -247,5 +250,105 @@ mod tests {
             ));
             assert_eq!(read_copy(dir.path()).unwrap(), Some(creds("p", "k")));
         }
+
+        fn secret_body(password: &str, key: &str) -> serde_json::Value {
+            use base64::Engine as _;
+            let b = |s: &str| base64::engine::general_purpose::STANDARD.encode(s);
+            serde_json::json!({
+                "apiVersion": "v1", "kind": "Secret",
+                "metadata": { "name": "yolab-backup-config", "namespace": "kube-system" },
+                "data": { "restic_password": b(password), "access_key_id": b(key) }
+            })
+        }
+
+        async fn serving(get: ResponseTemplate) -> (wiremock::MockServer, Client) {
+            let (server, client) = api_server().await;
+            Mock::given(method("GET"))
+                .and(path(SECRET_PATH))
+                .respond_with(get)
+                .mount(&server)
+                .await;
+            (server, client)
+        }
+
+        fn missing() -> ResponseTemplate {
+            ResponseTemplate::new(404).set_body_json(status(404, "NotFound"))
+        }
+
+        #[tokio::test]
+        async fn a_copy_that_matches_the_secret_is_left_alone() {
+            let dir = tempfile::tempdir().unwrap();
+            write_copy(dir.path(), &creds("p", "k")).unwrap();
+            let (_server, client) =
+                serving(ResponseTemplate::new(200).set_body_json(secret_body("p", "k"))).await;
+            assert_eq!(
+                sync(&client, dir.path()).await.unwrap(),
+                Tick::Idle("the copy is up to date".into())
+            );
+        }
+
+        #[tokio::test]
+        async fn a_corrupt_copy_on_disk_is_an_error_not_an_absent_copy() {
+            let dir = tempfile::tempdir().unwrap();
+            let file = copy_path(dir.path());
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(&file, "not json").unwrap();
+            let (_server, client) = serving(missing()).await;
+            assert_eq!(
+                sync(&client, dir.path()).await.unwrap_err().to_string(),
+                format!("{} is unreadable", file.display())
+            );
+        }
+
+        #[test]
+        fn a_copy_that_cannot_be_read_is_an_error_not_an_absent_copy() {
+            let dir = tempfile::tempdir().unwrap();
+            let file = copy_path(dir.path());
+            std::fs::create_dir_all(&file).unwrap();
+            assert_eq!(
+                read_copy(dir.path()).unwrap_err().to_string(),
+                format!("read {}", file.display())
+            );
+        }
+
+        #[tokio::test]
+        async fn a_copy_that_cannot_be_written_fails_the_sync() {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::create_dir_all(copy_path(dir.path()).with_extension("tmp")).unwrap();
+            let (_server, client) =
+                serving(ResponseTemplate::new(200).set_body_json(secret_body("p", "k"))).await;
+            assert!(sync(&client, dir.path()).await.is_err());
+            assert_eq!(read_copy(dir.path()).unwrap(), None);
+        }
+
+        #[tokio::test]
+        async fn a_secret_the_cluster_refuses_to_take_back_fails_the_sync() {
+            let dir = tempfile::tempdir().unwrap();
+            write_copy(dir.path(), &creds("p", "k")).unwrap();
+            let (server, client) = serving(missing()).await;
+            Mock::given(method("PATCH"))
+                .and(path(SECRET_PATH))
+                .respond_with(
+                    ResponseTemplate::new(500).set_body_json(status(500, "InternalError")),
+                )
+                .expect(1)
+                .mount(&server)
+                .await;
+            assert!(sync(&client, dir.path()).await.is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn the_credentials_copy_runs_on_every_machine_every_five_minutes_once_kube_is_up() {
+        let c = BackupCredentialsController;
+        assert_eq!(c.name(), NAME);
+        assert_eq!(c.scope(), Scope::Node);
+        assert_eq!(c.interval(), Duration::from_secs(300));
+        assert_eq!(c.depends_on(), &[crate::runtime::KUBE_API]);
+        let ctx = Ctx {
+            node: "node1".into(),
+            tools: crate::tools::Tools::unreachable(),
+        };
+        assert!(c.converge(&ctx).await.is_err());
     }
 }

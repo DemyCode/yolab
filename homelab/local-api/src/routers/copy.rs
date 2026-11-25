@@ -258,6 +258,41 @@ mod tests {
         assert_eq!(asked, ["GET"]);
     }
 
+    async fn notes_with_its_folder() -> (wiremock::MockServer, Client) {
+        let (server, kube) = crate::k8s::testing::api_server().await;
+        crate::k8s::testing::serve(
+            &server,
+            "/api/v1/persistentvolumes",
+            200,
+            crate::k8s::testing::list(
+                "PersistentVolume",
+                vec![crate::tree::testing::volume("yolab-notes", "data", "notes")],
+            ),
+        )
+        .await;
+        (server, kube)
+    }
+
+    #[tokio::test]
+    async fn each_folder_of_the_original_is_copied_by_a_tree_job() {
+        let (server, kube) = notes_with_its_folder().await;
+        crate::tree::testing::jobs_finish_saying(&server, "").await;
+        copy_live_folders(&kube, "yolab-notes", &[planned("data", "notes-2")])
+            .await
+            .unwrap();
+        assert!(crate::k8s::testing::asked(&server, "/jobs").await);
+    }
+
+    #[tokio::test]
+    async fn a_copy_job_the_cluster_refuses_fails_the_copy() {
+        let (_server, kube) = notes_with_its_folder().await;
+        assert!(
+            copy_live_folders(&kube, "yolab-notes", &[planned("data", "notes-2")])
+                .await
+                .is_err()
+        );
+    }
+
     #[tokio::test]
     async fn an_unreadable_volume_list_fails_the_copy() {
         assert!(

@@ -248,12 +248,6 @@ where
                     None => hi = mid - 1,
                 }
             }
-            for m in (lo + 1)..=(n - 2) {
-                match sizer.first_fit(&times, &forced, m, target).await? {
-                    Some(found) => chosen = found,
-                    None => break,
-                }
-            }
         }
     }
     Ok(Fit {
@@ -752,6 +746,15 @@ mod tests {
         sizes: &'a [(&'a str, u64)],
     ) -> impl FnMut(Vec<Point>) -> std::future::Ready<anyhow::Result<u64>> + 'a {
         move |kept: Vec<Point>| {
+            let count = kept.len() as u64;
+            if sizes
+                .iter()
+                .any(|(id, n)| *id == "unmeasurable" && *n == count)
+            {
+                return std::future::ready(Err(anyhow::anyhow!(
+                    "restic could not measure {count} backups"
+                )));
+            }
             let total = kept
                 .iter()
                 .map(|p| {
@@ -945,7 +948,7 @@ mod tests {
                 < crate::backup::spacing::doubling_cost(&all[..5]),
             "better than keeping the 5 newest"
         );
-        assert!(left.contains(&all[15]) || left.iter().min() < Some(&all[4]));
+        assert!(left.contains(&all[15]), "the oldest night stays");
     }
 
     #[tokio::test]
@@ -1084,6 +1087,72 @@ mod tests {
         );
         assert!(raw_size(&json!({})).is_err());
     }
+
+    #[test]
+    fn snapshots_with_an_unreadable_time_or_no_id_are_not_points() {
+        let snapshots = json!([
+            {"id": "garbled", "time": "yesterday", "tags": ["namespace:yolab-a"]},
+            {"time": "2026-11-16T03:00:00Z", "tags": ["namespace:yolab-a"]},
+            {"id": "good", "time": "2026-11-15T03:00:00Z", "tags": ["namespace:yolab-a"]},
+        ]);
+        assert_eq!(
+            points_of(&snapshots),
+            vec![Point {
+                snapshot_id: "good".into(),
+                time: "2026-11-15T03:00:00Z".into(),
+                run: None,
+            }]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_measurement_that_fails_stops_the_cleanup_at_every_step() {
+        let points = nightly(4);
+        for (budget, unmeasurable) in [(0, 4), (34, 1), (34, 3)] {
+            let sizes = [
+                ("n0", 10),
+                ("n1", 10),
+                ("n2", 10),
+                ("n3", 10),
+                ("unmeasurable", unmeasurable),
+            ];
+            let err = fit(&points, budget, sized(&sizes)).await.unwrap_err();
+            assert_eq!(
+                err.to_string(),
+                format!("restic could not measure {unmeasurable} backups")
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_measurement_that_fails_while_searching_for_the_count_stops_the_cleanup() {
+        let points = nightly(6);
+        let sizes = [
+            ("n0", 10),
+            ("n1", 10),
+            ("n2", 10),
+            ("n3", 10),
+            ("n4", 10),
+            ("n5", 10),
+            ("unmeasurable", 3),
+        ];
+        let err = fit(&points, 35, sized(&sizes)).await.unwrap_err();
+        assert_eq!(err.to_string(), "restic could not measure 3 backups");
+    }
+
+    #[tokio::test]
+    async fn when_only_what_must_stay_is_left_it_is_kept_even_over_budget() {
+        let points = [aged("new", 0, false), aged("legacy", 24, true)];
+        let fitted = fit(&points, 50, sized(&[("new", 80)])).await.unwrap();
+        assert_eq!(
+            fitted,
+            Fit {
+                drop: vec![],
+                size_after: 80,
+                over: true
+            }
+        );
+    }
 }
 
 #[cfg(test)]
@@ -1131,7 +1200,11 @@ mod against_restic {
     }
 
     fn restic_for(ns: &str, folders: &str) -> FakeHost {
-        FakeHost::new()
+        restic_on(FakeHost::new(), ns, folders)
+    }
+
+    fn restic_on(first: FakeHost, ns: &str, folders: &str) -> FakeHost {
+        first
             .ok(
                 &format!(
                     "restic snapshots --no-lock --json --tag {}",
@@ -1491,7 +1564,13 @@ mod against_restic {
     #[tokio::test]
     async fn a_refresh_that_cannot_read_or_measure_changes_nothing() {
         let (server, kube) = api_server().await;
-        sizes_are(&server, 503, None).await;
+        Mock::given(method("GET"))
+            .and(path(SIZES_PATH))
+            .respond_with(
+                ResponseTemplate::new(503).set_body_json(status(503, "ServiceUnavailable")),
+            )
+            .mount(&server)
+            .await;
         Mock::given(method("GET"))
             .and(path("/api/v1/namespaces/yolab-notes/secrets/yolab-config"))
             .respond_with(
@@ -1538,5 +1617,232 @@ mod against_restic {
             tokio::task::yield_now().await;
         }
         assert!(host.ran("restic prune"));
+    }
+
+    const DOWN: &str = "connection refused";
+    const SIZE: &str = r#"{"total_size": 100}"#;
+    const EVERY_SNAPSHOT: &str = "restic snapshots --no-lock --json";
+
+    fn points_listing(ns: &str) -> String {
+        format!("{EVERY_SNAPSHOT} --tag {}", namespace_tag(ns))
+    }
+
+    fn folders_listing() -> String {
+        format!("{EVERY_SNAPSHOT} --tag {FOLDERS_TAG}")
+    }
+
+    fn stats(ids: &str) -> String {
+        format!("restic stats --no-lock --mode raw-data --json {ids}")
+    }
+
+    fn volumes_catalog() -> String {
+        json!({ "services": [{ "namespace": NS, "pvcs": [
+            { "name": "data", "snapshot_id": "v1", "snapshot_time": "2026-11-10T03:00:00Z" },
+            { "name": "cache", "snapshot_id": "v9", "snapshot_time": "2026-11-10T03:00:00Z" }
+        ]}]})
+        .to_string()
+    }
+
+    fn with_volumes(first: FakeHost) -> FakeHost {
+        restic_on(first, NS, &folders_json())
+            .restic_restores(vec![("catalog.json", volumes_catalog())])
+    }
+
+    fn first_measure_failures() -> Vec<FakeHost> {
+        [
+            FakeHost::new().fail(&points_listing(NS), DOWN),
+            FakeHost::new().fail(&folders_listing(), DOWN),
+            FakeHost::new().fail(&stats("f2 f1"), DOWN),
+            FakeHost::new()
+                .ok(&stats("f2 f1"), SIZE)
+                .fail(&stats("f2"), DOWN),
+        ]
+        .into_iter()
+        .map(|first| restic_on(first, NS, &folders_json()))
+        .collect()
+    }
+
+    #[tokio::test]
+    async fn what_a_delete_frees_and_the_size_stop_at_the_first_restic_failure() {
+        let cfg = cfg();
+        for host in first_measure_failures() {
+            let svc = Service {
+                host: &host,
+                cfg: &cfg,
+                namespace: NS,
+            };
+            assert!(svc.frees("p1").await.is_err());
+        }
+        for host in first_measure_failures() {
+            let svc = Service {
+                host: &host,
+                cfg: &cfg,
+                namespace: NS,
+            };
+            assert!(svc.sized(None, None).await.is_err());
+        }
+        let garbled = FakeHost::new().ok("restic stats", "not json");
+        let svc = Service {
+            host: &garbled,
+            cfg: &cfg,
+            namespace: NS,
+        };
+        assert!(svc.measure(&["f1".into()]).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn deleting_a_backup_forgets_the_volume_copies_still_in_their_store() {
+        let host = with_volumes(FakeHost::new().ok(
+            EVERY_SNAPSHOT,
+            &json!([{ "id": "v1" }, { "id": "other" }]).to_string(),
+        ));
+        let cfg = cfg();
+        let svc = Service {
+            host: &host,
+            cfg: &cfg,
+            namespace: NS,
+        };
+        let points = svc.points().await.unwrap();
+        let folders = svc.folders().await.unwrap();
+        let touched = svc.delete(&points[1..2], &folders).await.unwrap();
+        assert_eq!(
+            touched,
+            BTreeSet::from([
+                SETTINGS_REPO.to_string(),
+                folder_backup::store(NS),
+                format!("volsync/{NS}/data"),
+            ])
+        );
+        assert!(host.ran("restic forget v1"));
+        assert!(!host.ran("restic forget v9"));
+    }
+
+    #[tokio::test]
+    async fn a_delete_stops_when_its_volume_copies_cannot_be_found_or_forgotten() {
+        let cfg = cfg();
+        let firsts = [
+            FakeHost::new().fail("restic restore", DOWN),
+            FakeHost::new().fail(EVERY_SNAPSHOT, DOWN),
+            FakeHost::new()
+                .ok(EVERY_SNAPSHOT, &json!([{ "id": "v1" }]).to_string())
+                .fail("restic forget v1", DOWN),
+        ];
+        for first in firsts {
+            let host = with_volumes(first);
+            let svc = Service {
+                host: &host,
+                cfg: &cfg,
+                namespace: NS,
+            };
+            let points = svc.points().await.unwrap();
+            let folders = svc.folders().await.unwrap();
+            assert!(svc.delete(&points[1..2], &folders).await.is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn deleting_one_or_every_backup_stops_at_the_first_restic_failure() {
+        for first in [
+            FakeHost::new().fail(&points_listing(NS), DOWN),
+            FakeHost::new().fail(&folders_listing(), DOWN),
+            FakeHost::new().fail("restic forget p1", DOWN),
+        ] {
+            let b = Backend {
+                kube: crate::k8s::testing::unreachable(),
+                host: restic_on(first, NS, &folders_json()),
+            };
+            assert!(delete_point(&b, &cfg(), NS, "p1").await.is_err());
+        }
+        for first in [
+            FakeHost::new().fail(&folders_listing(), DOWN),
+            FakeHost::new().fail("restic forget fx", DOWN),
+        ] {
+            let b = Backend {
+                kube: crate::k8s::testing::unreachable(),
+                host: restic_on(first, NS, &folders_json()),
+            };
+            assert!(delete_all(&b, &cfg(), NS).await.is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn after_a_backup_each_failing_step_stops_the_thinning_and_records_nothing() {
+        let ns = "yolab-thin-fails";
+        let (server, kube) = api_server().await;
+        sizes_are(&server, 404, None).await;
+        budget_is(&server, ns, Some(50)).await;
+        accept_writes(&server).await;
+        let firsts = [
+            FakeHost::new().fail(&points_listing(ns), DOWN),
+            FakeHost::new().fail(&folders_listing(), DOWN),
+            FakeHost::new().fail("restic forget fx", DOWN),
+            FakeHost::new().fail(&stats("f2 f1"), DOWN),
+            FakeHost::new().fail(&stats("f1"), DOWN),
+            FakeHost::new()
+                .ok(&stats("f2 f1"), SIZE)
+                .fail(&stats("f2"), DOWN),
+            FakeHost::new()
+                .ok(&stats("f2 f1"), SIZE)
+                .fail(&stats("f2 f1"), DOWN),
+            FakeHost::new().fail("restic forget p1", DOWN),
+        ];
+        for first in firsts {
+            let b = Backend {
+                kube: kube.clone(),
+                host: restic_on(first, ns, &folders_json()),
+            };
+            assert!(after_run(&b, &cfg(), ns, "p2").await.is_err());
+        }
+
+        let unbudgeted = "yolab-thin-no-budget";
+        Mock::given(method("GET"))
+            .and(path(format!(
+                "/api/v1/namespaces/{unbudgeted}/secrets/yolab-config"
+            )))
+            .respond_with(
+                ResponseTemplate::new(503).set_body_json(status(503, "ServiceUnavailable")),
+            )
+            .mount(&server)
+            .await;
+        let b = Backend {
+            kube,
+            host: restic_for(unbudgeted, &folders_json()),
+        };
+        assert!(after_run(&b, &cfg(), unbudgeted, "p2").await.is_err());
+        assert!(written_sizes(&server).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn after_a_backup_with_only_older_style_points_nothing_is_measured() {
+        let ns = "yolab-only-legacy";
+        let (server, kube) = api_server().await;
+        sizes_are(&server, 404, None).await;
+        budget_is(&server, ns, None).await;
+        accept_writes(&server).await;
+        let legacy = json!([
+            { "id": "old", "time": "2026-11-01T03:00:00Z", "tags": [namespace_tag(ns)] }
+        ]);
+        let host = FakeHost::new()
+            .ok(&points_listing(ns), &legacy.to_string())
+            .ok(&folders_listing(), "[]");
+        let after = after_run(&Backend { kube, host }, &cfg(), ns, "new")
+            .await
+            .unwrap();
+        assert_eq!(after.dropped, 0);
+        assert_eq!((after.size.size_bytes, after.size.newest_bytes), (0, 0));
+        assert_eq!(
+            written_sizes(&server).await[0][ns]["added"],
+            json!({ "new": 0 })
+        );
+    }
+
+    #[tokio::test]
+    async fn a_store_already_being_cleaned_up_is_not_cleaned_up_twice() {
+        let repo = "services/yolab-prune-busy";
+        PRUNING.lock().unwrap().insert(repo.to_string());
+        let host = FakeHost::new().ok("restic", "");
+        prune(&host, &cfg(), repo).await;
+        PRUNING.lock().unwrap().remove(repo);
+        assert!(!host.ran("restic"));
     }
 }

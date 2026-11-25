@@ -712,6 +712,99 @@ mod tests {
     }
 
     #[test]
+    fn a_drm_device_without_a_named_driver_is_not_a_gpu() {
+        let m = Machine::new();
+        std::fs::create_dir_all(m.path().join("sys/class/drm/renderD128/device")).unwrap();
+        let card = m.path().join("sys/class/drm/card0/device");
+        std::fs::create_dir_all(&card).unwrap();
+        symlink("..", card.join("driver")).unwrap();
+        assert!(drm_devices(m.path()).is_empty());
+    }
+
+    #[test]
+    fn meminfo_without_a_readable_total_gives_no_ram() {
+        assert_eq!(mem_total_bytes("MemFree: 1 kB\n"), None);
+        assert_eq!(mem_total_bytes("MemTotal:\n"), None);
+        assert_eq!(mem_total_bytes("MemTotal: lots kB\n"), None);
+    }
+
+    fn node1() -> crate::runtime::Ctx {
+        crate::runtime::Ctx {
+            node: "node1".into(),
+            tools: crate::tools::Tools::unreachable(),
+        }
+    }
+
+    #[tokio::test]
+    async fn the_labeller_runs_on_every_machine_every_minute_and_needs_the_cluster() {
+        use crate::runtime::Resource as _;
+        let c = HardwareLabelsController::real();
+        assert_eq!(c.name(), "hardware-labels");
+        assert_eq!(c.scope(), crate::runtime::Scope::Node);
+        assert_eq!(c.interval(), Duration::from_secs(60));
+        assert_eq!(c.depends_on(), &[crate::runtime::KUBE_API]);
+        assert_eq!(
+            c.converge(&node1()).await.unwrap_err().to_string(),
+            "this test runs without a cluster"
+        );
+    }
+
+    async fn labeller_for(
+        node: Option<Value>,
+    ) -> (wiremock::MockServer, HardwareLabelsController, Machine) {
+        use wiremock::{matchers, Mock, ResponseTemplate};
+        let (server, client) = crate::k8s::testing::api_server().await;
+        let (code, body) = node.map_or_else(
+            || (404, crate::k8s::testing::status(404, "NotFound")),
+            |n| (200, n),
+        );
+        crate::k8s::testing::serve(&server, "/api/v1/nodes/node1", code, body).await;
+        Mock::given(matchers::method("PATCH"))
+            .respond_with(
+                ResponseTemplate::new(500)
+                    .set_body_json(crate::k8s::testing::status(500, "InternalError")),
+            )
+            .mount(&server)
+            .await;
+        let machine = Machine::new();
+        let controller = HardwareLabelsController {
+            kube: crate::k8s::Kube::with(client),
+            root: machine.path().to_path_buf(),
+        };
+        (server, controller, machine)
+    }
+
+    fn node_labelled(labels: Value) -> Value {
+        json!({ "apiVersion": "v1", "kind": "Node", "metadata": { "name": "node1", "labels": labels } })
+    }
+
+    #[tokio::test]
+    async fn a_node_the_cluster_does_not_know_fails_the_tick() {
+        use crate::runtime::Resource as _;
+        let (_server, c, _m) = labeller_for(None).await;
+        assert!(c.converge(&node1()).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_node_already_labelled_right_is_not_patched() {
+        use crate::runtime::Resource as _;
+        let (server, c, _m) =
+            labeller_for(Some(node_labelled(json!({ LABEL_ACCELERATOR: "cpu" })))).await;
+        assert_eq!(
+            c.converge(&node1()).await.unwrap(),
+            crate::runtime::Tick::Done
+        );
+        assert!(crate::k8s::testing::patched(&server).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_label_patch_the_cluster_refuses_fails_the_tick() {
+        use crate::runtime::Resource as _;
+        let (_server, c, _m) = labeller_for(Some(node_labelled(json!({})))).await;
+        assert!(c.converge(&node1()).await.is_err());
+    }
+
+    #[test]
     fn labels_this_node_does_not_own_are_left_alone() {
         let current = BTreeMap::from([("kubernetes.io/hostname".to_string(), "node1".to_string())]);
         let patch = label_patch("node1", &current, &labels(&Inventory::default())).unwrap();

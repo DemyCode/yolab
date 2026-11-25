@@ -171,11 +171,7 @@ impl Store {
             detail: e.to_string(),
         })?;
 
-        let readable =
-            serde_json::to_vec_pretty(&self.debug_json()?).map_err(|e| StoreError::Corrupt {
-                key: path.display().to_string(),
-                detail: e.to_string(),
-            })?;
+        let readable = format!("{:#}", self.debug_json()?).into_bytes();
         let inspectable = debug_path(path);
         crate::config::write_private_file(&inspectable, &readable).map_err(|e| StoreError::Io {
             path: inspectable.display().to_string(),
@@ -195,7 +191,11 @@ impl Store {
 
     fn read_at<T: DeserializeOwned>(&self, key: &str) -> Result<Option<Entry<T>>, StoreError> {
         let mut candidates = Vec::new();
-        for (value, _) in self.doc.get_all(ROOT, key)? {
+        for (value, _) in self
+            .doc
+            .get_all(ROOT, key)
+            .expect("the root map can always be read")
+        {
             let Some(raw) = value.as_str() else {
                 continue;
             };
@@ -224,7 +224,9 @@ impl Store {
             key: key.to_string(),
             detail: e.to_string(),
         })?;
-        self.doc.put(ROOT, key, raw)?;
+        self.doc
+            .put(ROOT, key, raw)
+            .expect("the root map takes any value under a non-empty key");
         Ok(())
     }
 
@@ -373,7 +375,8 @@ impl Store {
         for (old, entry) in self.revoked_sessions()? {
             if entry.value <= now {
                 self.doc
-                    .delete(ROOT, format!("{REVOKED_PREFIX}{old}").as_str())?;
+                    .delete(ROOT, format!("{REVOKED_PREFIX}{old}").as_str())
+                    .expect("the root map deletes any key it has just listed");
             }
         }
         self.write_at(&format!("{REVOKED_PREFIX}{id}"), &expires, Origin::User)
@@ -388,8 +391,7 @@ impl Store {
             return Ok(found.value);
         }
         let key = crate::session::random_token(64);
-        self.write_at(SESSION_KEY, &key, Origin::User)?;
-        Ok(key)
+        self.write_at(SESSION_KEY, &key, Origin::User).map(|()| key)
     }
 
     pub fn set_ssh_key(&mut self, id: &str, key: &SshKey) -> Result<(), StoreError> {
@@ -999,6 +1001,184 @@ mod tests {
             node: this_node(),
         };
         assert!(crate::store::hlc::Hlc::decode(&stamp.encode()).is_some());
+    }
+
+    #[test]
+    fn only_a_document_error_carries_an_underlying_cause() {
+        use std::error::Error as _;
+        let doc = Store::load("node1", b"not an automerge document")
+            .err()
+            .unwrap();
+        assert!(matches!(doc, StoreError::Doc(_)));
+        assert!(doc.source().is_some());
+
+        let dir = tempfile::tempdir().unwrap();
+        let io = Store::open("node1", dir.path()).err().unwrap();
+        assert!(matches!(io, StoreError::Io { .. }));
+        assert!(io.source().is_none());
+
+        let mut store = Store::new("node1");
+        store.corrupt_disk_claim("node1--wwn-a");
+        let corrupt = store.disk_claims().unwrap_err();
+        assert!(matches!(corrupt, StoreError::Corrupt { .. }));
+        assert!(corrupt.source().is_none());
+    }
+
+    #[test]
+    fn a_store_whose_entries_cannot_be_projected_is_not_persisted_as_if_fine() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = Store::new("node1");
+        store.corrupt_disk_claim("node1--wwn-a");
+        assert!(matches!(
+            store.persist(&dir.path().join("store.automerge")),
+            Err(StoreError::Corrupt { .. })
+        ));
+    }
+
+    #[test]
+    fn a_json_projection_that_cannot_be_written_fails_the_persist() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("store.automerge");
+        let blocker = dir.path().join("store-debug.json");
+        std::fs::create_dir_all(blocker.join("inside")).unwrap();
+        let mut store = Store::new("node1");
+        assert!(matches!(store.persist(&path), Err(StoreError::Io { .. })));
+        assert!(path.exists());
+    }
+
+    #[test]
+    fn a_path_without_a_file_name_projects_to_store_debug_json() {
+        assert_eq!(
+            debug_path(Path::new("/")),
+            PathBuf::from("/store-debug.json")
+        );
+    }
+
+    #[test]
+    fn a_value_json_cannot_hold_is_refused_rather_than_written() {
+        let unwritable = BTreeMap::from([(vec![1u8], 1u8)]);
+        let mut store = Store::new("node1");
+        assert!(matches!(
+            store.set_setting("odd", &unwritable),
+            Err(StoreError::Corrupt { .. })
+        ));
+        assert!(store.settings().unwrap().is_empty());
+    }
+
+    #[test]
+    fn taking_in_a_value_follows_who_wrote_what_was_there_before() {
+        let empty: BTreeMap<Vec<u8>, u8> = BTreeMap::new();
+        let unwritable = BTreeMap::from([(vec![1u8], 1u8)]);
+        let mut store = Store::new("node1");
+        assert!(store
+            .import_at("setting:m", &empty, Origin::Discovered)
+            .unwrap());
+        assert!(!store
+            .import_at("setting:m", &empty, Origin::Discovered)
+            .unwrap());
+        assert!(matches!(
+            store.import_at("setting:m", &unwritable, Origin::User),
+            Err(StoreError::Corrupt { .. })
+        ));
+        assert!(store.import_at("setting:m", &empty, Origin::User).unwrap());
+        assert!(!store
+            .import_at("setting:m", &empty, Origin::Discovered)
+            .unwrap());
+        store.doc.put(ROOT, "setting:c", "not json").unwrap();
+        assert!(matches!(
+            store.import_at("setting:c", &empty, Origin::User),
+            Err(StoreError::Corrupt { .. })
+        ));
+    }
+
+    #[test]
+    fn a_value_that_is_not_text_is_not_an_entry() {
+        let mut store = Store::new("node1");
+        store.mark_disks_seeded();
+        store.doc.put(ROOT, "setting:n", 5i64).unwrap();
+        assert_eq!(store.setting::<u64>("n").unwrap(), None);
+        assert!(store.settings().unwrap().is_empty());
+    }
+
+    fn corrupt(key: &str) -> Store {
+        let mut store = Store::new("node1");
+        store.doc.put(ROOT, key, "not json").unwrap();
+        store
+    }
+
+    #[test]
+    fn every_kind_of_unreadable_entry_is_reported_by_its_own_reader() {
+        assert!(corrupt(STORAGE_POLICY_KEY).storage_policy().is_err());
+        assert!(corrupt("setting:backup.schedule")
+            .setting::<String>("backup.schedule")
+            .is_err());
+        assert!(corrupt(SESSION_KEY).session_key().is_err());
+        assert!(corrupt("revoked:old").revoke_session("new", 10, 5).is_err());
+    }
+
+    #[test]
+    fn any_unreadable_entry_fails_the_json_projection() {
+        for key in [
+            "revoked:old",
+            "ssh_key:k",
+            "setting:s",
+            "disk_claim:node1--wwn-a",
+            "machine:node2",
+            STORAGE_POLICY_KEY,
+        ] {
+            assert!(
+                matches!(corrupt(key).debug_json(), Err(StoreError::Corrupt { .. })),
+                "{key}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_session_key_is_made_once_and_then_kept() {
+        let mut store = Store::new("node1");
+        let first = store.session_key().unwrap();
+        assert_eq!(first.len(), 64);
+        assert_eq!(store.session_key().unwrap(), first);
+    }
+
+    #[test]
+    fn revoking_a_session_drops_revocations_that_have_already_expired() {
+        let mut store = Store::new("node1");
+        store.revoke_session("a", 10, 5).unwrap();
+        store.revoke_session("b", 100, 5).unwrap();
+        assert_eq!(
+            store.revoked_sessions().unwrap().keys().collect::<Vec<_>>(),
+            vec!["a", "b"]
+        );
+        store.revoke_session("c", 200, 20).unwrap();
+        assert_eq!(
+            store.revoked_sessions().unwrap().keys().collect::<Vec<_>>(),
+            vec!["b", "c"]
+        );
+    }
+
+    #[test]
+    fn states_and_intents_from_any_version_are_projected_as_they_were_written() {
+        let mut store = Store::new("node1");
+        for state in ["member", "draining", "removed", "quarantined"] {
+            put_machine(&mut store, state, state);
+        }
+        store
+            .set_disk_intent("node1", "wwn-a", DiskIntent::Unknown("draining".into()))
+            .unwrap();
+        let json = store.debug_json().unwrap();
+        for state in ["member", "draining", "removed", "quarantined"] {
+            assert_eq!(json["machines"][state]["v"], state);
+        }
+        assert_eq!(json["disk_claims"]["node1--wwn-a"]["v"], "draining");
+        assert_eq!(
+            store.machines().unwrap()["draining"].value,
+            MachineState::Draining
+        );
+        assert_eq!(
+            store.machines().unwrap()["removed"].value,
+            MachineState::Removed
+        );
     }
 
     #[test]

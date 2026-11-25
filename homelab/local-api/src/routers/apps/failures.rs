@@ -469,6 +469,14 @@ mod tests {
             Some("2026-11-24T10:00:10Z")
         );
         assert_eq!(next_restart(&json!({}), &ended), None);
+        assert_eq!(
+            next_restart(&json!({ "message": "restarting failed container" }), &ended),
+            None
+        );
+        assert_eq!(
+            next_restart(&json!({ "message": "back-off soon restarting" }), &ended),
+            None
+        );
         assert_eq!(next_restart(&waiting, &json!({})), None);
         assert_eq!(
             next_restart(&waiting, &json!({ "finishedAt": "yesterday" })),

@@ -946,6 +946,227 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn a_cluster_resource_run_by_hand_without_a_cluster_is_an_error() {
+        assert_eq!(
+            preflight(&crate::tools::Tools::real(), "x", Scope::Cluster, &[], &[])
+                .await
+                .unwrap_err()
+                .to_string(),
+            "this test runs without a cluster"
+        );
+    }
+
+    #[derive(Clone)]
+    enum Step {
+        Tick(Tick),
+        Fail,
+        Panic,
+    }
+
+    struct Scripted {
+        name: &'static str,
+        deps: &'static [&'static str],
+        scope: Scope,
+        pauses: &'static [activity::Activity],
+        not_before: Duration,
+        checks: Vec<State>,
+        steps: Vec<Step>,
+        checked: std::sync::atomic::AtomicUsize,
+        converges: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    fn scripted(name: &'static str) -> Scripted {
+        Scripted {
+            name,
+            deps: &[],
+            scope: Scope::Node,
+            pauses: &[],
+            not_before: Duration::ZERO,
+            checks: vec![State::Unchecked],
+            steps: vec![Step::Tick(Tick::Done)],
+            checked: std::sync::atomic::AtomicUsize::new(0),
+            converges: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        }
+    }
+
+    impl Resource for Scripted {
+        fn name(&self) -> &'static str {
+            self.name
+        }
+        fn depends_on(&self) -> &[&'static str] {
+            self.deps
+        }
+        fn scope(&self) -> Scope {
+            self.scope
+        }
+        fn interval(&self) -> Duration {
+            Duration::from_secs(1)
+        }
+        fn pauses_during(&self) -> &'static [activity::Activity] {
+            self.pauses
+        }
+        fn not_before_uptime(&self) -> Duration {
+            self.not_before
+        }
+        async fn check(&self, _ctx: &Ctx) -> State {
+            let n = self.checked.fetch_add(1, Ordering::SeqCst);
+            self.checks[n.min(self.checks.len() - 1)].clone()
+        }
+        async fn converge(&self, _ctx: &Ctx) -> anyhow::Result<Tick> {
+            let n = self.converges.fetch_add(1, Ordering::SeqCst);
+            match self.steps[n.min(self.steps.len() - 1)].clone() {
+                Step::Tick(tick) => Ok(tick),
+                Step::Fail => anyhow::bail!("the script fails here"),
+                Step::Panic => panic!("the script panics here"),
+            }
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_resource_lives_through_every_outcome_a_pass_can_have_and_ends_ready() {
+        let walk = Scripted {
+            steps: vec![
+                Step::Tick(Tick::Done),
+                Step::Tick(Tick::Done),
+                Step::Tick(Tick::Idle("resting".into())),
+                Step::Tick(Tick::RequeueAfter(Duration::from_millis(500))),
+                Step::Tick(Tick::NotYet("halfway".into())),
+                Step::Fail,
+                Step::Panic,
+                Step::Tick(Tick::Done),
+            ],
+            ..scripted("test-scripted-walk")
+        };
+        let converges = walk.converges.clone();
+        spawn(
+            walk,
+            leader::Leadership::fixed_for_tests(true),
+            crate::tools::Tools::unreachable(),
+        );
+        tokio::time::sleep(Duration::from_secs(60)).await;
+        assert!(converges.load(Ordering::SeqCst) >= 8);
+        let s = super::super::registry()
+            .get("test-scripted-walk")
+            .expect("registered");
+        assert_eq!(s.panics, 1);
+        assert_eq!(s.consecutive_failures, 0);
+        assert_eq!(state_of("test-scripted-walk"), Some(State::Ready));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_check_that_turns_ready_stops_the_converging() {
+        let settles = Scripted {
+            checks: vec![State::NotYet("warming up".into()), State::Ready],
+            ..scripted("test-scripted-settles")
+        };
+        let converges = settles.converges.clone();
+        spawn(
+            settles,
+            leader::Leadership::fixed_for_tests(true),
+            crate::tools::Tools::unreachable(),
+        );
+        tokio::time::sleep(Duration::from_secs(30)).await;
+        assert_eq!(converges.load(Ordering::SeqCst), 1);
+        assert_eq!(state_of("test-scripted-settles"), Some(State::Ready));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn only_a_resource_that_starts_after_the_current_uptime_waits_for_the_boot() {
+        let uptime = crate::storage::on_machine("/proc/uptime");
+        std::fs::create_dir_all(uptime.parent().unwrap()).unwrap();
+        std::fs::write(&uptime, "10.0 1.0\n").unwrap();
+        let leader = leader::Leadership::fixed_for_tests(true);
+        spawn(
+            Scripted {
+                not_before: Duration::from_secs(60),
+                ..scripted("test-scripted-late")
+            },
+            leader.clone(),
+            crate::tools::Tools::unreachable(),
+        );
+        spawn(
+            scripted("test-scripted-booted"),
+            leader,
+            crate::tools::Tools::unreachable(),
+        );
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        assert_eq!(
+            super::super::registry()
+                .get("test-scripted-late")
+                .expect("registered")
+                .phase,
+            Phase::Waiting("starts 60s after boot".into())
+        );
+        assert_eq!(state_of("test-scripted-booted"), Some(State::Ready));
+        tokio::time::sleep(Duration::from_secs(60)).await;
+        assert_eq!(state_of("test-scripted-late"), Some(State::Ready));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_dependent_of_a_standby_resource_waits_on_it_by_name_while_the_leader_runs_its_own() {
+        let standby = leader::Leadership::fixed_for_tests(false);
+        spawn(
+            Scripted {
+                scope: Scope::Cluster,
+                ..scripted("test-scripted-standby")
+            },
+            standby.clone(),
+            crate::tools::Tools::unreachable(),
+        );
+        spawn(
+            Scripted {
+                deps: &["test-scripted-standby"],
+                ..scripted("test-scripted-behind-standby")
+            },
+            standby,
+            crate::tools::Tools::unreachable(),
+        );
+        spawn(
+            Scripted {
+                scope: Scope::Cluster,
+                ..scripted("test-scripted-led")
+            },
+            leader::Leadership::fixed_for_tests(true),
+            crate::tools::Tools::unreachable(),
+        );
+        tokio::time::sleep(Duration::from_secs(20)).await;
+        assert_eq!(state_of("test-scripted-standby"), Some(State::Standby));
+        assert_eq!(
+            state_of("test-scripted-behind-standby"),
+            Some(State::NotYet("waiting on test-scripted-standby".into()))
+        );
+        assert_eq!(state_of("test-scripted-led"), Some(State::Ready));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_resource_paused_pass_after_pass_never_converges() {
+        let paused = Scripted {
+            pauses: &[activity::Activity::Restore],
+            ..scripted("test-scripted-paused")
+        };
+        let converges = paused.converges.clone();
+        spawn(
+            paused,
+            leader::Leadership::fixed_for_tests(true),
+            crate::tools::Tools::unreachable(),
+        );
+        tokio::time::sleep(Duration::from_secs(40)).await;
+        let why = "cannot tell whether an app restore is running";
+        assert_eq!(converges.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            state_of("test-scripted-paused"),
+            Some(State::NotYet(why.into()))
+        );
+        assert_eq!(
+            super::super::registry()
+                .get("test-scripted-paused")
+                .expect("registered")
+                .phase,
+            Phase::Paused(why.into())
+        );
+    }
+
     struct ClusterProbe {
         ready: Arc<AtomicBool>,
     }

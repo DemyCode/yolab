@@ -1063,10 +1063,10 @@ mod tests {
 
         let probed = host
             .position("wg set wg1 peer PEERKEY= endpoint 192.168.1.141:51821 allowed-ips ::dead:1/128 persistent-keepalive 5")
-            .unwrap_or_else(|| panic!("never probed: {:?}", host.calls()));
+            .expect("never probed");
         let promoted = host
             .position("wg set wg1 peer PEERKEY= endpoint 192.168.1.141:51821 allowed-ips ::1/128 persistent-keepalive 25")
-            .unwrap_or_else(|| panic!("never promoted: {:?}", host.calls()));
+            .expect("never promoted");
         assert!(probed < promoted);
         assert!(last_probe.contains_key(crate::testkit::PEER));
     }

@@ -129,3 +129,56 @@ async fn a_machine_without_a_cluster_keeps_trying_and_never_leads() {
 async fn a_machine_without_a_name_never_stands() {
     assert!(!start(String::new(), Kube::from_environment()).is_leader());
 }
+
+#[tokio::test]
+async fn a_lease_that_cannot_be_read_is_an_error_not_a_free_lease() {
+    let (server, kube) = api_server().await;
+    Mock::given(method("GET"))
+        .and(path(ITEM))
+        .respond_with(answer(500))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path(COLLECTION))
+        .respond_with(answer(201))
+        .expect(0)
+        .mount(&server)
+        .await;
+    assert!(try_acquire(&kube, "node1", Utc::now(), &mut None)
+        .await
+        .is_err());
+}
+
+#[tokio::test]
+async fn a_machine_that_keeps_renewing_its_own_lease_keeps_leading() {
+    let (server, kube) = api_server().await;
+    Mock::given(method("GET"))
+        .and(path(ITEM))
+        .respond_with(ResponseTemplate::new(404).set_body_json(status(404, "NotFound")))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    lease_is(&server, Some(held_by("node1", Some("43")))).await;
+    Mock::given(method("POST"))
+        .and(path(COLLECTION))
+        .respond_with(answer(201))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path(ITEM))
+        .respond_with(answer(200))
+        .mount(&server)
+        .await;
+    let leadership = start("node1".into(), Kube::with(kube));
+    tokio::time::sleep(RENEW_EVERY * 4).await;
+    assert!(leadership.is_leader());
+    let renewals = server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|r| r.method.as_str() == "PUT")
+        .count();
+    assert!(renewals >= 1, "{renewals}");
+}

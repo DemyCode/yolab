@@ -59,7 +59,7 @@ pub async fn attempt<H: Host>(
         share_of_pool: policy.share_of_pool,
         min_size_gb: policy.min_size_gb,
     };
-    let Some(want_mb) = images_sizing::compute(host, &sizing).await? else {
+    let Some(want_mb) = images_sizing::compute(host, &sizing).await else {
         return Ok(Attempt::NotYet(format!(
             "the capacity of the {} pool cannot be read yet",
             policy.pool_name
@@ -246,5 +246,77 @@ mod tests {
 
         assert!(!matches!(result, Ok(Attempt::Ready(()))));
         assert!(!host.ran("rbd create"));
+    }
+
+    fn with_pools(pools: &str) -> FakeHost {
+        FakeHost::new()
+            .ok("ceph -s", "")
+            .ok("ceph osd stat", ONE_UP)
+            .ok("ceph osd pool ls", pools)
+    }
+
+    fn sized(host: FakeHost) -> FakeHost {
+        host.ok(
+            "ceph osd tree",
+            r#"{"nodes":[{"type":"host","children":[1]}]}"#,
+        )
+        .ok("ceph df", r#"{"stats":{"total_bytes":1048576000000}}"#)
+        .ok("ceph osd pool get images size", r#"{"size":1}"#)
+    }
+
+    #[tokio::test]
+    async fn an_unreadable_pool_list_is_an_error_and_nothing_is_created() {
+        let host = FakeHost::new()
+            .ok("ceph -s", "")
+            .ok("ceph osd stat", ONE_UP)
+            .fail("ceph osd pool ls", "error connecting to the cluster");
+        assert!(attempt(&host, "yolab-n1", &policy()).await.is_err());
+        assert!(!host.ran("pool create"));
+    }
+
+    #[tokio::test]
+    async fn a_pool_whose_size_cannot_be_set_is_an_error() {
+        let host = with_pools("")
+            .ok("ceph osd pool create images 32 32", "")
+            .fail("ceph osd pool set images size 1", "Error EPERM");
+        assert!(attempt(&host, "yolab-n1", &policy()).await.is_err());
+        assert!(!host.ran("application enable"));
+    }
+
+    #[tokio::test]
+    async fn a_pool_whose_application_cannot_be_enabled_is_an_error() {
+        let host = with_pools("")
+            .ok("ceph osd pool create images 32 32", "")
+            .ok("ceph osd pool set images size 1 --yes-i-really-mean-it", "")
+            .fail("ceph osd pool application enable images rbd", "Error EPERM");
+        assert!(attempt(&host, "yolab-n1", &policy()).await.is_err());
+        assert!(!host.ran("rbd pool init"));
+    }
+
+    #[tokio::test]
+    async fn a_pool_that_cannot_be_initialised_is_an_error() {
+        let host = with_pools("")
+            .ok("ceph osd pool create images 32 32", "")
+            .ok("ceph osd pool set images size 1 --yes-i-really-mean-it", "")
+            .ok("ceph osd pool application enable images rbd", "")
+            .fail("rbd pool init images", "rbd: error");
+        assert!(attempt(&host, "yolab-n1", &policy()).await.is_err());
+        assert!(!host.ran("ceph osd tree"));
+    }
+
+    #[tokio::test]
+    async fn an_image_list_that_cannot_start_is_an_error() {
+        let host = sized(with_pools("images\n")).unstartable("rbd ls");
+        assert!(attempt(&host, "yolab-n1", &policy()).await.is_err());
+        assert!(!host.ran("rbd create"));
+    }
+
+    #[tokio::test]
+    async fn an_image_that_cannot_be_created_is_an_error() {
+        let host = sized(with_pools("images\n"))
+            .ok("rbd ls images", "")
+            .fail("rbd create images/yolab-n1", "rbd: create error");
+        assert!(attempt(&host, "yolab-n1", &policy()).await.is_err());
+        assert!(host.ran("rbd create images/yolab-n1 --size 250000"));
     }
 }

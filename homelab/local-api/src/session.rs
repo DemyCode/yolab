@@ -70,9 +70,10 @@ pub fn parse(key: &str, token: &str) -> Option<Session> {
     if key.is_empty() || !ct_eq(mac, &expected) {
         return None;
     }
-    let mut parts = body.split('.');
-    let (version, expires, id, _fp) = (parts.next()?, parts.next()?, parts.next()?, parts.next()?);
-    if version != TOKEN_VERSION || parts.next().is_some() {
+    let [version, expires, id, _fp] = body.split('.').collect::<Vec<_>>()[..] else {
+        return None;
+    };
+    if version != TOKEN_VERSION {
         return None;
     }
     Some(Session {

@@ -782,4 +782,75 @@ mod tests {
         let u = tally(sizes);
         assert_eq!((u.apps[0].bytes, u.unreadable), (42, 1));
     }
+
+    #[test]
+    fn a_pool_named_by_its_older_id_field_still_joins_its_usage() {
+        let df = json!({"pools": [{"id": 7, "stats": {"stored": 5}}]});
+        let pools = parse_pools(&df, &json!([{"pool": 7, "pool_name": "old"}]));
+        assert_eq!((pools[0].id, pools[0].stored_bytes), (7, 5));
+    }
+
+    async fn signed_in(kube: kube::Client, host: FakeHost) -> crate::testkit::TestApi {
+        crate::testkit::TestApi::with_kube_and_host(kube, host)
+            .login()
+            .await
+    }
+
+    #[tokio::test]
+    async fn the_storage_page_is_served_from_what_ceph_answers() {
+        let api = signed_in(crate::k8s::testing::unreachable(), answering()).await;
+        let res = api.get("/api/storage").await;
+        assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+        assert_eq!(res.json()["health"], "HEALTH_OK");
+    }
+
+    #[tokio::test]
+    async fn the_disk_checks_are_served_when_ceph_answers() {
+        let host = FakeHost::new().ok("ceph osd ls", "[]");
+        let api = signed_in(crate::k8s::testing::unreachable(), host).await;
+        let res = api.get("/api/storage/checks").await;
+        assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+        assert_eq!(res.json(), json!({"ok_to_stop": [], "safe_to_destroy": []}));
+    }
+
+    #[tokio::test]
+    async fn the_raw_ceph_status_is_served_as_text() {
+        let host = FakeHost::new().ok("ceph status", "HEALTH_OK");
+        let api = signed_in(crate::k8s::testing::unreachable(), host).await;
+        let res = api.get("/api/storage/ceph-status").await;
+        assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+        assert_eq!(res.json(), json!({"text": "HEALTH_OK"}));
+    }
+
+    #[tokio::test]
+    async fn usage_is_served_from_the_listed_volumes() {
+        let (server, kube) = crate::k8s::testing::api_server().await;
+        crate::k8s::testing::serve(
+            &server,
+            "/api/v1/persistentvolumes",
+            200,
+            crate::k8s::testing::list("PersistentVolume", vec![]),
+        )
+        .await;
+        let api = signed_in(kube, FakeHost::new()).await;
+        let res = api.get("/api/storage/usage").await;
+        assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+        assert_eq!(res.json()["unreadable"], 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn usage_is_an_error_when_kubernetes_never_lists_the_volumes() {
+        let silent = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", silent.local_addr().unwrap());
+        let mut config = kube::Config::new(url.parse().unwrap());
+        config.default_retry = false;
+        let kube = kube::Client::try_from(config).unwrap();
+        let api = signed_in(kube, FakeHost::new()).await;
+        let res = api.get("/api/storage/usage").await;
+        assert_eq!(res.status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            res.json()["error"],
+            "Storage is not answering: the cluster did not list volumes in time"
+        );
+    }
 }

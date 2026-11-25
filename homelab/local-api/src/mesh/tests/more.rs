@@ -291,3 +291,49 @@ async fn a_caller_is_told_this_machines_key_port_and_addresses() {
     );
     assert!(host.ran("wg set wg1 peer PEERKEY= allowed-ips fd00:cafe::dead:9/128"));
 }
+
+async fn candidates_from(host: FakeHost) -> axum::http::StatusCode {
+    crate::testkit::TestApi::with_kube_and_host(crate::k8s::testing::unreachable(), host)
+        .with_peer_token()
+        .get("/api/cluster/mesh-candidates")
+        .await
+        .status
+}
+
+#[tokio::test]
+async fn a_caller_gets_an_error_when_this_machine_cannot_name_its_port_or_addresses() {
+    let no_port = FakeHost::new()
+        .ok("wg show wg1 public-key", "SELFKEY=")
+        .fail("wg show wg1 listen-port", "no such device");
+    assert!(!candidates_from(no_port).await.is_success());
+    let no_addresses = FakeHost::new()
+        .ok("wg show wg1 public-key", "SELFKEY=")
+        .ok("wg show wg1 listen-port", "51821")
+        .unstartable("ip -j addr show");
+    assert!(!candidates_from(no_addresses).await.is_success());
+}
+
+#[tokio::test]
+async fn a_blackholed_path_wireguard_will_not_drop_fails_the_local_pass() {
+    let sending = dump_of(&[
+        hub_line(),
+        peer_line(
+            PEER,
+            "192.168.1.141:51821",
+            "fd00:cafe::6/128",
+            now_secs(),
+            900,
+            310_000,
+        ),
+    ]);
+    let host = lan_routes(&sending).fail("wg set", "busy");
+    let mut bh = HashMap::from([(
+        PEER.to_string(),
+        Traffic {
+            rx_bytes: 900,
+            tx_bytes: 1_000,
+            at: 0,
+        },
+    )]);
+    assert!(reconcile_local(&host, &mut bh).await.is_err());
+}
