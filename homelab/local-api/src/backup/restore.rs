@@ -726,16 +726,15 @@ impl BackupPayload {
         folders: &[crate::tree::Planned],
     ) -> anyhow::Result<()> {
         for (pvc, planned) in &self.volumes {
-            let replace = match rf::step(
+            let wanted = rf::step(
                 false,
                 true,
                 self.choices.data.get(&pvc.name).copied(),
                 rf::Choice::Use,
-            ) {
-                rf::Step::Restore => false,
-                rf::Step::Replace => true,
-                rf::Step::Keep | rf::Step::CreateEmpty => continue,
-            };
+            );
+            if wanted != rf::Step::Restore {
+                continue;
+            }
             let from = planned.clone().map_err(|why| anyhow::anyhow!("{why}"))?;
             let into = folders
                 .iter()
@@ -751,7 +750,7 @@ impl BackupPayload {
                     source_namespace: &self.source_namespace,
                     dest_folder: &into.claimed.folder,
                     from: &from,
-                    replace,
+                    replace: false,
                 },
             )
             .await?;
@@ -2073,6 +2072,12 @@ mod tests {
         }
 
         async fn running_service() -> (MockServer, Client, crate::records::testing::Kept) {
+            running_service_with(vec![]).await
+        }
+
+        async fn running_service_with(
+            volumes: Vec<Value>,
+        ) -> (MockServer, Client, crate::records::testing::Kept) {
             let (server, kube) = api_server().await;
             enabled(&server).await;
             let kept = crate::records::testing::kept(&server, "yolab-restores").await;
@@ -2092,7 +2097,7 @@ mod tests {
             Mock::given(method("GET"))
                 .and(path("/api/v1/persistentvolumes"))
                 .respond_with(
-                    ResponseTemplate::new(200).set_body_json(list("PersistentVolume", vec![])),
+                    ResponseTemplate::new(200).set_body_json(list("PersistentVolume", volumes)),
                 )
                 .mount(&server)
                 .await;
@@ -2454,5 +2459,7 @@ mod tests {
             let written = crate::records::testing::written(&server, "yolab-restores").await;
             assert!(written.is_empty());
         }
+
+        mod volumes;
     }
 }
