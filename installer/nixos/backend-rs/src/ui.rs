@@ -143,20 +143,16 @@ fn render_sidebar(f: &mut Frame, area: Rect, app: &App) {
     let mut lines: Vec<Line> = vec![Line::from(""), Line::from("")];
 
     for (i, (_step, label)) in steps.iter().enumerate() {
-        let (icon, style) = if i < current_idx {
-            ("✓", Style::default().fg(GREEN))
+        let (icon, style, step_style) = if i < current_idx {
+            ("✓", Style::default().fg(GREEN), Style::default().fg(GREEN))
         } else if i == current_idx {
-            ("▶", accent().add_modifier(Modifier::BOLD))
+            (
+                "▶",
+                accent().add_modifier(Modifier::BOLD),
+                white().add_modifier(Modifier::BOLD),
+            )
         } else {
-            ("○", muted())
-        };
-
-        let step_style = if i == current_idx {
-            white().add_modifier(Modifier::BOLD)
-        } else if i < current_idx {
-            Style::default().fg(GREEN)
-        } else {
-            muted()
+            ("○", muted(), muted())
         };
 
         lines.push(Line::from(vec![
@@ -366,11 +362,7 @@ fn render_account_new(f: &mut Frame, area: Rect, app: &mut App) {
     }
 
     if let Some(token) = &app.created_token.clone() {
-        let short = if token.len() > 30 {
-            &token[..30]
-        } else {
-            token
-        };
+        let short = &token[..token.len().min(30)];
         let tok_para = Paragraph::new(Line::from(vec![
             Span::styled("  Token: ", muted()),
             Span::styled(format!("{short}…"), accent().add_modifier(Modifier::BOLD)),
@@ -1398,6 +1390,85 @@ mod tests {
         app.error = None;
         let buf = draw(&mut app);
         assert!(shows(&buf, "Unknown error"));
+    }
+
+    #[test]
+    fn the_new_cluster_card_sits_above_the_join_card() {
+        let mut app = ready(Step::Mode);
+        let buf = draw(&mut app);
+        assert_eq!(at(&buf, "New cluster"), (30, 8));
+        assert_eq!(at(&buf, "Join existing cluster"), (30, 14));
+    }
+
+    #[test]
+    fn the_connected_account_continue_button_sits_under_the_message() {
+        let mut app = ready(Step::Account);
+        app.account_token = Some("tok".into());
+        let buf = draw(&mut app);
+        assert_eq!(at(&buf, "Continue →"), (29, 18));
+    }
+
+    #[test]
+    fn the_referral_field_its_note_and_the_create_button_are_stacked_in_order() {
+        let mut app = ready(Step::Account);
+        let buf = draw(&mut app);
+        assert_eq!(at(&buf, "Referral code (optional)"), (29, 13));
+        assert_eq!(at(&buf, "No email needed."), (27, 16));
+        assert_eq!(at(&buf, "Create account →"), (29, 18));
+    }
+
+    #[test]
+    fn the_token_field_sits_above_the_verify_button() {
+        let mut app = ready(Step::Account);
+        app.acct_cursor = 1;
+        let buf = draw(&mut app);
+        assert_eq!(at(&buf, " Token "), (28, 14));
+        assert_eq!(at(&buf, "Verify token →"), (29, 18));
+    }
+
+    #[test]
+    fn a_new_token_of_exactly_thirty_characters_is_shown_whole_above_its_continue_button() {
+        let mut app = ready(Step::Account);
+        let token = "t".repeat(30);
+        app.created_token = Some(token.clone());
+        let buf = draw(&mut app);
+        assert!(shows(&buf, &format!("Token: {token}…")));
+        assert_eq!(at(&buf, "Continue →"), (29, 42));
+    }
+
+    #[test]
+    fn the_erase_warning_sits_between_the_disk_heading_and_the_first_disk() {
+        let mut app = ready(Step::Disk);
+        app.disks = vec![disk("/dev/sda", false, false, false)];
+        let buf = draw(&mut app);
+        assert_eq!(at(&buf, "Select installation disk").1, 4);
+        assert_eq!(
+            at(&buf, "The selected disk will be completely erased.").1,
+            7
+        );
+        assert_eq!(at(&buf, "/dev/sda").1, 10);
+    }
+
+    #[test]
+    fn a_disk_that_ends_exactly_at_the_error_line_is_still_shown() {
+        let mut app = ready(Step::Disk);
+        app.disks = (0..4)
+            .map(|i| disk(&format!("/dev/sd{i}"), false, false, false))
+            .collect();
+        let buf = draw_sized(&mut app, W, 27);
+        assert!(shows(&buf, "/dev/sd2"));
+        assert!(!shows(&buf, "/dev/sd3"));
+        assert_eq!(app.click_areas.len(), 3);
+    }
+
+    #[test]
+    fn a_private_key_of_exactly_fifty_characters_is_shown_whole() {
+        let mut app = ready(Step::Configure);
+        let key = "k".repeat(50);
+        app.gen_privkey = Some(key.clone());
+        let buf = draw(&mut app);
+        assert!(shows(&buf, &format!("(save it!): {key}")));
+        assert!(!shows(&buf, &format!("{key}…")));
     }
 
     #[test]

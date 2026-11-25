@@ -181,45 +181,37 @@ mod tests {
     #[tokio::test]
     async fn every_route_refuses_an_unauthenticated_stranger() {
         let api = TestApi::provisioned();
-        let mut reached = Vec::new();
         for &(path, methods) in ROUTE_TABLE {
             if PUBLIC_ROUTES.contains(&path) {
                 continue;
             }
             for method in verbs(methods) {
                 let res = api.send(method, &concrete(path), Some("{}")).await;
-                if res.reached_handler() {
-                    reached.push(format!("{method} {path} -> {}", res.status));
-                }
+                assert!(
+                    !res.reached_handler(),
+                    "{method} {path} answered an unauthenticated stranger with {} instead of 401",
+                    res.status
+                );
             }
         }
-        assert!(
-            reached.is_empty(),
-            "these routes answered an unauthenticated stranger instead of 401:\n  {}",
-            reached.join("\n  ")
-        );
     }
 
     #[tokio::test]
     async fn an_unprovisioned_node_still_refuses_everything_off_box() {
         let api = TestApi::unprovisioned();
-        let mut reached = Vec::new();
         for &(path, methods) in ROUTE_TABLE {
             if PUBLIC_ROUTES.contains(&path) {
                 continue;
             }
             for method in verbs(methods) {
                 let res = api.send(method, &concrete(path), Some("{}")).await;
-                if res.reached_handler() {
-                    reached.push(format!("{method} {path} -> {}", res.status));
-                }
+                assert!(
+                    !res.reached_handler(),
+                    "an unprovisioned node let a stranger reach {method} {path} ({})",
+                    res.status
+                );
             }
         }
-        assert!(
-            reached.is_empty(),
-            "an unprovisioned node let a stranger reach:\n  {}",
-            reached.join("\n  ")
-        );
     }
 
     #[tokio::test]

@@ -179,6 +179,10 @@ mod tests {
             "error"
         );
         assert_eq!(state_of(&rec, Some(crate::vdisk::DRAINING)), "removing");
+        assert_eq!(
+            state_of(&rec, Some(crate::vdisk::PREPARING)),
+            "provisioning"
+        );
     }
 
     #[test]
@@ -419,6 +423,49 @@ mod tests {
                 .as_str()
                 .unwrap()
                 .contains("could not be saved"));
+        }
+
+        #[tokio::test]
+        async fn the_list_is_an_error_while_the_disk_states_cannot_be_read() {
+            let host = FakeHost::new()
+                .ok("ceph config-key dump yolab/vdisks/", "{}")
+                .fail("ceph config-key dump yolab/vdisk-status/", "timed out");
+            let api = signed_in(host).await;
+            assert!(!api.get("/api/vdisks").await.status.is_success());
+        }
+
+        #[tokio::test]
+        async fn prices_need_a_tunnel_section_in_the_config() {
+            let api = TestApi::with_config("[homelab]\nhostname = \"yolab\"\n").over_loopback();
+            let res = api.get("/api/vdisks/offers").await;
+            assert!(!res.status.is_success(), "{}", res.body);
+        }
+
+        #[tokio::test]
+        async fn a_purchase_without_a_tunnel_section_is_unavailable_before_asking_the_platform() {
+            let dir = tempfile::tempdir().unwrap();
+            let file = dir.path().join("config.toml");
+            std::fs::write(&file, "[homelab]\nhostname = \"yolab\"\n").unwrap();
+            let config = std::sync::Arc::new(crate::config::Config::for_test(&file));
+            let host = FakeHost::new().ok("ceph config-key dump yolab/disk-status/", &machines());
+            let state = crate::AppState {
+                config: config.clone(),
+                auth: crate::auth::AuthState::isolated(config),
+                kube: crate::k8s::Kube::with(crate::k8s::testing::unreachable()),
+                http: crate::http::Client::new(),
+                proxy_http: crate::http::Client::new(),
+                host,
+            };
+            let body = AddVdisk {
+                node: "node1".into(),
+                box_type: "bx11".into(),
+            };
+            let (code, Json(error)) = add_vdisk(State(state), Json(body)).await.unwrap_err();
+            assert_eq!(code, StatusCode::SERVICE_UNAVAILABLE);
+            assert!(
+                error["error"].as_str().unwrap().contains("[tunnel]"),
+                "{error}"
+            );
         }
     }
 }

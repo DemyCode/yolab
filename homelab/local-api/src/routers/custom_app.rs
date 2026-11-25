@@ -236,7 +236,6 @@ const USER_TEMPLATE: &str = "{{ .Files.Get \"user-manifest.yaml\" }}\n";
 async fn write_chart_at(root: &std::path::Path, app: &CustomApp, yaml: &str) -> anyhow::Result<()> {
     let dir = root.join(&app.id);
     remove_dir_if_present(&dir).await?;
-    tokio::fs::create_dir_all(dir.join("templates")).await?;
 
     let upstream = match (app.port, app.service.as_str()) {
         (Some(p), "") => format!("localhost:{p}"),
@@ -248,18 +247,16 @@ async fn write_chart_at(root: &std::path::Path, app: &CustomApp, yaml: &str) -> 
         "apiVersion: v2\nname: {id}\ndescription: {desc}\ntype: application\nversion: 0.1.0\n\ndependencies:\n  - name: yolab-common\n    version: \"{library}\"\n    repository: \"oci://ghcr.io/demycode/charts\"\n\nannotations:\n  yolab.io/display-name: {display}\n  yolab.io/icon: {icon}\n  yolab.io/category: \"custom\"\n",
         library = CUSTOM_LIBRARY_VERSION,
         id = app.id,
-        desc = serde_json::to_string(&app.description).unwrap_or_else(|_| "\"\"".into()),
-        display = serde_json::to_string(&app.display_name).unwrap_or_else(|_| "\"\"".into()),
-        icon = serde_json::to_string(&app.icon).unwrap_or_else(|_| "\"\"".into()),
+        desc = Value::from(app.description.as_str()),
+        display = Value::from(app.display_name.as_str()),
+        icon = Value::from(app.icon.as_str()),
     );
-    tokio::fs::write(dir.join("Chart.yaml"), chart_yaml).await?;
 
     let values = format!(
         "config:\n  subdomain: {id}\nyolab:\n  platformApiUrl: \"\"\n  accountToken: \"\"\n  serviceName: \"\"\n  gateway:\n    upstream: {upstream}\n",
         id = app.id,
         upstream = if upstream.is_empty() { "\"\"".to_string() } else { upstream.clone() },
     );
-    tokio::fs::write(dir.join("values.yaml"), values).await?;
 
     let schema = serde_json::json!({
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -279,18 +276,23 @@ async fn write_chart_at(root: &std::path::Path, app: &CustomApp, yaml: &str) -> 
             }
         }
     });
-    tokio::fs::write(
-        dir.join("values.schema.json"),
-        serde_json::to_string_pretty(&schema)?,
-    )
-    .await?;
 
+    let mut files = vec![
+        ("Chart.yaml", chart_yaml),
+        ("values.yaml", values),
+        ("values.schema.json", format!("{schema:#}")),
+        ("templates/user.yaml", USER_TEMPLATE.to_string()),
+        ("user-manifest.yaml", yaml.to_string()),
+        ("yolab-custom.json", serde_json::json!(app).to_string()),
+    ];
     if !upstream.is_empty() {
-        tokio::fs::write(dir.join("templates/gateway.yaml"), CHART_TEMPLATE).await?;
+        files.push(("templates/gateway.yaml", CHART_TEMPLATE.to_string()));
     }
-    tokio::fs::write(dir.join("templates/user.yaml"), USER_TEMPLATE).await?;
-    tokio::fs::write(dir.join("user-manifest.yaml"), yaml).await?;
-    tokio::fs::write(dir.join("yolab-custom.json"), serde_json::to_string(app)?).await?;
+    std::fs::create_dir_all(dir.join("templates")).and_then(|()| {
+        files
+            .iter()
+            .try_for_each(|(name, body)| std::fs::write(dir.join(name), body))
+    })?;
     Ok(())
 }
 
@@ -394,9 +396,8 @@ fn find_chart_root(base: &std::path::Path, depth: usize) -> Option<PathBuf> {
     if depth == 0 {
         return None;
     }
-    let entries = std::fs::read_dir(base).ok()?;
     let mut found = None;
-    for e in entries.flatten() {
+    for e in std::fs::read_dir(base).into_iter().flatten().flatten() {
         if !e.path().is_dir() {
             continue;
         }
@@ -534,6 +535,16 @@ async fn upload<H: Host>(
     custom_root: &std::path::Path,
     body: &[u8],
 ) -> (StatusCode, Json<Value>) {
+    upload_in(host, catalog_dir, custom_root, body, &std::env::temp_dir()).await
+}
+
+async fn upload_in<H: Host>(
+    host: &H,
+    catalog_dir: &std::path::Path,
+    custom_root: &std::path::Path,
+    body: &[u8],
+    scratch: &std::path::Path,
+) -> (StatusCode, Json<Value>) {
     let bad = |msg: String| {
         (
             StatusCode::BAD_REQUEST,
@@ -551,28 +562,15 @@ async fn upload<H: Host>(
         return bad("that file is not a .zip or a .tgz — package a chart with `helm package`, or zip the chart folder".into());
     };
 
-    let tmp = std::env::temp_dir().join(format!(
+    let tmp = scratch.join(format!(
         "yolab-chart-{}-{}",
         std::process::id(),
         chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
     ));
     discard_dir(&tmp).await;
-    if let Err(e) = tokio::fs::create_dir_all(&tmp).await {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({ "error": e.to_string() })),
-        );
-    }
     let archive = tmp.join("upload");
-    if let Err(e) = tokio::fs::write(&archive, body).await {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({ "error": e.to_string() })),
-        );
-    }
-
     let dest = tmp.join("x");
-    if let Err(e) = tokio::fs::create_dir_all(&dest).await {
+    if let Err(e) = std::fs::create_dir_all(&dest).and_then(|()| std::fs::write(&archive, body)) {
         discard_dir(&tmp).await;
         return internal(format!("could not make a folder to unpack into: {e}"));
     }
@@ -737,13 +735,8 @@ async fn upload<H: Host>(
         port: None,
         service: String::new(),
     };
-    let saved = match serde_json::to_string(&app) {
-        Ok(text) => tokio::fs::write(final_dir.join("yolab-custom.json"), text)
-            .await
-            .map_err(|e| e.to_string()),
-        Err(e) => Err(e.to_string()),
-    };
-    if let Err(e) = saved {
+    let details = serde_json::json!(app).to_string();
+    if let Err(e) = tokio::fs::write(final_dir.join("yolab-custom.json"), details).await {
         discard_dir(&tmp).await;
         return internal(format!("could not save this app's details: {e}"));
     }
@@ -1286,11 +1279,10 @@ spec:
     }
 
     fn test_catalog() -> tempfile::TempDir {
-        let from = std::env::var("YOLAB_TEST_CATALOG")
+        let in_repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/catalog");
+        let from = std::env::var_os("YOLAB_TEST_CATALOG")
             .map(std::path::PathBuf::from)
-            .unwrap_or_else(|_| {
-                std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apps/catalog")
-            });
+            .unwrap_or(in_repo);
         let dir = tempfile::tempdir().unwrap();
         for chart in ["yolab-common", "pairdrop"] {
             let copied = std::process::Command::new("cp")
@@ -1324,6 +1316,110 @@ spec:
     fn a_manifest_containing_go_templates_is_accepted() {
         let doc = "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: dash\ndata:\n  rule: \"{{ $labels.instance }} is down\"\n";
         assert!(validate_manifest(doc).is_ok());
+    }
+
+    fn pod_spec(spec: &str) -> String {
+        format!("apiVersion: v1\nkind: Pod\nmetadata:\n  name: p\nspec:\n{spec}")
+    }
+
+    #[test]
+    fn sharing_a_machine_namespace_is_refused_but_turning_it_off_is_fine() {
+        let err = validate_manifest(&pod_spec("  hostPID: true\n")).unwrap_err();
+        assert!(err.reason.contains("hostPID: true"), "{}", err.reason);
+        assert_eq!(validate_manifest(&pod_spec("  hostIPC: false\n")), Ok(1));
+    }
+
+    #[test]
+    fn containers_that_are_not_a_list_are_still_scanned() {
+        let err = validate_manifest(&pod_spec("  containers:\n    hostPort: 80\n")).unwrap_err();
+        assert!(err.reason.contains("hostPort"), "{}", err.reason);
+    }
+
+    #[test]
+    fn a_manifest_over_512_kb_is_refused() {
+        let big = pod_spec(&format!("  x: \"{}\"\n", "a".repeat(512 * 1024)));
+        assert_eq!(
+            validate_manifest(&big),
+            Err(reject("that manifest is larger than 512 KB"))
+        );
+    }
+
+    #[test]
+    fn an_empty_rendered_document_is_skipped_and_broken_output_is_refused() {
+        assert!(validate_rendered(&format!("---\n{POD}---\n"), "yolab-x").is_ok());
+        let err = validate_rendered("kind: [unclosed\n", "yolab-x").unwrap_err();
+        assert!(err.reason.contains("not valid YAML"), "{}", err.reason);
+    }
+
+    #[test]
+    fn files_and_chartless_folders_are_passed_over_and_the_search_stops_at_its_depth() {
+        let scratch = tempfile::tempdir().unwrap();
+        let base = scratch.path();
+        std::fs::write(base.join("README.md"), "hi").unwrap();
+        std::fs::create_dir_all(base.join("empty")).unwrap();
+        std::fs::create_dir_all(base.join("deep/er")).unwrap();
+        std::fs::write(base.join("deep/er/Chart.yaml"), "name: x").unwrap();
+        assert_eq!(find_chart_root(base, 1), None);
+        assert_eq!(find_chart_root(base, 2), Some(base.join("deep/er")));
+    }
+
+    fn web_app() -> CustomApp {
+        CustomApp {
+            id: "web".into(),
+            display_name: "Web".into(),
+            icon: String::new(),
+            description: "a \"quoted\" one".into(),
+            port: Some(80),
+            service: "frontend".into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_named_service_is_the_gateways_upstream_and_the_details_are_kept() {
+        let scratch = tempfile::tempdir().unwrap();
+        write_chart_at(scratch.path(), &web_app(), POD)
+            .await
+            .unwrap();
+        let read =
+            |name: &str| std::fs::read_to_string(scratch.path().join("web").join(name)).unwrap();
+        assert!(read("values.yaml").contains("upstream: frontend:80"));
+        assert!(read("Chart.yaml").contains(r#"description: "a \"quoted\" one""#));
+        assert!(read("templates/gateway.yaml").contains("name: gateway"));
+        assert_eq!(read("user-manifest.yaml"), POD);
+        let details: CustomApp = serde_json::from_str(&read("yolab-custom.json")).unwrap();
+        assert_eq!(details.service, "frontend");
+        let schema: Value = serde_json::from_str(&read("values.schema.json")).unwrap();
+        assert_eq!(
+            schema["properties"]["config"]["properties"]["subdomain"]["default"],
+            "web"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_chart_folder_that_cannot_be_cleared_or_made_is_an_error() {
+        let in_the_way = tempfile::NamedTempFile::new().unwrap();
+        assert!(write_chart_at(in_the_way.path(), &web_app(), POD)
+            .await
+            .is_err());
+        let unwritable = std::path::Path::new("/proc/yolab-custom");
+        assert!(write_chart_at(unwritable, &web_app(), POD).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn the_custom_list_is_sorted_by_name_and_skips_folders_without_readable_details() {
+        let _cache = crate::charts::testing::cache_in_temp();
+        let root = custom_dir();
+        for (id, name) in [("zeta", "Alpha"), ("alpha", "Zulu")] {
+            std::fs::create_dir_all(root.join(id)).unwrap();
+            let details = serde_json::json!({ "id": id, "display_name": name });
+            std::fs::write(root.join(id).join("yolab-custom.json"), details.to_string()).unwrap();
+        }
+        std::fs::create_dir_all(root.join("bare")).unwrap();
+        std::fs::create_dir_all(root.join("garbled")).unwrap();
+        std::fs::write(root.join("garbled/yolab-custom.json"), "{").unwrap();
+        let Json(apps) = list_custom().await;
+        let names: Vec<&str> = apps.iter().map(|a| a.display_name.as_str()).collect();
+        assert_eq!(names, ["Alpha", "Zulu"]);
     }
 
     #[tokio::test]
@@ -1569,6 +1665,94 @@ spec:
                 assert_eq!(got, code, "{why}: {said}");
                 assert!(said.contains(why), "{why}: {said}");
             }
+        }
+
+        fn unpacking_bytes(chart: &'static [u8]) -> FakeHost {
+            FakeHost::new()
+                .ok("tar -xzf", "")
+                .effect("tar -xzf", move |_: &str, args: &[&str]| {
+                    let dest = std::path::Path::new(args[3]).join("mychart");
+                    std::fs::create_dir_all(&dest).unwrap();
+                    std::fs::write(dest.join("Chart.yaml"), chart).unwrap();
+                })
+        }
+
+        #[tokio::test]
+        async fn an_upload_that_cannot_be_unpacked_or_kept_says_why() {
+            let cases: Vec<(FakeHost, StatusCode, &str)> = vec![
+                (
+                    unpacking_bytes(b"name: \xff\xfe\n"),
+                    StatusCode::BAD_REQUEST,
+                    "Chart.yaml could not be read",
+                ),
+                (
+                    unpacking(vec![("Chart.yaml", CHART), ("charts", "not a folder")]),
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "could not make the chart's charts folder",
+                ),
+                (
+                    unpacking(vec![("Chart.yaml", "name: mychart\n")])
+                        .ok("helm template", RENDERED)
+                        .ok("cp -r", ""),
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "could not save this app's details",
+                ),
+            ];
+            for (host, code, why) in cases {
+                let (got, said) = refused(host, TGZ).await;
+                assert_eq!(got, code, "{why}: {said}");
+                assert!(said.contains(why), "{why}: {said}");
+            }
+        }
+
+        #[tokio::test]
+        async fn a_scratch_folder_that_cannot_be_made_is_an_internal_error() {
+            let d = dirs();
+            let scratch = std::path::Path::new("/proc/yolab-scratch");
+            let (code, Json(said)) =
+                upload_in(&good(), d.catalog.path(), d.custom.path(), TGZ, scratch).await;
+            assert_eq!(code, StatusCode::INTERNAL_SERVER_ERROR);
+            assert!(said["error"]
+                .as_str()
+                .unwrap()
+                .contains("could not make a folder to unpack into"));
+        }
+
+        #[tokio::test]
+        async fn a_custom_folder_that_cannot_be_made_or_cleared_is_an_internal_error() {
+            let d = dirs();
+            let unwritable = std::path::Path::new("/proc/yolab-custom");
+            let (code, _) = upload(&good(), d.catalog.path(), unwritable, TGZ).await;
+            assert_eq!(code, StatusCode::INTERNAL_SERVER_ERROR);
+
+            std::fs::write(d.custom.path().join("mychart"), "in the way").unwrap();
+            let (code, Json(said)) = upload(&good(), d.catalog.path(), d.custom.path(), TGZ).await;
+            assert_eq!(code, StatusCode::INTERNAL_SERVER_ERROR);
+            assert!(said["error"]
+                .as_str()
+                .unwrap()
+                .contains("could not remove the previous copy"));
+        }
+
+        #[tokio::test]
+        async fn a_custom_service_that_cannot_be_written_is_an_internal_error() {
+            let _cache = crate::charts::testing::cache_in_temp();
+            std::fs::create_dir_all(custom_dir()).unwrap();
+            std::fs::write(custom_dir().join("hello"), "in the way").unwrap();
+            let api = crate::testkit::TestApi::with_kube_and_host(
+                crate::k8s::testing::unreachable(),
+                FakeHost::new(),
+            )
+            .login()
+            .await;
+            let body = serde_json::json!({ "id": "hello", "display_name": "Hello", "yaml": POD });
+            let res = api.post("/api/apps/custom", &body.to_string()).await;
+            assert_eq!(
+                res.status,
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "{}",
+                res.body
+            );
         }
 
         #[tokio::test]

@@ -358,6 +358,53 @@ token = "deadbeef"
         }
 
         #[tokio::test]
+        async fn a_record_without_a_name_is_not_a_machine_link() {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/tunnels"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                    { "dns_records": [{ "fqdn": "node1.6.yolab.io" }] }
+                ])))
+                .mount(&server)
+                .await;
+            let links = links_to_nodes(&crate::http::Client::new(), &server.uri(), "acct")
+                .await
+                .unwrap();
+            assert!(links.is_empty());
+        }
+
+        #[tokio::test]
+        async fn an_answer_that_is_not_json_is_an_error_not_an_empty_list() {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/tunnels"))
+                .respond_with(ResponseTemplate::new(200).set_body_string("<html>"))
+                .mount(&server)
+                .await;
+            assert!(
+                links_to_nodes(&crate::http::Client::new(), &server.uri(), "acct")
+                    .await
+                    .is_err()
+            );
+        }
+
+        #[tokio::test]
+        async fn a_config_that_cannot_be_read_is_an_error_not_empty_join_info() {
+            let config = std::sync::Arc::new(crate::config::Config::for_test(
+                std::path::Path::new("/nonexistent-yolab/config.toml"),
+            ));
+            let state = crate::AppState {
+                config: config.clone(),
+                auth: crate::auth::AuthState::isolated(config),
+                kube: crate::k8s::Kube::with(crate::k8s::testing::unreachable()),
+                http: crate::http::Client::new(),
+                proxy_http: crate::http::Client::new(),
+                host: crate::host::fake::FakeHost::new(),
+            };
+            assert!(join_info(State(state)).await.is_err());
+        }
+
+        #[tokio::test]
         async fn a_refused_request_is_an_error_not_an_empty_list() {
             let server = MockServer::start().await;
             Mock::given(method("GET"))

@@ -136,3 +136,68 @@ async fn a_restore_of_nothing_bad_or_from_outside_a_backup_runs_no_job() {
     );
     assert!(server.received_requests().await.unwrap().is_empty());
 }
+
+async fn only_credentials_accepted(server: &wiremock::MockServer) {
+    wiremock::Mock::given(wiremock::matchers::method("PATCH"))
+        .and(wiremock::matchers::path_regex(
+            "^/api/v1/namespaces/ceph-csi/secrets/[^/]+$",
+        ))
+        .respond_with(
+            wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "apiVersion": "v1", "kind": "Secret", "metadata": { "name": "x" }
+            })),
+        )
+        .mount(server)
+        .await;
+}
+
+async fn pods_unlistable(server: &wiremock::MockServer) {
+    wiremock::Mock::given(wiremock::matchers::method("GET"))
+        .and(wiremock::matchers::path("/api/v1/namespaces/ceph-csi/pods"))
+        .respond_with(
+            wiremock::ResponseTemplate::new(503)
+                .set_body_json(crate::k8s::testing::status(503, "ServiceUnavailable")),
+        )
+        .with_priority(1)
+        .mount(server)
+        .await;
+}
+
+#[tokio::test]
+async fn a_job_the_cluster_will_not_run_fails_the_backup_and_the_restore() {
+    let (server, kube) = api_server().await;
+    only_credentials_accepted(&server).await;
+    assert!(
+        back_up(&kube, &cfg(), "yolab-notes", "bk-1", &["notes".into()])
+            .await
+            .is_err()
+    );
+    assert!(
+        restore(&kube, &cfg(), "yolab-notes", "abc123", &[into("notes")])
+            .await
+            .is_err()
+    );
+    assert!(!server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .any(|r| r.method.as_str() == "POST"));
+}
+
+#[tokio::test]
+async fn a_job_whose_last_words_cannot_be_read_fails_the_backup_and_the_restore() {
+    let (server, kube) = api_server().await;
+    pods_unlistable(&server).await;
+    jobs_finish_saying(&server, "YOLAB_RESTORED\n").await;
+    assert!(
+        back_up(&kube, &cfg(), "yolab-notes", "bk-1", &["notes".into()])
+            .await
+            .is_err()
+    );
+    assert!(
+        restore(&kube, &cfg(), "yolab-notes", "abc123", &[into("notes")])
+            .await
+            .is_err()
+    );
+}

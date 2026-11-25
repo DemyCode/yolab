@@ -177,7 +177,10 @@ fn save(layout: &Layout, request: &PrepareRequest, phase: Phase) -> Result<()> {
         request: request.clone(),
         phase,
     };
-    write_private_file(&layout.state(), &serde_json::to_vec_pretty(&reset)?)
+    write_private_file(
+        &layout.state(),
+        format!("{:#}", serde_json::json!(reset)).as_bytes(),
+    )
 }
 
 #[derive(Clone, Default)]
@@ -189,10 +192,16 @@ impl Preparing {
         PREPARING.get_or_init(Preparing::default)
     }
     fn running(&self) -> Option<String> {
-        self.0.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
     fn set(&self, heal_id: Option<String>) {
-        *self.0.lock().unwrap_or_else(|e| e.into_inner()) = heal_id;
+        *self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = heal_id;
     }
 }
 
@@ -330,7 +339,7 @@ pub(crate) fn rewrite_config(config: &str, server_addr: &str, fsid: &str) -> Res
         .as_table_mut()
         .context("[ceph] in config.toml is not a table")?;
     ceph.insert("fsid".into(), fsid.into());
-    let text = toml::to_string(&table).context("write config.toml")?;
+    let text = table.to_string();
     reset_wipe::with_wipe_condition(&text, false)
 }
 
@@ -867,5 +876,365 @@ mod tests {
         assert_eq!(begin, Begin::Start);
         assert!(!armed(&m));
         assert_eq!(config(&m), ORIGINAL);
+    }
+
+    fn dir_at(path: PathBuf) {
+        std::fs::create_dir_all(path).unwrap();
+    }
+
+    fn tmp_of(path: PathBuf) -> PathBuf {
+        path.with_extension("tmp")
+    }
+
+    fn error_of(m: &Machine) -> String {
+        current(&m.layout, "boot1", &Preparing::default())
+            .unwrap()
+            .unwrap()
+            .error
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_reset_record_that_cannot_be_read_stops_every_step() {
+        let m = machine();
+        let host = host();
+        dir_at(m.layout.state());
+        assert!(current(&m.layout, "boot1", &Preparing::default())
+            .unwrap_err()
+            .to_string()
+            .starts_with("read "));
+        assert!(begin_prepare(
+            &host,
+            &m.layout,
+            &request("ab12"),
+            "boot1",
+            &Preparing::default()
+        )
+        .await
+        .is_err());
+        assert!(arm(&m.layout, "ab12", "boot1").is_err());
+        assert!(undo(
+            &host,
+            &m.layout,
+            "ab12",
+            "boot1",
+            &Preparing::default(),
+            true
+        )
+        .await
+        .is_err());
+    }
+
+    #[tokio::test]
+    async fn the_same_heal_asked_again_is_answered_from_what_it_asked_first() {
+        let m = machine();
+        let host = host();
+        prepared(&m, &host, "ab12").await;
+        let preparing = Preparing::default();
+        let changed = PrepareRequest {
+            fsid: "99999999-1111-4222-8333-444455556666".into(),
+            ..request("ab12")
+        };
+        assert_eq!(
+            begin_prepare(&host, &m.layout, &changed, "boot1", &preparing)
+                .await
+                .unwrap_err()
+                .to_string(),
+            "heal ab12 asked for something else before"
+        );
+        assert_eq!(
+            begin_prepare(&host, &m.layout, &request("ab12"), "boot1", &preparing)
+                .await
+                .unwrap(),
+            Begin::Already(ResetView {
+                heal_id: "ab12".into(),
+                driver: "node1".into(),
+                phase: PhaseView::Prepared,
+                error: None,
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_heal_asked_again_is_prepared_again() {
+        let m = machine();
+        let broken = FakeHost::new()
+            .ok("systemctl reset-failed", "")
+            .fail("nixos-rebuild boot", "error: boom");
+        prepared(&m, &broken, "ab12").await;
+        assert_eq!(phase(&m, "boot1"), PhaseView::Failed);
+        assert_eq!(
+            begin_prepare(
+                &broken,
+                &m.layout,
+                &request("ab12"),
+                "boot1",
+                &Preparing::default()
+            )
+            .await
+            .unwrap(),
+            Begin::Start
+        );
+    }
+
+    #[tokio::test]
+    async fn a_new_heal_that_cannot_put_the_old_one_back_does_not_start() {
+        let m = machine();
+        let host = host();
+        prepared(&m, &host, "ab12").await;
+        std::fs::remove_file(m.layout.config_before()).unwrap();
+        dir_at(m.layout.config_before());
+        assert!(begin_prepare(
+            &host,
+            &m.layout,
+            &request("cd34"),
+            "boot1",
+            &Preparing::default()
+        )
+        .await
+        .is_err());
+        assert!(undo(
+            &host,
+            &m.layout,
+            "ab12",
+            "boot1",
+            &Preparing::default(),
+            true
+        )
+        .await
+        .is_err());
+    }
+
+    #[tokio::test]
+    async fn a_new_heal_over_one_whose_copy_is_gone_has_nothing_to_put_back() {
+        let m = machine();
+        let host = host();
+        prepared(&m, &host, "ab12").await;
+        std::fs::remove_file(m.layout.config_before()).unwrap();
+        assert_eq!(
+            begin_prepare(
+                &host,
+                &m.layout,
+                &request("cd34"),
+                "boot1",
+                &Preparing::default()
+            )
+            .await
+            .unwrap(),
+            Begin::Start
+        );
+        assert!(config(&m).contains(FSID), "nothing was put back");
+    }
+
+    #[tokio::test]
+    async fn a_prepare_that_cannot_be_recorded_neither_starts_nor_finishes() {
+        let m = machine();
+        let host = host();
+        dir_at(tmp_of(m.layout.state()));
+        assert!(begin_prepare(
+            &host,
+            &m.layout,
+            &request("ab12"),
+            "boot1",
+            &Preparing::default()
+        )
+        .await
+        .is_err());
+
+        let m = machine();
+        let preparing = Preparing::default();
+        begin_prepare(&host, &m.layout, &request("ab12"), "boot1", &preparing)
+            .await
+            .unwrap();
+        dir_at(tmp_of(m.layout.state()));
+        prepare(&host, &m.layout, &request("ab12"), &preparing).await;
+        assert_eq!(error_of(&m), "preparing was interrupted");
+    }
+
+    #[tokio::test]
+    async fn a_prepare_that_cannot_keep_the_old_boot_entry_fails() {
+        let m = machine();
+        let profiles = m.layout.root.join("nix/var/nix/profiles");
+        dir_at(profiles.clone());
+        std::os::unix::fs::symlink("system-7-link", profiles.join("system")).unwrap();
+        dir_at(tmp_of(m.layout.system_before()));
+        prepared(&m, &host(), "ab12").await;
+        assert_eq!(phase(&m, "boot1"), PhaseView::Failed);
+        assert_eq!(config(&m), ORIGINAL);
+    }
+
+    #[tokio::test]
+    async fn a_prepare_that_cannot_keep_a_copy_of_the_config_fails() {
+        let m = machine();
+        dir_at(tmp_of(m.layout.config_before()));
+        prepared(&m, &host(), "ab12").await;
+        assert_eq!(phase(&m, "boot1"), PhaseView::Failed);
+        assert_eq!(config(&m), ORIGINAL);
+    }
+
+    #[tokio::test]
+    async fn a_copy_of_the_config_that_cannot_be_read_fails_the_prepare() {
+        let m = machine();
+        dir_at(m.layout.config_before());
+        prepared(&m, &host(), "ab12").await;
+        assert!(error_of(&m).starts_with("read the copy of config.toml"));
+    }
+
+    #[tokio::test]
+    async fn a_config_without_a_k3s_section_fails_the_prepare() {
+        let m = machine();
+        std::fs::write(m.layout.config(), "[homelab]\n").unwrap();
+        prepared(&m, &host(), "ab12").await;
+        assert_eq!(error_of(&m), "config.toml has no [node.k3s]");
+    }
+
+    #[tokio::test]
+    async fn a_config_that_cannot_be_rewritten_fails_the_prepare() {
+        let m = machine();
+        dir_at(tmp_of(m.layout.config()));
+        prepared(&m, &host(), "ab12").await;
+        assert_eq!(phase(&m, "boot1"), PhaseView::Failed);
+        assert_eq!(config(&m), ORIGINAL);
+    }
+
+    #[tokio::test]
+    async fn a_failed_rebuild_whose_config_cannot_be_put_back_still_reports_the_rebuild() {
+        let m = machine();
+        let blocker = tmp_of(m.layout.config());
+        let host = FakeHost::new()
+            .ok("systemctl reset-failed", "")
+            .effect("systemctl reset-failed", move |_: &str, _: &[&str]| {
+                dir_at(blocker.clone())
+            })
+            .fail("nixos-rebuild boot", "error: no space left on device");
+        prepared(&m, &host, "ab12").await;
+        assert!(error_of(&m).contains("no space left"));
+        assert!(
+            config(&m).contains(FSID),
+            "the config could not be put back"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_rebuild_that_cannot_start_fails_the_prepare() {
+        let m = machine();
+        let host = FakeHost::new()
+            .ok("systemctl reset-failed", "")
+            .unstartable("nixos-rebuild boot");
+        prepared(&m, &host, "ab12").await;
+        assert_eq!(phase(&m, "boot1"), PhaseView::Failed);
+        assert_eq!(config(&m), ORIGINAL);
+    }
+
+    #[test]
+    fn a_config_that_is_not_toml_or_has_a_strange_ceph_entry_is_not_rewritten() {
+        assert!(rewrite_config("not toml [[", "", FSID).is_err());
+        assert_eq!(
+            rewrite_config("ceph = 5\n[node.k3s]\ntoken = \"t\"\n", "", FSID)
+                .unwrap_err()
+                .to_string(),
+            "[ceph] in config.toml is not a table"
+        );
+    }
+
+    #[tokio::test]
+    async fn arming_fails_on_anything_but_a_cleanly_prepared_machine() {
+        let m = machine();
+        let broken = FakeHost::new()
+            .ok("systemctl reset-failed", "")
+            .fail("nixos-rebuild boot", "error: boom");
+        prepared(&m, &broken, "ab12").await;
+        assert!(arm(&m.layout, "ab12", "boot1")
+            .unwrap_err()
+            .to_string()
+            .starts_with("heal ab12 cannot be armed here"));
+
+        let unreadable = machine();
+        prepared(&unreadable, &host(), "ab12").await;
+        std::fs::remove_file(unreadable.layout.config()).unwrap();
+        dir_at(unreadable.layout.config());
+        assert!(arm(&unreadable.layout, "ab12", "boot1").is_err());
+
+        let garbled = machine();
+        prepared(&garbled, &host(), "ab12").await;
+        std::fs::write(garbled.layout.config(), "not toml [[").unwrap();
+        assert!(arm(&garbled.layout, "ab12", "boot1").is_err());
+
+        let unwritable = machine();
+        prepared(&unwritable, &host(), "ab12").await;
+        dir_at(tmp_of(unwritable.layout.config()));
+        assert!(arm(&unwritable.layout, "ab12", "boot1").is_err());
+        assert!(!armed(&unwritable));
+
+        let unrecorded = machine();
+        prepared(&unrecorded, &host(), "ab12").await;
+        dir_at(tmp_of(unrecorded.layout.state()));
+        assert!(arm(&unrecorded.layout, "ab12", "boot1").is_err());
+        assert_eq!(phase(&unrecorded, "boot1"), PhaseView::Prepared);
+    }
+
+    #[tokio::test]
+    async fn an_undo_that_cannot_finish_putting_back_fails() {
+        let unrecorded = machine();
+        prepared(&unrecorded, &host(), "ab12").await;
+        dir_at(tmp_of(unrecorded.layout.state()));
+        assert!(undo(
+            &host(),
+            &unrecorded.layout,
+            "ab12",
+            "boot1",
+            &Preparing::default(),
+            true
+        )
+        .await
+        .is_err());
+
+        let unwritable = machine();
+        prepared(&unwritable, &host(), "ab12").await;
+        dir_at(tmp_of(unwritable.layout.config()));
+        assert!(undo(
+            &host(),
+            &unwritable.layout,
+            "ab12",
+            "boot1",
+            &Preparing::default(),
+            true
+        )
+        .await
+        .is_err());
+
+        let unbuildable = machine();
+        prepared(&unbuildable, &host(), "ab12").await;
+        let broken = FakeHost::new()
+            .ok("systemctl reset-failed", "")
+            .fail("nixos-rebuild boot", "error: boom");
+        assert!(undo(
+            &broken,
+            &unbuildable.layout,
+            "ab12",
+            "boot1",
+            &Preparing::default(),
+            true
+        )
+        .await
+        .is_err());
+        assert!(
+            holds_config(&unbuildable.layout),
+            "the copy is kept for a retry"
+        );
+
+        let stuck = machine();
+        prepared(&stuck, &host(), "ab12").await;
+        dir_at(stuck.layout.system_before());
+        assert!(undo(
+            &host(),
+            &stuck.layout,
+            "ab12",
+            "boot1",
+            &Preparing::default(),
+            true
+        )
+        .await
+        .is_err());
     }
 }

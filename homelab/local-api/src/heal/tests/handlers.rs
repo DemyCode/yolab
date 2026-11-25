@@ -283,3 +283,17 @@ async fn the_heal_controller_runs_on_every_machine_every_ten_seconds() {
         Tick::Idle("no heal is driven from this machine".into())
     );
 }
+
+#[tokio::test]
+async fn a_failed_heal_asked_again_with_a_different_request_is_refused() {
+    booted("b1");
+    reset_state(
+        "ef56",
+        json!({ "phase": "failed", "error": "boom", "driver": "node9" }),
+    );
+    let res = api(FakeHost::new())
+        .post("/api/heal/peer/prepare", &prepare_body("ef56"))
+        .await;
+    assert_eq!(res.status, StatusCode::CONFLICT, "{}", res.body);
+    assert!(crate::routers::update::exclusive().is_some());
+}

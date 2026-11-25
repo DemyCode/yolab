@@ -49,35 +49,26 @@ fn want_mb(total_mb: u64, replicas: u64, hosts: u64, share_of_pool: f64, min_siz
 }
 
 pub async fn compute<H: Host>(host: &H, policy: &SizingPolicy) -> Option<u64> {
-    let Some(hosts) = host
+    let hosts = host
         .ceph_json(&["osd", "tree"])
         .await
         .ok_or_warn("images: read the osd tree to size the images disk")
-        .map(|v| host_count(&v))
-    else {
-        return None;
-    };
+        .map(|v| host_count(&v))?;
 
-    let Some(t_mb) = host
+    let t_mb = host
         .ceph_json(&["df"])
         .await
         .ok_or_warn("images: read ceph df to size the images disk")
-        .and_then(|v| total_mb(&v))
-    else {
-        return None;
-    };
+        .and_then(|v| total_mb(&v))?;
 
-    let Some(replicas) = host
+    let replicas = host
         .ceph_json(&["osd", "pool", "get", &policy.pool_name, "size"])
         .await
         .ok_or_warn(format!(
             "images: read the replica count of {} to size the images disk",
             policy.pool_name
         ))
-        .map(|v| replica_count(&v))
-    else {
-        return None;
-    };
+        .map(|v| replica_count(&v))?;
 
     Some(want_mb(
         t_mb,

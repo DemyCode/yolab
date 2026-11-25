@@ -216,6 +216,29 @@ mod tests {
         }
 
         #[tokio::test]
+        async fn a_platform_that_cannot_be_reached_is_an_error_not_zero_credit() {
+            let api = format!("http://[::1]:{}", crate::testkit::closed_port());
+            assert!(fetch_credit(&crate::http::Client::new(), &api, "tok")
+                .await
+                .is_err());
+        }
+
+        #[tokio::test]
+        async fn an_answer_that_is_not_a_balance_is_an_error_not_zero_credit() {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/billing/balance"))
+                .respond_with(ResponseTemplate::new(200).set_body_string("<html>"))
+                .mount(&server)
+                .await;
+            assert!(
+                fetch_credit(&crate::http::Client::new(), &server.uri(), "tok")
+                    .await
+                    .is_err()
+            );
+        }
+
+        #[tokio::test]
         async fn a_refused_token_is_an_error_not_zero_credit() {
             let server = MockServer::start().await;
             Mock::given(method("GET"))
@@ -348,6 +371,29 @@ mod tests {
                     crate::testkit::ACCOUNT_TOKEN
                 )
             );
+        }
+
+        #[tokio::test]
+        async fn a_server_without_a_tunnel_section_has_no_console() {
+            let api = TestApi::with_config("[homelab]\nhostname = \"yolab\"\n").over_loopback();
+            let res = api.get("/api/status").await;
+            assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+            assert_eq!(res.json()["console_url"], serde_json::Value::Null);
+        }
+
+        #[tokio::test]
+        async fn a_balance_the_platform_refuses_is_an_error() {
+            let platform = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/billing/balance"))
+                .respond_with(ResponseTemplate::new(401))
+                .mount(&platform)
+                .await;
+            let api = TestApi::with_platform(crate::k8s::testing::unreachable(), &platform.uri())
+                .login()
+                .await;
+            let res = api.get("/api/billing/balance").await;
+            assert!(!res.status.is_success(), "{}", res.body);
         }
     }
 }

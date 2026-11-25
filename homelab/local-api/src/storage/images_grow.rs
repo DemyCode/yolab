@@ -257,4 +257,66 @@ mod tests {
             "shrinking a mounted filesystem must never happen"
         );
     }
+
+    fn on_rbd() -> FakeHost {
+        FakeHost::new()
+            .ok("ceph -s", "")
+            .ok("findmnt -rno SOURCE --mountpoint", "/dev/rbd0\n")
+    }
+
+    fn resized() -> FakeHost {
+        on_rbd()
+            .ok("rbd info images/yolab-n1", r#"{"size":41943040000}"#)
+            .ok(
+                "ceph osd tree",
+                r#"{"nodes":[{"type":"host","children":[1]}]}"#,
+            )
+            .ok("ceph df", r#"{"stats":{"total_bytes":419430400000}}"#)
+            .ok("ceph osd pool get images size", r#"{"size":1}"#)
+            .ok("rbd resize", "")
+    }
+
+    #[tokio::test]
+    async fn a_findmnt_that_cannot_start_is_an_error() {
+        let host = FakeHost::new().ok("ceph -s", "").unstartable("findmnt");
+        let dir = tempfile::tempdir().unwrap();
+        assert!(run(&host, dir.path(), "yolab-n1", &policy()).await.is_err());
+        assert!(!host.ran("rbd"));
+    }
+
+    #[tokio::test]
+    async fn an_image_that_cannot_be_described_is_an_error() {
+        let host = on_rbd().fail("rbd info images/yolab-n1", "rbd: error opening image");
+        let dir = tempfile::tempdir().unwrap();
+        assert!(run(&host, dir.path(), "yolab-n1", &policy()).await.is_err());
+        assert!(!host.ran("rbd resize"));
+    }
+
+    #[tokio::test]
+    async fn an_image_description_that_is_not_json_is_an_error() {
+        let host = on_rbd().ok("rbd info images/yolab-n1", "not json");
+        let dir = tempfile::tempdir().unwrap();
+        assert!(run(&host, dir.path(), "yolab-n1", &policy()).await.is_err());
+        assert!(!host.ran("rbd resize"));
+    }
+
+    #[tokio::test]
+    async fn an_xfs_store_that_will_not_grow_is_an_error() {
+        let host = resized().fail("xfs_growfs", "xfs_growfs: not a mounted XFS filesystem");
+        let dir = tempfile::tempdir().unwrap();
+        assert!(run(&host, dir.path(), "yolab-n1", &policy()).await.is_err());
+        assert!(host.ran("xfs_growfs"));
+    }
+
+    #[tokio::test]
+    async fn an_ext4_store_that_will_not_grow_is_an_error() {
+        let host = resized().fail("resize2fs", "resize2fs: Bad magic number");
+        let ext4 = GrowPolicy {
+            filesystem: Filesystem::Ext4,
+            ..policy()
+        };
+        let dir = tempfile::tempdir().unwrap();
+        assert!(run(&host, dir.path(), "yolab-n1", &ext4).await.is_err());
+        assert!(host.ran("resize2fs /dev/rbd0"));
+    }
 }

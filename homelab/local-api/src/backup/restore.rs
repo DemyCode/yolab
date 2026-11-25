@@ -1686,10 +1686,13 @@ mod tests {
                 path: "/data/notes-ab12".into()
             }
         );
-        match plan_folders("data", Some(&pin("gone", "x")), &snaps, None, "n") {
-            VolumePlan::Refuse(why) => assert!(why.contains("deleted"), "{why}"),
-            other => panic!("{other:?}"),
-        }
+        assert_eq!(
+            plan_folders("data", Some(&pin("gone", "x")), &snaps, None, "n"),
+            VolumePlan::Refuse(
+                "the backup of data this restore point took has since been deleted — pick a newer backup"
+                    .into()
+            )
+        );
     }
 
     #[test]
@@ -1699,15 +1702,13 @@ mod tests {
             snap("f2", "2026-11-16T03:00:00Z"),
             snap("f3", "2026-11-17T03:00:00Z"),
         ];
-        let picked = |at: Option<&str>| match plan_folders("d", None, &snaps, at, "") {
-            VolumePlan::FromFolders { snapshot, path } => {
-                assert_eq!(path, "/data");
-                snapshot
-            }
-            other => panic!("{other:?}"),
+        let picked = |at: Option<&str>| plan_folders("d", None, &snaps, at, "");
+        let from = |snapshot: &str| VolumePlan::FromFolders {
+            snapshot: snapshot.into(),
+            path: "/data".into(),
         };
-        assert_eq!(picked(Some("2026-11-16T04:00:00Z")), "f2");
-        assert_eq!(picked(None), "f3");
+        assert_eq!(picked(Some("2026-11-16T04:00:00Z")), from("f2"));
+        assert_eq!(picked(None), from("f3"));
         assert!(matches!(
             plan_folders("d", None, &snaps, Some("2026-11-01T00:00:00Z"), ""),
             VolumePlan::Refuse(_)
@@ -1912,13 +1913,10 @@ mod tests {
             )
             .await
             .unwrap();
-            match plan {
-                VolumePlan::Refuse(why) => {
-                    assert!(why.starts_with("old "), "{why}");
-                    assert!(why.contains("before the file tree"), "{why}");
-                }
-                other => panic!("expected a refusal, got {other:?}"),
-            }
+            let why = saved_before_the_tree("old");
+            assert!(why.starts_with("old "), "{why}");
+            assert!(why.contains("before the file tree"), "{why}");
+            assert_eq!(plan, VolumePlan::Refuse(why));
             assert!(host.calls().is_empty(), "{:?}", host.calls());
         }
 
@@ -2460,6 +2458,7 @@ mod tests {
             assert!(written.is_empty());
         }
 
+        mod failures;
         mod volumes;
     }
 }

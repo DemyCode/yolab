@@ -183,4 +183,41 @@ mod tests {
         let host = FakeHost::new().ok("ceph config-key dump", "[]");
         assert!(dump(&host, DISKS).await.is_err());
     }
+
+    #[tokio::test]
+    async fn a_settings_dump_from_an_unreachable_cluster_is_an_error() {
+        let host = FakeHost::new().fail("ceph config-key dump", "error connecting to the cluster");
+        assert!(dump(&host, DISKS).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_missing_json_key_is_absent_and_an_unreachable_cluster_is_an_error() {
+        let absent = FakeHost::new().fail(
+            "ceph config-key get yolab/storage-policy",
+            "Error ENOENT: key 'yolab/storage-policy' doesn't exist",
+        );
+        assert_eq!(
+            get_json::<_, serde_json::Value>(&absent, STORAGE_POLICY)
+                .await
+                .unwrap(),
+            None
+        );
+
+        let down = FakeHost::new().fail(
+            "ceph config-key get yolab/storage-policy",
+            "error connecting to the cluster",
+        );
+        assert!(get_json::<_, serde_json::Value>(&down, STORAGE_POLICY)
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn a_value_that_cannot_be_written_is_an_error() {
+        let host = FakeHost::new().fail(
+            "ceph config-key set yolab/storage-policy",
+            "error connecting to the cluster",
+        );
+        assert!(set(&host, STORAGE_POLICY, "x").await.is_err());
+    }
 }

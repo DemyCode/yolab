@@ -13,6 +13,26 @@ use crate::AppState;
 const NTFY_LOCAL: &str = "http://[::1]:2586";
 const ENV_FILE: &str = "var/lib/yolab/ntfy/ntfy.env";
 
+#[cfg(not(test))]
+fn ntfy_local() -> String {
+    NTFY_LOCAL.to_string()
+}
+
+#[cfg(test)]
+thread_local! {
+    static NTFY: std::cell::RefCell<String> = std::cell::RefCell::new(NTFY_LOCAL.to_string());
+}
+
+#[cfg(test)]
+fn ntfy_local() -> String {
+    NTFY.with(|n| n.borrow().clone())
+}
+
+#[cfg(test)]
+fn use_ntfy(url: &str) {
+    NTFY.with(|n| *n.borrow_mut() = url.to_string());
+}
+
 pub(crate) fn topic_from_config(text: &str) -> Result<String> {
     use sha2::{Digest, Sha256};
     let table: toml::Table = toml::from_str(text).context("config.toml is not TOML")?;
@@ -39,17 +59,21 @@ pub(crate) fn write_ntfy_env(root: &Path, config_path: &str) -> Result<()> {
     crate::config::write_private_file(&root.join(ENV_FILE), env.as_bytes())
 }
 
+fn credentials(root: &Path, config_path: &str) -> i32 {
+    match write_ntfy_env(root, config_path) {
+        Ok(()) => 0,
+        Err(e) => {
+            tracing::error!("notify credentials: {e:#}");
+            1
+        }
+    }
+}
+
 pub async fn run(args: &[String]) -> i32 {
     match args.first().map(String::as_str) {
         Some("credentials") => {
             let config = crate::config::machine_dir().join("config.toml");
-            match write_ntfy_env(Path::new("/"), &config.to_string_lossy()) {
-                Ok(()) => 0,
-                Err(e) => {
-                    tracing::error!("notify credentials: {e:#}");
-                    1
-                }
-            }
+            credentials(Path::new("/"), &config.to_string_lossy())
         }
         other => {
             eprintln!("notify: unknown subcommand {other:?} (known: credentials)");
@@ -125,7 +149,7 @@ pub(crate) struct Notification {
 }
 
 async fn publish_local(topic: &str, n: &Notification) -> Result<()> {
-    publish_to(NTFY_LOCAL, topic, n).await
+    publish_to(&ntfy_local(), topic, n).await
 }
 
 async fn publish_to(ntfy: &str, topic: &str, n: &Notification) -> Result<()> {
@@ -161,7 +185,7 @@ pub(crate) async fn publish_everywhere(
     peer_addrs: &[String],
 ) -> Result<()> {
     deliver_everywhere(
-        NTFY_LOCAL,
+        &ntfy_local(),
         cfg.port,
         &cfg.cluster_token(),
         topic,
@@ -583,5 +607,57 @@ token = "abcdef0123456789"
         assert_eq!(run(&["nope".to_string()]).await, 2);
         assert_eq!(run(&[]).await, 2);
         assert_eq!(run(&["credentials".to_string()]).await, 1);
+    }
+
+    #[test]
+    fn the_credentials_command_writes_the_env_file_or_says_it_failed() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("config.toml");
+        std::fs::write(&config, CONFIG).unwrap();
+        assert_eq!(credentials(dir.path(), config.to_str().unwrap()), 0);
+        assert!(dir.path().join(ENV_FILE).exists());
+        assert_eq!(credentials(dir.path(), "/nonexistent/config.toml"), 1);
+    }
+
+    #[test]
+    fn a_tunnel_without_a_config_file_is_an_error() {
+        assert_eq!(
+            Tunnel::read("/nonexistent/config.toml")
+                .unwrap_err()
+                .to_string(),
+            "read /nonexistent/config.toml"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_test_or_relayed_notification_without_a_topic_says_why() {
+        let no_token =
+            crate::testkit::TestApi::with_config("[tunnel]\nenabled = true\n").over_loopback();
+        let res = no_token.post("/api/notifications/test", "").await;
+        assert_eq!(res.status, StatusCode::SERVICE_UNAVAILABLE, "{}", res.body);
+        let res = no_token
+            .post(
+                "/api/notifications/deliver",
+                &serde_json::to_string(&note(None)).unwrap(),
+            )
+            .await;
+        assert_eq!(res.status, StatusCode::SERVICE_UNAVAILABLE, "{}", res.body);
+    }
+
+    #[tokio::test]
+    async fn a_test_or_relayed_notification_reaches_a_running_ntfy() {
+        let server = ntfy(200).await;
+        use_ntfy(&server.uri());
+        let api = on_the_platform("https://node1.6.yolab.io").login().await;
+        let res = api.post("/api/notifications/test", "").await;
+        assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+        let res = api
+            .post(
+                "/api/notifications/deliver",
+                &serde_json::to_string(&note(None)).unwrap(),
+            )
+            .await;
+        assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+        use_ntfy(NTFY_LOCAL);
     }
 }

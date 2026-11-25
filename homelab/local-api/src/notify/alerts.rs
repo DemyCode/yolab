@@ -125,7 +125,10 @@ fn load(root: &Path) -> Result<BTreeMap<String, Alert>> {
 }
 
 fn save(root: &Path, sent: &BTreeMap<String, Alert>) -> Result<()> {
-    crate::config::write_private_file(&state_path(root), &serde_json::to_vec_pretty(sent)?)
+    crate::config::write_private_file(
+        &state_path(root),
+        format!("{:#}", serde_json::json!(sent)).as_bytes(),
+    )
 }
 
 fn heal_alert(problem: &str) -> Alert {
@@ -327,8 +330,12 @@ impl Resource for NotifierController {
         Duration::from_secs(180)
     }
     async fn converge(&self, ctx: &Ctx) -> Result<Tick> {
-        let root = state_root();
-        let root = root.as_path();
+        self.notify(ctx, &state_root()).await
+    }
+}
+
+impl NotifierController {
+    async fn notify(&self, ctx: &Ctx, root: &Path) -> Result<Tick> {
         let tunnel = Tunnel::read(&self.config.config_path)?;
         if !tunnel.enabled {
             return Ok(Tick::Idle(
@@ -818,14 +825,65 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_notifier_sends_what_changed_or_says_it_will_retry() {
-        let (_dir, c) = controller(
-            "[tunnel]\nenabled = true\ndns_url = \"https://node1.6.yolab.io\"\n[node.k3s]\ntoken = \"t\"\n",
-        );
-        match c.converge(&ctx()).await {
-            Ok(t) => assert!(matches!(t, Tick::Idle(_) | Tick::Done)),
-            Err(e) => assert!(format!("{e:#}").contains("send a notification"), "{e:#}"),
-        }
+    async fn the_notifier_keeps_its_record_where_it_always_lives() {
+        let ntfy = ntfy_answering(200).await;
+        let (_dir, c) = controller(ON_THE_PLATFORM);
+        c.converge(&ctx()).await.unwrap();
         assert!(state_path(&state_root()).exists());
+        drop(ntfy);
+        crate::notify::use_ntfy(crate::notify::NTFY_LOCAL);
+    }
+
+    const ON_THE_PLATFORM: &str =
+        "[tunnel]\nenabled = true\ndns_url = \"https://node1.6.yolab.io\"\n[node.k3s]\ntoken = \"t\"\n";
+
+    async fn ntfy_answering(code: u16) -> wiremock::MockServer {
+        use wiremock::{matchers, Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(matchers::method("POST"))
+            .respond_with(ResponseTemplate::new(code))
+            .mount(&server)
+            .await;
+        crate::notify::use_ntfy(&server.uri());
+        server
+    }
+
+    fn seeded_with_a_cleared_disk() -> tempfile::TempDir {
+        let root = tempfile::tempdir().unwrap();
+        save(root.path(), &sent(&["disk:zz-gone"])).unwrap();
+        root
+    }
+
+    #[tokio::test]
+    async fn a_cleared_problem_is_sent_and_forgotten() {
+        let _ntfy = ntfy_answering(200).await;
+        let (_dir, c) = controller(ON_THE_PLATFORM);
+        let root = seeded_with_a_cleared_disk();
+        assert_eq!(c.notify(&ctx(), root.path()).await.unwrap(), Tick::Done);
+        assert!(!load(root.path()).unwrap().contains_key("disk:zz-gone"));
+        crate::notify::use_ntfy(crate::notify::NTFY_LOCAL);
+    }
+
+    #[tokio::test]
+    async fn a_change_ntfy_refuses_is_kept_and_retried_next_tick() {
+        let _ntfy = ntfy_answering(500).await;
+        let (_dir, c) = controller(ON_THE_PLATFORM);
+        let root = seeded_with_a_cleared_disk();
+        let e = c.notify(&ctx(), root.path()).await.unwrap_err();
+        assert!(format!("{e:#}").starts_with("send a notification (retried next tick)"));
+        assert!(load(root.path()).unwrap().contains_key("disk:zz-gone"));
+        crate::notify::use_ntfy(crate::notify::NTFY_LOCAL);
+    }
+
+    #[tokio::test]
+    async fn a_record_that_cannot_be_read_or_written_fails_the_tick() {
+        let (_dir, c) = controller(ON_THE_PLATFORM);
+        let unreadable = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(state_path(unreadable.path())).unwrap();
+        assert!(c.notify(&ctx(), unreadable.path()).await.is_err());
+        let unwritable = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(state_path(unwritable.path()).with_extension("tmp")).unwrap();
+        assert!(c.notify(&ctx(), unwritable.path()).await.is_err());
+        assert!(!state_path(unwritable.path()).exists());
     }
 }

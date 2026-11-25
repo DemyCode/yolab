@@ -454,6 +454,14 @@ mod tests {
         }
 
         #[test]
+        fn the_icon_is_named_after_the_app_id_the_desktop_file_points_at() {
+            assert_eq!(
+                icon_path(Path::new("/d")),
+                PathBuf::from(format!("/d/icons/{APP_ID}.png"))
+            );
+        }
+
+        #[test]
         fn the_icon_goes_under_xdg_data_home_else_under_home() {
             let os = |s: &str| Some(OsString::from(s));
             assert_eq!(data_home(os("/x"), os("/h")), Some(PathBuf::from("/x")));

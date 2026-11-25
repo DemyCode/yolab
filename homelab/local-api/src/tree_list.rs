@@ -127,8 +127,14 @@ pub(crate) async fn folder_sizes(folders: Vec<String>) -> Result<Vec<Option<u64>
 }
 
 pub(crate) async fn folders(path: String) -> Result<Listing, ListError> {
+    folders_from(path, ffi::list).await
+}
+
+type Lister = fn(&str) -> Result<Vec<(String, u8)>, ListError>;
+
+async fn folders_from(path: String, list: Lister) -> Result<Listing, ListError> {
     let wanted = path.clone();
-    off_thread("the file tree listing", move || ffi::list(&wanted))
+    off_thread("the file tree listing", move || list(&wanted))
         .await
         .map(|entries| listing(&path, entries))
 }
@@ -323,6 +329,87 @@ mod tests {
         assert!(
             matches!(&crashed, Err(ListError::Unavailable(m)) if m.starts_with("listing failed: ")),
             "{crashed:?}"
+        );
+    }
+
+    fn sized(folder: &str) -> Result<u64, ListError> {
+        match folder {
+            "a" => Ok(1),
+            "down" => Err(ListError::Unavailable("down".into())),
+            _ => Err(ListError::Missing("gone".into())),
+        }
+    }
+
+    #[test]
+    fn the_same_measure_skips_a_vanished_folder_but_stops_at_a_silent_tree() {
+        let owned = |names: &[&str]| names.iter().map(|n| n.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            sizes_of(&owned(&["a", "gone"]), sized),
+            Ok(vec![Some(1), None])
+        );
+        assert_eq!(
+            sizes_of(&owned(&["a", "down"]), sized),
+            Err(ListError::Unavailable("down".into()))
+        );
+    }
+
+    fn two_folders(path: &str) -> Result<Vec<(String, u8)>, ListError> {
+        Ok(vec![entry(path, DT_DIR), entry("Movies", DT_DIR)])
+    }
+
+    #[tokio::test]
+    async fn a_listing_the_tree_gives_is_shown_as_its_folders() {
+        assert_eq!(
+            folders_from("photos".into(), two_folders).await,
+            Ok(Listing {
+                path: "photos".into(),
+                folders: vec!["Movies".into(), "photos".into()],
+                truncated: false,
+            })
+        );
+    }
+
+    enum Work {
+        Answer,
+        Crash,
+        Hang(std::sync::mpsc::Receiver<()>),
+    }
+
+    fn doing(work: Work) -> impl FnOnce() -> Result<u8, ListError> + Send + 'static {
+        move || match work {
+            Work::Answer => Ok(7),
+            Work::Crash => panic!("libcephfs crashed"),
+            Work::Hang(wait) => {
+                wait.recv().expect("the test releases the work");
+                Ok(0)
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn the_same_work_off_the_thread_answers_crashes_or_runs_out_of_time() {
+        let limit = Duration::from_secs(5);
+        assert_eq!(
+            off_thread_within(limit, "listing", doing(Work::Answer)).await,
+            Ok(7)
+        );
+        assert!(matches!(
+            off_thread_within(limit, "listing", doing(Work::Crash)).await,
+            Err(ListError::Unavailable(m)) if m.starts_with("listing failed: ")
+        ));
+        let (release, wait) = std::sync::mpsc::channel::<()>();
+        let slow = off_thread_within(
+            Duration::from_millis(20),
+            "listing",
+            doing(Work::Hang(wait)),
+        )
+        .await;
+        release.send(()).expect("the work is still waiting");
+        assert_eq!(
+            slow,
+            Err(ListError::Unavailable(
+                "the file tree did not answer in time".into()
+            ))
         );
     }
 

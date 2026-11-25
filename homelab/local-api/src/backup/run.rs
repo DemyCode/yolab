@@ -2365,5 +2365,685 @@ mod tests {
             std::fs::remove_file(&file).unwrap();
             assert_eq!(built_hash(), None);
         }
+
+        #[test]
+        fn every_state_reads_as_its_own_word() {
+            assert_eq!(
+                [
+                    SetState::Queued,
+                    SetState::Running,
+                    SetState::Restorable,
+                    SetState::Crashed
+                ]
+                .map(state_str),
+                ["queued", "running", "restorable", "crashed"]
+            );
+        }
+
+        #[test]
+        fn a_backup_whose_machine_was_just_heard_from_is_not_taken_over() {
+            assert!(!takeable(&set("bk-just-heard-from", RUNNING)));
+        }
+
+        #[test]
+        fn a_container_without_an_image_adds_no_image() {
+            let w = json!({ "spec": { "template": { "spec": { "containers": [
+                { "name": "bare" },
+                { "name": "app", "image": "app:1" }
+            ] } } } });
+            assert_eq!(collect_images(&[w]), vec!["app:1"]);
+        }
+
+        #[tokio::test]
+        async fn a_set_for_something_that_is_not_a_service_fails_without_running() {
+            let mut s = set("bk-not-a-service", RUNNING);
+            s.namespace = "kube-system".into();
+            let b = Backend {
+                kube: crate::k8s::testing::unreachable(),
+                host: FakeHost::new(),
+            };
+            let err = run_taken(&b, &cfg(), &s).await.err().unwrap();
+            assert_eq!(err.to_string(), "kube-system is not a service namespace");
+            assert!(b.host.calls().is_empty());
+        }
+
+        #[tokio::test]
+        async fn an_outcome_for_a_backup_no_longer_listed_writes_nothing() {
+            let (server, kube) = api_server().await;
+            crate::records::testing::records(&server, "yolab-backups", json!([])).await;
+            record_done(&kube, "bk-gone", &Err(anyhow::anyhow!("lost"))).await;
+            assert!(!wrote_records(&server).await);
+        }
+
+        fn lost_app_data() -> FakeHost {
+            FakeHost::new()
+                .ok(
+                    "ceph osd dump",
+                    r#"{"osds":[{"osd":0,"up":0,"in":1}],"pools":[{"pool":3,"pool_name":"yolab-fs-data0"}]}"#,
+                )
+                .ok(
+                    "ceph pg dump pgs_brief",
+                    r#"[{"pgid":"3.1","state":"down","up":[0],"acting":[0]}]"#,
+                )
+        }
+
+        #[tokio::test]
+        async fn nothing_is_queued_while_a_disk_holding_app_data_is_lost() {
+            let (server, kube) = api_server().await;
+            config(&server, 200, enabled()).await;
+            let b = Backend {
+                kube,
+                host: lost_app_data(),
+            };
+            let err = start_app(&b, "yolab-notes", "user").await.unwrap_err();
+            assert!(err.to_string().starts_with("not backing up: "), "{err}");
+            assert!(!wrote_records(&server).await);
+        }
+
+        #[tokio::test]
+        async fn asking_for_an_app_already_backing_up_joins_the_running_backup() {
+            let (server, kube) = api_server().await;
+            config(&server, 200, enabled()).await;
+            crate::records::testing::records(
+                &server,
+                "yolab-backups",
+                json!([{
+                    "id": "bk-running", "namespace": "yolab-notes",
+                    "started_at": "2026-11-01T00:00:00Z", "state": RUNNING,
+                    "owner": "node2", "heartbeat": "2026-11-01T00:00:00Z"
+                }]),
+            )
+            .await;
+            let b = Backend {
+                kube,
+                host: FakeHost::new(),
+            };
+            assert_eq!(
+                start_app(&b, "yolab-notes", "user").await.unwrap(),
+                "bk-running"
+            );
+            assert!(!wrote_records(&server).await);
+        }
+
+        async fn refuse(server: &MockServer, at: &str) {
+            Mock::given(method("GET"))
+                .and(path(at))
+                .respond_with(
+                    ResponseTemplate::new(503).set_body_json(status(503, "ServiceUnavailable")),
+                )
+                .mount(server)
+                .await;
+        }
+
+        #[tokio::test]
+        async fn a_request_whose_queue_cannot_be_read_is_not_queued() {
+            let (server, kube) = api_server().await;
+            config(&server, 200, enabled()).await;
+            refuse(&server, &crate::records::testing::path_of("yolab-backups")).await;
+            let b = Backend {
+                kube,
+                host: FakeHost::new(),
+            };
+            assert!(start_app(&b, "yolab-notes", "user").await.is_err());
+        }
+
+        #[tokio::test]
+        async fn a_queue_that_cannot_be_read_runs_nothing() {
+            let b = Backend {
+                kube: crate::k8s::testing::unreachable(),
+                host: FakeHost::new(),
+            };
+            assert!(drive_next(&b, &cfg()).await.is_err());
+        }
+
+        async fn taken_meanwhile(second: ResponseTemplate) -> anyhow::Result<bool> {
+            use crate::records::testing::{path_of, stored};
+            let (server, kube) = api_server().await;
+            let queued = json!([{
+                "id": "bk-raced", "namespace": "yolab-notes",
+                "started_at": "2026-11-01T00:00:00Z", "state": QUEUED,
+                "owner": "", "heartbeat": ""
+            }]);
+            Mock::given(method("GET"))
+                .and(path(path_of("yolab-backups")))
+                .respond_with(ResponseTemplate::new(200).set_body_json(stored(
+                    "yolab-backups",
+                    &queued,
+                    "1",
+                )))
+                .up_to_n_times(1)
+                .mount(&server)
+                .await;
+            Mock::given(method("GET"))
+                .and(path(path_of("yolab-backups")))
+                .respond_with(second)
+                .mount(&server)
+                .await;
+            let b = Backend {
+                kube,
+                host: FakeHost::new(),
+            };
+            drive_next(&b, &cfg()).await
+        }
+
+        #[tokio::test]
+        async fn a_backup_another_machine_took_first_is_left_to_it_and_an_unreadable_take_fails() {
+            let gone = ResponseTemplate::new(200).set_body_json(crate::records::testing::stored(
+                "yolab-backups",
+                &json!([]),
+                "2",
+            ));
+            assert!(!taken_meanwhile(gone).await.unwrap());
+            let down = ResponseTemplate::new(503).set_body_json(status(503, "ServiceUnavailable"));
+            assert!(taken_meanwhile(down).await.is_err());
+        }
+
+        #[tokio::test]
+        async fn a_service_whose_volumes_or_namespaces_cannot_be_listed_is_not_backed_up() {
+            let app = BackupTarget::App("yolab-notes".into());
+            let none = HashMap::new();
+            let (server, kube) = api_server().await;
+            refuse(&server, "/api/v1/persistentvolumes").await;
+            let b = Backend {
+                kube,
+                host: FakeHost::new(),
+            };
+            assert!(run_set(&b, &cfg(), &app, "bk-1").await.is_err());
+            assert!(
+                snapshot_cluster_inner(&b, &cfg(), "/proc/no-such-dir", &none, &app, "bk-1")
+                    .await
+                    .is_err()
+            );
+
+            let (server, kube) = api_server().await;
+            serve(
+                &server,
+                "/api/v1/persistentvolumes",
+                list("PersistentVolume", vec![]),
+            )
+            .await;
+            refuse(&server, "/api/v1/namespaces").await;
+            let b = Backend {
+                kube,
+                host: FakeHost::new(),
+            };
+            assert!(run_set(&b, &cfg(), &app, "bk-1").await.is_err());
+            for target in [&app, &BackupTarget::Cluster] {
+                assert!(snapshot_cluster_inner(
+                    &b,
+                    &cfg(),
+                    "/proc/no-such-dir",
+                    &none,
+                    target,
+                    "bk-1"
+                )
+                .await
+                .is_err());
+            }
+            assert!(b.host.calls().is_empty(), "{:?}", b.host.calls());
+        }
+
+        #[tokio::test]
+        async fn a_staging_folder_that_cannot_be_made_fails_the_run() {
+            let root = staging_root();
+            std::fs::create_dir_all(&root).unwrap();
+            std::fs::write(format!("{root}/blocker"), "x").unwrap();
+            let b = Backend {
+                kube: crate::k8s::testing::unreachable(),
+                host: FakeHost::new(),
+            };
+            let err = snapshot_cluster(
+                &b,
+                &cfg(),
+                &HashMap::new(),
+                &BackupTarget::Cluster,
+                "blocker/bk-1",
+            )
+            .await
+            .err()
+            .unwrap();
+            assert!(err.downcast_ref::<std::io::Error>().is_some(), "{err}");
+        }
+
+        async fn a_cluster_of(namespaces: Vec<Value>) -> (MockServer, Client) {
+            let (server, kube) = api_server().await;
+            serve(
+                &server,
+                "/api/v1/persistentvolumes",
+                list("PersistentVolume", vec![]),
+            )
+            .await;
+            serve(&server, "/api/v1/namespaces", list("Namespace", namespaces)).await;
+            serve(
+                &server,
+                "/api/v1/persistentvolumeclaims",
+                list("PersistentVolumeClaim", vec![]),
+            )
+            .await;
+            (server, kube)
+        }
+
+        #[tokio::test]
+        async fn a_cluster_backup_goes_past_every_part_it_cannot_save_until_restic_cannot_start() {
+            let (server, kube) =
+                a_cluster_of(vec![json!({ "metadata": { "name": "yolab-gone" } })]).await;
+            Mock::given(method("GET"))
+                .and(path("/api/v1/namespaces/yolab-gone"))
+                .respond_with(ResponseTemplate::new(404).set_body_json(status(404, "NotFound")))
+                .mount(&server)
+                .await;
+            let tmp = tempfile::tempdir().unwrap();
+            std::fs::create_dir(tmp.path().join("cluster-resources.yaml")).unwrap();
+            let b = Backend {
+                kube,
+                host: FakeHost::new()
+                    .unstartable("k3s etcd-snapshot save")
+                    .unstartable("restic init"),
+            };
+
+            let err = snapshot_cluster_inner(
+                &b,
+                &cfg(),
+                &tmp.path().to_string_lossy(),
+                &HashMap::new(),
+                &BackupTarget::Cluster,
+                "bk-1",
+            )
+            .await
+            .err()
+            .unwrap();
+
+            assert!(!err.to_string().starts_with("restic init failed"), "{err}");
+            assert!(b.host.ran("k3s etcd-snapshot save"));
+            assert!(b.host.ran("restic init"));
+            let catalog: Value = serde_json::from_str(
+                &std::fs::read_to_string(tmp.path().join("catalog.json")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(catalog["namespaces"], json!(["yolab-gone"]));
+            assert_eq!(catalog["services"], json!([]));
+            let manifest: Value = serde_json::from_str(
+                &std::fs::read_to_string(tmp.path().join("manifest.json")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(manifest["cluster"]["nodes"], 0);
+        }
+
+        #[tokio::test]
+        async fn a_catalog_or_manifest_that_cannot_be_written_fails_the_backup() {
+            for blocked in ["catalog.json", "manifest.json"] {
+                let (_server, kube) = a_cluster_of(vec![]).await;
+                let tmp = tempfile::tempdir().unwrap();
+                std::fs::create_dir(tmp.path().join(blocked)).unwrap();
+                let b = Backend {
+                    kube,
+                    host: FakeHost::new(),
+                };
+                let err = snapshot_cluster_inner(
+                    &b,
+                    &cfg(),
+                    &tmp.path().to_string_lossy(),
+                    &HashMap::new(),
+                    &BackupTarget::Cluster,
+                    "bk-1",
+                )
+                .await
+                .err()
+                .unwrap();
+                assert!(
+                    err.downcast_ref::<std::io::Error>().is_some(),
+                    "{blocked}: {err}"
+                );
+            }
+        }
+
+        fn notes_namespace() -> Value {
+            json!({
+                "apiVersion": "v1", "kind": "Namespace",
+                "metadata": { "name": "yolab-notes" }
+            })
+        }
+
+        async fn an_app_backup_that_fails(
+            namespace: ResponseTemplate,
+            kinds: bool,
+            blocked: Option<&str>,
+        ) -> anyhow::Error {
+            let (server, kube) =
+                a_cluster_of(vec![json!({ "metadata": { "name": "yolab-notes" } })]).await;
+            Mock::given(method("GET"))
+                .and(path("/api/v1/namespaces/yolab-notes"))
+                .respond_with(namespace)
+                .mount(&server)
+                .await;
+            for (p, kind) in [
+                (
+                    "/apis/apps/v1/namespaces/yolab-notes/deployments",
+                    "Deployment",
+                ),
+                (
+                    "/apis/apps/v1/namespaces/yolab-notes/daemonsets",
+                    "DaemonSet",
+                ),
+                ("/api/v1/namespaces/yolab-notes/services", "Service"),
+                ("/api/v1/namespaces/yolab-notes/secrets", "Secret"),
+                ("/api/v1/namespaces/yolab-notes/configmaps", "ConfigMap"),
+            ]
+            .into_iter()
+            .filter(|_| kinds)
+            {
+                serve(&server, p, list(kind, vec![])).await;
+            }
+            let tmp = tempfile::tempdir().unwrap();
+            if let Some(name) = blocked {
+                std::fs::create_dir(tmp.path().join(name)).unwrap();
+            }
+            let b = Backend {
+                kube,
+                host: FakeHost::new(),
+            };
+            snapshot_cluster_inner(
+                &b,
+                &cfg(),
+                &tmp.path().to_string_lossy(),
+                &HashMap::new(),
+                &BackupTarget::App("yolab-notes".into()),
+                "bk-1",
+            )
+            .await
+            .err()
+            .unwrap()
+        }
+
+        #[tokio::test]
+        async fn an_app_whose_namespace_objects_or_export_fail_is_not_backed_up() {
+            let down = ResponseTemplate::new(503).set_body_json(status(503, "ServiceUnavailable"));
+            an_app_backup_that_fails(down, false, None).await;
+            let found = || ResponseTemplate::new(200).set_body_json(notes_namespace());
+            an_app_backup_that_fails(found(), false, None).await;
+            let err = an_app_backup_that_fails(found(), true, Some("yolab-notes.yaml")).await;
+            assert!(err.downcast_ref::<std::io::Error>().is_some(), "{err}");
+        }
+
+        #[tokio::test]
+        async fn a_node_that_reports_no_cpu_or_no_memory_adds_none_of_it() {
+            let (server, kube) = api_server().await;
+            serve(
+                &server,
+                "/api/v1/nodes",
+                list(
+                    "Node",
+                    vec![
+                        json!({ "metadata": { "name": "n1" },
+                                "status": { "allocatable": { "memory": "1Gi" } } }),
+                        json!({ "metadata": { "name": "n2" },
+                                "status": { "allocatable": { "cpu": "2" } } }),
+                    ],
+                ),
+            )
+            .await;
+            assert_eq!(
+                rebuild_manifest(&kube, &[]).await["cluster"],
+                json!({
+                    "nodes": 2,
+                    "allocatable_cpu_millicores": 2000,
+                    "allocatable_memory_bytes": 1_073_741_824u64
+                })
+            );
+        }
+
+        #[tokio::test]
+        async fn restic_that_cannot_start_or_answers_no_list_fails_the_run() {
+            failed_with(restic().unstartable("restic backup")).await;
+            let unstartable =
+                failed_with(restic().unstartable("restic snapshots --no-lock --json --tag")).await;
+            assert_eq!(
+                unstartable,
+                "backup completed but no snapshot id could be read"
+            );
+            let not_a_list = failed_with(restic_but(&[(
+                "restic snapshots --no-lock --json --tag",
+                Ok("{}"),
+            )]))
+            .await;
+            assert_eq!(
+                not_a_list,
+                "backup completed but no snapshot id could be read"
+            );
+        }
+
+        fn settings(enabled: bool, schedule: &str, budget: u64) -> Value {
+            let def = json!({
+                "schema": 1, "app_id": "notes", "instance_name": "notes", "config": {},
+                "backup": { "enabled": enabled, "schedule": schedule, "budget_bytes": budget }
+            })
+            .to_string();
+            crate::k8s::testing::secret_with("app.json", &def)
+        }
+
+        #[tokio::test]
+        async fn a_service_over_its_budget_is_thinned_and_told_to_raise_it() {
+            use crate::backup::points::namespace_tag;
+            use crate::routers::folder_backup::FOLDERS_TAG;
+            let ns = "yolab-budget";
+            let (server, kube, kept) =
+                a_service_in(ns, vec![], vec![], 200, settings(true, "0 3 * * *", 50)).await;
+            crate::records::testing::no_records(&server, "yolab-backup-sizes").await;
+            let points = json!([
+                { "id": "p2", "time": "2026-11-20T03:00:00Z", "tags": [namespace_tag(ns), "run:r2"] },
+                { "id": "p1", "time": "2026-11-10T03:00:00Z", "tags": [namespace_tag(ns), "run:r1"] },
+                { "id": "old", "time": "2026-11-01T03:00:00Z", "tags": [namespace_tag(ns)] }
+            ])
+            .to_string();
+            let folders = json!([
+                { "id": "f2", "tags": [FOLDERS_TAG, "run:r2"] },
+                { "id": "f1", "tags": [FOLDERS_TAG, "run:r1"] },
+                { "id": "fx", "tags": [FOLDERS_TAG, "run:gone"] }
+            ])
+            .to_string();
+            let host = restic()
+                .ok(
+                    &format!(
+                        "restic snapshots --no-lock --json --tag {}",
+                        namespace_tag(ns)
+                    ),
+                    &points,
+                )
+                .ok(
+                    &format!("restic snapshots --no-lock --json --tag {FOLDERS_TAG}"),
+                    &folders,
+                )
+                .ok("restic stats", r#"{"total_size": 100}"#)
+                .ok("restic restore", "")
+                .ok("restic prune", "");
+            let b = Backend { kube, host };
+
+            start_app(&b, ns, MANUAL_TRIGGER).await.unwrap();
+            assert!(drive_next(&b, &cfg()).await.unwrap());
+
+            let set = only_set(&kept);
+            assert_eq!(set["state"], SUCCEEDED, "{set}");
+            let warning = set["warning"].as_str().unwrap();
+            assert!(warning.starts_with("budget's backups take "), "{warning}");
+            assert!(b.host.ran("restic forget p1"));
+        }
+
+        async fn scheduled_with(settings: Value, host: FakeHost) -> (Tick, Value) {
+            let (_server, kube, kept) =
+                a_service_whose_settings_answer(vec![], 200, settings).await;
+            let b = Backend { kube, host };
+            let tick = schedule(&b).await.unwrap();
+            (tick, kept.data("sets"))
+        }
+
+        fn queued_by_the_schedule(sets: &Value) -> Vec<&str> {
+            sets.as_array()
+                .unwrap()
+                .iter()
+                .filter(|s| s["triggered_by"] == "schedule")
+                .map(|s| s["namespace"].as_str().unwrap())
+                .collect()
+        }
+
+        #[tokio::test]
+        async fn a_service_with_backups_off_or_an_unreadable_schedule_is_not_queued() {
+            for def in [
+                settings(false, "* * * * *", 50),
+                settings(true, "not a schedule", 50),
+            ] {
+                let (tick, sets) = scheduled_with(def, restic()).await;
+                assert!(matches!(tick, Tick::Done));
+                assert!(queued_by_the_schedule(&sets).is_empty(), "{sets}");
+                assert_eq!(sets[0]["triggered_by"], "schedule-dr");
+            }
+        }
+
+        #[tokio::test]
+        async fn a_service_that_is_due_is_queued_by_the_schedule() {
+            let (tick, sets) = scheduled_with(settings(true, "* * * * *", 50), restic()).await;
+            assert!(matches!(tick, Tick::Done));
+            assert_eq!(queued_by_the_schedule(&sets), vec!["yolab-notes"]);
+        }
+
+        #[tokio::test]
+        async fn a_schedule_that_cannot_queue_anything_stays_idle() {
+            let (tick, sets) =
+                scheduled_with(settings(true, "* * * * *", 50), lost_app_data()).await;
+            assert!(matches!(tick, Tick::Idle(_)));
+            assert_eq!(sets, Value::Null);
+        }
+
+        #[tokio::test]
+        async fn a_service_backed_up_since_its_last_due_time_is_not_queued_again() {
+            let (_server, kube, kept) =
+                a_service_whose_settings_answer(vec![], 200, settings(true, "0 0 1 1 *", 50)).await;
+            let b = Backend {
+                kube,
+                host: restic(),
+            };
+            start_app(&b, "yolab-notes", MANUAL_TRIGGER).await.unwrap();
+            assert!(drive_next(&b, &cfg()).await.unwrap());
+            assert!(matches!(schedule(&b).await.unwrap(), Tick::Done));
+            let sets = kept.data("sets");
+            assert!(queued_by_the_schedule(&sets).is_empty(), "{sets}");
+            assert_eq!(sets.as_array().map(Vec::len), Some(2), "{sets}");
+        }
+
+        #[tokio::test]
+        async fn backups_already_waiting_are_not_queued_twice_by_the_schedule() {
+            let (_server, kube, kept) = a_service(vec![]).await;
+            let b = Backend {
+                kube,
+                host: restic(),
+            };
+            start_app(&b, "yolab-notes", MANUAL_TRIGGER).await.unwrap();
+            start(&b, MANUAL_TRIGGER).await.unwrap();
+            assert!(matches!(schedule(&b).await.unwrap(), Tick::Done));
+            let sets = kept.data("sets");
+            assert_eq!(sets.as_array().map(Vec::len), Some(2), "{sets}");
+            assert!(sets
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|s| s["triggered_by"] == MANUAL_TRIGGER));
+        }
+
+        #[tokio::test]
+        async fn a_schedule_whose_queue_or_namespaces_cannot_be_read_fails() {
+            let (server, kube) = api_server().await;
+            config(&server, 200, enabled()).await;
+            refuse(&server, &crate::records::testing::path_of("yolab-backups")).await;
+            let b = Backend {
+                kube,
+                host: FakeHost::new(),
+            };
+            assert!(schedule(&b).await.is_err());
+
+            let (server, kube) = api_server().await;
+            config(&server, 200, enabled()).await;
+            crate::records::testing::no_records(&server, "yolab-backups").await;
+            refuse(&server, "/api/v1/namespaces").await;
+            let b = Backend {
+                kube,
+                host: FakeHost::new(),
+            };
+            assert!(schedule(&b).await.is_err());
+        }
+
+        #[tokio::test]
+        async fn a_queue_that_stops_answering_mid_schedule_fails_the_tick() {
+            use crate::records::testing::{path_of, stored};
+            let (server, kube) = api_server().await;
+            config(&server, 200, enabled()).await;
+            serve(&server, "/api/v1/namespaces", list("Namespace", vec![])).await;
+            Mock::given(method("GET"))
+                .and(path(path_of("yolab-backups")))
+                .respond_with(ResponseTemplate::new(200).set_body_json(stored(
+                    "yolab-backups",
+                    &json!([]),
+                    "1",
+                )))
+                .up_to_n_times(1)
+                .mount(&server)
+                .await;
+            refuse(&server, &path_of("yolab-backups")).await;
+            let b = Backend {
+                kube,
+                host: FakeHost::new(),
+            };
+            assert!(schedule(&b).await.is_err());
+            assert!(!wrote_records(&server).await);
+        }
+
+        #[tokio::test]
+        async fn a_saved_etcd_snapshot_that_cannot_be_found_adds_nothing_to_the_backup() {
+            let dir = etcd_snapshot_dir();
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(format!("{dir}/someone-else-1"), "x").unwrap();
+            let staging = tempfile::tempdir().unwrap();
+            let b = Backend {
+                kube: crate::k8s::testing::unreachable(),
+                host: FakeHost::new().ok("k3s etcd-snapshot save", ""),
+            };
+            save_etcd_snapshot(&b, &staging.path().to_string_lossy(), "yolab-bk-unseen").await;
+            assert!(!staging.path().join("etcd.db").exists());
+            assert!(std::path::Path::new(&format!("{dir}/someone-else-1")).exists());
+        }
+
+        #[tokio::test]
+        async fn a_service_shows_its_newest_finished_backup_and_whether_one_is_running() {
+            let (server, kube) = api_server().await;
+            crate::records::testing::records(
+                &server,
+                "yolab-backups",
+                json!([
+                    { "id": "r", "namespace": "yolab-a", "started_at": "t", "state": RUNNING,
+                      "owner": "node2", "heartbeat": "h" },
+                    { "id": "s2", "namespace": "yolab-a", "started_at": "t", "state": SUCCEEDED,
+                      "finished_at": "2026-11-02T00:00:00Z", "owner": "", "heartbeat": "" },
+                    { "id": "s1", "namespace": "yolab-a", "started_at": "t", "state": SUCCEEDED,
+                      "finished_at": "2026-11-01T00:00:00Z", "owner": "", "heartbeat": "" }
+                ]),
+            )
+            .await;
+            let status = app_backup_status(&kube).await;
+            assert_eq!(
+                status["yolab-a"],
+                (Some("2026-11-02T00:00:00Z".to_string()), true)
+            );
+        }
+
+        #[tokio::test]
+        async fn the_scheduler_fails_when_there_is_no_cluster_to_reach() {
+            let ctx = Ctx {
+                node: "node1".into(),
+                tools: crate::tools::Tools {
+                    host: Default::default(),
+                    kube: crate::k8s::Kube::from_environment(),
+                    http: crate::http::client(),
+                },
+            };
+            assert!(BackupSchedulerController.converge(&ctx).await.is_err());
+        }
     }
 }

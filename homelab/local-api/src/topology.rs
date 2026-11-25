@@ -139,15 +139,14 @@ async fn write_policy_to_cluster<H: crate::host::Host>(
 
 fn record_policy_choice(p: &StoragePolicy) {
     let mut store = crate::store::locked();
-    if let Err(e) = store.set_storage_policy(p) {
+    if let Err(e) = store
+        .set_storage_policy(p)
+        .and_then(|()| store.persist(&crate::store::default_path()))
+    {
         tracing::warn!(
-            "the storage policy was saved to the cluster but not recorded as a choice ({e}) — the \
-             next read will take it from the cluster settings"
+            "the storage policy was saved to the cluster but not recorded as a choice on disk \
+             ({e}) — the next read will take it from the cluster settings"
         );
-        return;
-    }
-    if let Err(e) = store.persist(&crate::store::default_path()) {
-        tracing::warn!("the chosen storage policy could not be saved to disk ({e})");
     }
 }
 
@@ -540,10 +539,10 @@ mod tests {
             "ceph config-key get yolab/storage-policy",
             r#"{"size":2,"failure_domain":"host"}"#,
         );
-        match merge_policy(read_mirror_policy(&chosen).await, None, false) {
-            Some(PolicyState::Chosen(p)) => assert_eq!(p, policy(2, "host")),
-            _ => panic!("expected a chosen policy"),
-        }
+        assert!(matches!(
+            merge_policy(read_mirror_policy(&chosen).await, None, false),
+            Some(PolicyState::Chosen(p)) if p == policy(2, "host")
+        ));
 
         let fresh = FakeHost::new().fail(
             "ceph config-key get yolab/storage-policy",
@@ -583,10 +582,13 @@ mod tests {
 
     #[test]
     fn a_policy_in_the_store_is_used_even_when_the_cluster_cannot_be_read() {
-        match merge_policy(None, Some(policy(3, "host")), true) {
-            Some(PolicyState::Chosen(p)) => assert_eq!(p, policy(3, "host")),
-            _ => panic!("a stored choice is still a choice when ceph is down"),
-        }
+        assert!(
+            matches!(
+                merge_policy(None, Some(policy(3, "host")), true),
+                Some(PolicyState::Chosen(p)) if p == policy(3, "host")
+            ),
+            "a stored choice is still a choice when ceph is down"
+        );
     }
 
     #[test]
@@ -607,10 +609,10 @@ mod tests {
 
     #[test]
     fn the_store_wins_over_a_stale_cluster_copy() {
-        match merge_policy(Some(Some(policy(2, "osd"))), Some(policy(3, "host")), true) {
-            Some(PolicyState::Chosen(p)) => assert_eq!(p, policy(3, "host")),
-            _ => panic!("expected the stored policy"),
-        }
+        assert!(matches!(
+            merge_policy(Some(Some(policy(2, "osd"))), Some(policy(3, "host")), true),
+            Some(PolicyState::Chosen(p)) if p == policy(3, "host")
+        ));
     }
 
     #[test]
@@ -1004,5 +1006,93 @@ mod tests {
                 .await;
             assert!(!res.status.is_success());
         }
+
+        #[tokio::test]
+        async fn the_shape_is_unknown_when_any_ceph_reading_fails_or_has_the_wrong_form() {
+            let (_server, kube) = two_nodes().await;
+            let one_up = r#"{"num_up_osds": 1}"#;
+            for host in [
+                FakeHost::new().fail("ceph osd stat", "timed out"),
+                FakeHost::new().ok("ceph osd stat", r#"{"num_up_osds": "many"}"#),
+                FakeHost::new()
+                    .ok("ceph osd stat", one_up)
+                    .fail("ceph osd tree", "timed out"),
+                FakeHost::new()
+                    .ok("ceph osd stat", one_up)
+                    .ok("ceph osd tree", r#"{"nodes": {}}"#),
+            ] {
+                assert_eq!(
+                    observe(&Backend {
+                        kube: kube.clone(),
+                        host
+                    })
+                    .await,
+                    None
+                );
+            }
+        }
+
+        #[tokio::test]
+        async fn the_controller_fails_without_a_kubernetes_client() {
+            use crate::runtime::Resource as _;
+            let ctx = crate::runtime::Ctx {
+                node: "node1".into(),
+                tools: crate::tools::Tools {
+                    host: FakeHost::new(),
+                    kube: crate::k8s::Kube::from_environment(),
+                    http: crate::http::client(),
+                },
+            };
+            assert!(TopologyController.converge(&ctx).await.is_err());
+        }
+
+        #[tokio::test]
+        async fn a_tick_changes_nothing_while_neither_the_cluster_nor_the_store_knows_the_policy() {
+            let (_server, kube) = two_nodes().await;
+            let b = Backend {
+                kube,
+                host: ceph_with(2, 2)
+                    .fail("ceph config-key get", "error connecting to the cluster"),
+            };
+            tick(&b).await;
+            assert!(!b.host.ran("ceph osd pool"));
+        }
+
+        #[tokio::test]
+        async fn a_pool_that_refuses_its_new_size_still_gets_its_floor() {
+            let host = FakeHost::new()
+                .ok("ceph osd pool ls", "images\n")
+                .ok("ceph osd pool get images size", r#"{"size": 1}"#)
+                .ok("ceph osd pool set", "")
+                .fail("ceph osd pool set images size", "refused");
+            apply_pools(&host, &target(2, "host")).await;
+            assert!(host.ran("ceph osd pool set images size 2"));
+            assert!(host.ran("ceph osd pool set images min_size 1"));
+        }
+    }
+
+    #[test]
+    fn an_unreadable_stored_policy_is_read_as_none_and_the_cluster_copy_cannot_replace_it() {
+        use automerge::transaction::Transactable as _;
+        let mut doc = automerge::AutoCommit::new();
+        doc.put(automerge::ROOT, "policy:storage", "not json")
+            .unwrap();
+        let mut store = Store::load("node1", &doc.save()).unwrap();
+        let synced = sync_policy(&mut store, Some(Some(&policy(2, "host"))));
+        assert_eq!(synced.stored, None);
+        assert!(synced.seeded);
+    }
+
+    #[test]
+    fn a_choice_that_cannot_be_saved_to_disk_is_still_held_in_memory() {
+        let path = crate::store::default_path();
+        crate::config::remove_if_present(&path).unwrap();
+        std::fs::create_dir_all(path.join("blocker")).unwrap();
+        record_policy_choice(&policy(2, "osd"));
+        assert_eq!(
+            crate::store::locked().storage_policy().unwrap(),
+            Some(policy(2, "osd"))
+        );
+        assert!(path.is_dir());
     }
 }

@@ -272,10 +272,7 @@ async fn a_restore_with_a_broken_volume_list_or_no_view_of_the_volumes_is_an_err
 async fn a_restore_whose_folder_backups_cannot_be_listed_is_an_error() {
     let (_server, kube) = quiet_service(200).await;
     let host = dated(vec![folder_catalog()]).fail(FOLDERS, "Fatal: wrong password");
-    assert_eq!(
-        why(restored_in_place(kube, host).await),
-        "Fatal: wrong password"
-    );
+    assert!(why(restored_in_place(kube, host).await).contains("wrong password"));
 }
 
 #[tokio::test]
@@ -328,37 +325,35 @@ async fn a_backup_payload_that_cannot_read_its_backup_is_an_error() {
     )
     .await;
     let payload = |b: Backend<FakeHost>| async move {
-        backup_payload(&b, "yolab-notes", "abc123", Default::default())
-            .await
-            .map(|p| p.app_id)
+        why(backup_payload(&b, "yolab-notes", "abc123", Default::default()).await)
     };
-    assert!(why(payload(b).await).contains("no such snapshot"));
+    assert!(payload(b).await.contains("no such snapshot"));
 
     let host = dated(vec![notes_catalog()]).fail("restic restore", "Fatal: no such file");
     let (_server, b) = backed_up(host).await;
-    assert!(why(payload(b).await).contains("no such file"));
+    assert!(payload(b).await.contains("no such file"));
 
     let host =
         dated(vec![notes_catalog()]).effect("restic restore", unreadable("yolab-notes.yaml"));
     let (_server, b) = backed_up(host).await;
-    assert!(payload(b).await.is_err());
+    assert!(!payload(b).await.is_empty());
 
     let (_server, b) = backed_up(dated(vec![notes_catalog(), garbled_yaml()])).await;
-    assert!(payload(b).await.is_err());
+    assert!(!payload(b).await.is_empty());
 
     let host = FakeHost::new()
         .ok("restic unlock", "")
         .restic_restores(vec![notes_catalog(), notes_yaml()])
         .fail("restic snapshots", "Fatal: wrong password");
     let (_server, b) = backed_up(host).await;
-    assert!(why(payload(b).await).contains("wrong password"));
+    assert!(payload(b).await.contains("wrong password"));
 
     let (_server, b) = backed_up(dated(vec![nameless_volume_catalog(), notes_yaml()])).await;
-    assert!(why(payload(b).await).contains("yolab-notes"));
+    assert!(payload(b).await.contains("yolab-notes"));
 
     let host = dated(vec![folder_catalog(), notes_yaml()]).fail(FOLDERS, "Fatal: wrong password");
     let (_server, b) = backed_up(host).await;
-    assert_eq!(why(payload(b).await), "Fatal: wrong password");
+    assert!(payload(b).await.contains("wrong password"));
 }
 
 #[tokio::test]
@@ -540,8 +535,8 @@ async fn an_install_that_cannot_record_its_fill_or_reapply_its_settings_is_an_er
 
 #[tokio::test]
 async fn an_install_whose_new_volume_cannot_be_created_fails_and_records_it() {
-    let (_server, kube) = api_server().await;
-    let kept = crate::records::testing::kept(&_server, "yolab-restores").await;
+    let (server, kube) = api_server().await;
+    let kept = crate::records::testing::kept(&server, "yolab-restores").await;
     let b = Backend {
         kube,
         host: FakeHost::new(),

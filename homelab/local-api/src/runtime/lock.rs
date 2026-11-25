@@ -54,10 +54,6 @@ fn guard(
     }))
 }
 
-pub async fn acquire(name: &str, timeout: Duration) -> std::io::Result<Option<LockGuard>> {
-    acquire_in(&crate::storage::on_machine(LOCK_DIR), name, timeout).await
-}
-
 pub async fn acquire_in(
     dir: &Path,
     name: &str,
@@ -109,15 +105,6 @@ mod tests {
             guard(file, "refused", Err(refused)).unwrap_err().kind(),
             std::io::ErrorKind::Unsupported
         );
-    }
-
-    #[tokio::test]
-    async fn a_machine_lock_lives_in_the_machine_lock_folder() {
-        let got = acquire("machine", Duration::ZERO).await.unwrap();
-        assert!(got.is_some());
-        assert!(crate::storage::on_machine(LOCK_DIR)
-            .join("machine.lock")
-            .exists());
     }
 
     #[tokio::test]

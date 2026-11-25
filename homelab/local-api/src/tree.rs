@@ -1537,4 +1537,217 @@ mod tests {
             .to_string();
         assert!(e.contains("not a folder in the file tree"), "{e}");
     }
+
+    #[tokio::test]
+    async fn a_chart_that_cannot_be_rendered_at_all_or_renders_nonsense_stops_the_install() {
+        use crate::host::fake::FakeHost;
+        let host = FakeHost::new().unstartable("helm template");
+        let e = render(&host, "jellyfin", "/c", "yolab-jellyfin", "/v.yaml")
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            e.contains("could not read which folders jellyfin uses"),
+            "{e}"
+        );
+        let host = FakeHost::new().ok("helm template", "a: [");
+        let e = render(&host, "jellyfin", "/c", "yolab-jellyfin", "/v.yaml")
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("neither JSON nor YAML"), "{e}");
+    }
+
+    #[test]
+    fn a_volume_whose_root_path_is_not_text_is_not_a_folder_of_the_tree() {
+        let mut v = volume("/tree/jellyfin");
+        v["spec"]["csi"]["volumeAttributes"]["rootPath"] = json!(7);
+        assert_eq!(folder_of(&v), None);
+    }
+
+    #[test]
+    fn a_volume_bound_to_no_claim_is_not_claimed() {
+        let mut no_namespace = volume("/tree/jellyfin");
+        no_namespace["spec"]["claimRef"]
+            .as_object_mut()
+            .unwrap()
+            .remove("namespace");
+        let mut no_name = volume("/tree/jellyfin");
+        no_name["spec"]["claimRef"]
+            .as_object_mut()
+            .unwrap()
+            .remove("name");
+        assert!(claimed(&[no_namespace, no_name]).is_empty());
+    }
+
+    #[test]
+    fn folders_a_chart_renders_for_other_namespaces_or_outside_the_tree_are_not_planned() {
+        let docs = vec![
+            volume_in("yolab-radarr", "radarr-data", "/tree/radarr"),
+            volume("/volumes/csi/csi-vol-1"),
+        ];
+        assert!(planned(&docs, "yolab-jellyfin").unwrap().is_empty());
+    }
+
+    #[test]
+    fn deleting_the_whole_tree_is_described_as_deleting_slash() {
+        assert_eq!(
+            remove(&["", "notes"], &[]).describe(),
+            "delete the folders /, notes"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unreachable_cluster_is_an_error_not_a_service_already_in_the_tree() {
+        let docs = vec![
+            volume_in("yolab-jellyfin", "jellyfin-data", "/tree/jellyfin"),
+            request_in("yolab-jellyfin", "jellyfin-data"),
+        ];
+        let folders = planned(&docs, "yolab-jellyfin").unwrap();
+        assert!(refuse_older_volumes(
+            &crate::k8s::testing::unreachable(),
+            "yolab-jellyfin",
+            &folders
+        )
+        .await
+        .is_err());
+    }
+
+    fn make_jellyfin() -> Op {
+        Op::Make(vec!["jellyfin".into()])
+    }
+
+    #[tokio::test]
+    async fn a_root_volume_that_cannot_be_written_starts_no_job() {
+        let (server, kube) = api_server().await;
+        assert!(run(&kube, &make_jellyfin()).await.is_err());
+        assert!(!crate::k8s::testing::asked(&server, "/persistentvolumeclaims/").await);
+        assert!(crate::k8s::testing::asked(&server, "/persistentvolumes/").await);
+    }
+
+    #[tokio::test]
+    async fn a_root_claim_that_cannot_be_written_starts_no_job() {
+        let (server, kube) = api_server().await;
+        Mock::given(method("PATCH"))
+            .and(wiremock::matchers::path_regex(
+                "^/api/v1/persistentvolumes/[^/]+$",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(job_at(json!({}))))
+            .mount(&server)
+            .await;
+        assert!(run(&kube, &make_jellyfin()).await.is_err());
+        assert!(!crate::k8s::testing::asked(&server, "/jobs").await);
+        assert!(crate::k8s::testing::asked(&server, "/persistentvolumeclaims/").await);
+    }
+
+    #[tokio::test]
+    async fn a_job_that_cannot_be_created_is_an_error() {
+        let (server, kube) = api_server().await;
+        crate::k8s::testing::accept_patches(&server).await;
+        assert!(run(&kube, &make_jellyfin()).await.is_err());
+        assert!(crate::k8s::testing::asked(&server, "/jobs").await);
+    }
+
+    #[tokio::test]
+    async fn a_job_is_waited_on_through_errors_and_running_until_it_vanishes() {
+        let (server, kube) = api_server().await;
+        accepting_jobs(&server).await;
+        for (code, body) in [
+            (500, crate::k8s::testing::status(500, "InternalError")),
+            (200, job_at(json!({}))),
+        ] {
+            Mock::given(method("GET"))
+                .and(wiremock::matchers::path_regex(JOB_PATH))
+                .respond_with(ResponseTemplate::new(code).set_body_json(body))
+                .up_to_n_times(1)
+                .mount(&server)
+                .await;
+        }
+        Mock::given(method("GET"))
+            .and(wiremock::matchers::path_regex(JOB_PATH))
+            .respond_with(
+                ResponseTemplate::new(404)
+                    .set_body_json(crate::k8s::testing::status(404, "NotFound")),
+            )
+            .mount(&server)
+            .await;
+        let e = run(&kube, &make_jellyfin()).await.unwrap_err().to_string();
+        assert!(e.contains("could not make the folders jellyfin"), "{e}");
+        assert!(e.contains("vanished"), "{e}");
+    }
+
+    const JOB_PATH: &str = "^/apis/batch/v1/namespaces/ceph-csi/jobs/yolab-tree-[0-9a-f]+$";
+
+    async fn accepting_jobs(server: &wiremock::MockServer) {
+        crate::k8s::testing::accept_patches(server).await;
+        Mock::given(method("POST"))
+            .and(path("/apis/batch/v1/namespaces/ceph-csi/jobs"))
+            .respond_with(ResponseTemplate::new(201).set_body_json(job_at(json!({}))))
+            .mount(server)
+            .await;
+    }
+
+    fn backoff() -> Value {
+        json!({ "conditions": [
+            { "type": "Failed", "status": "True", "reason": "BackoffLimitExceeded" }
+        ] })
+    }
+
+    #[tokio::test]
+    async fn a_failed_job_whose_pods_cannot_be_listed_says_so_with_the_reason() {
+        let (server, kube) = api_server().await;
+        accepting(&server, backoff()).await;
+        let e = run(&kube, &make_jellyfin()).await.unwrap_err().to_string();
+        assert!(e.contains("BackoffLimitExceeded"), "{e}");
+        assert!(e.contains("its log could not be read"), "{e}");
+    }
+
+    #[tokio::test]
+    async fn a_failed_job_whose_log_cannot_be_read_says_so_with_the_reason() {
+        let (server, kube) = api_server().await;
+        accepting(&server, backoff()).await;
+        serve(
+            &server,
+            "/api/v1/namespaces/ceph-csi/pods",
+            200,
+            list(
+                "Pod",
+                vec![json!({ "metadata": { "name": "yolab-tree-x-abcde" } })],
+            ),
+        )
+        .await;
+        let e = run(&kube, &make_jellyfin()).await.unwrap_err().to_string();
+        assert!(e.contains("its log could not be read"), "{e}");
+    }
+
+    #[tokio::test]
+    async fn a_failed_job_with_nameless_pods_and_blank_logs_says_why_kubernetes_stopped_it() {
+        let (server, kube) = api_server().await;
+        accepting(&server, backoff()).await;
+        serve(
+            &server,
+            "/api/v1/namespaces/ceph-csi/pods",
+            200,
+            list(
+                "Pod",
+                vec![
+                    json!({ "metadata": {} }),
+                    json!({ "metadata": { "name": "yolab-tree-x-abcde" } }),
+                ],
+            ),
+        )
+        .await;
+        serve_logs(
+            &server,
+            "/api/v1/namespaces/ceph-csi/pods/yolab-tree-x-abcde",
+            CONTAINER,
+            "\n   \n",
+        )
+        .await;
+        let e = run(&kube, &make_jellyfin()).await.unwrap_err().to_string();
+        assert_eq!(
+            e,
+            "could not make the folders jellyfin: BackoffLimitExceeded"
+        );
+    }
 }

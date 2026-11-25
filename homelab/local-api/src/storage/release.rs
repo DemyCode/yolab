@@ -189,7 +189,7 @@ fn parse(line: &str) -> Option<Mount> {
     let mut after = line.split(" - ").nth(1)?.split(' ');
     Some(Mount {
         target,
-        fstype: after.next()?.to_string(),
+        fstype: after.next().unwrap_or_default().to_string(),
         source: after.next()?.to_string(),
     })
 }
@@ -401,5 +401,158 @@ mod tests {
             .unwrap_err();
         assert!(err.to_string().contains("/mnt/vol"));
         assert!(host.ran("sync"));
+    }
+
+    fn on_proc(root: &Path, pid: &str, comm: &str) {
+        let dir = root.join("proc").join(pid);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("comm"), comm).unwrap();
+    }
+
+    fn k3s_down() -> FakeHost {
+        FakeHost::new().fail("systemctl is-active --quiet k3s.service", "inactive")
+    }
+
+    #[test]
+    fn a_mountinfo_line_missing_its_fields_is_not_a_mount() {
+        assert!(parse("22 1 254:0 /").is_none());
+        assert!(parse("22 1 254:0 / /mnt rw ceph").is_none());
+        assert!(parse("22 1 254:0 / /mnt rw - ceph").is_none());
+    }
+
+    #[test]
+    fn overlays_resting_on_the_image_store_come_off_deepest_path_first() {
+        let mountinfo = "\
+30 22 251:0 / /var/lib/containerd rw - xfs /dev/rbd0 rw
+31 22 0:50 / /run/a/rootfs rw - overlay overlay rw,lowerdir=/var/lib/containerd/s/1/fs
+32 22 0:51 / /run/b/rootfs rw - overlay overlay rw,lowerdir=/var/lib/containerd/s/2/fs
+";
+        let root = machine(mountinfo, "populated 0\n");
+        assert_eq!(
+            ceph_backed_mounts(root.path()),
+            vec![
+                PathBuf::from("/run/b/rootfs"),
+                PathBuf::from("/run/a/rootfs"),
+                PathBuf::from("/var/lib/containerd"),
+            ]
+        );
+    }
+
+    #[test]
+    fn only_a_numbered_process_with_that_name_counts() {
+        let root = machine("", "populated 0\n");
+        on_proc(root.path(), "self", "containerd\n");
+        on_proc(root.path(), "12", "k3s\n");
+        assert!(!process_named(root.path(), CONTAINERD));
+        on_proc(root.path(), "77", "containerd\n");
+        assert!(process_named(root.path(), CONTAINERD));
+    }
+
+    #[tokio::test]
+    async fn a_containerd_that_outlives_sigterm_is_killed() {
+        let root = machine(MOUNTINFO, "populated 0\n");
+        on_proc(root.path(), "77", "containerd\n");
+        let host = stopped_k3s();
+        run(&host, root.path(), "k3s.service", NO_WAIT)
+            .await
+            .unwrap();
+        assert!(host.ran("pkill -KILL -x containerd"));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn k3s_is_polled_until_it_has_stopped() {
+        let root = machine("", "populated 0\n");
+        let host = FakeHost::new()
+            .ok("systemctl is-active --quiet k3s.service", "")
+            .fail("systemctl is-active --quiet k3s.service", "inactive")
+            .ok("pkill", "")
+            .ok("sync", "");
+        let waits = Waits {
+            k3s: Duration::from_secs(10),
+            pods: Duration::ZERO,
+            poll: Duration::from_secs(1),
+        };
+        run(&host, root.path(), "k3s.service", waits).await.unwrap();
+        let polls = host
+            .calls()
+            .iter()
+            .filter(|c| c.contains("is-active"))
+            .count();
+        assert_eq!(polls, 2);
+    }
+
+    #[tokio::test]
+    async fn pods_that_stop_after_sigkill_are_unmounted_without_a_warning() {
+        let root = machine(MOUNTINFO, "populated 1\n");
+        let events = root
+            .path()
+            .join("sys/fs/cgroup")
+            .join(PODS_SLICE)
+            .join("cgroup.events");
+        let host = stopped_k3s().effect("systemctl kill --signal=SIGKILL", move |_, _| {
+            std::fs::write(&events, "populated 0\n").unwrap();
+        });
+        run(&host, root.path(), "k3s.service", NO_WAIT)
+            .await
+            .unwrap();
+        assert!(host.ran("--signal=SIGKILL"));
+        assert!(!pods_running(root.path()));
+    }
+
+    #[tokio::test]
+    async fn refused_signals_and_kills_are_only_warned_about() {
+        let root = machine("", "populated 1\n");
+        let host = k3s_down()
+            .fail("systemctl kill", "Access denied")
+            .fail("pkill", "Operation not permitted")
+            .ok("sync", "");
+        run(&host, root.path(), "k3s.service", NO_WAIT)
+            .await
+            .unwrap();
+        assert!(host.ran("systemctl kill --signal=SIGKILL kubepods.slice"));
+        assert!(host.ran("pkill -KILL -f containerd-shim-runc-v2"));
+    }
+
+    #[tokio::test]
+    async fn a_pkill_that_cannot_start_is_only_warned_about() {
+        let root = machine("", "populated 0\n");
+        let host = k3s_down().unstartable("pkill").ok("sync", "");
+        run(&host, root.path(), "k3s.service", NO_WAIT)
+            .await
+            .unwrap();
+        assert!(host.ran("sync"));
+    }
+
+    #[tokio::test]
+    async fn an_umount_that_cannot_start_leaves_the_mount_stuck() {
+        let mountinfo = "41 22 0:60 /v /mnt/vol rw - ceph m:/v rw\n";
+        let root = machine(mountinfo, "populated 0\n");
+        let host = k3s_down()
+            .ok("pkill", "")
+            .unstartable("umount")
+            .ok("sync", "");
+        let err = run(&host, root.path(), "k3s.service", NO_WAIT)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("/mnt/vol"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_sync_that_cannot_start_is_an_error() {
+        let root = machine("", "populated 0\n");
+        let host = k3s_down().ok("pkill", "").unstartable("sync");
+        assert!(run(&host, root.path(), "k3s.service", NO_WAIT)
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn a_failed_sync_is_an_error() {
+        let root = machine("", "populated 0\n");
+        let host = k3s_down().ok("pkill", "").fail("sync", "EIO");
+        let err = run(&host, root.path(), "k3s.service", NO_WAIT)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().starts_with("sync failed: "), "{err}");
     }
 }

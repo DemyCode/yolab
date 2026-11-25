@@ -91,11 +91,8 @@ fn volumes_to_erase(raw: &str) -> Result<BTreeSet<String>> {
     let start = raw
         .find('{')
         .context("ceph-volume lvm list printed no JSON")?;
-    let listing: Value =
+    let osds: serde_json::Map<String, Value> =
         serde_json::from_str(&raw[start..]).context("ceph-volume lvm list is not JSON")?;
-    let osds = listing
-        .as_object()
-        .context("ceph-volume lvm list is not an object")?;
     let mut out = BTreeSet::new();
     for volumes in osds.values() {
         for volume in volumes.as_array().into_iter().flatten() {
@@ -123,7 +120,7 @@ fn vg_and_lv(volume: &Value, lv_path: &str) -> Option<(String, String)> {
         return Some((vg.to_string(), lv.to_string()));
     }
     let mut parts = lv_path.strip_prefix("/dev/")?.split('/');
-    let (vg, lv) = (parts.next()?, parts.next()?);
+    let (vg, lv) = (parts.next().unwrap_or_default(), parts.next()?);
     (parts.next().is_none() && !vg.is_empty() && !lv.is_empty())
         .then(|| (vg.to_string(), lv.to_string()))
 }
@@ -311,5 +308,173 @@ mod tests {
             .fail("ceph-volume lvm zap", "device busy");
         assert!(run(&host, root.path(), &cfg).await.is_err());
         assert!(flag(&cfg), "the next boot tries again");
+    }
+
+    #[test]
+    fn the_flag_cannot_be_written_into_a_config_that_is_not_toml_or_has_no_node() {
+        assert!(with_wipe_condition("not toml {{", true).is_err());
+        let err = with_wipe_condition("[tunnel]\n", true).unwrap_err();
+        assert_eq!(err.to_string(), "config.toml has no [node]");
+    }
+
+    #[test]
+    fn a_listing_that_is_not_json_after_its_first_brace_is_an_error() {
+        let err = volumes_to_erase("--> {not json").unwrap_err();
+        assert_eq!(err.to_string(), "ceph-volume lvm list is not JSON");
+    }
+
+    #[test]
+    fn a_volume_whose_group_cannot_be_told_is_an_error() {
+        let raw = json!({"0": [{"lv_path": "/mnt/pool/ceph"}]}).to_string();
+        let err = volumes_to_erase(&raw).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "cannot tell the volume group of /mnt/pool/ceph"
+        );
+    }
+
+    #[test]
+    fn only_a_dev_group_slash_volume_path_names_a_group_and_volume() {
+        let none = json!({});
+        assert_eq!(
+            vg_and_lv(&none, "/dev/vg/lv"),
+            Some(("vg".to_string(), "lv".to_string()))
+        );
+        assert_eq!(vg_and_lv(&none, "/dev/vg"), None);
+        assert_eq!(vg_and_lv(&none, "/dev/vg/lv/extra"), None);
+        assert_eq!(vg_and_lv(&none, "/dev//lv"), None);
+        assert_eq!(vg_and_lv(&none, "/dev/vg/"), None);
+        assert_eq!(
+            vg_and_lv(&json!({"vg_name": "vg"}), "/dev/x/y"),
+            Some(("x".to_string(), "y".to_string()))
+        );
+    }
+
+    #[test]
+    fn an_entry_that_cannot_be_removed_is_an_error_naming_it() {
+        let err = empty_dir(Path::new("/proc/self/fdinfo"), None).unwrap_err();
+        assert!(
+            err.to_string().starts_with("remove /proc/self/fdinfo/"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn files_and_links_in_an_emptied_folder_are_removed_and_the_kept_one_stays() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("agent");
+        std::fs::create_dir_all(dir.join("etc")).unwrap();
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("file"), "x").unwrap();
+        std::os::unix::fs::symlink(dir.join("sub"), dir.join("link")).unwrap();
+        empty_dir(&dir, Some("etc")).unwrap();
+        let left: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(left, ["etc"]);
+    }
+
+    fn wiping(root: &Path) -> (PathBuf, FakeHost) {
+        (
+            config(root, true),
+            FakeHost::new().ok("ceph-volume lvm list", "{}"),
+        )
+    }
+
+    #[tokio::test]
+    async fn a_missing_config_is_an_error() {
+        let root = tempfile::tempdir().unwrap();
+        let host = FakeHost::new();
+        let err = run(&host, root.path(), &root.path().join("none.toml"))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().starts_with("read "), "{err}");
+        assert!(host.calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_config_that_is_not_toml_is_an_error_not_a_wipe() {
+        let root = tempfile::tempdir().unwrap();
+        let cfg = root.path().join("config.toml");
+        std::fs::write(&cfg, "not toml {{").unwrap();
+        let host = FakeHost::new();
+        assert!(run(&host, root.path(), &cfg).await.is_err());
+        assert!(host.calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn osds_that_cannot_be_listed_stop_the_wipe() {
+        let root = tempfile::tempdir().unwrap();
+        let cfg = config(root.path(), true);
+        let host = FakeHost::new().fail("ceph-volume lvm list", "timed out");
+        let err = run(&host, root.path(), &cfg).await.unwrap_err();
+        assert_eq!(err.to_string(), "list this machine's OSDs");
+        assert!(flag(&cfg));
+    }
+
+    #[tokio::test]
+    async fn an_unreadable_osd_listing_stops_the_wipe() {
+        let root = tempfile::tempdir().unwrap();
+        let cfg = config(root.path(), true);
+        let host = FakeHost::new().ok("ceph-volume lvm list", "no osds");
+        assert!(run(&host, root.path(), &cfg).await.is_err());
+        assert!(!host.ran("zap"));
+        assert!(flag(&cfg));
+    }
+
+    #[tokio::test]
+    async fn a_state_folder_that_cannot_be_read_stops_the_wipe() {
+        let root = tempfile::tempdir().unwrap();
+        let (cfg, host) = wiping(root.path());
+        std::fs::create_dir_all(root.path().join("var/lib/ceph")).unwrap();
+        std::fs::write(root.path().join("var/lib/ceph/mon"), "").unwrap();
+        let err = run(&host, root.path(), &cfg).await.unwrap_err();
+        assert!(err.to_string().starts_with("read "), "{err}");
+        assert!(flag(&cfg));
+    }
+
+    #[tokio::test]
+    async fn a_state_file_that_cannot_be_removed_stops_the_wipe() {
+        let root = tempfile::tempdir().unwrap();
+        let (cfg, host) = wiping(root.path());
+        std::fs::create_dir_all(root.path().join("etc/ceph/ceph.client.admin.keyring/x")).unwrap();
+        let err = run(&host, root.path(), &cfg).await.unwrap_err();
+        assert!(err.to_string().starts_with("remove "), "{err}");
+        assert!(flag(&cfg));
+    }
+
+    #[tokio::test]
+    async fn a_config_gone_during_the_wipe_is_an_error() {
+        let root = tempfile::tempdir().unwrap();
+        let (cfg, host) = wiping(root.path());
+        let gone = cfg.clone();
+        let host = host.effect("ceph-volume lvm list", move |_, _| {
+            std::fs::remove_file(&gone).unwrap();
+        });
+        let err = run(&host, root.path(), &cfg).await.unwrap_err();
+        assert!(err.to_string().starts_with("read "), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_config_that_lost_its_node_during_the_wipe_is_an_error() {
+        let root = tempfile::tempdir().unwrap();
+        let (cfg, host) = wiping(root.path());
+        let rewritten = cfg.clone();
+        let host = host.effect("ceph-volume lvm list", move |_, _| {
+            std::fs::write(&rewritten, "[tunnel]\n").unwrap();
+        });
+        let err = run(&host, root.path(), &cfg).await.unwrap_err();
+        assert_eq!(err.to_string(), "config.toml has no [node]");
+    }
+
+    #[tokio::test]
+    async fn a_config_that_cannot_be_rewritten_is_an_error() {
+        let root = tempfile::tempdir().unwrap();
+        let (cfg, host) = wiping(root.path());
+        std::fs::create_dir_all(cfg.with_extension("tmp").join("x")).unwrap();
+        let err = run(&host, root.path(), &cfg).await.unwrap_err();
+        assert!(err.to_string().starts_with("open "), "{err}");
+        assert!(flag(&cfg));
     }
 }

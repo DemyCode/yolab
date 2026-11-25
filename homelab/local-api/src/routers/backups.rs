@@ -244,20 +244,22 @@ pub(crate) fn app_backup_state(set: Option<&serde_json::Value>) -> (String, Opti
     }
 }
 
-fn size_json(size: Option<&backup_points::ServiceSize>) -> serde_json::Value {
+fn size_fields(
+    size: Option<&backup_points::ServiceSize>,
+) -> [(&'static str, serde_json::Value); 4] {
     match size {
-        Some(s) => serde_json::json!({
-            "size_bytes": s.size_bytes,
-            "budget_bytes": s.budget_bytes,
-            "over_budget": s.over_budget,
-            "measured_at": s.updated_at,
-        }),
-        None => serde_json::json!({
-            "size_bytes": null,
-            "budget_bytes": null,
-            "over_budget": false,
-            "measured_at": null,
-        }),
+        Some(s) => [
+            ("size_bytes", serde_json::json!(s.size_bytes)),
+            ("budget_bytes", serde_json::json!(s.budget_bytes)),
+            ("over_budget", serde_json::json!(s.over_budget)),
+            ("measured_at", serde_json::json!(s.updated_at)),
+        ],
+        None => [
+            ("size_bytes", serde_json::Value::Null),
+            ("budget_bytes", serde_json::Value::Null),
+            ("over_budget", serde_json::json!(false)),
+            ("measured_at", serde_json::Value::Null),
+        ],
     }
 }
 
@@ -274,10 +276,8 @@ fn app_backup_json(app: &AppBackup) -> serde_json::Value {
         "warning": app.warning,
         "budget_set": app.budget_set,
     });
-    if let (Some(obj), serde_json::Value::Object(size)) =
-        (v.as_object_mut(), size_json(app.size.as_ref()))
-    {
-        obj.extend(size);
+    for (key, value) in size_fields(app.size.as_ref()) {
+        v[key] = value;
     }
     v
 }
@@ -363,8 +363,8 @@ pub(crate) fn points_json(
         })
         .collect();
     let mut v = serde_json::json!({ "configured": true, "points": listed });
-    if let (Some(obj), serde_json::Value::Object(extra)) = (v.as_object_mut(), size_json(size)) {
-        obj.extend(extra);
+    for (key, value) in size_fields(size) {
+        v[key] = value;
     }
     v
 }
@@ -622,6 +622,80 @@ mod tests {
         );
         assert_eq!(v["apps"][1]["installed"], true);
         assert_eq!(v["apps"][1]["size_bytes"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn a_config_without_a_tunnel_has_no_platform_to_ask() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("config.toml");
+        std::fs::write(&file, "[homelab]\nhostname = \"yolab\"\n").unwrap();
+        assert_eq!(ye_creds(&Config::for_test(&file)), None);
+    }
+
+    #[test]
+    fn a_service_s_backup_state_is_what_its_newest_run_says() {
+        assert_eq!(app_backup_state(None), ("never".to_string(), None));
+        let state = |set: serde_json::Value| app_backup_state(Some(&set));
+        assert_eq!(
+            state(serde_json::json!({ "state": "queued" })),
+            ("queued".to_string(), None)
+        );
+        assert_eq!(
+            state(serde_json::json!({ "state": "running" })),
+            ("running".to_string(), None)
+        );
+        assert_eq!(
+            state(serde_json::json!({ "state": "restorable" })),
+            ("ok".to_string(), None)
+        );
+        assert_eq!(
+            state(serde_json::json!({ "state": "failed", "error": "boom" })),
+            ("failed".to_string(), Some("boom".to_string()))
+        );
+        assert_eq!(
+            state(serde_json::json!({ "state": "failed", "error": "" })),
+            ("failed".to_string(), None)
+        );
+    }
+
+    #[test]
+    fn a_service_s_backup_row_and_points_carry_its_measured_size() {
+        let size = backup_points::ServiceSize {
+            size_bytes: 7,
+            newest_bytes: 3,
+            budget_bytes: 10,
+            over_budget: false,
+            added: std::collections::BTreeMap::from([("p1".to_string(), 3)]),
+            updated_at: "now".into(),
+        };
+        let app = AppBackup {
+            namespace: "yolab-notes".into(),
+            instance_name: "notes".into(),
+            app_id: "notes".into(),
+            enabled: true,
+            schedule: "0 3 * * *".into(),
+            state: "ok".into(),
+            last_ok_at: None,
+            error: None,
+            warning: None,
+            size: Some(size.clone()),
+            budget_set: true,
+        };
+        let row = app_backup_json(&app);
+        assert_eq!(row["size_bytes"], 7);
+        assert_eq!(row["budget_bytes"], 10);
+        assert_eq!(row["over_budget"], false);
+        assert_eq!(row["measured_at"], "now");
+        let points = points_json(
+            &[backup_points::Point {
+                snapshot_id: "p1".into(),
+                time: "2026-11-20T03:00:00Z".into(),
+                run: Some("r1".into()),
+            }],
+            Some(&size),
+        );
+        assert_eq!(points["points"][0]["added_bytes"], 3);
+        assert_eq!(points["size_bytes"], 7);
     }
 
     #[test]
@@ -1193,6 +1267,388 @@ mod tests {
                 );
             }
         }
+
+        async fn unavailable(server: &MockServer) {
+            Mock::given(wiremock::matchers::any())
+                .respond_with(
+                    ResponseTemplate::new(503).set_body_json(status(503, "ServiceUnavailable")),
+                )
+                .with_priority(u8::MAX)
+                .mount(server)
+                .await;
+        }
+
+        fn definition(instance: &str) -> Value {
+            json!({
+                "schema": crate::routers::apps::DEFINITION_SCHEMA, "app_id": "notes",
+                "chart_repo": "official", "chart_version": "1.2.3",
+                "instance_name": instance, "release": instance, "config": {},
+                "backup": { "enabled": true, "schedule": "0 3 * * *" }
+            })
+        }
+
+        async fn saved_definition(server: &MockServer, instance: &str) {
+            Mock::given(method("GET"))
+                .and(path(format!(
+                    "/api/v1/namespaces/yolab-{instance}/secrets/yolab-config"
+                )))
+                .respond_with(ResponseTemplate::new(200).set_body_json(
+                    crate::k8s::testing::secret_with(
+                        crate::routers::apps::DEFINITION_SECRET_KEY,
+                        &definition(instance).to_string(),
+                    ),
+                ))
+                .mount(server)
+                .await;
+        }
+
+        fn errors_on(res: &crate::testkit::Res) -> bool {
+            !res.status.is_success() && res.json()["error"].is_string()
+        }
+
+        #[tokio::test]
+        async fn every_page_that_needs_the_cluster_says_so_when_there_is_none() {
+            let api = crate::testkit::TestApi::without_cluster().login().await;
+            for (method_name, uri, body) in [
+                ("POST", "/api/backups/recovery-key/ack", None),
+                ("POST", "/api/backups/s3/enable", None),
+                (
+                    "POST",
+                    "/api/backups/restore",
+                    Some(r#"{"namespace":"yolab-notes"}"#),
+                ),
+                ("GET", "/api/backups/apps/yolab-notes/points", None),
+                (
+                    "GET",
+                    "/api/backups/apps/yolab-notes/points/abc123/frees",
+                    None,
+                ),
+                (
+                    "DELETE",
+                    "/api/backups/apps/yolab-notes/points/abc123",
+                    None,
+                ),
+                (
+                    "PUT",
+                    "/api/backups/apps/yolab-notes/budget",
+                    Some(r#"{"budget_bytes":5}"#),
+                ),
+                ("DELETE", "/api/backups/apps/yolab-notes", None),
+                ("POST", "/api/backups/apps/yolab-notes/run-now", None),
+                (
+                    "GET",
+                    "/api/backups/apps/yolab-notes/definition?snapshot_id=abc123",
+                    None,
+                ),
+                (
+                    "GET",
+                    "/api/backups/apps/yolab-notes/plan?snapshot_id=abc123",
+                    None,
+                ),
+            ] {
+                let res = api.send(method_name, uri, body).await;
+                assert!(
+                    res.json()["error"]
+                        .as_str()
+                        .unwrap()
+                        .contains("without a cluster"),
+                    "{method_name} {uri}: {}",
+                    res.body
+                );
+            }
+        }
+
+        #[tokio::test]
+        async fn a_cluster_that_answers_nothing_is_an_error_on_every_page_never_an_empty_one() {
+            let (server, kube) = api_server().await;
+            unavailable(&server).await;
+            let api = signed_in(kube, FakeHost::new()).await;
+            for (method_name, uri, body) in [
+                ("GET", "/api/backups/recovery-key", None),
+                ("POST", "/api/backups/recovery-key/ack", None),
+                ("POST", "/api/backups/s3/enable", None),
+                (
+                    "POST",
+                    "/api/backups/restore",
+                    Some(r#"{"namespace":"yolab-notes"}"#),
+                ),
+                ("GET", "/api/backups/restores", None),
+                ("GET", "/api/backups/apps", None),
+                ("POST", "/api/backups/apps/yolab-notes/run-now", None),
+                (
+                    "GET",
+                    "/api/backups/apps/yolab-notes/definition?snapshot_id=abc123",
+                    None,
+                ),
+                (
+                    "GET",
+                    "/api/backups/apps/yolab-notes/plan?snapshot_id=abc123",
+                    None,
+                ),
+                ("GET", "/api/backups/protected", None),
+                (
+                    "GET",
+                    "/api/backups/apps/yolab-notes/points/abc123/frees",
+                    None,
+                ),
+                (
+                    "PUT",
+                    "/api/backups/apps/yolab-notes/budget",
+                    Some(r#"{"budget_bytes":5}"#),
+                ),
+            ] {
+                let res = api.send(method_name, uri, body).await;
+                assert!(errors_on(&res), "{method_name} {uri}: {}", res.body);
+            }
+        }
+
+        #[tokio::test]
+        async fn the_backed_up_list_fails_when_the_installed_services_cannot_be_listed() {
+            let (server, kube) = api_server().await;
+            config(&server, 404, status(404, "NotFound")).await;
+            unavailable(&server).await;
+            let api = signed_in(kube, FakeHost::new()).await;
+            assert!(errors_on(&api.get("/api/backups/apps").await));
+        }
+
+        #[tokio::test]
+        async fn with_backups_on_a_restic_or_cluster_failure_is_an_error_on_every_page() {
+            let (server, kube) = api_server().await;
+            config(&server, 200, enabled()).await;
+            unavailable(&server).await;
+            let api = signed_in(kube.clone(), FakeHost::new()).await;
+            for (method_name, uri) in [
+                ("GET", "/api/backups/recovery-key"),
+                ("GET", "/api/backups/apps/yolab-notes/points"),
+                ("GET", "/api/backups/apps/yolab-notes/points/abc123/frees"),
+                ("DELETE", "/api/backups/apps/yolab-notes/points/abc123"),
+                ("DELETE", "/api/backups/apps/yolab-notes"),
+                ("GET", "/api/backups/protected"),
+            ] {
+                let res = api.send(method_name, uri, None).await;
+                assert!(errors_on(&res), "{method_name} {uri}: {}", res.body);
+            }
+
+            let listed = FakeHost::new().ok(
+                &format!(
+                    "restic snapshots --no-lock --json --tag {}",
+                    crate::backup::points::namespace_tag("yolab-notes")
+                ),
+                "[]",
+            );
+            let api = signed_in(kube.clone(), listed).await;
+            let res = api.get("/api/backups/apps/yolab-notes/points").await;
+            assert!(errors_on(&res), "{}", res.body);
+
+            let b = Backend {
+                kube,
+                host: FakeHost::new(),
+            };
+            assert!(sweep_locks(&b).await.is_err());
+        }
+
+        #[tokio::test]
+        async fn protected_services_are_listed_by_name_and_those_without_settings_are_skipped() {
+            let (server, kube) = api_server().await;
+            config(&server, 200, enabled()).await;
+            Mock::given(method("GET"))
+                .and(path("/api/v1/namespaces"))
+                .and(query_param("labelSelector", "yolab.io/managed=true"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(list(
+                    "Namespace",
+                    vec![
+                        json!({ "metadata": { "name": "yolab-todo" } }),
+                        json!({ "metadata": { "name": "yolab-gone" } }),
+                        json!({ "metadata": { "name": "yolab-notes" } }),
+                    ],
+                )))
+                .mount(&server)
+                .await;
+            saved_definition(&server, "notes").await;
+            saved_definition(&server, "todo").await;
+            Mock::given(method("GET"))
+                .respond_with(ResponseTemplate::new(404).set_body_json(status(404, "NotFound")))
+                .with_priority(u8::MAX)
+                .mount(&server)
+                .await;
+            let b = Backend {
+                kube,
+                host: FakeHost::new(),
+            };
+            let v = protected_apps(&b).await.unwrap();
+            assert_eq!(v["apps"].as_array().unwrap().len(), 2, "{v}");
+            assert_eq!(v["apps"][0]["instance_name"], "notes");
+            assert_eq!(v["apps"][1]["instance_name"], "todo");
+            assert_eq!(v["apps"][0]["state"], "never");
+
+            let (server, kube) = api_server().await;
+            config(&server, 200, enabled()).await;
+            apps(&server).await;
+            unavailable(&server).await;
+            let b = Backend {
+                kube,
+                host: FakeHost::new(),
+            };
+            assert!(protected_apps(&b).await.is_err());
+        }
+
+        #[tokio::test]
+        async fn a_budget_is_saved_and_a_failure_to_save_or_reread_it_is_an_error() {
+            let budget = Some(r#"{"budget_bytes":5000}"#);
+            let uri = "/api/backups/apps/yolab-notes/budget";
+
+            let (server, kube) = api_server().await;
+            saved_definition(&server, "notes").await;
+            unavailable(&server).await;
+            let api = signed_in(kube, FakeHost::new()).await;
+            assert!(errors_on(&api.send("PUT", uri, budget).await));
+
+            let (server, kube) = api_server().await;
+            saved_definition(&server, "notes").await;
+            crate::k8s::testing::accept_patches(&server).await;
+            unavailable(&server).await;
+            let api = signed_in(kube, FakeHost::new()).await;
+            assert!(errors_on(&api.send("PUT", uri, budget).await));
+
+            let (server, kube) = api_server().await;
+            saved_definition(&server, "notes").await;
+            crate::k8s::testing::accept_patches(&server).await;
+            config(&server, 404, status(404, "NotFound")).await;
+            unavailable(&server).await;
+            let api = signed_in(kube, FakeHost::new()).await;
+            let res = api.send("PUT", uri, budget).await;
+            assert_eq!(
+                res.json(),
+                json!({ "ok": true, "budget_bytes": 5000 }),
+                "{}",
+                res.body
+            );
+        }
+
+        #[tokio::test]
+        async fn storage_the_platform_cannot_give_is_an_error_when_asked_for_or_turned_on() {
+            let (server, kube) = api_server().await;
+            no_restores(&server).await;
+            config(&server, 404, status(404, "NotFound")).await;
+            let platform = MockServer::start().await;
+            Mock::given(wiremock::matchers::any())
+                .respond_with(ResponseTemplate::new(502))
+                .mount(&platform)
+                .await;
+            let api = crate::testkit::TestApi::with_platform(kube, &platform.uri())
+                .login()
+                .await;
+            assert!(errors_on(&api.get("/api/backups/s3").await));
+            assert!(errors_on(&api.post("/api/backups/s3/enable", "").await));
+        }
+
+        #[tokio::test]
+        async fn a_definition_from_a_backup_is_redacted_with_the_schema_saved_in_it() {
+            let (server, kube) = api_server().await;
+            config(&server, 200, enabled()).await;
+            let catalog = json!({
+                "services": [{ "namespace": "yolab-notes", "app_id": "notes", "pvcs": [] }]
+            })
+            .to_string();
+            let objects = json!({ "items": [{
+                "kind": "ConfigMap",
+                "metadata": { "name": crate::saved_chart::SCHEMA_MAP },
+                "data": { "values.schema.json": r#"{"type":"object","properties":{}}"# }
+            }]})
+            .to_string();
+            let host = FakeHost::new()
+                .restic_restores(vec![
+                    ("catalog.json", catalog),
+                    ("yolab-notes.yaml", objects),
+                ])
+                .ok("restic unlock", "");
+            let api = signed_in(kube, host).await;
+            let res = api
+                .get("/api/backups/apps/yolab-notes/definition?snapshot_id=abc123")
+                .await;
+            assert_eq!(res.json()["app_id"], "notes", "{}", res.body);
+        }
+
+        fn ctx_with(kube: crate::k8s::Kube) -> crate::runtime::Ctx {
+            crate::runtime::Ctx {
+                node: "node1".into(),
+                tools: crate::tools::Tools {
+                    host: Default::default(),
+                    kube,
+                    http: crate::http::client(),
+                },
+            }
+        }
+
+        fn key_controller(dir: &std::path::Path, platform: &str) -> BackupKeyController {
+            let file = dir.join("config.toml");
+            std::fs::write(
+                &file,
+                crate::testkit::config_with_tunnel(&format!("platform_api_url = \"{platform}\"\n")),
+            )
+            .unwrap();
+            BackupKeyController {
+                config: Config::for_test(&file),
+            }
+        }
+
+        #[tokio::test]
+        async fn the_key_controller_turns_backups_on_or_checks_the_key_and_reports_failures() {
+            use crate::runtime::{Resource as _, Tick};
+            let dir = tempfile::tempdir().unwrap();
+            let up = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/storage/s3"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "bucket_name": "bucket-1", "endpoint": "https://s3.example",
+                    "access_key_id": "AKID", "secret_access_key": "SECRET"
+                })))
+                .mount(&up)
+                .await;
+            let down = MockServer::start().await;
+            Mock::given(wiremock::matchers::any())
+                .respond_with(ResponseTemplate::new(502))
+                .mount(&down)
+                .await;
+
+            let (off, off_kube) = api_server().await;
+            config(&off, 404, status(404, "NotFound")).await;
+            crate::k8s::testing::accept_patches(&off).await;
+            let off = ctx_with(crate::k8s::Kube::with(off_kube));
+            let (on, on_kube) = api_server().await;
+            config(&on, 200, enabled()).await;
+            let on = ctx_with(crate::k8s::Kube::with(on_kube));
+
+            assert!(matches!(
+                key_controller(dir.path(), &up.uri())
+                    .converge(&off)
+                    .await
+                    .unwrap(),
+                Tick::Done
+            ));
+            assert!(key_controller(dir.path(), &down.uri())
+                .converge(&off)
+                .await
+                .is_err());
+            assert!(matches!(
+                key_controller(dir.path(), &up.uri())
+                    .converge(&on)
+                    .await
+                    .unwrap(),
+                Tick::Idle(_)
+            ));
+            assert!(key_controller(dir.path(), &down.uri())
+                .converge(&on)
+                .await
+                .is_err());
+
+            let nowhere = ctx_with(crate::k8s::Kube::from_environment());
+            assert!(LockSweeperController.converge(&nowhere).await.is_err());
+            assert!(key_controller(dir.path(), &up.uri())
+                .converge(&nowhere)
+                .await
+                .is_err());
+        }
     }
 
     mod against_the_platform {
@@ -1240,6 +1696,22 @@ mod tests {
             let server = MockServer::start().await;
             Mock::given(method("GET"))
                 .respond_with(ResponseTemplate::new(502))
+                .mount(&server)
+                .await;
+            assert!(s3_status(&crate::http::Client::new(), &server.uri(), "tok")
+                .await
+                .is_err());
+        }
+
+        #[tokio::test]
+        async fn an_unreachable_platform_or_a_garbled_answer_is_an_error() {
+            let closed = format!("http://127.0.0.1:{}", crate::testkit::closed_port());
+            assert!(s3_status(&crate::http::Client::new(), &closed, "tok")
+                .await
+                .is_err());
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .respond_with(ResponseTemplate::new(200).set_body_string("not json"))
                 .mount(&server)
                 .await;
             assert!(s3_status(&crate::http::Client::new(), &server.uri(), "tok")

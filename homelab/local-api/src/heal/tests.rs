@@ -900,4 +900,111 @@ mod real_network {
             .iter()
             .all(|r| r.url.path() == "/readyz"));
     }
+
+    #[tokio::test]
+    async fn a_peer_that_answers_with_something_else_is_an_error() {
+        let (_server, port) = answering("GET", "/api/heal/peer", 200, json!("not a peer")).await;
+        assert!(to_peer(port).peer(PEER).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_platform_that_cannot_be_reached_or_answers_badly_lists_nothing() {
+        let closed = format!("http://[::1]:{}", crate::testkit::closed_port());
+        let unreachable = network(1, &closed, crate::k8s::testing::unreachable());
+        assert!(unreachable.platform_nodes().await.is_err());
+        assert!(unreachable.delete_platform_node(7).await.is_err());
+
+        let server = MockServer::start().await;
+        Mock::given(matchers::method("GET"))
+            .and(matchers::path("/nodes"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+        let failing = network(1, &server.uri(), crate::k8s::testing::unreachable());
+        assert!(failing.platform_nodes().await.is_err());
+
+        let garbled = MockServer::start().await;
+        Mock::given(matchers::method("GET"))
+            .and(matchers::path("/nodes"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "nodes": 1 })))
+            .mount(&garbled)
+            .await;
+        let net = network(1, &garbled.uri(), crate::k8s::testing::unreachable());
+        assert!(net.platform_nodes().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn deleting_a_platform_node_the_platform_accepts_is_success() {
+        let server = MockServer::start().await;
+        Mock::given(matchers::method("DELETE"))
+            .and(matchers::path("/nodes/7"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let net = network(1, &server.uri(), crate::k8s::testing::unreachable());
+        net.delete_platform_node(7).await.unwrap();
+    }
+
+    async fn ready_cluster(nodes: ResponseTemplate) -> (MockServer, kube::Client) {
+        let (server, kube) = crate::k8s::testing::api_server().await;
+        Mock::given(matchers::method("GET"))
+            .and(matchers::path("/readyz"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("ok"))
+            .mount(&server)
+            .await;
+        Mock::given(matchers::method("GET"))
+            .and(matchers::path("/api/v1/nodes"))
+            .respond_with(nodes)
+            .mount(&server)
+            .await;
+        (server, kube)
+    }
+
+    fn node2_at(addr: &str) -> ResponseTemplate {
+        ResponseTemplate::new(200).set_body_json(crate::k8s::testing::list(
+            "Node",
+            vec![json!({
+                "metadata": { "name": "node2" },
+                "status": { "addresses": [{ "type": "InternalIP", "address": addr }] },
+            })],
+        ))
+    }
+
+    #[tokio::test]
+    async fn a_ready_cluster_names_its_nodes_and_a_failing_list_is_an_error() {
+        let (_server, kube) = ready_cluster(node2_at("fd00::2")).await;
+        assert_eq!(
+            network(1, "", kube).kubernetes_nodes().await.unwrap(),
+            Some(vec![("node2".to_string(), Some("fd00::2".to_string()))])
+        );
+        let (_server, kube) = ready_cluster(
+            ResponseTemplate::new(500)
+                .set_body_json(crate::k8s::testing::status(500, "InternalError")),
+        )
+        .await;
+        assert!(network(1, "", kube).kubernetes_nodes().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn the_view_hands_on_every_other_machine_that_answers() {
+        let (peer_server, port) = peer().await;
+        Mock::given(matchers::method("GET"))
+            .and(matchers::path("/api/heal/peer"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({ "name": "node2", "addr": PEER, "reset": null })),
+            )
+            .mount(&peer_server)
+            .await;
+        let (_cluster, kube) = ready_cluster(node2_at(PEER)).await;
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("config.toml");
+        std::fs::write(&file, "").unwrap();
+        let mut cfg = crate::config::Config::for_test(&file);
+        cfg.port = port;
+        cfg.node_ipv6 = "::ffff:127.0.0.1".into();
+        let view = current_view(&FakeHost::new(), &crate::k8s::Kube::with(kube), &cfg).await;
+        assert_eq!(view.peer_addrs, [PEER]);
+    }
 }

@@ -247,3 +247,31 @@ async fn a_settled_cluster_has_no_move_reason() {
     assert_eq!(m.state, State::Settled);
     assert_eq!(m.waiting_for, Vec::<String>::new());
 }
+
+fn cloning(status: &Value) -> FakeHost {
+    FakeHost::new()
+        .ok("ceph status", &status.to_string())
+        .ok("ceph osd dump", r#"{"flags":"sortbitwise"}"#)
+        .ok(
+            "ceph progress json",
+            &json!({"events": [
+                {"id": "x", "refs": ["clone"], "message": "2 ongoing clones - average progress is 40%"},
+            ]})
+            .to_string(),
+        )
+}
+
+#[tokio::test]
+async fn ongoing_clones_are_sampled_and_the_record_is_saved() {
+    let host = cloning(&settled_status())
+        .fail("ceph config-key get", "Error ENOENT: no such key")
+        .ok("ceph config-key set", "");
+    sample(&host).await;
+    assert!(host.ran("ceph config-key set yolab/movement"));
+}
+
+#[tokio::test]
+async fn ongoing_clones_are_counted_in_the_movement() {
+    let host = cloning(&settled_status());
+    assert_eq!(assess_via(&host).await.clones, 2);
+}

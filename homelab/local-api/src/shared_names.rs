@@ -28,17 +28,22 @@ pub(crate) fn write_caddy_env(root: &Path, config_path: &str) -> Result<()> {
 }
 
 pub async fn run(args: &[String]) -> i32 {
+    run_at(
+        args,
+        Path::new("/"),
+        &crate::config::machine_dir().join("config.toml"),
+    )
+}
+
+fn run_at(args: &[String], root: &Path, config: &Path) -> i32 {
     match args.first().map(String::as_str) {
-        Some("credentials") => {
-            let config = crate::config::machine_dir().join("config.toml");
-            match write_caddy_env(Path::new("/"), &config.to_string_lossy()) {
-                Ok(()) => 0,
-                Err(e) => {
-                    tracing::error!("shared-names credentials: {e:#}");
-                    1
-                }
+        Some("credentials") => match write_caddy_env(root, &config.to_string_lossy()) {
+            Ok(()) => 0,
+            Err(e) => {
+                tracing::error!("shared-names credentials: {e:#}");
+                1
             }
-        }
+        },
         other => {
             eprintln!("shared-names: unknown subcommand {other:?} (known: credentials)");
             2
@@ -191,5 +196,89 @@ mod tests {
                 .unwrap_err();
             assert!(format!("{e:#}").contains("cluster"), "{e:#}");
         }
+
+        #[tokio::test]
+        async fn a_platform_that_cannot_be_reached_is_an_error_naming_the_record() {
+            let unreachable = Tunnel {
+                platform_api_url: format!("http://[::1]:{}", crate::testkit::closed_port()),
+                ..tunnel("tok")
+            };
+            let e = claim_names(&crate::http::Client::new(), &unreachable)
+                .await
+                .unwrap_err();
+            assert!(format!("{e:#}").contains("cluster"), "{e:#}");
+        }
+
+        fn controller_for(dir: &tempfile::TempDir, body: &str) -> SharedNamesController {
+            let path = dir.path().join("config.toml");
+            std::fs::write(&path, body).unwrap();
+            SharedNamesController {
+                config: crate::config::Config::for_test(&path),
+            }
+        }
+
+        #[tokio::test]
+        async fn the_controller_claims_the_names_only_for_a_connected_machine() {
+            let server = MockServer::start().await;
+            Mock::given(method("PUT"))
+                .respond_with(ResponseTemplate::new(200))
+                .expect(2)
+                .mount(&server)
+                .await;
+            let ctx = Ctx {
+                node: "node1".into(),
+                tools: crate::tools::Tools::unreachable(),
+            };
+            let dir = tempfile::tempdir().unwrap();
+
+            let missing = SharedNamesController {
+                config: crate::config::Config::for_test(&dir.path().join("absent.toml")),
+            };
+            assert_eq!(missing.name(), "shared-names");
+            assert_eq!(missing.scope(), Scope::Node);
+            assert_eq!(missing.interval(), Duration::from_secs(600));
+            assert!(missing.converge(&ctx).await.is_err());
+
+            let not_connected = "this machine is not connected to the YoLab platform".to_string();
+            let disabled = controller_for(&dir, "[tunnel]\nenabled = false\ntunnel_id = \"25\"\n");
+            assert_eq!(
+                disabled.converge(&ctx).await.unwrap(),
+                Tick::Idle(not_connected.clone())
+            );
+            let unnamed = controller_for(&dir, "[tunnel]\nenabled = true\n");
+            assert_eq!(
+                unnamed.converge(&ctx).await.unwrap(),
+                Tick::Idle(not_connected)
+            );
+            let connected = controller_for(
+                &dir,
+                &format!(
+                    "[tunnel]\nenabled = true\ntunnel_id = \"25\"\naccount_token = \"tok\"\nplatform_api_url = \"{}\"\n",
+                    server.uri()
+                ),
+            );
+            assert_eq!(
+                connected.converge(&ctx).await.unwrap(),
+                Tick::Idle("this machine answers for cluster and notify".into())
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn the_credentials_subcommand_writes_the_env_file_or_fails_and_others_are_usage_errors() {
+        assert_eq!(run(&[]).await, 2);
+        assert_eq!(run(&["rotate".to_string()]).await, 2);
+        let credentials = ["credentials".to_string()];
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("config.toml");
+        assert_eq!(run_at(&credentials, dir.path(), &config), 1);
+        std::fs::write(&config, "[tunnel]\naccount_token = \"\"\n").unwrap();
+        assert_eq!(run_at(&credentials, dir.path(), &config), 1);
+        std::fs::write(&config, "[tunnel]\naccount_token = \"tok\"\n").unwrap();
+        assert_eq!(run_at(&credentials, dir.path(), &config), 0);
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join(CADDY_ENV)).unwrap(),
+            "YOLAB_ACCOUNT_TOKEN=tok\n"
+        );
     }
 }

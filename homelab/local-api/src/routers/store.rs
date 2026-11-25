@@ -677,6 +677,27 @@ mod tests {
             assert!(platform(&none).is_none());
         }
 
+        #[test]
+        fn a_config_without_a_usable_platform_address_has_no_platform() {
+            let dir = tempfile::tempdir().unwrap();
+            let file = dir.path().join("config.toml");
+            std::fs::write(&file, "[homelab]\nhostname = \"yolab\"\n").unwrap();
+            assert!(platform(&Config::for_test(&file)).is_none());
+            std::fs::write(&file, "[tunnel]\nplatform_api_url = 5\n").unwrap();
+            assert!(platform(&Config::for_test(&file)).is_none());
+        }
+
+        #[tokio::test]
+        async fn the_setting_cannot_be_changed_while_the_cluster_is_down() {
+            let body = r#"{"share_installs":false}"#;
+            let api = TestApi::without_cluster().login().await;
+            let res = api.send("PUT", "/api/store/settings", Some(body)).await;
+            assert!(!res.status.is_success(), "{}", res.body);
+            let api = TestApi::provisioned().login().await;
+            let res = api.send("PUT", "/api/store/settings", Some(body)).await;
+            assert!(!res.status.is_success(), "{}", res.body);
+        }
+
         #[tokio::test]
         async fn the_setting_cannot_be_read_while_the_cluster_is_down() {
             let api = TestApi::provisioned().login().await;

@@ -102,9 +102,12 @@ struct CephSection {
 
 fn gen_ceph_fsid() -> String {
     use rand::Rng;
-    let mut b: [u8; 16] = rand::thread_rng().gen();
-    b[6] = (b[6] & 0x0f) | 0x40;
-    b[8] = (b[8] & 0x3f) | 0x80;
+    uuid_v4(rand::thread_rng().gen())
+}
+
+fn uuid_v4(mut b: [u8; 16]) -> String {
+    b[6] = 0x40 + (b[6] & 0x0f);
+    b[8] = 0x80 + (b[8] & 0x3f);
     let h: Vec<String> = b.iter().map(|x| format!("{x:02x}")).collect();
     format!(
         "{}-{}-{}-{}-{}",
@@ -473,6 +476,12 @@ pub(crate) mod tests {
             ['8', '9', 'a', 'b'].contains(&parts[3].chars().next().unwrap()),
             "RFC 4122 variant nibble must be 8/9/a/b: {f}"
         );
+    }
+
+    #[test]
+    fn the_version_and_variant_bits_are_forced_whatever_the_random_bytes() {
+        assert_eq!(uuid_v4([0xff; 16]), "ffffffff-ffff-4fff-bfff-ffffffffffff");
+        assert_eq!(uuid_v4([0x00; 16]), "00000000-0000-4000-8000-000000000000");
     }
 
     #[test]
