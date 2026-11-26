@@ -237,15 +237,18 @@ where
     match sizer.first_fit(&times, &forced, n - 1, target).await? {
         Some(found) => chosen = found,
         None => {
-            let (mut lo, mut hi) = (floor.len(), n - 2);
-            while lo < hi {
-                let mid = (lo + hi).div_ceil(2);
+            let mut unknown = floor.len() + 1..n - 1;
+            for _ in 0..n {
+                if unknown.is_empty() {
+                    break;
+                }
+                let mid = unknown.start + (unknown.len() - 1) / 2;
                 match sizer.first_fit(&times, &forced, mid, target).await? {
                     Some(found) => {
-                        lo = mid;
+                        unknown.start = mid + 1;
                         chosen = found;
                     }
-                    None => hi = mid - 1,
+                    None => unknown.end = mid,
                 }
             }
         }
@@ -1014,6 +1017,65 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn what_must_stay_filling_the_budget_exactly_is_not_over_it() {
+        let points = [aged("new", 0, false), aged("extra", 24, false)];
+        let fitted = fit(&points, 50, sized(&[("new", 50), ("extra", 10)]))
+            .await
+            .unwrap();
+        assert_eq!(
+            fitted,
+            Fit {
+                drop: vec!["extra".to_string()],
+                size_after: 50,
+                over: false
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn a_budget_of_hundreds_is_also_filled_only_to_ninety_percent() {
+        let points = [
+            aged("new", 0, false),
+            aged("small", 24, false),
+            aged("big", 48, false),
+        ];
+        let fitted = fit(
+            &points,
+            1000,
+            sized(&[("new", 100), ("small", 100), ("big", 850)]),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            fitted,
+            Fit {
+                drop: vec!["big".to_string()],
+                size_after: 200,
+                over: false
+            },
+            "keeping big is 950, inside 1000 but above 900"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_count_that_fits_is_found_by_halving_between_what_must_stay_and_all_but_one() {
+        let points = nightly(11);
+        let mut counts: Vec<usize> = Vec::new();
+        let counts_ref = &mut counts;
+        let fitted = fit(&points, 35, move |kept: Vec<Point>| {
+            counts_ref.push(kept.len());
+            std::future::ready(anyhow::Ok(kept.len() as u64 * 10))
+        })
+        .await
+        .unwrap();
+        counts.dedup();
+        assert_eq!(counts, vec![11, 1, 10, 5, 3, 4]);
+        assert_eq!(fitted.drop.len(), 8);
+        assert_eq!(fitted.size_after, 30);
+        assert!(!fitted.over);
+    }
+
+    #[tokio::test]
     async fn a_backup_with_an_unreadable_time_stops_the_cleanup_instead_of_guessing() {
         let mut bad = aged("bad", 24, false);
         bad.time = "yesterday".into();
@@ -1291,6 +1353,9 @@ mod against_restic {
         let roomy = svc.sized(None, None).await.unwrap();
         assert_eq!(roomy.budget_bytes, DEFAULT_BUDGET);
         assert!(!roomy.over_budget);
+        let exactly_full = svc.sized(Some(100), None).await.unwrap();
+        assert_eq!(exactly_full.size_bytes, 100);
+        assert!(!exactly_full.over_budget);
     }
 
     #[tokio::test]
@@ -1484,7 +1549,12 @@ mod against_restic {
     async fn after_a_backup_the_space_is_thinned_to_the_budget_and_the_size_recorded() {
         let (server, kube) = api_server().await;
         let ns = "yolab-thinned";
-        sizes_are(&server, 200, Some(json!({ ns: sized(10, &[("p1", 4)]) }))).await;
+        sizes_are(
+            &server,
+            200,
+            Some(json!({ ns: sized(10, &[("p1", 4), ("gone", 7)]) })),
+        )
+        .await;
         budget_is(&server, ns, Some(50)).await;
         accept_writes(&server).await;
         let b = Backend {
@@ -1516,6 +1586,7 @@ mod against_restic {
         assert_eq!(after.dropped, 0);
         assert!(!after.size.over_budget);
         assert!(!b.host.ran("restic forget"));
+        assert!(!b.host.ran("restic prune"));
     }
 
     #[tokio::test]
