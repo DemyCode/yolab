@@ -14,7 +14,7 @@ export default {
     ...untested.map((f) => `!${f}`),
   ],
   coverageAnalysis: "perTest",
-  reporters: ["clear-text", "html"],
+  reporters: ["clear-text", "html", "progress-append-only"],
   htmlReporter: { fileName: "reports/mutation/index.html" },
   thresholds: { high: 100, low: 100, break: 100 },
 };
