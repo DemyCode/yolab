@@ -527,7 +527,7 @@ export function AppDetailPage() {
   const version = app.chart_version || entry?.chart_version || "";
   const stem = instanceStem(app);
   const current = app;
-  const shown: Notice | null = notice ?? updateNotice(running, name);
+  const message: Notice | null = notice ?? updateNotice(running, name);
 
   async function remove() {
     setWorking("remove");
@@ -613,9 +613,9 @@ export function AppDetailPage() {
           }
         >
           <WhatHappened app={current} fallback="It did not say why." />
-          {shown?.tone === "error" && (
+          {message?.tone === "error" && (
             <p className="mt-1 font-medium">
-              {shown.title}: {shown.body}
+              {message.title}: {message.body}
             </p>
           )}
           {note ? (
@@ -647,18 +647,18 @@ export function AppDetailPage() {
         </Banner>
       );
     }
-    if (shown?.tone === "error") {
+    if (message?.tone === "error") {
       return (
         <Banner
           tone="error"
-          title={shown.title}
+          title={message.title}
           action={
             <Button size="sm" variant="ghost" onClick={dismiss}>
               Dismiss
             </Button>
           }
         >
-          {shown.body}
+          {message.body}
         </Banner>
       );
     }
@@ -722,11 +722,11 @@ export function AppDetailPage() {
         </Banner>
       );
     }
-    if (shown?.tone === "success") {
+    if (message?.tone === "success") {
       return (
         <Banner
           tone="success"
-          title={shown.title}
+          title={message.title}
           action={
             <Button size="sm" variant="ghost" onClick={dismiss}>
               Dismiss
