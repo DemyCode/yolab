@@ -179,6 +179,14 @@ async fn a_tick_publishes_every_disk_this_machine_has_with_its_size_model_and_os
     assert_eq!(disks.get("vdisk-7"), None);
     assert_eq!(disks.as_object().unwrap().len(), 4);
     assert!(!host.ran("ceph config-key set yolab/disks/"));
+    assert_eq!(settings_reads(&host), 1);
+}
+
+fn settings_reads(host: &FakeHost) -> usize {
+    host.calls()
+        .iter()
+        .filter(|c| c.starts_with("ceph config-key dump yolab/disks/"))
+        .count()
 }
 
 #[tokio::test]
@@ -197,6 +205,7 @@ async fn a_store_that_cannot_list_its_claims_registers_new_disks_in_the_cluster_
     assert!(host.ran("ceph config-key set yolab/disks/serial-wwn-0xabc OFF"));
     assert!(host.ran("ceph config-key set yolab/disks/node-reg--dev-sdd OFF"));
     assert!(host.ran("ceph config-key set yolab/disks/node-reg--vdisk-3 OFF"));
+    assert_eq!(settings_reads(&host), 2);
     assert_eq!(
         progress_of("serial-wwn-0xabc").message,
         "Not in use. Safe to unplug."
@@ -252,6 +261,21 @@ async fn a_disk_list_that_cannot_be_read_skips_the_tick() {
         scan_devices(&empty).await.unwrap_err().to_string(),
         "lsblk -J has no blockdevices list"
     );
+}
+
+#[test]
+fn the_system_lv_is_present_only_once_its_device_exists() {
+    assert!(!system_osd_present());
+    put("/dev/mapper/pool-ceph", &[0u8; 4096]);
+    assert!(system_osd_present());
+}
+
+#[test]
+fn a_virtual_disk_is_never_reported_as_a_loop_device() {
+    let d = vdisk_meta(3, OURS);
+    assert!(!d.is_loop);
+    assert!(d.is_virtual);
+    assert_eq!(d.model, "Virtual disk");
 }
 
 #[test]

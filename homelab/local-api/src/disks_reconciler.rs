@@ -2396,9 +2396,15 @@ mod tests {
             (record_key("node1", "disk-known"), "ON".to_string()),
         ]);
         let disk_to_osd = HashMap::from([("disk-known".to_string(), 5i64)]);
+        let logs = crate::testkit::capture_logs();
 
         reconcile_local_osds(&host, "node1", &meta, &desired, Some(&disk_to_osd), false).await;
 
+        assert!(
+            logs.contain("this tick's OSD list is the mon's"),
+            "{}",
+            logs.text()
+        );
         assert!(
             !host.ran("lvm create") && !host.ran("wipefs"),
             "{:?}",
@@ -2446,9 +2452,15 @@ mod tests {
         let meta = HashMap::from([("disk-off".to_string(), disk(Ownership::Ours))]);
         let desired = HashMap::from([(record_key("node1", "disk-off"), "OFF".to_string())]);
         let disk_to_osd = HashMap::from([("disk-off".to_string(), 3i64)]);
+        let logs = crate::testkit::capture_logs();
 
         reconcile_local_osds(&host, "node1", &meta, &desired, Some(&disk_to_osd), true).await;
 
+        assert!(
+            !logs.contain("this tick's OSD list is the mon's"),
+            "{}",
+            logs.text()
+        );
         assert!(!host.ran("zap") && !host.ran("osd purge") && !host.ran("osd out"));
         assert_eq!(progress_of("disk-off").phase, Phase::Removable);
     }
@@ -3198,6 +3210,10 @@ mod tests {
         assert!(host.ran("systemctl start yolab-ceph-osd@9303.service"));
         assert!(!host.ran("purge-actual"));
         assert_eq!(progress_of("disk-drain-9303").phase, Phase::Draining);
+        assert_eq!(
+            progress_of("disk-drain-9303").message,
+            drain_message(0, None)
+        );
     }
 
     #[tokio::test]
@@ -4427,5 +4443,169 @@ mod tests {
     async fn without_the_crush_tree_nothing_is_observed() {
         let host = FakeHost::new().fail("ceph osd df tree", "timeout");
         assert!(observe_cluster(&host).await.is_none());
+    }
+
+    fn create_host() -> FakeHost {
+        FakeHost::new()
+            .ok(
+                "ceph fsid",
+                r#"{"fsid":"11111111-2222-3333-4444-555555555555"}"#,
+            )
+            .ok("ceph osd ls", "[]")
+            .ok("ceph-volume lvm list", "{}")
+            .ok("ceph-volume lvm create", "")
+    }
+
+    #[tokio::test]
+    async fn a_whole_disk_is_wiped_of_old_signatures_before_create_and_success_logs_no_failure() {
+        let host = create_host().ok("wipefs --all /dev/sdb", "");
+        let logs = crate::testkit::capture_logs();
+
+        create_osd(&host, "disk-wipefs-ok", "/dev/sdb").await;
+
+        assert!(host.ran("wipefs --all /dev/sdb"), "{:?}", host.calls());
+        assert!(!logs.contain("wipefs failed"), "{}", logs.text());
+        assert!(host.ran("ceph-volume lvm create"));
+    }
+
+    #[tokio::test]
+    async fn a_failed_wipefs_is_logged_and_create_is_still_attempted() {
+        let host = create_host().fail("wipefs --all /dev/sdb", "device busy");
+        let logs = crate::testkit::capture_logs();
+
+        create_osd(&host, "disk-wipefs-fails", "/dev/sdb").await;
+
+        assert!(logs.contain("wipefs failed on /dev/sdb"), "{}", logs.text());
+        assert!(host.ran("ceph-volume lvm create"));
+    }
+
+    #[tokio::test]
+    async fn a_device_mapper_volume_is_never_run_through_wipefs() {
+        for dev in ["/dev/mapper/vg-osd", "/dev/dm-7"] {
+            let host = create_host();
+
+            create_osd(&host, "disk-dm", dev).await;
+
+            assert!(!host.ran("wipefs"), "{dev}: {:?}", host.calls());
+            assert!(host.ran("ceph-volume lvm create"), "{dev}");
+        }
+    }
+
+    #[test]
+    fn an_osd_at_exactly_half_weight_is_not_a_place_to_drain_to() {
+        let nodes = vec![osd(0, true, 0.5), osd(2, true, 1.0)];
+        assert_eq!(drain_targets_remaining(&nodes, 1, "osd"), 1);
+    }
+
+    #[test]
+    fn as_many_places_as_copies_lets_the_drain_finish_without_a_shortfall() {
+        assert_eq!(
+            drain_message(2, Some(2)),
+            "Moving this disk's files onto the others. Do not unplug it until this finishes."
+        );
+    }
+
+    #[test]
+    fn an_osd_whose_size_is_unknown_is_given_no_weight() {
+        let steer = decide_steer(true, 0, seen(0.0, 1.0, 0, true), 0, &[], "osd", None);
+        assert_eq!(steer.set_weight, None);
+    }
+
+    #[test]
+    fn a_switched_on_osd_at_exactly_half_weight_is_not_marked_in() {
+        let steer = decide_steer(true, 0, seen(1.0, 0.5, 0, true), 0, &[], "osd", None);
+        assert!(!steer.mark_in);
+    }
+
+    #[test]
+    fn a_switched_off_osd_at_exactly_half_weight_counts_as_out_and_needs_purge() {
+        let steer = decide_steer(false, 0, seen(1.0, 0.5, 0, false), 0, &[], "osd", None);
+        assert!(!steer.mark_out);
+        assert!(steer.needs_purge);
+    }
+
+    #[test]
+    fn another_nodes_wanted_disk_is_not_unplugged_from_this_one() {
+        let desired = HashMap::from([("node2--dev-sdb".to_string(), "ON".to_string())]);
+        let meta: HashMap<String, Disk> = HashMap::new();
+        assert!(!any_unplugged_but_wanted(&desired, "node1", &meta));
+    }
+
+    #[test]
+    fn a_new_setting_taken_in_after_seeding_counts_as_a_change() {
+        let mut store = Store::new("node1");
+        sync_store(
+            &mut store,
+            "node1",
+            &HashMap::new(),
+            Some(&records(&[("node1--dev-sdb", "ON")])),
+        );
+
+        let again = sync_store(
+            &mut store,
+            "node1",
+            &HashMap::new(),
+            Some(&records(&[("node1--dev-sdb", "ON")])),
+        );
+        assert!(!again.changed);
+
+        let added = sync_store(
+            &mut store,
+            "node1",
+            &HashMap::new(),
+            Some(&records(&[("node2--dev-sdc", "ON")])),
+        );
+        assert!(added.changed);
+    }
+
+    #[test]
+    fn a_newly_seen_disk_counts_as_a_change() {
+        let mut store = Store::new("node1");
+        let meta = HashMap::from([("dev-sdb".to_string(), disk(Ownership::Blank))]);
+
+        assert!(sync_store(&mut store, "node1", &meta, None).changed);
+        assert!(!sync_store(&mut store, "node1", &meta, None).changed);
+    }
+
+    fn purge_host(osd_id: i64) -> FakeHost {
+        FakeHost::new()
+            .ok(
+                &format!("systemctl stop yolab-ceph-osd@{osd_id}.service"),
+                "",
+            )
+            .ok(
+                &format!("systemctl show -p ActiveState --value yolab-ceph-osd@{osd_id}.service"),
+                "inactive",
+            )
+            .ok("ceph osd safe-to-destroy", r#"{"safe_to_destroy":[]}"#)
+    }
+
+    #[tokio::test]
+    async fn only_this_nodes_own_crush_host_decides_which_osds_it_may_purge() {
+        let fake = purge_host(9308);
+        let nodes = vec![
+            host("node2", vec![9308]),
+            osd(9308, false, 0.0),
+            host("node1", vec![]),
+        ];
+
+        purge_drained_osds(&fake, "node1", &nodes, &HashMap::new(), false).await;
+
+        assert!(fake.calls().is_empty(), "{:?}", fake.calls());
+    }
+
+    #[tokio::test]
+    async fn a_down_osd_at_exactly_half_weight_is_stopped_to_be_purged() {
+        let fake = purge_host(9309);
+        let nodes = vec![host("node1", vec![9309]), osd(9309, false, 0.5)];
+
+        purge_drained_osds(&fake, "node1", &nodes, &HashMap::new(), false).await;
+
+        assert!(
+            fake.ran("systemctl stop yolab-ceph-osd@9309.service"),
+            "{:?}",
+            fake.calls()
+        );
+        assert!(!fake.ran("purge-actual"));
     }
 }
