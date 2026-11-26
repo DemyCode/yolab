@@ -260,6 +260,31 @@ mod tests {
     }
 
     #[test]
+    fn a_yearly_schedule_still_finds_last_years_slot() {
+        let c = Cron::parse("0 0 1 1 *").unwrap();
+        assert_eq!(
+            c.last_fire(at(2026, 12, 31, 23, 0)),
+            Some(at(2026, 1, 1, 0, 0))
+        );
+    }
+
+    #[test]
+    fn a_one_value_range_is_that_value() {
+        let c = Cron::parse("5-5 * * * *").unwrap();
+        assert!(c.matches(&at(2026, 1, 1, 0, 5)));
+        assert!(!c.matches(&at(2026, 1, 1, 0, 6)));
+    }
+
+    #[test]
+    fn a_start_with_a_step_runs_from_that_start_to_the_end_of_the_field() {
+        let c = Cron::parse("5/20 * * * *").unwrap();
+        for minute in [5, 25, 45] {
+            assert!(c.matches(&at(2026, 1, 1, 0, minute)), "minute {minute}");
+        }
+        assert!(!c.matches(&at(2026, 1, 1, 0, 6)));
+    }
+
+    #[test]
     fn a_never_matching_schedule_is_never_due_after_a_run() {
         let c = Cron::parse("0 0 31 2 *").unwrap();
         assert!(!c.due(Some(at(2026, 1, 1, 0, 0)), at(2026, 9, 17, 12, 0)));
