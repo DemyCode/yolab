@@ -157,10 +157,8 @@ fn parse_field(field: &str, lo: u32, hi: u32, name: &str) -> Result<Vec<bool>, C
                 "{name}: {start}-{end} is outside {lo}-{hi}"
             )));
         }
-        let mut v = start;
-        while v <= end {
+        for v in (start..=end).step_by(step as usize) {
             set[v as usize] = true;
-            v += step;
         }
     }
     Ok(set)
