@@ -30,11 +30,7 @@
   withNodeModules = pname: run:
     pkgs.stdenv.mkDerivation {
       inherit pname version;
-      src = pkgs.lib.cleanSourceWith {
-        name = "client-ui-source";
-        src = ./client-ui;
-        filter = path: type: !(type == "directory" && builtins.elem (baseNameOf path) ["node_modules" "dist" "dist-ssr" "coverage" "reports" ".stryker-tmp"]);
-      };
+      src = pkgs.nix-gitignore.gitignoreSource [] ./client-ui;
       nativeBuildInputs = [nodejs];
       configurePhase = ''
         runHook preConfigure
