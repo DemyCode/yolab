@@ -747,9 +747,12 @@ fn list(items: &BTreeSet<String>) -> String {
 }
 
 fn new_fsid() -> String {
-    let mut b: [u8; 16] = rand::random();
-    b[6] = (b[6] & 0x0f) | 0x40;
-    b[8] = (b[8] & 0x3f) | 0x80;
+    uuid_v4(rand::random())
+}
+
+fn uuid_v4(mut b: [u8; 16]) -> String {
+    b[6] = 0x40 + (b[6] % 0x10);
+    b[8] = 0x80 + (b[8] % 0x40);
     let h = hex::encode(b);
     format!(
         "{}-{}-{}-{}-{}",

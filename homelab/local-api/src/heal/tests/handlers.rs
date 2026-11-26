@@ -177,6 +177,16 @@ async fn a_peer_already_prepared_for_this_heal_says_so() {
 }
 
 #[tokio::test]
+async fn a_peer_prepared_for_another_heal_does_not_answer_as_if_it_were_this_one() {
+    booted("b1");
+    reset_state("ab12", json!({ "phase": "prepared" }));
+    let res = api(FakeHost::new())
+        .post("/api/heal/peer/prepare", &prepare_body("cd34"))
+        .await;
+    assert_ne!(res.status, StatusCode::OK, "{}", res.body);
+}
+
+#[tokio::test]
 async fn a_peer_does_not_prepare_while_an_update_rebuilds_it() {
     booted("b1");
     let _update = crate::routers::update::exclusive().unwrap();

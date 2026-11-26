@@ -301,6 +301,13 @@ fn addresses_from_different_lists_are_compared_as_addresses() {
 }
 
 #[test]
+fn the_version_and_variant_bits_are_forced_whatever_the_random_bytes() {
+    assert_eq!(uuid_v4([0xff; 16]), "ffffffff-ffff-4fff-bfff-ffffffffffff");
+    assert_eq!(uuid_v4([0x00; 16]), "00000000-0000-4000-8000-000000000000");
+    assert_eq!(uuid_v4([0x5a; 16]), "5a5a5a5a-5a5a-4a5a-9a5a-5a5a5a5a5a5a");
+}
+
+#[test]
 fn a_new_fsid_is_a_version_4_uuid() {
     let a = new_fsid();
     assert_eq!(a.len(), 36);

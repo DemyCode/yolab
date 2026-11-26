@@ -972,8 +972,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let cache = dir.path().join("mesh-peers.json");
         std::fs::write(&cache, r#"["fd00:cafe::5","fd00:cafe::6"]"#).unwrap();
+        let logs = crate::testkit::capture_logs();
         let peers = peer_addresses_from(None, &cache, "fd00:cafe::5").await;
         assert_eq!(peers, ["fd00:cafe::6"]);
+        assert!(logs.contain("using 2 cached peers"), "{}", logs.text());
         let unreachable = crate::k8s::testing::unreachable();
         let peers = peer_addresses_from(Some(&unreachable), &cache, "fd00:cafe::5").await;
         assert_eq!(peers, ["fd00:cafe::6"]);
@@ -999,9 +1001,11 @@ mod tests {
     #[tokio::test]
     async fn no_api_and_nothing_remembered_is_no_peers() {
         let dir = tempfile::tempdir().unwrap();
+        let logs = crate::testkit::capture_logs();
         let peers =
             peer_addresses_from(None, &dir.path().join("absent.json"), "fd00:cafe::5").await;
         assert!(peers.is_empty());
+        assert!(!logs.contain("cached peers"), "{}", logs.text());
     }
 
     const TOKEN: &str = "cluster-tok";
