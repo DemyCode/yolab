@@ -846,6 +846,17 @@ mod tests {
     }
 
     #[test]
+    fn every_known_machine_state_reads_back_as_itself() {
+        for state in [
+            MachineState::Member,
+            MachineState::Draining,
+            MachineState::Removed,
+        ] {
+            assert_eq!(MachineState::from(String::from(state.clone())), state);
+        }
+    }
+
+    #[test]
     fn the_kinds_of_record_do_not_bleed_into_each_other() {
         let mut store = Store::new("node1");
         store

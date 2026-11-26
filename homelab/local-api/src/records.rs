@@ -503,6 +503,27 @@ mod tests {
     }
 
     #[test]
+    fn a_store_is_named_by_its_namespace_and_name() {
+        assert_eq!(STORE.label(), "kube-system/yolab-test");
+    }
+
+    #[test]
+    fn a_written_object_lives_in_the_store_namespace_marked_as_managed_by_yolab() {
+        let written = STORE.object("[]", None, Some("3".into()));
+        assert_eq!(written.metadata.namespace.as_deref(), Some("kube-system"));
+        assert_eq!(
+            written.metadata.labels,
+            Some(
+                [(
+                    "app.kubernetes.io/managed-by".to_string(),
+                    "yolab".to_string(),
+                )]
+                .into(),
+            )
+        );
+    }
+
+    #[test]
     fn errors_name_the_store_they_are_about() {
         let corrupt = RecordError::Corrupt {
             store: "kube-system/x".into(),

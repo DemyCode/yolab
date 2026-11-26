@@ -449,6 +449,23 @@ mod tests {
     }
 
     #[test]
+    fn a_key_line_is_sized_at_most_sixteen_kibibytes() {
+        assert_eq!(MAX_KEY_LEN, 16_384);
+        let base = key_of("ssh-ed25519", &[5; 32]);
+        let at_limit = format!("{base} {}", "c".repeat(MAX_KEY_LEN - base.len() - 1));
+        assert_eq!(at_limit.len(), MAX_KEY_LEN);
+        assert!(parse_key(&at_limit).is_ok());
+        let why = parse_key(&format!("{at_limit}c")).unwrap_err();
+        assert!(why.contains("too long"), "{why}");
+    }
+
+    #[test]
+    fn a_label_of_exactly_the_limit_is_kept() {
+        let label = "x".repeat(MAX_LABEL_CHARS);
+        assert_eq!(clean_label(&label).unwrap(), label);
+    }
+
+    #[test]
     fn a_label_is_a_short_single_line() {
         assert_eq!(clean_label("  My laptop ").unwrap(), "My laptop");
         assert!(clean_label(&"x".repeat(MAX_LABEL_CHARS + 1)).is_err());

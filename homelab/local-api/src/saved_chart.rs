@@ -369,6 +369,13 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_chart_of_exactly_the_config_map_limit_is_kept() {
+        let host = packaging(MAX_BYTES);
+        let bytes = package(&host, Path::new("/nowhere/notes")).await.unwrap();
+        assert_eq!(bytes.len(), MAX_BYTES);
+    }
+
+    #[tokio::test]
     async fn helm_that_cannot_start_is_an_error() {
         let host = FakeHost::new().unstartable("helm package");
         assert!(package(&host, Path::new("/nowhere/notes")).await.is_err());

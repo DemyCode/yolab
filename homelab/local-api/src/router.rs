@@ -12,6 +12,8 @@ use crate::routers::{
 };
 use crate::{auth, heal, mesh, notify, runtime, topology, AppState};
 
+const MAX_CHART_UPLOAD: usize = 16 * 1024 * 1024;
+
 pub fn build_router(state: AppState) -> Router {
     let auth_state = state.auth.clone();
 
@@ -153,7 +155,7 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/api/apps/custom/chart",
             post(custom_app::upload_chart)
-                .layer(axum::extract::DefaultBodyLimit::max(16 * 1024 * 1024)),
+                .layer(axum::extract::DefaultBodyLimit::max(MAX_CHART_UPLOAD)),
         )
         .route("/api/tunnel/domain", get(apps::tunnel_domain))
         .route("/api/apps/catalog", get(apps::catalog))
@@ -197,4 +199,14 @@ pub fn build_router(state: AppState) -> Router {
         .layer(middleware::from_fn_with_state(auth_state, auth_middleware))
         .layer(cors)
         .with_state(state)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_uploaded_chart_may_be_up_to_sixteen_mebibytes() {
+        assert_eq!(MAX_CHART_UPLOAD, 16_777_216);
+    }
 }

@@ -60,6 +60,18 @@ mod tests {
         assert_eq!(human_bytes(1_500_000_000_000), "1.5 TB");
     }
 
+    #[test]
+    fn a_size_of_exactly_ten_units_drops_the_decimal() {
+        assert_eq!(human_bytes(9_900), "9.9 KB");
+        assert_eq!(human_bytes(10_000), "10 KB");
+    }
+
+    #[test]
+    fn an_exbibyte_is_two_to_the_sixtieth() {
+        assert_eq!(bytes("1Ei"), 1u64 << 60);
+        assert_eq!(bytes("3Ei"), 3 * (1u64 << 60));
+    }
+
     const GI: u64 = 1024 * 1024 * 1024;
 
     #[test]

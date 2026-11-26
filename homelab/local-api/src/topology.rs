@@ -636,6 +636,18 @@ mod tests {
             synced.seeded,
             "having read the cluster and found nothing is still having read it"
         );
+        assert!(synced.changed, "a newly seeded store has to be saved");
+    }
+
+    #[test]
+    fn a_policy_taken_into_an_already_seeded_store_is_saved() {
+        let mut store = Store::new("node1");
+        store.mark_policy_seeded();
+
+        let synced = sync_policy(&mut store, Some(Some(&policy(2, "host"))));
+
+        assert_eq!(synced.stored, Some(policy(2, "host")));
+        assert!(synced.changed);
     }
 
     #[test]
@@ -766,9 +778,11 @@ mod tests {
                 .ok(
                     "ceph osd tree",
                     r#"{"nodes": [
-                        {"type": "root", "children": [-2, -3]},
+                        {"type": "root", "children": [-2, -3, -4]},
                         {"type": "host", "children": [0, 1]},
-                        {"type": "host", "children": []}
+                        {"type": "host", "children": [2]},
+                        {"type": "host", "children": []},
+                        {"type": "osd"}
                     ]}"#,
                 );
             let topo = observe(&Backend { kube, host }).await.unwrap();
@@ -777,7 +791,7 @@ mod tests {
                 Topology {
                     nodes: 2,
                     osds: 3,
-                    osd_hosts: 1
+                    osd_hosts: 2
                 }
             );
         }

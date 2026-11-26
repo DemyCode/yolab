@@ -314,12 +314,22 @@ mod tests {
         assert!(err.to_string().contains("unit masked"), "{err}");
     }
 
+    async fn within_seconds<F: std::future::Future>(work: F) -> F::Output {
+        tokio::time::timeout(Duration::from_secs(5), work)
+            .await
+            .expect("waited on an image store a machine without Ceph settings does not have")
+    }
+
     #[tokio::test]
     async fn a_machine_without_ceph_settings_fails_instead_of_starting_k3s_on_the_root_disk() {
         let host = FakeHost::new().ok("systemctl", "");
-        let err = image_store_up(&host, &StorageEnv::from_lookup(|_| None), "yolab-n1")
-            .await
-            .unwrap_err();
+        let err = within_seconds(image_store_up(
+            &host,
+            &StorageEnv::from_lookup(|_| None),
+            "yolab-n1",
+        ))
+        .await
+        .unwrap_err();
         assert!(err.to_string().contains("no Ceph settings"), "{err}");
         assert!(!host.ran("systemctl start"), "{:?}", host.calls());
     }
@@ -334,6 +344,16 @@ mod tests {
         assert_eq!(env.api_port, 3001);
         assert_eq!(env.bootstrap_args().api_port, 3001);
         assert!(!env.is_configured());
+    }
+
+    #[test]
+    fn ceph_needs_both_a_cluster_id_and_a_monitor_address() {
+        let only = |key: &'static str| {
+            StorageEnv::from_lookup(move |name| (name == key).then(|| "x".to_string()))
+        };
+        assert!(!only("YOLAB_CEPH_FSID").is_configured());
+        assert!(!only("YOLAB_CEPH_MON_ADDR").is_configured());
+        assert!(ceph_settings().is_configured());
     }
 
     #[test]
@@ -500,7 +520,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let host = FakeHost::new();
         let env = StorageEnv::from_lookup(|_| None);
-        assert_eq!(run_job(&host, "image-store-up", &env, dir.path()).await, 1);
+        assert_eq!(
+            within_seconds(run_job(&host, "image-store-up", &env, dir.path())).await,
+            1
+        );
         assert_eq!(lock_files(dir.path()), ["storage-image-store-up.lock"]);
     }
 

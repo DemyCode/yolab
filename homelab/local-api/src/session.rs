@@ -233,6 +233,21 @@ mod tests {
     }
 
     #[test]
+    fn ct_eq_rejects_two_differences_that_would_cancel_out() {
+        assert!(!ct_eq("ab", "ba"));
+    }
+
+    #[test]
+    fn hmac_uses_a_key_of_exactly_one_block_as_is_without_hashing_it() {
+        let key = [0xaa; 64];
+        let message = b"exactly one block";
+        assert_ne!(
+            hmac_sha256(&key, message),
+            hmac_sha256(&Sha256::digest(key), message)
+        );
+    }
+
+    #[test]
     fn ct_eq_rejects_empty() {
         assert!(!ct_eq("", ""));
         assert!(!ct_eq("", "anything"));
