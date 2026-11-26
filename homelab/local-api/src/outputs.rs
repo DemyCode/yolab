@@ -660,6 +660,28 @@ mod tests {
         }
 
         #[tokio::test]
+        async fn every_container_log_is_asked_for_with_its_timestamps() {
+            let (server, kube) = api_server().await;
+            nothing_stored(&server).await;
+            pods(&server).await;
+            serve_logs(&server, POD_PATH, "file-explorer-init", &printed("s3cret")).await;
+            serve_logs(&server, POD_PATH, "caddy", "").await;
+            accept_patches(&server).await;
+
+            rescan(&kube, NS, &app()).await.unwrap();
+
+            let stamped: Vec<bool> = server
+                .received_requests()
+                .await
+                .unwrap()
+                .iter()
+                .filter(|r| r.url.path().ends_with("/log"))
+                .map(|r| r.url.query().unwrap().contains("timestamps=true"))
+                .collect();
+            assert_eq!(stamped, [true, true]);
+        }
+
+        #[tokio::test]
         async fn one_container_whose_logs_cannot_be_read_does_not_hide_the_others() {
             let (server, kube) = api_server().await;
             nothing_stored(&server).await;

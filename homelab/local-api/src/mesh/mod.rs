@@ -24,6 +24,8 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(8);
 
 const PROBE_RETRY: Duration = Duration::from_secs(300);
 
+const PROBE_HANDSHAKE_MAX_AGE_SECS: u64 = PROBE_TIMEOUT.as_secs() + 2;
+
 const TICK: Duration = Duration::from_secs(60);
 
 const FAST_TICK: Duration = Duration::from_secs(5);
@@ -421,10 +423,7 @@ async fn tick<H: Host>(
             continue;
         }
 
-        if last_probe
-            .get(peer_addr)
-            .is_some_and(|t| t.elapsed() < PROBE_RETRY)
-        {
+        if probed_recently(last_probe.get(peer_addr), Instant::now()) {
             continue;
         }
         last_probe.insert(peer_addr.clone(), Instant::now());
@@ -440,6 +439,10 @@ async fn tick<H: Host>(
         }
     }
     Ok(())
+}
+
+fn probed_recently(last: Option<&Instant>, now: Instant) -> bool {
+    last.is_some_and(|t| now.saturating_duration_since(*t) < PROBE_RETRY)
 }
 
 async fn probe<H: Host>(host: &H, cand: &Candidates, probe_addr: &str) -> Option<String> {
@@ -469,7 +472,7 @@ async fn probe<H: Host>(host: &H, cand: &Candidates, probe_addr: &str) -> Option
                 .unwrap_or_default()
                 .iter()
                 .find(|p| p.public_key == cand.public_key)
-                .is_some_and(|p| p.is_alive(now_secs(), PROBE_TIMEOUT.as_secs() + 2));
+                .is_some_and(|p| p.is_alive(now_secs(), PROBE_HANDSHAKE_MAX_AGE_SECS));
             if alive {
                 return Some(endpoint);
             }
@@ -814,6 +817,42 @@ mod tests {
             &peer(900, 310_000),
             BLACKHOLE_SECS - 1
         ));
+    }
+
+    #[test]
+    fn a_window_of_exactly_the_blackhole_span_already_counts() {
+        let before = Traffic {
+            rx_bytes: 900,
+            tx_bytes: 1_000,
+            at: 0,
+        };
+        assert!(is_blackholed(
+            Some(&before),
+            &peer(900, 310_000),
+            BLACKHOLE_SECS
+        ));
+    }
+
+    #[test]
+    fn a_peer_probed_less_than_the_retry_window_ago_is_not_probed_again() {
+        let t = Instant::now();
+        assert!(probed_recently(Some(&t), t));
+        assert!(probed_recently(
+            Some(&t),
+            t + PROBE_RETRY - Duration::from_nanos(1)
+        ));
+    }
+
+    #[test]
+    fn a_peer_probed_exactly_the_retry_window_ago_is_due_again() {
+        let t = Instant::now();
+        assert!(!probed_recently(Some(&t), t + PROBE_RETRY));
+        assert!(!probed_recently(None, t));
+    }
+
+    #[test]
+    fn a_probe_handshake_counts_for_two_seconds_past_the_probe_timeout() {
+        assert_eq!(PROBE_HANDSHAKE_MAX_AGE_SECS, 10);
     }
 
     #[test]

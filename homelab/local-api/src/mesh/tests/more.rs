@@ -167,6 +167,12 @@ async fn a_candidate_that_never_handshakes_is_given_up_after_the_probe_timeout()
         .ok("wg set", "")
         .ok("wg show wg1 dump", &dump_of(&[hub_line()]));
     assert_eq!(probe(&host, &candidate(&[LAN]), "::dead:1/128").await, None);
+    let looks = host
+        .calls()
+        .iter()
+        .filter(|c| c.contains("wg show wg1 dump"))
+        .count();
+    assert_eq!(looks, 8, "one look per second of the probe timeout");
 }
 
 #[tokio::test]

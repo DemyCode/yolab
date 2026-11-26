@@ -22,7 +22,10 @@ where
             Step::Failed(e) => return Err(e),
             Step::Pending(why) => why,
         };
-        if tokio::time::Instant::now() >= deadline {
+        if deadline
+            .saturating_duration_since(tokio::time::Instant::now())
+            .is_zero()
+        {
             return Err(still);
         }
         tokio::time::sleep(every).await;
@@ -134,11 +137,28 @@ mod tests {
     #[tokio::test]
     async fn the_check_always_runs_at_least_once_even_with_no_time() {
         let mut calls = 0;
-        let _ = until::<(), _, _>(NOW, NOW, || {
+        let e = until::<(), _, _>(NOW, NOW, || {
             calls += 1;
             async { Step::Pending(anyhow::anyhow!("never")) }
         })
-        .await;
+        .await
+        .unwrap_err();
+        assert_eq!(e.to_string(), "never");
         assert_eq!(calls, 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_last_check_is_the_one_made_exactly_at_the_deadline() {
+        let mut calls = 0;
+        let started = tokio::time::Instant::now();
+        let e = until::<(), _, _>(Duration::from_secs(3), Duration::from_secs(1), || {
+            calls += 1;
+            async { Step::Pending(anyhow::anyhow!("not yet")) }
+        })
+        .await
+        .unwrap_err();
+        assert_eq!(e.to_string(), "not yet");
+        assert_eq!(calls, 4);
+        assert_eq!(started.elapsed(), Duration::from_secs(3));
     }
 }

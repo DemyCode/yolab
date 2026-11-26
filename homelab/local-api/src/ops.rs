@@ -226,6 +226,31 @@ mod tests {
         assert!(seen.contains_key("new"));
     }
 
+    #[test]
+    fn an_id_seen_just_under_a_day_ago_is_still_remembered() {
+        let mut seen = Seen::new();
+        let t0 = Instant::now();
+        silence_in(&mut seen, "old", "h", t0);
+        silence_in(&mut seen, "new", "h", t0 + Duration::from_secs(86_399));
+        assert!(seen.contains_key("old"));
+    }
+
+    #[test]
+    fn an_id_seen_exactly_a_day_ago_is_forgotten() {
+        let mut seen = Seen::new();
+        let t0 = Instant::now();
+        silence_in(&mut seen, "old", "h", t0);
+        silence_in(&mut seen, "new", "h", t0 + Duration::from_secs(86_400));
+        assert!(!seen.contains_key("old"));
+    }
+
+    #[test]
+    fn a_running_record_silent_for_exactly_the_stale_span_is_no_longer_driven() {
+        let live = job("a", RUNNING);
+        assert!(is_driven(&live, STALE_AFTER - Duration::from_nanos(1)));
+        assert!(!is_driven(&live, STALE_AFTER));
+    }
+
     #[derive(serde::Serialize, serde::Deserialize)]
     struct Rec {
         id: String,
