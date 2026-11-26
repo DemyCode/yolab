@@ -1386,6 +1386,39 @@ mod tests {
         assert_ne!(s.started_at, "2026-01-01T00:00:00Z");
     }
 
+    #[test]
+    fn a_backup_set_hands_out_its_own_claim_and_keeps_changes_made_to_it() {
+        let mut s = set("bk-1", RUNNING);
+        s.claim = Claim {
+            owner: "node2".into(),
+            heartbeat: "2026-01-01T00:01:00Z".into(),
+        };
+        assert_eq!(s.claim().owner, "node2");
+        assert_eq!(s.claim().heartbeat, "2026-01-01T00:01:00Z");
+        s.claim_mut().owner = "node3".into();
+        assert_eq!(s.claim.owner, "node3");
+    }
+
+    #[tokio::test]
+    async fn a_backup_on_its_last_allowed_attempt_is_still_tried() {
+        let mut s = set("a", RUNNING);
+        s.attempts = MAX_ATTEMPTS;
+        s.namespace = "kube-system".into();
+        let b = Backend {
+            kube: crate::k8s::testing::unreachable(),
+            host: crate::host::fake::FakeHost::new(),
+        };
+        let cfg = BackupConfig {
+            access_key_id: "AKID".into(),
+            secret_access_key: "SECRET".into(),
+            bucket: "bucket-1".into(),
+            endpoint: "https://s3.example".into(),
+            restic_password: "pw".into(),
+        };
+        let err = run_taken(&b, &cfg, &s).await.err().unwrap();
+        assert!(!err.to_string().contains("interrupted"), "{err}");
+    }
+
     #[tokio::test]
     async fn a_backup_interrupted_too_often_fails_without_running() {
         let mut s = set("a", RUNNING);
@@ -1713,6 +1746,31 @@ mod tests {
                 "bk-waiting"
             );
             assert!(!wrote_records(&server).await);
+        }
+
+        #[tokio::test]
+        async fn a_backup_running_for_another_service_does_not_absorb_a_new_request() {
+            let (server, kube) = api_server().await;
+            config(&server, 200, enabled()).await;
+            crate::records::testing::records(
+                &server,
+                "yolab-backups",
+                json!([{
+                    "id": "bk-other", "namespace": "yolab-photos",
+                    "started_at": "2026-09-28T00:00:00Z", "state": RUNNING,
+                    "owner": "node1", "heartbeat": "2026-09-28T00:00:00Z"
+                }]),
+            )
+            .await;
+            crate::records::testing::accept_writes(&server).await;
+            let b = Backend {
+                kube,
+                host: FakeHost::new(),
+            };
+
+            let id = start_app(&b, "yolab-notes", "user").await.unwrap();
+            assert_ne!(id, "bk-other");
+            assert!(wrote_records(&server).await);
         }
 
         #[tokio::test]
