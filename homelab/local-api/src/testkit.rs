@@ -238,11 +238,23 @@ impl tracing::log::Log for LogSink {
     fn enabled(&self, _: &tracing::log::Metadata) -> bool {
         true
     }
-    fn log(&self, _: &tracing::log::Record) {}
+    fn log(&self, record: &tracing::log::Record) {
+        CAPTURED.with(|captured| {
+            if let Some(buffer) = captured.borrow().as_ref() {
+                use std::io::Write as _;
+                writeln!(buffer.clone(), "{} {}", record.level(), record.args())
+                    .expect("an in-memory log buffer takes every write");
+            }
+        });
+    }
     fn flush(&self) {}
 }
 
 static LOG_SINK: LogSink = LogSink;
+
+thread_local! {
+    static CAPTURED: std::cell::RefCell<Option<LogBuffer>> = const { std::cell::RefCell::new(None) };
+}
 
 extern "C" fn format_every_log_line() {
     if logs_off() {
@@ -345,7 +357,13 @@ impl std::io::Write for LogBuffer {
 
 pub struct Logs {
     buffer: LogBuffer,
-    _scope: tracing::subscriber::DefaultGuard,
+    _scope: Option<tracing::subscriber::DefaultGuard>,
+}
+
+impl Drop for Logs {
+    fn drop(&mut self) {
+        CAPTURED.with(|captured| *captured.borrow_mut() = None);
+    }
 }
 
 impl Logs {
@@ -365,6 +383,13 @@ impl Logs {
 
 pub fn capture_logs() -> Logs {
     let buffer = LogBuffer::default();
+    if logs_off() {
+        CAPTURED.with(|captured| *captured.borrow_mut() = Some(buffer.clone()));
+        return Logs {
+            buffer,
+            _scope: None,
+        };
+    }
     let writer = buffer.clone();
     let subscriber = tracing_subscriber::fmt()
         .with_max_level(tracing::Level::TRACE)
@@ -374,7 +399,7 @@ pub fn capture_logs() -> Logs {
         .finish();
     Logs {
         buffer,
-        _scope: tracing::subscriber::set_default(subscriber),
+        _scope: Some(tracing::subscriber::set_default(subscriber)),
     }
 }
 
