@@ -883,6 +883,12 @@ async fn a_removal_stops_when_a_record_or_the_run_folder_cannot_be_removed() {
 #[tokio::test]
 async fn a_disk_attached_here_with_its_record_is_kept_attached() {
     std::fs::create_dir_all(stack::run_dir(crate::storage::root(), 1)).unwrap();
+    std::fs::write(
+        stack::run_dir(crate::storage::root(), 1).join("loop"),
+        "/dev/loop1",
+    )
+    .unwrap();
+    std::fs::create_dir_all(crate::storage::on_machine("/sys/block/loop1/loop")).unwrap();
     let host = FakeHost::new()
         .ok(
             "ceph config-key dump yolab/vdisks/",

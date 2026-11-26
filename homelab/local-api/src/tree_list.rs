@@ -105,7 +105,11 @@ async fn off_thread<T: Send + 'static>(
     what: &str,
     work: impl FnOnce() -> Result<T, ListError> + Send + 'static,
 ) -> Result<T, ListError> {
-    off_thread_within(TIMEOUT * 2, what, work).await
+    off_thread_within(off_thread_limit(), what, work).await
+}
+
+fn off_thread_limit() -> Duration {
+    TIMEOUT * 2
 }
 
 async fn off_thread_within<T: Send + 'static>(
@@ -222,6 +226,21 @@ mod tests {
         let l = listing("", many);
         assert_eq!(l.folders.len(), LIMIT);
         assert!(l.truncated);
+    }
+
+    #[test]
+    fn a_folder_of_exactly_the_limit_is_shown_whole() {
+        let many = (0..LIMIT)
+            .map(|i| entry(&format!("d{i:05}"), DT_DIR))
+            .collect();
+        let l = listing("", many);
+        assert_eq!(l.folders.len(), LIMIT);
+        assert!(!l.truncated);
+    }
+
+    #[test]
+    fn work_off_the_thread_gets_twice_the_trees_own_timeout() {
+        assert_eq!(off_thread_limit(), Duration::from_secs(20));
     }
 
     #[test]

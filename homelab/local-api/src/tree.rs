@@ -435,14 +435,19 @@ enum JobState {
 }
 
 fn job_state(job: &Value) -> JobState {
-    if job["status"]["succeeded"].as_u64().unwrap_or(0) > 0 {
+    if matches!(job["status"]["succeeded"].as_u64(), Some(1..)) {
         return JobState::Succeeded;
     }
     let failed = job["status"]["conditions"]
         .as_array()
         .into_iter()
         .flatten()
-        .find(|c| c["type"] == "Failed" && c["status"] == "True");
+        .find(|c| {
+            matches!(
+                (c["type"].as_str(), c["status"].as_str()),
+                (Some("Failed"), Some("True"))
+            )
+        });
     match failed {
         Some(c) => JobState::Failed(
             c["message"]
@@ -497,6 +502,10 @@ pub(crate) const JOB_MOUNT: &str = MOUNT;
 pub(crate) const JOB_VOLUME: &str = ROOT_VOLUME;
 pub(crate) const JOB_KEEP_FINISHED_SECS: u64 = KEEP_FINISHED_SECS;
 
+fn waited(deadline: Duration) -> Duration {
+    deadline + WAIT_MARGIN
+}
+
 pub(crate) async fn run_job(
     client: &Client,
     name: &str,
@@ -510,7 +519,7 @@ pub(crate) async fn run_job(
     let reference = crate::k8s::reference("batch/v1", "Job", crate::csi::NS, name);
     let reference = &reference;
     let job_name = name;
-    let failure = crate::poll::until(deadline + WAIT_MARGIN, POLL, move || async move {
+    let failure = crate::poll::until(waited(deadline), POLL, move || async move {
         match crate::k8s::get(client, reference).await {
             Ok(Some(found)) => match job_state(&found) {
                 JobState::Succeeded => crate::poll::Step::Done(None),
@@ -961,6 +970,24 @@ mod tests {
     }
 
     #[test]
+    fn a_folder_is_matched_only_to_a_claim_of_its_own_name() {
+        let docs = vec![
+            volume_in("yolab-jellyfin", "jellyfin-data", "/tree/jellyfin"),
+            json!({ "kind": "ConfigMap", "metadata": {
+                "name": "jellyfin-data", "namespace": "yolab-jellyfin"
+            } }),
+            request_in("yolab-jellyfin", "other-data"),
+            request_in("yolab-jellyfin", "jellyfin-data"),
+        ];
+        let found = planned(&docs, "yolab-jellyfin").unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(
+            found[0].request,
+            request_in("yolab-jellyfin", "jellyfin-data")
+        );
+    }
+
+    #[test]
     fn a_rendered_claim_without_a_namespace_is_the_releases_own() {
         let mut request = request_in("yolab-jellyfin", "jellyfin-data");
         request["metadata"]
@@ -1379,6 +1406,57 @@ mod tests {
             "metadata": { "name": "yolab-tree-x", "namespace": "ceph-csi" },
             "status": server_status,
         })
+    }
+
+    fn read(status: Value) -> String {
+        match job_state(&job_at(status)) {
+            JobState::Running => "running".into(),
+            JobState::Succeeded => "succeeded".into(),
+            JobState::Failed(why) => format!("failed: {why}"),
+        }
+    }
+
+    #[test]
+    fn a_job_has_succeeded_once_any_of_its_pods_succeeded() {
+        assert_eq!(read(json!({})), "running");
+        assert_eq!(read(json!({ "succeeded": 0 })), "running");
+        assert_eq!(read(json!({ "succeeded": 1 })), "succeeded");
+        assert_eq!(read(json!({ "succeeded": 2 })), "succeeded");
+    }
+
+    #[test]
+    fn a_job_has_failed_only_once_its_failed_condition_is_true() {
+        let condition = |kind: &str, status: &str| {
+            json!({ "conditions": [
+                { "type": kind, "status": status, "reason": "BackoffLimitExceeded" }
+            ] })
+        };
+        assert_eq!(read(condition("Failed", "False")), "running");
+        assert_eq!(read(condition("Complete", "True")), "running");
+        assert_eq!(
+            read(condition("Failed", "True")),
+            "failed: BackoffLimitExceeded"
+        );
+    }
+
+    #[test]
+    fn a_failed_job_says_its_message_then_its_reason_then_that_it_failed() {
+        assert_eq!(
+            read(json!({ "conditions": [{
+                "type": "Failed", "status": "True",
+                "reason": "DeadlineExceeded", "message": "too slow",
+            }] })),
+            "failed: too slow"
+        );
+        assert_eq!(
+            read(json!({ "conditions": [{ "type": "Failed", "status": "True" }] })),
+            "failed: it failed"
+        );
+    }
+
+    #[test]
+    fn a_job_is_waited_on_a_margin_past_its_own_deadline() {
+        assert_eq!(waited(DEADLINE), Duration::from_secs(21_900));
     }
 
     async fn accepting(server: &wiremock::MockServer, job_status: Value) {
