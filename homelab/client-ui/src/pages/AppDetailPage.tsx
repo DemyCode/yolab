@@ -24,6 +24,12 @@ import {
   ValueRow,
 } from "@/components/ui/list";
 import { api, reasonOf, streamEvents } from "@/lib/api";
+import {
+  forgetFinished,
+  startUpdate,
+  updateNotice,
+  useAppUpdate,
+} from "@/lib/appUpdates";
 import { backupPagePath, scheduleLabel } from "@/lib/backups";
 import { formatDateTime, relativeTime } from "@/lib/format";
 import { useApi } from "@/lib/useResource";
@@ -427,7 +433,7 @@ export function AppDetailPage() {
   const [confirmRemove, setConfirmRemove] = useState(false);
   const [deleteShared, setDeleteShared] = useState(false);
   const [deleteBackups, setDeleteBackups] = useState(false);
-  const [working, setWorking] = useState<null | "update" | "remove">(null);
+  const [working, setWorking] = useState<null | "remove">(null);
   const [notice, setNotice] = useState<Notice | null>(null);
   const [restore, setRestore] = useState<RestoreRecord | null>(null);
   const [restoreSeen, setRestoreSeen] = useState<string | null>(null);
@@ -438,6 +444,19 @@ export function AppDetailPage() {
   const app = installed.find((a) => a.instance_name === instanceName);
   const state = app ? appState(app) : "starting";
   const now = useNow(5_000);
+  const running = useAppUpdate(instanceName);
+  const updating = running?.running === true;
+  const finished = running?.running === false;
+  const refreshApps = apps.refresh;
+  const refreshCatalog = catalog.refresh;
+
+  useEffect(() => {
+    if (!finished) return;
+    void refreshApps();
+    void refreshCatalog();
+  }, [finished, refreshApps, refreshCatalog]);
+
+  useEffect(() => () => forgetFinished(instanceName), [instanceName]);
 
   useEffect(() => {
     let cancelled = false;
@@ -503,10 +522,12 @@ export function AppDetailPage() {
   const restoring = restore?.state === "running";
   const actions = availableActions(state, restoring);
   const newer = newerVersion(app, entry);
-  const offeredUpdate = newer && actions.has("update") ? newer : null;
+  const offeredUpdate =
+    newer && actions.has("update") && !updating ? newer : null;
   const version = app.chart_version || entry?.chart_version || "";
   const stem = instanceStem(app);
   const current = app;
+  const shown: Notice | null = notice ?? updateNotice(running, name);
 
   async function remove() {
     setWorking("remove");
@@ -526,34 +547,14 @@ export function AppDetailPage() {
     }
   }
 
-  async function update() {
-    setWorking("update");
+  function update() {
     setNotice(null);
-    let reached = "";
-    const result = await streamEvents(
-      `/api/apps/${current.instance_name}/update`,
-      { method: "POST" },
-      (line) => {
-        const found = /^Now on version (.+)$/.exec(line);
-        if (found) reached = found[1];
-      },
-    );
-    if (result.ok) {
-      setNotice({
-        tone: "success",
-        title: reached
-          ? `${name} now runs version ${reached}`
-          : `${name} was reinstalled`,
-      });
-    } else {
-      setNotice({
-        tone: "error",
-        title: "The update did not finish",
-        body: result.error,
-      });
-    }
-    await Promise.all([apps.refresh(), catalog.refresh()]);
-    setWorking(null);
+    void startUpdate(current.instance_name, "update");
+  }
+
+  function dismiss() {
+    setNotice(null);
+    forgetFinished(current.instance_name);
   }
 
   const restoreDone =
@@ -584,8 +585,8 @@ export function AppDetailPage() {
               <Button
                 size="sm"
                 variant="secondary"
-                onClick={() => void update()}
-                loading={working === "update"}
+                onClick={update}
+                loading={updating}
               >
                 <RefreshCw className="h-4 w-4" />
                 Try again
@@ -612,9 +613,9 @@ export function AppDetailPage() {
           }
         >
           <WhatHappened app={current} fallback="It did not say why." />
-          {notice?.tone === "error" && (
+          {shown?.tone === "error" && (
             <p className="mt-1 font-medium">
-              {notice.title}: {notice.body}
+              {shown.title}: {shown.body}
             </p>
           )}
           {note ? (
@@ -638,10 +639,26 @@ export function AppDetailPage() {
         </Banner>
       );
     }
-    if (notice?.tone === "error") {
+    if (updating) {
       return (
-        <Banner tone="error" title={notice.title}>
-          {notice.body}
+        <Banner tone="info" title={`Updating ${name}`}>
+          It keeps running while the new version is put in place. You can leave
+          this page.
+        </Banner>
+      );
+    }
+    if (shown?.tone === "error") {
+      return (
+        <Banner
+          tone="error"
+          title={shown.title}
+          action={
+            <Button size="sm" variant="ghost" onClick={dismiss}>
+              Dismiss
+            </Button>
+          }
+        >
+          {shown.body}
         </Banner>
       );
     }
@@ -705,13 +722,13 @@ export function AppDetailPage() {
         </Banner>
       );
     }
-    if (notice?.tone === "success") {
+    if (shown?.tone === "success") {
       return (
         <Banner
           tone="success"
-          title={notice.title}
+          title={shown.title}
           action={
-            <Button size="sm" variant="ghost" onClick={() => setNotice(null)}>
+            <Button size="sm" variant="ghost" onClick={dismiss}>
               Dismiss
             </Button>
           }

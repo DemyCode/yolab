@@ -20,6 +20,19 @@ export function stream(...lines: string[]) {
     new Response(lines.map((l) => `data: ${l}\n\n`).join(""), { status: 200 });
 }
 
+export function held(...lines: string[]) {
+  return () =>
+    new Response(
+      new ReadableStream<Uint8Array>({
+        start(c) {
+          for (const l of lines)
+            c.enqueue(new TextEncoder().encode(`data: ${l}\n\n`));
+        },
+      }),
+      { status: 200 },
+    );
+}
+
 export function never() {
   return () => new Promise<Response>(() => {});
 }

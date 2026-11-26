@@ -1,5 +1,6 @@
 import { cleanup, configure } from "@testing-library/react";
 import { afterEach, vi } from "vitest";
+import { forgetUpdates } from "@/lib/appUpdates";
 import { forgetPending } from "@/lib/inflight";
 import { forgetAll } from "@/lib/localCache";
 import { forgetListings } from "@/lib/treeFolder";
@@ -21,6 +22,7 @@ afterEach(() => {
   cleanup();
   forgetAll();
   forgetPending();
+  forgetUpdates();
   forgetListings();
   localStorage.clear();
   vi.useRealTimers();

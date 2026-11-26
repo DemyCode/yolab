@@ -87,6 +87,7 @@ export async function streamEvents(
   path: string,
   init: RequestInit,
   onLine: (line: string) => void,
+  onOpen: () => void = () => {},
 ): Promise<StreamResult> {
   let res: Response;
   try {
@@ -102,6 +103,7 @@ export async function streamEvents(
     const body = await res.text().catch(() => "");
     return { ok: false, error: errorMessageFrom(body, res.status) };
   }
+  onOpen();
 
   const reader = res.body.getReader();
   const decoder = new TextDecoder();

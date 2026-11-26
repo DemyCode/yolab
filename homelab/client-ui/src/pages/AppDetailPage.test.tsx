@@ -1,13 +1,15 @@
 import {
   act,
   fireEvent,
+  renderHook,
   screen,
   waitFor,
   within,
 } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { AppDetailPage } from "./AppDetailPage";
-import { fakeServer, never, reply, settle, stream } from "@/test/server";
+import { startUpdate, useAppUpdate } from "@/lib/appUpdates";
+import { fakeServer, held, never, reply, settle, stream } from "@/test/server";
 import { renderAt } from "@/test/render";
 import { appInfo, catalogApp } from "@/test/fixtures";
 import type { AppInfo, PodInfo } from "@/types/apps";
@@ -349,6 +351,58 @@ describe("AppDetailPage, updating", () => {
     expect(
       await screen.findByText("The update did not finish: chart missing"),
     ).toBeTruthy();
+  });
+
+  it("says it is updating while an update from the update page runs, and offers no second one", async () => {
+    serve(gitea(), {
+      "GET /api/apps/catalog": [catalogApp({ chart_version: "2.0.0" })],
+      "POST /api/apps/gitea/update": held("Updating…"),
+    });
+    await startUpdate("gitea", "update", { keep_version: false });
+    open();
+    expect(await screen.findByText("Updating Gitea")).toBeTruthy();
+    expect(screen.queryByText(/2\.0\.0 available/)).toBeNull();
+  });
+
+  it("says when an update from the update page finishes, and reads the service again", async () => {
+    const server = serve(gitea(), {
+      "POST /api/apps/gitea/update": stream("Now on version 1.2.0", "[DONE]"),
+    });
+    open();
+    await screen.findAllByText("Gitea");
+    await act(() => startUpdate("gitea", "update", {}));
+    expect(
+      await screen.findByText("Gitea now runs version 1.2.0"),
+    ).toBeTruthy();
+    await waitFor(() =>
+      expect(server.sent("GET", "/api/apps/catalog")).toHaveLength(2),
+    );
+  });
+
+  it("says why new settings were not applied, and lets it be dismissed", async () => {
+    serve(gitea(), {
+      "POST /api/apps/gitea/update": stream("[ERROR] helm refused"),
+    });
+    open();
+    await screen.findAllByText("Gitea");
+    await act(() => startUpdate("gitea", "settings", {}));
+    expect(
+      await screen.findByText("The new settings were not applied"),
+    ).toBeTruthy();
+    expect(screen.getByText("helm refused")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+    await waitFor(() => expect(screen.queryByText("helm refused")).toBeNull());
+  });
+
+  it("forgets a finished update once its page closes", async () => {
+    serve(gitea(), { "POST /api/apps/gitea/update": stream("[DONE]") });
+    await startUpdate("gitea", "update");
+    await settle();
+    const { unmount } = open();
+    expect(await screen.findByText("Gitea was reinstalled")).toBeTruthy();
+    unmount();
+    const { result } = renderHook(() => useAppUpdate("gitea"));
+    expect(result.current).toBeUndefined();
   });
 
   it("shows the update error above a stopped service", async () => {

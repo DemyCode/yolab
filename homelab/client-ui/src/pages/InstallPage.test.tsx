@@ -1,7 +1,14 @@
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import {
+  fireEvent,
+  renderHook,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { InstallPage } from "./InstallPage";
-import { fakeServer, never, reply, settle, stream } from "@/test/server";
+import { useAppUpdate } from "@/lib/appUpdates";
+import { fakeServer, held, never, reply, settle, stream } from "@/test/server";
 import { renderAt } from "@/test/render";
 import { appInfo, catalogApp } from "@/test/fixtures";
 import type { CatalogApp } from "@/types/apps";
@@ -671,7 +678,10 @@ describe("InstallPage, changing a running service", () => {
 
   it("says why the settings were not applied", async () => {
     editing({
-      "POST /api/apps/gitea-ab12/update": stream("[ERROR] helm refused"),
+      "POST /api/apps/gitea-ab12/update": reply(
+        400,
+        '{"error":"helm refused"}',
+      ),
     });
     open("?edit=gitea-ab12");
     await screen.findByRole("heading", { name: "Settings of gitea-ab12" });
@@ -749,6 +759,52 @@ describe("InstallPage, changing a running service", () => {
     fireEvent.click(go());
     expect(await screen.findByText("chart broken")).toBeTruthy();
     expect(screen.getByText("The update did not finish")).toBeTruthy();
+    expect(go().textContent).toBe("Update to 1.0.0");
+  });
+
+  it("opens the service as soon as the update is taken, while it still runs", async () => {
+    editing({
+      "POST /api/apps/gitea-ab12/update": held("Fetching the newest version…"),
+    });
+    const { result } = renderHook(() => useAppUpdate("gitea-ab12"));
+    open("?update=gitea-ab12");
+    await screen.findByRole("heading", { name: "Update gitea-ab12 to 1.0.0" });
+    await ready();
+    fireEvent.click(go());
+    await waitFor(() => expect(where()).toBe("/app/gitea-ab12"));
+    expect(result.current).toEqual({ kind: "update", running: true });
+  });
+
+  it("leaves an update that finishes after it opened the service for that page to show", async () => {
+    editing({
+      "POST /api/apps/gitea-ab12/update": stream("[ERROR] helm refused"),
+    });
+    const { result } = renderHook(() => useAppUpdate("gitea-ab12"));
+    open("?edit=gitea-ab12");
+    await screen.findByRole("heading", { name: "Settings of gitea-ab12" });
+    await ready();
+    fireEvent.click(go());
+    await waitFor(() => expect(where()).toBe("/app/gitea-ab12"));
+    await waitFor(() =>
+      expect(result.current).toMatchObject({
+        kind: "settings",
+        ok: false,
+        error: "helm refused",
+      }),
+    );
+  });
+
+  it("keeps a refused update off the service's page", async () => {
+    editing({
+      "POST /api/apps/gitea-ab12/update": reply(400, '{"error":"no"}'),
+    });
+    const { result } = renderHook(() => useAppUpdate("gitea-ab12"));
+    open("?update=gitea-ab12");
+    await screen.findByRole("heading", { name: "Update gitea-ab12 to 1.0.0" });
+    await ready();
+    fireEvent.click(go());
+    expect(await screen.findByText("no")).toBeTruthy();
+    expect(result.current).toBeUndefined();
   });
 });
 

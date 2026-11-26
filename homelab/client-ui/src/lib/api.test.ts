@@ -96,6 +96,32 @@ describe("streamEvents", () => {
     const result = await streamEvents("/api/apps/gitea", {}, () => {});
     expect(result).toMatchObject({ ok: false, dropped: true });
   });
+
+  it("says the server took the request before the first line arrives", async () => {
+    const order: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => streaming(frames("Installing…", "[DONE]"))),
+    );
+    await streamEvents(
+      "/api/apps/gitea",
+      {},
+      (line) => order.push(line),
+      () => order.push("open"),
+    );
+    expect(order).toEqual(["open", "Installing…", "[DONE]"]);
+  });
+
+  it("does not say the server took a request it refused", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response('{"error":"no"}', { status: 400 })),
+    );
+    const opened = vi.fn();
+    const result = await streamEvents("/api/apps/gitea", {}, () => {}, opened);
+    expect(result).toEqual({ ok: false, error: "no" });
+    expect(opened).not.toHaveBeenCalled();
+  });
 });
 
 describe("api.upload", () => {

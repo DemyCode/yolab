@@ -13,7 +13,8 @@ import { Card } from "@/components/ui/card";
 import { Switch } from "@/components/ui/input";
 import { Row, Section } from "@/components/ui/list";
 import { Banner, Spinner } from "@/components/ui/feedback";
-import { api, reasonOf, streamEvents } from "@/lib/api";
+import { api, reasonOf } from "@/lib/api";
+import { forgetFinished, startUpdate } from "@/lib/appUpdates";
 import { useApi } from "@/lib/useResource";
 import { formatDateTime, generateSecret } from "@/lib/format";
 import { backupPagePath } from "@/lib/backups";
@@ -313,21 +314,16 @@ export function InstallPage() {
     );
 
     if (changesLiveApp(origin.mode)) {
-      const result = await streamEvents(
-        `/api/apps/${instanceName}/update`,
-        {
-          method: "POST",
-          body: JSON.stringify({
-            config: payload,
-            keep_version: origin.mode === "edit",
-          }),
-        },
-        () => {},
+      const refused = await startUpdate(
+        instanceName,
+        origin.mode === "edit" ? "settings" : "update",
+        { config: payload, keep_version: origin.mode === "edit" },
       );
-      if (result.ok) {
+      if (refused === null) {
         navigate(`/app/${instanceName}`);
       } else {
-        setError(result.error);
+        forgetFinished(instanceName);
+        setError(refused);
         setInstalling(false);
       }
       return;
