@@ -231,23 +231,25 @@ async fn apply_mon_mgr<H: Host>(host: &H, target: &Target) {
         return;
     };
     let cur_mon = dump["mons"].as_array().map(|a| a.len()).unwrap_or(0) as u32;
-    if cur_mon == target.mon {
-        return;
+    if let Some(note) = mon_note(cur_mon, target.mon) {
+        tracing::info!("{note}");
     }
+}
 
-    if cur_mon < target.mon {
-        tracing::info!(
+fn mon_note(cur_mon: u32, target_mon: u32) -> Option<String> {
+    match cur_mon.cmp(&target_mon) {
+        std::cmp::Ordering::Equal => None,
+        std::cmp::Ordering::Less => Some(format!(
             "topology: {cur_mon} mon(s) across {} node(s) — a machine has joined Kubernetes but \
              its Ceph has not yet; its yolab-ceph-bootstrap retry timer will pick it up",
-            target.mon
-        );
-    } else {
-        tracing::info!(
+            target_mon
+        )),
+        std::cmp::Ordering::Greater => Some(format!(
             "topology: {cur_mon} mon(s) for {} node(s) — a machine has left. Removal is \
              operator-driven (`ceph mon remove <name>`): an offline node must never be \
              auto-evicted from the quorum.",
-            target.mon
-        );
+            target_mon
+        )),
     }
 }
 
@@ -371,7 +373,7 @@ pub async fn set_policy(
         );
     };
 
-    if size < 1 {
+    if size == 0 {
         return (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({"error": "keep at least one copy"})),
@@ -402,6 +404,13 @@ pub async fn set_policy(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_mon_count_is_explained_only_when_it_differs_from_the_target() {
+        assert_eq!(mon_note(3, 3), None);
+        assert!(mon_note(2, 3).unwrap().contains("has joined Kubernetes"));
+        assert!(mon_note(3, 2).unwrap().contains("a machine has left"));
+    }
 
     fn policy(size: u32, fd: &str) -> StoragePolicy {
         StoragePolicy {

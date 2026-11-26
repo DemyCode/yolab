@@ -1151,7 +1151,7 @@ mod tests {
             make["spec"]["activeDeadlineSeconds"],
             copy["spec"]["activeDeadlineSeconds"]
         );
-        assert!(DEADLINE >= Duration::from_secs(3600));
+        assert_eq!(DEADLINE, Duration::from_secs(21_600));
     }
 
     #[test]
