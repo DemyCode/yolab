@@ -1324,6 +1324,26 @@ mod tests {
     }
 
     #[test]
+    fn a_restore_set_hands_out_its_own_claim_and_keeps_changes_made_to_it() {
+        let mut s = set("rs-1", "running");
+        s.claim = Claim {
+            owner: "node2".into(),
+            heartbeat: "2026-01-01T00:01:00Z".into(),
+        };
+        assert_eq!(
+            s.claim(),
+            &Claim {
+                owner: "node2".into(),
+                heartbeat: "2026-01-01T00:01:00Z".into(),
+            }
+        );
+        s.claim_mut().owner = "node3".into();
+        s.claim_mut().heartbeat = "2026-01-01T00:02:00Z".into();
+        assert_eq!(s.claim.owner, "node3");
+        assert_eq!(s.claim.heartbeat, "2026-01-01T00:02:00Z");
+    }
+
+    #[test]
     fn a_reinstall_never_overwrites_the_charts_own_objects_or_helms_bookkeeping() {
         let backed_up = json!({"items": [
             {"kind": "Deployment", "metadata": {"name": "gateway"}},
@@ -1988,6 +2008,18 @@ mod tests {
         }
 
         #[tokio::test]
+        async fn a_restore_on_its_last_allowed_attempt_is_still_tried() {
+            let record = queued_record(json!({ "attempts": MAX_ATTEMPTS - 1 }));
+            let (server, _) = drive_one(record).await;
+            let written = crate::records::testing::written(&server, "yolab-restores").await;
+            assert_eq!(written[0][0]["attempts"], MAX_ATTEMPTS);
+            let done = &written.last().unwrap()[0];
+            assert_eq!(done["state"], FAILED);
+            let why = done["error"].as_str().unwrap();
+            assert!(!why.contains("interrupted"), "{why}");
+        }
+
+        #[tokio::test]
         async fn an_install_fill_left_behind_fails_instead_of_restoring_in_place() {
             let (server, _) = drive_one(queued_record(json!({ "by_install": true }))).await;
             let written = crate::records::testing::written(&server, "yolab-restores").await;
@@ -2399,12 +2431,12 @@ mod tests {
             assert_eq!(patched[0]["metadata"]["name"], "settings");
 
             let plan = restore_plan(&b, "yolab-notes", "abc123").await.unwrap();
-            assert_eq!(
-                serde_json::to_value(&plan).unwrap()["data"]
-                    .as_array()
-                    .map(Vec::len),
-                Some(3)
-            );
+            let rows: Vec<(&str, bool)> = plan
+                .data
+                .iter()
+                .map(|r| (r.claim.as_str(), r.backed_up))
+                .collect();
+            assert_eq!(rows, vec![("data", true), ("cache", true), ("old", true)]);
             let older = older_volume_copies(&b.host, &cfg(), "abc123", "yolab-notes")
                 .await
                 .unwrap();

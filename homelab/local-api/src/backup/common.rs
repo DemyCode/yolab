@@ -1002,6 +1002,18 @@ mod tests {
         }
 
         #[test]
+        fn a_platform_key_missing_either_half_never_overwrites_a_working_one() {
+            assert_eq!(
+                key_refresh(&cfg(), &info("bucket-1", "", "SECRET2")),
+                KeyRefresh::Current
+            );
+            assert_eq!(
+                key_refresh(&cfg(), &info("bucket-1", "AKID2", "")),
+                KeyRefresh::Current
+            );
+        }
+
+        #[test]
         fn a_key_for_another_bucket_is_never_adopted() {
             assert_eq!(
                 key_refresh(&cfg(), &info("bucket-2", "AKID2", "SECRET2")),
@@ -1265,6 +1277,73 @@ mod tests {
                 restic_unlock_with(&host, "s3:x/y", "pw", "AKID", "SECRET", loud).await;
                 assert!(host.ran("restic unlock"));
             }
+        }
+
+        async fn unlock_logs(host: FakeHost, loud: bool) -> String {
+            let logs = crate::testkit::capture_logs();
+            restic_unlock_with(&host, "s3:x/y", "pw", "AKID", "SECRET", loud).await;
+            logs.text()
+        }
+
+        #[tokio::test]
+        async fn an_unlock_that_removed_locks_is_logged_as_information() {
+            for loud in [true, false] {
+                let host = FakeHost::new().ok("restic unlock", "successfully removed 1 locks");
+                let text = unlock_logs(host, loud).await;
+                assert!(
+                    text.contains("INFO")
+                        && text.contains("restic unlock (s3:x/y): successfully removed 1 locks"),
+                    "{text}"
+                );
+                assert!(!text.contains("WARN") && !text.contains("failed"), "{text}");
+            }
+        }
+
+        #[tokio::test]
+        async fn an_unlock_that_found_no_locks_logs_nothing() {
+            for loud in [true, false] {
+                let host = FakeHost::new().ok("restic unlock", "");
+                assert_eq!(unlock_logs(host, loud).await, "");
+            }
+        }
+
+        #[tokio::test]
+        async fn a_failed_unlock_warns_only_when_loud() {
+            let host = FakeHost::new().fail("restic unlock", "repository does not exist");
+            let text = unlock_logs(host, true).await;
+            assert!(
+                text.contains("WARN")
+                    && text.contains("restic unlock (s3:x/y) failed: ")
+                    && text.contains("repository does not exist"),
+                "{text}"
+            );
+            let host = FakeHost::new().fail("restic unlock", "repository does not exist");
+            let text = unlock_logs(host, false).await;
+            assert!(
+                text.contains("DEBUG")
+                    && text.contains("restic unlock (s3:x/y): ")
+                    && text.contains("repository does not exist"),
+                "{text}"
+            );
+            assert!(!text.contains("WARN") && !text.contains("failed"), "{text}");
+        }
+
+        #[tokio::test]
+        async fn an_unlock_that_cannot_start_warns_only_when_loud() {
+            let text = unlock_logs(FakeHost::new().unstartable("restic unlock"), true).await;
+            assert!(
+                text.contains("WARN") && text.contains("restic unlock (s3:x/y) could not run: "),
+                "{text}"
+            );
+            let text = unlock_logs(FakeHost::new().unstartable("restic unlock"), false).await;
+            assert!(
+                text.contains("DEBUG") && text.contains("restic unlock (s3:x/y): "),
+                "{text}"
+            );
+            assert!(
+                !text.contains("WARN") && !text.contains("could not run"),
+                "{text}"
+            );
         }
 
         async fn platform_gives(bucket: &str, key: &str, secret: &str) -> MockServer {

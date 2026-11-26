@@ -519,6 +519,7 @@ mod against_restic {
         backups_enabled(&server, true).await;
         record(&server, "yolab-backup-sizes", "services", None).await;
         record(&server, "yolab-backup-checks", "stores", None).await;
+        let logs = crate::testkit::capture_logs();
         let t = tick(
             async {},
             &server,
@@ -528,6 +529,7 @@ mod against_restic {
         .await;
         assert!(matches!(t, Tick::Done));
         assert_eq!(written(&server).await[0]["cluster-backup"]["ok"], true);
+        assert!(!logs.contain("has a problem"), "{}", logs.text());
     }
 
     #[tokio::test]
@@ -537,8 +539,15 @@ mod against_restic {
         record(&server, "yolab-backup-sizes", "services", None).await;
         record(&server, "yolab-backup-checks", "stores", None).await;
         let host = FakeHost::new().fail("restic check", "Fatal: wrong password");
+        let logs = crate::testkit::capture_logs();
         let t = tick(async {}, &server, kube, host).await;
         assert!(matches!(t, Tick::Done));
+        assert!(
+            logs.contain("backup check: cluster-backup has a problem: ")
+                && logs.contain("Fatal: wrong password"),
+            "{}",
+            logs.text()
+        );
         let recorded = written(&server).await;
         let why = recorded[0]["cluster-backup"]["problem"].as_str().unwrap();
         assert!(why.ends_with("Fatal: wrong password"), "{why}");
@@ -620,6 +629,12 @@ mod against_restic {
             tools: crate::tools::Tools::real(),
         };
         assert!(BackupCheckController.converge(&ctx).await.is_err());
+    }
+
+    #[test]
+    fn a_check_may_run_three_hours_and_a_repair_one() {
+        assert_eq!(CHECK_TIMEOUT, Duration::from_secs(10_800));
+        assert_eq!(REPAIR_TIMEOUT, Duration::from_secs(3_600));
     }
 
     #[tokio::test]
