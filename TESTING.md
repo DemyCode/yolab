@@ -130,8 +130,9 @@ nix build -L $(nix eval --json .#checks.x86_64-linux \
 nix fmt                                           # fix formatting
 ```
 
-CI does the same thing, one runner per check: the matrix is `builtins.attrNames`
-of `checks.<system>`, so adding a check is enough to get it run and cached.
+GitHub CI runs the long set, one runner per check: the matrix is `builtins.attrNames`
+of `longChecks.<system>` without `all`, so adding a check to either set is enough to get it
+run and cached.
 
 **Read the log, not the scrollback.** A VM test or a cold Rust build emits tens
 of thousands of lines. Redirect and tail:

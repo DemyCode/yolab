@@ -31,7 +31,7 @@ jobs:
           set -euo pipefail
           {
             for system in x86_64-linux aarch64-linux; do
-              nix eval --json ".#checks.${system}" --apply "a: builtins.map (n: \"checks.${system}.\${n}\") (builtins.attrNames a)"
+              nix eval --json ".#longChecks.${system}" --apply "a: builtins.map (n: \"longChecks.${system}.\${n}\") (builtins.attrNames (removeAttrs a [\"all\"]))"
             done
           } | jq --slurp --compact-output 'add | map({target: ., runner: (if test("aarch64") then "ubuntu-24.04-arm" else "ubuntu-latest" end)})' > matrix.json
           cat matrix.json
