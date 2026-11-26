@@ -440,17 +440,6 @@ fn disk_key(node: &str, disk_id: &str) -> String {
     )
 }
 
-#[cfg(not(test))]
-fn this_node() -> String {
-    let node = crate::system::hostname();
-    assert!(
-        !node.is_empty(),
-        "/etc/hostname is missing or empty, so this machine cannot sign the changes it makes to \
-         the store"
-    );
-    node
-}
-
 #[cfg(test)]
 fn this_node() -> String {
     "test-node".into()
@@ -466,22 +455,7 @@ pub fn shared() -> &'static Mutex<Store> {
 }
 
 #[cfg(not(test))]
-pub fn shared() -> &'static Mutex<Store> {
-    static SHARED: std::sync::OnceLock<Mutex<Store>> = std::sync::OnceLock::new();
-    SHARED.get_or_init(|| {
-        let node = this_node();
-        let path = default_path();
-        let store = Store::open(&node, &path).unwrap_or_else(|e| {
-            tracing::error!(
-                "the desired-state store at {} cannot be read ({e}) — starting empty, and it will \
-                 not be acted on until it has been seeded from the cluster again",
-                path.display()
-            );
-            Store::new(&node)
-        });
-        Mutex::new(store)
-    })
-}
+pub use crate::live::shared_store as shared;
 
 pub fn locked() -> std::sync::MutexGuard<'static, Store> {
     shared()
@@ -490,11 +464,7 @@ pub fn locked() -> std::sync::MutexGuard<'static, Store> {
 }
 
 #[cfg(not(test))]
-pub fn default_path() -> PathBuf {
-    std::env::var("YOLAB_STORE_FILE")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("/var/lib/yolab/store.automerge"))
-}
+pub use crate::live::store_path as default_path;
 
 #[cfg(test)]
 pub fn default_path() -> PathBuf {

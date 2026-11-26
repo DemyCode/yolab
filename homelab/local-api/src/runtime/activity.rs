@@ -43,23 +43,20 @@ enum Key {
 type Answer = Option<bool>;
 
 #[derive(Default)]
-struct Cache(Mutex<HashMap<Key, (Instant, Answer)>>);
+pub(crate) struct Cache(Mutex<HashMap<Key, (Instant, Answer)>>);
+
+#[cfg(not(test))]
+use crate::live::activity_cache as cache;
+
+#[cfg(test)]
+fn cache() -> &'static Cache {
+    thread_local! {
+        static C: &'static Cache = Box::leak(Box::new(Cache::default()));
+    }
+    C.with(|c| *c)
+}
 
 impl Cache {
-    #[cfg(not(test))]
-    fn global() -> &'static Cache {
-        static C: std::sync::OnceLock<Cache> = std::sync::OnceLock::new();
-        C.get_or_init(Cache::default)
-    }
-
-    #[cfg(test)]
-    fn global() -> &'static Cache {
-        thread_local! {
-            static C: &'static Cache = Box::leak(Box::new(Cache::default()));
-        }
-        C.with(|c| *c)
-    }
-
     async fn get_or_ask(&self, key: Key, ask: impl Future<Output = Answer>) -> Answer {
         {
             let c = self
@@ -116,14 +113,14 @@ async fn ask_activity(tools: &crate::tools::Tools, a: Activity) -> Answer {
 }
 
 pub async fn is_met(tools: &crate::tools::Tools, r: Requirement) -> bool {
-    Cache::global()
+    cache()
         .get_or_ask(Key::Req(r), ask_requirement(tools, r))
         .await
         == Some(true)
 }
 
 pub async fn unmet(tools: &crate::tools::Tools, requires: &[Requirement]) -> Option<Requirement> {
-    first_unmet(Cache::global(), requires, |r| ask_requirement(tools, r)).await
+    first_unmet(cache(), requires, |r| ask_requirement(tools, r)).await
 }
 
 async fn first_unmet<F, Fut>(cache: &Cache, requires: &[Requirement], ask: F) -> Option<Requirement>
@@ -140,7 +137,7 @@ where
 }
 
 pub async fn gate(tools: &crate::tools::Tools, activities: &[Activity]) -> Gate {
-    gate_in(Cache::global(), activities, |a| ask_activity(tools, a)).await
+    gate_in(cache(), activities, |a| ask_activity(tools, a)).await
 }
 
 async fn gate_in<F, Fut>(cache: &Cache, activities: &[Activity], ask: F) -> Gate

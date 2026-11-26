@@ -8,9 +8,7 @@ const REPO_CM: &str = "yolab-chart-repos";
 const REPO_NS: &str = "kube-system";
 
 #[cfg(not(test))]
-pub fn cache_root() -> PathBuf {
-    PathBuf::from("/var/lib/yolab/charts")
-}
+pub use crate::live::charts_cache_root as cache_root;
 
 #[cfg(test)]
 pub fn cache_root() -> PathBuf {
@@ -91,9 +89,7 @@ fn yes() -> bool {
 }
 
 #[cfg(not(test))]
-fn official_url() -> String {
-    default_official_url()
-}
+use crate::live::official_chart_repo as official_url;
 
 #[cfg(test)]
 fn official_url() -> String {
@@ -102,7 +98,7 @@ fn official_url() -> String {
         .unwrap_or_else(default_official_url)
 }
 
-fn default_official_url() -> String {
+pub(crate) fn default_official_url() -> String {
     std::env::var("YOLAB_OFFICIAL_CHART_REPO").unwrap_or_else(|_| {
         "https://raw.githubusercontent.com/DemyCode/yolab/refs/heads/main/catalog.yaml".into()
     })

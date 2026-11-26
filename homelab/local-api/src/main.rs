@@ -20,6 +20,8 @@ mod heal;
 mod host;
 mod http;
 mod k8s;
+#[cfg(not(test))]
+mod live;
 mod mesh;
 mod notify;
 mod ops;

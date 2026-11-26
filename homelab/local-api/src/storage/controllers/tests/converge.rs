@@ -42,6 +42,8 @@ fn a_ready_attempt_is_a_done_tick_and_a_wait_is_not_yet() {
 async fn a_lock_folder_that_cannot_be_made_is_an_error() {
     put(lock::LOCK_DIR);
     assert!(locked("osd-activate", succeed).await.is_err());
+    let err = locked("osd-activate", time_out).await.unwrap_err();
+    assert!(!err.to_string().contains("ceph-volume"), "{err}");
 }
 
 #[tokio::test]

@@ -244,7 +244,7 @@ async fn enqueue<H: Host>(
     Ok(existing.unwrap_or(id))
 }
 
-fn pick(sets: &[BackupSet], silent: impl Fn(&BackupSet) -> Duration) -> ops::Next {
+fn pick(sets: &[BackupSet], silent: fn(&BackupSet) -> Duration) -> ops::Next {
     match ops::next(sets, |_| false, silent) {
         ops::Next::Nothing => match next_in_line(sets) {
             Some(s) => ops::Next::Run(s.id.clone()),
@@ -550,9 +550,7 @@ fn catalog_pvc(
 }
 
 #[cfg(not(test))]
-fn staging_root() -> String {
-    "/var/lib/yolab/backup-staging".into()
-}
+use crate::live::backup_staging_root as staging_root;
 
 #[cfg(test)]
 fn staging_root() -> String {
@@ -689,9 +687,7 @@ async fn export_cluster_scoped(client: &Client, tmp_dir: &str) -> anyhow::Result
 }
 
 #[cfg(not(test))]
-fn etcd_snapshot_dir() -> String {
-    "/var/lib/rancher/k3s/server/db/snapshots".into()
-}
+use crate::live::etcd_snapshot_dir;
 
 #[cfg(test)]
 fn etcd_snapshot_dir() -> String {
@@ -1039,9 +1035,7 @@ fn collect_images(workloads: &[Value]) -> Vec<String> {
 }
 
 #[cfg(not(test))]
-fn built_hash_file() -> String {
-    "/var/lib/yolab/built-hash".into()
-}
+use crate::live::built_hash_file;
 
 #[cfg(test)]
 fn built_hash_file() -> String {

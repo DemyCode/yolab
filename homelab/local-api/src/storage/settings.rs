@@ -176,6 +176,10 @@ mod tests {
             .unwrap_err();
         assert!(err.to_string().contains("serialise"), "{err}");
         assert!(host.calls().is_empty());
+        let empty: std::collections::BTreeMap<(i32, i32), i32> = std::collections::BTreeMap::new();
+        let writes = FakeHost::new().ok("ceph config-key set", "");
+        set_json(&writes, STORAGE_POLICY, &empty).await.unwrap();
+        assert!(writes.ran("ceph config-key set"));
     }
 
     #[tokio::test]

@@ -19,10 +19,7 @@ const RENEW_EVERY: Duration = Duration::from_millis(50);
 const ACT_WITHIN_MS: i64 = 20_000;
 
 #[cfg(not(test))]
-fn renewed() -> Arc<AtomicI64> {
-    static RENEWED: std::sync::OnceLock<Arc<AtomicI64>> = std::sync::OnceLock::new();
-    RENEWED.get_or_init(|| Arc::new(AtomicI64::new(0))).clone()
-}
+use crate::live::leader_renewed as renewed;
 
 #[cfg(test)]
 fn renewed() -> Arc<AtomicI64> {

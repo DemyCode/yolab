@@ -27,9 +27,7 @@ use std::time::Duration;
 use anyhow::Result;
 
 #[cfg(not(test))]
-pub(crate) fn root() -> &'static Path {
-    Path::new("/")
-}
+pub(crate) use crate::live::machine_root as root;
 
 #[cfg(test)]
 pub(crate) fn root() -> &'static Path {

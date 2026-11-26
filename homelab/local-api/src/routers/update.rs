@@ -20,10 +20,7 @@ use crate::{
 };
 
 #[cfg(not(test))]
-fn updating() -> &'static AtomicBool {
-    static IS_UPDATING: AtomicBool = AtomicBool::new(false);
-    &IS_UPDATING
-}
+use crate::live::updating;
 
 #[cfg(test)]
 fn updating() -> &'static AtomicBool {

@@ -57,18 +57,17 @@ fn combinations(n: usize, k: usize) -> usize {
     c as usize
 }
 
-fn every_removal(removable: &[usize], k: usize, mut each: impl FnMut(&[usize])) {
+fn every_removal(removable: &[usize], k: usize) -> Vec<Vec<usize>> {
     if k == 0 {
-        each(&[]);
-        return;
+        return vec![Vec::new()];
     }
     if k > removable.len() {
-        return;
+        return Vec::new();
     }
+    let mut every = Vec::new();
     let mut idx: Vec<usize> = (0..k).collect();
     loop {
-        let gone: Vec<usize> = idx.iter().map(|&i| removable[i]).collect();
-        each(&gone);
+        every.push(idx.iter().map(|&i| removable[i]).collect());
         let mut i = k;
         loop {
             i -= 1;
@@ -76,7 +75,7 @@ fn every_removal(removable: &[usize], k: usize, mut each: impl FnMut(&[usize])) 
                 break;
             }
             if i == 0 {
-                return;
+                return every;
             }
         }
         idx[i] += 1;
@@ -110,10 +109,10 @@ fn shaped(times: &[i64], forced: &[bool], m: usize, take: usize) -> Vec<Vec<usiz
     let k = n - m;
     if combinations(removable.len(), k) <= ENUMERATE_MAX {
         let mut all: Vec<Scored> = Vec::new();
-        every_removal(&removable, k, |gone| {
+        for gone in every_removal(&removable, k) {
             let picked: Vec<usize> = (0..n).filter(|i| !gone.contains(i)).collect();
             all.push(scored(times, picked));
-        });
+        }
         all.sort_by(better);
         return all.into_iter().take(take).map(|s| s.picked).collect();
     }
@@ -435,9 +434,7 @@ mod tests {
     }
 
     fn removals(removable: &[usize], k: usize) -> Vec<Vec<usize>> {
-        let mut seen = Vec::new();
-        every_removal(removable, k, |gone| seen.push(gone.to_vec()));
-        seen
+        every_removal(removable, k)
     }
 
     #[test]

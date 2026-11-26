@@ -10,13 +10,11 @@ use serde_json::{json, Value};
 
 use crate::AppState;
 
-const NTFY_LOCAL: &str = "http://[::1]:2586";
+pub(crate) const NTFY_LOCAL: &str = "http://[::1]:2586";
 const ENV_FILE: &str = "var/lib/yolab/ntfy/ntfy.env";
 
 #[cfg(not(test))]
-fn ntfy_local() -> String {
-    NTFY_LOCAL.to_string()
-}
+use crate::live::ntfy_local;
 
 #[cfg(test)]
 thread_local! {

@@ -761,6 +761,13 @@ pub(crate) fn verdict(
     }
 }
 
+fn log_outcome(subject: &str, outcome: &anyhow::Result<()>) {
+    match outcome {
+        Ok(()) => tracing::info!("{subject}: finished"),
+        Err(e) => tracing::warn!("{subject}: failed: {e:#}"),
+    }
+}
+
 fn sse<F, Fut>(
     subject: String,
     work: F,
@@ -775,10 +782,7 @@ where
     let running = work(Log(tx));
     let task = tokio::spawn(async move {
         let outcome = running.await;
-        match &outcome {
-            Ok(()) => tracing::info!("{subject}: finished"),
-            Err(e) => tracing::warn!("{subject}: failed: {e:#}"),
-        }
+        log_outcome(&subject, &outcome);
         outcome
     });
     async_stream::stream! {

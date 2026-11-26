@@ -102,9 +102,7 @@ fn notification(change: &Change, tunnel: &Tunnel) -> Notification {
 }
 
 #[cfg(not(test))]
-fn state_root() -> PathBuf {
-    PathBuf::from("/")
-}
+use crate::live::alerts_state_root as state_root;
 
 #[cfg(test)]
 fn state_root() -> PathBuf {

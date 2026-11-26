@@ -138,12 +138,13 @@ impl Registry {
 
 pub const SNAPSHOT_PATH: &str = "/run/yolab/controllers.json";
 
-pub fn publish_snapshot() {
-    #[cfg(not(test))]
-    write_snapshot(std::path::Path::new(SNAPSHOT_PATH));
-}
+#[cfg(not(test))]
+pub use crate::live::publish_snapshot;
 
-fn write_snapshot(path: &std::path::Path) {
+#[cfg(test)]
+pub fn publish_snapshot() {}
+
+pub(crate) fn write_snapshot(path: &std::path::Path) {
     let snap = serde_json::json!({
         "node": crate::system::hostname(),
         "written_at": Utc::now(),

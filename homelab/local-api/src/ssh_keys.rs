@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Duration;
 
 use anyhow::Context as _;
@@ -162,15 +162,11 @@ pub fn views(keys: &[(String, ParsedKey, String)]) -> Vec<KeyView> {
 }
 
 #[cfg(not(test))]
-pub fn keys_file() -> PathBuf {
-    std::env::var("YOLAB_SSH_KEYS_FILE")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from(format!("/var/lib/yolab-ssh/{LOGIN_USER}.keys")))
-}
+pub use crate::live::ssh_keys_file as keys_file;
 
 #[cfg(test)]
-pub fn keys_file() -> PathBuf {
-    PathBuf::from(crate::testkit::thread_dir(&format!(
+pub fn keys_file() -> std::path::PathBuf {
+    std::path::PathBuf::from(crate::testkit::thread_dir(&format!(
         "ssh/{LOGIN_USER}.keys"
     )))
 }

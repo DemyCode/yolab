@@ -79,6 +79,13 @@
             | { f: .filename, r: [ .segments[] | select(.[2] == 0 and .[3] and .[4] and (.[5] | not)) | "\(.[0]):\(.[1])" ] }
             | select(.r | length > 0)
             | "\(.f): \(.r | join(" "))"' regions.json
+          echo "Uncovered regions in the best-covered instantiation of each function (line:column):"
+          jq -r '.data[0].functions
+            | group_by([.filenames[0], .regions[0][0], .regions[0][1]])
+            | map(max_by([.regions[] | select(.[4] > 0)] | length))
+            | map({ f: .filenames[0], r: [ .regions[] | select(.[4] == 0 and .[5] == 0 and .[7] == 0) | "\(.[0]):\(.[1])" ] })
+            | map(select(.r | length > 0))
+            | .[] | "\(.f): \(.r | join(" "))"' regions.json
           cargo llvm-cov report --release --summary-only --show-missing-lines ${ignoreUntested} \
             --fail-under-lines 100 --fail-under-functions 100 --fail-under-regions 100
         '';
@@ -88,6 +95,8 @@
     mutants = craneLib.mkCargoDerivation (withTestTools args
       // {
         pname = "${pname}-mutants";
+        CARGO_BUILD_INCREMENTAL = "true";
+        CARGO_PROFILE_DEV_DEBUG = "0";
         inherit cargoArtifacts;
         nativeBuildInputs = args.nativeBuildInputs ++ testInputs ++ [pkgs.cargo-mutants];
         doInstallCargoArtifacts = false;
