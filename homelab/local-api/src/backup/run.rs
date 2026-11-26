@@ -2868,6 +2868,55 @@ mod tests {
             assert!(b.host.ran("restic forget p1"));
         }
 
+        #[tokio::test]
+        async fn a_service_within_its_budget_keeps_every_copy_and_gets_no_warning() {
+            use crate::backup::points::namespace_tag;
+            let ns = "yolab-roomy";
+            let (server, kube, kept) = a_service_in(
+                ns,
+                vec![],
+                vec![],
+                200,
+                settings(true, "0 3 * * *", 1_000_000_000),
+            )
+            .await;
+            crate::records::testing::no_records(&server, "yolab-backup-sizes").await;
+            let points = json!([
+                { "id": "p1", "time": "2026-11-10T03:00:00Z", "tags": [namespace_tag(ns), "run:r1"] }
+            ])
+            .to_string();
+            let host = restic()
+                .ok(
+                    &format!(
+                        "restic snapshots --no-lock --json --tag {}",
+                        namespace_tag(ns)
+                    ),
+                    &points,
+                )
+                .ok(
+                    &format!(
+                        "restic snapshots --no-lock --json --tag {}",
+                        crate::routers::folder_backup::FOLDERS_TAG
+                    ),
+                    "[]",
+                )
+                .ok("restic stats", r#"{"total_size": 100}"#)
+                .ok("restic restore", "")
+                .ok("restic prune", "");
+            let b = Backend { kube, host };
+
+            start_app(&b, ns, MANUAL_TRIGGER).await.unwrap();
+            assert!(drive_next(&b, &cfg()).await.unwrap());
+
+            let set = only_set(&kept);
+            assert_eq!(set["state"], SUCCEEDED, "{set}");
+            assert_eq!(
+                set.get("warning").cloned().unwrap_or(Value::Null),
+                Value::Null
+            );
+            assert!(!b.host.ran("restic forget"));
+        }
+
         async fn scheduled_with(settings: Value, host: FakeHost) -> (Tick, Value) {
             let (_server, kube, kept) =
                 a_service_whose_settings_answer(vec![], 200, settings).await;

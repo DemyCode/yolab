@@ -861,6 +861,10 @@ mod tests {
         let root = seeded_with_a_cleared_disk();
         assert_eq!(c.notify(&ctx(), root.path()).await.unwrap(), Tick::Done);
         assert!(!load(root.path()).unwrap().contains_key("disk:zz-gone"));
+        assert!(matches!(
+            c.notify(&ctx(), root.path()).await.unwrap(),
+            Tick::Idle(_)
+        ));
         crate::notify::use_ntfy(crate::notify::NTFY_LOCAL);
     }
 

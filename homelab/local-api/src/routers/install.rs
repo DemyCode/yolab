@@ -394,7 +394,7 @@ async fn pinned_chart<H: Host>(
             log.say(format!(
                 "Fetching version {version} of {app_id}, the one the original runs…"
             ));
-            let pulled = tempfile::tempdir()?;
+            let pulled = tempfile::tempdir_in(crate::scratch::dir())?;
             let repos = crate::charts::list_repos(&b.kube).await;
             let dir = crate::charts::fetch_exact(
                 &b.host,
@@ -2356,6 +2356,19 @@ mod tests {
         }
 
         #[tokio::test]
+        async fn a_version_that_cannot_be_fetched_into_a_temp_folder_fails_the_install() {
+            let w = world(pulling(helm())).await;
+            let _official = catalog_at(&w, "registry: oci://ghcr.io/x/charts\ncharts: []\n").await;
+            let (log, _rx) = logged();
+            crate::scratch::set(Some(w._dir.path().join("no-such-folder")));
+            let failed =
+                execute(&w.b, &w.cfg, &notes(exact("official", "0.5.0"), None), &log).await;
+            crate::scratch::set(None);
+            assert!(failed.is_err());
+            assert!(!w.b.host.ran("helm pull"));
+        }
+
+        #[tokio::test]
         async fn an_install_without_the_tunnel_settings_stops_before_helm() {
             let mut w = world(helm()).await;
             w.cfg = without_tunnel(&w);
@@ -2584,6 +2597,55 @@ mod tests {
             assert_eq!(found.definition, definition("notes"));
             assert_eq!(found.chart, None);
             assert_eq!(found.schema, Some(saved));
+        }
+
+        #[tokio::test]
+        async fn a_backup_whose_definition_or_kept_chart_cannot_be_read_is_no_source() {
+            let w = world(FakeHost::new()).await;
+            backups_enabled(&w).await;
+            let origin = ConfigOrigin::Backup {
+                namespace: "yolab-old".into(),
+                snapshot_id: "abc123".into(),
+            };
+            let nothing_restored = Backend {
+                kube: w.b.kube.clone(),
+                host: FakeHost::new()
+                    .ok("restic unlock", "")
+                    .fail("restic restore", "snapshot not found"),
+            };
+            assert!(crate::routers::install::source(&nothing_restored, &origin)
+                .await
+                .is_err());
+            let catalog = json!({
+                "namespaces": ["yolab-old"],
+                "services": [{ "namespace": "yolab-old", "app_id": "notes",
+                               "definition": serde_json::to_value(definition("notes")).unwrap() }]
+            });
+            let only_the_catalog = Backend {
+                kube: w.b.kube.clone(),
+                host: FakeHost::new()
+                    .ok("restic unlock", "")
+                    .restic_restores(vec![("catalog.json", catalog.to_string())])
+                    .fail("restic restore", "snapshot not found"),
+            };
+            assert!(crate::routers::install::source(&only_the_catalog, &origin)
+                .await
+                .is_err());
+        }
+
+        #[tokio::test]
+        async fn a_kept_chart_that_cannot_be_unpacked_fails_the_copy() {
+            let w = world(helm().fail("tar", "not a gzip archive")).await;
+            let (log, _rx) = logged();
+            let saved = ChartPin::Saved {
+                repo: "official".into(),
+                version: "0.9.0".into(),
+                tgz: vec![1, 2, 3],
+            };
+            assert!(execute(&w.b, &w.cfg, &notes(saved, None), &log)
+                .await
+                .is_err());
+            assert!(!w.b.host.ran("helm upgrade"));
         }
 
         async fn refuse_get(w: &World, at: &str) {

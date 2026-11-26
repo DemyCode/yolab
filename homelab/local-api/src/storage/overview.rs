@@ -838,6 +838,25 @@ mod tests {
         assert_eq!(res.json()["unreadable"], 0);
     }
 
+    #[tokio::test]
+    async fn a_tree_folder_whose_size_cannot_be_read_is_counted_as_unreadable() {
+        let (server, kube) = crate::k8s::testing::api_server().await;
+        crate::k8s::testing::serve(
+            &server,
+            "/api/v1/persistentvolumes",
+            200,
+            crate::k8s::testing::list(
+                "PersistentVolume",
+                vec![crate::tree::testing::volume("yolab-notes", "data", "notes")],
+            ),
+        )
+        .await;
+        let api = signed_in(kube, FakeHost::new()).await;
+        let res = api.get("/api/storage/usage").await;
+        assert_eq!(res.status, StatusCode::OK, "{}", res.body);
+        assert_eq!(res.json()["unreadable"], 1, "{}", res.body);
+    }
+
     #[tokio::test(start_paused = true)]
     async fn usage_is_an_error_when_kubernetes_never_lists_the_volumes() {
         let silent = std::net::TcpListener::bind("127.0.0.1:0").unwrap();

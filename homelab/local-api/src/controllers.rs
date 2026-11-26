@@ -296,10 +296,14 @@ mod tests {
             .build()
             .unwrap();
         assert_eq!(
-            rt.block_on(Dangling.converge(&runtime::Ctx {
-                node: "node1".into(),
-                tools: Tools::unreachable(),
-            }))
+            rt.block_on(async {
+                Dangling
+                    .converge(&runtime::Ctx {
+                        node: "node1".into(),
+                        tools: Tools::unreachable(),
+                    })
+                    .await
+            })
             .unwrap(),
             runtime::Tick::Idle("nothing depends on this".into())
         );

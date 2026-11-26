@@ -28,6 +28,10 @@ fn now_secs() -> i64 {
     i64::try_from(crate::system::now_secs()).unwrap_or(i64::MAX)
 }
 
+fn session_expiry(now: i64) -> i64 {
+    now + SESSION_DAYS * 86400
+}
+
 fn password_hash(cfg: &Config) -> String {
     cfg.toml()
         .and_then(|t| {
@@ -352,7 +356,7 @@ pub async fn login(
         if let Err(e) = auth.saved(&mut store) {
             return failed(e);
         }
-        let expires = now_secs() + SESSION_DAYS * 86400;
+        let expires = session_expiry(now_secs());
         session::issue(&key, &hash, &session::random_token(32), expires)
     };
     let cookie = Cookie::build((COOKIE, token))
@@ -366,7 +370,7 @@ pub async fn login(
 }
 
 pub async fn check() -> StatusCode {
-    StatusCode::OK
+    StatusCode::NO_CONTENT
 }
 
 pub async fn logout(State(state): State<crate::AppState>, jar: CookieJar) -> Response {
@@ -959,6 +963,31 @@ mod tests {
             f.by_client.is_empty(),
             "expired entries do not pile up in memory"
         );
+    }
+
+    #[test]
+    fn a_blocked_client_waits_out_fifteen_minutes_from_its_oldest_failure() {
+        let mut f = LoginFailures::default();
+        for _ in 0..LOGIN_FAILURES_PER_CLIENT {
+            f.failed("a", 1_000);
+        }
+        assert_eq!(f.retry_after("a", 1_100), Some(800));
+        assert_eq!(f.retry_after("a", 1_000 + 14 * 60), Some(60));
+        assert_eq!(f.retry_after("a", 1_000 + 15 * 60), None);
+    }
+
+    #[test]
+    fn a_session_lasts_thirty_days_from_login() {
+        assert_eq!(session_expiry(1_000), 1_000 + 30 * 24 * 60 * 60);
+    }
+
+    #[test]
+    fn the_clock_is_the_machine_s_own_in_seconds() {
+        let wall = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        assert!((now_secs() - wall).abs() <= 5, "{} vs {wall}", now_secs());
     }
 
     #[test]

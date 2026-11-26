@@ -1365,6 +1365,7 @@ mod tests {
             let api = signed_in(kube, FakeHost::new()).await;
             for (method_name, uri, body) in [
                 ("GET", "/api/backups/recovery-key", None),
+                ("GET", "/api/backups/apps/yolab-notes/points", None),
                 ("POST", "/api/backups/recovery-key/ack", None),
                 ("POST", "/api/backups/s3/enable", None),
                 (

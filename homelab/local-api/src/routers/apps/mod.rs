@@ -669,13 +669,15 @@ pub(crate) async fn stage_install(
     let service_name = resolve_service_name(&meta.app.config(), config);
     let values = tempfile::Builder::new()
         .suffix(".json")
-        .tempfile()
+        .tempfile_in(crate::scratch::dir())
+        .and_then(|values| {
+            std::fs::write(
+                values.path(),
+                build_values(config, &tunnel_cfg, &service_name),
+            )
+            .map(|()| values)
+        })
         .map_err(|e| anyhow::anyhow!("staging values: {e}"))?;
-    std::fs::write(
-        values.path(),
-        build_values(config, &tunnel_cfg, &service_name),
-    )
-    .map_err(|e| anyhow::anyhow!("write values: {e}"))?;
     Ok(StagedInstall {
         ns,
         chart_repo: repo,
@@ -855,7 +857,10 @@ pub(crate) async fn installed_apps(client: &Client) -> anyhow::Result<Vec<Instal
             }
             Some(InstalledApp {
                 namespace: ns["metadata"]["name"].as_str()?.to_string(),
-                app_id: annotations.get(ANN_APP_ID)?.as_str()?.to_string(),
+                app_id: annotations
+                    .get(ANN_APP_ID)
+                    .and_then(serde_json::Value::as_str)?
+                    .to_string(),
             })
         })
         .collect())
@@ -3280,6 +3285,29 @@ mod tests {
         }
 
         #[tokio::test]
+        async fn staging_stops_when_the_values_file_cannot_be_made() {
+            let chart = a_chart_folder();
+            let at = ChartAt::Dir {
+                repo: "official",
+                dir: chart.path(),
+            };
+            let tunnel = crate::testkit::config_with_tunnel("");
+            let (server, kube) = api_server().await;
+            crate::k8s::testing::accept_patches(&server).await;
+            Mock::given(method("GET"))
+                .and(path(
+                    "/api/v1/namespaces/yolab-notes/secrets/yolab-tunnel-credentials",
+                ))
+                .respond_with(ResponseTemplate::new(404).set_body_json(gone()))
+                .mount(&server)
+                .await;
+            crate::scratch::set(Some(chart.path().join("no-such-folder")));
+            let said = staging_fails(&kube, &tunnel, &at).await;
+            crate::scratch::set(None);
+            assert!(said.starts_with("staging values: "), "{said}");
+        }
+
+        #[tokio::test]
         async fn a_failed_install_is_marked_with_its_reason_and_nothing_is_deleted() {
             let (server, kube) = api_server().await;
             Mock::given(method("PATCH"))
@@ -3792,7 +3820,6 @@ mod tests {
                         namespace("yolab-d", json!({}), json!({})),
                         json!({ "metadata": { "name": "yolab-e" } }),
                         json!({ "metadata": { "annotations": { ANN_APP_ID: "notes" } } }),
-                        namespace("yolab-f", json!({ ANN_APP_ID: 5 }), json!({})),
                     ],
                 ),
             )

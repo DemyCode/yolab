@@ -1204,16 +1204,21 @@ pub async fn post_peer_prepare(
             "an update is rebuilding this machine's system",
         );
     };
-    match member::begin_prepare(&s.host, &layout, &request, &boot, Preparing::global()).await {
+    let begun = member::begin_prepare(&s.host, &layout, &request, &boot, Preparing::global()).await;
+    if matches!(begun, Ok(Begin::Start)) {
+        let host = s.host.clone();
+        tokio::spawn(async move {
+            let _update = update;
+            member::prepare(&host, &layout, &request, Preparing::global()).await;
+        });
+    }
+    begun_answer(begun)
+}
+
+fn begun_answer(begun: anyhow::Result<Begin>) -> (StatusCode, Json<Value>) {
+    match begun {
         Ok(Begin::Already(v)) => (StatusCode::OK, Json(json!(v))),
-        Ok(Begin::Start) => {
-            let host = s.host.clone();
-            tokio::spawn(async move {
-                let _update = update;
-                member::prepare(&host, &layout, &request, Preparing::global()).await;
-            });
-            (StatusCode::ACCEPTED, Json(json!({ "status": "preparing" })))
-        }
+        Ok(Begin::Start) => (StatusCode::ACCEPTED, Json(json!({ "status": "preparing" }))),
         Err(e) => error(StatusCode::CONFLICT, format!("{e:#}")),
     }
 }

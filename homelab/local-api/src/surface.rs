@@ -225,7 +225,7 @@ mod tests {
     async fn an_unprovisioned_node_trusts_loopback() {
         let api = TestApi::unprovisioned().over_loopback();
         let res = api.get("/api/auth/check").await;
-        assert_eq!(res.status, StatusCode::OK);
+        assert_eq!(res.status, StatusCode::NO_CONTENT);
     }
 
     #[tokio::test]
@@ -240,14 +240,14 @@ mod tests {
     async fn a_session_from_the_real_password_opens_the_door() {
         let api = TestApi::provisioned().login().await;
         let res = api.get("/api/auth/check").await;
-        assert_eq!(res.status, StatusCode::OK);
+        assert_eq!(res.status, StatusCode::NO_CONTENT);
     }
 
     #[tokio::test]
     async fn the_cluster_token_opens_node_to_node_calls() {
         let api = TestApi::provisioned().with_peer_token();
         let res = api.get("/api/auth/check").await;
-        assert_eq!(res.status, StatusCode::OK);
+        assert_eq!(res.status, StatusCode::NO_CONTENT);
     }
 
     #[tokio::test]

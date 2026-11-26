@@ -132,20 +132,28 @@ fn empty_dir(dir: &Path, keep: Option<&str>) -> Result<()> {
         Err(e) => return Err(e).with_context(|| format!("read {}", dir.display())),
     };
     for entry in entries {
-        let entry = entry?;
-        if keep.is_some_and(|k| entry.file_name() == k) {
-            continue;
-        }
-        let path: PathBuf = entry.path();
-        let kind = entry.file_type()?;
-        if kind.is_dir() && !kind.is_symlink() {
-            std::fs::remove_dir_all(&path)
-        } else {
-            std::fs::remove_file(&path)
-        }
-        .with_context(|| format!("remove {}", path.display()))?;
+        entry
+            .map_err(anyhow::Error::from)
+            .and_then(|entry| remove_entry(&entry, keep))?;
     }
     Ok(())
+}
+
+fn remove_entry(entry: &std::fs::DirEntry, keep: Option<&str>) -> Result<()> {
+    if keep.is_some_and(|k| entry.file_name() == k) {
+        return Ok(());
+    }
+    let path: PathBuf = entry.path();
+    entry
+        .file_type()
+        .and_then(|kind| {
+            if kind.is_dir() && !kind.is_symlink() {
+                std::fs::remove_dir_all(&path)
+            } else {
+                std::fs::remove_file(&path)
+            }
+        })
+        .with_context(|| format!("remove {}", path.display()))
 }
 
 #[cfg(test)]

@@ -155,11 +155,11 @@ async fn a_start_that_cannot_find_its_snapshot_or_stop_the_service_or_queue_is_a
     );
 }
 
-async fn attempted(record: Value, config: u16) -> Value {
+async fn attempted(record: Value, config: u16, reason: &str) -> Value {
     let (server, kube) = api_server().await;
     Mock::given(method("GET"))
         .and(path(CONFIG_PATH))
-        .respond_with(ResponseTemplate::new(config).set_body_json(status(config, "Refused")))
+        .respond_with(ResponseTemplate::new(config).set_body_json(status(config, reason)))
         .mount(&server)
         .await;
     scaled("web", 3).mount(&server).await;
@@ -177,15 +177,20 @@ async fn attempted(record: Value, config: u16) -> Value {
 
 #[tokio::test]
 async fn a_restore_without_a_snapshot_or_a_backup_config_fails_and_says_why() {
-    let done = attempted(queued_record(json!({ "snapshot_id": null })), 404).await;
+    let done = attempted(
+        queued_record(json!({ "snapshot_id": null })),
+        404,
+        "NotFound",
+    )
+    .await;
     assert_eq!(done["state"], FAILED);
     assert_eq!(done["error"], "restore rs-1 names no snapshot");
 
-    let done = attempted(queued_record(json!({})), 404).await;
+    let done = attempted(queued_record(json!({})), 404, "NotFound").await;
     assert_eq!(done["state"], FAILED);
     assert_eq!(done["error"], "backup not configured");
 
-    let done = attempted(queued_record(json!({})), 500).await;
+    let done = attempted(queued_record(json!({})), 500, "InternalError").await;
     assert_eq!(done["state"], FAILED);
 }
 

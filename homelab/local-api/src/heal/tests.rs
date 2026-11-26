@@ -1008,3 +1008,16 @@ mod real_network {
         assert_eq!(view.peer_addrs, [PEER]);
     }
 }
+
+#[test]
+fn a_heal_already_under_way_is_answered_with_where_it_stands() {
+    let (status, body) = begun_answer(Ok(Begin::Already(ResetView {
+        heal_id: "ab12".into(),
+        driver: "node1".into(),
+        phase: PhaseView::Prepared,
+        error: None,
+    })));
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body.0["heal_id"], "ab12");
+    assert_eq!(body.0["driver"], "node1");
+}

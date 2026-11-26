@@ -218,7 +218,7 @@ async fn a_peer_prepares_in_the_background_and_reports_how_it_went() {
         if phase == "failed" {
             break;
         }
-        tokio::task::yield_now().await;
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
     assert_eq!(phase, "failed");
     assert!(crate::routers::update::exclusive().is_some());

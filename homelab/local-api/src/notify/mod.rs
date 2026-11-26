@@ -344,6 +344,7 @@ token = "abcdef0123456789"
         );
         assert_eq!(t.machine_label(), "node1");
         assert!(Tunnel::parse("[homelab]\n").is_err());
+        assert!(Tunnel::parse("[tunnel").is_err());
         let bare = Tunnel {
             host: "localhost".into(),
             ..t

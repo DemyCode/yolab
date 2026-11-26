@@ -350,5 +350,10 @@ mod tests {
             tools: crate::tools::Tools::unreachable(),
         };
         assert!(c.converge(&ctx).await.is_err());
+        let without_a_cluster = Ctx {
+            node: "node1".into(),
+            tools: crate::tools::Tools::real(),
+        };
+        assert!(c.converge(&without_a_cluster).await.is_err());
     }
 }

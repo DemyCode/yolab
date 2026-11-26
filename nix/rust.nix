@@ -93,7 +93,7 @@
         doInstallCargoArtifacts = false;
         buildPhaseCargoCommand = ''
           mkdir -p "$out"
-          cargo mutants --in-place --output "$out" ${excludeUntested}
+          cargo mutants --jobs 4 --copy-target=true --output "$out" ${excludeUntested}
         '';
         installPhaseCommand = "";
       });
