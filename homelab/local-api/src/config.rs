@@ -429,7 +429,13 @@ mod tests {
     #[test]
     fn an_absent_channel_file_reads_as_the_default_source() {
         let dir = tempfile::tempdir().unwrap();
+        let logs = crate::testkit::capture_logs();
         let ch = channel_cfg(&dir).channel();
+        assert_eq!(
+            logs.text(),
+            "",
+            "a machine that never chose a channel is not a problem"
+        );
         assert_eq!(ch.url, default_flake_url());
         assert_eq!(ch.ref_, "main");
     }
@@ -491,6 +497,21 @@ mod tests {
     }
 
     #[test]
+    fn a_subnet_may_be_a_single_address_but_no_longer_than_128_bits() {
+        assert_eq!(
+            parse_subnet("fd00::1/128"),
+            Some(("fd00::1".parse().unwrap(), 128))
+        );
+        assert_eq!(parse_subnet("fd00::1/129"), None);
+    }
+
+    #[test]
+    fn the_machine_folder_and_the_flake_default_to_the_installed_layout() {
+        assert_eq!(machine_dir(), PathBuf::from("/var/lib/yolab/machine"));
+        assert_eq!(default_flake_url(), "github:DemyCode/yolab");
+    }
+
+    #[test]
     fn a_zero_length_subnet_holds_every_ipv6_address() {
         let any = parse_subnet("fd00::/0").unwrap();
         assert!(subnet_contains(any, "2001:db8::1".parse().unwrap()));
@@ -529,7 +550,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let cfg = channel_cfg(&dir);
         std::fs::create_dir_all(&cfg.channel_file).unwrap();
+        let logs = crate::testkit::capture_logs();
         assert_eq!(cfg.channel(), Channel::default());
+        assert!(logs.contain("could not read"), "{}", logs.text());
         assert!(cfg.write_channel(&Channel::default()).is_err());
     }
 

@@ -326,3 +326,75 @@ async fn a_peer_is_reached_through_the_same_url_production_builds() {
         .unwrap();
     assert!(res.status().is_success());
 }
+
+#[derive(Clone, Default)]
+struct LogBuffer(Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl std::io::Write for LogBuffer {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+pub struct Logs {
+    buffer: LogBuffer,
+    _scope: tracing::subscriber::DefaultGuard,
+}
+
+impl Logs {
+    pub fn text(&self) -> String {
+        let bytes = self
+            .buffer
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        String::from_utf8_lossy(&bytes).into_owned()
+    }
+
+    pub fn contain(&self, needle: &str) -> bool {
+        self.text().contains(needle)
+    }
+}
+
+pub fn capture_logs() -> Logs {
+    let buffer = LogBuffer::default();
+    let writer = buffer.clone();
+    let subscriber = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::TRACE)
+        .with_ansi(false)
+        .without_time()
+        .with_writer(move || writer.clone())
+        .finish();
+    Logs {
+        buffer,
+        _scope: tracing::subscriber::set_default(subscriber),
+    }
+}
+
+#[cfg(test)]
+mod log_capture_tests {
+    use super::*;
+    use std::io::Write as _;
+
+    #[test]
+    fn a_test_sees_exactly_what_was_logged_on_its_own_thread() {
+        let logs = capture_logs();
+        assert!(!logs.contain("disk full"));
+        tracing::warn!("disk full on node1");
+        assert!(logs.contain("disk full on node1"), "{}", logs.text());
+        assert!(logs.text().contains("WARN"), "{}", logs.text());
+        let mut buffer = logs.buffer.clone();
+        buffer.flush().unwrap();
+        std::thread::spawn(|| tracing::warn!("from another thread"))
+            .join()
+            .unwrap();
+        assert!(!logs.contain("from another thread"));
+    }
+}

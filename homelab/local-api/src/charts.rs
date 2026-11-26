@@ -266,10 +266,6 @@ async fn pull_into<H: Host>(
     Ok(())
 }
 
-fn http() -> crate::http::Client {
-    crate::http::client()
-}
-
 const MANIFEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 fn github_contents_url(api: &str, url: &str) -> Option<String> {
@@ -304,7 +300,7 @@ async fn body_of(request: crate::http::RequestBuilder) -> anyhow::Result<String>
 
 async fn manifest_text(repo: &ChartRepo, api: &str) -> anyhow::Result<String> {
     if let Some(contents) = github_contents_url(api, &repo.url) {
-        let request = http()
+        let request = crate::http::client()
             .get(&contents)
             .header("user-agent", "yolab")
             .header("accept", "application/vnd.github.raw+json");
@@ -318,7 +314,7 @@ async fn manifest_text(repo: &ChartRepo, api: &str) -> anyhow::Result<String> {
             ),
         }
     }
-    body_of(http().get(&repo.url)).await
+    body_of(crate::http::client().get(&repo.url)).await
 }
 
 async fn fetch_manifest(repo: &ChartRepo) -> anyhow::Result<CatalogManifest> {
@@ -465,23 +461,19 @@ pub async fn sync_repo<H: Host>(
         }
     }
 
-    let wanted: Vec<CatalogEntry> = manifest
+    let (wanted, unusable): (Vec<CatalogEntry>, Vec<CatalogEntry>) = manifest
         .charts
         .iter()
         .filter(|e| stale(e))
-        .filter(|e| {
-            let usable = valid_chart_name(&e.name);
-            if !usable {
-                tracing::warn!(
-                    "{}: skipping chart with unusable name {:?}",
-                    repo.name,
-                    e.name
-                );
-            }
-            usable
-        })
         .cloned()
-        .collect();
+        .partition(|e| valid_chart_name(&e.name));
+    for e in &unusable {
+        tracing::warn!(
+            "{}: skipping chart with unusable name {:?}",
+            repo.name,
+            e.name
+        );
+    }
     let dir = dir.as_path();
     let registry = manifest.registry.as_str();
     Ok(pull_all(wanted, |entry: CatalogEntry| async move {
@@ -582,6 +574,10 @@ impl crate::runtime::Resource for ChartSyncController {
     }
 }
 
+fn when_any(n: usize, note: String) -> Option<String> {
+    (n > 0).then_some(note)
+}
+
 async fn refresh_github_stars(client: &Client, api: &str) {
     let dirs: Vec<PathBuf> = chart_sources(client)
         .await
@@ -590,9 +586,15 @@ async fn refresh_github_stars(client: &Client, api: &str) {
         .collect();
     let repos = github_repos(&dirs);
     let now = i64::try_from(crate::system::now_secs()).unwrap_or(i64::MAX);
-    match crate::github::refresh(client, &http(), api, &repos, now).await {
-        Ok(n) if n > 0 => tracing::info!("chart sync: GitHub stars refreshed for {n} project(s)"),
-        Ok(_) => {}
+    match crate::github::refresh(client, &crate::http::client(), api, &repos, now).await {
+        Ok(n) => {
+            if let Some(note) = when_any(
+                n,
+                format!("chart sync: GitHub stars refreshed for {n} project(s)"),
+            ) {
+                tracing::info!("{note}");
+            }
+        }
         Err(e) => tracing::warn!("chart sync: GitHub stars not refreshed: {e:#}"),
     }
 }
@@ -610,8 +612,12 @@ async fn sync_all_with<H: Host>(
     let mut failed = Vec::new();
     for repo in list_repos(client).await {
         match sync_repo(host, &cache_root(), &repo).await {
-            Ok(n) if n > 0 => tracing::info!("chart sync: {} — {n} chart(s)", repo.name),
-            Ok(_) => {}
+            Ok(n) => {
+                if let Some(note) = when_any(n, format!("chart sync: {} — {n} chart(s)", repo.name))
+                {
+                    tracing::info!("{note}");
+                }
+            }
             Err(e) => failed.push(format!("{}: {e}", repo.name)),
         }
     }
@@ -628,6 +634,18 @@ async fn sync_all_with<H: Host>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_official_catalog_is_cached_under_its_own_name() {
+        assert_eq!(official_dir(), cache_root().join(OFFICIAL));
+        assert!(!OFFICIAL.is_empty());
+    }
+
+    #[test]
+    fn a_sync_that_brought_nothing_new_says_nothing() {
+        assert_eq!(when_any(0, "x".into()), None);
+        assert_eq!(when_any(1, "x".into()), Some("x".into()));
+    }
 
     fn chart_in(root: &Path, name: &str, annotations: &str) {
         let dir = root.join(name);

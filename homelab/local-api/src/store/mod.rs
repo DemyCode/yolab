@@ -5,7 +5,6 @@ pub mod sync;
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, AutomergeError, ReadDoc, ROOT};
@@ -446,10 +445,10 @@ fn this_node() -> String {
 }
 
 #[cfg(test)]
-pub fn shared() -> &'static Mutex<Store> {
+pub fn shared() -> &'static std::sync::Mutex<Store> {
     thread_local! {
-        static SHARED: &'static Mutex<Store> =
-            Box::leak(Box::new(Mutex::new(Store::new(&this_node()))));
+        static SHARED: &'static std::sync::Mutex<Store> =
+            Box::leak(Box::new(std::sync::Mutex::new(Store::new(&this_node()))));
     }
     SHARED.with(|store| *store)
 }

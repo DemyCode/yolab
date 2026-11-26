@@ -143,6 +143,22 @@ mod tests {
     }
 
     #[test]
+    fn a_new_service_takes_whatever_schedule_and_space_the_cluster_set() {
+        let weekly_5gb = ClusterSettings {
+            backup_schedule: "0 4 * * 0".into(),
+            backup_budget_bytes: 5 * GB,
+        };
+        assert_eq!(
+            weekly_5gb.new_service_backup(),
+            BackupPolicy {
+                enabled: true,
+                schedule: "0 4 * * 0".into(),
+                budget_bytes: Some(5 * GB),
+            }
+        );
+    }
+
+    #[test]
     fn settings_saved_on_one_machine_apply_on_the_other_once_they_sync() {
         let mut a = Store::new("node1");
         monthly_10gb().write_changes(&mut a).unwrap();
