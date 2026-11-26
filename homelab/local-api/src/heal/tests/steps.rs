@@ -549,3 +549,42 @@ fn the_page_sees_the_heal_by_its_member_and_machine_names() {
         })
     );
 }
+
+#[test]
+fn a_heal_walks_prepare_arm_restart_rebuild_and_stops_after_rebuild_or_undo() {
+    assert_eq!(Step::Prepare.next(), Some(Step::Arm));
+    assert_eq!(Step::Arm.next(), Some(Step::Restart));
+    assert_eq!(Step::Restart.next(), Some(Step::Rebuild));
+    assert_eq!(Step::Rebuild.next(), None);
+    assert_eq!(Step::Undo.next(), None);
+}
+
+#[tokio::test]
+async fn a_heal_runs_only_until_it_has_a_finish_time() {
+    let (_d, _record, _net, mut heal) = at(Step::Rebuild).await;
+    assert!(heal.running());
+    heal.finished_at = Some(NOW);
+    assert!(!heal.running());
+}
+
+#[tokio::test]
+async fn a_silent_machine_is_logged_but_this_machine_is_not() {
+    let (host, _) = broken_cluster();
+    let net = FakeNetwork::with(&[("node3", "fd00::3")]).platform(&[
+        (11, "fd00::1"),
+        (12, "fd00::2"),
+        (13, "fd00::3"),
+    ]);
+    let logs = crate::testkit::capture_logs();
+    survey(&host, &net, "node1", "fd00::1", 5_000).await;
+    assert!(
+        logs.contain("heal: fd00::2 does not answer"),
+        "{}",
+        logs.text()
+    );
+    assert!(
+        !logs.contain("heal: fd00::1 does not answer"),
+        "{}",
+        logs.text()
+    );
+}

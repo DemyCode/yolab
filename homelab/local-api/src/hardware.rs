@@ -538,6 +538,21 @@ mod tests {
     }
 
     #[test]
+    fn only_card_and_render_nodes_with_a_number_are_devices() {
+        assert!(is_device_node("card0"));
+        assert!(is_device_node("renderD128"));
+        assert!(!is_device_node("card"));
+        assert!(!is_device_node("renderD"));
+        assert!(!is_device_node("card0-HDMI-A-1"));
+        assert!(!is_device_node("version"));
+    }
+
+    #[test]
+    fn a_radeon_without_a_render_node_is_not_counted() {
+        assert!(!probe(Machine::new().drm("card0", "radeon").path()).amd);
+    }
+
+    #[test]
     fn connectors_are_not_mistaken_for_gpus() {
         let m = Machine::new().drm("card0-HDMI-A-1", "i915");
         assert_eq!(probe(m.path()), Inventory::default());

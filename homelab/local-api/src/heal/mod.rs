@@ -819,7 +819,10 @@ async fn tick<H: Host, N: Network>(
     let Some(mut heal) = local.load()? else {
         return Ok(Tick::Idle("no heal is driven from this machine".into()));
     };
-    while heal.running() {
+    for _ in 0..=Step::PATH.len() {
+        if !heal.running() {
+            break;
+        }
         tracing::info!("heal {}: {:?}", heal.id, heal.step);
         match run_step(host, net, local, &mut heal, boot_id, now).await {
             Err(e) => {
@@ -863,7 +866,10 @@ async fn tick<H: Host, N: Network>(
             }
         }
     }
-    Ok(Tick::Idle(format!("heal {} finished", heal.id)))
+    let finished = heal
+        .finished_at
+        .map(|_| format!("heal {} finished", heal.id));
+    Ok(finished.map_or(Tick::Done, Tick::Idle))
 }
 
 async fn run_step<H: Host, N: Network>(

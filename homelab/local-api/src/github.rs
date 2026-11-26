@@ -242,6 +242,11 @@ mod tests {
     }
 
     #[test]
+    fn stats_go_stale_after_a_day() {
+        assert_eq!(MAX_AGE_SECS, 86_400);
+    }
+
+    #[test]
     fn a_repository_two_apps_share_is_fetched_once() {
         let repos = vec!["a/b".to_string(), "a/b".to_string()];
         assert_eq!(stale(&repos, &HashMap::new(), NOW, 10), vec!["a/b"]);

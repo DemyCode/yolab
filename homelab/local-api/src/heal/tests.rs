@@ -706,7 +706,10 @@ async fn a_prepare_that_never_finishes_is_given_up() {
         .await
         .unwrap();
     let heal = record.load().unwrap().unwrap();
-    assert!(heal.failed.unwrap().contains("did not finish preparing"));
+    assert!(heal
+        .failed
+        .unwrap()
+        .contains("did not finish preparing in 3 hours"));
 }
 
 #[test]
