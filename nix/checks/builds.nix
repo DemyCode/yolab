@@ -19,7 +19,6 @@ in
     client-ui-tests = builds.clientUiTests;
     client-ui-lint = builds.clientUiLint;
     client-ui-coverage = builds.clientUiCoverage;
-    client-ui-mutants = builds.clientUiMutants;
 
     local-api-tests = crates.local-api.tests;
     installer-tests = crates.installer.tests;
@@ -28,10 +27,6 @@ in
     local-api-coverage = crates.local-api.coverage;
     installer-coverage = crates.installer.coverage;
     desktop-client-coverage = crates.desktop-client.coverage;
-
-    local-api-mutants = crates.local-api.mutants;
-    installer-mutants = crates.installer.mutants;
-    desktop-client-mutants = crates.desktop-client.mutants;
 
     untested-exceptions-name-real-files = failOn "untested-exceptions-name-real-files" {
       problems = missingUntested;

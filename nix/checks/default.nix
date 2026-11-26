@@ -4,6 +4,8 @@
   rust,
   nixosSystems,
   androidApk,
+  vm,
+  outputs,
 }: let
   inherit (pkgs) lib;
 
@@ -33,14 +35,15 @@
     '';
 
   ctx = {
-    inherit pkgs lib treeSrc nixosSystems failOn treefmtEval androidApk;
+    inherit pkgs lib treeSrc nixosSystems failOn treefmtEval androidApk vm outputs;
     inherit (rust) crates;
     x86 = pkgs.stdenv.hostPlatform.system == "x86_64-linux";
     cfg = nixosSystems.yolab-ci.config;
     builds = import ../../homelab/builds.nix {inherit pkgs rust;};
   };
 
-  groups = map (f: import f ctx) [
+  load = map (f: import f ctx);
+  short = load [
     ./builds.nix
     ./scripts.nix
     ./lint.nix
@@ -49,11 +52,24 @@
     ./storage.nix
     ./security.nix
     ./hardware.nix
+    ./outputs.nix
+  ];
+  extra = load [
+    ./mutants.nix
+    ./vm.nix
   ];
 
-  names = lib.concatMap builtins.attrNames groups;
+  names = lib.concatMap builtins.attrNames (short ++ extra);
   twice = lib.filter (n: lib.count (m: m == n) names > 1) (lib.unique names);
+  long = lib.mergeAttrsList (short ++ extra);
 in
   if twice != []
   then throw "nix/checks defines these checks in more than one file: ${toString twice}"
-  else lib.mergeAttrsList groups
+  else {
+    short = lib.mergeAttrsList short;
+    long =
+      long
+      // {
+        all = pkgs.linkFarm "all-long-checks" (lib.mapAttrsToList (name: path: {inherit name path;}) long);
+      };
+  }

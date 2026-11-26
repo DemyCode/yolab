@@ -158,6 +158,12 @@
         rust = rustFor.${system};
         nixosSystems = ciSystemsFor system;
         inherit androidApk;
+        outputs = self;
+        vm = {
+          pkgs = pkgsFor system;
+          inherit inputs disko;
+          yolabSpecialArgs = specialArgsFor system;
+        };
       };
 
     devShellsFor = system: let
@@ -223,7 +229,9 @@
       }
       // lib.optionalAttrs isMachine {yolab = nixosSystems.yolab;};
 
-    checks = lib.genAttrs systems checksFor;
+    checks = lib.genAttrs systems (system: (checksFor system).short);
+
+    longChecks = lib.genAttrs systems (system: (checksFor system).long);
 
     formatter = lib.genAttrs systems (system: treefmtFor.${system}.config.build.wrapper);
 

@@ -12,7 +12,7 @@ forever.
 | 2. Rust unit | `#[cfg(test)] mod tests` beside the code | nothing | every push |
 | 3. Rust seam | same, driven by `host::fake::FakeHost` | nothing | every push |
 | 4. Rust surface | `surface.rs` + `testkit.rs`, the real axum router | nothing | every push |
-| 5. NixOS VM | `nix/tests/*.nix` | `/dev/kvm` | every push, one runner per test |
+| 5. NixOS VM | `nix/tests/*.nix` | `/dev/kvm` | `longChecks` only |
 
 ## 1. Nix invariants — the tier nobody else has
 
@@ -77,6 +77,7 @@ every mutant must be caught:
 
 100% coverage only proves the code ran. The mutation checks prove that a test
 notices when the code changes.
+The mutation checks take hours, so they are in `longChecks`, not `checks`.
 
 The only exceptions are whole files, listed with the reason they can't be
 unit-tested, in `nix/untested.nix` (Rust) and `homelab/client-ui/untested.json`
@@ -102,14 +103,25 @@ A comment that asserts a property is a test that has not been written yet.
 
 ## Running things
 
-`nix flake check` builds **every** entry in `checks.x86_64-linux` — all of them,
-no filter. The VM tests are in there too, so `nix flake check` needs `/dev/kvm`.
+There are two check sets, defined in `nix/checks/default.nix`:
+
+| set | what | when |
+|---|---|---|
+| `checks` | every group in `nix/checks/` except mutants and VM tests, plus a build of every flake output (packages, devShells, apps, formatter, nixosConfigurations for that system; `nix/checks/outputs.nix`) | every push; `nix flake check` and `om ci run` build exactly this |
+| `longChecks` | `checks` plus `mutants.nix` and `vm.nix`; `longChecks.<system>.all` depends on every one of them | nightly or before a release |
+
+`longChecks` is a superset by construction, so the two cannot drift. A check name
+may appear in only one file across both sets.
+
+```sh
+nix build path:.#longChecks.x86_64-linux.all --keep-going   # the whole long suite (needs /dev/kvm)
+```
 
 To run a subset:
 
 ```sh
 nix build .#checks.x86_64-linux.local-api-tests   # exactly one check
-nix build .#checks.x86_64-linux.two-node-test     # a VM test (needs /dev/kvm)
+nix build .#longChecks.x86_64-linux.two-node-test # a VM test (needs /dev/kvm)
 
 # everything, in one nix invocation
 nix build -L $(nix eval --json .#checks.x86_64-linux \
@@ -119,12 +131,12 @@ nix fmt                                           # fix formatting
 ```
 
 CI does the same thing, one runner per check: the matrix is `builtins.attrNames`
-of `checks.x86_64-linux`, so adding a check is enough to get it run and cached.
+of `checks.<system>`, so adding a check is enough to get it run and cached.
 
 **Read the log, not the scrollback.** A VM test or a cold Rust build emits tens
 of thousands of lines. Redirect and tail:
 
 ```sh
-nix build --no-link --print-build-logs .#checks.x86_64-linux.boot-test > /tmp/boot.log 2>&1
+nix build --no-link --print-build-logs .#longChecks.x86_64-linux.boot-test > /tmp/boot.log 2>&1
 tail -40 /tmp/boot.log
 ```
