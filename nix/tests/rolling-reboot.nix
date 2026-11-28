@@ -32,7 +32,7 @@
     environment.systemPackages = [pkgs.curl pkgs.jq];
   };
 in
-  testLib.withNetwork (pkgs.testers.nixosTest {
+  testLib.run yolabSpecialArgs {
     name = "yolab-rolling-reboot";
 
     nodes.node1 = mkNode {
@@ -153,4 +153,4 @@ in
                 f"{fsid_before!r} -> {fsids!r}"
             )
       '';
-  })
+  }

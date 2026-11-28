@@ -32,7 +32,7 @@
     systemd.tmpfiles.rules = ["C /var/lib/yolab/machine/config.toml 0600 root root - ${configPath}"];
   };
 in
-  testLib.withNetwork (pkgs.testers.nixosTest {
+  testLib.run yolabSpecialArgs {
     name = "yolab-disk-loss";
     nodes.node1 = node;
 
@@ -195,4 +195,4 @@ in
       node1.wait_until_succeeds(f"{K} get --raw /readyz", timeout=900)
       node1.fail(f"{K} get namespace yolab-demo")
     '';
-  })
+  }

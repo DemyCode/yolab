@@ -32,7 +32,7 @@
     environment.systemPackages = [pkgs.curl pkgs.jq];
   };
 in
-  testLib.withNetwork (pkgs.testers.nixosTest {
+  testLib.run yolabSpecialArgs {
     name = "yolab-reboot";
     nodes.node1 = node;
 
@@ -212,4 +212,4 @@ in
                 ["images-rbd", "system-osd", "ceph-keys"],
             )
       '';
-  })
+  }

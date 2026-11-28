@@ -32,7 +32,7 @@
     environment.systemPackages = [pkgs.curl pkgs.jq];
   };
 in
-  testLib.withNetwork (pkgs.testers.nixosTest {
+  testLib.run yolabSpecialArgs {
     name = "yolab-two-node-disk-loss";
 
     nodes.node1 = mkNode {
@@ -151,4 +151,4 @@ in
         with step(node2, "node2's own k3s agent is unaffected by its lost disk"):
             node2.succeed("systemctl is-active k3s.service")
       '';
-  })
+  }

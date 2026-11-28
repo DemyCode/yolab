@@ -47,6 +47,22 @@
     withTestTools = a: a // testEnv // {nativeBuildInputs = a.nativeBuildInputs ++ testInputs;};
     covArgs = withTestTools (args // {pname = "${pname}-coverage";});
     strict = args // {CARGO_BUILD_WARNINGS = "deny";};
+
+    mutantsShard = shard: of:
+      craneLib.mkCargoDerivation (withTestTools args
+        // {
+          pname = "${pname}-mutants-${toString (shard + 1)}-of-${toString of}";
+          CARGO_BUILD_INCREMENTAL = "true";
+          CARGO_PROFILE_DEV_DEBUG = "0";
+          inherit cargoArtifacts;
+          nativeBuildInputs = args.nativeBuildInputs ++ testInputs ++ [pkgs.cargo-mutants];
+          doInstallCargoArtifacts = false;
+          buildPhaseCargoCommand = ''
+            mkdir -p "$out"
+            cargo mutants --jobs 4 --copy-target=true --caught --unviable --shard ${toString shard}/${toString of} --output "$out" ${excludeUntested}
+          '';
+          installPhaseCommand = "";
+        });
   in {
     inherit args cargoArtifacts untested;
 
@@ -92,20 +108,8 @@
         installPhaseCommand = "";
       });
 
-    mutants = craneLib.mkCargoDerivation (withTestTools args
-      // {
-        pname = "${pname}-mutants";
-        CARGO_BUILD_INCREMENTAL = "true";
-        CARGO_PROFILE_DEV_DEBUG = "0";
-        inherit cargoArtifacts;
-        nativeBuildInputs = args.nativeBuildInputs ++ testInputs ++ [pkgs.cargo-mutants];
-        doInstallCargoArtifacts = false;
-        buildPhaseCargoCommand = ''
-          mkdir -p "$out"
-          cargo mutants --jobs 4 --copy-target=true --caught --unviable --output "$out" ${excludeUntested}
-        '';
-        installPhaseCommand = "";
-      });
+    inherit mutantsShard;
+    mutants = mutantsShard 0 1;
 
     untestedMissing = lib.filter (f: !builtins.pathExists (path + "/${f}")) untestedFiles;
   };

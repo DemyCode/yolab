@@ -72,8 +72,8 @@ every mutant must be caught:
 | check | tool | fails when |
 |---|---|---|
 | `<crate>-coverage`, `client-ui-coverage` | cargo-llvm-cov, Vitest v8 | anything below 100%; the log lists the missing lines |
-| `<crate>-mutants` | cargo-mutants (every mutant, no diff filter) | any mutant MISSED or TIMEOUT |
-| `client-ui-mutants` | StrykerJS + Vitest runner | mutation score below 100 |
+| `<crate>-mutants`, `local-api-mutants-<k>-of-8` | cargo-mutants (every mutant, no diff filter; local-api split into 8 `--shard`s so each fits a 6h GitHub job; x86_64 only) | any mutant MISSED or TIMEOUT |
+| `client-ui-mutants` | StrykerJS + Vitest runner | mutation score below 100 (x86_64 only) |
 
 100% coverage only proves the code ran. The mutation checks prove that a test
 notices when the code changes.

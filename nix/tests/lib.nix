@@ -1,4 +1,4 @@
-{pkgs}: {
+{pkgs}: rec {
   # Real internet access for exactly this VM test's build — nothing else in
   # the flake. `nix build` sandboxes every derivation (no network) unless it
   # is a fixed-output derivation; there is no per-derivation "give this one
@@ -14,6 +14,14 @@
   # CI setup makes the runner user trusted too) — an untrusted user silently
   # gets the normal sandboxed build instead, not an error.
   withNetwork = test: test.overrideTestDerivation (_: {__noChroot = true;});
+
+  run = yolabSpecialArgs: test:
+    withNetwork (pkgs.testers.runNixOSTest ({lib, ...}: {
+      imports = [test];
+      node.pkgs = lib.mkForce null;
+      node.specialArgs = {inherit (yolabSpecialArgs null) nixosHardware yolabFacterPath;};
+      defaults.nixpkgs.pkgs = lib.mkDefault pkgs;
+    }));
 
   # A tiny OCI image built entirely from the Nix store — no registry pull, so
   # it works inside a VM test's network-sandboxed VM. `k3s ctr -n k8s.io

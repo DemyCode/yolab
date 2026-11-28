@@ -32,7 +32,7 @@
     };
   };
 in
-  testLib.withNetwork (pkgs.testers.nixosTest {
+  testLib.run yolabSpecialArgs {
     name = "yolab-boot";
     nodes.node1 = vmModule;
     testScript =
@@ -100,4 +100,4 @@ in
             ).strip()
             assert restarts == "0", f"k3s restarted {restarts} times, expected a clean start"
       '';
-  })
+  }
